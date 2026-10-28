@@ -31,14 +31,22 @@
 //! A form's answers (`clarification`) are an ordinary new message, checked as
 //! for any harness before its receipt is recorded.
 //!
-//! Not yet: a sub-agent's own conversation is not shown, nor are background
-//! sub-agents (OpenCode's experimental flag); a sub-agent of a sub-agent
-//! (`subagent_depth` above OpenCode's default of 1) is followed as it starts
-//! but not found again after the event stream breaks; no message joins a
-//! running Turn; no images or remote machines.
+//! A model (T-10) is OpenCode's own default unless one is chosen for the
+//! Agent from what its OpenCode's configured providers list
+//! (`/config/providers`); a chosen one goes with each new message
+//! (`prompt_async`'s `model`), and one OpenCode no longer lists refuses the
+//! message before anything is sent. Only a model's names are kept, never what
+//! else a provider's record holds (its key, options or headers).
+//!
+//! Not yet: no model is chosen when the Agent is created, and no model
+//! `variant` or OpenCode `agent` at all; a sub-agent's own conversation is
+//! not shown, nor are background sub-agents (OpenCode's experimental flag);
+//! a sub-agent of a sub-agent (`subagent_depth` above OpenCode's default of
+//! 1) is followed as it starts but not found again after the event stream
+//! breaks; no message joins a running Turn; no images or remote machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
-    opencode::{self, Events, Launch, Mcp, MessageId, Reply, Server, Snapshot, Submission},
+    opencode::{self, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
     workspace::Workspace,
@@ -162,13 +170,61 @@ pub fn enabled() -> bool {
     std::env::var_os("YUZUNO_EXPERIMENTAL_OPENCODE").is_some_and(|v| v == "1")
 }
 
-/// What `/api/models?harness=opencode` and an Agent's models answer: no list,
-/// since the model is OpenCode's own default (its configuration's).
+/// What `/api/models?harness=opencode` answers: no list, since an Agent
+/// starts with OpenCode's own default (its configuration's); its models are
+/// its own OpenCode's (`opencode_agent_catalog`).
 pub fn catalog() -> Value {
     json!({"models":[],"opencode":{"version":opencode::VERSION}})
 }
 
+/// A model as the Agent settings offer it: named `<provider>/<model>`, shown
+/// with the provider's and the model's names and, unless active, its status.
+fn offered(model: &ModelChoice) -> Value {
+    let id = model.id();
+    json!({"id":id,"model":id,"displayName":format!("{} · {}", model.provider_name, model.name),
+        "description":(model.status != "active").then(|| model.status.clone())})
+}
+
+/// The model chosen for an Agent, as its OpenCode lists it now; None for
+/// OpenCode's own default. One it no longer lists is refused.
+async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
+    if model.is_empty() {
+        return Ok(None);
+    }
+    let listed = server.models().await.context("没有读到 OpenCode 的模型；这条消息没有发送，草稿保留")?;
+    let found = listed.into_iter().find(|m| m.id() == model);
+    found.map(Some).with_context(|| format!("所选模型 {model} 已不在 OpenCode 当前的配置中；这条消息没有发送，草稿保留。请在设置里另选模型"))
+}
+
 impl Workspace {
+    /// An Agent's models (`/api/agents/:id/models`): what its own OpenCode's
+    /// configured providers offer now, read from the running connection.
+    pub async fn opencode_agent_catalog(self: &Arc<Self>, id: &str) -> Result<Value> {
+        let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
+        let models = c.server.models().await?;
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERSION}}))
+    }
+
+    /// Chooses the model for an Agent's next messages: "" for OpenCode's own
+    /// default, else one its OpenCode lists now. Saved only; a running Turn
+    /// keeps the model it was sent with.
+    pub async fn opencode_set_model(self: &Arc<Self>, id: &str, model: String) -> Result<crate::model::Agent> {
+        let _permit = self.admission.enter_work()?;
+        let agent = self.listed(id).await?;
+        ensure!(agent.harness == "opencode", "Agent 不是 OpenCode");
+        ensure_agent_open(&agent)?;
+        let model = model.trim().to_owned();
+        if !model.is_empty() {
+            let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能选择它的模型")?;
+            let listed = c.server.models().await?;
+            ensure!(listed.iter().any(|m| m.id() == model), "OpenCode 当前配置的模型里没有 {model}；设置未保存");
+        }
+        let selected = model.clone();
+        self.record_meta(id, "opencode/modelSelected", json!({"model":model}), move |m| m.agent.model = selected).await?;
+        self.changed(id);
+        self.listed(id).await
+    }
+
     pub async fn opencode_create_on(
         self: &Arc<Self>, name: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>,
@@ -530,7 +586,9 @@ impl Workspace {
             "OpenCode Agent 目前只接受空闲时的新消息；草稿保留");
         self.opencode_after_restart(id, detail).await?;
         ensure!(!busy(detail), "OpenCode 正在执行或等待回应；这条消息没有发送，草稿保留");
-        self.opencode_ensure(id).await?;
+        let c = self.opencode_ensure(id).await?;
+        // A chosen model OpenCode no longer lists: refused before a receipt.
+        chosen(&c.server, &detail.agent.model).await?;
         self.require_collaboration(id).await
     }
 
@@ -585,13 +643,16 @@ impl Workspace {
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
         self.require_collaboration(id).await?;
+        // The model it goes with, as OpenCode lists it now (or its default).
+        let model = chosen(&c.server, &d.agent.model).await?;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
         // Recorded before it is sent: its ID is the only way to learn what
         // became of it.
         let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), json!([{"type":"text","text":text}]));
-        self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text}),
+        self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text,
+            "model":model.as_ref().map(ModelChoice::id)}),
             Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
@@ -606,7 +667,7 @@ impl Workspace {
         }).await?;
         self.changed(id);
         *sent = true;
-        let submitted = c.server.submit(&c.session, &message, &text).await;
+        let submitted = c.server.submit_with(&c.session, &message, &text, model.as_ref()).await;
         let refused = match &submitted {
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.

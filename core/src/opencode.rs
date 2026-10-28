@@ -138,6 +138,28 @@ pub struct Snapshot {
     pub questions: Vec<Value>,
 }
 
+/// A model one of OpenCode's configured providers offers, as
+/// `GET /config/providers` lists it, and only what names it: a provider's
+/// `key`, `options` and `env`, and a model's `options` and `headers`, can hold
+/// credentials and are never read (T-10).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChoice {
+    pub provider: String,
+    pub provider_name: String,
+    pub model: String,
+    pub name: String,
+    /// `alpha`, `beta`, `deprecated` or `active` (`provider/provider.ts`).
+    pub status: String,
+}
+
+impl ModelChoice {
+    /// How Yuzuno names it: `<providerID>/<modelID>`, as OpenCode's own
+    /// configuration does (`cfg.model`).
+    pub fn id(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+}
+
 /// A message ID in OpenCode's own form: `msg_`, 12 hex digits of
 /// `ms × 4096 + n`, 14 base62 characters (`schema/src/identifier.ts`).
 /// OpenCode orders messages by the time it stores them, so the ID only has to
@@ -360,10 +382,19 @@ impl Server {
     /// Sends one text prompt under `id`, once: an ID this server was given
     /// before is refused here, whatever became of it.
     pub async fn submit(&self, session: &str, id: &MessageId, text: &str) -> Result<Submission> {
+        self.submit_with(session, id, text, None).await
+    }
+
+    /// As `submit`, with the model to answer it; without one OpenCode decides
+    /// (its agent's model, the session's last, then its configured default).
+    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, model: Option<&ModelChoice>) -> Result<Submission> {
         let path = format!("/session/{}/prompt_async", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
-        let body = json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": text}]});
+        let mut body = json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": text}]});
+        if let Some(model) = model {
+            body["model"] = json!({"providerID": model.provider, "modelID": model.model});
+        }
         let sent = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&body).send().await;
         Ok(match sent {
             Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
@@ -418,6 +449,29 @@ impl Server {
             permissions: self.pending_in("/permission", &sessions).await?,
             questions: self.pending_in("/question", &sessions).await?,
         })
+    }
+
+    /// The models OpenCode's configured providers offer now, by provider and
+    /// then model name. Nothing else of `/config/providers` is kept.
+    pub async fn models(&self) -> Result<Vec<ModelChoice>> {
+        let listed = self.json(Method::GET, "/config/providers", None).await?;
+        let mut models = Vec::new();
+        for provider in listed["providers"].as_array().context("OpenCode's providers is not a list")? {
+            let Some(id) = provider["id"].as_str() else { continue };
+            let provider_name = provider["name"].as_str().unwrap_or(id);
+            for (key, model) in provider["models"].as_object().into_iter().flatten() {
+                let model_id = model["id"].as_str().unwrap_or(key);
+                models.push(ModelChoice {
+                    provider: id.into(),
+                    provider_name: provider_name.into(),
+                    model: model_id.into(),
+                    name: model["name"].as_str().unwrap_or(model_id).into(),
+                    status: model["status"].as_str().unwrap_or("active").into(),
+                });
+            }
+        }
+        models.sort_by(|a, b| (&a.provider_name, &a.name, &a.model).cmp(&(&b.provider_name, &b.name, &b.model)));
+        Ok(models)
     }
 
     /// The sessions OpenCode started under `session` (its `task` tool's

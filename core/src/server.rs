@@ -1124,7 +1124,11 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
     let harness = ws.listed(&id).await?.harness;
     if harness == "opencode" {
-        return Err(anyhow::anyhow!("OpenCode Agent 的模型和权限来自 OpenCode 自己的配置，这里不能修改").into());
+        // Only the model (T-10); effort and permissions stay OpenCode's own configuration's.
+        if input.settings.is_some() || input.effort.is_some() || input.permission_mode.is_some() {
+            return Err(anyhow::anyhow!("OpenCode Agent 这里只能选择模型；推理和权限仍来自 OpenCode 自己的配置").into());
+        }
+        return Ok(Json(serde_json::to_value(ws.opencode_set_model(&id, input.model).await?)?));
     }
     let agent = if harness == "claude" {
         if input.settings.is_some() { return Err(anyhow::anyhow!("Claude 模型设置不接受 Codex 权限或推理参数").into()); }
@@ -1155,9 +1159,10 @@ async fn codex_review(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
 #[cfg(test)]
 mod models_tests {
     use super::*;
-    /// T-140: `/models` picks the harness's catalog from the listed Agent,
-    /// and an Agent that does not exist is refused as before, without
-    /// reading a whole record.
+    /// T-140: `/models` picks the harness's catalog from the listed Agent
+    /// (an OpenCode Agent's is its own OpenCode's, T-10: none while it has no
+    /// connection), and an Agent that does not exist is refused as before,
+    /// without reading a whole record.
     #[tokio::test]
     async fn the_models_route_picks_the_catalog_from_the_listed_agent() {
         let temp = tempfile::tempdir().unwrap();
@@ -1166,11 +1171,8 @@ mod models_tests {
             "cwd":"/tmp","model":"","color":"sage","harness":"opencode","status":"idle","createdAt":"","updatedAt":"",
             "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
         ws.store.insert(&detail).unwrap();
-        let catalog = match agent_models(State(ws.clone()), Path("models-route".into())).await {
-            Ok(Json(catalog)) => catalog,
-            Err(error) => panic!("refused: {}", error.0),
-        };
-        assert_eq!(catalog, crate::opencode_agent::catalog());
+        let unconnected = agent_models(State(ws.clone()), Path("models-route".into())).await.err().unwrap();
+        assert!(unconnected.0.to_string().contains("OpenCode Agent 尚未连接"), "{}", unconnected.0);
         let missing = agent_models(State(ws.clone()), Path("models-missing".into())).await.err().unwrap();
         assert!(missing.0.to_string().contains("Agent 不存在"), "{}", missing.0);
         assert_eq!(crate::store::detail_reads_of("models-route"), 0, "a whole record was read");
@@ -1183,7 +1185,7 @@ async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) 
     Ok(Json(if harness == "claude" {
         ws.claude_agent_catalog(&id).await?
     } else if harness == "opencode" {
-        crate::opencode_agent::catalog()
+        ws.opencode_agent_catalog(&id).await?
     } else {
         ws.agent_catalog(&id).await?
     }))

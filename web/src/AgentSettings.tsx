@@ -21,12 +21,13 @@ const COMPACT_EXCEEDS = "The compaction threshold cannot exceed the configured w
 // descriptions, and Core's errors are shown as they came.
 const text = strings({
   button: "Agent settings",
-  buttonTitle: (claude: boolean): string => (claude ? "Claude Code model, reasoning effort and approvals" : "Model, reasoning and permissions"),
+  buttonTitle: (harness: string): string => (harness === "claude" ? "Claude Code model, reasoning effort and approvals" : harness === "opencode" ? "OpenCode model" : "Model, reasoning and permissions"),
   model: "Model",
-  andWhat: (claude: boolean) => ` & ${claude ? "approvals" : "reasoning"}`,
+  andWhat: (harness: string) => (harness === "opencode" ? "" : ` & ${harness === "claude" ? "approvals" : "reasoning"}`),
   title: (name: string) => `${name} · Agent settings`,
   claudeDescription: "The model and reasoning effort apply from the next turn; a running turn keeps its own, and this conversation stays together. Approvals apply to Claude’s next permission check, including in a running turn.",
   codexDescription: "Model, effort and permissions apply to new turns. The current turn and pending requests keep their existing permissions. Context settings need a separate safe reload while the conversation is idle.",
+  opencodeDescription: "The model goes with each new message from the next one; a running turn keeps the model it was sent with. The models are those OpenCode’s configured providers list. Reasoning and permissions stay OpenCode’s own configuration.",
   machine: (name: string | null) => `Execution machine: ${name || "Core host"}`,
   loading: "Loading this agent’s model catalog…",
   harnessDefault: "Harness default",
@@ -65,12 +66,13 @@ const text = strings({
   tokenInvalid: TOKEN_INVALID,
 }, {
   button: "Agent 设置",
-  buttonTitle: (claude) => (claude ? "Claude Code 的模型、推理强度与审批" : "模型、推理与权限"),
+  buttonTitle: (harness) => (harness === "claude" ? "Claude Code 的模型、推理强度与审批" : harness === "opencode" ? "OpenCode 的模型" : "模型、推理与权限"),
   model: "模型",
-  andWhat: (claude) => ` 与${claude ? "审批" : "推理"}`,
+  andWhat: (harness) => (harness === "opencode" ? "" : ` 与${harness === "claude" ? "审批" : "推理"}`),
   title: (name) => `${name} · Agent 设置`,
   claudeDescription: "模型和推理强度从下一个 Turn 起生效；正在运行的 Turn 保持自己的设置，此会话也不会被拆开。审批设置对 Claude 的下一次权限检查生效，包括正在运行的 Turn。",
   codexDescription: "模型、推理强度和权限对新的 Turn 生效。当前 Turn 和待处理的请求保留原有权限。上下文设置需要在会话空闲时另行安全地重新载入。",
+  opencodeDescription: "模型从下一条消息起随每条新消息发送；正在运行的 Turn 保持发送时的模型。可选的模型来自 OpenCode 已配置的提供方。推理和权限仍由 OpenCode 自己的配置决定。",
   machine: (name) => `执行机器：${name || "Core 主机"}`,
   loading: "正在载入此 Agent 的模型目录…",
   harnessDefault: "Harness 默认",
@@ -150,6 +152,8 @@ export function AgentSettings({
   const form = useRef<HTMLFormElement>(null);
   const focusContext = useRef(false);
   const claude = agent.harness === "claude";
+  // OpenCode (T-10): only the model, from what its own OpenCode lists.
+  const opencode = agent.harness === "opencode";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
   const [permissions, setPermissions] = useState<PermissionCatalog>();
@@ -202,7 +206,8 @@ export function AgentSettings({
           if (!row) setError(() => (t: Words) => t.unknownModel(wanted, agent.harness === "claude"));
         }
         // A Claude effort is only ever the user's choice; no default fills it.
-        if (agent.harness === "claude") return;
+        // OpenCode takes none here.
+        if (agent.harness === "claude" || agent.harness === "opencode") return;
         const selected = models.find((m) => (m.model || m.id) === agent.model);
         setSettings((s) => ({
           ...s,
@@ -270,6 +275,7 @@ export function AgentSettings({
   // Nothing is saved until Save.
   function selectModel(value: string, catalog: Model[], effort: string) {
     setModel(value);
+    if (opencode) return;
     if (claude) {
       // A chosen effort survives a model switch only if the new model takes
       // it; otherwise say so and fall back to default.
@@ -294,17 +300,20 @@ export function AgentSettings({
     setSaving(true);
     setError("");
     try {
-      const window = claude ? null : tokenSetting(contextWindow);
-      const compact = claude ? null : tokenSetting(compactLimit);
+      const window = claude || opencode ? null : tokenSetting(contextWindow);
+      const compact = claude || opencode ? null : tokenSetting(compactLimit);
       if (window !== null && compact !== null && compact > window) throw new Error(COMPACT_EXCEEDS);
-      const contextChanged = !claude && (window !== (agent.settings?.contextWindow ?? null) || compact !== (agent.settings?.autoCompactTokenLimit ?? null));
+      const contextChanged = !claude && !opencode && (window !== (agent.settings?.contextWindow ?? null) || compact !== (agent.settings?.autoCompactTokenLimit ?? null));
       await post(`/agents/${encodeURIComponent(agent.id)}/settings`, {
         model,
         // Claude always receives the chosen mode: saving also returns a live
         // session from a mode Claude switched to, and replaces older records.
-        ...(claude
-          ? { permissionMode, effort: claudeEffort || null }
-          : { settings: { ...settings, contextWindow: window, autoCompactTokenLimit: compact } }),
+        // OpenCode receives the model alone.
+        ...(opencode
+          ? {}
+          : claude
+            ? { permissionMode, effort: claudeEffort || null }
+            : { settings: { ...settings, contextWindow: window, autoCompactTokenLimit: compact } }),
       });
       onSaved();
       if (contextChanged) {
@@ -368,7 +377,7 @@ export function AgentSettings({
         type="button"
         className="conversation-action agent-settings-button"
         aria-label={t.button}
-        title={t.buttonTitle(claude)}
+        title={t.buttonTitle(agent.harness)}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
@@ -377,7 +386,7 @@ export function AgentSettings({
         <Settings2 size={16} />
         <span>
           {t.model}
-          <span className="reasoning-label">{t.andWhat(claude)}</span>
+          <span className="reasoning-label">{t.andWhat(agent.harness)}</span>
         </span>
         <ChevronDown size={12} className="settings-chevron" />
       </button>
@@ -385,7 +394,7 @@ export function AgentSettings({
         open={open}
         onOpenChange={changeOpen}
         title={t.title(agent.name)}
-        description={claude ? t.claudeDescription : t.codexDescription}
+        description={claude ? t.claudeDescription : opencode ? t.opencodeDescription : t.codexDescription}
         lang={langTag(language)}
         closeLabel={t.closeDialog}
       >
@@ -411,7 +420,7 @@ export function AgentSettings({
               disabled={loading || saving}
               onChange={(value) => selectModel(value, models, claudeEffort)}
               choices={[
-                ...(claude ? [{ value: "", label: t.harnessDefault }] : []),
+                ...(claude || opencode ? [{ value: "", label: t.harnessDefault }] : []),
                 // The model in use stays shown while the catalog loads, or
                 // when the catalog no longer lists it.
                 ...(!selected && model
@@ -503,7 +512,7 @@ export function AgentSettings({
                 )}
             </div>
           )}
-          {!claude && (
+          {!claude && !opencode && (
             <>
               <div className="agent-setting">
                 <ChoiceChips
@@ -578,12 +587,14 @@ export function AgentSettings({
               disabled={
                 saving ||
                 loading ||
-                (claude
-                  ? (!!model && !selected) || effortUnlisted
-                  : !selected ||
-                    !efforts.some(
-                      (e) => e.reasoningEffort === settings.reasoningEffort,
-                    ))
+                (opencode
+                  ? !!model && !selected
+                  : claude
+                    ? (!!model && !selected) || effortUnlisted
+                    : !selected ||
+                      !efforts.some(
+                        (e) => e.reasoningEffort === settings.reasoningEffort,
+                      ))
               }
             >
               {saving ? t.saving : t.save}

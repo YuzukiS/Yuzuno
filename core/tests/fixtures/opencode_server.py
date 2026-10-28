@@ -32,11 +32,32 @@ PASSWORD = os.environ.get('OPENCODE_SERVER_PASSWORD', '')
 USERNAME = os.environ.get('OPENCODE_SERVER_USERNAME', 'opencode')
 AUTHORIZATION = 'Basic ' + base64.b64encode(f'{USERNAME}:{PASSWORD}'.encode()).decode()
 
+# What `GET /config/providers` answers (T-10): OpenCode's configured providers,
+# each with the fields that can hold credentials (`key`, `options`, `env`, and
+# a model's `options` and `headers`), here fake; `mode` replaces it.
+SECRETS = ['fixture-secret-key', 'fixture-secret-option', 'fixture-secret-header', 'FIXTURE_SECRET_ENV']
+
+
+def model(provider, id, name, status='active'):
+    return {'id': id, 'providerID': provider, 'name': name, 'status': status, 'release_date': '2026-01-01',
+            'api': {'id': id, 'url': 'https://api.example.invalid', 'npm': '@ai-sdk/openai-compatible'},
+            'capabilities': {}, 'cost': {'input': 0, 'output': 0}, 'limit': {'context': 1000, 'output': 100},
+            'options': {'apiKey': SECRETS[1]}, 'headers': {'Authorization': f'Bearer {SECRETS[2]}'}}
+
+
+PROVIDERS = {'providers': [
+    {'id': 'openrouter', 'name': 'OpenRouter', 'source': 'config', 'env': [SECRETS[3]], 'key': SECRETS[0],
+     'options': {'apiKey': SECRETS[1]}, 'models': {'anthropic/claude-x': model('openrouter', 'anthropic/claude-x', 'Claude X', 'beta')}},
+    {'id': 'deepseek', 'name': 'DeepSeek', 'source': 'api', 'env': [SECRETS[3]], 'key': SECRETS[0],
+     'options': {'baseURL': 'https://api.example.invalid', 'apiKey': SECRETS[1]},
+     'models': {'deepseek-flash': model('deepseek', 'deepseek-flash', 'DeepSeek Flash')}},
+], 'default': {'openrouter': 'anthropic/claude-x', 'deepseek': 'deepseek-flash'}}
+
 lock = threading.Lock()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'abortEvidence': True,
-         'abortOrder': 'answer-first', 'refuseEventsUntil': 0}
+         'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 tools = []
@@ -282,6 +303,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, questions)
         if key == ('GET', 'mcp'):
             return self.reply(200, mcp)
+        if key == ('GET', 'config', 'providers'):
+            return self.reply(200, modes['providers'])
         if key == ('POST', 'mcp'):
             status = {'status': modes['mcp']}
             if modes['mcp'] == 'failed':
