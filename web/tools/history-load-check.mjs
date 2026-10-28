@@ -98,6 +98,7 @@ const detailFor = (query) => {
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 let page;
+let latestAsked = false;
 try {
   page = await browser.newPage({ viewport: { width: 1280, height: 860 }, reducedMotion: "reduce" });
   await page.addInitScript(() => {
@@ -111,11 +112,13 @@ try {
     assert.equal(url.hostname, "yuzuno-history-load.test");
     assert.equal(request.method(), "GET", `No writes: ${request.method()} ${url.pathname}`);
     if (url.pathname === "/api/agents/a") {
-      // Earlier windows answer a little later, as a read from Core does.
+      // Earlier windows answer a little later, as a read from Core does; so
+      // does the newest after Back to latest, which arrives after the next
+      // frame then (T-6).
       if (url.searchParams.has("before")) {
         report.earlier.push(url.searchParams.get("before"));
         await new Promise((done) => setTimeout(done, 150));
-      }
+      } else if (latestAsked) await new Promise((done) => setTimeout(done, 150));
       return route.fulfill({ json: detailFor(url.searchParams) });
     }
     const json = {
@@ -280,6 +283,7 @@ window.drawn = (look) => requestAnimationFrame(() => { const channel = new Messa
   }
   // Back to latest from the replaced windows (they have newer messages after
   // them): the newest window, shown to its end, and followed again (T-6).
+  latestAsked = true;
   await page.locator("button.jump-latest").click();
   const newest = JSON.parse(all.at(-1))[1];
   await page.waitForFunction((id) => {
