@@ -45,7 +45,11 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-SOURCE_URL = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/Variable/OTF/Subset/NotoSansSC-VF.otf"
+# Pinned to a commit, not to `main`: a branch moves, and then the digest
+# below would only tell you that it moved, not get you the file it names.
+SOURCE_COMMIT = "165c01b46ea533872e002e0785ff17e44f6d97d8"
+SOURCE_PATH = "Sans/Variable/OTF/Subset/NotoSansSC-VF.otf"
+SOURCE_URL = f"https://raw.githubusercontent.com/notofonts/noto-cjk/{SOURCE_COMMIT}/{SOURCE_PATH}"
 SOURCE_SHA256 = "d13ed01ec8aa45d6178999b648e96fb92150683e9f8e2a581f2acf208dcbe44b"
 # What the interface uses: Regular through Bold, with Regular the default.
 AXIS_MIN, AXIS_DEFAULT, AXIS_MAX = 400, 400, 700
@@ -97,6 +101,15 @@ def ranges(points: list[int]) -> list[tuple[int, int]]:
     return spans
 
 
+def _version(package: str) -> str:
+    try:
+        from importlib.metadata import version
+
+        return version(package)
+    except Exception:
+        return "unknown"
+
+
 def css(digest: str, points: list[int]) -> str:
     spans = ", ".join(f"U+{lo:04X}" + (f"-{hi:04X}" if hi != lo else "") for lo, hi in ranges(points))
     wrapped: list[str] = []
@@ -123,6 +136,9 @@ def css(digest: str, points: list[int]) -> str:
  *
  * Source: {SOURCE_URL}
  * SHA-256: {digest}
+ * Built with fontTools {_version("fontTools")}, brotli {_version("brotli")}. Another
+ * version may produce different bytes; what is promised is the check above,
+ * not a byte-identical rebuild.
  *
  * Noto Sans SC is licensed under the SIL Open Font License 1.1 —
  * see LICENSE-NotoSansSC.txt beside this file.
@@ -137,6 +153,64 @@ def css(digest: str, points: list[int]) -> str:
 {body};
 }}
 """
+
+
+def verify(path: Path, points: list[int]) -> None:
+    """Refuse a built font that does not do what its CSS will promise.
+
+    Everything here is read back from `path`, the bytes that would ship.
+    """
+    from fontTools.pens.areaPen import AreaPen
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+
+    font = TTFont(path)
+    if "fvar" not in font:
+        sys.exit(f"{path.name} has no weight axis at all")
+    axis = next((a for a in font["fvar"].axes if a.axisTag == "wght"), None)
+    if axis is None:
+        sys.exit(f"{path.name} has no wght axis")
+    if (axis.minValue, axis.defaultValue, axis.maxValue) != (AXIS_MIN, AXIS_DEFAULT, AXIS_MAX):
+        sys.exit(f"{path.name} has wght {axis.minValue}-{axis.maxValue} default {axis.defaultValue}, not {AXIS_MIN}-{AXIS_MAX} default {AXIS_DEFAULT}")
+    if "CFF2" not in font:
+        sys.exit(f"{path.name} has no CFF2 outlines")
+    if not hasattr(font["CFF2"].cff.topDictIndex[0], "VarStore"):
+        sys.exit(
+            f"{path.name} carries no variation data (CFF2 has no VarStore), so every weight would draw "
+            "the same outlines — this is the defect this script exists to prevent"
+        )
+
+    shipped = set(font.getBestCmap())
+    if shipped != set(points):
+        missing, extra = len(set(points) - shipped), len(shipped - set(points))
+        sys.exit(f"{path.name} covers {len(shipped)} code points, not the {len(points)} asked for ({missing} missing, {extra} unexpected)")
+
+    # Instancing the shipped bytes is itself the test: the broken asset this
+    # replaced raised AttributeError here.
+    try:
+        light = instancer.instantiateVariableFont(TTFont(path), {"wght": AXIS_MIN}, inplace=False)
+        heavy = instancer.instantiateVariableFont(TTFont(path), {"wght": AXIS_MAX}, inplace=False)
+    except Exception as error:
+        sys.exit(f"{path.name} cannot be instanced at {AXIS_MIN} and {AXIS_MAX} — {type(error).__name__}: {error}")
+
+    cmap = light.getBestCmap()
+    absent = [char for char in SAMPLE if ord(char) not in cmap]
+    if absent:
+        sys.exit(f"{path.name} is missing the characters this check reads: {''.join(absent)}")
+
+    flat = []
+    for char in SAMPLE:
+        name = cmap[ord(char)]
+        areas = []
+        for built in (light, heavy):
+            pen = AreaPen(built.getGlyphSet())
+            built.getGlyphSet()[name].draw(pen)
+            areas.append(abs(pen.value))
+        if areas[0] >= areas[1] * 0.98:
+            flat.append(f"{char}: {areas[0]:.0f} at {AXIS_MIN} vs {areas[1]:.0f} at {AXIS_MAX}")
+    if flat:
+        sys.exit("these outlines barely change with weight, so this font would promise a bold it cannot draw:\n  " + "\n  ".join(flat))
+    print(f"checked {path.name}: wght {AXIS_MIN}-{AXIS_MAX} default {AXIS_DEFAULT}, {len(shipped)} code points, outlines change with weight")
 
 
 def main() -> None:
@@ -160,11 +234,18 @@ def main() -> None:
     listing.write_text("\n".join(f"U+{point:04X}" for point in points) + "\n")
     subset = work / "subset.otf"
     print(f"subsetting {len(points)} code points")
-    subprocess.run(
+    subsetting = subprocess.run(
         [sys.executable, "-m", "fontTools.subset", str(source), f"--unicodes-file={listing}",
          f"--output-file={subset}", "--layout-features=*", "--no-hinting", "--desubroutinize"],
-        check=True,
+        capture_output=True,
+        text=True,
     )
+    if subsetting.returncode != 0:
+        detail = (subsetting.stderr or subsetting.stdout).strip().splitlines()
+        sys.exit(
+            "the source font could not be subset, so nothing was written.\n  "
+            + "\n  ".join(detail[-3:] or ["fontTools.subset gave no reason"])
+        )
 
     font = TTFont(subset)
     print(f"limiting wght to {AXIS_MIN}-{AXIS_MAX}, default {AXIS_DEFAULT}")
@@ -172,29 +253,17 @@ def main() -> None:
         font, {"wght": (AXIS_MIN, AXIS_DEFAULT, AXIS_MAX)}, inplace=True, updateFontNames=True
     )
 
-    # The whole point of the asset: the outlines have to change with weight.
-    axis = font["fvar"].axes[0]
-    if (axis.minValue, axis.defaultValue, axis.maxValue) != (AXIS_MIN, AXIS_DEFAULT, AXIS_MAX):
-        sys.exit(f"the weight axis came out as {axis.minValue}-{axis.maxValue}, default {axis.defaultValue}")
-    light = instancer.instantiateVariableFont(TTFont(subset), {"wght": AXIS_MIN}, inplace=False)
-    heavy = instancer.instantiateVariableFont(TTFont(subset), {"wght": AXIS_MAX}, inplace=False)
-    same = []
-    for char in SAMPLE:
-        name = light.getBestCmap().get(ord(char))
-        if not name:
-            continue
-        areas = []
-        for built in (light, heavy):
-            pen = AreaPen(built.getGlyphSet())
-            built.getGlyphSet()[name].draw(pen)
-            areas.append(abs(pen.value))
-        if areas[0] >= areas[1] * 0.98:
-            same.append(f"{char} {areas[0]:.0f} vs {areas[1]:.0f}")
-    if same:
-        sys.exit("the outlines barely change with weight, so this font would promise a bold it cannot draw:\n  " + "\n  ".join(same))
-
+    # Write what would ship, then check *that file*, read back from disk.
+    # Checking the font in memory, or the subset before its axis was limited,
+    # would miss exactly the failure this asset already had once: variation
+    # data lost while limiting or serialising, leaving a font that promises
+    # weights it cannot draw.
+    candidate = work / "candidate.woff2"
     font.flavor = "woff2"
-    font.save(OUT_FONT)
+    font.save(candidate)
+    verify(candidate, points)
+
+    OUT_FONT.write_bytes(candidate.read_bytes())
     OUT_CSS.write_text(css(digest, points))
     print(f"wrote {OUT_FONT} ({OUT_FONT.stat().st_size:,} bytes) and {OUT_CSS.name}")
 

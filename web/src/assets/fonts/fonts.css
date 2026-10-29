@@ -11,8 +11,11 @@
  * The unicode-range is the point: an English session never asks for a
  * code point in it, so this file is never fetched.
  *
- * Source: https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/Variable/OTF/Subset/NotoSansSC-VF.otf
+ * Source: https://raw.githubusercontent.com/notofonts/noto-cjk/165c01b46ea533872e002e0785ff17e44f6d97d8/Sans/Variable/OTF/Subset/NotoSansSC-VF.otf
  * SHA-256: d13ed01ec8aa45d6178999b648e96fb92150683e9f8e2a581f2acf208dcbe44b
+ * Built with fontTools 4.60.2, brotli 1.2.1. Another
+ * version may produce different bytes; what is promised is the check above,
+ * not a byte-identical rebuild.
  *
  * Noto Sans SC is licensed under the SIL Open Font License 1.1 —
  * see LICENSE-NotoSansSC.txt beside this file.
