@@ -346,6 +346,68 @@ try {
   assert.equal(await card('numbers').locator('.brief-chart[aria-label="Trend"] .brief-chart-state').count(), 0);
   assert.equal((await sectionOf('numbers')).version, editedVersion, 'Core kept the last good version');
   check('an invalid put and an invalid edit are refused by Core with their problems, and the card keeps its last good version');
+
+  // My widgets (PR B): only what the user pins, with Machines, in a grid of
+  // two columns on a wide pane and one on a phone, in the same order;
+  // between Needs you and the projects; arranged only in Organize.
+  const widgetsArea = page.locator('.home-widget-column');
+  const slots = () => page.locator('.home-widget-grid > .home-widget-slot').evaluateAll(all => all.map(slot => slot.dataset.widget));
+  const columns = () => page.locator('.home-widget-grid').evaluate(grid => getComputedStyle(grid).gridTemplateColumns.split(' ').length);
+  const savedLayout = () => page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith('yuzuno.homeWidgets.'))?.[1] ?? null);
+  assert.deepEqual(await slots(), ['machines'], 'nothing is pinned for the user');
+  assert.equal(await widgetsArea.locator('.home-widget-count').textContent(), '0 pinned');
+  for (const key of ['plan', 'numbers']) await card(key).locator('.home-pin').click();
+  await page.waitForFunction(() => document.querySelectorAll('.home-widget-grid > .home-widget-slot').length === 3);
+  const pinned = await slots();
+  assert.equal(pinned[0], 'machines');
+  assert.match(pinned[1], /:plan$/);
+  assert.match(pinned[2], /:numbers$/);
+  assert.equal(await widgetsArea.locator('.home-widget-count').textContent(), '2 pinned');
+  assert.equal(await columns(), 2, 'two columns on a wide pane');
+  const box = selector => page.locator(selector).first().evaluate(el => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
+  const [needsBox, widgetsBox, projectBox] = [await box('.home-needs-area'), await box('.home-widget-column'), await box('.home-main')];
+  assert.ok(needsBox.bottom <= widgetsBox.top + 1 && widgetsBox.bottom <= projectBox.top + 1, `Needs you, My widgets, projects: ${JSON.stringify({ needsBox, widgetsBox, projectBox })}`);
+  assert.ok(await card('plan').isVisible() && await card('numbers').isVisible(), 'the project cards stay where they are');
+  assert.ok(await noOverflow());
+  await shoot('widgets-desktop.png');
+  check('pinned cards join Machines in a two-column grid between Needs you and the projects; nothing is pinned for the user and project cards stay');
+
+  // An Agent's update changes a pinned card's content, never its place.
+  const layoutBefore = await savedLayout();
+  const renamed = `${steps[doneCount].text.split('\n')[0]} (revised ${word()})`;
+  const revised = steps.map((step, i) => i === doneCount ? { ...step, text: `${renamed}\nRevised by the Agent` } : step);
+  const planEdit = await update([{ op: 'edit', key: 'plan', elements: { plan: { type: 'Plan', props: { title: 'Steps', steps: revised } } } }]);
+  assert.equal(planEdit.accepted, true, JSON.stringify(planEdit.problems));
+  await page.waitForFunction(([id, text]) => document.querySelector(`.home-widget-grid > [data-widget="${id}"]`)?.textContent.includes(text), [pinned[1], renamed], { timeout: 15000 });
+  assert.deepEqual(await slots(), pinned, 'the order is the same');
+  assert.equal(await savedLayout(), layoutBefore, 'the saved layout is unchanged');
+  check("an Agent's update shows in its pinned card and leaves the order and the saved layout unchanged");
+
+  // Organize: move, hide, show; kept for this Workspace.
+  await widgetsArea.getByRole('button', { name: 'Organize', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByText('Organize my widgets').waitFor();
+  await dialog.getByRole('button', { name: `Move ${numbersTitle} up`, exact: true }).click();
+  await dialog.getByRole('button', { name: 'Hide Machines', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Show Machines', exact: true }).waitFor();
+  await shoot('organize.png');
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await dialog.waitFor({ state: 'detached' });
+  assert.deepEqual(await slots(), [pinned[2], pinned[1]], 'numbers first, Machines hidden');
+  await page.reload();
+  await page.locator('.toolbar-nav button[title^="Home"]').click();
+  await page.waitForFunction(order => JSON.stringify([...document.querySelectorAll('.home-widget-grid > .home-widget-slot')].map(slot => slot.dataset.widget)) === order,
+    JSON.stringify([pinned[2], pinned[1]]), { timeout: 10000 });
+  check('Organize moves and hides widgets in a dialog; the layout is kept for this Workspace across a reload');
+
+  // A phone: one column, the same order.
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.home-widget-grid')).gridTemplateColumns.split(' ').length === 1);
+  assert.deepEqual(await slots(), [pinned[2], pinned[1]]);
+  assert.ok(await noOverflow(), 'no horizontal overflow at 393 px');
+  await shoot('widgets-mobile.png');
+  check('393 px wide: My widgets is one column in the same order, without horizontal overflow');
+
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

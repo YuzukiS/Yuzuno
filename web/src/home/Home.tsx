@@ -40,10 +40,10 @@ const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Home: what needs you across projects, then one panel per Project in
- * Project Priority; beside them, a column of widgets (this machine's load
- * first). It reads Core's facts and the Agents' Briefs; it never mounts a
- * conversation.
+ * Home: what needs you across projects, then My widgets (this machine's
+ * load and the sections the user pinned), then one panel per Project in
+ * Project Priority. It reads Core's facts and the Agents' Briefs; it never
+ * mounts a conversation.
  */
 export function Home({
   revision,
@@ -370,8 +370,8 @@ export function Home({
           </div>
         )
       ) : (
-        // Wide: Needs you and the projects on the left, widgets on the
-        // right. Narrow: one column, the widgets between the two.
+        // Needs you first, on its own; then My widgets, two columns where
+        // the pane is wide; then the projects.
         <div className="home-layout">
           <div className="home-needs-area">
             <NeedsYou items={data.needsYou} projectName={projectName} onJump={jump} />
