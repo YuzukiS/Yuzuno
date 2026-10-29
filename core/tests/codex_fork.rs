@@ -151,7 +151,10 @@ async fn fork_inherits_original_image_ownership_and_both_preview_routes_remain_r
     let detail = lab.ws.store.detail(&fork.id).unwrap();
     let inherited = detail.turns.iter().flat_map(|t| t["items"].as_array().unwrap())
         .find(|i| i["id"] == "image-user").unwrap();
-    assert_eq!(inherited, &message);
+    // The fork holds no receipt for it: who wrote it is unconfirmed (T-6).
+    let mut expected = message.clone();
+    expected["_yuzunoInput"] = "unconfirmed".into();
+    assert_eq!(inherited, &expected);
     assert!(!lab.ws.data_dir.join("input-images").join(&fork.id).exists());
     let native_path = std::path::Path::new(inherited["content"][0]["path"].as_str().unwrap());
     let owner = native_path.parent().unwrap().file_name().unwrap().to_str().unwrap();

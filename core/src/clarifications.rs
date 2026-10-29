@@ -27,8 +27,9 @@ impl Workspace {
             ensure!(version == latest, "This form has been replaced. Open the latest version; your draft is kept");
             Ok((serde_json::from_str::<Value>(&spec)?, session))
         }).await?;
-        let current = if agent.harness == "claude" { &agent.claude_session_id } else { &agent.thread_id };
-        ensure!(&session == current && session.is_some(), "The original conversation has changed. Your answers were not sent");
+        // The same conversation the form was published in, for every harness.
+        let current = crate::results::native_session(agent);
+        ensure!(session == current && session.is_some(), "The original conversation has changed. Your answers were not sent");
         let checked = self.results.check_answers(&spec, &serde_json::to_value(answer)?).await?;
         ensure!(checked == text, "The submitted text does not match the original form and answers");
         Ok(())

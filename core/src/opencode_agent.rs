@@ -17,13 +17,36 @@
 //! process and session. No permission rule is added and `always` is not
 //! offered: what asks is OpenCode's own configuration.
 //!
-//! Not yet: sub-agent sessions (OpenCode's `task` tool) are not followed, so
-//! a request one of them makes is not shown and its Turn waits until it is
-//! interrupted; no message joins a running Turn; no images, forms or remote
-//! machines.
+//! Sub-agents (T-10): OpenCode's `task` tool runs one in a session of its
+//! own, under the session that called it (`parentID`, 1.19.3 `tool/task.ts`).
+//! A session is this Agent's sub-agent once OpenCode says so: its
+//! `session.created` names one of the Agent's sessions as its parent, a
+//! `task` call's part names it (`metadata.sessionId` under
+//! `parentSessionId`), or the session's `children` list it. Its permission
+//! and question requests are the Agent's, shown with the sub-agent that asks
+//! and answered in its session. Nothing else of it is followed: its messages,
+//! status and errors change no Turn, which the Agent's own session alone
+//! decides. Any other session's events are not this Agent's.
+//!
+//! A form's answers (`clarification`) are an ordinary new message, checked as
+//! for any harness before its receipt is recorded.
+//!
+//! A model (T-10) is OpenCode's own default unless one is chosen for the
+//! Agent from what its OpenCode's configured providers list
+//! (`/config/providers`); a chosen one goes with each new message
+//! (`prompt_async`'s `model`), and one OpenCode no longer lists refuses the
+//! message before anything is sent. Only a model's names are kept, never what
+//! else a provider's record holds (its key, options or headers).
+//!
+//! Not yet: no model is chosen when the Agent is created, and no model
+//! `variant` or OpenCode `agent` at all; a sub-agent's own conversation is
+//! not shown, nor are background sub-agents (OpenCode's experimental flag);
+//! a sub-agent of a sub-agent (`subagent_depth` above OpenCode's default of
+//! 1) is followed as it starts but not found again after the event stream
+//! breaks; no message joins a running Turn; no images or remote machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
-    opencode::{self, Events, Launch, Mcp, MessageId, Reply, Server, Snapshot, Submission},
+    opencode::{self, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
     workspace::Workspace,
@@ -31,6 +54,7 @@ use crate::{
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{atomic::Ordering, Arc, Weak},
     time::Duration,
@@ -52,6 +76,88 @@ pub(crate) struct Connection {
     pub generation: u64,
     pub server: Arc<Server>,
     pub session: String,
+    /// The sub-agent sessions OpenCode started under `session` (or under one
+    /// of them) on this process, by ID, with what OpenCode says each is
+    /// (`title`, `agent`). Their requests are the Agent's to answer.
+    pub children: Arc<std::sync::Mutex<BTreeMap<String, Value>>>,
+}
+
+impl Connection {
+    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
+        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)) }
+    }
+
+    /// Whether `session` is the Agent's: its own or one of its sub-agents'.
+    fn owns(&self, session: &str) -> bool {
+        session == self.session || self.children.lock().unwrap().contains_key(session)
+    }
+
+    /// What OpenCode says the sub-agent `session` is; None for the Agent's own.
+    fn child(&self, session: &str) -> Option<Value> {
+        self.children.lock().unwrap().get(session).cloned()
+    }
+
+    /// Adopts `child` as a sub-agent if OpenCode started it under one of the
+    /// Agent's sessions; what is already known about it is kept, and
+    /// filled in where OpenCode now says more.
+    fn adopt(&self, child: &str, parent: &str, about: Value) {
+        if child.is_empty() || child == self.session || !self.owns(parent) {
+            return;
+        }
+        let mut children = self.children.lock().unwrap();
+        let known = children.entry(child.to_owned()).or_insert_with(|| json!({}));
+        for (key, value) in about.as_object().into_iter().flatten() {
+            if !value.is_null() && known.get(key).is_none_or(Value::is_null) {
+                known[key] = value.clone();
+            }
+        }
+    }
+
+    fn known_children(&self) -> Vec<String> {
+        self.children.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// A sub-agent session OpenCode says it started under one of the Agent's:
+    /// its `session.created` or `session.updated`, or a `task` call's part.
+    fn learn(&self, kind: &str, event: &Value) {
+        let p = &event["properties"];
+        match kind {
+            "session.created" | "session.updated" => {
+                let info = &p["info"];
+                if let (Some(child), Some(parent)) = (info["id"].as_str(), info["parentID"].as_str()) {
+                    self.adopt(child, parent, about(info));
+                }
+            }
+            "message.part.updated" => {
+                let part = &p["part"];
+                let metadata = &part["state"]["metadata"];
+                if part["type"] == "tool" && part["tool"] == "task" {
+                    if let (Some(child), Some(parent)) = (metadata["sessionId"].as_str(), metadata["parentSessionId"].as_str()) {
+                        let title = part["state"]["title"].as_str().or(part["state"]["input"]["description"].as_str());
+                        self.adopt(child, parent, json!({"title":title,"agent":part["state"]["input"]["subagent_type"]}));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What a session's info says it is, for a request's card.
+fn about(info: &Value) -> Value {
+    json!({"title":info["title"],"agent":info["agent"]})
+}
+
+/// The sub-agents OpenCode lists under `session`, one level down: as deep as
+/// OpenCode goes unless configured otherwise (`subagent_depth`, 1).
+async fn sub_agents(server: &Server, session: &str) -> Result<BTreeMap<String, Value>> {
+    let mut found = BTreeMap::new();
+    for child in server.children(session).await? {
+        if let Some(id) = child["id"].as_str() {
+            found.insert(id.to_owned(), about(&child));
+        }
+    }
+    Ok(found)
 }
 
 /// The `opencode` this Core starts (`YUZUNO_OPENCODE_BIN`, else from PATH).
@@ -64,13 +170,64 @@ pub fn enabled() -> bool {
     std::env::var_os("YUZUNO_EXPERIMENTAL_OPENCODE").is_some_and(|v| v == "1")
 }
 
-/// What `/api/models?harness=opencode` and an Agent's models answer: no list,
-/// since the model is OpenCode's own default (its configuration's).
+/// What `/api/models?harness=opencode` answers: no list, since an Agent
+/// starts with OpenCode's own default (its configuration's); its models are
+/// its own OpenCode's (`opencode_agent_catalog`).
 pub fn catalog() -> Value {
     json!({"models":[],"opencode":{"version":opencode::VERSION}})
 }
 
+/// A model as the Agent settings offer it: named `<provider>/<model>`, shown
+/// with the provider's and the model's names and, unless active, its status.
+fn offered(model: &ModelChoice) -> Value {
+    let id = model.id();
+    json!({"id":id,"model":id,"displayName":format!("{} · {}", model.provider_name, model.name),
+        "description":(model.status != "active").then(|| model.status.clone())})
+}
+
+/// The model chosen for an Agent, as its OpenCode lists it now; None for
+/// OpenCode's own default. One it no longer lists is refused.
+async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
+    if model.is_empty() {
+        return Ok(None);
+    }
+    let listed = server.models().await.context("没有读到 OpenCode 的模型；这条消息没有发送，草稿保留")?;
+    let found = listed.into_iter().find(|m| m.id() == model);
+    found.map(Some).with_context(|| format!("所选模型 {model} 已不在 OpenCode 当前的配置中；这条消息没有发送，草稿保留。请在设置里另选模型"))
+}
+
 impl Workspace {
+    /// An Agent's models (`/api/agents/:id/models`): what its own OpenCode's
+    /// configured providers offer now, read from the running connection.
+    pub async fn opencode_agent_catalog(self: &Arc<Self>, id: &str) -> Result<Value> {
+        let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
+        let models = c.server.models().await?;
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERSION}}))
+    }
+
+    /// Chooses the model for an Agent's next messages: "" for OpenCode's own
+    /// default, else one its OpenCode lists now. Saved only; a running Turn
+    /// keeps the model it was sent with. Under the Agent gate, as the other
+    /// harnesses' settings: a close or reconnect waits for it, and it for them.
+    pub async fn opencode_set_model(self: &Arc<Self>, id: &str, model: String) -> Result<crate::model::Agent> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        let agent = self.listed(id).await?;
+        ensure!(agent.harness == "opencode", "Agent 不是 OpenCode");
+        ensure_agent_open(&agent)?;
+        let model = model.trim().to_owned();
+        if !model.is_empty() {
+            let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能选择它的模型")?;
+            let listed = c.server.models().await?;
+            ensure!(listed.iter().any(|m| m.id() == model), "OpenCode 当前配置的模型里没有 {model}；设置未保存");
+        }
+        let selected = model.clone();
+        self.record_meta(id, "opencode/modelSelected", json!({"model":model}), move |m| m.agent.model = selected).await?;
+        self.changed(id);
+        self.listed(id).await
+    }
+
     pub async fn opencode_create_on(
         self: &Arc<Self>, name: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>,
@@ -229,9 +386,10 @@ impl Workspace {
         };
         // Subscribed before the snapshot, so nothing between them is missed.
         let events = server.subscribe(opencode::EVENT_IDLE_LIMIT).await?;
-        let snapshot = server.snapshot(&session).await?;
+        let children = sub_agents(&server, &session).await?;
+        let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection { generation, server: server.clone(), session: session.clone() };
+        let c = Connection::new(generation, server.clone(), session.clone(), children.clone());
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
         let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
@@ -242,7 +400,7 @@ impl Workspace {
             d.agent.status = "idle".into();
             d.agent.error = None;
             restarted(d);
-            apply_snapshot(d, generation, &session, &snapshot);
+            apply_snapshot(d, generation, &session, &snapshot, &children);
             refresh_status(d);
         }).map(drop)).await;
         if let Err(error) = ready {
@@ -310,7 +468,11 @@ impl Workspace {
     }
 
     async fn opencode_resync(&self, id: &str, c: &Connection) -> Result<()> {
-        let snapshot = c.server.snapshot(&c.session).await?;
+        for (child, info) in sub_agents(&c.server, &c.session).await? {
+            c.adopt(&child, &c.session, info);
+        }
+        let snapshot = c.server.snapshot(&c.session, &c.known_children()).await?;
+        let children = c.children.lock().unwrap().clone();
         let owned = self.owner(id).await;
         if self.opencode_current(id, c.generation).is_none() {
             return Ok(());
@@ -319,7 +481,7 @@ impl Workspace {
         let data = json!({"generation":generation,"messages":snapshot.messages.as_array().map_or(0, Vec::len),
             "status":snapshot.status,"permissions":snapshot.permissions.len(),"questions":snapshot.questions.len()});
         self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/resynced", &data, Sel::Tail(TAIL), move |d| {
-            apply_snapshot(d, generation, &session, &snapshot);
+            apply_snapshot(d, generation, &session, &snapshot, &children);
             refresh_status(d);
         }).map(drop)).await?;
         self.changed(id);
@@ -344,12 +506,27 @@ impl Workspace {
 
     fn opencode_event(&self, id: &str, generation: u64, event: &Value) {
         let Some(c) = self.opencode_current(id, generation) else { return };
-        // Another session's (a sub-agent's, say) is not this Agent's.
-        if opencode::session_of(event) != Some(c.session.as_str()) {
+        let Some(session) = opencode::session_of(event) else { return };
+        let kind = event["type"].as_str().unwrap_or("unknown");
+        c.learn(kind, event);
+        let journal = format!("opencode/{kind}");
+        if session != c.session {
+            // A sub-agent's requests are the Agent's to answer; nothing else
+            // of it changes the record. Any other session's is not the Agent's.
+            let Some(child) = c.child(session) else { return };
+            if !requested(kind) {
+                return;
+            }
+            let written = self.store.record_event(id, &journal, event, Sel::Open, |d| {
+                request(d, generation, session, Some(&child), event);
+                refresh_status(d);
+            });
+            if let Err(error) = written {
+                eprintln!("Workspace OpenCode event not recorded: {error:#}");
+            }
+            self.changed(id);
             return;
         }
-        let kind = event["type"].as_str().unwrap_or("unknown");
-        let journal = format!("opencode/{kind}");
         let written = match kind {
             // Text as it streams: the completed part replaces it.
             "message.part.delta" => return,
@@ -407,11 +584,14 @@ impl Workspace {
     /// Before a receipt is recorded (send_message): what an OpenCode Agent
     /// takes is a new message while it is idle, with Workspace MCP ready.
     pub(crate) async fn opencode_admit(self: &Arc<Self>, id: &str, input: &crate::model::MessageInput, detail: &AgentDetail) -> Result<()> {
-        ensure!(input.question.is_none() && input.clarification.is_none() && input.expected_turn_id.is_none(),
+        // A form's answers are a new message too, checked before (send_message).
+        ensure!(input.question.is_none() && input.expected_turn_id.is_none(),
             "OpenCode Agent 目前只接受空闲时的新消息；草稿保留");
         self.opencode_after_restart(id, detail).await?;
         ensure!(!busy(detail), "OpenCode 正在执行或等待回应；这条消息没有发送，草稿保留");
-        self.opencode_ensure(id).await?;
+        let c = self.opencode_ensure(id).await?;
+        // A chosen model OpenCode no longer lists: refused before a receipt.
+        chosen(&c.server, &detail.agent.model).await?;
         self.require_collaboration(id).await
     }
 
@@ -466,13 +646,16 @@ impl Workspace {
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
         self.require_collaboration(id).await?;
+        // The model it goes with, as OpenCode lists it now (or its default).
+        let model = chosen(&c.server, &d.agent.model).await?;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
         // Recorded before it is sent: its ID is the only way to learn what
         // became of it.
         let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), json!([{"type":"text","text":text}]));
-        self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text}),
+        self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text,
+            "model":model.as_ref().map(ModelChoice::id)}),
             Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
@@ -487,7 +670,7 @@ impl Workspace {
         }).await?;
         self.changed(id);
         *sent = true;
-        let submitted = c.server.submit(&c.session, &message, &text).await;
+        let submitted = c.server.submit_with(&c.session, &message, &text, model.as_ref()).await;
         let refused = match &submitted {
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.
@@ -568,8 +751,10 @@ impl Workspace {
             };
             ensure!(!p.stale && p.params["_responseSent"] != true, "这个请求已经回答或已失效；不会再次发送");
             let c = connection.context("OpenCode 连接已断开，回答没有发送")?;
-            // Only the process and session that asked can take the answer.
-            ensure!(p.params["_runtimeGeneration"] == c.generation && p.params["_opencodeSession"] == c.session.as_str(),
+            // Only the process and session that asked can take the answer:
+            // the Agent's own, or one of its sub-agents' on this process.
+            let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
+            ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
@@ -581,10 +766,12 @@ impl Workspace {
         }).await?;
         let Some((p, c, answer)) = checked else { return Ok(false) };
         let native = p.params["id"].as_str().unwrap_or_default();
+        // OpenCode checks it is pending in that same session before answering.
+        let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
         let sent = match &answer {
-            Answer::Permission(reply) => c.server.reply_permission(&c.session, native, *reply).await,
-            Answer::Question(answers) => c.server.reply_question(&c.session, native, answers).await,
-            Answer::RejectQuestion => c.server.reject_question(&c.session, native).await,
+            Answer::Permission(reply) => c.server.reply_permission(asked, native, *reply).await,
+            Answer::Question(answers) => c.server.reply_question(asked, native, answers).await,
+            Answer::RejectQuestion => c.server.reject_question(asked, native).await,
         };
         let request = request_id.to_owned();
         match sent {
@@ -739,8 +926,22 @@ fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
                 turn["_opencodeSessionError"] = p["error"].clone();
             }
         }
-        "permission.asked" => ask(d, PERMISSION, generation, session, p),
-        "question.asked" => ask(d, QUESTION, generation, session, p),
+        kind if requested(kind) => request(d, generation, session, None, event),
+        _ => {}
+    }
+}
+
+/// Request events: asked, answered or rejected.
+fn requested(kind: &str) -> bool {
+    matches!(kind, "permission.asked" | "permission.replied" | "question.asked" | "question.replied" | "question.rejected")
+}
+
+/// A request event of `session`: the Agent's own, or its sub-agent `child`'s.
+fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&Value>, event: &Value) {
+    let p = &event["properties"];
+    match event["type"].as_str().unwrap_or_default() {
+        "permission.asked" => ask(d, PERMISSION, generation, session, child, p),
+        "question.asked" => ask(d, QUESTION, generation, session, child, p),
         "permission.replied" | "question.replied" | "question.rejected" => {
             let request = p["requestID"].clone();
             d.pending.retain(|r| !(r.params["id"] == request && r.params["_runtimeGeneration"] == generation));
@@ -751,7 +952,7 @@ fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
 
 /// What a snapshot holds, applied as the events it stands for would be; each
 /// part and message replaces its own, so applying one again changes nothing.
-fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot) {
+fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot, children: &BTreeMap<String, Value>) {
     for entry in snapshot.messages.as_array().into_iter().flatten() {
         message(d, &entry["info"]);
         for p in entry["parts"].as_array().into_iter().flatten() {
@@ -762,11 +963,12 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     // dropped the others while no stream was open.
     let pending: Vec<&Value> = snapshot.permissions.iter().chain(&snapshot.questions).map(|r| &r["id"]).collect();
     d.pending.retain(|r| r.params["_runtimeGeneration"] != generation || pending.contains(&&r.params["id"]));
-    for request in &snapshot.permissions {
-        ask(d, PERMISSION, generation, session, request);
-    }
-    for request in &snapshot.questions {
-        ask(d, QUESTION, generation, session, request);
+    // Each in the session that asked, the Agent's or a sub-agent's.
+    for (method, requests) in [(PERMISSION, &snapshot.permissions), (QUESTION, &snapshot.questions)] {
+        for request in requests {
+            let asked = request["sessionID"].as_str().unwrap_or(session);
+            ask(d, method, generation, asked, children.get(asked), request);
+        }
     }
     status(d, &snapshot.status);
 }
@@ -952,7 +1154,7 @@ fn refresh_status(d: &mut AgentDetail) {
     }
 }
 
-fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, request: &Value) {
+fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child: Option<&Value>, request: &Value) {
     let Some(native) = request["id"].as_str() else { return };
     if d.pending.iter().any(|p| !p.stale && p.params["id"] == native && p.params["_runtimeGeneration"] == generation) {
         return;
@@ -960,6 +1162,10 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, reques
     let mut params = request.clone();
     params["_runtimeGeneration"] = generation.into();
     params["_opencodeSession"] = session.into();
+    if let Some(child) = child {
+        // Which sub-agent asks, as OpenCode calls it.
+        params["_opencodeChild"] = child.clone();
+    }
     params["_responseSent"] = false.into();
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();

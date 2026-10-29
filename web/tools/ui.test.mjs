@@ -1072,7 +1072,9 @@ test("tool counts distinguish native kinds, named MCP tools and Claude tools", a
   ] };
   const page = await mount({ extraTurns: [turn] });
   try {
-    const labels = () => [...page.document.querySelectorAll('[data-turn-id="counts"] .tool-count')].map(el => el.textContent);
+    // The name and the number; what the calls reported is tool-capsules-ui's.
+    const labels = () => [...page.document.querySelectorAll('[data-turn-id="counts"] .tool-count')]
+      .map(el => el.querySelector(".tool-count-name").textContent + el.querySelector(".tool-count-number").textContent);
     assert.deepEqual(labels(), ["Shell×2", "Edit×1", "docs/search×2", "docs/fetch×1", "other/search×1", "Bash×1", "Read×2"]);
     turn.items[0].status = "completed";
     turn.items[0].aggregatedOutput = "New output must not count as a new call";
@@ -2336,10 +2338,11 @@ test("earlier saved messages load in front of what is being read, within three w
     // A failed read keeps what is shown and says why; it can be tried again.
     failEarlier = true;
     button(page, "Load earlier messages").click();
-    const alert = await until(() => page.document.querySelector(".conversation-history-window [role=alert]"), "the failure is shown");
+    const alert = await until(() => page.document.querySelector(".history-entry [role=alert]"), "the failure is shown");
     assert.match(alert.textContent, /could not be read/);
     assert.match(text(), /Answer 4[\s\S]*Answer 5/);
-    assert.equal(button(page, "Load earlier messages").disabled, false);
+    // The same button tries again (T-6).
+    assert.equal(button(page, "Try again").disabled, false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -4962,7 +4965,7 @@ test("imported history labels the dock and pinned request as loaded turns", asyn
     assert.ok(page.document.querySelector('[data-turn-choice="t1"][aria-label="Loaded turn 1 · Working"]'));
     assert.ok(page.document.querySelector('summary[aria-label="Your request for loaded turn 1"]'));
     assert.match(page.document.querySelector(".turn-divider").textContent, /LOADED TURN 01/);
-    assert.match(page.document.querySelector(".session-history-loader").textContent, /Load earlier turns/);
+    assert.ok(page.document.querySelector(".history-entry") && button(page, "Load earlier messages"));
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -5135,9 +5138,9 @@ test("a reconnect asks Core for the Agent only and the conversation stays as the
 test("read-only imported history questions stay distinct from Core-known pending questions", async () => {
   const page = await mount({ questionItem: pinnedQuestion, history: { hasMore: true, nextCursor: "older", loadedCount: 1 }, historyPage: { turns: [{ id: "older-turn", status: "completed", items: [{ type: "agentMessage", id: "historical-question", delivery: "async", questions: [{ title: "Old unconfirmed question" }] }] }], hasMore: false, nextCursor: null } });
   try {
-    assert.match(page.document.querySelector(".session-history-loader").textContent, /Earlier history has not been checked/);
+    assert.match(page.document.querySelector(".history-entry").textContent, /Earlier history has not been checked/);
     assert.equal(page.calls.filter(c => c.url.includes("/history?")).length, 0);
-    button(page, "Load earlier turns").click(); await pause(); await pause();
+    button(page, "Load earlier messages").click(); await pause(); await pause();
     assert.match(page.document.querySelector(".pending-questions").textContent, /· 1/);
     assert.match(page.document.querySelector('[data-item-id="historical-question"]').textContent, /Historical question · answer status unconfirmed/);
     button(page, "View historical question").click(); await pause();
@@ -5152,7 +5155,7 @@ test("read-only imported history questions stay distinct from Core-known pending
 });
 
 
-test("earlier native turns are offered where the saved conversation starts and each load says what it added (T-161)", async () => {
+test("earlier native turns are offered where the saved conversation starts and each load says what it added (T-161, T-6)", async () => {
   // A saved window that starts later: the native Turns come before the oldest
   // saved one, so loading them here would put them next to unrelated messages.
   const away = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3 }, beforeLoad(window) {
@@ -5167,29 +5170,32 @@ test("earlier native turns are offered where the saved conversation starts and e
     };
   } });
   try {
-    const loader = away.document.querySelector(".session-history-loader");
-    assert.match(loader.textContent, /come before the start of the saved conversation/);
-    assert.equal(button(away, "Load earlier turns"), undefined);
+    // One way to earlier messages, which pages the saved conversation first.
+    assert.equal(away.document.querySelectorAll(".history-entry").length, 1);
+    assert.equal(away.document.querySelectorAll(".history-entry-load").length, 1);
     assert.ok(button(away, "Load earlier messages"));
+    assert.doesNotMatch(away.document.querySelector(".history-entry").textContent, /Beginning of conversation|Earlier history has not been checked/);
   } finally { away.close(); }
   const saved = { id: "t1", status: "completed", items: [{ id: "u1", type: "userMessage", content: [{ type: "text", text: "Please review." }] }] };
   const known = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3 },
     historyPage: { turns: [saved], hasMore: true, nextCursor: "older-still" } });
   try {
-    button(known, "Load earlier turns").click(); await pause(); await pause();
+    button(known, "Load earlier messages").click(); await pause(); await pause();
     assert.equal(known.calls.filter(c => c.url.includes("/history?")).length, 1);
-    assert.match(known.document.querySelector(".session-history-loader [role=status]").textContent,
-      /no turns beyond the saved conversation/);
-    assert.ok(button(known, "Load earlier turns"), "the next page can still be read");
+    assert.match(known.document.querySelector(".history-entry [role=status]").textContent,
+      /No new earlier messages in that page/);
+    assert.ok(button(known, "Load earlier messages"), "the next page can still be read");
   } finally { known.close(); }
   const turn = (id) => ({ id, status: "completed", items: [{ id: `${id}-reply`, type: "agentMessage", text: `Earlier ${id}` }] });
   const fresh = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3 },
     historyPage: { turns: [turn("t-old-1"), turn("t-old-2")], hasMore: false, nextCursor: null } });
   try {
-    button(fresh, "Load earlier turns").click(); await pause(); await pause();
-    const loader = fresh.document.querySelector(".session-history-loader");
+    button(fresh, "Load earlier messages").click(); await pause(); await pause();
+    const loader = fresh.document.querySelector(".history-entry");
     assert.match(loader.querySelector("[role=status]").textContent, /Loaded 2 earlier turns\./);
-    assert.match(loader.textContent, /All saved turns are loaded|All earlier native history pages are loaded/);
+    // Only now does nothing come earlier: the saved start and the session's.
+    assert.match(loader.textContent, /Beginning of conversation/);
+    assert.equal(button(fresh, "Load earlier messages"), undefined);
     assert.match(fresh.document.querySelector(".conversation-scroll").textContent, /Earlier t-old-2/, "the earlier turns are shown");
   } finally { fresh.close(); }
 });
@@ -5199,7 +5205,7 @@ test("accepted questions plus more history leave no question dock", async () => 
   const page = await mount({ questionItem: pinnedQuestion, receipts, history: { hasMore: true, nextCursor: "older", loadedCount: 1 } });
   try {
     assert.equal(!!page.document.querySelector(".pending-questions"), false);
-    assert.match(page.document.querySelector(".session-history-loader").textContent, /Earlier history has not been checked/);
+    assert.match(page.document.querySelector(".history-entry").textContent, /Earlier history has not been checked/);
     assert.equal(page.calls.some(c => c.url.includes("/history?")), false);
   } finally { page.close(); }
 });
@@ -5707,7 +5713,8 @@ test("an OpenCode Agent at work takes no message into its turn and shows OpenCod
     assert.equal(send?.disabled, true, "OpenCode takes no message into a running turn");
     assert.equal(send.title, "Wait for this turn to finish, or interrupt");
     assert.equal(page.document.querySelector('[aria-label="Send while working"]'), null);
-    assert.equal(page.document.querySelector('[aria-label="Agent settings"]'), null, "its model and permissions are OpenCode's own");
+    // Its Agent settings choose only its model (T-10); permissions stay OpenCode's own.
+    assert.ok(page.document.querySelector('[aria-label="Agent settings"]') !== null, "its model is chosen in its Agent settings");
     const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();
     assert.equal(fact("Harness"), "OpenCode");
     assert.equal(fact("Session"), "ses_0123");

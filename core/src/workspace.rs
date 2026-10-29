@@ -1623,14 +1623,16 @@ impl Workspace {
         self.require_collaboration(id).await
     }
 
+    /// A message without an origin: nothing confirms who wrote it (T-6).
     pub async fn send_message(self: &Arc<Self>, id: &str, input: MessageInput) -> Result<MessageReceipt> {
-        self.send_message_with_skills(id, input, Vec::new()).await
+        self.send_message_from(id, input, Vec::new(), None).await
     }
 
-    /// A message that also invokes Codex skills the Agent's Codex listed
+    /// A message with where Core took it from, its `origin`, on its receipt
+    /// (T-6), and any Codex skills it invokes that the Agent's Codex listed
     /// (`codex_skills`): typed `skill` items after its text, kept on its
     /// receipt beside the input.
-    pub async fn send_message_with_skills(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>) -> Result<MessageReceipt> {
+    pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>) -> Result<MessageReceipt> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -1723,7 +1725,7 @@ impl Workspace {
             Err(error) if error.is::<crate::collaboration_credentials::MessageNotSubmitted>() => return Err(error),
             Err(error) => return Err(crate::collaboration_credentials::MessageNotSubmitted(error).into()),
         };
-        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(), status: "sending".into(), turn_id: None, error: None };
+        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(), origin, status: "sending".into(), turn_id: None, error: None };
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
         let result = if detail.agent.harness == "opencode" {

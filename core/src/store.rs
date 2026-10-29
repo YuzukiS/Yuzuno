@@ -1075,7 +1075,7 @@ fn project_window(
         // Apply the same item provenance to its original body before sizing it.
         if let Some(object) = item.as_object_mut() {
             object.remove("_yuzunoMailbox");
-            for key in ["_yuzunoSource", "_yuzunoMailbox"] {
+            for key in ["_yuzunoSource", "_yuzunoMailbox", "_yuzunoInput"] {
                 if let Some(value) = index.turns[t]["items"][i].get(key) { object.insert(key.into(), value.clone()); }
             }
         }
@@ -1104,7 +1104,7 @@ fn project_window_marked(
         if let Some(object) = item.as_object_mut() {
             object.remove("_yuzunoMailbox");
             let listed = ords[t].iter().position(|ord| *ord == i).map(|k| &index.turns[t]["items"][k]);
-            for key in ["_yuzunoSource", "_yuzunoMailbox"] {
+            for key in ["_yuzunoSource", "_yuzunoMailbox", "_yuzunoInput"] {
                 if let Some(value) = listed.and_then(|entry| entry.get(key)) { object.insert(key.into(), value.clone()); }
             }
         }
@@ -1186,6 +1186,7 @@ impl Store {
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::services::migrate(&db)?;
+        crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
         crate::pr_review::store::migrate(&db)?;
         crate::pr_operations::store::migrate(&db)?;
@@ -1698,6 +1699,28 @@ impl Store {
             tx.commit()?;
         }
         Ok(results)
+    }
+
+    /// A page of the inputs a person wrote or may have in an Agent's
+    /// conversation (T-6), from its light index: no body is read.
+    pub fn conversation_inputs(&self, id: &str, query: &crate::conversation_window::InputsQuery)
+        -> Result<std::result::Result<Value, crate::client_view::Missing>> {
+        ensure!(record_rows::exists(&*self.db.read()?, id)?, "Agent 不存在");
+        self.settle_unwritten(id)?;
+        let (page, fills) = {
+            let db = self.db.read()?;
+            let record_rows::window::Sparse { mut detail, ords, fills, .. } =
+                record_rows::window::sparse(&db, id).inspect_err(|error| self.note_damage(id, error))?;
+            crate::mailbox_notice::annotate(&db, &mut detail)?;
+            (crate::conversation_window::inputs(&detail.turns, &ords, query), fills)
+        };
+        if !fills.is_empty() {
+            let mut writer = self.db.write()?;
+            let tx = writer.transaction()?;
+            record_rows::window::fill(&tx, id, fills)?;
+            tx.commit()?;
+        }
+        Ok(page)
     }
 
     /// The window clients are shown of an Agent's conversation: the light

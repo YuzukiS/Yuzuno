@@ -405,7 +405,8 @@ try {
       .locator('[data-turn-id="live"] .tool-activity')
       .last()
       .locator(".tool-count")
-      .allTextContents(),
+      .evaluateAll((capsules) => capsules.map((capsule) =>
+        capsule.querySelector(".tool-count-name").textContent + capsule.querySelector(".tool-count-number").textContent)),
     [
       "Shell×2",
       "Edit×1",

@@ -493,7 +493,8 @@ try {
   await page.keyboard.press("Escape");
   assert.equal(await dock.count(), 0);
   assert.equal(await page.locator(".pending-questions").count(), 0);
-  assert.match(await page.locator(".session-history-loader").innerText(), /Earlier history has not been checked/);
+  // Shown, not only behind About history, where these turns are offered (T-6).
+  assert.match(await page.locator(".history-entry").innerText(), /Earlier history has not been checked/);
   check("all accepted plus hasMore leaves no fixed card; history notice stays at the conversation top");
   for (const id of ["dismiss-one", "dismiss-two"]) {
     const item = question(id, `New unanswered question ${id}`);
@@ -528,9 +529,9 @@ try {
   check("multiple explicit dismissals survive switching and reload; source restore keeps the exact draft and sends nothing");
   const reads = calls.filter((c) => c.path.endsWith("/history")).length;
   assert.equal(await page.locator(".pending-questions").count(), 0);
-  await page.locator(".session-history-loader").scrollIntoViewIfNeeded();
+  await page.locator(".history-entry").scrollIntoViewIfNeeded();
   assert.equal(calls.filter((c) => c.path.endsWith("/history")).length, reads);
-  await page.getByRole("button", { name: "Load earlier turns" }).click();
+  await page.getByRole("button", { name: "Load earlier messages" }).click();
   const anchor = page.locator('[data-item-id="historical"]');
   await anchor.waitFor();
   assert.match(

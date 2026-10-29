@@ -55,6 +55,9 @@ pub const MAX_WAIT_SECS: i64 = 24 * 60 * 60;
 /// Continuations of one stop, the first included.
 pub const MAX_ATTEMPTS: i64 = 3;
 
+/// The client ID of a continue: this prefix and its `claude_quota_resumes` ID.
+pub(crate) const RESUME_CLIENT_PREFIX: &str = "quota-resume-";
+
 pub const CONTINUE_TEXT: &str = "[Yuzuno · automatic continue] Claude's usage limit has reset. Automatic continue is on for this agent, so Yuzuno sent this one message. Continue the task you were working on when the limit stopped you. First check what already finished; don't repeat completed steps or tool calls that already ran.";
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
@@ -366,7 +369,7 @@ impl Workspace {
     }
 
     async fn settle_claude_quota_resume(self: &Arc<Self>, i: &Intent) -> Result<()> {
-        let client = format!("quota-resume-{}", i.id);
+        let client = format!("{RESUME_CLIENT_PREFIX}{}", i.id);
         let agent = i.agent_id.clone();
         let receipt = self.stored(move |store| store.receipt(&agent, &client)).await.ok().flatten();
         let (id, now) = (i.id.clone(), now());
@@ -424,9 +427,9 @@ impl Workspace {
         if let Some(reason) = cancel {
             self.stored(move |s| s.move_quota_resume(&id, "sending", "cancelled", Some(reason), None, at)).await?;
         } else {
-            let input = MessageInput { client_message_id: format!("quota-resume-{}", i.id), text: CONTINUE_TEXT.into(), text_blocks: None,
+            let input = MessageInput { client_message_id: format!("{RESUME_CLIENT_PREFIX}{}", i.id), text: CONTINUE_TEXT.into(), text_blocks: None,
                 images: vec![], expected_turn_id: None, question: None, clarification: None };
-            let (to, reason, turn) = match self.send_message(&agent, input).await {
+            let (to, reason, turn) = match self.send_message_from(&agent, input, Vec::new(), Some(json!({"kind":"resume"}))).await {
                 Ok(r) => { let (to, reason) = receipt_state(&r.status, r.error.as_deref()); (to, reason, r.turn_id) }
                 Err(error) => ("failed", Some(error.to_string()), None),
             };

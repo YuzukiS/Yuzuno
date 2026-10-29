@@ -116,7 +116,7 @@ export function agentMenuItems(
     items.push(entry("endMissing"));
   if (interruptible(agent)) items.push(entry("interrupt"));
   if (disconnect && disconnectable(agent)) items.push(entry("disconnect"));
-  if (!agent.closedAt && agent.harness !== "opencode") items.push(entry("settings"));
+  if (!agent.closedAt) items.push(entry("settings"));
   // Any Agent can be linked, a closed one or one with no Turn yet.
   if (link) items.push(entry("copyLink"));
   items.push(entry("manage"));

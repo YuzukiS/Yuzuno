@@ -190,11 +190,14 @@
 .home-widget-add:hover {
   border-color: var(--home-focus);
 }
+/* The title and its tools share a row while they fit; on a narrow phone
+   the tools wrap below it, right-aligned, never past the edge. */
 .home-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   margin-bottom: 16px;
 }
 .home-header h1 {
@@ -207,8 +210,12 @@
 }
 .home-header-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
+  min-width: 0;
+  margin-left: auto;
 }
 .home-header-tools .is-active {
   color: var(--home-new);
@@ -1298,4 +1305,33 @@ ul.home-widget {
   height: 36px;
   min-width: 36px;
   margin: -7px -4px -7px -10px;
+}
+
+/* Card detail (T-9): this device's choice, two options side by side. */
+.home-density {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.home-density-option {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.home-density-option[aria-pressed="true"] {
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--line);
+  color: var(--ink);
+}
+.home-density-option:focus-visible {
+  outline: 2px solid var(--accent-ink, currentColor);
+  outline-offset: 1px;
 }

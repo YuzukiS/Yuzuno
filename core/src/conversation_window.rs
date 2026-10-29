@@ -12,6 +12,10 @@ pub const MAX_ITEM_BYTES: usize = 32 * 1024;
 /// background tasks, outside the window are listed, the newest of each; the
 /// docks show fewer.
 const MAX_RUNNING: usize = 32;
+/// At most this many inputs a page of them lists (T-6), each with at most
+/// this many bytes of its text.
+pub const MAX_INPUTS: usize = 100;
+const INPUT_PREVIEW: usize = 160;
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +104,40 @@ fn keep_task_facts(item: &Value, out: &mut Value) {
                 .map(|(key, value)| (key.clone(), value.clone())).collect::<serde_json::Map<_, _>>().into();
         }
     }
+}
+
+/// A page of `inputs`: the newest, or those before an input's cursor.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputsQuery {
+    pub before: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// The inputs a person wrote or may have, to read the conversation by them
+/// (T-6): each user message `input_origin` marked one of its `HUMAN` or
+/// `unconfirmed`, oldest first, by Turn and Item ID (as a cursor names it),
+/// `[Turn, Item]` position and the start of its text. A page of at most
+/// `MAX_INPUTS` ending before the input `before` names, or at the newest;
+/// `total` counts them all. `turns` is a sparse index (`record_rows::window::
+/// sparse`): only its listed Items, at positions `ords`, are read.
+pub(crate) fn inputs(turns: &[Value], ords: &[Vec<usize>], query: &InputsQuery) -> Result<Value, Missing> {
+    let listed: Vec<(usize, usize, &Value)> = turns.iter().enumerate()
+        .flat_map(|(t, turn)| turn["items"].as_array().into_iter().flatten().zip(&ords[t]).map(move |(item, &i)| (t, i, item)))
+        .filter(|(_, _, item)| item["type"] == "userMessage" && item["_yuzunoInput"].as_str().is_some_and(crate::input_origin::navigable))
+        .collect();
+    let end = match &query.before {
+        None => listed.len(),
+        Some(cursor) => {
+            let (turn, item): (String, Option<String>) = serde_json::from_str(cursor).map_err(|_| Missing::Item)?;
+            listed.iter().position(|(t, _, entry)| turns[*t]["id"] == turn && entry["id"].as_str() == item.as_deref())
+                .ok_or(Missing::Item)?
+        }
+    };
+    let start = end.saturating_sub(query.limit.unwrap_or(MAX_INPUTS).clamp(1, MAX_INPUTS));
+    let page: Vec<Value> = listed[start..end].iter().map(|(t, i, item)| json!({"turnId":turns[*t]["id"],"itemId":item["id"],
+        "position":[t, i],"by":item["_yuzunoInput"],"preview":excerpt(item, INPUT_PREVIEW)})).collect();
+    Ok(json!({"inputs":page,"hasBefore":start > 0,"total":listed.len()}))
 }
 
 pub(crate) fn turn_shell(turn: &Value) -> Value {

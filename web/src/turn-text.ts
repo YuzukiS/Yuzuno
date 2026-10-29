@@ -50,6 +50,10 @@ export const turnWords = strings({
   noPlanText: "No plan text yet.",
   runningTools: "Running tools",
   toolActivity: "Tool activity",
+  // What a capsule says about one group of calls (tool-capsules.ts). A call
+  // that returned gets no word at all: nothing here claims the work went well.
+  toolState: { failed: "failed", unconfirmed: "not confirmed", running: "running" } as Record<string, string>,
+  toolStatePart: (count: number, state: string) => `${count} ${state}`,
   // The turn.
   turn: (loaded: boolean): string => (loaded ? "LOADED TURN" : "TURN"),
   waiting: "Waiting for you",
@@ -128,6 +132,8 @@ export const turnWords = strings({
   noPlanText: "暂无计划文本。",
   runningTools: "正在运行工具",
   toolActivity: "工具活动",
+  toolState: { failed: "失败", unconfirmed: "未确认", running: "运行中" },
+  toolStatePart: (count, state) => `${count} 个${state}`,
   turn: (loaded) => (loaded ? "已载入的 TURN" : "TURN"),
   waiting: "等你处理",
   waitingDetail: "需要你回复才能继续。",

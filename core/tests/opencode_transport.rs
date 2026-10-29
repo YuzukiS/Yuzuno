@@ -205,7 +205,7 @@ async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
         other => panic!("{other:?}"),
     }
     lab.control("mode", json!({"fail": {"/session/status": 503}})).await;
-    let error = server.snapshot(&session).await.unwrap_err();
+    let error = server.snapshot(&session, &[]).await.unwrap_err();
     assert_eq!(error.downcast_ref::<HttpStatus>().unwrap().code, 503);
     server.shutdown().await.unwrap();
 }
@@ -268,11 +268,11 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     // ...but is in the snapshot read after subscribing again, with no other
     // session's request.
     let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
-    let snapshot = server.snapshot(&session).await.unwrap();
+    let snapshot = server.snapshot(&session, &[]).await.unwrap();
     assert_eq!(snapshot.status["type"], "busy");
     assert_eq!(snapshot.permissions, vec![asked]);
     assert!(snapshot.questions.is_empty());
-    assert_eq!(server.snapshot(&other).await.unwrap().status, json!({"type": "idle"}), "an unlisted session is idle");
+    assert_eq!(server.snapshot(&other, &[]).await.unwrap().status, json!({"type": "idle"}), "an unlisted session is idle");
     lab.control("question", json!({"sessionID": session})).await;
     assert_eq!(session_of(&next_of(&mut events, "question.asked").await), Some(session.as_str()));
 
@@ -329,8 +329,8 @@ async fn answers_and_abort_stay_within_their_session() {
     server.abort(&a).await.unwrap();
     let idle = next_of(&mut events, "session.status").await;
     assert_eq!(session_of(&idle), Some(a.as_str()));
-    assert!(server.snapshot(&a).await.unwrap().permissions.is_empty());
-    let now_b = server.snapshot(&b).await.unwrap();
+    assert!(server.snapshot(&a, &[]).await.unwrap().permissions.is_empty());
+    let now_b = server.snapshot(&b, &[]).await.unwrap();
     assert_eq!((now_b.permissions.len(), now_b.questions.len()), (1, 1));
     let stale = server.reply_permission(&a, &ask_a, Reply::Once).await.unwrap_err().to_string();
     assert!(stale.contains("not pending"), "{stale}");
@@ -349,6 +349,6 @@ async fn answers_and_abort_stay_within_their_session() {
     lab.control("ask", json!({"sessionID": b})).await;
     server.reply_permission(&b, &first, Reply::Reject).await.unwrap();
     assert_eq!(lab.posts("/permission/").last().unwrap()["body"], json!({"reply": "reject"}));
-    assert!(server.snapshot(&b).await.unwrap().permissions.is_empty());
+    assert!(server.snapshot(&b, &[]).await.unwrap().permissions.is_empty());
     server.shutdown().await.unwrap();
 }

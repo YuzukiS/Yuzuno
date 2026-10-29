@@ -176,6 +176,12 @@ pub(crate) fn annotate(db: &Connection, detail: &mut AgentDetail) -> Result<()> 
 }
 
 pub(crate) fn annotate_turns(db: &Connection, agent: &Agent, conversation: &mut [Value]) -> Result<()> {
+    annotate_mail(db, agent, conversation)?;
+    // Who each input came from, given what was marked here (T-6).
+    crate::input_origin::annotate(db, &agent.id, conversation)
+}
+
+fn annotate_mail(db: &Connection, agent: &Agent, conversation: &mut [Value]) -> Result<()> {
     let mut clients = HashMap::new();
     let mut turns = HashMap::new();
     for (t, turn) in conversation.iter_mut().enumerate() {

@@ -451,16 +451,17 @@ impl Runtime {
 }
 
 /// What one HTTP request on the way found.
-enum Probe {
+pub(crate) enum Probe {
     Http(u16, Framing),
     Refused(String),
     Silent(String),
 }
 
-/// One `GET path` on 127.0.0.1:port, judged by the first bytes of its answer.
-/// Through an SSH forward a refused connection there arrives as a connection
-/// closed before any byte (`forward_probe` tells that from a silent service).
-async fn probe(port: u16, path: &str) -> Probe {
+/// One `GET path` on 127.0.0.1:port, judged by its status line, however
+/// many reads it arrives in. Through an SSH forward a refused connection
+/// there arrives as a connection closed before any byte (`forward_probe`
+/// tells that from a silent service).
+pub(crate) async fn probe(port: u16, path: &str) -> Probe {
     let mut stream = match timeout(PROBE_TIMEOUT, TcpStream::connect(("127.0.0.1", port))).await {
         Err(_) => return Probe::Silent(format!("no TCP connection within {} s", PROBE_TIMEOUT.as_secs())),
         Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused =>
@@ -479,28 +480,34 @@ async fn probe(port: u16, path: &str) -> Probe {
     if let Err(error) = stream.write_all(request.as_bytes()).await {
         return closed(error);
     }
-    // The status from the first bytes; the headers (for `framing`) as far as
-    // they come whole, within the same time and at most 16 KiB.
+    // TCP keeps no write boundaries: read until the head ends (its headers,
+    // for `framing`, at most 16 KiB), the service closes, or the time is up.
+    // A status line that never completes is no HTTP answer.
     let deadline = Instant::now() + PROBE_TIMEOUT;
     let mut head = Vec::with_capacity(1024);
     let mut buffer = [0u8; 1024];
-    loop {
+    while head.len() < 16 * 1024 && !head.windows(4).any(|w| w == b"\r\n\r\n") {
         match tokio::time::timeout_at(deadline, stream.read(&mut buffer)).await {
             Err(_) if head.is_empty() => return Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
+            Err(_) if !head.contains(&b'\n') => {
+                return Probe::Silent(format!("no complete HTTP status line within {} s", PROBE_TIMEOUT.as_secs()))
+            }
             Ok(Err(error)) if head.is_empty() => return closed(error),
             Ok(Ok(0)) if head.is_empty() => return Probe::Silent(CLOSED.into()),
-            Ok(Ok(n)) if n > 0 => {
-                head.extend_from_slice(&buffer[..n]);
-                if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() >= 16 * 1024 {
-                    break;
-                }
-            }
-            _ => break,
+            // Closed, or out of time after the status line: judge what came.
+            Err(_) | Ok(Err(_)) | Ok(Ok(0)) => break,
+            Ok(Ok(n)) => head.extend_from_slice(&buffer[..n]),
         }
     }
     let text = String::from_utf8_lossy(&head);
     let whole = text.find("\r\n\r\n").map(|end| &text[..end]);
-    match text.strip_prefix("HTTP/").and_then(|rest| rest.split(' ').nth(1)).and_then(|code| code.parse().ok()) {
+    let line = text.lines().next().unwrap_or_default();
+    match line
+        .strip_prefix("HTTP/")
+        .and_then(|rest| rest.split(' ').nth(1))
+        .filter(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|code| code.parse().ok())
+    {
         Some(code) => Probe::Http(code, whole.map_or(Framing::Unknown, framing)),
         None => Probe::Silent("it answered, but not with HTTP".into()),
     }
@@ -611,7 +618,7 @@ impl Workspace {
     pub async fn project_services(&self, project: &str) -> Result<Value> {
         let project = project.to_owned();
         let services = self.stored(move |s| s.services(&project)).await?;
-        Ok(json!({"services": services.iter().map(|s| self.service_view(s)).collect::<Vec<_>>()}))
+        Ok(json!({"services": crate::service_jobs::with_jobs(self, &services, services.iter().map(|s| self.service_view(s)).collect()).await?}))
     }
 
     fn service_view(&self, service: &Service) -> Value {

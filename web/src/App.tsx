@@ -177,6 +177,7 @@ import { refreshLiveJobs } from "./live-jobs";
 import { clearLiveCI, refreshLiveCI } from "./live-ci";
 import { TurnNavigator } from "./TurnNavigator";
 import { ConversationWindow, ConversationRows } from "./ConversationWindow";
+import { HistoryEntry } from "./HistoryEntry";
 import { ConversationMetadata } from "./ConversationMetadata";
 import { moveWindow, useCustomFrame, WindowControls } from "./WindowControls";
 import { conversationTimeMarks } from "./conversation-time";
@@ -1413,7 +1414,7 @@ export function App() {
     requestAnimationFrame(() => {
     if (destination.kind === "agent") {
       const chosen = workspace?.agents.find((item) => item.id === destination.agentId && !item.closedAt);
-      if (!chosen || chosen.harness === "opencode" ||
+      if (!chosen || (chosen.harness === "opencode" && destination.section !== "model") ||
         (destination.section === "context" && chosen.harness !== "codex") ||
         (destination.section === "auto-continue" && (chosen.harness !== "claude" || chosen.remote))) return;
       selectAgent(chosen.id);
@@ -1755,6 +1756,24 @@ export function App() {
         behavior: "instant",
       }),
     );
+  }
+  /** The session's own earlier turns, read where the saved conversation
+   * starts; the reader's first Turn is held in place. */
+  function loadEarlierTurns() {
+    setHistoryReading(true);
+    searchReading.current = true;
+    stickToBottom.current = false;
+    void sessionHistory.loadEarlier(() => {
+      const el = scroll.current;
+      const anchor =
+        el?.querySelector<HTMLElement>(".turn");
+      if (anchor)
+        historyAnchor.current = {
+          agentId: selected,
+          element: anchor,
+          top: anchor.getBoundingClientRect().top,
+        };
+    });
   }
   function changeHistoryPage(direction: "before" | "after") {
     toLatest.current = false;
@@ -2589,7 +2608,7 @@ export function App() {
                 lang={langTag(language)}
                 aria-label={shell.conversationTools}
               >
-                {!isOpenCode && <AgentSettings
+                <AgentSettings
                   key={`settings-${selected}`}
                   agent={agent}
                   observedPermissionMode={
@@ -2610,9 +2629,10 @@ export function App() {
                   }}
                   onSaved={() => {
                     refresh();
-                    setNotice(shell.settingsSaved(agent.harness === "claude"));
+                    // Only Codex has context settings to apply.
+                    setNotice(shell.settingsSaved(agent.harness !== "codex"));
                   }}
-                />}
+                />
                 <ConversationSearch
                   savedAgentId={currentDetail?.conversation && !previewMode ? selected : undefined}
                   key={selected}
@@ -2790,69 +2810,24 @@ export function App() {
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpToTurn ? { turnId: jumpToTurn } : pageTarget}>
-                  {currentDetail?.conversation && <div className="conversation-history-window">
-                    {currentDetail.conversation.hasBefore && <button className="inline-link" disabled={live.windowLoading || savedPages.loading} onClick={() => changeHistoryPage("before")}>
-                      {live.windowLoading || savedPages.loading ? "Loading history…" : "Load earlier messages"}
-                    </button>}
-                    <p>Showing part of the saved conversation. Search finds saved messages; Copy turn includes the full turn. Text selection covers visible messages.</p>
-                    {savedPages.error && <p role="alert" className="inline-error">{savedPages.error}</p>}
-                  </div>}
-                  {currentDetail?.history && (
-                    <div className="session-history-loader">
-                      <p>
-                        {currentDetail.history.hasMore
-                          ? nativeHistoryHere
-                            ? "Recent conversation is loaded. Earlier turns are available on demand."
-                            : "Earlier native turns come before the start of the saved conversation. Load earlier messages to reach them."
-                          : currentDetail.conversation ? "All earlier native history pages are loaded." : "All saved turns are loaded."}
-                      </p>
-                      {currentDetail.history.hasMore && nativeHistoryHere && <p className="question-history-note">Earlier history has not been checked for questions.</p>}
-                      {currentDetail.history.hasMore && nativeHistoryHere && (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          disabled={sessionHistory.loading}
-                          onClick={() => {
-                            setHistoryReading(true);
-                            searchReading.current = true;
-                            stickToBottom.current = false;
-                            void sessionHistory.loadEarlier(() => {
-                              const el = scroll.current;
-                              const anchor =
-                                el?.querySelector<HTMLElement>(".turn");
-                              if (anchor)
-                                historyAnchor.current = {
-                                  agentId: selected,
-                                  element: anchor,
-                                  top: anchor.getBoundingClientRect().top,
-                                };
-                            });
-                          }}
-                        >
-                          {sessionHistory.loading ? (
-                            <LoaderCircle size={14} className="spin" />
-                          ) : (
-                            <History size={14} />
-                          )}
-                          {sessionHistory.loading
-                            ? "Loading earlier turns…"
-                            : "Load earlier turns"}
-                        </button>
-                      )}
-                      {sessionHistory.added !== null && !sessionHistory.loading && (
-                        <p role="status" className="field-hint">
-                          {sessionHistory.added
-                            ? `Loaded ${sessionHistory.added} earlier ${sessionHistory.added === 1 ? "turn" : "turns"}.`
-                            : "That page had no turns beyond the saved conversation."}
-                        </p>
-                      )}
-                      {sessionHistory.error && (
-                        <p role="alert" className="inline-error">
-                          {sessionHistory.error}
-                        </p>
-                      )}
-                    </div>
-                  )}
+                  {(currentDetail?.conversation || currentDetail?.history) && (() => {
+                    // One way to earlier messages (T-6): the saved window
+                    // before the shown one while there is one, then the
+                    // session's own earlier turns where the saved
+                    // conversation starts, each by its own handler.
+                    const saved = !!currentDetail.conversation?.hasBefore;
+                    const native = !!currentDetail.history?.hasMore && nativeHistoryHere;
+                    return <HistoryEntry
+                      more={saved || native}
+                      loading={saved ? savedPages.loading || (live.windowLoading && pageSpace === "after") : sessionHistory.loading}
+                      busy={live.windowLoading || savedPages.loading || sessionHistory.loading}
+                      error={savedPages.error || sessionHistory.error || ""}
+                      added={sessionHistory.added}
+                      beginning={!saved && !currentDetail.history?.hasMore}
+                      session={!!currentDetail.history}
+                      unchecked={native}
+                      onLoad={saved ? () => changeHistoryPage("before") : loadEarlierTurns} />;
+                  })()}
                   {detailError && (
                     <p role="alert" className="inline-error">
                       {detailError}

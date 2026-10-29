@@ -239,7 +239,7 @@ function SettingCard({ entry, navigation, brief, onOpen }: {
   const [objectId, setObjectId] = useState("");
   const target = entry.target;
   const agents = target.kind === "agent" ? (navigation?.agents ?? []).filter((agent) => !agent.closedAt &&
-    (target.section === "context" ? agent.harness === "codex" : target.section === "auto-continue" ? agent.harness === "claude" && !agent.remote : agent.harness !== "opencode")) : [];
+    (target.section === "context" ? agent.harness === "codex" : target.section === "auto-continue" ? agent.harness === "claude" && !agent.remote : true)) : [];
   const projects = (navigation?.projects ?? []).filter((project) => !project.archivedAt);
   const choices = target.kind === "agent" ? agents : target.kind === "project" ? projects : [];
   const selected = choices.find((item) => item.id === objectId);
