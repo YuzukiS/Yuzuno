@@ -50,7 +50,9 @@ const text = strings({
   otherProcess: "Another program answers on its port",
   notListening: "This Job isn't listening on the port",
   ownerUnknown: "Can't confirm whose program answers on the port",
-  checkedAt: (time: string) => `checked ${time}`,
+  pageChecked: "Page (last check)",
+  notConnected: "Not connected",
+  checkingPage: "Checking",
   reachable: "Reachable",
   notReachable: "Not reachable",
   disconnect: "Disconnect",
@@ -97,7 +99,9 @@ const text = strings({
   otherProcess: "端口上是别的程序",
   notListening: "此 Job 没有在端口上监听",
   ownerUnknown: "无法确认端口上是谁在应答",
-  checkedAt: (time) => `${time} 检查`,
+  pageChecked: "页面（上次检查）",
+  notConnected: "未连接",
+  checkingPage: "正在检查",
   reachable: "可访问",
   notReachable: "无法访问",
   disconnect: "断开连接",
@@ -449,6 +453,7 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
   const job = service.job;
   const c = service.connection;
   const reachable = c.state === "available";
+  const checked = reachable || c.state === "notRunning" || c.state === "notReady";
   useEffect(() => {
     if (drawer !== "logs" || !job) return;
     let current = true;
@@ -482,21 +487,25 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
           <div className="portal-fact" data-state={job.status}>
             <small>{t.process}</small>
             <b><span className="portal-dot" />{t.jobStates[job.status] ?? job.status}</b>
+            {/* Whose listener answers, as the list says now; only a verified one is the Job's. */}
+            <em>{({ verified: t.linked, otherProcess: t.otherProcess, notListening: t.notListening } as Record<string, string>)[job.owner] ?? t.ownerUnknown}</em>
           </div>
         )}
-        <div className="portal-fact" data-state={reachable ? "running" : "unknown"}>
-          <small>{t.page}</small>
-          <b><span className="portal-dot" />{reachable ? t.reachable : t.notReachable}</b>
-          <em>
-            {[
-              c.httpStatus ? `HTTP ${c.httpStatus}` : "",
-              // Only a verified listener is the Job's own; nothing else is guessed.
-              job ? ({ verified: t.linked, otherProcess: t.otherProcess, notListening: t.notListening } as Record<string, string>)[job.owner] ?? t.ownerUnknown : "",
-              // The page is checked when the way is opened or checked again, not continuously.
-              c.since ? t.checkedAt(timeOf(c.since)) : "",
-            ].filter(Boolean).join(" · ")}
-          </em>
-        </div>
+        {/* The page as its last check found it (on opening or checking again):
+            nothing re-checks it while it is shown, so it says when. Other
+            states are not a check of the page. */}
+        {checked ? (
+          <div className="portal-fact" data-state={reachable ? "running" : "unknown"}>
+            <small>{t.pageChecked}</small>
+            <b><span className="portal-dot" />{reachable ? t.reachable : t.notReachable}</b>
+            <em>{[Number.isNaN(Date.parse(c.since)) ? "" : timeOf(c.since), c.httpStatus ? `HTTP ${c.httpStatus}` : ""].filter(Boolean).join(" · ")}</em>
+          </div>
+        ) : (
+          <div className="portal-fact" data-state="unknown">
+            <small>{t.page}</small>
+            <b><span className="portal-dot" />{c.state === "opening" ? t.checkingPage : t.notConnected}</b>
+          </div>
+        )}
         {job && (
           <div className="portal-fact" data-state={health?.declared ? health.state : "unset"}>
             <small>{t.health}</small>

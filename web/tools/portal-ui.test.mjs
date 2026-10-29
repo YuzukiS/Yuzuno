@@ -261,7 +261,8 @@ test("a service's Job: running, reachable and health apart; stop only for its ow
   page.window.portal.open(serviceTarget(service({}, { job, health: { declared: false } })));
   const section = await until(() => page.panel()?.querySelector(".portal-job"), "the Job");
   const facts = [...section.querySelectorAll(".portal-fact")].map((f) => f.textContent);
-  assert.deepEqual(facts, ["ProcessRunning", "PageReachableHTTP 200 · Linked to this Job", "Health checkNot set"]);
+  // The Job as the list says now; the page as its last check found it, apart.
+  assert.deepEqual(facts, ["ProcessRunningLinked to this Job", "Page (last check)ReachableHTTP 200", "Health checkNot set"]);
   page.click(page.button("Stop Job…", section));
   const confirm = await until(() => page.button("Stop the Job", section), "the confirmation");
   assert.ok(!page.requests.some((r) => r.url.includes("/cancel")), "nothing stopped before the confirmation");
@@ -287,8 +288,8 @@ test("a service's Job: running, reachable and health apart; stop only for its ow
     job: { ...job, status: "starting", owner: "unknown" }, health: { declared: true, path: "/health", state: "failing", reason: "HTTP 500" } })));
   const unsure = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Can't confirm")), "the unknown owner");
   assert.doesNotMatch(unsure.textContent, /Linked to this Job/);
-  assert.match(unsure.textContent, /HTTP 200 · Can't confirm whose program answers on the port · checked \d{1,2}:\d{2}/);
-  assert.match(unsure.textContent, /ProcessStarting/);
+  assert.match(unsure.textContent, /ProcessStartingCan't confirm whose program answers on the port/);
+  assert.match(unsure.textContent, /Page \(last check\)Reachable\d{1,2}:\d{2}[^·]* · HTTP 200/);
   assert.match(unsure.textContent, /Health checkFailingHTTP 500/);
   assert.ok(page.button("Stop Job…", unsure), "a starting Job can still be stopped (canStop)");
   // While it is being stopped: said so, and no second stop.
@@ -296,6 +297,11 @@ test("a service's Job: running, reachable and health apart; stop only for its ow
   const stopping = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Stopping")), "the stopping Job");
   assert.match(stopping.textContent, /This Job isn't listening on the port/);
   assert.equal(page.button("Stop Job…", stopping), undefined);
+  // A way that isn't open is no check of the page: no reachability, time or code from it.
+  page.window.portal.open(serviceTarget(service({ state: "disconnected", httpStatus: undefined, since: "2026-10-29T00:40:00Z" }, { job: { ...job, status: "running" } })));
+  const closed = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Not connected")), "the closed way");
+  const closedFacts = [...closed.querySelectorAll(".portal-fact")].map((f) => f.textContent);
+  assert.equal(closedFacts[1], "PageNot connected");
 });
 
 test("a finished Turn's HTML files are offered as prototypes; a deleted one or a running Turn's are not", async (t) => {
