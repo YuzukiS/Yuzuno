@@ -913,8 +913,15 @@ export function App() {
         .reverse()
         .find((turn) => turn.status === "inProgress" && turn._yuzunoSource !== "native")?.id || null
     : null;
-  // OpenCode takes no message into a running turn.
-  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy);
+  // OpenCode takes a message into its running turn and answers it from its
+  // next step (T-10), but not while it waits for your answer to a request.
+  const openCodeTurnId = isOpenCode && agent?.status === "working"
+    ? logicalTurns
+        .slice()
+        .reverse()
+        .find((turn) => turn.status === "inProgress")?.id || null
+    : null;
+  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy && !openCodeTurnId);
   // Codex would refuse to add to a Turn whose result is unconfirmed; the
   // draft waits until reconnecting has checked it. Claude resumes on send.
   const recovery =
@@ -957,9 +964,9 @@ export function App() {
       .slice()
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id || null;
-  // The turn a message joins: Claude's follow-up, Codex's running turn;
-  // none for OpenCode.
-  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? null : activeTurnId;
+  // The turn a message joins: Claude's follow-up, OpenCode's or Codex's
+  // running turn.
+  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? openCodeTurnId : activeTurnId;
   const {
     submit: submitMessage,
     sending,

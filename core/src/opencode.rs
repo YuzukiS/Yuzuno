@@ -501,6 +501,13 @@ impl Server {
 
     /// The session's messages and status, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
+    /// `session`'s status now (`{type: busy | retry | idle, …}`), idle when
+    /// OpenCode does not list it (`session/status.ts`).
+    pub async fn session_status(&self, session: &str) -> Result<Value> {
+        let statuses = self.json(Method::GET, "/session/status", None).await?;
+        Ok(statuses.get(session).cloned().unwrap_or_else(|| json!({"type": "idle"})))
+    }
+
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
         let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
         let statuses = self.json(Method::GET, "/session/status", None).await?;
