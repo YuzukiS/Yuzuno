@@ -141,6 +141,11 @@ struct Fixture {
     runtime: Arc<FakeRuntime>,
 }
 fn fixture() -> Fixture {
+    fixture_in(|temp| temp.into())
+}
+
+/// `fixture` of a Core launched in `cwd`, given the fixture's own folder.
+fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let a = package::fixture(&temp.path().join("source-a"), "a");
     let mut b = package::fixture(&temp.path().join("source-b"), "b");
@@ -162,7 +167,7 @@ fn fixture() -> Fixture {
         Launch {
             port: 4399,
             data_dir: data,
-            cwd: temp.path().into(),
+            cwd: cwd(temp.path()),
             codex: "fixture".into(),
         },
         runtime.clone(),
@@ -400,7 +405,7 @@ async fn private_control_requires_operation_secret_before_any_transition() {
     panic!("Preparation did not finish");
 }
 
-async fn waiting(f: &Fixture) -> super::state::Operation {
+async fn prepared(f: &Fixture) -> super::state::Operation {
     f.controller.prepare("b").await.unwrap();
     for _ in 0..200 {
         if f.layout.journal().unwrap().prepared.is_some() {
@@ -410,6 +415,11 @@ async fn waiting(f: &Fixture) -> super::state::Operation {
     }
     let op = f.layout.journal().unwrap().operation.unwrap();
     assert_eq!(op.phase, Phase::Prepared);
+    op
+}
+
+async fn waiting(f: &Fixture) -> super::state::Operation {
+    let op = prepared(f).await;
     f.layout
         .edit_operation(&op.id, |op| {
             op.phase = Phase::Waiting;
@@ -791,4 +801,99 @@ async fn recovery_reopens_even_if_current_pointer_cannot_be_written() {
     assert_eq!(failed.phase, Phase::Failed);
     assert!(failed.error.unwrap().contains("Interrupted stop"));
     assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 1);
+}
+
+/// An update pauses nothing unless a Core can start where this one did
+/// (T-11). With Core's launch directory missing, not a directory or not
+/// enterable, apply refuses before new work pauses, saying where and why. No
+/// operation begins, no helper starts, nothing stops, and the Core keeps
+/// taking work.
+#[tokio::test]
+async fn apply_refuses_before_pausing_when_the_launch_directory_cannot_be_used() {
+    use std::os::unix::fs::PermissionsExt;
+    for (case, cause) in [("missing", "is missing or unreadable"), ("file", "is not a directory"), ("closed", "cannot be entered")] {
+        // Root enters any directory.
+        if case == "closed" && rustix::process::geteuid().is_root() {
+            continue;
+        }
+        let f = fixture_in(|temp| temp.join(format!("launch-{case}")));
+        let cwd = f.controller.launch.cwd.clone();
+        match case {
+            "file" => std::fs::write(&cwd, b"").unwrap(),
+            "closed" => {
+                std::fs::create_dir(&cwd).unwrap();
+                std::fs::set_permissions(&cwd, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            _ => {}
+        }
+        let before = prepared(&f).await;
+        let error = f.controller.apply("b", &uuid::Uuid::new_v4().to_string()).await.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.starts_with("Before pausing new work") && message.contains(&format!("{} {cause}", cwd.display())), "{case}: {message}");
+        let journal = f.layout.journal().unwrap();
+        let op = journal.operation.unwrap();
+        assert_eq!((op.id.as_str(), op.phase), (before.id.as_str(), Phase::Prepared), "{case}: no operation began");
+        assert!(journal.requests.is_empty(), "{case}: the request was not taken");
+        assert!(f.controller.admission.enter_work().is_ok(), "{case}: new work is still taken");
+        assert!(!*f.controller.shutdown.borrow(), "{case}: nothing stopped");
+        let helpers = std::fs::read_dir(f.layout.updates()).unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".helper.log")).count();
+        assert_eq!(helpers, 0, "{case}: no helper started");
+        if case == "closed" {
+            std::fs::set_permissions(&cwd, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+}
+
+/// The running Core stops only while a Core can still start where it did
+/// (T-11). If its launch directory went away while the update waited, Stop
+/// is refused, saying where and why: the Core stays Flushing and doesn't shut
+/// down, and the helper's Abort gives it back its sessions and new work. With
+/// the directory there, the same Stop goes on as before.
+#[tokio::test]
+async fn stop_is_refused_when_the_launch_directory_went_away_while_waiting() {
+    use super::control::{self, Command, Request};
+    for present in [true, false] {
+        let f = fixture_in(|temp| temp.join("launch"));
+        let cwd = f.controller.launch.cwd.clone();
+        std::fs::create_dir(&cwd).unwrap();
+        let op = waiting(&f).await;
+        f.layout.edit_operation(&op.id, |o| {
+            o.phase = Phase::Flushing;
+            Ok(())
+        }).unwrap();
+        f.controller.admission.try_seal(&op.id).unwrap();
+        if !present {
+            std::fs::remove_dir(&cwd).unwrap();
+        }
+        let request = |command: Command| Request { operation_id: op.id.clone(), token: op.token.clone(), command };
+        let phase = || f.layout.journal().unwrap().operation.unwrap().phase;
+        let stopped = control::dispatch(&f.controller, request(Command::Stop)).await;
+        if present {
+            stopped.unwrap();
+            assert_eq!(phase(), Phase::Stopping, "the update goes on as before");
+            continue;
+        }
+        let message = format!("{:#}", stopped.unwrap_err());
+        assert!(message.starts_with("Before stopping the running Core") && message.contains(&format!("{} is missing", cwd.display())), "{message}");
+        assert_eq!(phase(), Phase::Flushing, "not stopping");
+        assert!(!*f.controller.shutdown.borrow());
+        let restored = f.runtime.restored.load(Ordering::SeqCst);
+        control::dispatch(&f.controller, request(Command::Abort)).await.unwrap();
+        assert_eq!(f.runtime.restored.load(Ordering::SeqCst), restored + 1, "its sessions are given back");
+        assert!(f.controller.admission.enter_work().is_ok(), "it takes work again");
+        assert_eq!(phase(), Phase::Failed);
+    }
+}
+
+/// A Core that can't start says which release, where and why (T-11): the
+/// candidate, or after it fails, the previous release, which starts in the
+/// same directory.
+#[tokio::test]
+async fn a_core_that_cannot_start_names_its_release_and_launch_directory() {
+    let f = fixture_in(|temp| temp.join("launch"));
+    let op = waiting(&f).await;
+    let candidate = f.layout.release(&op.candidate).unwrap();
+    let message = format!("{:#}", super::helper::launch(&f.layout, &op, &candidate).unwrap_err());
+    assert!(message.starts_with("Cannot start packaged Core b") && message.contains(&format!("{} is missing", op.launch.cwd.display())), "{message}");
 }

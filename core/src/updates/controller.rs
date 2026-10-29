@@ -391,6 +391,10 @@ impl Controller {
                 .saturating_mul(2)
                 .saturating_add(64 * 1024 * 1024),
         )?;
+        // Nothing pauses unless a Core can start where this one did (T-11).
+        self.launch
+            .check_cwd()
+            .context("Before pausing new work: the update did not start, and this Core keeps working")?;
         let op = self
             .operation(&candidate, request_id.into(), Phase::Waiting)
             .await?;
