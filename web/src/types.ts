@@ -459,6 +459,8 @@ export interface Model {
   supportsEffort?: boolean;
   supportedEffortLevels?: string[];
   defaultReasoningEffort?: string;
+  /** OpenCode: the names of the model's variants (T-10). */
+  variants?: string[];
   supportedReasoningEfforts?: {
     reasoningEffort: string;
     description: string;

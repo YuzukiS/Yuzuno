@@ -38,8 +38,9 @@ AUTHORIZATION = 'Basic ' + base64.b64encode(f'{USERNAME}:{PASSWORD}'.encode()).d
 SECRETS = ['fixture-secret-key', 'fixture-secret-option', 'fixture-secret-header', 'FIXTURE_SECRET_ENV']
 
 
-def model(provider, id, name, status='active'):
+def model(provider, id, name, status='active', variants=None):
     return {'id': id, 'providerID': provider, 'name': name, 'status': status, 'release_date': '2026-01-01',
+            **({'variants': variants} if variants is not None else {}),
             'api': {'id': id, 'url': 'https://api.example.invalid', 'npm': '@ai-sdk/openai-compatible'},
             'capabilities': {}, 'cost': {'input': 0, 'output': 0}, 'limit': {'context': 1000, 'output': 100},
             'options': {'apiKey': SECRETS[1]}, 'headers': {'Authorization': f'Bearer {SECRETS[2]}'}}
@@ -50,7 +51,8 @@ PROVIDERS = {'providers': [
      'options': {'apiKey': SECRETS[1]}, 'models': {'anthropic/claude-x': model('openrouter', 'anthropic/claude-x', 'Claude X', 'beta')}},
     {'id': 'deepseek', 'name': 'DeepSeek', 'source': 'api', 'env': [SECRETS[3]], 'key': SECRETS[0],
      'options': {'baseURL': 'https://api.example.invalid', 'apiKey': SECRETS[1]},
-     'models': {'deepseek-flash': model('deepseek', 'deepseek-flash', 'DeepSeek Flash')}},
+     'models': {'deepseek-flash': model('deepseek', 'deepseek-flash', 'DeepSeek Flash', variants={
+         'max': {'thinking': {'budgetTokens': 32000}, 'apiKey': SECRETS[1]}, 'high': {'reasoningEffort': 'high'}})}},
 ], 'default': {'openrouter': 'anthropic/claude-x', 'deepseek': 'deepseek-flash'}}
 
 lock = threading.Lock()
