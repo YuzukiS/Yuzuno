@@ -3788,6 +3788,44 @@ test("the same Agent id in another Workspace at this address: its inputs are rea
   } finally { page.close(); }
 });
 
+test("a jump from the dock still on its way when the Workspace changes is dropped, not taken into the other one (T-6)", async () => {
+  const requests = [];
+  // Input 1's window answers only when let go: after the Workspace changed.
+  const asked = [];
+  let letGo;
+  const gate = new Promise((resolve) => { letGo = resolve; });
+  const held = (window) => {
+    windowedMori(requests)(window);
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      if (url.includes("turnId=t1")) { asked.push(url); await gate; }
+      return fetch(url, init);
+    };
+  };
+  const input = (n) => ({ turnId: `t${n}`, itemId: `t${n}-u`, position: [n - 1, 0], by: "you", preview: `Question ${n}` });
+  const pages = { "ws-1": { inputs: [input(1), input(5)], hasBefore: false, total: 2 }, "ws-2": { inputs: [input(5)], hasBefore: false, total: 1 } };
+  let page;
+  page = await mount({ workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, beforeLoad: held,
+    inputs: () => pages[page?.core.workspaceIdentity ?? "ws-1"] });
+  try {
+    await pause(); await pause();
+    const choice = () => [...page.document.querySelectorAll("[data-turn-choice]")].find((b) => b.dataset.turnChoice === JSON.stringify(["t1", "t1-u"]));
+    await until(() => choice(), "the dock lists input 1");
+    choice().click();
+    await until(() => asked.length === 1, "input 1's window is asked for");
+    // Before it answers, the Core here turns out to be another Workspace, Mori's id the same.
+    page.core.workspaceIdentity = "ws-2";
+    page.eventSources.at(-1).onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }) });
+    await until(() => /^1\s*\/ 1$/.test(page.document.querySelector(".turn-dock-position")?.textContent ?? ""), "Workspace 2's dock");
+    letGo();
+    await pause(); await pause(); await pause();
+    assert.equal(asked.length, 1, "Workspace 1's jump is not asked for again in Workspace 2");
+    assert.notEqual(page.document.activeElement?.dataset.itemId, "t1-u", "nor read there");
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays in view (T-6)", async () => {
   const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
   const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });

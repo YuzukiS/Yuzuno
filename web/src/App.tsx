@@ -432,6 +432,10 @@ export function App() {
   const [jumpToTurn, setJumpToTurn] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
+  // Whose conversation a jump from its dock was asked in (T-6): one still on
+  // its way when the Workspace or the Agent changes is dropped, not taken into
+  // the other conversation, where the same Turn id names nothing of its.
+  const jumpScope = useRef<{ turnId: string; scope: string } | null>(null);
   // The turn dock reads by the person's inputs unless switched to Turns.
   const [readBy, setReadBy] = useState<ReadBy>("inputs");
   const [readingTurn, setReadingTurn] = useState<string>();
@@ -1215,7 +1219,18 @@ export function App() {
   useEffect(() => {
     followHeld.current = sourceJump || !!artifact;
   }, [sourceJump, artifact]);
+  // A jump from the dock of a conversation no longer shown: none here, and
+  // dropped before anything acts on it.
+  const jumpElsewhere = !!jumpToTurn && jumpScope.current?.turnId === jumpToTurn
+    && jumpScope.current.scope !== JSON.stringify([workspaceId, selected]);
+  const jumpHere = jumpElsewhere ? null : jumpToTurn;
   useEffect(() => {
+    if (jumpElsewhere) {
+      jumpItem.current = null;
+      jumpScope.current = null;
+      setJumpToTurn(null);
+      return;
+    }
     if (sourceJump || artifact) return;
     // An input no longer in the conversation: its Turn instead.
     if (jumpToTurn && jumpItem.current && live.missing === JSON.stringify({turnId:jumpToTurn, itemId:jumpItem.current}))
@@ -1240,7 +1255,7 @@ export function App() {
     }
     if (stickToBottom.current && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing, scroller, live.missing]);
+  }, [currentDetail, jumpToTurn, jumpElsewhere, homeOpen, sourceJump, artifact, outgoing, scroller, live.missing]);
   // A phone's conversation shown again from the Agent list (the same one
   // too, which keeps its place): Back to latest if it is not at its end.
   useEffect(() => {
@@ -1752,6 +1767,7 @@ export function App() {
   // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
     jumpItem.current = null;
+    jumpScope.current = { turnId, scope: JSON.stringify([workspaceId, selected]) };
     setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
@@ -2864,7 +2880,7 @@ export function App() {
                   <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
-                      : jumpToTurn ? { turnId: jumpToTurn, itemId: jumpItem.current ?? undefined } : pageTarget}>
+                      : jumpHere ? { turnId: jumpHere, itemId: jumpItem.current ?? undefined } : pageTarget}>
                   {(currentDetail?.conversation || currentDetail?.history) && (() => {
                     // One way to earlier messages (T-6): the saved window
                     // before the shown one while there is one, then the
@@ -2899,7 +2915,7 @@ export function App() {
                     <ConversationRows id="turns" items={currentDetail.turns} itemKey={turn => turn.id}
                       estimate={turn => Math.max(180, turn.items.length * 65)}
                       onReading={turn => setReadingTurn(turn.id)}
-                      targetKey={sourceJump ? catchupSource?.turnId : jumpToTurn || pageTarget?.turnId || undefined}>
+                      targetKey={sourceJump ? catchupSource?.turnId : jumpHere || pageTarget?.turnId || undefined}>
                     {(turn, i) => (
                       <LiveTurn
                         key={turn.id}

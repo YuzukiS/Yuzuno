@@ -29,15 +29,17 @@ const key = (input: ConversationInput) => `${input.turnId}\u0000${input.itemId}`
  */
 export function useConversationInputs(workspaceId: string, agentId: string, enabled: boolean, following: boolean, changed: string) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  // A read on its way and a failed one, each said only for whose it was.
+  const scope = JSON.stringify([workspaceId, agentId]);
+  const [loading, setLoading] = useState<string | null>(null);
+  const [error, setError] = useState<{ scope: string; text: string } | null>(null);
   const request = useRef<AbortController | null>(null);
   const read = useCallback(async (before?: string) => {
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    setLoading(true);
-    setError("");
+    setLoading(scope);
+    setError(null);
     try {
       const query = new URLSearchParams({ limit: String(PAGE), ...(before ? { before } : {}) });
       const page = await api<ConversationInputs>(
@@ -61,14 +63,14 @@ export function useConversationInputs(workspaceId: string, agentId: string, enab
           hasBefore: earlier.length ? (current?.hasBefore ?? page.hasBefore) : page.hasBefore };
       });
     } catch (failure) {
-      if (!controller.signal.aborted) setError(errorText(failure));
+      if (!controller.signal.aborted) setError({ scope, text: errorText(failure) });
     } finally {
       if (request.current === controller) {
         request.current = null;
-        setLoading(false);
+        setLoading(null);
       }
     }
-  }, [workspaceId, agentId]);
+  }, [workspaceId, agentId, scope]);
   useEffect(() => {
     setLoaded(null);
     return () => request.current?.abort();
@@ -83,15 +85,15 @@ export function useConversationInputs(workspaceId: string, agentId: string, enab
   }, [due, read]);
   const loadEarlier = useCallback(() => {
     const first = known && loaded ? loaded.inputs[0] : undefined;
-    if (first && loaded?.hasBefore && !loading) void read(JSON.stringify([first.turnId, first.itemId]));
-  }, [known, loaded, loading, read]);
+    if (first && loaded?.hasBefore && loading !== scope) void read(JSON.stringify([first.turnId, first.itemId]));
+  }, [known, loaded, loading, scope, read]);
   const shown = known ? loaded : null;
   return {
     inputs: shown?.inputs ?? NONE,
     hasBefore: shown?.hasBefore ?? false,
     total: shown?.total ?? 0,
-    loading,
-    error,
+    loading: loading === scope,
+    error: error?.scope === scope ? error.text : "",
     loadEarlier,
   };
 }
