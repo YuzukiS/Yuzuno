@@ -101,55 +101,138 @@ def save_fixture_budget(api):
     return {'suggested': suggested, 'saved': budget}
 
 
-# What this smoke reads from a Workspace backup (core.11 and core.12). Any
-# other layout is refused rather than guessed at.
+# What this smoke reads from a Workspace backup, in two layouts, told apart
+# as Core tells them (record_rows::check_store): a `sessionStore` mark of
+# exactly '2' is the session store (core.20 on: `agents(id, data)`, the
+# Agent's metadata without its Turns); no mark at all is the record layout of
+# core.11 to core.19, with each Agent's `layout` column at 1. Any other mark,
+# or neither, is refused rather than guessed at.
 BACKUP_TABLES = {
     'workspace_meta': {'key', 'value'},
-    'agents': {'id', 'data', 'layout'},
+    'agents': {'id', 'data'},
     'agent_turns': {'agent_id', 'turn_id', 'ord', 'items', 'data'},
     'agent_items': {'agent_id', 'turn_id', 'item_id', 'ord', 'payloads', 'data', 'previews'},
     'project_agents': {'agent_id', 'project_id'},
 }
+SESSION_STORE = '2'
+# The session store keeps the start of a long streamed field in its own rows.
+STREAM_CHUNKS = {'agent_id', 'turn_id', 'item_id'}
+# An Item that holds part of itself elsewhere (client_view, record_rows).
+ELSEWHERE = ('_yuzunoTruncated', '_yuzunoSpilled')
+# An Item over the window's size limit, sent in its place as a `historyPreview`
+# (conversation_window::bounded_item): its own type is no longer a message's.
+WINDOW_PREVIEW = '_yuzunoWindowPreview'
 MESSAGE_TYPES = ('userMessage', 'agentMessage')
+
+
+def columns_of(db, table):
+    return {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
 
 
 def backup_conversation(path, agent_id, workspace_id):
     """The fixture Agent's conversation as the operation's own backup holds
     it, in snapshot()'s shape. The update helper takes that backup after the
     old Core stopped taking work, so it also holds what Core added after the
-    fixture's Turn by itself (a Brief reminder Turn, for one)."""
+    fixture's Turn by itself (a Brief reminder Turn, for one). Every message
+    must be whole in its own row: one whose text lies partly elsewhere is
+    refused, not compared by its preview."""
     db = sqlite3.connect(f'file:{path}?mode=ro&immutable=1', uri=True)
     try:
         for table, columns in BACKUP_TABLES.items():
-            missing = columns - {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+            missing = columns - columns_of(db, table)
             if missing:
                 raise ValueError(f'Unsupported backup layout: {table} lacks {sorted(missing)}')
         row = db.execute("SELECT value FROM workspace_meta WHERE key='workspaceId'").fetchone()
         if not row or row[0] != workspace_id:
             raise ValueError('The operation backup is of another Workspace')
-        row = db.execute('SELECT data, layout FROM agents WHERE id=?', (agent_id,)).fetchone()
-        if not row:
-            raise ValueError('The operation backup has no record of the fixture Agent')
-        if row[1] != 1:
-            raise ValueError(f'Unsupported backup layout: agent record layout {row[1]}')
-        agent = json.loads(row[0])['agent']
+        mark = db.execute("SELECT value FROM workspace_meta WHERE key='sessionStore'").fetchone()
+        if mark is not None:
+            if not (isinstance(mark[0], str) and mark[0] == SESSION_STORE):
+                raise ValueError(f'Unsupported backup layout: session store {mark[0]!r}')
+            missing = STREAM_CHUNKS - columns_of(db, 'agent_stream_chunks')
+            if missing:
+                raise ValueError(f'Unsupported backup layout: agent_stream_chunks lacks {sorted(missing)}')
+            row = db.execute('SELECT data FROM agents WHERE id=?', (agent_id,)).fetchone()
+            if not row:
+                raise ValueError('The operation backup has no record of the fixture Agent')
+            # As record_rows::from_meta reads it: an object, without Turns or receipts.
+            meta = json.loads(row[0])
+            if not isinstance(meta, dict) or not isinstance(meta.get('agent'), dict):
+                raise ValueError('Unsupported backup layout: the Agent metadata is not an object with its agent')
+            if 'turns' in meta or 'messageReceipts' in meta:
+                raise ValueError('Unsupported backup layout: the Agent metadata carries Turns or receipts')
+            agent = meta['agent']
+            if agent.get('id') != agent_id:
+                raise ValueError('The operation backup holds another Agent under the fixture Agent')
+        else:
+            if 'layout' not in columns_of(db, 'agents'):
+                raise ValueError('Unsupported backup layout: no session store mark and no agent record layout')
+            row = db.execute('SELECT data, layout FROM agents WHERE id=?', (agent_id,)).fetchone()
+            if not row:
+                raise ValueError('The operation backup has no record of the fixture Agent')
+            if row[1] != 1:
+                raise ValueError(f'Unsupported backup layout: agent record layout {row[1]}')
+            agent = json.loads(row[0])['agent']
         project = db.execute('SELECT project_id FROM project_agents WHERE agent_id=?', (agent_id,)).fetchone()
-        turns = [turn for (turn,) in db.execute('SELECT turn_id FROM agent_turns WHERE agent_id=? ORDER BY ord', (agent_id,))]
+        turns = []
+        for turn, count in db.execute('SELECT turn_id, items FROM agent_turns WHERE agent_id=? ORDER BY ord', (agent_id,)):
+            if mark is not None:
+                # Its Item rows, all of them: a Turn kept whole in its own row, or
+                # with rows missing, would hide messages from the comparison.
+                rows = db.execute('SELECT COUNT(*) FROM agent_items WHERE agent_id=? AND turn_id=?', (agent_id, turn)).fetchone()[0]
+                if count is None or rows != count:
+                    raise ValueError(f'The operation backup has {rows} of Turn {turn}\'s {count} Item rows')
+            turns.append(turn)
         messages = []
-        for item_id, payloads, data in db.execute(
-                'SELECT i.item_id, i.payloads, i.data FROM agent_items i JOIN agent_turns t '
+        for turn, item_id, payloads, data in db.execute(
+                'SELECT i.turn_id, i.item_id, i.payloads, i.data FROM agent_items i JOIN agent_turns t '
                 'ON t.agent_id=i.agent_id AND t.turn_id=i.turn_id WHERE i.agent_id=? ORDER BY t.ord, i.ord', (agent_id,)):
             item = json.loads(data)
             if item.get('type') not in MESSAGE_TYPES:
                 continue
             if payloads:
                 raise ValueError(f'Unsupported backup layout: message {item_id} keeps fields in agent_payloads')
+            if any(key in item for key in ELSEWHERE):
+                raise ValueError(f'Unsupported backup layout: message {item_id} keeps part of itself outside its row')
+            if mark is not None and db.execute('SELECT 1 FROM agent_stream_chunks WHERE agent_id=? AND turn_id=? AND item_id=? LIMIT 1',
+                                               (agent_id, turn, item_id)).fetchone():
+                raise ValueError(f'Unsupported backup layout: message {item_id} keeps its start in agent_stream_chunks')
             messages.append([item.get('id'), item.get('text'), item.get('content')])
     finally:
         db.close()
     return {'id': agent.get('id'), 'threadId': agent.get('threadId'), 'projectId': project[0] if project else None,
             'settings': agent.get('settings'), 'reviewedSeq': agent.get('reviewedSeq'),
             'turnIds': turns, 'messages': messages}
+
+
+def whole_conversation(detail):
+    """The Agent's conversation in snapshot()'s shape, from GET
+    /api/agents/<id>?view=window (core.18 on). Core answers with a window of
+    the newest Items, and an Item over its size limits as a preview, so the
+    answer is the whole conversation only when the window says it holds
+    every Item of every Turn it lists, and nothing before or after, and no
+    Item is a preview. The smoke's conversation is small; anything less is
+    refused rather than compared."""
+    window = detail.get('conversation')
+    if not isinstance(window, dict):
+        raise ValueError('Core answered without its conversation window')
+    if window.get('hasBefore') is not False or window.get('hasAfter') is not False:
+        raise ValueError('The conversation window does not hold the whole conversation')
+    turns = detail['turns']
+    for turn in turns:
+        part = turn.get('_yuzunoSlice')
+        if part is not None and (part.get('start') != 0 or part.get('total') != len(turn['items'])):
+            raise ValueError(f"The conversation window holds part of Turn {turn['id']}")
+        if any(key in item for item in turn['items'] for key in ELSEWHERE) or any(
+                WINDOW_PREVIEW in item or item.get('type') == 'historyPreview' for item in turn['items']):
+            raise ValueError(f"The conversation window shows an Item of Turn {turn['id']} as a preview")
+    if window.get('totalItems') != sum(len(turn['items']) for turn in turns):
+        raise ValueError('The conversation window does not hold every Item')
+    agent = detail['agent']
+    return {key: agent.get(key) for key in ('id', 'threadId', 'projectId', 'settings', 'reviewedSeq')} | {
+        'turnIds': [t['id'] for t in turns],
+        'messages': [(i.get('id'), i.get('text'), i.get('content')) for t in turns
+                     for i in t['items'] if i['type'] in MESSAGE_TYPES]}
 
 
 def plain_backup(path):
@@ -364,12 +447,7 @@ def smoke(args):
     # `into` is where a seeded Workspace is recorded: `state`, or for the new
     # installation of --new-data-directory, state['fresh'].
     def snapshot(into=None):
-        detail = api('agents/' + (into or state)['agentId'])
-        agent = detail['agent']
-        return {key: agent.get(key) for key in ('id', 'threadId', 'projectId', 'settings', 'reviewedSeq')} | {
-            'turnIds': [t['id'] for t in detail['turns']],
-            'messages': [(i.get('id'), i.get('text'), i.get('content')) for t in detail['turns']
-                         for i in t['items'] if i['type'] in ('userMessage', 'agentMessage')]}
+        return whole_conversation(api('agents/' + (into or state)['agentId'] + '?view=window'))
 
     def idle(into=None):
         detail = api('agents/' + (into or state)['agentId'])
