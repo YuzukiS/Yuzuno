@@ -1,9 +1,12 @@
-// Home's right-hand column: a free area of widgets. Which widgets show, and
-// in what order, is kept on this device for each workspace (widget-layout.ts).
-// Machines is the first widget; Brief sections the user pins join it. The
-// area takes any widget with an id, a name and a body.
+// Home's "My widgets": the widgets the user keeps on Home, in a grid of two
+// columns where the pane is wide and one where it is narrow, in the same
+// order. Which widgets show, and in what order, is kept on this device for
+// each workspace (widget-layout.ts) and changed only in Organize; an Agent's
+// update changes a widget's content, never its place. Machines is a widget;
+// Brief sections the user pins join it. Nothing is pinned for the user.
 import { useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, EyeOff, LayoutGrid, PinOff, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, LayoutGrid, PinOff, SlidersHorizontal } from "lucide-react";
+import { Modal } from "../components";
 import { useStrings } from "../i18n";
 import { homeText } from "./home-text";
 import type { WidgetLayout } from "./widget-layout";
@@ -40,8 +43,7 @@ export function HomeWidgets({
   onChange?: (next: (current: WidgetLayout) => WidgetLayout) => void;
 }) {
   const t = useStrings(homeText);
-  const [stateArranging, setArranging] = useState(false);
-  const arranging = stateArranging && !!onChange;
+  const [organizing, setOrganizing] = useState(false);
   const { shown, hidden } = arrangeWidgets(widgets, layout ?? { order: [], hidden: [], pins: [] });
   function change(order: HomeWidget[], hiddenIds: string[]) {
     onChange?.((current) => ({ ...current, order: order.map((widget) => widget.id), hidden: hiddenIds }));
@@ -56,7 +58,7 @@ export function HomeWidgets({
     if (!layout) return;
     change([...shown, ...hidden], [...layout.hidden.filter((id) => id !== widget.id), widget.id]);
   };
-  // Shown again at the end of the column.
+  // Shown again after the others on show.
   const show = (widget: HomeWidget) => {
     if (!layout) return;
     change(
@@ -64,96 +66,125 @@ export function HomeWidgets({
       layout.hidden.filter((id) => id !== widget.id),
     );
   };
+  const unpin = (widget: HomeWidget) =>
+    widget.onUnpin && (
+      <button
+        type="button"
+        className="icon-button"
+        aria-label={t.unpinWidget(widget.name)}
+        title={t.unpinShort}
+        onClick={widget.onUnpin}
+      >
+        <PinOff size={13} />
+      </button>
+    );
+  const canOrganize = !!onChange && !!layout;
   return (
-    <aside className="home-widget-column" aria-label={t.widgets}>
+    <section className="home-widget-column" aria-label={t.widgets}>
       <header className="home-widget-column-head">
         <h2>
           <LayoutGrid size={14} />
           {t.widgets}
         </h2>
-        {onChange && layout && (
-          <button
-            type="button"
-            className={`quiet-button${arranging ? " is-active" : ""}`}
-            aria-pressed={arranging}
-            onClick={() => setArranging((value) => !value)}
-          >
-            {arranging ? t.reorderDone : t.arrange}
+        {layout && <span className="home-widget-count">{t.pinnedCount(layout.pins.length)}</span>}
+        {canOrganize && (
+          <button type="button" className="quiet-button home-widget-organize" aria-haspopup="dialog" onClick={() => setOrganizing(true)}>
+            <SlidersHorizontal size={13} />
+            {t.organize}
           </button>
         )}
       </header>
       {!layout && <p className="home-note">{t.readingLayout}</p>}
-      {layout && shown.map((widget, index) => (
-        <div key={widget.id} className="home-widget-slot" data-widget={widget.id}>
-          {arranging && (
-            <div className="home-widget-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
-              <span>{widget.name}</span>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t.moveUp(widget.name)}
-                title={t.moveUpTitle}
-                disabled={index === 0}
-                onClick={() => move(index, -1)}
-              >
-                <ArrowUp size={13} />
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t.moveDown(widget.name)}
-                title={t.moveDownTitle}
-                disabled={index === shown.length - 1}
-                onClick={() => move(index, 1)}
-              >
-                <ArrowDown size={13} />
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t.hideWidget(widget.name)}
-                title={t.hide}
-                onClick={() => hide(widget)}
-              >
-                <EyeOff size={13} />
-              </button>
-              {widget.onUnpin && (
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={t.unpinWidget(widget.name)}
-                  title={t.unpinShort}
-                  onClick={widget.onUnpin}
-                >
-                  <PinOff size={13} />
-                </button>
-              )}
+      {layout && shown.length > 0 && (
+        <div className="home-widget-grid">
+          {shown.map((widget) => (
+            <div key={widget.id} className="home-widget-slot" data-widget={widget.id}>
+              {widget.body}
             </div>
-          )}
-          {widget.body}
-        </div>
-      ))}
-      {layout && onChange && (arranging || shown.length === 0) && (
-        <div className="home-widget-column-add">
-          {hidden.length ? (
-            <>
-              <span>{shown.length ? t.addWidget : t.noWidgets}</span>
-              {hidden.map((widget) => (
-                <button
-                  key={widget.id}
-                  type="button"
-                  className="home-widget-add"
-                  onClick={() => show(widget)}
-                >
-                  <Plus size={13} /> {widget.name}
-                </button>
-              ))}
-            </>
-          ) : (
-            <span>{t.allWidgets}</span>
-          )}
+          ))}
         </div>
       )}
-    </aside>
+      {layout && !shown.length && <p className="home-note home-widget-empty">{t.noWidgets}</p>}
+      {canOrganize && (
+        <Modal
+          open={organizing}
+          onOpenChange={setOrganizing}
+          title={t.organizeTitle}
+          description={t.organizeHelp}
+          className="home-organize"
+        >
+          <h3>{t.onShow}</h3>
+          {shown.length ? (
+            <ol className="home-organize-list">
+              {shown.map((widget, index) => (
+                <li key={widget.id} data-widget={widget.id}>
+                  <span>{widget.name}</span>
+                  <span className="home-organize-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label={t.moveUp(widget.name)}
+                      title={t.moveUpTitle}
+                      disabled={index === 0}
+                      onClick={() => move(index, -1)}
+                    >
+                      <ArrowUp size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label={t.moveDown(widget.name)}
+                      title={t.moveDownTitle}
+                      disabled={index === shown.length - 1}
+                      onClick={() => move(index, 1)}
+                    >
+                      <ArrowDown size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label={t.hideWidget(widget.name)}
+                      title={t.hide}
+                      onClick={() => hide(widget)}
+                    >
+                      <EyeOff size={13} />
+                    </button>
+                    {unpin(widget)}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="home-note">{t.noneOnShow}</p>
+          )}
+          <p className="home-note">{t.organizeNote}</p>
+          <h3>{t.hiddenWidgets}</h3>
+          {hidden.length ? (
+            <ul className="home-organize-list">
+              {hidden.map((widget) => (
+                <li key={widget.id} data-widget={widget.id}>
+                  <span>{widget.name}</span>
+                  <span className="home-organize-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
+                    <button type="button" className="quiet-button" aria-label={t.showWidget(widget.name)} onClick={() => show(widget)}>
+                      <Eye size={13} />
+                      {t.show}
+                    </button>
+                    {unpin(widget)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="home-note">{t.noneHidden}</p>
+          )}
+          <p className="home-note">{t.addFromProject}</p>
+          <div className="modal-actions">
+            <button type="button" className="primary-button" onClick={() => setOrganizing(false)}>
+              {t.reorderDone}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </section>
   );
 }
