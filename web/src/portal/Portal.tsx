@@ -149,6 +149,80 @@ function layout(dragged: number | null): Layout {
   return { mode: "side", width, rail: Math.round(rail) };
 }
 
+/** Only the latest layout change holds the reading; an older one stops. */
+let holding = 0;
+
+/**
+ * Runs a change that resizes the chat (the Portal opening, closing or
+ * widening beside it), keeping what the reader is at where they saw it in
+ * the conversation: the card the page was opened from while it shows, else
+ * the paragraph on the line a quarter down inside its message, else the
+ * first message in view, as the conversation picks its own reading anchor
+ * (ConversationWindow's ReadingAnchor). Rows measured after the width
+ * change move it again, so the remaining drift is corrected for a few frames
+ * more, until the reader scrolls or a newer change takes over; nothing else
+ * scrolls the conversation.
+ */
+function keepInPlace(opener: HTMLElement | null, change: () => void) {
+  const token = ++holding;
+  const pane = (opener?.isConnected ? opener.closest<HTMLElement>(".conversation-scroll") : null)
+    ?? document.querySelector<HTMLElement>(".conversation-scroll");
+  if (!pane?.clientHeight) return change();
+  const box = pane.getBoundingClientRect();
+  const shows = (rect: DOMRect) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom;
+  let anchor: HTMLElement | undefined;
+  if (opener?.isConnected && pane.contains(opener) && shows(opener.getBoundingClientRect())) anchor = opener;
+  else {
+    // The block on the line a quarter down, inside the message there: a long
+    // message reflows within itself, so its top alone would not hold the
+    // paragraph being read.
+    const line = typeof document.elementFromPoint === "function"
+      ? document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 4) : null;
+    const item = line?.closest<HTMLElement>("[data-item-id]");
+    if (line && item && pane.contains(item)) {
+      const block = line.closest<HTMLElement>("p, li, pre, blockquote, h1, h2, h3, h4, h5, h6, tr");
+      anchor = block && item.contains(block) ? block : item;
+    } else {
+      const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter(({ rect }) => shows(rect));
+      anchor = (visible.find(({ rect }) => rect.top >= box.top) || visible[0])?.element;
+    }
+  }
+  if (!anchor) return change();
+  const at = anchor;
+  const offset = () => at.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+  const before = offset();
+  change();
+  let stopped = false;
+  const stop = () => { stopped = true; };
+  const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+  for (const name of events) pane.addEventListener(name, stop, { capture: true, passive: true });
+  window.addEventListener("keydown", stop, { capture: true });
+  const done = () => {
+    for (const name of events) pane.removeEventListener(name, stop, { capture: true });
+    window.removeEventListener("keydown", stop, { capture: true });
+  };
+  const settle = () => {
+    if (stopped || token !== holding || !at.isConnected || !pane.isConnected) return false;
+    const drift = offset() - before;
+    if (Math.abs(drift) > 1) pane.scrollTop += drift;
+    return true;
+  };
+  settle();
+  let frames = 0;
+  const again = () => {
+    if (settle() && ++frames < 10) requestAnimationFrame(again);
+    else done();
+  };
+  requestAnimationFrame(again);
+}
+
+/** Whether going from one shape to the next changes the chat's width. */
+const resizesChat = (from: Layout | null, to: Layout | null) =>
+  (from?.mode === "side" || to?.mode === "side")
+  && !(from?.mode === "side" && to?.mode === "side" && from.width === to.width && from.rail === to.rail);
+
 /** The app's grid gives the Portal its column; nothing else of the app moves. */
 function apply(shape: Layout | null) {
   const html = document.documentElement;
@@ -175,12 +249,20 @@ function PortalHost() {
   latest.current = dragged;
   const [shape, setShape] = useState<Layout | null>(null);
   const panel = useRef<HTMLElement>(null);
+  // What the page was opened from, kept past closing: the reading stays there.
+  const anchor = useRef<HTMLElement | null>(null);
+  if (shown?.opener) anchor.current = shown.opener;
   const relayout = useCallback(() => setShape(shown ? layout(dragged) : null), [shown, dragged]);
   useLayoutEffect(() => {
     relayout();
   }, [relayout]);
+  // The shape last applied: a full-screen Portal leaves the chat as it was.
+  const applied = useRef<Layout | null>(null);
   useLayoutEffect(() => {
-    apply(shape);
+    const was = applied.current;
+    applied.current = shape;
+    if (resizesChat(was, shape)) keepInPlace(anchor.current, () => apply(shape));
+    else apply(shape);
   }, [shape]);
   useEffect(() => () => apply(null), []);
   useEffect(() => {

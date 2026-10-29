@@ -214,6 +214,107 @@ test("on a narrow window the Portal is full screen, as a dialog with a way back"
   await until(() => !page.panel(), "closed");
 });
 
+// A conversation pane that scrolls, its geometry given: beside the Portal the
+// narrower chat is 500 px taller above the card (jsdom lays nothing out).
+function readingPane(page) {
+  const html = page.document.documentElement;
+  const pane = page.document.querySelector(".main-panel");
+  pane.classList.add("conversation-scroll");
+  pane.style.overflowY = "auto";
+  const state = { top: 745 };
+  Object.defineProperty(pane, "scrollHeight", { value: 5000, configurable: true });
+  Object.defineProperty(pane, "clientHeight", { value: 600, configurable: true });
+  Object.defineProperty(pane, "scrollTop", { get: () => state.top, set: (v) => { state.top = v; }, configurable: true });
+  pane.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 0, right: 400, height: 600, width: 400 });
+  const place = (el, closed, beside, height = 40) => {
+    el.getBoundingClientRect = () => {
+      const y = (html.dataset.portal === "side" ? beside : closed) - state.top;
+      return { top: y, bottom: y + height, left: 0, right: 200, height, width: 200 };
+    };
+  };
+  return { html, pane, state, place };
+}
+
+test("opening and closing beside the chat keeps the reader's place: the card it opened from, else the message in view", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.window.renderChoice(snapshot);
+  const { html, pane, state, place } = readingPane(page);
+  const main = page.document.querySelector(".open-choice-split .primary-button");
+  place(main, 1000, 1500);
+  assert.equal(main.getBoundingClientRect().top, 255);
+  page.click(main);
+  await until(page.frame, "the prototype's frame");
+  await until(() => html.dataset.portal === "side", "beside the chat");
+  assert.equal(state.top, 1245, "scrolled by the 500 px the chat grew");
+  assert.equal(main.getBoundingClientRect().top, 255, "the card stays where it was");
+  page.click(page.button("Close preview"));
+  await until(() => !page.panel(), "closed");
+  assert.equal(state.top, 745, "and back by as much when the chat widens again");
+  assert.equal(page.document.activeElement, main, "focus back on it");
+  // Scrolled on, past the card, while the page is open: closing keeps the message read then.
+  page.click(main);
+  await until(() => html.dataset.portal === "side", "open again");
+  await new Promise((done) => setTimeout(done, 300));
+  state.top = 2245;
+  const message = page.document.createElement("div");
+  message.dataset.itemId = "m2";
+  pane.append(message);
+  place(message, 1800, 2500, 80);
+  assert.equal(message.getBoundingClientRect().top, 255, "the message read now");
+  page.click(page.button("Close preview"));
+  await until(() => !page.panel(), "closed again");
+  assert.equal(message.getBoundingClientRect().top, 255, "the message read stays where it was");
+  assert.equal(state.top, 1545, "not pulled back to the card");
+  // In a long message, the paragraph on the reading line holds, not the message's top.
+  page.click(main);
+  await until(() => html.dataset.portal === "side", "open a third time");
+  await new Promise((done) => setTimeout(done, 300));
+  state.top = 2245;
+  const paragraph = page.document.createElement("p");
+  message.append(paragraph);
+  place(paragraph, 2100, 2500, 24);
+  page.document.elementFromPoint = () => paragraph;
+  page.click(page.button("Close preview"));
+  await until(() => !page.panel(), "closed a third time");
+  assert.equal(paragraph.getBoundingClientRect().top, 255, "the paragraph read stays where it was");
+  assert.equal(state.top, 1845);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a reader's own scroll right after the Portal opens wins over holding the place", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.window.renderChoice(snapshot);
+  const { html, pane, state, place } = readingPane(page);
+  const main = page.document.querySelector(".open-choice-split .primary-button");
+  place(main, 1000, 1500);
+  page.click(main);
+  await until(() => html.dataset.portal === "side", "beside the chat");
+  assert.equal(state.top, 1245);
+  // The wheel turns before the frames that hold the place have run.
+  pane.dispatchEvent(new page.window.WheelEvent("wheel", { deltaY: 600, bubbles: true }));
+  state.top = 3000;
+  await new Promise((done) => setTimeout(done, 300));
+  assert.equal(state.top, 3000, "left where the reader scrolled");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a full-screen Portal leaves the chat's scroll alone", async (t) => {
+  const page = mount({ width: 393 });
+  t.after(page.close);
+  page.window.renderChoice(snapshot);
+  const { html, state, place } = readingPane(page);
+  const main = page.document.querySelector(".open-choice-split .primary-button");
+  place(main, 1000, 1500);
+  page.click(main);
+  await until(() => html.dataset.portal === "full", "full screen");
+  await new Promise((done) => setTimeout(done, 200));
+  page.click(page.button("Back to the conversation"));
+  await until(() => !page.panel(), "closed");
+  assert.equal(state.top, 745, "never scrolled");
+});
+
 test("the panel's width follows the grip and is kept on this device", async (t) => {
   const page = mount();
   t.after(page.close);
