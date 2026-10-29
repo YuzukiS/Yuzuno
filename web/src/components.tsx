@@ -58,9 +58,14 @@ import type { TimeDisplay } from "./time-preferences";
 import { MessageTime, TurnFooter } from "./ConversationTime";
 import { AgentReply } from "./intelligent-ui/AgentReply";
 import { TurnResults } from "./intelligent-ui/TurnResults";
+import { formAnswer, SentFormAnswer } from "./intelligent-ui/SentFormAnswer";
+import { TurnFiles } from "./portal/TurnFiles";
+import { OpenChoice } from "./portal/OpenChoice";
+import { htmlFile } from "./portal/html-file";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
+import { toolCapsules } from "./tool-capsules";
 import { langTag, useLanguage, useStrings } from "./i18n";
 import { turnWords, type TurnWords } from "./turn-text";
 import { requestWords, shownError } from "./request-text";
@@ -668,10 +673,15 @@ function ToolActivity({
       <summary>
         <ChevronRight size={13} />
         <span className="tool-activity-label">{active ? t.runningTools : t.toolActivity}</span>
+        {/* One capsule per tool, named as the harness named it, with the
+            calls' own state; see tool-capsules.ts for what a state means. */}
         <span className="execution-count tool-counts">
-          {toolActivityCounts(items, language).map(({ key, label, count }) => (
-            <span className="tool-count" key={key} data-count-key={key}>
-              <span>{label}</span><span className="tool-count-number">×{count}</span>
+          {toolCapsules(toolActivityCounts(items, language), executionUnconfirmed).map(({ key, label, count, state, part }) => (
+            <span className="tool-count" key={key} data-count-key={key} data-state={state || undefined}>
+              <span className="tool-count-name">{label}</span><span className="tool-count-number">×{count}</span>
+              {state && state !== "returned" && <span className="tool-count-state">
+                {part < count ? t.toolStatePart(part, t.toolState[state]) : t.toolState[state]}
+              </span>}
             </span>
           ))}
         </span>
@@ -791,6 +801,21 @@ export function Turn({
       )}
     </div>
   );
+  // The receipt a message was sent with, by the client ID Core restores on
+  // it (or a new Claude Turn names before it is confirmed).
+  const receiptOf = (item: NativeItem) => {
+    const id = typeof item.clientId === "string" ? item.clientId : item._yuzunoClientMessageId;
+    return id ? receipts?.find((r) => r.input.clientMessageId === id) : undefined;
+  };
+  const userBody = (item: NativeItem) => {
+    const text = userText(item);
+    const answer = formAnswer(text, receiptOf(item));
+    return answer ? (
+      <div className="user-text user-form-answer"><SentFormAnswer agentId={agent.id} answer={answer} text={text} /></div>
+    ) : (
+      <div className="user-text"><MessageContent text={text} blocks={item._yuzunoTextBlocks} /></div>
+    );
+  };
   const userMessage = (item: NativeItem) => (
     <div
       className={`user-message${sourceItemId === item.id ? " source-highlight" : ""}`}
@@ -828,7 +853,7 @@ export function Turn({
             <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
             <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
-          <div className="user-text"><MessageContent text={userText(item)} blocks={item._yuzunoTextBlocks} /></div>
+          {userBody(item)}
           <SkillChips skills={messageSkills(item.content)} />
           <ImageAttachments images={messageImages(item.content)} onAnnotate={!pointFix ? undefined : ((image) => pointFix({
             name: image.name || "Image",
@@ -1002,6 +1027,7 @@ export function Turn({
         }}</ConversationRows>
         </ClaudeSubAgentScope>
         <TurnResults agentId={agent.id} turn={turn} onFile={onFile} onDraft={onAnswer} onInteract={onResultInteract} />
+        {!running && <TurnFiles agent={agent} turn={turn} onSource={onFile} />}
         {running && (
           <div
             className="turn-activity"
@@ -1541,6 +1567,13 @@ export function ArtifactModal({
           <FileText size={14} />
           <span>{t.readOnly}</span>
           <CopyButton text={text} label={t.copyContents} />
+          {/* An HTML file opens working too, in the Portal or the browser (T-5). */}
+          {!preview && artifact && htmlFile(artifact.path) && (
+            <OpenChoice
+              target={() => ({ kind: "snapshot", source: { kind: "artifact", agentId, path: artifact.path }, name: artifact.name, from: t.filePreview })}
+              onOpened={onClose}
+            />
+          )}
         </div>
       )}
     </Modal>

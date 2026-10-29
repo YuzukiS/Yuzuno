@@ -538,6 +538,7 @@ export function ProjectManager({
               machines={machines}
               machineError={machineError}
               onChanged={onChanged}
+              onLeave={() => onOpenChange(false)}
               onDeleted={() => {
                 onChanged();
                 setView({ kind: "new" });
@@ -653,6 +654,7 @@ function ProjectDetail({
   machines,
   machineError,
   onChanged,
+  onLeave,
   onDeleted,
 }: {
   project: Project;
@@ -662,6 +664,8 @@ function ProjectDetail({
   machines: WorkspaceMachine[];
   machineError: string;
   onChanged: () => void;
+  /** Closes this dialog: a service opened in the Portal is shown beside the conversation, not under it. */
+  onLeave: () => void;
   onDeleted: () => void;
 }) {
   const t = useStrings(managerText);
@@ -731,7 +735,7 @@ function ProjectDetail({
         </button>
       </form>
       <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
-      <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} />
+      <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} onOpened={onLeave} />
       <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
       <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />

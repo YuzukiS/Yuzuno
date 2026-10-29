@@ -25,17 +25,16 @@
   /* The whole pane; the layout below follows its width, not the window's. */
   container: home / inline-size;
 }
-/* Needs you and the projects on the left, a column of widgets on the right;
-   one column when the pane is narrow, the widgets between Needs you and the
-   projects. */
+/* One column: Needs you first, on its own; then My widgets; then the
+   projects, full width. */
 .home-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(300px, 30%, 400px);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    "needs widgets"
-    "main widgets";
-  grid-template-rows: auto 1fr;
-  column-gap: 24px;
+    "needs"
+    "widgets"
+    "main";
+  row-gap: 18px;
   align-items: start;
 }
 .home-needs-area {
@@ -46,36 +45,43 @@
   grid-area: main;
   min-width: 0;
 }
-@container home (max-width: 900px) {
-  .home-layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "needs"
-      "widgets"
-      "main";
-    grid-template-rows: none;
-  }
-  .home-widget-column {
-    margin-bottom: 18px;
-  }
+.home-needs-area:empty {
+  display: none;
 }
 
-/* The widget column: widgets chosen and ordered on this device
-   (HomeWidgets.tsx). Its own class names: .home-widget(s) are the project
-   panels' inner widgets. */
+/* My widgets: widgets chosen and ordered on this device (HomeWidgets.tsx),
+   two columns where the pane is wide and one where it is narrow, in the same
+   order. Its own class names: .home-widget(s) are the project panels' inner
+   widgets. */
 .home-widget-column {
   grid-area: widgets;
+  container: home-widgets / inline-size;
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
 }
+.home-widget-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@container home-widgets (min-width: 720px) {
+  .home-widget-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .home-widget-column-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   min-height: 28px;
+}
+.home-widget-count {
+  margin-right: auto;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
 }
 .home-widget-column-head h2 {
   display: flex;
@@ -84,10 +90,6 @@
   color: var(--home-ink-2);
   font-size: calc(10px + var(--font-adjust, 3px));
   font-weight: 600;
-}
-.home-widget-column-head .is-active {
-  color: var(--home-new);
-  background: var(--home-soft);
 }
 .home-widget-slot {
   min-width: 0;
@@ -147,54 +149,47 @@
 .home-pinned[data-pin-state="shown"] .home-pinned-note {
   color: var(--error-ink, var(--ink));
 }
-.home-widget-tools {
+/* Organize my widgets: each widget on show with its place and controls,
+   then the hidden ones. */
+.home-organize h3 {
+  margin: 18px 0 6px;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-organize-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-organize-list li {
   display: flex;
   align-items: center;
-  gap: 2px;
-  margin-bottom: 6px;
-  padding: 3px 4px 3px 10px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  color: var(--home-ink-2);
-  font-size: calc(9.5px + var(--font-adjust, 3px));
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
 }
-.home-widget-tools > span {
-  margin-right: auto;
-  color: var(--ink);
-  font-weight: 500;
+.home-organize-list li > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.home-widget-column-add {
+.home-organize-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.home-organize .home-note {
+  margin-top: 8px;
+}
+/* The title and its tools share a row while they fit; on a narrow phone
+   the tools wrap below it, right-aligned, never past the edge. */
+.home-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 8px;
-  padding: 10px 12px;
-  border: 1px dashed var(--line);
-  border-radius: 10px;
-  color: var(--home-ink-2);
-  font-size: calc(10px + var(--font-adjust, 3px));
-}
-.home-widget-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 28px;
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--home-surface);
-  color: var(--home-new);
-  font: inherit;
-  cursor: pointer;
-}
-.home-widget-add:hover {
-  border-color: var(--home-focus);
-}
-.home-header {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   margin-bottom: 16px;
 }
 .home-header h1 {
@@ -207,8 +202,12 @@
 }
 .home-header-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
+  min-width: 0;
+  margin-left: auto;
 }
 .home-header-tools .is-active {
   color: var(--home-new);
@@ -1298,4 +1297,33 @@ ul.home-widget {
   height: 36px;
   min-width: 36px;
   margin: -7px -4px -7px -10px;
+}
+
+/* Card detail (T-9): this device's choice, two options side by side. */
+.home-density {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.home-density-option {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.home-density-option[aria-pressed="true"] {
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--line);
+  color: var(--ink);
+}
+.home-density-option:focus-visible {
+  outline: 2px solid var(--accent-ink, currentColor);
+  outline-offset: 1px;
 }

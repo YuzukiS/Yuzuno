@@ -890,37 +890,48 @@ test("non-editor content stays in closed team details and does not affect Seen a
   } finally { p.close(); }
 });
 
-test("Home is laid out in columns: Machines is a widget beside Needs you and the projects, arranged on this device", async () => {
+test("Home is laid out as Needs you, My widgets, then the projects; widgets are organized in a dialog on this device (T-9)", async () => {
   const p = await mount();
   try {
-    const column = p.doc.querySelector('.home-layout > .home-widget-column[aria-label="Widgets"]');
-    assert.ok(column, "a widget column in the layout");
-    assert.ok(column.querySelector('[data-widget="machines"] .home-machines'), "Machines is a widget there");
-    assert.ok(p.doc.querySelector(".home-layout > .home-needs-area .home-needs-you"), "Needs you has its own area");
-    assert.ok(p.doc.querySelector(".home-layout > .home-main [data-home-project]"), "the projects have theirs");
-    assert.equal(column.querySelector(".home-needs-you, [data-home-project]"), null, "neither is inside the widget column");
+    const column = p.doc.querySelector('.home-layout > .home-widget-column[aria-label="My widgets"]');
+    assert.ok(column, "My widgets in the layout");
+    assert.ok(column.querySelector('.home-widget-grid > [data-widget="machines"] .home-machines'), "Machines is a widget in the grid");
+    const needs = p.doc.querySelector(".home-layout > .home-needs-area .home-needs-you");
+    const project = p.doc.querySelector(".home-layout > .home-main [data-home-project]");
+    assert.ok(needs, "Needs you has its own area");
+    assert.ok(project, "the projects have theirs");
+    const follows = (a, b) => !!(a.compareDocumentPosition(b) & p.w.Node.DOCUMENT_POSITION_FOLLOWING);
+    assert.ok(follows(needs, column) && follows(column, project), "Needs you, then My widgets, then the projects");
+    assert.ok(!column.querySelector(".home-needs-you, [data-home-project]"), "neither is inside My widgets");
     // The project panels keep their own inner .home-widgets; the column shares no class with them.
     assert.equal(column.matches(".home-widgets") || !!column.querySelector(".home-widget, .home-widgets"), false);
+    assert.equal(column.querySelector(".home-widget-count").textContent, "0 pinned");
     // Manage opens the Machines page.
     p.button("Manage", column).click();
     await waitFor(() => /Where your agents run/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "the Machines page opens");
     p.doc.querySelector('[role="dialog"]').dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await waitFor(() => !p.doc.querySelector('[role="dialog"]'), "the Machines page closes");
-    // Hidden, a widget is not drawn and reads nothing; the choice is kept.
-    p.button("Arrange", column).click();
-    await pause();
-    assert.equal(column.querySelector('[aria-label="Move Machines up"]').disabled, true);
-    column.querySelector('[aria-label="Hide Machines"]').click();
+    // Organize: a dialog; hidden, a widget is not drawn and reads nothing; the choice is kept.
+    p.button("Organize", column).click();
+    await waitFor(() => /Organize my widgets/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "Organize opens");
+    const dialog = () => p.doc.querySelector('[role="dialog"]');
+    assert.match(dialog().textContent, /Changes only how this device shows them\./);
+    assert.ok(dialog().querySelector('[aria-label="Move Machines up"]').disabled);
+    assert.match(dialog().textContent, /No hidden widgets\./);
+    dialog().querySelector('[aria-label="Hide Machines"]').click();
     await waitFor(() => !column.querySelector(".home-machines"), "Machines is hidden");
     assert.deepEqual(JSON.parse(p.w.localStorage.getItem("yuzuno.homeWidgets.ws-home")), { order: ["machines"], hidden: ["machines"], pins: [] });
+    assert.ok(dialog().querySelector('[aria-label="Show Machines"]'), "it is listed as hidden");
     const reads = () => p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length;
     const before = reads();
     await pause(2300);
     assert.equal(reads(), before, "a hidden widget does not sample");
-    p.button("Done", column).click();
-    await pause();
-    assert.match(column.textContent, /No widgets on show\. Add one:/);
-    p.button("Machines", column.querySelector(".home-widget-column-add")).click();
+    p.button("Done", dialog()).click();
+    await waitFor(() => !dialog(), "Organize closes");
+    assert.match(column.querySelector(".home-widget-empty").textContent, /No widgets on show\./);
+    p.button("Organize", column).click();
+    await waitFor(() => dialog()?.querySelector('[aria-label="Show Machines"]'), "Organize opens again");
+    dialog().querySelector('[aria-label="Show Machines"]').click();
     await waitFor(() => column.querySelector(".home-machines"), "Machines is shown again");
     assert.deepEqual(JSON.parse(p.w.localStorage.getItem("yuzuno.homeWidgets.ws-home")), { order: ["machines"], hidden: [], pins: [] });
     assert.deepEqual(p.errors, []);
@@ -1185,7 +1196,7 @@ test("a report or status pins to the widget column: the same section, its source
     const needs = [...p.doc.querySelectorAll("[data-needs-you]")].map((e) => e.dataset.needsYou);
     const writes = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).length;
     const before = writes();
-    card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to Widgets"]').click();
+    card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to My widgets"]').click();
     await waitFor(() => pinned(), "Notes is pinned");
     assert.match(pinned().querySelector(".home-pinned-from").textContent, /^App · Mori · Updated /);
     assert.match(pinned().querySelector(".home-pinned-body").textContent, /Notes body/);
@@ -1195,19 +1206,26 @@ test("a report or status pins to the widget column: the same section, its source
     assert.deepEqual([...p.doc.querySelectorAll("[data-needs-you]")].map((e) => e.dataset.needsYou), needs);
     const layout = () => JSON.parse(p.w.localStorage.getItem("yuzuno.homeWidgets.ws-home"));
     assert.deepEqual(layout().pins, [{ projectId: "p-app", key: "notes", id: 101, title: "Notes", projectName: "App" }]);
+    assert.equal(column.querySelector(".home-widget-count").textContent, "1 pinned");
     // Hidden, it stays pinned and shows again; unpinning is a separate button.
-    p.button("Arrange", column).click();
-    await pause();
-    assert.ok(column.querySelector('[aria-label="Unpin Notes"]') && column.querySelector('[aria-label="Hide Notes"]'));
-    column.querySelector('[aria-label="Hide Notes"]').click();
+    p.button("Organize", column).click();
+    const dialog = () => p.doc.querySelector('[role="dialog"]');
+    await waitFor(() => dialog()?.querySelector('[aria-label="Hide Notes"]'), "Organize lists Notes");
+    assert.ok(dialog().querySelector('[aria-label="Unpin Notes"]'));
+    assert.deepEqual([...dialog().querySelectorAll(".home-organize-list li")].map((li) => li.dataset.widget), ["machines", "pin:p-app:101:notes"], "a new pin comes last");
+    dialog().querySelector('[aria-label="Hide Notes"]').click();
     await waitFor(() => !pinned(), "the pinned section is hidden");
     assert.equal(layout().pins.length, 1, "hidden, it is still pinned");
     assert.deepEqual(layout().hidden, ["pin:p-app:101:notes"]);
-    p.button("Notes", column.querySelector(".home-widget-column-add")).click();
+    dialog().querySelector('[aria-label="Show Notes"]').click();
     await waitFor(() => pinned(), "it shows again");
     assert.deepEqual(layout().hidden, []);
-    p.button("Done", column).click();
-    await pause();
+    // Moved before Machines: the grid follows the order.
+    dialog().querySelector('[aria-label="Move Notes up"]').click();
+    await waitFor(() => column.querySelector(".home-widget-grid > .home-widget-slot")?.dataset.widget === "pin:p-app:101:notes", "Notes comes first");
+    assert.deepEqual(layout().order, ["pin:p-app:101:notes", "machines"]);
+    p.button("Done", dialog()).click();
+    await waitFor(() => !dialog(), "Organize closes");
     const saved = JSON.stringify(layout());
     // The Agent writes a new version: the content follows, the layout does not change.
     Object.assign(notes(), { version: 3, title: "Notes, round 2", body: body("Round 2 notes"), updatedAt: at(0) });
@@ -1311,14 +1329,14 @@ test("until the workspace is read, the widget layout is neither shown as arrange
     // Home answered first: no layout yet, and nothing to arrange, hide or pin.
     assert.equal(p.calls.some((c) => c.url.endsWith("/api/workspace")), true);
     assert.match(column.textContent, /Reading this workspace's layout/);
-    assert.equal(p.button("Arrange", column), undefined);
-    assert.equal(column.querySelector(".home-widget-slot, .home-widget-add, .home-machines"), null, "no widget is drawn, Machines reads nothing");
+    assert.equal(p.button("Organize", column), undefined);
+    assert.equal(column.querySelector(".home-widget-slot, .home-machines"), null, "no widget is drawn, Machines reads nothing");
     assert.equal(p.doc.querySelector(".home-pin"), null, "no section offers a pin");
     assert.equal(p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length, 0);
     assert.deepEqual(keys(), ["yuzuno.homeWidgets.ws-home"]);
     // The workspace is read: its own layout, its pin, and the controls.
     p.releaseWorkspace();
-    await waitFor(() => p.button("Arrange", column), "the layout controls appear");
+    await waitFor(() => p.button("Organize", column), "the layout controls appear");
     await waitFor(() => column.querySelector('.home-pinned[data-pin-state="shown"]'), "the workspace's pin shows");
     assert.equal(column.querySelector(".home-machines"), null, "Machines stays hidden as this workspace keeps it");
     assert.ok(card(p, "p-app", "notes").querySelector(".home-pin"), "sections offer a pin again");
@@ -1488,7 +1506,7 @@ test("a pinned report takes the same reply as its card: one draft, and one send 
   try {
     const column = p.doc.querySelector(".home-widget-column");
     const pinned = () => column.querySelector(".home-pinned");
-    card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to Widgets"]').click();
+    card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to My widgets"]').click();
     await waitFor(() => !!pinned(), "Notes is pinned");
     p.button("Reply", pinned()).click();
     await waitFor(() => !!replyBox(pinned()), "the reply opens in the widget");
@@ -1867,5 +1885,95 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
     assert.deepEqual(refused.errors, []);
   } finally {
     refused.close();
+  }
+});
+
+test("T-9 card density: low by default, high on a click, kept on this device for this Workspace and sent nowhere", async () => {
+  const p = await mount();
+  try {
+    const group = p.doc.querySelector('.home-header .home-density[role="group"]');
+    assert.ok(group, "the choice is in Home's header");
+    assert.equal(group.getAttribute("aria-label"), "Card density");
+    const option = (label) => [...group.querySelectorAll("button")].find((b) => b.textContent === label);
+    assert.equal(option("Low density").getAttribute("aria-pressed"), "true", "low is Home's default");
+    assert.equal(option("Low density").title, "Spacious: each card’s main point");
+    assert.equal(option("High density").title, "Compact: every field and row");
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "low");
+    const before = p.calls.length;
+    option("High density").click();
+    await waitFor(() => p.doc.querySelector(".home-view").dataset.density === "high", "high applies");
+    assert.equal(option("High density").getAttribute("aria-pressed"), "true");
+    assert.equal(p.w.localStorage.getItem("yuzuno.homeDensity.ws-home"), '"high"', "kept on this device for this Workspace");
+    assert.equal(p.w.localStorage.getItem("yuzuno.homeDensity"), null, "not for every Workspace");
+    // Home's repository read is a POST of its own; nothing else is sent.
+    assert.deepEqual(
+      p.calls.slice(before).filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url),
+      [],
+      "nothing is sent to Core or an Agent",
+    );
+    assert.ok(!p.doc.querySelector(".home-density-note"), "no note when kept");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+  const stored = { "yuzuno.homeDensity.ws-home": '"high"' };
+  // Read again on this device, for this Workspace only.
+  const again = await mount({ storage: stored });
+  try {
+    assert.equal(again.doc.querySelector(".home-view").dataset.density, "high");
+  } finally {
+    again.close();
+  }
+  const other = await mount({ storage: stored, workspace: "ws-other" });
+  try {
+    assert.equal(other.doc.querySelector(".home-view").dataset.density, "low", "another Workspace keeps its own, low until chosen");
+  } finally {
+    other.close();
+  }
+});
+
+test("T-9 card density another window saves while Home is closed here shows when Home opens again", async () => {
+  const p = await mount();
+  try {
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "low");
+    p.button("Sora", p.panel("p-res").querySelector(".home-error")).click();
+    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Sora", "Sora's conversation is open");
+    assert.ok(!p.doc.querySelector(".home-view"), "Home is closed");
+    // Another window of this device chooses high density for this Workspace.
+    p.w.localStorage.setItem("yuzuno.homeDensity.ws-home", '"high"');
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.homeDensity.ws-home" }));
+    p.button("Back to Home").click();
+    await waitFor(() => p.doc.querySelector(".home-view [data-home-project]"), "back on Home");
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "high", "the choice made meanwhile, not the one read before");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 card density a device refuses to keep still applies in this window, says it was not kept, and outlasts another Workspace's update", async () => {
+  const p = await mount();
+  try {
+    const setItem = p.w.Storage.prototype.setItem;
+    p.w.Storage.prototype.setItem = function () {
+      throw new p.w.DOMException("full", "QuotaExceededError");
+    };
+    try {
+      [...p.doc.querySelectorAll(".home-density button")].find((b) => b.textContent === "High density").click();
+      await waitFor(() => p.doc.querySelector(".home-view").dataset.density === "high", "high applies here");
+      await waitFor(() => p.doc.querySelector(".home-density-note"), "the note says it was not kept");
+      assert.match(p.doc.querySelector(".home-density-note").textContent, /not kept on this device: this browser’s storage for Yuzuno is full/);
+    } finally {
+      p.w.Storage.prototype.setItem = setItem;
+    }
+    // Another Workspace's choice saved in another window leaves this unsaved one as it is.
+    p.w.localStorage.setItem("yuzuno.homeDensity.ws-other", '"low"');
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.homeDensity.ws-other" }));
+    await pause(100);
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "high", "still high in this window");
+    assert.ok(p.doc.querySelector(".home-density-note"), "still said not to be kept");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
   }
 });

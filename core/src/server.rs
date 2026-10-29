@@ -144,6 +144,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/projects/{id}/services",get(project_services).post(register_service))
         .route("/api/services/{id}",axum::routing::delete(delete_service))
         .route("/api/services/{id}/open",post(open_service))
+        .route("/api/previews",post(open_preview))
         .route("/api/services/{id}/close",post(close_service))
         .route("/api/agents/{id}/project",post(set_agent_project))
         .route("/api/codex/sessions/preview",post(preview_session))
@@ -158,6 +159,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/items/{item_id}/original",get(item_original))
         .route("/api/agents/{id}/turns/{turn_id}/original",get(turn_original))
         .route("/api/agents/{id}/conversation/search",get(conversation_search))
+        .route("/api/agents/{id}/conversation/inputs",get(conversation_inputs))
         .route("/api/agents/{id}/turns/{turn_id}/payload",get(turn_payload))
         .route("/api/agents/{id}/results/{result_id}",get(interactive_result))
         .route("/api/agents/{id}/close",post(close_agent))
@@ -767,6 +769,14 @@ async fn open_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
     let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
     Ok(Json(ws.open_service(&id, origin).await?))
 }
+/// A single HTML file, kept as it is now and served working from the
+/// previews' own origin (previews.rs). The page's origin frames it.
+async fn open_preview(State(ws): State<Arc<Workspace>>, headers: axum::http::HeaderMap,
+    Json(source): Json<crate::previews::Source>) -> ApiResult<Json<Value>> {
+    // The browser boundary has already accepted this page's Origin, if any.
+    let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
+    Ok(Json(ws.open_preview(source, origin).await?))
+}
 async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.close_service(&id).await?))
 }
@@ -1017,6 +1027,16 @@ async fn conversation_search(State(ws): State<Arc<Workspace>>, Path(id): Path<St
     if query.q.len() > 256 { return Ok((StatusCode::BAD_REQUEST, Json(json!({"error":"Search is limited to 256 bytes"}))).into_response()); }
     stored_json(&ws, move |store| store.conversation_search(&id, &query.q)).await
 }
+/// A page of the inputs a person wrote or may have, from the light index
+/// (T-6); an unknown `before` is a 404.
+async fn conversation_inputs(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
+    Query(query): Query<crate::conversation_window::InputsQuery>) -> ApiResult<Response> {
+    let found = ws.stored(move |store| store.conversation_inputs(&id, &query)).await?;
+    Ok(match found {
+        Ok(page) => Json(page).into_response(),
+        Err(missing) => (StatusCode::NOT_FOUND, Json(json!({"error":missing.message(),"code":missing.code()}))).into_response(),
+    })
+}
 /// Full values of an Item's trimmed fields, or of one named field. Reads
 /// that Item's rows only, unless its record is held in memory.
 async fn item_payload(State(ws): State<Arc<Workspace>>, Path((id, item_id)): Path<(String, String)>, Query(q): Query<PayloadQuery>) -> Response {
@@ -1104,7 +1124,8 @@ async fn send_message(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
         Ok((serde_json::from_value(body).map_err(|e| anyhow::anyhow!("Invalid message: {e}"))?, skills))
     })();
     let (input, skills) = parsed.map_err(crate::collaboration_credentials::MessageNotSubmitted)?;
-    Ok(Json(serde_json::to_value(ws.send_message_with_skills(&id, input, skills).await?)?))
+    // Typed by the person in a client (T-6).
+    Ok(Json(serde_json::to_value(ws.send_message_from(&id, input, skills, Some(json!({"kind":"client"}))).await?)?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1124,7 +1145,11 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
     let harness = ws.listed(&id).await?.harness;
     if harness == "opencode" {
-        return Err(anyhow::anyhow!("OpenCode Agent 的模型和权限来自 OpenCode 自己的配置，这里不能修改").into());
+        // Only the model (T-10); effort and permissions stay OpenCode's own configuration's.
+        if input.settings.is_some() || input.effort.is_some() || input.permission_mode.is_some() {
+            return Err(anyhow::anyhow!("OpenCode Agent 这里只能选择模型；推理和权限仍来自 OpenCode 自己的配置").into());
+        }
+        return Ok(Json(serde_json::to_value(ws.opencode_set_model(&id, input.model).await?)?));
     }
     let agent = if harness == "claude" {
         if input.settings.is_some() { return Err(anyhow::anyhow!("Claude 模型设置不接受 Codex 权限或推理参数").into()); }
@@ -1155,9 +1180,10 @@ async fn codex_review(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
 #[cfg(test)]
 mod models_tests {
     use super::*;
-    /// T-140: `/models` picks the harness's catalog from the listed Agent,
-    /// and an Agent that does not exist is refused as before, without
-    /// reading a whole record.
+    /// T-140: `/models` picks the harness's catalog from the listed Agent
+    /// (an OpenCode Agent's is its own OpenCode's, T-10: none while it has no
+    /// connection), and an Agent that does not exist is refused as before,
+    /// without reading a whole record.
     #[tokio::test]
     async fn the_models_route_picks_the_catalog_from_the_listed_agent() {
         let temp = tempfile::tempdir().unwrap();
@@ -1166,11 +1192,8 @@ mod models_tests {
             "cwd":"/tmp","model":"","color":"sage","harness":"opencode","status":"idle","createdAt":"","updatedAt":"",
             "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
         ws.store.insert(&detail).unwrap();
-        let catalog = match agent_models(State(ws.clone()), Path("models-route".into())).await {
-            Ok(Json(catalog)) => catalog,
-            Err(error) => panic!("refused: {}", error.0),
-        };
-        assert_eq!(catalog, crate::opencode_agent::catalog());
+        let unconnected = agent_models(State(ws.clone()), Path("models-route".into())).await.err().unwrap();
+        assert!(unconnected.0.to_string().contains("OpenCode Agent 尚未连接"), "{}", unconnected.0);
         let missing = agent_models(State(ws.clone()), Path("models-missing".into())).await.err().unwrap();
         assert!(missing.0.to_string().contains("Agent 不存在"), "{}", missing.0);
         assert_eq!(crate::store::detail_reads_of("models-route"), 0, "a whole record was read");
@@ -1183,7 +1206,7 @@ async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) 
     Ok(Json(if harness == "claude" {
         ws.claude_agent_catalog(&id).await?
     } else if harness == "opencode" {
-        crate::opencode_agent::catalog()
+        ws.opencode_agent_catalog(&id).await?
     } else {
         ws.agent_catalog(&id).await?
     }))

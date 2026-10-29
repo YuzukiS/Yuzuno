@@ -779,7 +779,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     assert_eq!(message, format!("Reply from the user on Home, to version 1 of the Project Brief section `news` (\"About news\") \
         of Code (Workspace {workspace}, Project {project}):\n\nLooks good"));
     // A message already sent under this id: its retry returns it, though the card changed since.
-    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], origin: None, status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         input: crate::model::MessageInput { client_message_id: "r1".into(), text: message.clone(), text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     let kept = sent.clone();
@@ -817,6 +817,14 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     let seen_marks = sections::seen(&ws.store.db.read().unwrap(), &project).unwrap();
     assert_eq!(seen_marks.get("news").map(|(version, _)| *version), Some(2));
     assert_eq!(seen_marks.len(), 1);
+    // A reply's receipt says it came from Home, from which section and
+    // version (T-6), a card's and an ask's alike, delivered or not.
+    let origin = |id: &str| ws.store.receipt("b", id).unwrap().expect("a receipt").origin;
+    assert_eq!(origin("r5"), Some(json!({"kind":"home","projectId":project,"key":"news","version":2})));
+    let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
+        client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None };
+    let _ = home::reply(&ws, project.clone(), answer).await;
+    assert_eq!(origin("r7"), Some(json!({"kind":"home","projectId":project,"key":"decide","version":1})));
 }
 
 #[test]
@@ -873,6 +881,22 @@ async fn the_generated_validator_checks_sections_for_core() {
     assert_eq!(rejected["problems"][0]["path"], "changes[0].ask.reply");
     assert_eq!(rejected["problems"][0]["guide"], "brief_guide ask");
     assert_eq!(version(&ws, &project), 1);
+}
+
+#[tokio::test]
+async fn an_html_attachment_is_found_for_a_preview_as_its_kept_snapshot() {
+    let (dir, ws, project) = lab();
+    let file = dir.path().join("proto.html");
+    std::fs::write(&file, "<button>Try</button>").unwrap();
+    let mut change = put("design", "report");
+    change["attachments"] = json!([{"name":"proto.html","path":file}]);
+    accept(&ws, "a", input("a1", 0, vec![change])).await;
+    // The source file changes; the preview reads the snapshot kept with the section.
+    std::fs::write(&file, "changed").unwrap();
+    let kept = crate::project_brief::attachment_file(&ws, &project, "design", "proto.html", None).await.unwrap();
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "<button>Try</button>");
+    assert!(crate::project_brief::attachment_file(&ws, &project, "design", "other.html", None).await.is_err());
+    assert!(crate::project_brief::attachment_file(&ws, &project, "nope", "proto.html", None).await.is_err());
 }
 
 #[tokio::test]

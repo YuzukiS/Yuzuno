@@ -81,7 +81,9 @@ test("a Codex MCP call's row names its server and tool, as its group's summary d
     assert.equal(label(m1).title, "yuzuno/task_get");
     assert.equal(result(m1), "completed");
 
-    const counts = [...page.document.querySelectorAll(".tool-activity .tool-count")].map((node) => node.textContent);
+    // The capsule's name and number; what the calls reported is tool-capsules-ui's.
+    const counts = [...page.document.querySelectorAll(".tool-activity .tool-count")]
+      .map((node) => node.querySelector(".tool-count-name").textContent + node.querySelector(".tool-count-number").textContent);
     assert.deepEqual(counts, ["yuzuno/task_get×2", "MCP tool×1", `${long.server}/${long.tool}×1`, "Shell×1"]);
 
     // A long name is whole in the text and in its title; only the row cuts it short.

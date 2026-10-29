@@ -514,12 +514,18 @@ impl Store {
             }
         }
         let task = collaboration::task_key(&tx, &input.task_id)?.0;
+        if let Some(link) = &input.service_link {
+            crate::service_jobs::check(&tx, &task, link)?;
+        }
         let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
         let identity = super::runs::job_identity(&input, &snapshot);
         let mut value = new_job(self, &tx, actor, &input, snapshot, machine, capability)?;
         value["identity"] = identity;
         let value = insert_job(&tx, value)?;
+        if let Some(link) = &input.service_link {
+            crate::service_jobs::insert(&tx, value["id"].as_str().context("Job identity missing")?, link)?;
+        }
         tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'job_submit',?2,?3,?4)",params![actor_key(actor),input.request_id,payload.to_string(),json!({"jobId":value["id"]}).to_string()])?;
         let value = QueueState::read(&tx)?.view(value);
         tx.commit()?;

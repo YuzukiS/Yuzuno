@@ -67,7 +67,8 @@ fn find<'a>(detail: &'a Value, turn: &str, item: &str) -> &'a Value {
 #[tokio::test]
 async fn detail_ships_previews_and_the_payload_route_returns_full_completed_items() {
     let lab = Lab::new();
-    let full = lab.ws.store.detail("a").unwrap();
+    // The record as written.
+    let full = lab.row();
     let full_size = serde_json::to_vec(&full).unwrap().len();
     let (status, detail, size) = lab.get("/api/agents/a").await;
     assert_eq!(status, StatusCode::OK);
@@ -105,7 +106,10 @@ async fn detail_ships_previews_and_the_payload_route_returns_full_completed_item
 
     // Trimming happened only on the way out.
     assert_eq!(lab.row().turns, full.turns);
-    assert_eq!(lab.ws.store.detail("a").unwrap().turns, full.turns);
+    // A read adds only who each input came from (T-6), never stored.
+    let mut read = lab.ws.store.detail("a").unwrap().turns;
+    assert_eq!(read[0]["items"][0].as_object_mut().unwrap().remove("_yuzunoInput"), Some(json!("unconfirmed")));
+    assert_eq!(read, full.turns);
 }
 
 #[tokio::test]

@@ -140,9 +140,11 @@ export function toolLabel(item: NativeItem, language: Language = "en"): { label:
 
 /** Count native calls, not output chunks or files touched by a single edit. */
 export function toolActivityCounts(items: readonly NativeItem[], language: Language = "en") {
+  // `items`: the group's own calls, for a caller that also shows their
+  // state (tool-capsules.ts). A call is named by toolLabel and counted here.
   const counts = new Map<
     string,
-    { key: string; label: string; count: number }
+    { key: string; label: string; count: number; items: NativeItem[] }
   >();
   const seen = new Set<string>();
   for (const item of items) {
@@ -156,8 +158,10 @@ export function toolActivityCounts(items: readonly NativeItem[], language: Langu
     const { label } = toolLabel(item, language);
     const key = JSON.stringify([item.type, namespace, name]);
     const previous = counts.get(key);
-    if (previous) previous.count++;
-    else counts.set(key, { key, label, count: 1 });
+    if (previous) {
+      previous.count++;
+      previous.items.push(item);
+    } else counts.set(key, { key, label, count: 1, items: [item] });
   }
   return [...counts.values()];
 }

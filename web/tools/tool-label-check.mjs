@@ -106,7 +106,8 @@ try {
       return [id, { text: label.textContent, title: label.getAttribute("title"), strong: !!label.querySelector("strong"),
         cut: label.scrollWidth > label.clientWidth, result: result.textContent, label: box(label), status: box(result), summary: box(summary) }];
     })));
-    const counts = await page.locator(".tool-activity .tool-count").allTextContents();
+    const counts = await page.locator(".tool-activity .tool-count").evaluateAll((nodes) =>
+      nodes.map((node) => node.querySelector(".tool-count-name").textContent + node.querySelector(".tool-count-number").textContent));
     const overflow = await page.evaluate(() => {
       const pane = document.querySelector(".conversation-scroll");
       return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth, pane: pane ? pane.scrollWidth - pane.clientWidth : null };

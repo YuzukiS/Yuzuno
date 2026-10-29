@@ -19,6 +19,7 @@ import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type 
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
+import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDensityRefusal } from "./home-density";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -39,10 +40,10 @@ const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Home: what needs you across projects, then one panel per Project in
- * Project Priority; beside them, a column of widgets (this machine's load
- * first). It reads Core's facts and the Agents' Briefs; it never mounts a
- * conversation.
+ * Home: what needs you across projects, then My widgets (this machine's
+ * load and the sections the user pinned), then one panel per Project in
+ * Project Priority. It reads Core's facts and the Agents' Briefs; it never
+ * mounts a conversation.
  */
 export function Home({
   revision,
@@ -70,6 +71,11 @@ export function Home({
 }) {
   const language = useLanguage();
   const t = homeText(language);
+  // How much each card shows, kept on this device for each Workspace (the
+  // preview keeps none): the same content either way.
+  const densityWorkspace = readOnly ? "" : workspaceId;
+  const density = useHomeDensity(densityWorkspace);
+  const densityRefusal = useHomeDensityRefusal(densityWorkspace);
   const [data, setData] = useState<HomeData | null>(readOnly ? previewHome : null);
   // What went wrong, worded when shown so it follows the language (T-189):
   // a reply Home can't use, an order not saved, or Core's reason as it came.
@@ -305,13 +311,28 @@ export function Home({
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
-    <div className="home-view" lang={langTag(language)}>
+    <BriefDensity.Provider value={density}>
+    <div className="home-view" lang={langTag(language)} data-density={density}>
       <header className="home-header">
         <h1>
           <House size={18} />
           {t.home}
         </h1>
         <span className="home-header-tools">
+          <span className="home-density" role="group" aria-label={t.density} title={t.densityHelp}>
+            {densities.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className="home-density-option"
+                aria-pressed={density === option}
+                title={option === "low" ? t.densityLowHelp : t.densityHighHelp}
+                onClick={() => chooseHomeDensity(densityWorkspace, option)}
+              >
+                {option === "low" ? t.densityLow : t.densityHigh}
+              </button>
+            ))}
+          </span>
           {data && panels.length > 1 && !readOnly && (
             <button
               type="button"
@@ -330,6 +351,11 @@ export function Home({
           )}
         </span>
       </header>
+      {densityRefusal && !densityRefusal.saved && (
+        <p className="home-note home-density-note" role="status">
+          {t.densityNotKept(densityRefusal.detail)}
+        </p>
+      )}
       {error && (
         <p className="inline-error home-error-banner" role="alert">
           {error.kind === "unavailable" ? t.unavailable : error.kind === "order" ? t.orderNotSaved(error.reason) : error.reason}
@@ -344,8 +370,8 @@ export function Home({
           </div>
         )
       ) : (
-        // Wide: Needs you and the projects on the left, widgets on the
-        // right. Narrow: one column, the widgets between the two.
+        // Needs you first, on its own; then My widgets, two columns where
+        // the pane is wide; then the projects.
         <div className="home-layout">
           <div className="home-needs-area">
             <NeedsYou items={data.needsYou} projectName={projectName} onJump={jump} />
@@ -394,6 +420,7 @@ export function Home({
         </div>
       )}
     </div>
+    </BriefDensity.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>

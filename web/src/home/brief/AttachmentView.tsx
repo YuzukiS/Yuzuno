@@ -18,7 +18,10 @@ import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import type { SectionAttachment } from "../types";
 import { useBrief } from "./BriefContext";
+import { useBriefDensity } from "../home-density";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
+import { OpenChoice } from "../../portal/OpenChoice";
+import { htmlFile } from "../../portal/html-file";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -335,6 +338,8 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   // A kept image opens whole in the app, as a conversation's images do,
   // rather than in a browser tab (T-177).
   const image = kept && attachment.kind === "image";
+  // A kept HTML page opens working (T-5): its source only when asked for.
+  const page = kept && attachment.kind !== "image" && htmlFile(attachment.name);
   const preview = () =>
     setShown({ url, version: section.version, takenAt: attachment.takenAt, title: section.title, ownerId: section.owner.agentId });
   // Point & Fix on the image as shown, its source named for the Agent told.
@@ -367,6 +372,16 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
           <button type="button" className="brief-attachment-open" onClick={preview}>
             {t.openFile}
           </button>
+        ) : page ? (
+          <OpenChoice
+            target={() => ({
+              kind: "snapshot",
+              source: { kind: "briefAttachment", projectId, section: section.key, name: attachment.name, version: section.version },
+              name: attachment.name,
+              from: `Home · ${section.title}`,
+            })}
+            onSource={() => window.open(url, "_blank", "noopener,noreferrer")}
+          />
         ) : (
           kept && (
             <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer">
@@ -400,7 +415,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         </button>
       ) : attachment.kind === "data" ? (
         <DataPreview url={url} attachment={attachment} />
-      ) : attachment.kind === "text" ? (
+      ) : attachment.kind === "text" && !page ? (
         <TextTail url={url} attachment={attachment} />
       ) : null}
       {image && (
@@ -429,13 +444,26 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
  */
 export const FIRST_ATTACHMENTS = 4;
 
+/** A short card (low density) leads with its first attachment, the deliverable to preview. */
+export const FIRST_ATTACHMENTS_SHORT = 1;
+
 export function BriefAttachments({ items }: AttachmentsProps) {
   const t = useStrings(briefText);
+  const { section } = useBrief();
+  const density = useBriefDensity();
   const [all, setAll] = useState(false);
-  const folds = items.length > FIRST_ATTACHMENTS + 2;
-  const shown = folds && !all ? items.slice(0, FIRST_ATTACHMENTS) : items;
+  const first = density === "low" ? FIRST_ATTACHMENTS_SHORT : FIRST_ATTACHMENTS;
+  const folds = density === "low" ? items.length > first : items.length > first + 2;
+  // A short card never folds away what an attachment warns of: one gone
+  // from the section, not kept, or that may change.
+  const warns = (name: string) => {
+    const attachment = section.attachments.find((item) => item.name === name);
+    return !attachment || attachment.mayChange || (!attachment.snapshot && attachment.kind !== "link");
+  };
+  const shown =
+    folds && !all ? items.filter((item, index) => index < first || (density === "low" && warns(item.name))) : items;
   return (
-    <div className="brief-attachments-block">
+    <div className="brief-attachments-block" data-density={density}>
       <ul className="brief-attachments" aria-label={t.attachments}>
         {shown.map((item) => (
           <li key={item.name}>
@@ -445,7 +473,7 @@ export function BriefAttachments({ items }: AttachmentsProps) {
       </ul>
       {folds && (
         <button type="button" className="quiet-button brief-attachments-more" aria-expanded={all} onClick={() => setAll(!all)}>
-          {all ? t.showFirst(FIRST_ATTACHMENTS) : t.showAll(items.length)}
+          {all ? (density === "low" ? t.showFewer : t.showFirst(first)) : t.showAll(items.length)}
         </button>
       )}
     </div>

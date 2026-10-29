@@ -55,6 +55,89 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     ws.close_agent("oc").await.unwrap();
 }
 
+/// The stand-in's control, on its own port (`start.json`).
+#[cfg(target_os = "linux")]
+async fn control(data: &std::path::Path, name: &str, body: Value) -> Value {
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode/oc/start.json")).unwrap()).unwrap();
+    reqwest::Client::builder().no_proxy().build().unwrap()
+        .post(format!("http://127.0.0.1:{}/__fixture/{name}", seen["port"])).json(&body)
+        .timeout(Duration::from_secs(20)).send().await.unwrap().json().await.unwrap()
+}
+
+/// A form an OpenCode Agent publishes is answered as a new message (T-10):
+/// its answers are checked against the form and the conversation it was
+/// published in, then sent once under their receipt, and not again.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_form_an_opencode_agent_publishes_is_answered_once_as_a_new_message() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    let message = |value: Value| serde_json::from_value::<crate::model::MessageInput>(value).unwrap();
+    let prompts = || std::fs::read_to_string(data.join("opencode/oc/calls.jsonl")).unwrap_or_default().lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|call| call["path"].as_str().unwrap().ends_with("/prompt_async")).collect::<Vec<_>>();
+
+    let turn = ws.send_message("oc", message(json!({"clientMessageId":"c1","text":"Set it up"}))).await.unwrap().turn_id.unwrap();
+    let spec = json!({"root":"r","elements":{
+        "r":{"type":"Result","props":{"title":"Setup","summary":"Answer once"},"children":["f"]},
+        "f":{"type":"Clarification","props":{"id":"setup","title":"Setup","fields":[{"id":"directory","type":"text","label":"Directory","required":true}]}}
+    }});
+    let published = ws.result_publish("oc", json!({"requestId":"form","expectedTurnId":turn,"spec":spec})).await.unwrap().unwrap();
+    let result = published["resultId"].as_str().unwrap().to_owned();
+    control(&data, "reply", json!({"sessionID":c.session,"text":"Where should it go?"})).await;
+    for _ in 0..400 {
+        if ws.store.detail("oc").unwrap().turns.iter().any(|t| t["id"] == turn.as_str() && t["status"] == "completed") { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let answer = json!({"resultId":result,"formId":"setup","answers":{"directory":"src"}});
+    let text = ws.results.check_answers(&spec, &answer).await.unwrap();
+
+    // Text that is not the form's answers is refused before anything is sent.
+    assert!(ws.send_message("oc", message(json!({"clientMessageId":"form-0","text":"something else","clarification":answer}))).await.is_err());
+    assert_eq!(prompts().len(), 1);
+    let form = message(json!({"clientMessageId":"form-1","text":text,"clarification":answer}));
+    let sent = ws.send_message("oc", form.clone()).await.unwrap();
+    assert_eq!(sent.status, "accepted");
+    assert_eq!(sent.input.clarification.as_ref().map(|c| c.result_id.as_str()), Some(result.as_str()));
+    let calls = prompts();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1]["body"]["parts"][0]["text"], text);
+    // The same message again is its receipt; the same form's answers again are refused.
+    assert_eq!(ws.send_message("oc", form).await.unwrap().turn_id, sent.turn_id);
+    assert!(ws.send_message("oc", message(json!({"clientMessageId":"form-2","text":text,"clarification":answer}))).await.is_err());
+    assert_eq!(prompts().len(), 2, "sent once");
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// Choosing a model waits for the Agent gate (T-10), as a close or a
+/// reconnect does, so it never changes an Agent a close is ending.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn choosing_a_model_waits_for_the_agent_gate() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let gate = ws.gate("oc").await;
+    let held = gate.lock().await;
+    let chosen = tokio::spawn({
+        let ws = ws.clone();
+        async move { ws.opencode_set_model("oc", "deepseek/deepseek-flash".into()).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!chosen.is_finished(), "it waits while the gate is held");
+    assert_eq!(ws.store.detail("oc").unwrap().agent.model, "");
+    drop(held);
+    assert_eq!(chosen.await.unwrap().unwrap().model, "deepseek/deepseek-flash");
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// A part of an answer to a Turn that ended, arriving after a newer Turn
 /// began, is the ended Turn's (T-140): the change reads that Turn, not only
 /// the open and newest ones.

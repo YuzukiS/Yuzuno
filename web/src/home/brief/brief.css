@@ -46,9 +46,13 @@
 .brief-body :is(h4, p, ul, ol, dl) {
   margin: 0;
 }
+/* A block's or group's title: the card's own structure, so it stands above
+ * the body it introduces and above the headings written inside it, which an
+ * explicit h1 alone outranks. */
 .brief-body h4 {
-  font-size: 0.86rem;
+  font-size: 1.05rem;
   font-weight: 600;
+  color: var(--ink);
 }
 /* The section card is the only frame. A group inside it is a title and its
  * blocks, set apart by space, and by a rule from the group before it. */
@@ -134,9 +138,49 @@
 .brief-body .brief-markdown :is(p, ul, ol) {
   margin: 0 0 10px;
 }
+/* An Agent's own heading levels. Home used to draw h1, h2 and h3 at one
+ * size, which left its writing flat; each level is a step again, with the
+ * size and weight carrying it, since a theme may draw heading and body in
+ * the same ink. A heading binds to the text under it: more space above it
+ * than below. */
 .brief-body .brief-markdown :is(h1, h2, h3) {
-  margin: 14px 0 8px;
-  font-size: 0.95rem;
+  margin: 18px 0 7px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.brief-body .brief-markdown h1 {
+  font-size: 1.14rem;
+}
+.brief-body .brief-markdown h2 {
+  font-size: 1rem;
+}
+.brief-body .brief-markdown h3 {
+  margin-top: 14px;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+/* An Agent may write deeper than h3. Those are Markdown headings, not the
+   card's own structure, so they stay below h3 and out of the block-title
+   rule above, which would otherwise draw an h4 larger than the h2 above it. */
+.brief-body .brief-markdown :is(h4, h5, h6) {
+  margin: 12px 0 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
+/* A block begins at its own top, whatever it begins with. */
+.brief-body .brief-markdown > :first-child {
+  margin-top: 0;
+}
+/* Emphasis is a full step of weight rather than a tint. Chinese showed none
+ * of it while the bundled Han subset carried no variation data: every weight
+ * drew the same outlines, whatever this rule asked for. That is the font's
+ * to fix, not this rule's (acceptance/cjk-font-weights). */
+.brief-body .brief-markdown strong {
+  font-weight: 700;
+  color: var(--ink);
 }
 .brief-body .brief-markdown pre {
   max-height: 22em;
@@ -746,5 +790,175 @@ p.brief-preview-frame {
 @media (forced-colors: active) {
   .brief-change-mark {
     border: 1px solid CanvasText;
+  }
+}
+
+/* Density (T-9): the same blocks, chosen per device on Home. Low shows a
+ * card's main point (the Home board design); high every field and row in a
+ * compact layout, at the same text size and touch targets. */
+
+/* Plans: a step's marker, its name and what more it says, its state. */
+.brief-plan ol {
+  gap: 10px;
+}
+.brief-plan li {
+  position: relative;
+  gap: 10px;
+}
+.brief-plan-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  color: var(--muted);
+}
+.brief-plan-mark[data-state="done"] {
+  color: var(--brief-done);
+}
+.brief-plan-mark[data-state="doing"] {
+  color: var(--brief-working);
+}
+.brief-plan-mark[data-state="blocked"] {
+  color: var(--brief-error);
+}
+.brief-plan-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.brief-plan-text strong {
+  font-weight: 600;
+}
+.brief-plan li[data-state="done"] .brief-plan-text strong {
+  color: var(--text-secondary, var(--muted));
+}
+.brief-plan-more {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: pre-line;
+}
+.brief-plan .brief-chip {
+  margin-left: auto;
+}
+.brief-plan-all {
+  align-self: flex-start;
+}
+/* Low: a short timeline, the steps joined by a line, each one's more on one line. */
+.brief-plan[data-density="low"] li:not(:last-child)::before {
+  position: absolute;
+  top: 22px;
+  bottom: -10px;
+  left: 9.5px;
+  width: 1px;
+  background: var(--line);
+  content: "";
+}
+.brief-plan[data-density="low"] li:not([data-state="blocked"]) .brief-plan-more {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+/* A blocked step shown past the window: the line doesn't join across the gap. */
+.brief-plan[data-density="low"] li[data-gap] {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.brief-plan[data-density="low"] li:has(+ li[data-gap])::before {
+  content: none;
+}
+/* High: tighter rows, every line of every step. */
+.brief-plan[data-density="high"] ol {
+  gap: 0;
+}
+.brief-plan[data-density="high"] li {
+  padding: 5px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.brief-plan[data-density="high"] li:last-child {
+  border-bottom: 0;
+}
+
+/* A trend in low density: its box as short as its line, before data arrives too. */
+.brief-chart[data-density="low"] .brief-chart-plot {
+  height: 120px;
+}
+
+/* Metrics: low leads with the first value, large; high is the full grid, tighter. */
+.brief-metrics[data-density="low"] {
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  align-items: end;
+}
+.brief-metrics[data-density="low"] > [data-lead] {
+  grid-column: 1 / -1;
+}
+.brief-metrics[data-density="low"] > [data-lead] dd {
+  font-size: 2.4rem;
+  line-height: 1.1;
+}
+.brief-metrics[data-density="low"] > [data-lead] .brief-unit {
+  font-size: 1rem;
+}
+.brief-metrics[data-density="high"] {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px 18px;
+}
+.brief-metrics-more {
+  align-self: flex-start;
+  margin: 4px 0 0;
+}
+
+/* Attachments: low leads with one deliverable, its picture beside what it is;
+ * a narrow card stacks them. */
+.brief-attachments-block[data-density="low"] .brief-attachments {
+  grid-template-columns: 1fr;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] {
+  display: grid;
+  grid-template-areas:
+    "image header"
+    "image caption"
+    "image meta";
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  align-content: start;
+  gap: 6px 18px;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-image {
+  grid-area: image;
+  margin: 0;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-image img {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] header {
+  grid-area: header;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-attachment-caption {
+  grid-area: caption;
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-attachment-meta {
+  grid-area: meta;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-attachment-note {
+  grid-column: 1 / -1;
+}
+@container brief-body (max-width: 520px) {
+  .brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] {
+    grid-template-areas:
+      "image"
+      "header"
+      "caption"
+      "meta";
+    grid-template-columns: minmax(0, 1fr);
   }
 }

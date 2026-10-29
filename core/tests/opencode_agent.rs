@@ -595,6 +595,166 @@ async fn a_broken_stream_is_reconciled_from_a_snapshot_once() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A sub-agent OpenCode starts (its `task` tool) asks in a session of its own
+/// (T-10). Its requests are shown with the sub-agent that asks and answered
+/// in that session; nothing else of it ends the Agent's Turn, and another
+/// session's requests are not the Agent's.
+#[tokio::test]
+async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    let child = lab.control("child", json!({"parentID":session,"title":"Find the files (@explore subagent)","agent":"explore"})).await;
+    let child = child["id"].as_str().unwrap().to_owned();
+    let other = lab.control("child", json!({"parentID":"ses_elsewhere","title":"another client's"})).await;
+    lab.control("ask", json!({"sessionID":other["id"]})).await;
+    let asked = lab.control("ask", json!({"sessionID":child})).await;
+    let d = lab.until("the sub-agent's request", |d| !d.pending.is_empty()).await;
+    assert_eq!(d.pending.len(), 1, "another session's request is not this Agent's: {:#?}", d.pending);
+    let p = d.pending[0].clone();
+    assert_eq!((p.method.as_str(), &p.params["id"]), ("opencode/permission", &asked["id"]));
+    assert_eq!(p.params["_opencodeSession"], child);
+    assert_eq!(p.params["_opencodeChild"], json!({"title":"Find the files (@explore subagent)","agent":"explore"}));
+    assert_eq!(p.params["turnId"], running, "the Agent's running Turn asked it");
+    assert_eq!(d.agent.status, "waiting");
+
+    // The same event again adds nothing, and the sub-agent's idle ends no Turn.
+    lab.control("event", json!({"type":"permission.asked","properties":asked})).await;
+    lab.control("idle", json!({"sessionID":child})).await;
+    let question = lab.control("question", json!({"sessionID":child})).await;
+    let d = lab.until("the sub-agent's question", |d| d.pending.iter().any(|p| p.params["id"] == question["id"])).await;
+    assert_eq!(d.pending.iter().filter(|p| p.params["id"] == asked["id"]).count(), 1);
+    assert_eq!(turn(&d, &running)["status"], "inProgress");
+
+    // Answered in the session that asked, once.
+    lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
+    let answered = lab.posts("/permission/");
+    assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
+        (format!("/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"reply":"once"})));
+    assert!(lab.ws.respond(&p.id, json!({"decision":"once"})).await.is_err(), "answered already");
+    let q = d.pending.iter().find(|p| p.params["id"] == question["id"]).unwrap();
+    assert_eq!(q.params["_opencodeSession"], child);
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
+    assert_eq!(lab.posts("/question/").last().unwrap()["path"], format!("/question/{}/reply", question["id"].as_str().unwrap()));
+    lab.until("the answered requests", |d| d.pending.is_empty()).await;
+
+    // A request of a sub-agent whose run ended is not answered.
+    lab.control("ask", json!({"sessionID":child})).await;
+    let gone = lab.until("the next request", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.control("close", json!({"sessionID":child})).await;
+    assert!(lab.ws.respond(&gone.id, json!({"decision":"once"})).await.is_err());
+    assert_eq!(lab.posts("/permission/").len(), 1, "only the first permission answer was sent");
+
+    // The Agent's own session ends its Turn.
+    assert_eq!(turn(&lab.detail(), &running)["status"], "inProgress");
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the Turn's end", |d| turn(d, &running)["status"] == "completed").await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A sub-agent that starts and asks while no event stream is open is found
+/// again with the snapshot: OpenCode lists it among the session's children,
+/// and its request comes with it (T-10).
+#[tokio::test]
+async fn a_sub_agent_that_asked_while_no_stream_was_open_is_found_again() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("refuseEvents", json!({"seconds":0.4})).await;
+    lab.control("drop", json!({})).await;
+    let child = lab.control("child", json!({"parentID":session,"title":"Check (@general subagent)","agent":"general","announce":false})).await;
+    let asked = lab.control("ask", json!({"sessionID":child["id"]})).await;
+    let d = lab.until("the request read again", |d| !d.pending.is_empty()).await;
+    assert!(journal(&lab).iter().any(|k| k == "opencode/resynced"));
+    let p = &d.pending[0];
+    assert_eq!(p.params["id"], asked["id"]);
+    assert_eq!(p.params["_opencodeSession"], child["id"]);
+    assert_eq!(p.params["_opencodeChild"], json!({"title":"Check (@general subagent)","agent":"general"}));
+    lab.ws.respond(&p.id, json!({"decision":"reject"})).await.unwrap();
+    assert_eq!(lab.posts("/permission/")[0]["body"], json!({"reply":"reject"}));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Every file under `dir`, read whole, for a secret the stand-in's providers hold.
+fn holds_a_secret(dir: &std::path::Path) -> Option<(PathBuf, &'static str)> {
+    const SECRETS: [&str; 4] = ["fixture-secret-key", "fixture-secret-option", "fixture-secret-header", "FIXTURE_SECRET_ENV"];
+    for entry in std::fs::read_dir(dir).unwrap().map(Result::unwrap) {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = holds_a_secret(&path) {
+                return Some(found);
+            }
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            if let Some(secret) = SECRETS.iter().find(|s| bytes.windows(s.len()).any(|w| w == s.as_bytes())) {
+                return Some((path, secret));
+            }
+        }
+    }
+    None
+}
+
+/// A model OpenCode's configured providers list (`/config/providers`) is
+/// chosen for the Agent's next messages (T-10) and goes with each of them;
+/// OpenCode's default sends none, as before; one OpenCode no longer lists is
+/// refused before anything is sent. Only a model's names are kept, never a
+/// provider's key, options or headers.
+#[tokio::test]
+async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_its_providers_is_kept() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["models"], json!([
+        {"id":"deepseek/deepseek-flash","model":"deepseek/deepseek-flash","displayName":"DeepSeek · DeepSeek Flash","description":null},
+        {"id":"openrouter/anthropic/claude-x","model":"openrouter/anthropic/claude-x","displayName":"OpenRouter · Claude X","description":"beta"},
+    ]));
+
+    // Only a model OpenCode lists is saved.
+    let refused = lab.ws.opencode_set_model(ID, "nope/model".into()).await.unwrap_err().to_string();
+    assert!(refused.contains("设置未保存"), "{refused}");
+    assert_eq!(lab.detail().agent.model, "");
+    let chosen = lab.ws.opencode_set_model(ID, " openrouter/anthropic/claude-x ".into()).await.unwrap();
+    assert_eq!(chosen.model, "openrouter/anthropic/claude-x");
+
+    // It goes with the next message, named as OpenCode names it.
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.prompts()[0]["body"]["model"], json!({"providerID":"openrouter","modelID":"anthropic/claude-x"}));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+
+    // OpenCode's default again: no model is sent, as before any was chosen.
+    lab.ws.opencode_set_model(ID, String::new()).await.unwrap();
+    let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.prompts()[1]["body"], json!({"messageID":second,"parts":[{"type":"text","text":"again"}]}));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
+
+    // A chosen model OpenCode no longer lists: refused before anything is sent.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    providers["providers"].as_array_mut().unwrap().retain(|p| p["id"] != "deepseek");
+    lab.control("mode", json!({"providers":providers})).await;
+    let gone = lab.send("c3", "third").await.unwrap_err().to_string();
+    assert!(gone.contains("不在 OpenCode 当前的配置中") && gone.contains("没有发送"), "{gone}");
+    assert_eq!(lab.prompts().len(), 2, "nothing was sent");
+    let d = lab.detail();
+    assert!(d.message_receipts.iter().all(|r| r.input.client_message_id != "c3"), "no receipt was recorded");
+    assert_eq!(d.agent.model, "deepseek/deepseek-flash", "the choice stays the user's");
+
+    // Nothing else of a provider's record was kept, in the record or anywhere in Core's data.
+    let data = lab.dir.path().join("data");
+    let record = serde_json::to_string(&lab.detail()).unwrap();
+    assert!(!record.contains("fixture-secret") && !record.contains("FIXTURE_SECRET"));
+    assert_eq!(holds_a_secret(&data), None);
+    lab.ws.close_agent(ID).await.unwrap();
+
+    // An Agent with no connection has no models to read, and saves none.
+    let ws = Workspace::new(lab.dir.path().join("data2"), lab.dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&lab.dir.path().to_string_lossy())).unwrap();
+    assert!(ws.opencode_agent_catalog(ID).await.unwrap_err().to_string().contains("尚未连接"));
+    assert!(ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap_err().to_string().contains("尚未连接"));
+    assert_eq!(ws.opencode_set_model(ID, String::new()).await.unwrap().model, "", "OpenCode's default needs no list");
+}
+
 #[tokio::test]
 async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session() {
     // OpenCode reports the Workspace MCP server failed: nothing is sent.

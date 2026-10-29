@@ -1,0 +1,388 @@
+/* The Portal (T-5): a web service or an HTML prototype beside the
+   conversation, or over it on a narrow window. Portal.tsx sets
+   html[data-portal] and the app grid's columns; the panel sits in the
+   column it leaves, below the toolbar and above the status bar. */
+:root[data-portal="side"] .app {
+  grid-template-columns: var(--portal-columns) !important;
+}
+/* The context panel steps aside while a page is open beside the chat. */
+:root[data-portal="side"] .app > .inspector {
+  display: none !important;
+}
+
+.portal-panel {
+  position: fixed;
+  z-index: 40;
+  top: calc(var(--safe-top, 0px) + var(--top, 57px));
+  right: var(--safe-right, 0px);
+  bottom: calc(var(--safe-bottom, 0px) + var(--bottom, 27px));
+  width: var(--portal-width, 50vw);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--ink);
+  background: var(--surface-raised, var(--paper));
+  border-left: 1px solid var(--line);
+  box-shadow: -10px 0 30px var(--palette-shadow, rgba(0, 0, 0, 0.12));
+}
+.portal-panel.is-full {
+  z-index: 60;
+  inset: 0;
+  width: auto;
+  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px);
+  border-left: 0;
+  box-shadow: none;
+}
+
+.portal-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 14px;
+  display: grid;
+  place-items: center;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+.portal-grip span {
+  width: 4px;
+  height: 44px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--line) 70%, var(--ink) 30%);
+}
+.portal-grip:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: -2px;
+}
+
+.portal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.portal-kind {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 8px;
+  color: var(--accent-ink, var(--green));
+  background: var(--surface-soft);
+}
+.portal-title {
+  flex: 1;
+  min-width: 0;
+  outline: none;
+}
+.portal-title strong,
+.portal-title small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.portal-title strong {
+  font-weight: 600;
+}
+.portal-title small {
+  color: var(--muted);
+  font-size: 0.8em;
+}
+.portal-outside {
+  flex: none;
+  gap: 4px;
+  white-space: nowrap;
+}
+.portal-box {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.portal-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 12px;
+  flex: none;
+  font-size: 0.82em;
+  color: var(--text-secondary, var(--muted));
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+}
+.portal-note svg {
+  flex: none;
+  color: var(--success-ink, var(--green));
+}
+.portal-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: var(--surface-soft);
+}
+.portal-panel.is-full .portal-stage {
+  padding: 8px;
+}
+.portal-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+.portal-hint {
+  margin: 0 0 8px;
+  font-size: 0.82em;
+  color: var(--muted);
+}
+.portal-state {
+  margin: auto;
+  max-width: 34em;
+  padding: 20px;
+  text-align: center;
+  color: var(--text-secondary, var(--muted));
+  line-height: 1.6;
+}
+.portal-blocked strong {
+  display: block;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.portal-blocked p,
+.portal-moved p {
+  margin: 0 0 14px;
+}
+
+.portal-job {
+  flex: none;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-raised, var(--paper));
+}
+.portal-job > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.portal-tag {
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 0.78em;
+  color: var(--text-secondary, var(--muted));
+  background: var(--surface-soft);
+}
+.portal-disconnect {
+  margin-left: auto;
+}
+.portal-states {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+.portal-fact {
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.portal-fact small,
+.portal-fact em {
+  display: block;
+  font-size: 0.78em;
+  font-style: normal;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.portal-fact b {
+  font-weight: 600;
+}
+.portal-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--muted);
+}
+.portal-fact[data-state="running"] .portal-dot {
+  background: var(--success-ink, var(--green));
+}
+.portal-fact[data-state="queued"] .portal-dot,
+.portal-fact[data-state="waiting"] .portal-dot {
+  background: var(--state-working, var(--yellow));
+}
+.portal-fact[data-state="failed"] .portal-dot {
+  background: var(--error-ink, #b34e48);
+}
+.portal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.portal-stop {
+  margin-left: auto;
+  padding: 5px 10px;
+}
+.portal-muted {
+  margin-left: auto;
+  font-size: 0.82em;
+  color: var(--muted);
+}
+.portal-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.portal-confirm p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.85em;
+}
+.portal-logs {
+  max-height: 160px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font: 12px/1.6 ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #efe3cf;
+  background: #2b241d;
+}
+
+/* The way to open a page: the device's default first, the other one beside. */
+.open-choice {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.open-choice-split {
+  display: inline-flex;
+  min-width: 0;
+}
+.open-choice-split > .primary-button {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.open-choice-more {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.open-choice-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised, var(--paper));
+  box-shadow: 0 12px 30px var(--palette-shadow, rgba(0, 0, 0, 0.14));
+}
+.open-choice-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+}
+.open-choice-menu button:hover,
+.open-choice-menu button:focus-visible {
+  background: var(--surface-soft);
+}
+.open-choice-menu small {
+  display: block;
+  font-size: 0.8em;
+  color: var(--muted);
+}
+.open-choice-note {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.82em;
+  color: var(--muted);
+}
+
+/* A Turn's prototypes (TurnFiles.tsx): one card per HTML file it wrote. */
+.turn-files {
+  list-style: none;
+  margin: 10px 0 18px;
+  padding: 0 0 0 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.turn-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  max-width: 600px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised, var(--paper));
+}
+.turn-file-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 9px;
+  color: var(--accent-ink, var(--green));
+  background: var(--surface-soft);
+}
+.turn-file-meta {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+.turn-file-meta strong,
+.turn-file-meta small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.turn-file-meta strong {
+  font-weight: 600;
+}
+.turn-file-meta small {
+  font-size: 0.8em;
+  color: var(--muted);
+}
+@media (max-width: 720px) {
+  .turn-files {
+    padding-left: 0;
+  }
+}

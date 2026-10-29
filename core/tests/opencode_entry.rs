@@ -82,11 +82,25 @@ async fn a_core_that_turned_opencode_on_creates_a_local_agent_and_keeps_its_sess
     let d = until(&ws, &id, "connected", |d| d.agent.connection_state == "connected").await;
     let session = d.agent.opencode_session_id.clone().expect("the session is kept");
 
-    // Its model and permissions are OpenCode's own configuration.
-    let (status, refused) = call(&router, "POST", &format!("/api/agents/{id}/settings"), json!({"model":"x"})).await;
-    assert!(!status.is_success() && refused.to_string().contains("OpenCode"), "{status} {refused}");
-    let (_, models) = call(&router, "GET", &format!("/api/agents/{id}/models"), Value::Null).await;
-    assert_eq!(models["models"], json!([]));
+    // Its models are what its OpenCode's providers list (T-10), by name only;
+    // one of them may be chosen, and nothing else: effort and permissions
+    // stay OpenCode's own configuration.
+    let (status, models) = call(&router, "GET", &format!("/api/agents/{id}/models"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{models}");
+    let listed: Vec<&str> = models["models"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, ["deepseek/deepseek-flash", "openrouter/anthropic/claude-x"]);
+    assert!(!models.to_string().contains("fixture-secret") && !models.to_string().contains("FIXTURE_SECRET"), "{models}");
+    for (body, refusal) in [
+        (json!({"model":"x"}), "设置未保存"),
+        (json!({"model":"deepseek/deepseek-flash","effort":"high"}), "只能选择模型"),
+        (json!({"model":"deepseek/deepseek-flash","permissionMode":"auto"}), "只能选择模型"),
+    ] {
+        let (status, refused) = call(&router, "POST", &format!("/api/agents/{id}/settings"), body).await;
+        assert!(!status.is_success() && refused.to_string().contains(refusal), "{status} {refused}");
+    }
+    assert_eq!(ws.store.detail(&id).unwrap().agent.model, "");
+    let (status, saved) = call(&router, "POST", &format!("/api/agents/{id}/settings"), json!({"model":"deepseek/deepseek-flash"})).await;
+    assert_eq!((status, &saved["model"]), (StatusCode::OK, &json!("deepseek/deepseek-flash")), "{saved}");
 
     // Deleting the Agent ends its process and keeps OpenCode's own record of
     // the session, as it keeps Codex's and Claude's.
