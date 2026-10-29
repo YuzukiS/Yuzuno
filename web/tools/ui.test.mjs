@@ -6091,7 +6091,8 @@ test("Claude: /model drops an effort the new model lacks exactly as the model ch
 
 test("an OpenCode Agent at work takes a message into its running turn, not while it waits for you, and shows OpenCode's own facts", async () => {
   // Waiting for your answer to a request: nothing joins the turn.
-  const waiting = await mount({ harness: "opencode", status: "waiting", agentFields: { opencodeSessionId: "ses_0123456789" } });
+  // A connected Agent: one with its session but no connection is offered a reconnect instead.
+  const waiting = await mount({ harness: "opencode", status: "waiting", agentFields: { opencodeSessionId: "ses_0123456789", connectionState: "connected" } });
   try {
     setValue(waiting.window, waiting.document.querySelector("[data-composer-input]"), "One more thing");
     await pause();
@@ -6102,7 +6103,7 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
     assert.equal(waiting.calls.filter((call) => call.init.method === "POST").length, 0);
   } finally { waiting.close(); }
 
-  const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789" } });
+  const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789", connectionState: "connected" } });
   try {
     const field = page.document.querySelector("[data-composer-input]");
     setValue(page.window, field, "One more thing");
