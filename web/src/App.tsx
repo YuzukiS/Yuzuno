@@ -3212,7 +3212,7 @@ export function App() {
                     }
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
-                    slashCommands={previewMode || isOpenCode ? false : isClaude ? "claude" : "codex"}
+                    slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : "codex"}
                     sendKey={sendKey}
                     onChange={next => setDraft(selected, next)}
                     onSkill={skill => skill.path && setDraft(selected, current => {

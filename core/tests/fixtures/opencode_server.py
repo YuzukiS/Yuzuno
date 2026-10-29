@@ -55,11 +55,30 @@ PROVIDERS = {'providers': [
          'max': {'thinking': {'budgetTokens': 32000}, 'apiKey': SECRETS[1]}, 'high': {'reasoningEffort': 'high'}})}},
 ], 'default': {'openrouter': 'anthropic/claude-x', 'deepseek': 'deepseek-flash'}}
 
+# What `GET /config` answers (T-10): OpenCode's whole configuration. As in
+# OpenCode it holds provider keys and options (here fake) beside the commands
+# (`command`), whose templates may hold paths and shell lines; one command
+# names a model of its own and one an agent that does. `mode` replaces it.
+TEMPLATE_SECRET = 'fixture-template-secret'
+CONFIG = {
+    '$schema': 'https://opencode.ai/config.json',
+    'provider': {'deepseek': {'options': {'apiKey': SECRETS[1], 'headers': {'Authorization': f'Bearer {SECRETS[2]}'}}}},
+    'agent': {'reviewer': {'model': 'deepseek/deepseek-flash', 'mode': 'subagent', 'prompt': f'Read /home/example/{TEMPLATE_SECRET}'}},
+    'command': {
+        'explain': {'template': 'Explain $1 briefly.', 'description': 'Explain one thing'},
+        'review': {'template': f'Review $ARGUMENTS against /home/example/{TEMPLATE_SECRET}/rules.md', 'description': 'Review\na change'},
+        'status': {'template': f'!`cat /home/example/{TEMPLATE_SECRET}` Summarise the status.'},
+        'pinned': {'template': 'Answer as the pinned model.', 'description': 'Uses its own model', 'model': 'openrouter/anthropic/claude-x'},
+        'delegate': {'template': 'Investigate $ARGUMENTS', 'description': 'Ask a sub-agent', 'agent': 'reviewer', 'subtask': True},
+    },
+}
+
 lock = threading.Lock()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'abortEvidence': True,
-         'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS}
+         'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
+         'command': 'run'}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 tools = []
@@ -102,7 +121,7 @@ def load():
         counter[0] = state['counter']
 
 
-def store(session, message_id, text, files=()):
+def store(session, message_id, text, files=(), announce=True):
     info = {'id': message_id, 'sessionID': session, 'role': 'user', 'time': {'created': int(time.time() * 1000)}}
     message = {'info': info, 'parts': [{'id': new_id('prt'), 'sessionID': session, 'messageID': message_id,
                                          'type': 'text', 'text': text}]}
@@ -112,6 +131,9 @@ def store(session, message_id, text, files=()):
         # As in OpenCode, the same ID replaces the stored message.
         messages.setdefault(session, {})[message_id] = message
     save()
+    if not announce:
+        # Stored, with no event Core sees (as when its stream missed them).
+        return message
     publish('message.updated', {'sessionID': session, 'info': info})
     # As OpenCode 1.19.3 saves a prompt (`createUserMessage`): each part
     # follows, whole, a file part's `data:` URL included.
@@ -313,6 +335,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, mcp)
         if key == ('GET', 'config', 'providers'):
             return self.reply(200, modes['providers'])
+        if key == ('GET', 'config'):
+            return self.reply(200, modes['config'])
         if key == ('POST', 'mcp'):
             status = {'status': modes['mcp']}
             if modes['mcp'] == 'failed':
@@ -336,10 +360,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, [s for s in sessions.values() if s.get('parentID') == session])
         if (method, *rest) == ('POST', 'prompt_async'):
             return self.prompt(session, body)
+        if (method, *rest) == ('POST', 'command'):
+            return self.run_command(session, body)
         if (method, *rest) == ('GET', 'message'):
             stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
             return self.reply(200, stored)
         if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
+            if modes.get('failMessageReads'):
+                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: message read failed'}})
             found = messages.get(session, {}).get(rest[1])
             return self.reply(200, found) if found else self.missing(f'Message {rest[1]}')
         if (method, *rest) == ('POST', 'abort'):
@@ -401,6 +429,48 @@ class Handler(BaseHTTPRequestHandler):
         # store-then-drop and drop: the connection ends without an answer.
         self.close_connection = True
         return None
+
+    def run_command(self, session, body):
+        """As OpenCode 1.19.3's command endpoint (`handlers/session.ts`,
+        `session/prompt.ts` command): an unknown command is published as a
+        session error and refused before any message exists; a known one is
+        expanded here, stored under the given ID as a prompt is, and answered
+        only once its run has ended (an answer to it, then idle), with that
+        answer; every failure is a 400. A `subtask` command's run starts a
+        sub-agent session under this one, as the task tool does. Mode
+        `command`: `run`, `fail` (stored, then the run fails: 400),
+        `fail-unannounced` (as `fail`, with no event for the stored message)
+        or `drop` (the connection ends with nothing stored or answered).
+        `failMessageReads` makes reading one message a 500."""
+        command = modes['config'].get('command', {}).get(body.get('command'))
+        if command is None or not isinstance(body.get('arguments'), str) or not isinstance(body.get('model', ''), str):
+            error = {'name': 'UnknownError', 'data': {'message': f'Command not found: "{body.get("command")}".'}}
+            publish('session.error', {'sessionID': session, 'error': error})
+            return self.reply(400, error)
+        mode = modes['command']
+        if mode == 'drop':
+            self.close_connection = True
+            return None
+        message_id = body.get('messageID') or new_id('msg')
+        arguments = body['arguments'].split()
+        text = command['template'].replace('$ARGUMENTS', body['arguments'])
+        for n in range(1, 10):
+            text = text.replace(f'${n}', arguments[n - 1] if n <= len(arguments) else '')
+        store(session, message_id, text, announce=mode != 'fail-unannounced')
+        statuses[session] = {'type': 'busy'}
+        publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+        if command.get('subtask'):
+            agent = command.get('agent', 'general')
+            control('child', {'parentID': session, 'title': f'{command.get("description", "")} (@{agent} subagent)', 'agent': agent})
+        if mode in ('fail', 'fail-unannounced'):
+            return self.reply(400, {'name': 'UnknownError', 'data': {'message': 'fixture: the run failed'}})
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            answers = [m for m in messages.get(session, {}).values() if m['info'].get('parentID') == message_id]
+            if answers and session not in statuses:
+                return self.reply(200, answers[-1])
+            time.sleep(0.02)
+        return self.reply(400, {'name': 'UnknownError', 'data': {'message': 'fixture: no answer'}})
 
     def dispose(self):
         how = switch('dispose')
