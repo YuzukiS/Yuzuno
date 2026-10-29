@@ -265,12 +265,15 @@ try {
         assert.match(await page.locator("#item-conflict .tool-call-details").innerText(), /Reason\s*brief_rejected: version_conflict/);
         await shoot(page.locator("#item-conflict"), `${view.name}-refused-opened`);
         // An error flag on a call called completed is failed, styled and counted as one.
-        const crash = await page.locator("#item-crash > summary").evaluate((el) => ({
-          tone: el.dataset.tone, end: getComputedStyle(el.querySelector(".tool-result")).color,
-          plain: getComputedStyle(document.querySelector("#item-comment > summary .tool-call-note")).color,
-        }));
-        assert.equal(crash.tone, "failed");
-        assert.notEqual(crash.end, crash.plain, `the failure has its own colour: ${JSON.stringify(crash)}`);
+        // So is a queued mail: each in its own colour, in every theme.
+        const colours = await page.evaluate(() => {
+          const end = (id) => getComputedStyle(document.querySelector(`#item-${id} > summary .tool-result`)).color;
+          return { tone: document.querySelector("#item-crash > summary").dataset.tone, failed: end("crash"), queued: end("send"),
+            returned: end("long"), plain: getComputedStyle(document.querySelector("#item-comment > summary .tool-call-note")).color };
+        });
+        assert.equal(colours.tone, "failed");
+        assert.ok(colours.failed !== colours.returned && colours.failed !== colours.plain, `the failure has its own colour: ${JSON.stringify(colours)}`);
+        assert.ok(colours.queued !== colours.returned && colours.queued !== colours.failed, `a queued mail has its own colour: ${JSON.stringify(colours)}`);
         await shoot(page.locator("#item-crash"), `${view.name}-error-flag`);
         await page.locator("#item-conflict > summary").click();
         record(`${view.name}: a click opens the row with its facts and no tip`);

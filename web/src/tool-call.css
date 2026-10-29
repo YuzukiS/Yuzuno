@@ -52,13 +52,15 @@
   border-color: color-mix(in srgb, var(--error-ink, #a37961) 42%, transparent);
   background-color: color-mix(in srgb, var(--error-ink, #a37961) 8%, transparent);
 }
-.tool-call:is([data-tone="failed"], [data-tone="refused"]) :is(.tool-result, .tool-call-note) {
+/* Scoped to the row, so the dark and palette themes' quiet colour for every
+   tool result (appearance.css) does not take a failure's colour away. */
+.tool-item > summary.tool-call:is([data-tone="failed"], [data-tone="refused"]) :is(.tool-result, .tool-call-note) {
   color: var(--error-ink, #a37961);
 }
 .tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) {
   border-color: color-mix(in srgb, var(--accent-ink, #786637) 38%, transparent);
 }
-.tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
+.tool-item > summary.tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
   color: var(--accent-ink, #786637);
 }
 .tool-call[data-to-expand] .tool-call-note {
