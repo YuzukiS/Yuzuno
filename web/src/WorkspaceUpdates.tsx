@@ -21,6 +21,7 @@ import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
 import { InputPreferencesSection } from "./InputPreferences";
+import { PortalPreferencesSection } from "./portal/PortalPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { TimePreferencesSection } from "./TimePreferences";
@@ -1030,7 +1031,12 @@ export function WorkspaceUpdates({
               <SharedAppearanceSection active={open && visible} />
             </>
           )}
-          {tab === "input" && <InputPreferencesSection />}
+          {tab === "input" && (
+            <>
+              <InputPreferencesSection />
+              <PortalPreferencesSection />
+            </>
+          )}
           {tab === "time" && <TimePreferencesSection />}
           {tab === "language" && <LanguagePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}

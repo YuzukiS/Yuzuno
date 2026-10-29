@@ -215,6 +215,9 @@ pub struct Access {
     /// The HTTP status the last check got.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    /// Whether that answer lets another origin frame the page (T-5's Portal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framing: Option<Framing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub since: String,
@@ -244,9 +247,65 @@ pub enum State {
     Disconnected,
 }
 
+/// Whether a service's page may be framed by another origin, from the
+/// headers of the answer its check got. Read only: the relay passes every
+/// header on unchanged, and the Portal opens a page that refuses framing in
+/// the browser instead.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Framing {
+    /// Neither X-Frame-Options nor a CSP frame-ancestors, or frame-ancestors * in every policy that has one.
+    Allowed,
+    /// X-Frame-Options, or a policy whose frame-ancestors is 'none' or 'self' only.
+    Blocked,
+    /// A frame-ancestors names origins: the page's own may or may not be one.
+    Restricted,
+    /// The answer's headers did not arrive whole in time.
+    Unknown,
+}
+
+/// `Framing` from a response head, as browsers enforce it. Every CSP policy
+/// (each header, and each comma-separated policy within one) is enforced on
+/// its own, so a page may be framed only where every policy with a
+/// frame-ancestors allows it: one that blocks blocks, one naming origins
+/// restricts, `*` alone allows. Within a policy the first frame-ancestors
+/// counts. A frame-ancestors anywhere makes browsers ignore
+/// X-Frame-Options; a report-only policy decides nothing.
+fn framing(head: &str) -> Framing {
+    let headers = || head.split("\r\n").skip(1).filter_map(|line| line.split_once(':')).map(|(n, v)| (n.trim(), v.trim()));
+    let mut seen = false;
+    let mut restricted = false;
+    for policy in headers()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-security-policy"))
+        .flat_map(|(_, value)| value.split(',').collect::<Vec<_>>())
+    {
+        let Some(sources) = policy.split(';').find_map(|directive| {
+            let mut words = directive.split_whitespace();
+            words.next().filter(|n| n.eq_ignore_ascii_case("frame-ancestors"))?;
+            Some(words.map(str::to_ascii_lowercase).collect::<Vec<_>>())
+        }) else { continue };
+        seen = true;
+        if sources.iter().any(|s| s == "*") {
+            continue;
+        }
+        if sources.iter().all(|s| s == "'none'" || s == "'self'") {
+            return Framing::Blocked;
+        }
+        restricted = true;
+    }
+    if seen {
+        return if restricted { Framing::Restricted } else { Framing::Allowed };
+    }
+    if headers().any(|(name, _)| name.eq_ignore_ascii_case("x-frame-options")) {
+        Framing::Blocked
+    } else {
+        Framing::Allowed
+    }
+}
+
 impl Access {
     fn new(state: State, local_port: Option<u16>, reason: Option<String>) -> Self {
-        Self { state, local_port, http_status: None, reason, since: now() }
+        Self { state, local_port, http_status: None, framing: None, reason, since: now() }
     }
 }
 
@@ -375,7 +434,7 @@ impl Runtime {
     /// A port of the range for this service: the one it had last if it is
     /// free, else the first free one. Never the service's own port (a service
     /// on this host whose port is in the range would be relayed to itself).
-    async fn listen(&self, id: &str, service_port: u16) -> std::result::Result<TcpListener, String> {
+    pub(crate) async fn listen(&self, id: &str, service_port: u16) -> std::result::Result<TcpListener, String> {
         let range = self.ports.lock().unwrap().clone();
         let last = self.assigned.lock().unwrap().get(id).copied();
         for port in last.into_iter().chain(range.clone()) {
@@ -393,7 +452,7 @@ impl Runtime {
 
 /// What one HTTP request on the way found.
 pub(crate) enum Probe {
-    Http(u16),
+    Http(u16, Framing),
     Refused(String),
     Silent(String),
 }
@@ -421,23 +480,27 @@ pub(crate) async fn probe(port: u16, path: &str) -> Probe {
     if let Err(error) = stream.write_all(request.as_bytes()).await {
         return closed(error);
     }
-    // TCP keeps no write boundaries: read until the status line ends (64
-    // bytes hold one), the service closes, or the time is up.
-    let mut head = [0u8; 64];
-    let mut got = 0;
+    // TCP keeps no write boundaries: read until the head ends (its headers,
+    // for `framing`, at most 16 KiB), the service closes, or the time is up.
+    // A status line that never completes is no HTTP answer.
     let deadline = Instant::now() + PROBE_TIMEOUT;
-    while got < head.len() && !head[..got].contains(&b'\n') {
-        match tokio::time::timeout_at(deadline, stream.read(&mut head[got..])).await {
-            Err(_) if got == 0 => return Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
-            Err(_) => return Probe::Silent(format!("no complete HTTP status line within {} s", PROBE_TIMEOUT.as_secs())),
-            Ok(Err(error)) if got == 0 => return closed(error),
-            Ok(Ok(0)) if got == 0 => return Probe::Silent(CLOSED.into()),
-            // Closed after some bytes: judge those.
-            Ok(Err(_)) | Ok(Ok(0)) => break,
-            Ok(Ok(n)) => got += n,
+    let mut head = Vec::with_capacity(1024);
+    let mut buffer = [0u8; 1024];
+    while head.len() < 16 * 1024 && !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        match tokio::time::timeout_at(deadline, stream.read(&mut buffer)).await {
+            Err(_) if head.is_empty() => return Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
+            Err(_) if !head.contains(&b'\n') => {
+                return Probe::Silent(format!("no complete HTTP status line within {} s", PROBE_TIMEOUT.as_secs()))
+            }
+            Ok(Err(error)) if head.is_empty() => return closed(error),
+            Ok(Ok(0)) if head.is_empty() => return Probe::Silent(CLOSED.into()),
+            // Closed, or out of time after the status line: judge what came.
+            Err(_) | Ok(Err(_)) | Ok(Ok(0)) => break,
+            Ok(Ok(n)) => head.extend_from_slice(&buffer[..n]),
         }
     }
-    let text = String::from_utf8_lossy(&head[..got]);
+    let text = String::from_utf8_lossy(&head);
+    let whole = text.find("\r\n\r\n").map(|end| &text[..end]);
     let line = text.lines().next().unwrap_or_default();
     match line
         .strip_prefix("HTTP/")
@@ -445,14 +508,14 @@ pub(crate) async fn probe(port: u16, path: &str) -> Probe {
         .filter(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|code| code.parse().ok())
     {
-        Some(code) => Probe::Http(code),
+        Some(code) => Probe::Http(code, whole.map_or(Framing::Unknown, framing)),
         None => Probe::Silent("it answered, but not with HTTP".into()),
     }
 }
 
 fn judged(probe: Probe, local_port: u16) -> Access {
     match probe {
-        Probe::Http(code) => Access { http_status: Some(code), ..Access::new(State::Available, Some(local_port), None) },
+        Probe::Http(code, framing) => Access { http_status: Some(code), framing: Some(framing), ..Access::new(State::Available, Some(local_port), None) },
         Probe::Refused(reason) => Access::new(State::NotRunning, Some(local_port), Some(reason)),
         Probe::Silent(reason) => Access::new(State::NotReady, Some(local_port), Some(reason)),
     }

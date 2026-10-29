@@ -29,6 +29,7 @@ test("the page reaches the screen's edges, keeping its other viewport settings",
 test("the app is padded by the safe-area insets, which are zero elsewhere", () => {
   for (const side of ["top", "right", "bottom", "left"])
     assert.match(css, new RegExp(`--safe-${side}:\\s*env\\(safe-area-inset-${side},\\s*0(px)?\\)`), side);
-  const app = css.match(/\.app\{[^}]*\}/)?.[0] ?? "";
+  // The rule for .app itself, not one for .app under another selector (the Portal's, T-5).
+  const app = css.match(/(?:^|[{}])\.app\{[^}]*\}/)?.[0] ?? "";
   assert.match(app, /padding:\s*var\(--safe-top\)\s+var\(--safe-right\)\s+var\(--safe-bottom\)\s+var\(--safe-left\)/, app);
 });
