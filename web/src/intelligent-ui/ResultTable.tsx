@@ -8,9 +8,39 @@ import {
   useReactTable,
   type ColumnDef,
 } from "@tanstack/react-table";
+import { strings, useStrings } from "../i18n";
 import type { TableProps } from "./spec";
 import { emptyView, useResult } from "./ResultContext";
 import { SourceLinks } from "./SourceLinks";
+
+// The table's own words (T-189); titles, labels and cells as written.
+const text = strings({
+  filter: (title: string) => `Filter ${title}`,
+  filterHint: "Filter…",
+  clearFilter: (title: string) => `Clear filter ${title}`,
+  region: (title: string) => `${title} table`,
+  select: "Select",
+  selectRow: (name: string) => `Select ${name}`,
+  sources: "Sources",
+  noMatches: "No matches. Try another filter.",
+  noRows: "No rows were provided.",
+  count: (shown: number, total: number) => `${shown} of ${total} rows`,
+  selected: (count: number) => `${count} selected`,
+  clearSelection: "Clear selection",
+}, {
+  filter: (title) => `筛选${title}`,
+  filterHint: "筛选…",
+  clearFilter: (title) => `清除${title}的筛选`,
+  region: (title) => `${title}表格`,
+  select: "选择",
+  selectRow: (name) => `选择 ${name}`,
+  sources: "来源",
+  noMatches: "没有匹配的行，换个筛选词试试。",
+  noRows: "没有提供任何行。",
+  count: (shown, total) => `${shown} / ${total} 行`,
+  selected: (count) => `已选 ${count} 行`,
+  clearSelection: "清除选择",
+});
 
 export function ResultTable({
   id,
@@ -19,6 +49,7 @@ export function ResultTable({
   columns: definitions,
   selectable = false,
 }: TableProps) {
+  const t = useStrings(text);
   const { views, update } = useResult();
   const view = views[id] || emptyView;
   const columns = useMemo<ColumnDef<TableProps["rows"][number]>[]>(
@@ -60,8 +91,8 @@ export function ResultTable({
         <label className="result-filter">
           <Search size={14} aria-hidden="true" />
           <input
-            aria-label={`Filter ${title}`}
-            placeholder="Filter…"
+            aria-label={t.filter(title)}
+            placeholder={t.filterHint}
             value={view.filter}
             maxLength={200}
             onChange={(event) => update(id, { filter: event.target.value })}
@@ -69,7 +100,7 @@ export function ResultTable({
           {view.filter && (
             <button
               type="button"
-              aria-label={`Clear filter ${title}`}
+              aria-label={t.clearFilter(title)}
               onClick={() => update(id, { filter: "" })}
             >
               <X size={13} />
@@ -81,7 +112,7 @@ export function ResultTable({
         className="result-table-scroll"
         tabIndex={0}
         role="region"
-        aria-label={`${title} table`}
+        aria-label={t.region(title)}
       >
         <table>
           <thead>
@@ -89,7 +120,7 @@ export function ResultTable({
               <tr key={group.id}>
                 {selectable && (
                   <th scope="col">
-                    <span className="sr-only">Select</span>
+                    <span className="sr-only">{t.select}</span>
                   </th>
                 )}
                 {group.headers.map((header) => (
@@ -122,7 +153,7 @@ export function ResultTable({
                     </button>
                   </th>
                 ))}
-                {hasSources && <th scope="col">Sources</th>}
+                {hasSources && <th scope="col">{t.sources}</th>}
               </tr>
             ))}
           </thead>
@@ -136,7 +167,7 @@ export function ResultTable({
                   <td>
                     <input
                       type="checkbox"
-                      aria-label={`Select ${row.original.cells[definitions[0].key] ?? row.id}`}
+                      aria-label={t.selectRow(String(row.original.cells[definitions[0].key] ?? row.id))}
                       checked={validSelected.includes(row.id)}
                       onChange={(event) =>
                         update(id, {
@@ -164,19 +195,17 @@ export function ResultTable({
         </table>
         {!visibleRows.length && (
           <p className="result-empty">
-            {rows.length
-              ? "No matches. Try another filter."
-              : "No rows were provided."}
+            {rows.length ? t.noMatches : t.noRows}
           </p>
         )}
       </div>
       <div className="result-table-caption">
         <span>
-          {visibleRows.length} of {rows.length} rows
+          {t.count(visibleRows.length, rows.length)}
         </span>
         {selectable && (
           <span>
-            {validSelected.length} selected
+            {t.selected(validSelected.length)}
             {validSelected.length > 0 && (
               <>
                 {" "}
@@ -185,7 +214,7 @@ export function ResultTable({
                   type="button"
                   onClick={() => update(id, { selected: [] })}
                 >
-                  Clear selection
+                  {t.clearSelection}
                 </button>
               </>
             )}
