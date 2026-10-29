@@ -1066,6 +1066,8 @@ test("tool counts distinguish native kinds, named MCP tools and Claude tools", a
     { id: "mcp2", type: "mcpToolCall", server: "docs", tool: "search" },
     { id: "mcp3", type: "mcpToolCall", server: "docs", tool: "fetch" },
     { id: "mcp4", type: "mcpToolCall", server: "other", tool: "search" },
+    { id: "mcp5", type: "mcpToolCall", tool: "lookup" },
+    { id: "mcp6", type: "mcpToolCall", server: "docs" },
     { id: "bash", type: "claudeToolUse", name: "Bash" },
     { id: "read1", type: "claudeToolUse", name: "Read" },
     { id: "read2", type: "claudeToolUse", name: "Read" },
@@ -1075,7 +1077,18 @@ test("tool counts distinguish native kinds, named MCP tools and Claude tools", a
     // The name and the number; what the calls reported is tool-capsules-ui's.
     const labels = () => [...page.document.querySelectorAll('[data-turn-id="counts"] .tool-count')]
       .map(el => el.querySelector(".tool-count-name").textContent + el.querySelector(".tool-count-number").textContent);
-    assert.deepEqual(labels(), ["Shell×2", "Edit×1", "docs/search×2", "docs/fetch×1", "other/search×1", "Bash×1", "Read×2"]);
+    assert.deepEqual(labels(), ["Shell×2", "Edit×1", "docs/search×2", "docs/fetch×1", "other/search×1", "lookup×1", "MCP tool×1", "Bash×1", "Read×2"]);
+    // Each Codex MCP row is named as the summary names it (T-9).
+    const group = page.document.querySelector('[data-turn-id="counts"] .tool-activity');
+    if (!group.open) { group.querySelector("summary").click(); await pause(); }
+    const row = (id) => page.document.querySelector(`[data-turn-id="counts"] [id="item-${id}"] > summary > span:first-of-type`);
+    for (const [id, name] of [["mcp1", "docs/search"], ["mcp3", "docs/fetch"], ["mcp5", "lookup"]]) {
+      assert.equal(row(id).textContent, name);
+      assert.equal(row(id).querySelector("strong")?.textContent, name);
+      assert.equal(row(id).title, name);
+    }
+    assert.equal(row("mcp6").textContent, "MCP tool");
+    assert.equal(row("mcp6").getAttribute("title"), null);
     turn.items[0].status = "completed";
     turn.items[0].aggregatedOutput = "New output must not count as a new call";
     page.window.dispatchEvent(new page.window.Event("focus"));

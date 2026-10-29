@@ -48,7 +48,7 @@ import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
-import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts } from "./conversation-blocks";
+import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts, toolLabel } from "./conversation-blocks";
 import { deliveryNote } from "./delivery-note";
 import { SubAgentAnchors } from "./SubAgentPanels";
 import { ActivityElapsed } from "./ActivityElapsed";
@@ -512,6 +512,7 @@ function ToolItem({
 }) {
   const view = useFullItem(agentId, turnId, preview);
   const t = useStrings(turnWords);
+  const language = useLanguage();
   // A Codex plan is what Plan mode is for: open unless the reader closes it.
   const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${preview.id}`, preview.type === "plan");
   const item = view.item;
@@ -523,15 +524,20 @@ function ToolItem({
   const isFile = item.type === "fileChange";
   const unconfirmed = executionUnconfirmed && /inProgress|running/.test(item.status || "");
   const running = !executionUnconfirmed && /inProgress|running/.test(item.status || "");
-  const label = isCommand
-    ? item.command
+  const own = isCommand
+    ? item.command ?? ""
     : isFile
       ? t.fileChanges(item.changes?.length || 0)
       : item.type === "reasoning"
         ? t.reasoning
         : item.type === "enteredReviewMode"
           ? t.codexReview(item.review)
-          : item.type.replace(/([A-Z])/g, " $1");
+          : null;
+  // Any other call by what it names, as its group's summary names it: an MCP
+  // call's server and tool, in full on hover when the row cuts it short.
+  const tool = own === null ? toolLabel(item, language) : null;
+  const label = own ?? tool!.label;
+  const named = !!tool?.named;
   return (
     <details className="tool-item" id={`item-${item.id}`} data-running={running || undefined}
       open={opened} onToggle={event => {
@@ -540,7 +546,7 @@ function ToolItem({
       <summary>
         <ChevronRight size={12} />
         {isCommand ? <SquareTerminal size={14} /> : <FileCode2 size={14} />}
-        <span>{label}</span>
+        <span title={named ? label : undefined}>{named ? <strong>{label}</strong> : label}</span>
         <span className="tool-result" title={unconfirmed ? t.unconfirmedTitle : undefined}>
           {item.exitCode != null ? t.exit(item.exitCode) : unconfirmed ? t.unconfirmed : item.status || ""}
         </span>
