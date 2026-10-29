@@ -704,8 +704,10 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
     let session = lab.session();
     let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
     assert_eq!(catalog["models"], json!([
-        {"id":"deepseek/deepseek-flash","model":"deepseek/deepseek-flash","displayName":"DeepSeek · DeepSeek Flash","description":null},
-        {"id":"openrouter/anthropic/claude-x","model":"openrouter/anthropic/claude-x","displayName":"OpenRouter · Claude X","description":"beta"},
+        {"id":"deepseek/deepseek-flash","model":"deepseek/deepseek-flash","displayName":"DeepSeek · DeepSeek Flash","description":null,
+         "variants":["high","max"]},
+        {"id":"openrouter/anthropic/claude-x","model":"openrouter/anthropic/claude-x","displayName":"OpenRouter · Claude X","description":"beta",
+         "variants":[]},
     ]));
 
     // Only a model OpenCode lists is saved.
@@ -753,6 +755,61 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
     assert!(ws.opencode_agent_catalog(ID).await.unwrap_err().to_string().contains("尚未连接"));
     assert!(ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap_err().to_string().contains("尚未连接"));
     assert_eq!(ws.opencode_set_model(ID, String::new()).await.unwrap().model, "", "OpenCode's default needs no list");
+}
+
+/// A chosen model's variant (T-10), by the name OpenCode lists it under,
+/// goes with the next messages; without one nothing is sent for it, as
+/// before. One the model does not list, or a variant without a model, is
+/// refused on saving, and one OpenCode no longer lists refuses the message
+/// before anything is sent: OpenCode itself would apply nothing for it and
+/// say nothing. What a variant sets is never kept.
+#[tokio::test]
+async fn a_variant_the_chosen_model_lists_goes_with_the_next_messages() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let choose = |model: &str, variant: Option<&str>| lab.ws.opencode_set_choice(ID, model.into(), Some(variant.map(str::to_owned)));
+    for (model, variant, refusal) in [
+        ("deepseek/deepseek-flash", "low", "设置未保存"),
+        ("openrouter/anthropic/claude-x", "high", "设置未保存"),
+        ("", "high", "设置未保存"),
+    ] {
+        let refused = choose(model, Some(variant)).await.unwrap_err().to_string();
+        assert!(refused.contains(refusal), "{model} {variant}: {refused}");
+    }
+    let d = lab.detail();
+    assert_eq!((d.agent.model.as_str(), d.agent.settings.reasoning_effort.as_deref()), ("", None), "nothing was saved");
+    let chosen = choose("deepseek/deepseek-flash", Some("max")).await.unwrap();
+    assert_eq!((chosen.model.as_str(), chosen.settings.reasoning_effort.as_deref()), ("deepseek/deepseek-flash", Some("max")));
+    // Choosing the model alone keeps it.
+    assert_eq!(lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap().settings.reasoning_effort.as_deref(), Some("max"));
+
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    let body = &lab.prompts()[0]["body"];
+    assert_eq!((&body["model"], &body["variant"]), (&json!({"providerID":"deepseek","modelID":"deepseek-flash"}), &json!("max")));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+
+    // OpenCode's own variant again: none is sent.
+    choose("deepseek/deepseek-flash", None).await.unwrap();
+    let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.prompts()[1]["body"].get("variant"), None);
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
+
+    // A variant OpenCode no longer lists: refused before anything is sent.
+    choose("deepseek/deepseek-flash", Some("max")).await.unwrap();
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    for provider in providers["providers"].as_array_mut().unwrap().iter_mut().filter(|p| p["id"] == "deepseek") {
+        provider["models"]["deepseek-flash"]["variants"].as_object_mut().unwrap().remove("max");
+    }
+    lab.control("mode", json!({"providers":providers})).await;
+    let gone = lab.send("c3", "third").await.unwrap_err().to_string();
+    assert!(gone.contains("所选变体 max") && gone.contains("没有发送"), "{gone}");
+    assert_eq!(lab.prompts().len(), 2, "nothing was sent");
+    assert!(lab.detail().message_receipts.iter().all(|r| r.input.client_message_id != "c3"), "no receipt was recorded");
+    // What a variant sets (here, a fake key among its options) is nowhere in Core's data.
+    assert_eq!(holds_a_secret(&lab.dir.path().join("data")), None);
+    lab.ws.close_agent(ID).await.unwrap();
 }
 
 #[tokio::test]

@@ -189,36 +189,54 @@ test("a sub-agent's request names the sub-agent that asks, and is answered as an
   } finally { own.close(); }
 });
 
-test("an OpenCode Agent's settings choose only its model, from what its OpenCode lists (T-10)", async () => {
+test("an OpenCode Agent's settings choose only its model and that model's variant, from what its OpenCode lists (T-10)", async () => {
   const listed = [
-    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek Flash", description: null },
-    { id: "openrouter/anthropic/claude-x", model: "openrouter/anthropic/claude-x", displayName: "OpenRouter · Claude X", description: "beta" },
+    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek Flash", description: null, variants: ["high", "max"] },
+    { id: "openrouter/anthropic/claude-x", model: "openrouter/anthropic/claude-x", displayName: "OpenRouter · Claude X", description: "beta", variants: [] },
   ];
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
   const page = mount((url, init) => url.endsWith("/agents/oc/models") ? { models: listed, opencode: { version: "1.19.3" } }
     : url.endsWith("/agents/oc/settings") ? { ...agent, model: JSON.parse(init.body).model } : undefined);
+  const save = async () => {
+    page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await tick(); await tick();
+  };
+  const saved = () => page.calls.filter((call) => call.url.endsWith("/agents/oc/settings")).map((call) => call.body);
   try {
     page.window.renderSettings({ agent, onSaved() {} }); await tick();
     const opener = page.document.querySelector(".agent-settings-button");
     assert.ok(opener !== null, "OpenCode has the settings button");
-    assert.equal(opener.title, "OpenCode model");
-    assert.equal(opener.textContent.trim(), "Model");
+    assert.equal(opener.title, "OpenCode model and variant");
+    assert.equal(opener.textContent.trim(), "Model & variant");
     opener.click(); await tick(); await tick();
     const dialog = page.document.querySelector('[role="dialog"]');
     assert.ok(dialog !== null, "the dialog opens");
-    assert.match(dialog.textContent, /Reasoning and permissions stay OpenCode’s own configuration/);
+    assert.match(dialog.textContent, /Permissions stay OpenCode’s own configuration/);
     assert.ok(page.calls.some((call) => call.url.endsWith("/agents/oc/models")), "its own OpenCode's models are read");
-    const offered = [...group(page, "Model").querySelectorAll("input")].map((input) => input.value);
-    assert.deepEqual(offered, ["", "deepseek/deepseek-flash", "openrouter/anthropic/claude-x"], "OpenCode's default, then its list");
-    assert.equal(group(page, "Reasoning effort"), null, "no effort");
-    assert.equal(group(page, "Approvals"), null, "no approvals");
-    assert.equal(page.document.querySelector(".codex-context-settings"), null, "no context settings");
+    const offered = (label) => [...(group(page, label)?.querySelectorAll("input") || [])].map((input) => input.value);
+    assert.deepEqual(offered("Model"), ["", "deepseek/deepseek-flash", "openrouter/anthropic/claude-x"], "OpenCode's default, then its list");
+    assert.ok(group(page, "Reasoning effort") === null, "no effort");
+    assert.ok(group(page, "Approvals") === null, "no approvals");
+    assert.ok(page.document.querySelector(".codex-context-settings") === null, "no context settings");
+    assert.ok(group(page, "Variant") === null, "OpenCode's default model offers no variant");
+
+    // A model with variants: OpenCode's default, then its variants; one chosen goes with the model.
+    choice(page, "Model", "deepseek/deepseek-flash").click(); await tick();
+    assert.deepEqual(offered("Variant"), ["", "high", "max"]);
+    choice(page, "Variant", "max").click(); await tick();
+    await save();
+    assert.deepEqual(saved().at(-1), { model: "deepseek/deepseek-flash", effort: "max" });
+
+    // A model without it drops the variant back to the default, and says so.
+    // Saving closed the dialog; it opens again on the Agent as saved.
+    page.window.renderSettings({ agent: { ...agent, model: "deepseek/deepseek-flash", settings: { reasoningEffort: "max" } }, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click(); await tick(); await tick();
+    assert.ok(choice(page, "Variant", "max")?.checked, "the saved variant is shown");
     choice(page, "Model", "openrouter/anthropic/claude-x").click(); await tick();
-    page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
-    await tick(); await tick();
-    const saved = page.calls.filter((call) => call.url.endsWith("/agents/oc/settings"));
-    assert.equal(saved.length, 1);
-    assert.deepEqual(saved[0].body, { model: "openrouter/anthropic/claude-x" }, "the model alone");
+    assert.ok(group(page, "Variant") === null, "Claude X lists no variant");
+    assert.match(page.document.body.textContent, /OpenRouter · Claude X does not list variant max; it is back to the default/);
+    await save();
+    assert.deepEqual(saved().at(-1), { model: "openrouter/anthropic/claude-x", effort: null }, "the model, and OpenCode's own variant");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

@@ -1124,11 +1124,12 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
     let harness = ws.listed(&id).await?.harness;
     if harness == "opencode" {
-        // Only the model (T-10); effort and permissions stay OpenCode's own configuration's.
-        if input.settings.is_some() || input.effort.is_some() || input.permission_mode.is_some() {
-            return Err(anyhow::anyhow!("OpenCode Agent 这里只能选择模型；推理和权限仍来自 OpenCode 自己的配置").into());
+        // The model and its variant only (T-10, `effort` names the variant);
+        // permissions stay OpenCode's own configuration's.
+        if input.settings.is_some() || input.permission_mode.is_some() {
+            return Err(anyhow::anyhow!("OpenCode Agent 这里只能选择模型和变体；权限仍来自 OpenCode 自己的配置").into());
         }
-        return Ok(Json(serde_json::to_value(ws.opencode_set_model(&id, input.model).await?)?));
+        return Ok(Json(serde_json::to_value(ws.opencode_set_choice(&id, input.model, input.effort).await?)?));
     }
     let agent = if harness == "claude" {
         if input.settings.is_some() { return Err(anyhow::anyhow!("Claude 模型设置不接受 Codex 权限或推理参数").into()); }
