@@ -10,13 +10,90 @@ fn only_listening_sockets_that_take_a_loopback_connection_on_the_port_count() {
    3: 0101A8C0:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 444 1 0000000000000000 100 0 0 10 0
    4: 0100007F:1436 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 555 1 0000000000000000 100 0 0 10 0";
     // 127.0.0.1 and 0.0.0.0 listening on 0x1435; not the connection, not 192.168.1.1, not another port.
-    assert_eq!(parse_listeners(tcp, 0x1435), HashSet::from([111, 222]));
+    assert_eq!(parse_listeners(tcp, 0x1435), vec![(Bound::Loopback, 111), (Bound::AnyV4, 222)]);
     let tcp6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000000000000:1435 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 666 1 0000000000000000 100 0 0 10 0
    1: 00000000000000000000000001000000:1435 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 777 1 0000000000000000 100 0 0 10 0
    2: 0000000000000000FFFF00000100007F:1435 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 888 1 0000000000000000 100 0 0 10 0";
-    // :: and ::ffff:127.0.0.1 take 127.0.0.1; ::1 does not.
-    assert_eq!(parse_listeners(tcp6, 0x1435), HashSet::from([666, 888]));
+    // :: and ::ffff:127.0.0.1 may take 127.0.0.1; ::1 never does.
+    assert_eq!(parse_listeners(tcp6, 0x1435), vec![(Bound::AnyV6, 666), (Bound::MappedLoopback, 888)]);
+}
+
+#[test]
+fn a_connection_to_127_0_0_1_reaches_the_most_specific_ipv4_listener_first() {
+    // No connection is made while an IPv4 listener decides it (port 9 is never asked).
+    let all = [(Bound::AnyV6, 1), (Bound::AnyV4, 2), (Bound::Loopback, 3)];
+    assert_eq!(reached(&all, 9), Some(HashSet::from([3])));
+    assert_eq!(reached(&all[..2], 9), Some(HashSet::from([2])), "a :: beside 0.0.0.0 is IPv6-only or loses to it");
+    assert_eq!(reached(&[(Bound::AnyV6, 1), (Bound::MappedLoopback, 4)], 9), Some(HashSet::from([4])));
+    assert_eq!(reached(&[], 9), Some(HashSet::new()));
+}
+
+/// An IPv6-only (IPV6_V6ONLY) socket listening on [::]:port; None where this
+/// host has no IPv6.
+fn v6only_listener(port: u16) -> Option<std::net::TcpListener> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: plain socket calls on a descriptor this function owns until
+    // the TcpListener takes it.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET6, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return None;
+        }
+        let one: libc::c_int = 1;
+        let size = std::mem::size_of_val(&one) as libc::socklen_t;
+        assert_eq!(libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, &one as *const _ as *const libc::c_void, size), 0);
+        let mut address: libc::sockaddr_in6 = std::mem::zeroed();
+        address.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+        address.sin6_port = port.to_be();
+        let length = std::mem::size_of_val(&address) as libc::socklen_t;
+        let bound = libc::bind(fd, &address as *const _ as *const libc::sockaddr, length);
+        assert_eq!(bound, 0, "bind [::]:{port}: {}", std::io::Error::last_os_error());
+        assert_eq!(libc::listen(fd, 8), 0);
+        Some(std::net::TcpListener::from_raw_fd(fd))
+    }
+}
+
+/// This test process's own cgroup (v2) and boot, to stand for a Job.
+fn own_group() -> Option<(String, String)> {
+    let group = std::fs::read_to_string("/proc/self/cgroup").ok()?.lines().find_map(|l| l.strip_prefix("0::").map(str::to_owned))?;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?.trim().to_owned();
+    Some((group, boot))
+}
+
+#[test]
+fn an_ipv6_only_wildcard_never_counts_for_127_0_0_1() {
+    let Some((group, boot)) = own_group() else {
+        eprintln!("no cgroup v2 here: the ownership check is not exercised");
+        return;
+    };
+    let data = tempfile::tempdir().unwrap();
+    let job = started(data.path(), &group, &boot);
+    // The Job serves 127.0.0.1; an IPv6-only :: on the same port (anyone's)
+    // takes no IPv4 connection, so it can't make the Job's listener another's.
+    let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = v4.local_addr().unwrap().port();
+    let Some(v6) = v6only_listener(port) else {
+        eprintln!("no IPv6 here: the IPv6-only case is not exercised");
+        return;
+    };
+    let all = listening(port).unwrap();
+    assert_eq!(all.len(), 2, "{all:?}");
+    let ipv4: HashSet<u64> = all.iter().filter(|(b, _)| *b == Bound::Loopback).map(|(_, i)| *i).collect();
+    assert_eq!(reached(&all, port), Some(ipv4));
+    assert_eq!(owner(data.path(), &job, port), Owner::Verified);
+    // Alone, the IPv6-only :: is not listening for 127.0.0.1, even when the
+    // Job holds it.
+    drop(v4);
+    assert_eq!(reached(&listening(port).unwrap(), port), Some(HashSet::new()));
+    assert_eq!(owner(data.path(), &job, port), Owner::NotListening);
+    drop(v6);
+    // A dual-stack :: does take 127.0.0.1: one connection tells.
+    if std::fs::read_to_string("/proc/sys/net/ipv6/bindv6only").map(|v| v.trim() == "0").unwrap_or(false) {
+        let dual = std::net::TcpListener::bind("[::]:0").unwrap();
+        let port = dual.local_addr().unwrap().port();
+        assert_eq!(owner(data.path(), &job, port), Owner::Verified);
+    }
 }
 
 /// A Job folder whose start record names `group` on `boot`.

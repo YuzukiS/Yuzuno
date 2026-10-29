@@ -339,6 +339,7 @@ pub(crate) enum Owner {
 /// it holds beside another process's is `OtherProcess`.
 pub(crate) fn owner(data: &Path, job: &Value, port: u16) -> Owner {
     let Ok(listeners) = listening(port) else { return Owner::Unknown };
+    let Some(listeners) = reached(&listeners, port) else { return Owner::Unknown };
     if listeners.is_empty() {
         return Owner::NotListening;
     }
@@ -368,48 +369,86 @@ pub(crate) fn owner(data: &Path, job: &Value, port: u16) -> Owner {
     }
 }
 
-/// The socket inodes listening on `port` where a connection to 127.0.0.1
-/// arrives: 127.0.0.1, 0.0.0.0, :: and ::ffff:127.0.0.1.
-fn listening(port: u16) -> std::io::Result<HashSet<u64>> {
-    let mut inodes = HashSet::new();
+/// Where a socket listening on the port is bound, of the addresses a
+/// connection to 127.0.0.1 can arrive at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bound {
+    Loopback,
+    AnyV4,
+    MappedLoopback,
+    AnyV6,
+}
+
+/// The sockets listening on `port` at 127.0.0.1, 0.0.0.0, ::ffff:127.0.0.1
+/// or ::, with their inodes.
+fn listening(port: u16) -> std::io::Result<Vec<(Bound, u64)>> {
+    let mut found = Vec::new();
     for file in ["/proc/net/tcp", "/proc/net/tcp6"] {
         match std::fs::read_to_string(file) {
-            Ok(text) => inodes.extend(parse_listeners(&text, port)),
+            Ok(text) => found.extend(parse_listeners(&text, port)),
             // A kernel without IPv6 has no tcp6.
             Err(e) if file.ends_with('6') && e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
     }
-    Ok(inodes)
+    Ok(found)
+}
+
+/// How long a connection to 127.0.0.1 may take to tell whether a lone ::
+/// takes IPv4: a local one is answered at once unless its backlog is full.
+const V4_CHECK: Duration = Duration::from_millis(300);
+
+/// The listening sockets a connection to 127.0.0.1:port reaches, as Linux
+/// picks: 127.0.0.1, else 0.0.0.0, else ::ffff:127.0.0.1, else ::. A :: that
+/// is IPv6-only (IPV6_V6ONLY) takes no IPv4 at all. Beside an IPv4 listener
+/// a :: on the same port is IPv6-only (or loses to it), so it is left out.
+/// /proc doesn't say whether a lone :: is IPv6-only; one connection to
+/// 127.0.0.1 tells. None: that could not be told.
+fn reached(listeners: &[(Bound, u64)], port: u16) -> Option<HashSet<u64>> {
+    let at = |bound: Bound| -> HashSet<u64> { listeners.iter().filter(|(b, _)| *b == bound).map(|(_, inode)| *inode).collect() };
+    for bound in [Bound::Loopback, Bound::AnyV4, Bound::MappedLoopback] {
+        let inodes = at(bound);
+        if !inodes.is_empty() {
+            return Some(inodes);
+        }
+    }
+    let wildcard = at(Bound::AnyV6);
+    if wildcard.is_empty() {
+        return Some(wildcard);
+    }
+    match std::net::TcpStream::connect_timeout(&(std::net::Ipv4Addr::LOCALHOST, port).into(), V4_CHECK) {
+        Ok(_) => Some(wildcard),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => Some(HashSet::new()),
+        Err(_) => None,
+    }
 }
 
 /// /proc/net/tcp{,6} lines: `sl local rem st … inode`, addresses in hex.
-fn parse_listeners(text: &str, port: u16) -> HashSet<u64> {
-    const LOOPBACK: [&str; 4] = [
-        "0100007F",
-        "00000000",
-        "00000000000000000000000000000000",
-        "0000000000000000FFFF00000100007F",
-    ];
-    let mut inodes = HashSet::new();
+fn parse_listeners(text: &str, port: u16) -> Vec<(Bound, u64)> {
+    let mut found = Vec::new();
     for line in text.lines().skip(1) {
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() < 10 || fields[3] != "0A" {
             continue;
         }
         let Some((address, local_port)) = fields[1].split_once(':') else { continue };
-        if u16::from_str_radix(local_port, 16).ok() != Some(port)
-            || !LOOPBACK.iter().any(|a| a.eq_ignore_ascii_case(address))
-        {
+        if u16::from_str_radix(local_port, 16).ok() != Some(port) {
             continue;
         }
+        let bound = match address.to_ascii_uppercase().as_str() {
+            "0100007F" => Bound::Loopback,
+            "00000000" => Bound::AnyV4,
+            "0000000000000000FFFF00000100007F" => Bound::MappedLoopback,
+            "00000000000000000000000000000000" => Bound::AnyV6,
+            _ => continue,
+        };
         if let Ok(inode) = fields[9].parse::<u64>() {
             if inode != 0 {
-                inodes.insert(inode);
+                found.push((bound, inode));
             }
         }
     }
-    inodes
+    found
 }
 
 /// Every process of a control group and the groups below it.
