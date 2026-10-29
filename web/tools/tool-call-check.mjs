@@ -109,12 +109,18 @@ async function open({ width, height, touch, theme, language }) {
   await page.locator("#turn-live").waitFor({ timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
   await page.addStyleTag({ content: ".jump-latest { visibility: hidden }" });
-  // Every Tool activity open, as a reader opens it.
+  // Every Tool activity open, as a reader opens it. A group can open on its
+  // own as the conversation settles, so each is opened until it stays open.
   for (const turn of ["done", "lost", "live"]) {
     const group = page.locator(`#turn-${turn} .tool-activity`).first();
-    if (!(await group.evaluate((el) => el.open))) await group.locator(":scope > summary").click();
+    await group.waitFor();
+    for (let tries = 0; tries < 5 && !(await group.evaluate((el) => el.open)); tries++) {
+      await group.locator(":scope > summary").click();
+      await page.waitForTimeout(300);
+    }
+    assert.ok(await group.evaluate((el) => el.open), `${turn}: its Tool activity opens`);
   }
-  await page.locator("#item-long").waitFor();
+  for (const id of ["long", "gone", "running"]) await page.locator(`#item-${id}`).waitFor({ state: "attached" });
   return { context, page };
 }
 
@@ -268,6 +274,9 @@ try {
         await shoot(page.locator("#item-cut"), `${view.name}-to-expand`);
         record(`${view.name}: a tap opens the row with its facts and no tip; a cut result says so`, { after });
       }
+    } catch (error) {
+      await page.screenshot({ path: `${output}/failed.png` }).catch(() => {});
+      throw error;
     } finally {
       await context.close();
     }
@@ -303,6 +312,9 @@ try {
       await shoot(page.locator("#turn-done .tool-activity").first(), "desktop-zh-calls");
       await shoot(page, "desktop-zh-hover");
       record("desktop zh-Hans: the capsules' and tip's words are Chinese; names, IDs and codes as given", { box });
+    } catch (error) {
+      await page.screenshot({ path: `${output}/failed.png` }).catch(() => {});
+      throw error;
     } finally {
       await context.close();
     }

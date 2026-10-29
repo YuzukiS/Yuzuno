@@ -697,7 +697,7 @@ test("latest tools expand until an Agent reply and manual history expansion surv
     await pause();
     assert.ok(stream.querySelector(".execution") === groups[0], "the first execution group is the one rendered");
     assert.equal(groups[0].open, true);
-    assert.match(groups[0].querySelector("summary").textContent, /Shell×2/);
+    assert.match(groups[0].querySelector("summary").textContent, /2 tool steps/);
     assert.equal(groups[1].open, false);
     assert.deepEqual(order(), [
       "progress-1",
@@ -3349,7 +3349,7 @@ for (const harness of ["codex", "claude"]) test(`${harness}: deferred tools moun
   try {
     const group = page.document.querySelector('[data-turn-id="deferred"] .tool-activity');
     assert.equal(group.open, false);
-    assert.match(group.querySelector("summary").textContent, harness === "claude" ? /Bash×1/ : /Shell×1/);
+    assert.match(group.querySelector("summary").textContent, /1 tool step/);
     assert.equal(page.document.getElementById("item-deferred-a"), null);
     group.querySelector("summary").click();
     await pause(); await pause();
@@ -6366,7 +6366,11 @@ test("Codex's review findings are its review Turn's reply", async () => {
     assert.match(reply.textContent, /Mostly sound/);
     assert.match(reply.textContent, /parse\.rs:12/);
     assert.ok([...reply.querySelectorAll("button")].some((b) => /Copy reply/.test(b.textContent)), "copied as a reply is");
-    assert.match(turn.querySelector(".tool-activity summary").textContent, /Review/);
+    // Entering review mode stays a step of its Tool activity.
+    const activity = turn.querySelector(".tool-activity");
+    assert.match(activity.querySelector(":scope > summary").textContent, /1 tool step/);
+    if (!activity.open) { activity.querySelector(":scope > summary").click(); await pause(); }
+    assert.equal(page.document.querySelector("#item-entered .tool-call-name").textContent, "Codex review: current changes");
   } finally { page.close(); }
 });
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { activityStartedAt, formatElapsed } from "../src/activity-time.ts";
-import { conversationBlocks, hasAgentContent, toolActivityCounts } from "../src/conversation-blocks.ts";
+import { conversationBlocks, hasAgentContent } from "../src/conversation-blocks.ts";
 
 test("Working uses native start or persisted fallback; Compacting has its own clock", () => {
   const turn = { startedAt: 1700000000, _yuzunoStartedAt: 1700000002000, _yuzunoCompactionStartedAt: 1700000080000 };
@@ -32,5 +32,4 @@ test("empty reasoning does not create cards, counts, or split real tool groups",
   ]);
   assert.equal(blocks.length, 1);
   assert.deepEqual(blocks[0].items.map((i) => i.id), ["shell1", "public", "shell2"]);
-  assert.deepEqual(toolActivityCounts(blocks[0].items).map(({ label, count }) => [label, count]), [["Shell", 2], ["Reasoning", 1]]);
 });

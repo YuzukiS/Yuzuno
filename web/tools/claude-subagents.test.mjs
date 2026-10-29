@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { callToward, claudeSubAgents, formatUsage, subAgentCalls, turnSubAgents } from "../src/claude-subagents.ts";
-import { blockItems, conversationBlocks, shownItemId, toolActivityCounts } from "../src/conversation-blocks.ts";
+import { blockItems, conversationBlocks, shownItemId } from "../src/conversation-blocks.ts";
 
 // T-26: Claude sub-agents as Core records them from CLI 2.1.280 (recorded
 // probe: two in parallel, one in the background). The Agent call carries
@@ -51,7 +51,6 @@ test("the Turn's own tool activity keeps the Agent calls and its own tools; the 
   assert.deepEqual(blocks[2].items.map((i) => i.id), ["agent-a", "agent-b", "agent-c"]);
   assert.deepEqual(blocks[2].calls.map((i) => i.id), ["a-ls", "b-read", "a-read", "c-read"], "even one arriving after a reply");
   assert.deepEqual(blocks[4].items.map((i) => i.id), ["main-bash"]);
-  assert.deepEqual(toolActivityCounts(blocks[2].items).map((c) => [c.label, c.count]), [["Agent", 3]]);
   assert.deepEqual(blockItems(blocks[2]).map((i) => i.id), ["agent-a", "agent-b", "agent-c", "a-ls", "b-read", "a-read", "c-read"]);
   // A source link to a sub-agent's call shows its Agent call.
   assert.equal(shownItemId(blocks[2], "c-read"), "agent-c");
