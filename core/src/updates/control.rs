@@ -182,6 +182,15 @@ async fn execute(this: &Controller, request: Request) -> Result<Value> {
                 ),
                 "Core cannot stop in this update phase"
             );
+            // The running Core stops only while a Core can still start where
+            // it did (T-11). Refused, it stays Flushing, and the helper's
+            // Abort gives it back its sessions and work. A candidate that
+            // failed (Starting, Restoring) is stopped whatever its directory.
+            if op.phase == Phase::Flushing {
+                op.launch
+                    .check_cwd()
+                    .context("Before stopping the running Core: it was not stopped")?;
+            }
             ensure!(
                 this.admission.snapshot().operation_id.as_deref() == Some(&op.id)
                     && this.blockers().await?.is_empty(),

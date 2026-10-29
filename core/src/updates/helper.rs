@@ -249,7 +249,8 @@ fn perform(layout: &Layout, id: &str) -> Result<()> {
                 return retain(layout, id);
             }
             ensure!(!op.new_process.as_ref().is_some_and(ProcessIdentity::alive), "Candidate still owns native sessions; leaving it running for recovery rather than stopping active or uncertain work. {error:#}");
-            layout.edit_operation(id, |op| { op.error = Some(format!("Candidate could not become ready; restored the previous compatible release. {error:#}")); Ok(()) })?;
+            // Said as an attempt: only Finish (RolledBack) says it worked.
+            layout.edit_operation(id, |op| { op.error = Some(format!("Candidate could not become ready; starting the previous compatible release instead. {error:#}")); Ok(()) })?;
             let previous = layout.release(&op.previous)?;
             ensure!(
                 previous
@@ -358,7 +359,11 @@ pub(super) fn backup_with_budget(layout: &Layout, op: &Operation, budget: Durati
     result
 }
 
-fn launch(layout: &Layout, op: &Operation, bundle: &Bundle) -> Result<Child> {
+pub(super) fn launch(layout: &Layout, op: &Operation, bundle: &Bundle) -> Result<Child> {
+    let release = &bundle.manifest.release_id;
+    op.launch
+        .check_cwd()
+        .with_context(|| format!("Cannot start packaged Core {release}"))?;
     let log = state::private_file(
         &layout
             .updates()
@@ -380,7 +385,9 @@ fn launch(layout: &Layout, op: &Operation, bundle: &Bundle) -> Result<Child> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    command.spawn().context("Cannot start packaged Core")
+    command
+        .spawn()
+        .with_context(|| format!("Cannot start packaged Core {release} in {}", op.launch.cwd.display()))
 }
 
 fn boot_and_restore(layout: &Layout, id: &str, bundle: &Bundle) -> Result<()> {

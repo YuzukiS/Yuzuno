@@ -67,6 +67,22 @@ pub struct Launch {
     pub codex: String,
 }
 
+impl Launch {
+    /// Whether a Core can start in `cwd`, its `--cwd` and working directory,
+    /// the candidate's and, after a failed update, the previous release's
+    /// alike: it exists, is a directory and can be entered (T-11). This is
+    /// checked at that moment; the directory can still go away afterwards.
+    pub fn check_cwd(&self) -> Result<()> {
+        let cwd = &self.cwd;
+        let metadata = fs::metadata(cwd)
+            .with_context(|| format!("Core's launch directory {} is missing or unreadable", cwd.display()))?;
+        ensure!(metadata.is_dir(), "Core's launch directory {} is not a directory", cwd.display());
+        rustix::fs::access(cwd, rustix::fs::Access::EXEC_OK)
+            .with_context(|| format!("Core's launch directory {} cannot be entered", cwd.display()))?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProcessIdentity {
