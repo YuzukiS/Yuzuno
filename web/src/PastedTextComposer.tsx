@@ -62,10 +62,10 @@ type Props = {
   placeholder: string;
   draft: ComposerDraft;
   readOnly?: boolean;
-  /** When the draft starts with "/": a Claude Agent's commands, or the
+  /** When the draft starts with "/": a Claude Agent's commands, the
    * controls Yuzuno runs for a Codex Agent and the skills its Codex lists
-   * (also after "$"). */
-  slashCommands?: "claude" | "codex" | false;
+   * (also after "$"), or an OpenCode Agent's own commands (T-10). */
+  slashCommands?: "claude" | "codex" | "opencode" | false;
   onChange: (draft: ComposerDraft) => void;
   /** A Codex skill chosen from the list: for the draft's chosen skills. */
   onSkill?: (skill: SlashCommand) => void;
@@ -218,7 +218,15 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
               "codex",
               (skill) => callbacks.current.onSkill?.(skill),
             )
-          : [],
+          : callbacks.current.slashCommands === "opencode" && !callbacks.current.readOnly
+            ? slashCommands(
+                () =>
+                  api<CommandList>(
+                    `/agents/${encodeURIComponent(callbacks.current.agentId)}/opencode/commands`,
+                  ),
+                "opencode",
+              )
+            : [],
     ];
     function stateFor(draft: ComposerDraft) {
       const initial = draftDocument(draft);

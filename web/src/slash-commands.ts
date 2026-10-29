@@ -19,7 +19,8 @@ import { pathTail } from "./skill-refs";
 /**
  * A command a Claude Agent can be sent, as Claude Code lists it
  * (core/src/claude_commands.rs): Claude Code's own, a Skill, or another
- * command from a user, project, plugin or MCP server.
+ * command from a user, project, plugin or MCP server. An OpenCode Agent's
+ * are its OpenCode's own (`/agents/{id}/opencode/commands`, T-10).
  */
 export type SlashCommand = {
   name: string;
@@ -30,6 +31,8 @@ export type SlashCommand = {
   /** A Codex skill's path on the Agent's machine and its scope (T-29). */
   path?: string;
   scope?: string;
+  /** An OpenCode command that runs as a sub-agent (T-10). */
+  subtask?: boolean;
 };
 export type CommandList =
   | {
@@ -45,6 +48,8 @@ export type CommandList =
       skillsKnown: boolean;
       /** Codex: why its skills are not listed, beside the controls that are. */
       skillsNote?: string;
+      /** OpenCode: when Core read the list. */
+      observedAt?: string;
     }
   | { state: "unavailable" | "unsupported" | "failed"; reason: string };
 
@@ -287,7 +292,8 @@ const loadFacet = Facet.define<() => Promise<CommandList>, (() => Promise<Comman
   combine: (values) => values[0] ?? null,
 });
 /** Whose list this composer shows, for the menu's own wording. */
-const kindFacet = Facet.define<"claude" | "codex", "claude" | "codex">({
+type Kind = "claude" | "codex" | "opencode";
+const kindFacet = Facet.define<Kind, Kind>({
   combine: (values) => values[0] ?? "claude",
 });
 /** Where a chosen Codex skill goes: the draft's own list of chosen skills. */
@@ -338,6 +344,12 @@ const unavailable: Record<string, string> = {
   changed: "Claude's session changed; type / again.",
   unsupported: "This Claude Code does not list its commands.",
 };
+/** Why an OpenCode Agent's commands are not listed (T-10). */
+const opencodeUnavailable: Record<string, string> = {
+  closed: "This Agent is closed.",
+  disconnected: "OpenCode isn't connected; reconnect it, then type / again.",
+  changed: "OpenCode's connection changed; type / again.",
+};
 
 function createMenuView(view: EditorView): TooltipView {
   const dom = document.createElement("div");
@@ -367,17 +379,21 @@ function createMenuView(view: EditorView): TooltipView {
       dom.append(p);
     };
     const codex = view.state.facet(kindFacet) === "codex";
+    const opencode = view.state.facet(kindFacet) === "opencode";
     const skills = menu.kind === "skill";
-    box.setAttribute("aria-label", skills ? "Codex skills" : codex ? "Codex controls and skills" : "Claude commands");
+    box.setAttribute("aria-label", skills ? "Codex skills" : codex ? "Codex controls and skills" : opencode ? "OpenCode commands" : "Claude commands");
     if (!current) {
-      note(skills ? "Reading this Agent's Codex skills…" : codex ? "Reading Codex controls and skills…" : "Reading Claude's commands…");
+      note(skills ? "Reading this Agent's Codex skills…" : codex ? "Reading Codex controls and skills…" : opencode ? "Reading OpenCode's commands…" : "Reading Claude's commands…");
       return;
     }
     if (current.state !== "ready") {
-      note(unavailable[current.reason] ?? "Could not read Claude's commands.", "is-failed");
+      note(opencode ? opencodeUnavailable[current.reason] ?? "Could not read OpenCode's commands."
+        : unavailable[current.reason] ?? "Could not read Claude's commands.", "is-failed");
       return;
     }
-    if (!items.length) {
+    if (opencode && !current.commands.length) {
+      note("This Agent's OpenCode lists no commands. Enter sends the text as it is.");
+    } else if (!items.length) {
       note(skills
         ? `No skill matches “$${menu.query ?? ""}”. The text stays as typed and invokes no skill.`
         : `No command matches “/${menu.query ?? ""}”. Enter sends the text as it is.`);
@@ -402,7 +418,7 @@ function createMenuView(view: EditorView): TooltipView {
         description.className = "slash-menu-description";
         description.textContent = command.description;
         option.append(name, hint, tag, description);
-        option.title = [command.path ? `$${command.name}\n${command.path}` : `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`, command.description, command.aliases.length ? `Also /${command.aliases.join(", /")}` : ""]
+        option.title = [command.path ? `$${command.name}\n${command.path}` : `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`, command.description, command.aliases.length ? `Also /${command.aliases.join(", /")}` : "", command.subtask ? "Runs as a sub-agent" : ""]
           .filter(Boolean)
           .join("\n");
         option.addEventListener("click", () => choose(view, command));
@@ -431,6 +447,11 @@ function createMenuView(view: EditorView): TooltipView {
       );
       if (current.skillsNote) note(current.skillsNote, "is-failed");
       else if (current.truncated) note(`${current.total} in all; the first ${current.commands.length} shown.`, "is-source");
+    } else if (opencode) {
+      if (current.commands.length) note(
+        `Listed by this Agent's OpenCode${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in; Send runs it as that command.`,
+        "is-source",
+      );
     } else {
       note(
         `${current.source === "session" ? "Listed by this conversation's Claude Code" : "Listed by Claude Code for this folder; the conversation may add more once it runs"}${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in.`,
@@ -534,6 +555,6 @@ const keys = Prec.highest(
  * its name and keeps the rest of the draft; a Codex skill also goes to
  * `onSkill`. Nothing is sent or run.
  */
-export function slashCommands(load: () => Promise<CommandList>, kind: "claude" | "codex" = "claude", onSkill?: (skill: SlashCommand) => void): Extension {
+export function slashCommands(load: () => Promise<CommandList>, kind: Kind = "claude", onSkill?: (skill: SlashCommand) => void): Extension {
   return [menuField, loader, keys, loadFacet.of(load), kindFacet.of(kind), ...(onSkill ? [skillFacet.of(onSkill)] : [])];
 }
