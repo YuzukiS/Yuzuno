@@ -126,6 +126,7 @@ pub struct Workspace {
     pub(crate) machine_load: crate::machine_load::State,
     /// Project services opened in this Core (T-151); see `services`.
     pub(crate) services: crate::services::Runtime,
+    pub(crate) previews: crate::previews::Previews,
     /// Backups and restores made from Settings (T-192); see `workspace_backup::online`.
     pub(crate) backups: Arc<crate::workspace_backup::online::Backups>,
     /// The daily backup (T-196); see `workspace_backup::schedule`.
@@ -196,6 +197,7 @@ impl Workspace {
             brief_turns: Default::default(),
             machine_load: Default::default(),
             services: Default::default(),
+            previews: Default::default(),
             remote_access: Default::default(),
             web_push: Default::default(),
         }))

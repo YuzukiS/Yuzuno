@@ -59,6 +59,9 @@ import { MessageTime, TurnFooter } from "./ConversationTime";
 import { AgentReply } from "./intelligent-ui/AgentReply";
 import { TurnResults } from "./intelligent-ui/TurnResults";
 import { formAnswer, SentFormAnswer } from "./intelligent-ui/SentFormAnswer";
+import { TurnFiles } from "./portal/TurnFiles";
+import { OpenChoice } from "./portal/OpenChoice";
+import { htmlFile } from "./portal/html-file";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
@@ -1018,6 +1021,7 @@ export function Turn({
         }}</ConversationRows>
         </ClaudeSubAgentScope>
         <TurnResults agentId={agent.id} turn={turn} onFile={onFile} onDraft={onAnswer} onInteract={onResultInteract} />
+        {!running && <TurnFiles agent={agent} turn={turn} onSource={onFile} />}
         {running && (
           <div
             className="turn-activity"
@@ -1557,6 +1561,13 @@ export function ArtifactModal({
           <FileText size={14} />
           <span>{t.readOnly}</span>
           <CopyButton text={text} label={t.copyContents} />
+          {/* An HTML file opens working too, in the Portal or the browser (T-5). */}
+          {!preview && artifact && htmlFile(artifact.path) && (
+            <OpenChoice
+              target={() => ({ kind: "snapshot", source: { kind: "artifact", agentId, path: artifact.path }, name: artifact.name, from: t.filePreview })}
+              onOpened={onClose}
+            />
+          )}
         </div>
       )}
     </Modal>

@@ -144,6 +144,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/projects/{id}/services",get(project_services).post(register_service))
         .route("/api/services/{id}",axum::routing::delete(delete_service))
         .route("/api/services/{id}/open",post(open_service))
+        .route("/api/previews",post(open_preview))
         .route("/api/services/{id}/close",post(close_service))
         .route("/api/agents/{id}/project",post(set_agent_project))
         .route("/api/codex/sessions/preview",post(preview_session))
@@ -767,6 +768,14 @@ async fn open_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
     // The browser boundary has already accepted this page's Origin, if any.
     let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
     Ok(Json(ws.open_service(&id, origin).await?))
+}
+/// A single HTML file, kept as it is now and served working from the
+/// previews' own origin (previews.rs). The page's origin frames it.
+async fn open_preview(State(ws): State<Arc<Workspace>>, headers: axum::http::HeaderMap,
+    Json(source): Json<crate::previews::Source>) -> ApiResult<Json<Value>> {
+    // The browser boundary has already accepted this page's Origin, if any.
+    let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
+    Ok(Json(ws.open_preview(source, origin).await?))
 }
 async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.close_service(&id).await?))

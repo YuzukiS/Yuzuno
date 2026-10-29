@@ -189,14 +189,14 @@ test("a category opens its first entry's editor directly, with its entries in on
   assert.equal(tab("appearance").querySelector(".sr-only").textContent, "Appearance & interaction");
   tab("appearance").click();
   await until(() => shown().includes("settings-editor-appearance"));
-  assert.deepEqual(row(), [["Appearance", "true"], ["Sending", null], ["Shortcuts", null], ["Move preferences", null], ["Shared preset", null], ["Clock", null], ["Language", null]]);
+  assert.deepEqual(row(), [["Appearance", "true"], ["Opening", null], ["Sending", null], ["Shortcuts", null], ["Move preferences", null], ["Shared preset", null], ["Clock", null], ["Language", null]]);
   assert.equal(p.doc.querySelectorAll(".settings-catalog-card").length, 0, "no cards before the editor");
   const about = p.doc.querySelector(".settings-entry-about");
   assert.equal(about.open, false);
   assert.equal(about.querySelector("summary").textContent, "Scope: This device · this site");
   p.button("Clock").click();
   await until(() => shown().join() === "settings-editor-time");
-  assert.equal(row()[5][1], "true");
+  assert.equal(row()[6][1], "true");
   // Where an entry is edited elsewhere: its object chosen first, nothing read.
   tab("agents").click();
   await until(() => p.doc.querySelector(".settings-catalog-card.is-brief"));
