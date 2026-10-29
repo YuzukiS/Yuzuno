@@ -1291,3 +1291,24 @@ async fn an_interrupt_ends_the_turn_with_its_added_messages() {
     assert_eq!(lab.prompts().len(), 2);
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// OpenCode may go on under a user message of its own after an added one
+/// (an auto-compaction's "continue", 1.19.3 `session/compaction.ts`): its
+/// answers then name that message, not the added one. The Turn does not wait
+/// for an answer that will not come: idle ends it, here as unknown, since no
+/// answer names any of its own messages.
+#[tokio::test]
+async fn an_added_message_opencode_goes_on_past_still_ends_the_turn_on_idle() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    let added = lab.add("c2", "And this", &first).await.unwrap();
+    assert_eq!(added.status, "accepted");
+    // OpenCode's own message, later than the added one, then its answer to that.
+    lab.control("store", json!({"sessionID":session,"messageID":"msg_fffffffffffffffffffffffffff","text":"Continue if you have next steps"})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Continued."})).await;
+    let d = lab.until("the end of the Turn", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "outcomeUnknown", "ended by idle, not left running");
+    assert_eq!(d.agent.status, "idle");
+    lab.ws.close_agent(ID).await.unwrap();
+}

@@ -47,7 +47,8 @@ OpenCode Agent keeps working either way.
   the composer's "send while working" joins that turn. OpenCode stores it at
   once and answers it from its next step, in the same run, as its own TUI does
   (where it shows as queued until then). The turn ends once its newest
-  message is answered. It is refused, and the draft kept, while a permission
+  message is answered, or once OpenCode is idle after going on under a
+  message of its own (as after an automatic compaction). It is refused, and the draft kept, while a permission
   or question waits for you, while the turn is being interrupted, or for a
   command, which only runs on its own.
 - **History:** each Agent keeps its session in an OpenCode database in Core's

@@ -63,7 +63,8 @@
 //! before it is sent: OpenCode 1.19.3 stores it at once and its running run
 //! answers it from the next step (one run, answering the newest message).
 //! The Turn's answers are those to any of its messages, and it ends once
-//! every one of them is stored and the newest is answered. Only while its
+//! every one of them is stored and the newest is answered, or OpenCode went
+//! on under a later message of its own (an auto-compaction's). Only while its
 //! prompt is stored, no interrupt is asked and no request waits for the user;
 //! never a command.
 //!
@@ -1378,6 +1379,7 @@ fn message(d: &mut AgentDetail, info: &Value) {
         Some("user") => {
             confirm(d, id);
             confirm_input(d, id);
+            followed(d, id);
         }
         Some("assistant") => {
             // Its Turn: the one whose prompt it answers, or whose added message (T-10).
@@ -1433,6 +1435,21 @@ fn confirm_input(d: &mut AgentDetail, input: &str) {
                 message["clientId"] = client.into();
             }
         }
+    }
+}
+
+/// A user message of OpenCode's own after the newest message added to the
+/// running Turn (T-10): an auto-compaction's, or the "continue" or replay
+/// that follows one (`session/compaction.ts`). The run goes on under it, and
+/// its answers name it, so the Turn does not wait for one to the added
+/// message. OpenCode's message IDs ascend.
+fn followed(d: &mut AgentDetail, id: &str) {
+    if d.turns.iter().any(|t| t["id"] == id || t["_opencodeInputs"].get(id).is_some()) {
+        return;
+    }
+    let Some(turn) = running(d) else { return };
+    if turn["_opencodeLastInput"].as_str().is_some_and(|last| id > last) {
+        turn["_opencodeFollowed"] = id.into();
     }
 }
 
@@ -1496,7 +1513,9 @@ fn settle(turn: &mut Value) {
         return;
     }
     if let Some(last) = turn["_opencodeLastInput"].as_str() {
-        if !turn["_opencodeAnswers"].as_object().is_some_and(|answers| answers.values().any(|a| a["parent"] == last)) {
+        let answered = turn["_opencodeAnswers"].as_object().is_some_and(|answers| answers.values().any(|a| a["parent"] == last));
+        let followed = turn["_opencodeFollowed"].as_str().is_some_and(|after| after > last);
+        if !answered && !followed {
             return;
         }
     }
