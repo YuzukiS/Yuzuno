@@ -616,15 +616,22 @@ function failedCall(item: NativeItem) {
  * and closed unless something here is being read, waits for an approval or
  * is the latest work. A failed call is said beside it, folded or not.
  */
-function CollaborationFold({ id, members, open, children }: {
+function CollaborationFold({ id, members, open, revealing, children }: {
   id: string;
   members: ConversationBlock[];
   open: boolean;
+  /** A link or a search leads into it: it stays open once there. */
+  revealing: boolean;
   children: React.ReactNode;
 }) {
   const t = turnWords(useLanguage());
   const [opened, setOpened] = useConversationDisclosure(id, false);
-  const shown = opened || open;
+  useLayoutEffect(() => {
+    // Commit the disclosure choice before App clears the navigation hint,
+    // as ToolActivity does: the message led to would close again with it.
+    if (revealing) setOpened(true);
+  }, [revealing]);
+  const shown = opened || open || revealing;
   const inputs = members.flatMap((block) => (block.kind === "user" ? [block.item] : []));
   const mails = inputs.filter((item) => item._yuzunoInput === "peer").length;
   const automatic = inputs.length - mails;
@@ -801,6 +808,7 @@ export function Turn({
   const reveal = useConversationReveal(turn.id);
   const windowed = useConversationWindowed();
   const reportInput = useContext(InputReading);
+  const readingPlaces = useRef<{ prefix?: [number, -1 | 0 | 1]; blocks?: [number, -1 | 0 | 1] }>({});
   useEffect(() => { drawn.current = true; }, []);
   const plan = turn._yuzunoPlan;
   const planSourceId = `yuzuno-plan-${turn.id}`;
@@ -1021,15 +1029,31 @@ export function Turn({
   const rowKey = (row: Row) => "fold" in row ? `fold:${blockKey(row.fold[0].block)}` : blockKey(row.block);
   const targetRow = targetBlock ? rows.find(row => "fold" in row ? row.fold.some(member => member.block === targetBlock) : row.block === targetBlock) : undefined;
   // The input this Turn is read at (T-6): the last of yours at or before the
-  // row at the reading line, by the rows' own positions; before any, the one
-  // the Turn opens with.
-  const inputRows = rows.map(row => !("fold" in row) && row.block.kind === "user" && (yours(row.block.item) || unconfirmed(row.block.item))
-    ? row.block.item.id : null);
-  const readAt = (row: Row) => {
-    const at = rows.indexOf(row);
-    let input = opener?.id ?? null;
-    for (let index = 0; index <= at; index++) input = inputRows[index] ?? input;
-    reportInput?.(turn.id, input);
+  // row at the reading line, by the rows' own positions, in the messages the
+  // Turn opens with (userPrefix) and then in its blocks; before any, none.
+  const inputOf = (block: ConversationBlock) => block.kind === "user" && (yours(block.item) || unconfirmed(block.item)) ? block.item.id : null;
+  const prefixInputs = userPrefix.map(inputOf);
+  const inputRows = rows.map(row => "fold" in row ? null : inputOf(row.block));
+  const lastInput = (inputs: (string | null)[], at: number, before: string | null) => {
+    let input = before;
+    for (let index = 0; index <= at; index++) input = inputs[index] ?? input;
+    return input;
+  };
+  // A Turn whose first block is the Agent's still opens with its first input.
+  const prefixInput = lastInput(prefixInputs, prefixInputs.length - 1, userPrefix.length ? null : opener?.id ?? null);
+  const reportReading = () => {
+    const { prefix, blocks: inBlocks } = readingPlaces.current;
+    reportInput?.(turn.id, inBlocks && inBlocks[1] >= 0 ? lastInput(inputRows, inBlocks[0], prefixInput)
+      : prefix && prefix[1] <= 0 ? lastInput(prefixInputs, prefix[0], null)
+      : prefixInput);
+  };
+  const readPrefix = (block: ConversationBlock, place: -1 | 0 | 1) => {
+    readingPlaces.current.prefix = [userPrefix.indexOf(block), place];
+    reportReading();
+  };
+  const readAt = (row: Row, place: -1 | 0 | 1) => {
+    readingPlaces.current.blocks = [rows.indexOf(row), place];
+    reportReading();
   };
   return (
     <article
@@ -1069,7 +1093,8 @@ export function Turn({
       )}
       <ConversationRows id={`users:${turn.id}`} items={userPrefix}
         itemKey={block => "item" in block ? block.item.id : block.items[0].id}
-        estimate={() => 120} targetKey={target?.itemId}>
+        estimate={() => 120} targetKey={target?.itemId}
+        onReading={reportInput ? readPrefix : undefined}>
         {block => block.kind === "user" && <>{inputDivider(block.item)}{userMessage(block.item)}</>}
       </ConversationRows>
       <div className="agent-message">
@@ -1117,9 +1142,9 @@ export function Turn({
         {row => "fold" in row ? (
           <CollaborationFold key={rowKey(row)} id={`collab:${turn.id}:${rowKey(row)}`} members={row.fold.map(member => member.block)}
             open={row.fold.some(member => !!shownItemId(member.block, windowed ? target?.itemId : sourceItemId)
-              || !!(reveal?.itemId && shownItemId(member.block, reveal.itemId))
               || blockItems(member.block).some(item => pendingToolIds?.has(item.id))
-              || (isLatestAgentTurn && member.at > lastMessage))}>
+              || (isLatestAgentTurn && member.at > lastMessage))}
+            revealing={row.fold.some(member => !!(reveal?.itemId && shownItemId(member.block, reveal.itemId)))}>
             {row.fold.map(member => renderBlock(member.block, member.at))}
           </CollaborationFold>
         ) : renderBlock(row.block, row.at)}</ConversationRows>

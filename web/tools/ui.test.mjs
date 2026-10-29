@@ -3688,6 +3688,31 @@ test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays
   } finally { page.close(); }
 });
 
+test("a link to folded mail opens its fold, which stays open once the link has led there (T-6)", async () => {
+  const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
+  const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+  const extraTurns = [{ id: "t-work", status: "completed", items: [
+    user("u1", "Make history easier to read", "you"), reply("r1", "Merged the two blocks."),
+    user("p1", "Mail from Dev 9: rerun CI on the new main", "peer", { _yuzunoSource: "peer" }),
+    { id: "c1", type: "commandExecution", command: "npm test", status: "completed", exitCode: 0, aggregatedOutput: "ok" },
+    reply("r2", "Reran CI."),
+  ] }];
+  const page = await mount({ workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, extraTurns });
+  try {
+    await pause(); await pause();
+    const fold = () => page.document.querySelector("#turn-t-work .collaboration-fold");
+    assert.ok(!fold().open, "closed to begin with");
+    page.window.location.hash = "#/message?w=ws-1&a=a&t=t-work&i=p1&s=thread-1";
+    await until(() => page.document.activeElement?.dataset.itemId === "p1", "the linked mail has the focus");
+    // App has cleared its one-shot target by now: the fold is the user's.
+    await pause(); await pause();
+    assert.ok(fold().open, "the fold stays open");
+    assert.ok(fold().querySelector('[data-item-id="p1"] .mailbox-notice'), "with the mail in it");
+    assert.equal(page.document.activeElement?.dataset.itemId, "p1", "which keeps the focus");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("design specimen is labelled and never opens a runtime connection", async () => {
   const page = await mount({ preview: true });
   try {

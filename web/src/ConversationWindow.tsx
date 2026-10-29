@@ -127,7 +127,10 @@ export function ConversationRows<T>({ id, items, itemKey, estimate, targetKey, c
   estimate: (item: T, index: number) => number;
   targetKey?: string;
   children: (item: T, index: number) => ReactNode;
-  onReading?: (item: T) => void;
+  /** The row at the reading line, and where that line is: before these
+   * rows (-1, the first is given), among them (0) or after them (1, the
+   * last). */
+  onReading?: (item: T, place: -1 | 0 | 1) => void;
 }) {
   const context = useContext(Context);
   const root = useRef<HTMLDivElement>(null);
@@ -189,7 +192,9 @@ export function ConversationRows<T>({ id, items, itemKey, estimate, targetKey, c
         // read, however short it is: a Turn that has just begun must not
         // leave the marker on the one before (the turn dock's own rule).
         const atEnd = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8;
-        read.current(values.current[atEnd ? values.current.length - 1 : rowAt(snapshot.current.offsets, relativeTop + 32)]);
+        const line = relativeTop + 32, offsets = snapshot.current.offsets;
+        read.current(values.current[atEnd ? values.current.length - 1 : rowAt(offsets, line)],
+          atEnd || (line >= 0 && line < offsets.at(-1)!) ? 0 : line < 0 ? -1 : 1);
       }
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
