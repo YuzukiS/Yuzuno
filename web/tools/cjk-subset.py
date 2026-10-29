@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -155,6 +156,23 @@ def css(digest: str, points: list[int]) -> str:
 """
 
 
+def replace_whole(path: Path, data: bytes) -> None:
+    """Put `data` at `path` in one step, or leave what was there.
+
+    `write_bytes` truncates the file first, so an interrupted write would
+    leave the asset shorter than it was. The temporary file is made beside
+    the target, which keeps it on the same filesystem, where `os.replace` is
+    atomic.
+    """
+    temporary = path.with_name(f".{path.name}.new")
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def verify(path: Path, points: list[int]) -> None:
     """Refuse a built font that does not do what its CSS will promise.
 
@@ -263,8 +281,13 @@ def main() -> None:
     font.save(candidate)
     verify(candidate, points)
 
-    OUT_FONT.write_bytes(candidate.read_bytes())
-    OUT_CSS.write_text(css(digest, points))
+    # Each file is swapped in whole, through a temporary file beside it and
+    # os.replace, so an interruption cannot leave a half-written font where a
+    # font used to be. The two swaps are not one transaction: stopping
+    # between them leaves the new font with the previous CSS, which differs
+    # only in its header, since the code points are the same file's input.
+    replace_whole(OUT_FONT, candidate.read_bytes())
+    replace_whole(OUT_CSS, css(digest, points).encode())
     print(f"wrote {OUT_FONT} ({OUT_FONT.stat().st_size:,} bytes) and {OUT_CSS.name}")
 
 

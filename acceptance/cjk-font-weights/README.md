@@ -35,13 +35,21 @@ then does it replace the asset. Checking the font in memory, or the subset
 before its axis was limited, would miss exactly the failure that shipped:
 variation data lost while limiting or serialising.
 
-Three rejections are confirmed by hand:
+Each output file is swapped in whole, through a temporary file beside it and
+`os.replace`: `write_bytes` truncates first, so an interruption there would
+have left the asset shorter than it was. **The font and the CSS are two
+separate atomic swaps, not one transaction** — stopping between them leaves
+the new font with the previous CSS, which differs only in its header, since
+both are written from the same code point list.
+
+Four rejections and one interruption are confirmed by hand:
 
 | given | result |
 |---|---|
 | the font that actually shipped, as a candidate | rejected: "carries no variation data (CFF2 has no VarStore)" |
 | the font that actually shipped, as a *source* | rejected while subsetting; nothing written |
 | a sample character absent from the font | rejected: "missing the characters this check reads" |
+| the swap interrupted at `os.replace` | the asset is byte-identical to what it was, and no temporary file is left |
 
 ## Measured, on this Mac in Google Chrome
 
@@ -72,7 +80,7 @@ YUZUNO_UI_DIST=/tmp/yuzuno-font-dist node ../acceptance/cjk-font-weights/font-we
 
 ## What this costs, and what is not covered
 
-The file goes from 546,052 to 899,612 bytes (+65%): that is the variation data
+The file goes from 546,052 to 899,224 bytes (+65%): that is the variation data
 the old one was missing. It is still fetched only when a page asks for a code
 point in its `unicode-range`, so an English session never downloads it.
 
