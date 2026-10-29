@@ -1312,3 +1312,39 @@ async fn an_added_message_opencode_goes_on_past_still_ends_the_turn_on_idle() {
     assert_eq!(d.agent.status, "idle");
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// An interrupt that ends the run before its next step answers the added
+/// message (R1 77fcdc6b): the aborted answer is the earlier message's, and
+/// that ends the Turn interrupted, not left running.
+#[tokio::test]
+async fn an_added_message_unanswered_when_the_run_is_aborted_ends_the_turn_interrupted() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.add("c2", "And this", &first).await.unwrap();
+    // The aborted answer names the first message, as when the abort comes before the next step.
+    lab.control("reply", json!({"sessionID":session,"parentID":first,
+        "error":{"name":"MessageAbortedError","data":{"message":"The operation was aborted."}}})).await;
+    let d = lab.until("the end of the Turn", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "interrupted");
+    assert_eq!(d.agent.status, "idle");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// The run ends while an added message is being sent, and OpenCode then
+/// refuses that message (R1 77fcdc6b): the idle that came while it was
+/// unconfirmed decided nothing, so OpenCode's status is read after the
+/// refusal, and the Turn ends as its own messages' answers say.
+#[tokio::test]
+async fn an_added_message_refused_after_the_run_ended_still_ends_the_turn() {
+    let lab = lab(&[], false).await;
+    let first = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("mode", json!({"prompt":"idle-then-400"})).await;
+    let refused = lab.add("c2", "Too late", &first).await.unwrap();
+    assert_eq!(refused.status, "rejected", "{refused:?}");
+    let d = lab.until("the end of the Turn", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "completed");
+    assert_eq!(d.agent.status, "idle");
+    lab.control("mode", json!({"prompt":"store"})).await;
+    lab.ws.close_agent(ID).await.unwrap();
+}

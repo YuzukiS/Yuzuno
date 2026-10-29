@@ -147,10 +147,10 @@ def last_prompt(session):
     return max(users, key=lambda m: m['info']['time']['created'])['info']['id'] if users else None
 
 
-def answer_prompt(session, text=None, error=None, completed=True):
-    """An assistant message answering the session's last prompt, with a text part."""
+def answer_prompt(session, text=None, error=None, completed=True, parent=None):
+    """An assistant message answering the session's last prompt (or `parent`), with a text part."""
     now = int(time.time() * 1000)
-    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': last_prompt(session),
+    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent or last_prompt(session),
             'time': {'created': now}, 'finish': 'stop'}
     if completed:
         info['time']['completed'] = now
@@ -223,7 +223,7 @@ def control(name, body):
     if name == 'store':
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
     if name == 'reply':
-        info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True))
+        info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'))
         if body.get('idle', True):
             go_idle(body['sessionID'])
         return info
@@ -424,6 +424,13 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
+        if mode == 'idle-then-400':
+            # The run ends (its answer, then idle) while this prompt is being
+            # refused: the 400 comes only after those events.
+            answer_prompt(session, text='Done.')
+            go_idle(session)
+            time.sleep(0.3)
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused after the run ended'}})
         if mode == 'store-then-400':
             # Stored and announced, then answered as refused.
             store(session, message_id, text, files)

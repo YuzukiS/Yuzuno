@@ -882,6 +882,14 @@ impl Workspace {
                 }
             }).await?;
             self.changed(id);
+            // An idle that came while it was unconfirmed decided nothing, and
+            // none may follow: OpenCode's status now says whether the run ended.
+            if c.server.session_status(&c.session).await.is_ok_and(|now| now["type"] == "idle") {
+                let turn = expected.to_owned();
+                let _ = self.record_update(id, "opencode/statusRead", json!({"turnId":expected,"status":{"type":"idle"}}),
+                    Sel::Turns(vec![turn]), |d| status(d, &json!({"type":"idle"}))).await;
+                self.changed(id);
+            }
             bail!(error);
         }
         if self.opencode_confirm_input(id, &c, expected, &message).await {
@@ -1507,24 +1515,29 @@ fn settle(turn: &mut Value) {
     if turn["_opencodeConfirmed"] != true {
         return;
     }
-    // A message added to it (T-10) not stored yet, or the newest one not yet
-    // answered: OpenCode's run answers the newest, so the Turn goes on.
-    if turn["_opencodeInputs"].as_object().is_some_and(|inputs| inputs.values().any(|i| i["confirmed"] != true)) {
-        return;
-    }
-    if let Some(last) = turn["_opencodeLastInput"].as_str() {
-        let answered = turn["_opencodeAnswers"].as_object().is_some_and(|answers| answers.values().any(|a| a["parent"] == last));
-        let followed = turn["_opencodeFollowed"].as_str().is_some_and(|after| after > last);
-        if !answered && !followed {
+    let answers: Vec<Value> = turn["_opencodeAnswers"].as_object().map(|a| a.values().cloned().collect()).unwrap_or_default();
+    // How the run ended when OpenCode said so: an answer's error (an abort,
+    // a provider's failure) or the error its halt reported. That ends the
+    // Turn whatever its messages added (T-10) have had.
+    let ended = answers.iter().any(|a| a["error"].is_object()) || halted(&turn["_opencodeSessionError"]).is_some();
+    // Its newest added message answered, or gone past under a later user
+    // message of OpenCode's own (`followed`); always so with none added.
+    let newest = turn["_opencodeLastInput"].as_str().is_none_or(|last| answers.iter().any(|a| a["parent"] == last)
+        || turn["_opencodeFollowed"].as_str().is_some_and(|after| after > last));
+    if !ended {
+        // A message added to it not stored yet, or the newest one not yet
+        // answered: OpenCode's run answers the newest, so an idle alone
+        // leaves the Turn going on.
+        let unstored = turn["_opencodeInputs"].as_object().is_some_and(|inputs| inputs.values().any(|i| i["confirmed"] != true));
+        if unstored || !newest {
             return;
         }
     }
-    let answers: Vec<Value> = turn["_opencodeAnswers"].as_object().map(|a| a.values().cloned().collect()).unwrap_or_default();
     if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
         let interrupted = error["name"] == "MessageAbortedError";
         turn["status"] = if interrupted { "interrupted" } else { "failed" }.into();
         turn["error"] = json!({"message":error_text(error),"native":error});
-    } else if !answers.is_empty() && answers.iter().all(|a| a["completed"].is_number()) {
+    } else if newest && !answers.is_empty() && answers.iter().all(|a| a["completed"].is_number()) {
         turn["status"] = "completed".into();
     } else if let Some(status) = halted(&turn["_opencodeSessionError"]) {
         // OpenCode (1.19.3) halts a run by reporting the session's error and
