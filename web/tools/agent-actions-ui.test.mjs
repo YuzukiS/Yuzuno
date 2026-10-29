@@ -113,9 +113,9 @@ test("it offers only what applies to the Agent as it is", () => {
   assert.deepEqual(menu({ status: "waiting" }), ["interrupt:Interrupt current turn", "settings:Agent settings…", "manage:Manage…"]);
   // Closed: it reopens from Manage, never reconnects or interrupts here.
   assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", closedAt: "now" }), ["manage:Manage…"]);
-  // No session to reconnect to; OpenCode has no Agent settings.
+  // No session to reconnect to; OpenCode's Agent settings choose its model (T-10).
   assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", threadId: undefined }), ["settings:Agent settings…", "manage:Manage…"]);
-  assert.deepEqual(menu({ harness: "opencode", opencodeSessionId: "s", threadId: undefined }), ["manage:Manage…"]);
+  assert.deepEqual(menu({ harness: "opencode", opencodeSessionId: "s", threadId: undefined }), ["settings:Agent settings…", "manage:Manage…"]);
   // A remote Agent reconnects through the same request.
   assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", threadId: undefined, remote: { machine: { id: "m", name: "Box" } } }),
     ["reconnect:Reconnect", "settings:Agent settings…", "manage:Manage…"]);

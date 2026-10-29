@@ -675,6 +675,86 @@ async fn a_sub_agent_that_asked_while_no_stream_was_open_is_found_again() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// Every file under `dir`, read whole, for a secret the stand-in's providers hold.
+fn holds_a_secret(dir: &std::path::Path) -> Option<(PathBuf, &'static str)> {
+    const SECRETS: [&str; 4] = ["fixture-secret-key", "fixture-secret-option", "fixture-secret-header", "FIXTURE_SECRET_ENV"];
+    for entry in std::fs::read_dir(dir).unwrap().map(Result::unwrap) {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = holds_a_secret(&path) {
+                return Some(found);
+            }
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            if let Some(secret) = SECRETS.iter().find(|s| bytes.windows(s.len()).any(|w| w == s.as_bytes())) {
+                return Some((path, secret));
+            }
+        }
+    }
+    None
+}
+
+/// A model OpenCode's configured providers list (`/config/providers`) is
+/// chosen for the Agent's next messages (T-10) and goes with each of them;
+/// OpenCode's default sends none, as before; one OpenCode no longer lists is
+/// refused before anything is sent. Only a model's names are kept, never a
+/// provider's key, options or headers.
+#[tokio::test]
+async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_its_providers_is_kept() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["models"], json!([
+        {"id":"deepseek/deepseek-flash","model":"deepseek/deepseek-flash","displayName":"DeepSeek · DeepSeek Flash","description":null},
+        {"id":"openrouter/anthropic/claude-x","model":"openrouter/anthropic/claude-x","displayName":"OpenRouter · Claude X","description":"beta"},
+    ]));
+
+    // Only a model OpenCode lists is saved.
+    let refused = lab.ws.opencode_set_model(ID, "nope/model".into()).await.unwrap_err().to_string();
+    assert!(refused.contains("设置未保存"), "{refused}");
+    assert_eq!(lab.detail().agent.model, "");
+    let chosen = lab.ws.opencode_set_model(ID, " openrouter/anthropic/claude-x ".into()).await.unwrap();
+    assert_eq!(chosen.model, "openrouter/anthropic/claude-x");
+
+    // It goes with the next message, named as OpenCode names it.
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.prompts()[0]["body"]["model"], json!({"providerID":"openrouter","modelID":"anthropic/claude-x"}));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+
+    // OpenCode's default again: no model is sent, as before any was chosen.
+    lab.ws.opencode_set_model(ID, String::new()).await.unwrap();
+    let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.prompts()[1]["body"], json!({"messageID":second,"parts":[{"type":"text","text":"again"}]}));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
+
+    // A chosen model OpenCode no longer lists: refused before anything is sent.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    providers["providers"].as_array_mut().unwrap().retain(|p| p["id"] != "deepseek");
+    lab.control("mode", json!({"providers":providers})).await;
+    let gone = lab.send("c3", "third").await.unwrap_err().to_string();
+    assert!(gone.contains("不在 OpenCode 当前的配置中") && gone.contains("没有发送"), "{gone}");
+    assert_eq!(lab.prompts().len(), 2, "nothing was sent");
+    let d = lab.detail();
+    assert!(d.message_receipts.iter().all(|r| r.input.client_message_id != "c3"), "no receipt was recorded");
+    assert_eq!(d.agent.model, "deepseek/deepseek-flash", "the choice stays the user's");
+
+    // Nothing else of a provider's record was kept, in the record or anywhere in Core's data.
+    let data = lab.dir.path().join("data");
+    let record = serde_json::to_string(&lab.detail()).unwrap();
+    assert!(!record.contains("fixture-secret") && !record.contains("FIXTURE_SECRET"));
+    assert_eq!(holds_a_secret(&data), None);
+    lab.ws.close_agent(ID).await.unwrap();
+
+    // An Agent with no connection has no models to read, and saves none.
+    let ws = Workspace::new(lab.dir.path().join("data2"), lab.dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&lab.dir.path().to_string_lossy())).unwrap();
+    assert!(ws.opencode_agent_catalog(ID).await.unwrap_err().to_string().contains("尚未连接"));
+    assert!(ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap_err().to_string().contains("尚未连接"));
+    assert_eq!(ws.opencode_set_model(ID, String::new()).await.unwrap().model, "", "OpenCode's default needs no list");
+}
+
 #[tokio::test]
 async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session() {
     // OpenCode reports the Workspace MCP server failed: nothing is sent.

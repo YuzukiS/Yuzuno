@@ -5713,7 +5713,8 @@ test("an OpenCode Agent at work takes no message into its turn and shows OpenCod
     assert.equal(send?.disabled, true, "OpenCode takes no message into a running turn");
     assert.equal(send.title, "Wait for this turn to finish, or interrupt");
     assert.equal(page.document.querySelector('[aria-label="Send while working"]'), null);
-    assert.equal(page.document.querySelector('[aria-label="Agent settings"]'), null, "its model and permissions are OpenCode's own");
+    // Its Agent settings choose only its model (T-10); permissions stay OpenCode's own.
+    assert.ok(page.document.querySelector('[aria-label="Agent settings"]') !== null, "its model is chosen in its Agent settings");
     const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();
     assert.equal(fact("Harness"), "OpenCode");
     assert.equal(fact("Session"), "ses_0123");

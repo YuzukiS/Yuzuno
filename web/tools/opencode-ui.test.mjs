@@ -23,7 +23,9 @@ try {
 import {createRoot} from 'react-dom/client';
 import {RemoteCreateAgent} from ${JSON.stringify(path.join(root, "src/RemoteCreateAgent.tsx"))};
 import {PendingCard, Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
+import {AgentSettings} from ${JSON.stringify(path.join(root, "src/AgentSettings.tsx"))};
 const root=createRoot(document.getElementById('root'));
+window.renderSettings=(props)=>root.render(<AgentSettings {...props}/>);
 window.renderCreate=(props)=>root.render(<RemoteCreateAgent {...props}/>);
 window.renderPending=(props)=>root.render(<PendingCard onViewChanges={()=>{}} {...props}/>);
 window.renderTurn=(props)=>root.render(<Turn {...props}/>);`,
@@ -185,6 +187,40 @@ test("a sub-agent's request names the sub-agent that asks, and is answered as an
     own.window.renderPending({ request: permission, refresh() {}, disabled: false }); await tick();
     assert.ok(own.document.querySelector(".pending-source") === null, "the Agent's own request names no sub-agent");
   } finally { own.close(); }
+});
+
+test("an OpenCode Agent's settings choose only its model, from what its OpenCode lists (T-10)", async () => {
+  const listed = [
+    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek Flash", description: null },
+    { id: "openrouter/anthropic/claude-x", model: "openrouter/anthropic/claude-x", displayName: "OpenRouter · Claude X", description: "beta" },
+  ];
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  const page = mount((url, init) => url.endsWith("/agents/oc/models") ? { models: listed, opencode: { version: "1.19.3" } }
+    : url.endsWith("/agents/oc/settings") ? { ...agent, model: JSON.parse(init.body).model } : undefined);
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    const opener = page.document.querySelector(".agent-settings-button");
+    assert.ok(opener !== null, "OpenCode has the settings button");
+    assert.equal(opener.title, "OpenCode model");
+    assert.equal(opener.textContent.trim(), "Model");
+    opener.click(); await tick(); await tick();
+    const dialog = page.document.querySelector('[role="dialog"]');
+    assert.ok(dialog !== null, "the dialog opens");
+    assert.match(dialog.textContent, /Reasoning and permissions stay OpenCode’s own configuration/);
+    assert.ok(page.calls.some((call) => call.url.endsWith("/agents/oc/models")), "its own OpenCode's models are read");
+    const offered = [...group(page, "Model").querySelectorAll("input")].map((input) => input.value);
+    assert.deepEqual(offered, ["", "deepseek/deepseek-flash", "openrouter/anthropic/claude-x"], "OpenCode's default, then its list");
+    assert.equal(group(page, "Reasoning effort"), null, "no effort");
+    assert.equal(group(page, "Approvals"), null, "no approvals");
+    assert.equal(page.document.querySelector(".codex-context-settings"), null, "no context settings");
+    choice(page, "Model", "openrouter/anthropic/claude-x").click(); await tick();
+    page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    const saved = page.calls.filter((call) => call.url.endsWith("/agents/oc/settings"));
+    assert.equal(saved.length, 1);
+    assert.deepEqual(saved[0].body, { model: "openrouter/anthropic/claude-x" }, "the model alone");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
 });
 
 test("questions are answered with one list of labels per question, in order", async () => {
