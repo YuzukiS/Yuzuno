@@ -149,48 +149,67 @@ function layout(dragged: number | null): Layout {
   return { mode: "side", width, rail: Math.round(rail) };
 }
 
-/** The nearest box around `el` that scrolls, if one does. */
-function scrollParent(el: HTMLElement): HTMLElement | null {
-  for (let at = el.parentElement; at && at !== document.body; at = at.parentElement) {
-    if (/(auto|scroll)/.test(getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight) return at;
-  }
-  return null;
-}
+/** Only the latest layout change holds the reading; an older one stops. */
+let holding = 0;
 
 /**
- * Runs a change that resizes the conversation (the Portal opening, closing or
- * widening), keeping what the reader is at where they saw it in its
- * scrolling box: the card the page was opened from while it shows, else the
- * line a quarter down (they scrolled away from the card while it was open).
- * Rows measured after the width change move it again, so it is held for a
- * few frames more; nothing else scrolls the conversation.
+ * Runs a change that resizes the chat (the Portal opening, closing or
+ * widening beside it), keeping what the reader is at where they saw it in
+ * the conversation: the card the page was opened from while it shows, else
+ * the first message in view, as the conversation picks its own reading
+ * anchor (ConversationWindow's ReadingAnchor). Rows measured after the width
+ * change move it again, so the remaining drift is corrected for a few frames
+ * more, until the reader scrolls or a newer change takes over; nothing else
+ * scrolls the conversation.
  */
 function keepInPlace(opener: HTMLElement | null, change: () => void) {
-  const scroller = opener?.isConnected ? scrollParent(opener) : null;
-  if (!opener || !scroller) return change();
-  const box = scroller.getBoundingClientRect();
-  const card = opener.getBoundingClientRect();
-  let anchor: Element = opener;
-  if ((card.bottom <= box.top || card.top >= box.bottom) && typeof document.elementFromPoint === "function") {
-    const at = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 4);
-    if (at && at !== scroller && scroller.contains(at)) anchor = at;
+  const token = ++holding;
+  const pane = (opener?.isConnected ? opener.closest<HTMLElement>(".conversation-scroll") : null)
+    ?? document.querySelector<HTMLElement>(".conversation-scroll");
+  if (!pane?.clientHeight) return change();
+  const box = pane.getBoundingClientRect();
+  const shows = (rect: DOMRect) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom;
+  let anchor: HTMLElement | undefined;
+  if (opener?.isConnected && pane.contains(opener) && shows(opener.getBoundingClientRect())) anchor = opener;
+  else {
+    const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
+      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => shows(rect));
+    anchor = (visible.find(({ rect }) => rect.top >= box.top) || visible[0])?.element;
   }
-  const offset = () => anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  if (!anchor) return change();
+  const at = anchor;
+  const offset = () => at.getBoundingClientRect().top - pane.getBoundingClientRect().top;
   const before = offset();
   change();
+  let stopped = false;
+  const stop = () => { stopped = true; };
+  const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+  for (const name of events) pane.addEventListener(name, stop, { capture: true, passive: true });
+  window.addEventListener("keydown", stop, { capture: true });
+  const done = () => {
+    for (const name of events) pane.removeEventListener(name, stop, { capture: true });
+    window.removeEventListener("keydown", stop, { capture: true });
+  };
   const settle = () => {
-    if (!anchor.isConnected) return false;
+    if (stopped || token !== holding || !at.isConnected || !pane.isConnected) return false;
     const drift = offset() - before;
-    if (Math.abs(drift) > 1) scroller.scrollTop += drift;
+    if (Math.abs(drift) > 1) pane.scrollTop += drift;
     return true;
   };
   settle();
   let frames = 0;
   const again = () => {
     if (settle() && ++frames < 10) requestAnimationFrame(again);
+    else done();
   };
   requestAnimationFrame(again);
 }
+
+/** Whether going from one shape to the next changes the chat's width. */
+const resizesChat = (from: Layout | null, to: Layout | null) =>
+  (from?.mode === "side" || to?.mode === "side")
+  && !(from?.mode === "side" && to?.mode === "side" && from.width === to.width && from.rail === to.rail);
 
 /** The app's grid gives the Portal its column; nothing else of the app moves. */
 function apply(shape: Layout | null) {
@@ -225,8 +244,13 @@ function PortalHost() {
   useLayoutEffect(() => {
     relayout();
   }, [relayout]);
+  // The shape last applied: a full-screen Portal leaves the chat as it was.
+  const applied = useRef<Layout | null>(null);
   useLayoutEffect(() => {
-    keepInPlace(anchor.current, () => apply(shape));
+    const was = applied.current;
+    applied.current = shape;
+    if (resizesChat(was, shape)) keepInPlace(anchor.current, () => apply(shape));
+    else apply(shape);
   }, [shape]);
   useEffect(() => () => apply(null), []);
   useEffect(() => {
