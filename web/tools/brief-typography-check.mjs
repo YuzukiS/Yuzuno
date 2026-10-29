@@ -1,8 +1,14 @@
 // A Home card's writing has levels again (T-9): an Agent's h1, h2 and h3 are
-// three visible steps, a block's title stands above the body it introduces,
-// and emphasis reads in Chinese. Measured in a real browser on the production
-// bundle, desktop and 320 px, light and dark, in both densities. No Core, no
-// Agent; nothing is sent.
+// three visible steps, and a block's title stands above the body it
+// introduces. Read from getComputedStyle in a real browser on the production
+// bundle, desktop and 320 px, light and dark, in both densities and in two
+// palettes. No Core, no Agent; nothing is sent.
+//
+// What this does and does not show: these are the styles the browser resolved
+// and the box it laid out — the levels and the space between them. A computed
+// `font-weight` is not proof that a heavier face was drawn; for Chinese it
+// currently is not (acceptance/brief-typography/font-weight-probe.mjs asks
+// that question, and this one does not).
 //   YUZUNO_UI_DIST=<isolated build> node tools/brief-typography-check.mjs
 //   YUZUNO_BASELINE=1 ... records what a build draws today without asserting,
 //   for the before picture of a build that does not have the fix.
@@ -49,8 +55,9 @@ const section = (key, title, body, extra = {}) => ({
   attachments: [], refs: {}, seen: null, history: false, body, ...extra,
 });
 
-// The card the user was looking at: a group title, written paragraphs, and
-// figures beside them.
+// A fixture in the shape of the card the user was reading — a group title,
+// written paragraphs and figures beside them. Its structure and wording are
+// written here, not copied from their Brief.
 const progress = section("development", "当前进展", spec([
   ["lead", node("Markdown", { text: "本轮把工具活动改成胶囊行，并让每张问题卡都能用自己的话回答。两项都已合并，**尚未部署到你的 Core**。" })],
   ["round", node("Group", { title: "本轮进展" }, ["round-text", "round-metrics"])],
@@ -110,15 +117,15 @@ const home = () => ({
 const browser = await launchBrowser();
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 
-async function open({ width, height, touch, theme, density }) {
+async function open({ width, height, touch, theme, density, palette }) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
   const page = await context.newPage();
-  await page.addInitScript(([theme, density]) => {
+  await page.addInitScript(([theme, density, palette]) => {
     window.EventSource = class { close() {} };
-    localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette: "garden" }));
+    localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette }));
     localStorage.setItem("yuzuno.selected", JSON.stringify("mori"));
     localStorage.setItem("yuzuno.homeDensity.ws", JSON.stringify(density));
-  }, [theme, density]);
+  }, [theme, density, palette]);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -196,13 +203,17 @@ try {
     { name: "narrow-320", width: 320, height: 780, touch: true },
   ]) {
     for (const theme of ["light", "dark"]) {
-      for (const density of ["low", "high"]) {
-        const { context, page } = await open({ ...view, theme, density });
-        const where = `${view.name} ${theme} ${density}`;
+      for (const [density, palette] of [["low", "garden"], ["high", "garden"], ["low", "yuzu"], ["high", "yuzu"]]) {
+        const { context, page } = await open({ ...view, theme, density, palette });
+        const where = `${view.name} ${theme} ${density} ${palette}`;
         try {
           const shown = await levels(page);
           const heads = await groupTitle(page);
-          report.measured.push({ where, ...shown, groupTitle: heads });
+          report.measured.push({ where, palette, ...shown, groupTitle: heads });
+          // Outside Garden, heading and body are the same ink (appearance.css),
+          // which is why the levels may not rest on colour.
+          if (!baseline && palette !== "garden")
+            assert.equal(shown.h2.color, shown.body.color, `${where}: this palette draws them in one ink ${JSON.stringify(shown)}`);
           assert.equal(
             await page.locator(".home-view").first().getAttribute("data-density"),
             density,
@@ -223,7 +234,7 @@ try {
             // Emphasis: a full step of weight, not a tint alone.
             assert.ok(shown.strong.weight >= 700, `${where}: strong is heavier ${JSON.stringify(shown)}`);
             assert.ok(shown.strong.weight - shown.body.weight >= 200, `${where}: a visible step ${JSON.stringify(shown)}`);
-            record(`${where}: three heading levels, a title above the body, emphasis a step heavier`, { ...shown, groupTitle: heads });
+            record(`${where}: three heading levels, a title above the body, emphasis a step heavier in the computed style`, { ...shown, groupTitle: heads });
           }
           if (view.touch) {
             const overflow = await page.locator('[data-section-key="typography"]').first()
@@ -232,7 +243,7 @@ try {
             if (!baseline) record(`${where}: the card fits 320 px`, { overflow });
           }
           for (const [key, label] of [["typography", "levels"], ["development", "card"]]) {
-            const shot = `${output}/${label}-${view.name}-${theme}-${density}.png`;
+            const shot = `${output}/${label}-${view.name}-${theme}-${density}-${palette}.png`;
             await page.locator(`[data-section-key="${key}"]`).first().screenshot({ path: shot });
             report.shots.push(shot);
           }

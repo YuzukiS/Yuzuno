@@ -4,8 +4,11 @@ A Home card drew an Agent's `h1`, `h2` and `h3` at one size, a block's title
 smaller than the body under it, and emphasis one weight step from plain text.
 The user, reading a Chinese card, could not tell the levels apart.
 
-This check measures what a build actually draws, and photographs it. Run it
-twice to get a before and an after:
+This check reads what a build resolved and laid out — `getComputedStyle` and
+the boxes — and photographs it. It does not say which face was drawn: a
+computed `font-weight` is not proof that a heavier one reached the screen,
+which is what the probe below is for. Run it twice for a before and an
+after:
 
 ```sh
 # from web/, against an isolated build (never web/dist)
@@ -20,8 +23,14 @@ so a build that does not have the fix can still be photographed.
 `YUZUNO_BROWSER_BIN` selects another Chromium build (on a Mac, Google
 Chrome's own executable).
 
-It covers desktop and 320 px, light and dark, in both Home densities, on two
-cards: a real Chinese progress card, and a sample holding every level at once.
+It covers desktop and 320 px, light and dark, both Home densities and two
+palettes, on two cards: a fixture in the shape of the Chinese progress card
+the user was reading — its structure and wording written in the script, not
+copied from a Brief — and a sample holding every level at once. The second
+palette matters: outside Garden, `appearance.css` draws body, `strong` and
+h1–h3 in one ink, so the levels there rest on size and spacing alone, and the
+check asserts that heading and body really are the same colour before
+measuring the levels.
 It asserts three heading steps, each above body text; a block title above the
 body and above the headings inside it, with only an explicit `h1` leading;
 emphasis a full weight step; nothing running off 320 px; and that the page

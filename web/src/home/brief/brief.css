@@ -164,9 +164,11 @@
 .brief-body .brief-markdown > :first-child {
   margin-top: 0;
 }
-/* Emphasis has to read in Chinese too. The bundled Han face is a variable
- * font with real 400-700 weights (assets/fonts/fonts.css), so this is a full
- * step in weight, not a tint; `font-synthesis: none` never comes into it. */
+/* Emphasis is a full step of weight rather than a tint. In Latin that is
+ * what the reader sees; in Chinese it currently is not — every weight
+ * resolves to the bundled face's Thin instance on the machine this was
+ * measured on, which is an open question for the font, not for this rule
+ * (acceptance/brief-typography). */
 .brief-body .brief-markdown strong {
   font-weight: 700;
   color: var(--ink);
