@@ -887,7 +887,10 @@ impl Workspace {
             if c.server.session_status(&c.session).await.is_ok_and(|now| now["type"] == "idle") {
                 let turn = expected.to_owned();
                 let _ = self.record_update(id, "opencode/statusRead", json!({"turnId":expected,"status":{"type":"idle"}}),
-                    Sel::Turns(vec![turn]), |d| status(d, &json!({"type":"idle"}))).await;
+                    Sel::Turns(vec![turn]), |d| {
+                    status(d, &json!({"type":"idle"}));
+                    refresh_status(d);
+                }).await;
                 self.changed(id);
             }
             bail!(error);
