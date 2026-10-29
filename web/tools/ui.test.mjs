@@ -3681,6 +3681,55 @@ test("chose Turns, then opened another Agent: its inputs are read once and the s
   } finally { page.close(); }
 });
 
+test("by Turn, an Agent with no inputs offers no switch, and a late answer for the last Agent changes nothing (T-6)", async () => {
+  const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: "you" });
+  const extraTurns = [
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read")] },
+    { id: "t-b", status: "completed", items: [user("u2", "Keep Back to latest as it is")] },
+    { id: "t-c", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (itemId, at) => ({ turnId: `t-${"abc"[at - 1]}`, itemId, position: [at, 0], by: "you", preview: itemId });
+  const mori = { inputs: [input("u1", 1), input("u2", 2), input("u3", 3)], hasBefore: false, total: 3 };
+  // Mori's second read answers only when let go: after Hana is open again.
+  let letGo;
+  const held = new Promise((resolve) => { letGo = () => resolve(mori); });
+  let moriReads = 0;
+  const page = await mount({ extraTurns, inputs: (url) => url.includes("/agents/b/")
+    ? { inputs: [], hasBefore: false, total: 0 }
+    : (++moriReads === 2 ? held : mori) });
+  try {
+    await pause(); await pause();
+    const by = () => page.document.querySelector(".turn-dock .turn-dock-by");
+    const pressed = () => by()?.querySelector('[aria-pressed="true"]')?.textContent;
+    const open = async (name, id) => {
+      [...page.document.querySelectorAll(".agent-row")].find((el) => el.textContent.includes(name)).querySelector(".agent-select").click();
+      await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === id, `${name} is open`);
+      await pause(); await pause();
+    };
+    const reads = (agent) => page.calls.filter((call) => call.url.startsWith(`/api/agents/${agent}/conversation/inputs`)).length;
+    [...by().querySelectorAll("button")].find((b) => b.textContent === "Turns").click();
+    await pause();
+    await open("Hana", "b");
+    assert.equal(reads("b"), 1, "Hana's inputs read once");
+    assert.ok(page.document.querySelector(".turn-dock") && !by(), "none: by Turn, no switch");
+    // Mori again, its read still on its way, then Hana before it answers.
+    await open("Mori", "a");
+    assert.equal(moriReads, 2);
+    await open("Hana", "b");
+    letGo();
+    await pause(); await pause(); await pause();
+    assert.equal(page.document.querySelector(".agent-row.selected")?.dataset.agentId, "b");
+    assert.ok(!by(), "Mori's late answer offers Hana no switch");
+    assert.equal(reads("b"), 2, "once each time Hana is opened");
+    // Mori, read again, offers it, still by Turn.
+    await open("Mori", "a");
+    await until(() => pressed() === "Turns", "Mori's switch is back, by Turn");
+    assert.equal(reads("a"), 3);
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays in view (T-6)", async () => {
   const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
   const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
