@@ -79,14 +79,19 @@ not):
 Latin 400 → .SFNS-Regular     Latin 700 → .SFNS-Bold
 ```
 
-So the bundled face **is** the one drawing Chinese here, and every weight
-resolves to its Thin instance. That is as far as the evidence goes: it does
-not establish what the `woff2` contains, and `fc-scan` on the source font
-reports Regular, Medium and Bold. Allowing `font-synthesis-weight: auto` for
-one span changed nothing here either.
+So the bundled face **is** the one drawing Chinese here, and no weight
+changed what it drew. Two things that reading does *not* establish, both
+settled elsewhere since:
 
-Nothing about this is fixed in this slice: the weight step in `brief.css` is
-for Latin, and what Chinese emphasis should do is a product decision. The
-open question — why a face declared `font-weight: 400 700` resolves to Thin —
-belongs to the font investigation, and this probe is the way to ask it again
-on another machine.
+- The face Chrome names, `NotoSansSC-Thin`, is a name, not a measurement. Its
+  outlines turned out to be byte-identical to Regular — Chinese body text was
+  never thin, and only bold was missing. `acceptance/cjk-font-weights` has
+  the glyph-by-glyph comparison.
+- Why it happened is in the file, not in CSS: the subset declared a weight
+  axis while carrying no variation data. Allowing `font-synthesis-weight:
+  auto` for one span changed nothing, because the face claimed the weight.
+
+Nothing about this is fixed in this slice; the asset is rebuilt separately,
+in `acceptance/cjk-font-weights`. This probe stays here because it is the way
+to ask the question again on another machine — Windows has not been
+measured.

@@ -164,11 +164,10 @@
 .brief-body .brief-markdown > :first-child {
   margin-top: 0;
 }
-/* Emphasis is a full step of weight rather than a tint. In Latin that is
- * what the reader sees; in Chinese it currently is not — every weight
- * resolves to the bundled face's Thin instance on the machine this was
- * measured on, which is an open question for the font, not for this rule
- * (acceptance/brief-typography). */
+/* Emphasis is a full step of weight rather than a tint. Chinese showed none
+ * of it while the bundled Han subset carried no variation data: every weight
+ * drew the same outlines, whatever this rule asked for. That is the font's
+ * to fix, not this rule's (acceptance/cjk-font-weights). */
 .brief-body .brief-markdown strong {
   font-weight: 700;
   color: var(--ink);
