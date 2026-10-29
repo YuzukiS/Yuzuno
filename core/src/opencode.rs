@@ -150,6 +150,9 @@ pub struct ModelChoice {
     pub name: String,
     /// `alpha`, `beta`, `deprecated` or `active` (`provider/provider.ts`).
     pub status: String,
+    /// The names of its variants (`model.variants`, such as `low` or `max`),
+    /// mildest first; never what each one sets.
+    pub variants: Vec<String>,
 }
 
 impl ModelChoice {
@@ -158,6 +161,13 @@ impl ModelChoice {
     pub fn id(&self) -> String {
         format!("{}/{}", self.provider, self.model)
     }
+}
+
+/// Variant names mildest first, as OpenCode derives them (`none`, `low`, …,
+/// `max`, `provider/transform.ts`); other names after them, by name.
+fn variant_order(name: &str) -> (usize, &str) {
+    const KNOWN: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    (KNOWN.iter().position(|known| *known == name).unwrap_or(KNOWN.len()), name)
 }
 
 /// A message ID in OpenCode's own form: `msg_`, 12 hex digits of
@@ -382,18 +392,22 @@ impl Server {
     /// Sends one text prompt under `id`, once: an ID this server was given
     /// before is refused here, whatever became of it.
     pub async fn submit(&self, session: &str, id: &MessageId, text: &str) -> Result<Submission> {
-        self.submit_with(session, id, text, None).await
+        self.submit_with(session, id, text, None, None).await
     }
 
-    /// As `submit`, with the model to answer it; without one OpenCode decides
-    /// (its agent's model, the session's last, then its configured default).
-    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, model: Option<&ModelChoice>) -> Result<Submission> {
+    /// As `submit`, with the model to answer it and that model's variant;
+    /// without them OpenCode decides (its agent's model and variant, the
+    /// session's last, then its configured default).
+    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, model: Option<&ModelChoice>, variant: Option<&str>) -> Result<Submission> {
         let path = format!("/session/{}/prompt_async", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
         let mut body = json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": text}]});
         if let Some(model) = model {
             body["model"] = json!({"providerID": model.provider, "modelID": model.model});
+        }
+        if let Some(variant) = variant {
+            body["variant"] = variant.into();
         }
         let sent = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&body).send().await;
         Ok(match sent {
@@ -461,12 +475,15 @@ impl Server {
             let provider_name = provider["name"].as_str().unwrap_or(id);
             for (key, model) in provider["models"].as_object().into_iter().flatten() {
                 let model_id = model["id"].as_str().unwrap_or(key);
+                let mut variants: Vec<String> = model["variants"].as_object().into_iter().flatten().map(|(name, _)| name.clone()).collect();
+                variants.sort_by(|a, b| variant_order(a).cmp(&variant_order(b)));
                 models.push(ModelChoice {
                     provider: id.into(),
                     provider_name: provider_name.into(),
                     model: model_id.into(),
                     name: model["name"].as_str().unwrap_or(model_id).into(),
                     status: model["status"].as_str().unwrap_or("active").into(),
+                    variants,
                 });
             }
         }

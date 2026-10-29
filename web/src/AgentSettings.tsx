@@ -21,13 +21,16 @@ const COMPACT_EXCEEDS = "The compaction threshold cannot exceed the configured w
 // descriptions, and Core's errors are shown as they came.
 const text = strings({
   button: "Agent settings",
-  buttonTitle: (harness: string): string => (harness === "claude" ? "Claude Code model, reasoning effort and approvals" : harness === "opencode" ? "OpenCode model" : "Model, reasoning and permissions"),
+  buttonTitle: (harness: string): string => (harness === "claude" ? "Claude Code model, reasoning effort and approvals" : harness === "opencode" ? "OpenCode model and variant" : "Model, reasoning and permissions"),
   model: "Model",
-  andWhat: (harness: string) => (harness === "opencode" ? "" : ` & ${harness === "claude" ? "approvals" : "reasoning"}`),
+  andWhat: (harness: string) => ` & ${harness === "claude" ? "approvals" : harness === "opencode" ? "variant" : "reasoning"}`,
   title: (name: string) => `${name} · Agent settings`,
   claudeDescription: "The model and reasoning effort apply from the next turn; a running turn keeps its own, and this conversation stays together. Approvals apply to Claude’s next permission check, including in a running turn.",
   codexDescription: "Model, effort and permissions apply to new turns. The current turn and pending requests keep their existing permissions. Context settings need a separate safe reload while the conversation is idle.",
-  opencodeDescription: "The model goes with each new message from the next one; a running turn keeps the model it was sent with. The models are those OpenCode’s configured providers list. Reasoning and permissions stay OpenCode’s own configuration.",
+  opencodeDescription: "The model and its variant go with each new message from the next one; a running turn keeps what it was sent with. Both are what OpenCode’s configured providers list. Permissions stay OpenCode’s own configuration.",
+  variant: "Variant",
+  variantNote: "OpenCode runs the model with this variant from the next message. Default leaves it to OpenCode.",
+  variantBack: (name: string, variant: string) => `${name || "This model"} does not list variant ${variant}; it is back to the default.`,
   machine: (name: string | null) => `Execution machine: ${name || "Core host"}`,
   loading: "Loading this agent’s model catalog…",
   harnessDefault: "Harness default",
@@ -66,13 +69,16 @@ const text = strings({
   tokenInvalid: TOKEN_INVALID,
 }, {
   button: "Agent 设置",
-  buttonTitle: (harness) => (harness === "claude" ? "Claude Code 的模型、推理强度与审批" : harness === "opencode" ? "OpenCode 的模型" : "模型、推理与权限"),
+  buttonTitle: (harness) => (harness === "claude" ? "Claude Code 的模型、推理强度与审批" : harness === "opencode" ? "OpenCode 的模型与变体" : "模型、推理与权限"),
   model: "模型",
-  andWhat: (harness) => (harness === "opencode" ? "" : ` 与${harness === "claude" ? "审批" : "推理"}`),
+  andWhat: (harness) => ` 与${harness === "claude" ? "审批" : harness === "opencode" ? "变体" : "推理"}`,
   title: (name) => `${name} · Agent 设置`,
   claudeDescription: "模型和推理强度从下一个 Turn 起生效；正在运行的 Turn 保持自己的设置，此会话也不会被拆开。审批设置对 Claude 的下一次权限检查生效，包括正在运行的 Turn。",
   codexDescription: "模型、推理强度和权限对新的 Turn 生效。当前 Turn 和待处理的请求保留原有权限。上下文设置需要在会话空闲时另行安全地重新载入。",
-  opencodeDescription: "模型从下一条消息起随每条新消息发送；正在运行的 Turn 保持发送时的模型。可选的模型来自 OpenCode 已配置的提供方。推理和权限仍由 OpenCode 自己的配置决定。",
+  opencodeDescription: "模型及其变体从下一条消息起随每条新消息发送；正在运行的 Turn 保持发送时的设置。两者都来自 OpenCode 已配置的提供方。权限仍由 OpenCode 自己的配置决定。",
+  variant: "变体",
+  variantNote: "从下一条消息起，OpenCode 用这个变体运行模型。选默认则由 OpenCode 决定。",
+  variantBack: (name, variant) => `${name || "此模型"}没有列出变体 ${variant}，已恢复为默认。`,
   machine: (name) => `执行机器：${name || "Core 主机"}`,
   loading: "正在载入此 Agent 的模型目录…",
   harnessDefault: "Harness 默认",
@@ -275,7 +281,15 @@ export function AgentSettings({
   // Nothing is saved until Save.
   function selectModel(value: string, catalog: Model[], effort: string) {
     setModel(value);
-    if (opencode) return;
+    if (opencode) {
+      // A chosen variant survives a model switch only if the new model lists it.
+      const row = catalog.find((r) => (r.model || r.id) === value);
+      if (effort && !(row?.variants || []).includes(effort)) {
+        setSettings((s) => ({ ...s, reasoningEffort: null }));
+        setEffortNote(() => (t: Words) => t.variantBack(row?.displayName || value, effort));
+      } else setEffortNote("");
+      return;
+    }
     if (claude) {
       // A chosen effort survives a model switch only if the new model takes
       // it; otherwise say so and fall back to default.
@@ -295,6 +309,10 @@ export function AgentSettings({
     }));
   }
   const effortRefused = effortUnlisted && !!claudeEffortRow;
+  // OpenCode's variant (T-10), kept where Claude keeps its effort.
+  const opencodeVariant = opencode ? settings.reasoningEffort || "" : "";
+  const variants = opencode ? selected?.variants || [] : [];
+  const variantUnlisted = !!opencodeVariant && !variants.includes(opencodeVariant);
   async function save() {
     if (saving) return;
     setSaving(true);
@@ -310,7 +328,7 @@ export function AgentSettings({
         // session from a mode Claude switched to, and replaces older records.
         // OpenCode receives the model alone.
         ...(opencode
-          ? {}
+          ? { effort: opencodeVariant || null }
           : claude
             ? { permissionMode, effort: claudeEffort || null }
             : { settings: { ...settings, contextWindow: window, autoCompactTokenLimit: compact } }),
@@ -418,7 +436,7 @@ export function AgentSettings({
               name="agent-model"
               value={model}
               disabled={loading || saving}
-              onChange={(value) => selectModel(value, models, claudeEffort)}
+              onChange={(value) => selectModel(value, models, opencode ? opencodeVariant : claudeEffort)}
               choices={[
                 ...(claude || opencode ? [{ value: "", label: t.harnessDefault }] : []),
                 // The model in use stays shown while the catalog loads, or
@@ -512,6 +530,29 @@ export function AgentSettings({
                 )}
             </div>
           )}
+          {opencode && (variants.length > 0 || variantUnlisted) && (
+            <div className="agent-setting">
+              <ChoiceChips
+                label={t.variant}
+                name="agent-variant"
+                value={opencodeVariant}
+                disabled={loading || saving}
+                onChange={(value) => {
+                  setEffortNote("");
+                  setSettings((s) => ({ ...s, reasoningEffort: value || null }));
+                }}
+                choices={[
+                  { value: "", label: t.harnessDefault },
+                  ...(variantUnlisted ? [{ value: opencodeVariant, label: opencodeVariant, note: t.notForModel }] : []),
+                  ...variants.map((variant) => ({ value: variant, label: variant })),
+                ]}
+              />
+              <small>{t.variantNote}</small>
+            </div>
+          )}
+          {opencode && effortNote && (
+            <small className="model-catalog-note" role="status">{say(effortNote)}</small>
+          )}
           {!claude && !opencode && (
             <>
               <div className="agent-setting">
@@ -588,7 +629,7 @@ export function AgentSettings({
                 saving ||
                 loading ||
                 (opencode
-                  ? !!model && !selected
+                  ? (!!model && !selected) || variantUnlisted
                   : claude
                     ? (!!model && !selected) || effortUnlisted
                     : !selected ||

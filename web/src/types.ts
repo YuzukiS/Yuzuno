@@ -95,6 +95,11 @@ export interface NativeItem {
   /** A particular collaboration reminder added to an existing turn, or
    * Yuzuno's reminder that a turn ended without a Brief update. */
   _yuzunoSource?: "peer" | "brief-reminder";
+  /** Who a user message came from, as Core recorded it (T-6): yours ("you",
+   * "home", "form", "answer"); another Agent's mail, a reminder, an
+   * automatic continue or Claude's own ("peer", "reminder", "resume",
+   * "native"); or no record says ("unconfirmed"). */
+  _yuzunoInput?: InputOrigin;
   _yuzunoMailbox?: import("./MailboxNotice").MailboxSnapshot;
   /**
    * A follow-up sent while Claude worked: "queued" until Claude names it as
@@ -152,6 +157,8 @@ export interface TruncatedField {
   cutDiffs?: number[];
 }
 export interface NativeTurn {
+  /** A turn dock entry standing for one input (input-dock.ts, T-6). */
+  _yuzunoInputOf?: { turnId: string; itemId: string; turn: number; by: InputOrigin };
   _yuzunoIndex?: boolean;
   _yuzunoRequestCount?: number;
   /** Body slice in the saved history window; Copy turn loads the original. */
@@ -248,6 +255,23 @@ export interface RunningCall {
   item: NativeItem;
 }
 export type RunningSubAgent = RunningCall;
+export type InputOrigin = "you" | "home" | "form" | "answer" | "unconfirmed" | "peer" | "reminder" | "resume" | "native";
+/** One input a person wrote, or may have ("unconfirmed"), in the
+ * conversation's inputs (GET /api/agents/{id}/conversation/inputs, T-6). */
+export interface ConversationInput {
+  turnId: string;
+  itemId: string;
+  /** [Turn, Item] in the whole conversation. */
+  position: [number, number];
+  by: InputOrigin;
+  preview: string;
+}
+/** A page of them, oldest first; `total` counts them all. */
+export interface ConversationInputs {
+  inputs: ConversationInput[];
+  hasBefore: boolean;
+  total: number;
+}
 export interface AgentDetail {
   conversation?: {
     index: (NativeTurn & { number: number; itemCount: number })[];
@@ -459,6 +483,8 @@ export interface Model {
   supportsEffort?: boolean;
   supportedEffortLevels?: string[];
   defaultReasoningEffort?: string;
+  /** OpenCode: the names of the model's variants (T-10). */
+  variants?: string[];
   supportedReasoningEfforts?: {
     reasoningEffort: string;
     description: string;
