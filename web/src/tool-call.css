@@ -1,0 +1,149 @@
+/* One tool call, one line (T-9, ToolCall.tsx): its icon, name and short
+   result in a capsule only as wide as they are, cut short with an ellipsis
+   at the row's edge rather than wrapping. The tints are mixed from the row's
+   own colour, so every palette and dark keep them. */
+.tool-item > summary.tool-call {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  gap: 6px;
+  margin: 0;
+  padding: 3px 11px 3px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, currentColor 5%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tool-call > svg {
+  flex-shrink: 0;
+}
+/* The name and the result are one run of text, cut from its end when the
+   line is full: the result gives way first, the name only when it alone is
+   too long. The state at the end stays whole. */
+.tool-item > summary.tool-call > .tool-call-text {
+  flex: 0 1 auto;
+  min-width: 2em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tool-call-note {
+  color: var(--text-secondary);
+}
+.tool-call-note::before {
+  content: "·" / "";
+  margin: 0 6px;
+  opacity: 0.7;
+}
+.tool-item > summary.tool-call > .tool-result {
+  flex: none;
+  margin-left: 0;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+}
+.tool-call-name .tool-call-server {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.tool-call[data-tone="failed"],
+.tool-call[data-tone="refused"] {
+  border-color: color-mix(in srgb, var(--error-ink, #a37961) 42%, transparent);
+  background-color: color-mix(in srgb, var(--error-ink, #a37961) 8%, transparent);
+}
+.tool-call:is([data-tone="failed"], [data-tone="refused"]) :is(.tool-result, .tool-call-note) {
+  color: var(--error-ink, #a37961);
+}
+.tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) {
+  border-color: color-mix(in srgb, var(--accent-ink, #786637) 38%, transparent);
+}
+.tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
+  color: var(--accent-ink, #786637);
+}
+/* The dark and palette themes give every tool result their quiet colour
+   (appearance.css); a call's state keeps its own there too. */
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
+  .tool-call:is([data-tone="failed"], [data-tone="refused"]) > .tool-result {
+  color: var(--error-ink, #efb49a);
+}
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
+  .tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
+  color: var(--accent-ink, #e2ce8e);
+}
+.tool-call[data-to-expand] .tool-call-note {
+  font-style: italic;
+}
+@media (forced-colors: active) {
+  .tool-item > summary.tool-call,
+  .tool-item > summary.tool-call > .tool-result {
+    border-color: CanvasText;
+  }
+}
+
+/* The few more facts beside a capsule, on hover or keyboard focus. It only
+   describes: the capsule under it still takes the click. */
+.tool-call-tip {
+  position: fixed;
+  z-index: 50;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised, var(--input));
+  color: var(--ink);
+  box-shadow: 0 6px 20px #0002;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.tool-call-tip > p {
+  margin: 0;
+}
+.tool-call-tip-name {
+  font-weight: 600;
+}
+.tool-call-tip-state {
+  color: var(--text-secondary);
+}
+.tool-call-tip-state:is([data-tone="failed"], [data-tone="refused"]) {
+  color: var(--error-ink, #a37961);
+}
+.tool-call-tip-state:is([data-tone="unconfirmed"], [data-tone="queued"]) {
+  color: var(--accent-ink, #786637);
+}
+.tool-call-tip-hint {
+  margin-top: 6px !important;
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+}
+.tool-call-details {
+  margin: 4px 0 6px;
+}
+.tool-call-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 1px 12px;
+  margin: 0;
+}
+.tool-call-details dl > div {
+  display: contents;
+}
+.tool-call-details dt {
+  color: var(--text-secondary);
+}
+.tool-call-details dd {
+  margin: 0;
+}
+.tool-call-caution {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+}
+.tool-content > .tool-call-details {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}

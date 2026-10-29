@@ -106,8 +106,7 @@ try {
       return [id, { text: label.textContent, title: label.getAttribute("title"), strong: !!label.querySelector("strong"),
         cut: label.scrollWidth > label.clientWidth, result: result.textContent, label: box(label), status: box(result), summary: box(summary) }];
     })));
-    const counts = await page.locator(".tool-activity .tool-count").evaluateAll((nodes) =>
-      nodes.map((node) => node.querySelector(".tool-count-name").textContent + node.querySelector(".tool-count-number").textContent));
+    const counts = await page.locator(".tool-activity > summary .tool-overview-part").allTextContents();
     const overflow = await page.evaluate(() => {
       const pane = document.querySelector(".conversation-scroll");
       return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth, pane: pane ? pane.scrollWidth - pane.clientWidth : null };
@@ -117,20 +116,20 @@ try {
     report.shots.push({ name, rows, counts, overflow, background });
 
     assert.equal(rows.m1.text, "yuzuno/task_get");
-    assert.ok(rows.m1.strong && rows.m1.title === "yuzuno/task_get");
-    assert.equal(rows.m1.result, "completed");
-    assert.deepEqual(counts, ["yuzuno/task_get×2", "MCP tool×1", `${long.server}/${long.tool}×1`, "Shell×1"]);
-    check(`${name}: the row and the summary name the server and tool`);
+    assert.ok(rows.m1.strong);
+    assert.equal(rows.m1.result, "returned");
+    // The heading counts the steps; each call is its own capsule (T-9).
+    assert.deepEqual(counts, ["5 tool steps", "1 failed"]);
+    check(`${name}: the capsule names the server and tool`);
     assert.equal(rows.m4.text, `${long.server}/${long.tool}`);
-    assert.equal(rows.m4.title, rows.m4.text);
-    check(`${name}: a long name is whole in its text and title${rows.m4.cut ? ", cut short on screen" : ""}`, { cut: rows.m4.cut });
+    check(`${name}: a long name is whole in its text${rows.m4.cut ? ", cut short on screen" : ""}`, { cut: rows.m4.cut });
     for (const id of ["m1", "m3", "m4", "ls"]) {
       const { status, summary, label } = rows[id];
       assert.ok(status.width > 0 && status.right <= summary.right + 1 && status.left >= label.right - 1, `${name}: ${id}'s status is in view`);
     }
     check(`${name}: every row's status stays in view beside its label`);
     assert.equal(rows.m3.text, "MCP tool");
-    assert.ok(!rows.m3.strong && rows.m3.title === null && rows.m3.result === "failed");
+    assert.ok(!rows.m3.strong && rows.m3.result === "failed");
     assert.equal(rows.ls.text, "ls");
     check(`${name}: a call naming no tool and a command keep their own labels`);
     assert.ok(overflow.page <= 0 && (overflow.pane === null || overflow.pane <= 0), `${name}: nothing scrolls sideways ${JSON.stringify(overflow)}`);

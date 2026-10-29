@@ -8,9 +8,8 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM } from "jsdom";
 
-// T-9: a Codex MCP call's row names its server and tool, as its group's
-// summary does, instead of only its kind ("mcp Tool Call"). Its status and
-// raw details are unchanged.
+// T-9: a Codex MCP call's capsule names its server and tool instead of only
+// its kind ("mcp Tool Call"). Its raw details are unchanged.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
 await mkdir(cache, { recursive: true });
@@ -72,35 +71,33 @@ const row = (page, id) => page.document.querySelector(`[id="item-${id}"]`);
 const label = (node) => node.querySelector(":scope > summary > span:first-of-type");
 const result = (node) => node.querySelector(":scope > summary > .tool-result").textContent;
 
-test("a Codex MCP call's row names its server and tool, as its group's summary does", async () => {
+test("a Codex MCP call's capsule names its server and tool", async () => {
   const page = await mount();
   try {
     const m1 = row(page, "m1");
     assert.equal(label(m1).textContent, "yuzuno/task_get");
-    assert.equal(label(m1).querySelector("strong")?.textContent, "yuzuno/task_get");
-    assert.equal(label(m1).title, "yuzuno/task_get");
-    assert.equal(result(m1), "completed");
+    // The server quieter, the tool in bold; the tip has the name whole.
+    assert.equal(label(m1).querySelector(".tool-call-server")?.textContent, "yuzuno/");
+    assert.equal(label(m1).querySelector("strong")?.textContent, "task_get");
+    // A call that returned says so, and no more (T-9: never success).
+    assert.equal(result(m1), "returned");
 
-    // The capsule's name and number; what the calls reported is tool-capsules-ui's.
-    const counts = [...page.document.querySelectorAll(".tool-activity .tool-count")]
-      .map((node) => node.querySelector(".tool-count-name").textContent + node.querySelector(".tool-count-number").textContent);
-    assert.deepEqual(counts, ["yuzuno/task_get×2", "MCP tool×1", `${long.server}/${long.tool}×1`, "Shell×1"]);
+    // The heading keeps only an overview; each call is its own capsule.
+    assert.equal(page.document.querySelectorAll(".tool-activity .tool-count").length, 0);
+    assert.equal(page.document.querySelector(".tool-activity .tool-overview").textContent, "5 tool steps1 failed");
 
-    // A long name is whole in the text and in its title; only the row cuts it short.
+    // A long name is whole in the text; only the capsule cuts it short.
     const m4 = row(page, "m4");
     assert.equal(label(m4).textContent, `${long.server}/${long.tool}`);
-    assert.equal(label(m4).title, `${long.server}/${long.tool}`);
 
     // A call that names no tool is named by its kind, as before but readable.
     const m3 = row(page, "m3");
     assert.equal(label(m3).textContent, "MCP tool");
     assert.equal(label(m3).querySelector("strong"), null);
-    assert.equal(label(m3).getAttribute("title"), null);
     assert.equal(result(m3), "failed");
 
     // Other rows keep their own labels.
     assert.equal(label(row(page, "ls")).textContent, "ls");
-    assert.equal(label(row(page, "ls")).getAttribute("title"), null);
 
     // The raw details are unchanged.
     m1.querySelector("summary").click();

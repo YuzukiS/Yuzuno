@@ -125,8 +125,8 @@ function toolName(item: NativeItem): { namespace: string; name: string } {
 }
 
 /**
- * What a tool call is called, in a row of its own and in its group's
- * summary alike: the tool it names, else the kind of call.
+ * What a tool call is called in its row: the tool it names, else the kind
+ * of call.
  */
 export function toolLabel(item: NativeItem, language: Language = "en"): { label: string; named: boolean } {
   const { namespace, name } = toolName(item);
@@ -136,32 +136,4 @@ export function toolLabel(item: NativeItem, language: Language = "en"): { label:
     label: names[item.type] || item.type.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()),
     named: false,
   };
-}
-
-/** Count native calls, not output chunks or files touched by a single edit. */
-export function toolActivityCounts(items: readonly NativeItem[], language: Language = "en") {
-  // `items`: the group's own calls, for a caller that also shows their
-  // state (tool-capsules.ts). A call is named by toolLabel and counted here.
-  const counts = new Map<
-    string,
-    { key: string; label: string; count: number; items: NativeItem[] }
-  >();
-  const seen = new Set<string>();
-  for (const item of items) {
-    if (
-      seen.has(item.id) ||
-      ["userMessage", "agentMessage"].includes(item.type)
-    )
-      continue;
-    seen.add(item.id);
-    const { namespace, name } = toolName(item);
-    const { label } = toolLabel(item, language);
-    const key = JSON.stringify([item.type, namespace, name]);
-    const previous = counts.get(key);
-    if (previous) {
-      previous.count++;
-      previous.items.push(item);
-    } else counts.set(key, { key, label, count: 1, items: [item] });
-  }
-  return [...counts.values()];
 }

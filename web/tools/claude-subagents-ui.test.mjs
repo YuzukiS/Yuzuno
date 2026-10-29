@@ -107,7 +107,7 @@ test("parallel and background sub-agents: each Agent call shows only its own goa
   await page.openTools();
   const shown = [...page.document.querySelectorAll(".tool-activity .claude-tool")].map((node) => node.id);
   assert.deepEqual(shown, ["item-agent-a", "item-agent-b", "item-agent-c"], "sub-agents' calls are not the Turn's own tools");
-  assert.match(page.document.querySelector(".tool-counts").textContent, /^Agent×3$/);
+  assert.equal(page.document.querySelector(".tool-overview").textContent, "3 tool steps");
   assert.deepEqual(["agent-a", "agent-b", "agent-c"].map((id) => page.summary(id).querySelector(".tool-result").textContent),
     ["Completed", "Completed", "Running in the background"], "the background sub-agent runs on after its Turn ended");
   assert.equal(page.document.querySelectorAll(".claude-subagent").length, 0, "no detail DOM before a row opens");

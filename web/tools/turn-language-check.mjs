@@ -119,7 +119,7 @@ const shown = () => turn().evaluate((el) => {
   return {
     activityOpen: activity?.open,
     activity: activity?.querySelector(".tool-activity-label")?.textContent,
-    counts: [...(activity?.querySelectorAll(".tool-count") || [])].map((c) => c.textContent),
+    counts: [...(activity?.querySelectorAll(":scope > summary .tool-overview-part") || [])].map((c) => c.textContent),
     commandOpen: command?.open,
     commandSummary: command?.querySelector("summary")?.textContent,
     output: command?.querySelector("pre")?.textContent,
@@ -141,7 +141,7 @@ try {
   const en = await shown();
   assert.deepEqual([en.activityOpen, en.commandOpen], [true, true]);
   assert.equal(en.activity, "Tool activity");
-  assert.deepEqual(en.counts, ["Shell×1", "Edit×1"]);
+  assert.deepEqual(en.counts, ["2 tool steps"]);
   assert.match(en.commandSummary, /npm test -- fixture.*exit 0/);
   assert.equal(en.output, "fixture output line\n");
   assert.equal(en.replyActions[0], "Copy reply");
@@ -154,7 +154,7 @@ try {
   await turn().locator(".tool-activity-label", { hasText: "工具活动" }).waitFor({ timeout: 10_000 });
   const zh = await shown();
   assert.deepEqual([zh.activityOpen, zh.commandOpen], [true, true], "what was open stays open");
-  assert.deepEqual(zh.counts, ["Shell×1", "编辑×1"]);
+  assert.deepEqual(zh.counts, ["2 个工具步骤"]);
   assert.match(zh.commandSummary, /npm test -- fixture.*退出码 0/, "the command as it came");
   assert.equal(zh.output, en.output, "the output as it came");
   // Copy link shows where message links are offered.

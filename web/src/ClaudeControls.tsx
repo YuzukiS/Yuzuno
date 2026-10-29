@@ -6,6 +6,8 @@ import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import { claudeCodeFacts } from "./claude-runtime";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { cardWords } from "./subagent-text";
+import { callFacts } from "./tool-call";
+import { CallDetails, CallName, ToolCallSummary, callIcon } from "./ToolCall";
 import { requestWords, shownError, type RequestWords } from "./request-text";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
@@ -186,7 +188,8 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
 }) {
   const scope = useContext(SubAgentScopeContext);
   const anchored = useContext(AnchorsContext);
-  const t = useStrings(cardWords);
+  const language = useLanguage();
+  const t = cardWords(language);
   const entry = scope?.entries.get(item.id);
   const target = useConversationReveal(scope?.turnId ?? "");
   // A source link to one of its calls, or to a call of a sub-agent it
@@ -198,20 +201,23 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
   const plan = name === "ExitPlanMode" && typeof input.plan === "string" ? input.plan : null;
   const hint = plan !== null ? planTitle(plan) : input.command || input.file_path || input.pattern || input.description || "";
   const running = entry ? entry.status === "running" : !unconfirmed && /inProgress|running/.test(item.status || "");
+  // What Claude says of a sub-agent or a plan, and of a call not done; any
+  // other call says what its capsule reads of it (tool-call.ts).
   const result = entry ? entry.record?.background && entry.status === "running" ? t.runningBackground : t.claudeSub[entry.status]
     : unconfirmed || item.status === "unknown" ? t.unconfirmed : item.status === "inProgress" ? plan !== null ? t.waitingReview : t.running
       // Claude Code completes ExitPlanMode only when the plan is approved.
-      : plan !== null && item.status === "completed" ? t.approved : plan !== null && item.status === "failed" ? t.notApproved : item.status;
+      : plan !== null && item.status === "completed" ? t.approved : plan !== null && item.status === "failed" ? t.notApproved : undefined;
+  const facts = callFacts(item, name, language, unconfirmed);
   return <details className="tool-item claude-tool" id={anchored ? `item-${item.id}` : undefined} data-running={running || undefined}
     data-subagent-status={entry?.status} open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange?.(event.currentTarget.open);
     }}>
-    <summary><ChevronRight size={12} />{entry ? <Bot size={14} /> : <SquareTerminal size={14} />}
-      <span><strong>{name}</strong>{hint ? ` · ${String(hint)}` : ""}</span>
-      <span className="tool-result">{result}</span>
-    </summary>
+    <ToolCallSummary open={!!opened} facts={facts} result={result} raw={!entry && plan === null}
+      icon={entry ? <Bot size={14} /> : callIcon(item, <SquareTerminal size={14} />)}
+      name={facts.name !== name ? <CallName name={facts.name} /> : <><strong>{name}</strong>{hint ? ` · ${String(hint)}` : ""}</>} />
     <div className="tool-content">
       {notice}
+      {!entry && plan === null && <CallDetails facts={facts} />}
       {entry && scope ? (opened ?? true) && <ClaudeSubAgentDetail agentId={scope.agentId} entry={entry} live={scope.live} item={item} /> : <>
         {plan !== null ? <>
           <span className="section-eyebrow">{t.plan}</span><PlanText plan={plan} id={`plan-${item.id}`} /><PlanFile path={input.planFilePath} />
