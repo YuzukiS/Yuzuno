@@ -266,6 +266,19 @@ test("opening and closing beside the chat keeps the reader's place: the card it 
   await until(() => !page.panel(), "closed again");
   assert.equal(message.getBoundingClientRect().top, 255, "the message read stays where it was");
   assert.equal(state.top, 1545, "not pulled back to the card");
+  // In a long message, the paragraph on the reading line holds, not the message's top.
+  page.click(main);
+  await until(() => html.dataset.portal === "side", "open a third time");
+  await new Promise((done) => setTimeout(done, 300));
+  state.top = 2245;
+  const paragraph = page.document.createElement("p");
+  message.append(paragraph);
+  place(paragraph, 2100, 2500, 24);
+  page.document.elementFromPoint = () => paragraph;
+  page.click(page.button("Close preview"));
+  await until(() => !page.panel(), "closed a third time");
+  assert.equal(paragraph.getBoundingClientRect().top, 255, "the paragraph read stays where it was");
+  assert.equal(state.top, 1845);
   assert.deepEqual(page.errors, []);
 });
 

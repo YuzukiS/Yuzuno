@@ -156,8 +156,9 @@ let holding = 0;
  * Runs a change that resizes the chat (the Portal opening, closing or
  * widening beside it), keeping what the reader is at where they saw it in
  * the conversation: the card the page was opened from while it shows, else
- * the first message in view, as the conversation picks its own reading
- * anchor (ConversationWindow's ReadingAnchor). Rows measured after the width
+ * the paragraph on the line a quarter down inside its message, else the
+ * first message in view, as the conversation picks its own reading anchor
+ * (ConversationWindow's ReadingAnchor). Rows measured after the width
  * change move it again, so the remaining drift is corrected for a few frames
  * more, until the reader scrolls or a newer change takes over; nothing else
  * scrolls the conversation.
@@ -172,10 +173,21 @@ function keepInPlace(opener: HTMLElement | null, change: () => void) {
   let anchor: HTMLElement | undefined;
   if (opener?.isConnected && pane.contains(opener) && shows(opener.getBoundingClientRect())) anchor = opener;
   else {
-    const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
-      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-      .filter(({ rect }) => shows(rect));
-    anchor = (visible.find(({ rect }) => rect.top >= box.top) || visible[0])?.element;
+    // The block on the line a quarter down, inside the message there: a long
+    // message reflows within itself, so its top alone would not hold the
+    // paragraph being read.
+    const line = typeof document.elementFromPoint === "function"
+      ? document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 4) : null;
+    const item = line?.closest<HTMLElement>("[data-item-id]");
+    if (line && item && pane.contains(item)) {
+      const block = line.closest<HTMLElement>("p, li, pre, blockquote, h1, h2, h3, h4, h5, h6, tr");
+      anchor = block && item.contains(block) ? block : item;
+    } else {
+      const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter(({ rect }) => shows(rect));
+      anchor = (visible.find(({ rect }) => rect.top >= box.top) || visible[0])?.element;
+    }
   }
   if (!anchor) return change();
   const at = anchor;
