@@ -392,16 +392,17 @@ impl Runtime {
 }
 
 /// What one HTTP request on the way found.
-enum Probe {
+pub(crate) enum Probe {
     Http(u16),
     Refused(String),
     Silent(String),
 }
 
-/// One `GET path` on 127.0.0.1:port, judged by the first bytes of its answer.
-/// Through an SSH forward a refused connection there arrives as a connection
-/// closed before any byte (`forward_probe` tells that from a silent service).
-async fn probe(port: u16, path: &str) -> Probe {
+/// One `GET path` on 127.0.0.1:port, judged by its status line, however
+/// many reads it arrives in. Through an SSH forward a refused connection
+/// there arrives as a connection closed before any byte (`forward_probe`
+/// tells that from a silent service).
+pub(crate) async fn probe(port: u16, path: &str) -> Probe {
     let mut stream = match timeout(PROBE_TIMEOUT, TcpStream::connect(("127.0.0.1", port))).await {
         Err(_) => return Probe::Silent(format!("no TCP connection within {} s", PROBE_TIMEOUT.as_secs())),
         Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused =>
@@ -420,18 +421,32 @@ async fn probe(port: u16, path: &str) -> Probe {
     if let Err(error) = stream.write_all(request.as_bytes()).await {
         return closed(error);
     }
+    // TCP keeps no write boundaries: read until the status line ends (64
+    // bytes hold one), the service closes, or the time is up.
     let mut head = [0u8; 64];
-    match timeout(PROBE_TIMEOUT, stream.read(&mut head)).await {
-        Err(_) => Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
-        Ok(Err(error)) => closed(error),
-        Ok(Ok(0)) => Probe::Silent(CLOSED.into()),
-        Ok(Ok(n)) => {
-            let text = String::from_utf8_lossy(&head[..n]);
-            match text.strip_prefix("HTTP/").and_then(|rest| rest.split(' ').nth(1)).and_then(|code| code.parse().ok()) {
-                Some(code) => Probe::Http(code),
-                None => Probe::Silent("it answered, but not with HTTP".into()),
-            }
+    let mut got = 0;
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    while got < head.len() && !head[..got].contains(&b'\n') {
+        match tokio::time::timeout_at(deadline, stream.read(&mut head[got..])).await {
+            Err(_) if got == 0 => return Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
+            Err(_) => return Probe::Silent(format!("no complete HTTP status line within {} s", PROBE_TIMEOUT.as_secs())),
+            Ok(Err(error)) if got == 0 => return closed(error),
+            Ok(Ok(0)) if got == 0 => return Probe::Silent(CLOSED.into()),
+            // Closed after some bytes: judge those.
+            Ok(Err(_)) | Ok(Ok(0)) => break,
+            Ok(Ok(n)) => got += n,
         }
+    }
+    let text = String::from_utf8_lossy(&head[..got]);
+    let line = text.lines().next().unwrap_or_default();
+    match line
+        .strip_prefix("HTTP/")
+        .and_then(|rest| rest.split(' ').nth(1))
+        .filter(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|code| code.parse().ok())
+    {
+        Some(code) => Probe::Http(code),
+        None => Probe::Silent("it answered, but not with HTTP".into()),
     }
 }
 
@@ -540,7 +555,7 @@ impl Workspace {
     pub async fn project_services(&self, project: &str) -> Result<Value> {
         let project = project.to_owned();
         let services = self.stored(move |s| s.services(&project)).await?;
-        Ok(json!({"services": services.iter().map(|s| self.service_view(s)).collect::<Vec<_>>()}))
+        Ok(json!({"services": crate::service_jobs::with_jobs(self, &services, services.iter().map(|s| self.service_view(s)).collect()).await?}))
     }
 
     fn service_view(&self, service: &Service) -> Value {

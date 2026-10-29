@@ -253,6 +253,8 @@ impl RunSubmit {
             requested_machine: None,
             checkpoint: None,
             checkpoint_from: None,
+            service: None,
+            service_link: None,
         }
     }
 }
