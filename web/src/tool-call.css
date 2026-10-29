@@ -52,16 +52,24 @@
   border-color: color-mix(in srgb, var(--error-ink, #a37961) 42%, transparent);
   background-color: color-mix(in srgb, var(--error-ink, #a37961) 8%, transparent);
 }
-/* Scoped to the row, so the dark and palette themes' quiet colour for every
-   tool result (appearance.css) does not take a failure's colour away. */
-.tool-item > summary.tool-call:is([data-tone="failed"], [data-tone="refused"]) :is(.tool-result, .tool-call-note) {
+.tool-call:is([data-tone="failed"], [data-tone="refused"]) :is(.tool-result, .tool-call-note) {
   color: var(--error-ink, #a37961);
 }
 .tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) {
   border-color: color-mix(in srgb, var(--accent-ink, #786637) 38%, transparent);
 }
-.tool-item > summary.tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
+.tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
   color: var(--accent-ink, #786637);
+}
+/* The dark and palette themes give every tool result their quiet colour
+   (appearance.css); a call's state keeps its own there too. */
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
+  .tool-call:is([data-tone="failed"], [data-tone="refused"]) > .tool-result {
+  color: var(--error-ink, #efb49a);
+}
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
+  .tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
+  color: var(--accent-ink, #e2ce8e);
 }
 .tool-call[data-to-expand] .tool-call-note {
   font-style: italic;
