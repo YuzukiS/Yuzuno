@@ -119,6 +119,9 @@ SESSION_STORE = '2'
 STREAM_CHUNKS = {'agent_id', 'turn_id', 'item_id'}
 # An Item that holds part of itself elsewhere (client_view, record_rows).
 ELSEWHERE = ('_yuzunoTruncated', '_yuzunoSpilled')
+# An Item over the window's size limit, sent in its place as a `historyPreview`
+# (conversation_window::bounded_item): its own type is no longer a message's.
+WINDOW_PREVIEW = '_yuzunoWindowPreview'
 MESSAGE_TYPES = ('userMessage', 'agentMessage')
 
 
@@ -220,7 +223,8 @@ def whole_conversation(detail):
         part = turn.get('_yuzunoSlice')
         if part is not None and (part.get('start') != 0 or part.get('total') != len(turn['items'])):
             raise ValueError(f"The conversation window holds part of Turn {turn['id']}")
-        if any(key in item for item in turn['items'] for key in ELSEWHERE):
+        if any(key in item for item in turn['items'] for key in ELSEWHERE) or any(
+                WINDOW_PREVIEW in item or item.get('type') == 'historyPreview' for item in turn['items']):
             raise ValueError(f"The conversation window shows an Item of Turn {turn['id']} as a preview")
     if window.get('totalItems') != sum(len(turn['items']) for turn in turns):
         raise ValueError('The conversation window does not hold every Item')

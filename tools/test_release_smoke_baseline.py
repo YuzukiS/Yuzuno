@@ -294,8 +294,10 @@ class SessionStoreBackup(unittest.TestCase):
             smoke.backup_conversation(self.backup, AGENT, WORKSPACE)
 
 
-def window_answer(turns, *, has_before=False, has_after=False, total=None, part=None, preview=False):
-    """GET /api/agents/<id>?view=window for `turns`, as Core answers it."""
+def window_answer(turns, *, has_before=False, has_after=False, total=None, part=None, preview=False, window_preview=False):
+    """GET /api/agents/<id>?view=window for `turns`, as Core answers it.
+    `window_preview` sends the first message as conversation_window::bounded_item
+    sends one over its size limit: a `historyPreview` in its place."""
     shells = []
     for t, (turn, items) in enumerate(turns):
         shells.append({'id': turn, 'items': copy.deepcopy(items), '_yuzunoSlice': {'start': 0, 'total': len(items), 'index': t}})
@@ -303,6 +305,10 @@ def window_answer(turns, *, has_before=False, has_after=False, total=None, part=
         shells[0]['_yuzunoSlice'].update(part)
     if preview:
         shells[0]['items'][0]['_yuzunoTruncated'] = {'content': {'bytes': 1048576}}
+    if window_preview:
+        first = shells[0]['items'][0]
+        shells[0]['items'][0] = {'id': first['id'], 'type': 'historyPreview', 'status': first.get('status'),
+                                 '_yuzunoWindowPreview': {'type': first['type'], 'bytes': 40000}, 'text': 'run:2:0:0:100'}
     return json.loads(json.dumps({
         'agent': {'id': AGENT, 'threadId': 'thread-1', 'projectId': PROJECT, 'settings': SETTINGS, 'reviewedSeq': 7},
         'turns': shells,
@@ -329,6 +335,7 @@ class WholeConversation(unittest.TestCase):
             'a Turn shown from its second Item': (window_answer([SEEDED_TURN], part={'start': 1}), 'holds part of Turn turn-1'),
             'a Turn with more Items than shown': (window_answer([SEEDED_TURN], part={'total': 4}), 'holds part of Turn turn-1'),
             'an Item shown as a preview': (window_answer([SEEDED_TURN], preview=True), 'as a preview'),
+            'a message sent as the window\'s historyPreview': (window_answer([SEEDED_TURN, REMINDER_TURN], window_preview=True), 'as a preview'),
             'more Items than the window holds': (window_answer([SEEDED_TURN], total=9), 'every Item'),
         }
         for label, (detail, message) in cases.items():
