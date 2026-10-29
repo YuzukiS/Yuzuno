@@ -22,6 +22,7 @@ type EntryText = Partial<Pick<SettingEntry, "title" | "scope" | "source" | "effe
 
 export const entriesZh: Record<string, EntryText> = {
   appearance: { title: "主题、文字与布局", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的偏好；未设置时使用内置默认值。", effect: "更改会立即预览。存储成功后，重新打开仍会保留。可导出为文件，预览后再导入。" },
+  "portal-open": { title: "网页与原型的打开方式", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“在 Yuzuno 内打开”。", effect: "作用于下一次打开的网页或原型。每个入口也提供另一种方式，仅限那一次。" },
   "send-key": { title: "发送消息", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“自动”。", effect: "立即作用于会话的输入框。存储成功后，重新打开仍会保留。" },
   shortcuts: { title: "键盘快捷键", scope: "此设备 · 此站点", source: "此版本已有的快捷键，按它们在此设备上的实际效果列出，包括此设备为“查找 Agent”“新建 Agent”和“搜索此会话”选择的字母；未设置时使用原来的字母。", effect: "新字母立即生效；如果三者中另一个已在使用它，会被拒绝。存储成功后，重新打开时仍会保留。其他快捷键保持原来的按键。" },
   transfer: { title: "把偏好移到另一台设备", scope: "此设备 · 你保存的文件", source: "此设备当前生效的外观、发送键、时间显示、界面语言和通知选择。不含 Workspace、账户或权限的任何内容；此设备是否发送通知仍由它自己决定。", effect: "导出会写出一个文件。导入会把每组设置与你现有的并排显示；每组单独应用，只在保存到此设备后才生效。它不会在设备之间同步。" },
@@ -54,7 +55,7 @@ export const entriesZh: Record<string, EntryText> = {
 
 /** Each entry's short name, in the row of its category's entries. */
 export const entriesShortZh: Record<string, string> = {
-  appearance: "外观", "send-key": "发送", shortcuts: "快捷键", transfer: "迁移偏好", "appearance-preset": "共享预设",
+  appearance: "外观", "portal-open": "打开方式", "send-key": "发送", shortcuts: "快捷键", transfer: "迁移偏好", "appearance-preset": "共享预设",
   clock: "时钟", language: "语言", notifications: "通知", "agent-model": "模型与权限", "agent-context": "上下文",
   "auto-continue": "自动继续", "auto-continue-default": "自动继续默认值", "agent-defaults": "新 Agent 默认值",
   review: "代码审查", credentials: "账户与 MCP", machines: "机器与 SSH", phone: "手机访问", projects: "项目", home: "Home",

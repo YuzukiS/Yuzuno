@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArrowUpRight,
   Globe,
   LoaderCircle,
   Monitor,
@@ -13,6 +12,7 @@ import { api, errorText, post, remove } from "./api";
 import { strings, useStrings } from "./i18n";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./project-services.css";
+import { OpenChoice } from "./portal/OpenChoice";
 
 /** What Core has open for a service now (core/src/services.rs, Access). */
 export type ServiceConnection = {
@@ -28,9 +28,23 @@ export type ServiceConnection = {
     | "disconnected";
   localPort?: number;
   httpStatus?: number;
+  /** Whether the checked page may be framed by another origin (T-5). */
+  framing?: "allowed" | "blocked" | "restricted" | "unknown";
   reason?: string;
   since: string;
 };
+/** The Yuzuno Job that serves a service, when one does (T-5, service_jobs). */
+export type ServiceJob = {
+  jobId: string;
+  status: string;
+  /** Whether the listener on the service's port is that Job's own. */
+  owner: "verified" | "otherProcess" | "notListening" | "unknown";
+  earlierJobIds: string[];
+  canStop: boolean;
+};
+export type ServiceHealth =
+  | { declared: false }
+  | { declared: true; path: string; state: "ok" | "failing" | "unknown"; httpStatus?: number; reason?: string; checkedAt?: string };
 export type ProjectService = {
   id: string;
   projectId: string;
@@ -41,6 +55,9 @@ export type ProjectService = {
   author: { kind: "user" } | { kind: "agent"; id: string; name: string };
   createdAt: string;
   connection: ServiceConnection;
+  /** Undefined from a Core without service Jobs; null for a service no Yuzuno Job runs. */
+  job?: ServiceJob | null;
+  health?: ServiceHealth;
 };
 type Opened = ProjectService & { proof?: { challenge: string; answer: string } };
 /** Whether this browser reaches Core's port for the service (checked here,
@@ -87,7 +104,6 @@ const text = strings({
   deleteTip: "Delete (closes it here; the service keeps running)",
   corePort: (port: number) => ` · Core port ${port}`,
   checking: (port?: number) => `Checking that this computer reaches port ${port}…`,
-  openUrl: (url: string) => `Open ${url}`,
   unreachedHere: (port: number) =>
     `This computer does not reach Core’s port ${port}: something else answers there, or nothing does. On the Core host itself it opens directly. From another computer whose tunnel reaches Core (a Mac), that tunnel must forward Core’s service ports too; see “Connect from another computer” in the guide.`,
   unreachedRemote: (port: number) =>
@@ -127,7 +143,6 @@ const text = strings({
   deleteTip: "删除（在这里关闭它；服务本身继续运行）",
   corePort: (port) => ` · Core 端口 ${port}`,
   checking: (port) => `正在检查这台电脑能否访问端口 ${port}…`,
-  openUrl: (url) => `打开 ${url}`,
   unreachedHere: (port) =>
     `这台电脑访问不到 Core 的端口 ${port}：那里有别的程序在响应，或者没有任何响应。在 Core 主机上会直接打开。从另一台通过隧道连到 Core 的电脑（例如 Mac）访问时，该隧道也必须转发 Core 的服务端口；参见指南中的 “Connect from another computer”。`,
   unreachedRemote: (port) =>
@@ -166,10 +181,13 @@ export function ProjectServices({
   projectId,
   machines,
   disabled,
+  onOpened,
 }: {
   projectId: string;
   machines: WorkspaceMachine[];
   disabled: boolean;
+  /** Once a service is opened (in the Portal or the browser). */
+  onOpened?: () => void;
 }) {
   const t = useStrings(text);
   const [services, setServices] = useState<ProjectService[] | null>(null);
@@ -334,10 +352,13 @@ export function ProjectServices({
                 </p>
               )}
               {shown?.kind === "proven" && c.state === "available" && (
-                <a className="services-open" href={shown.url} target="_blank" rel="noopener noreferrer">
-                  {t.openUrl(shown.url.replace(/^http:\/\//, ""))}
-                  <ArrowUpRight size={13} />
-                </a>
+                <div className="services-open">
+                  <OpenChoice
+                    target={() => ({ kind: "service", service, url: shown.url, where: t.where(machineName(service.machineId), service.port) })}
+                    onOpened={onOpened}
+                  />
+                  <small>{shown.url.replace(/^http:\/\//, "")}</small>
+                </div>
               )}
               {shown?.kind === "unproven" && (
                 <p className="services-unreached" role="status">

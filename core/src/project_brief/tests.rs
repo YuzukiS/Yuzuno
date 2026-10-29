@@ -884,6 +884,22 @@ async fn the_generated_validator_checks_sections_for_core() {
 }
 
 #[tokio::test]
+async fn an_html_attachment_is_found_for_a_preview_as_its_kept_snapshot() {
+    let (dir, ws, project) = lab();
+    let file = dir.path().join("proto.html");
+    std::fs::write(&file, "<button>Try</button>").unwrap();
+    let mut change = put("design", "report");
+    change["attachments"] = json!([{"name":"proto.html","path":file}]);
+    accept(&ws, "a", input("a1", 0, vec![change])).await;
+    // The source file changes; the preview reads the snapshot kept with the section.
+    std::fs::write(&file, "changed").unwrap();
+    let kept = crate::project_brief::attachment_file(&ws, &project, "design", "proto.html", None).await.unwrap();
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "<button>Try</button>");
+    assert!(crate::project_brief::attachment_file(&ws, &project, "design", "other.html", None).await.is_err());
+    assert!(crate::project_brief::attachment_file(&ws, &project, "nope", "proto.html", None).await.is_err());
+}
+
+#[tokio::test]
 async fn routes_take_a_percent_encoded_section_key_as_one_segment() {
     use tower::ServiceExt;
     let (dir, ws, project) = lab();

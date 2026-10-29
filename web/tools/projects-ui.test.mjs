@@ -796,10 +796,11 @@ test("a project's service opens only once this computer proves it reaches Core's
     // Through Core's port: the answer only Core knows, then the address.
     page.answersHere.set(4380, (challenge) => (challenge === "c4380" ? "a4380" : "nope"));
     button(page, "Check again", panel).click();
-    const link = await waitFor(() => panel.querySelector(".services-open"), "the address is offered");
-    assert.equal(link.getAttribute("href"), "http://127.0.0.1:4380/lab");
-    assert.equal(link.getAttribute("target"), "_blank");
-    assert.match(link.getAttribute("rel"), /noopener/);
+    // The address, and the way to open it as this device prefers (T-5's Portal), the other way behind ▾.
+    const offered = await waitFor(() => panel.querySelector(".services-open"), "the address is offered");
+    assert.equal(offered.querySelector("small").textContent, "127.0.0.1:4380/lab");
+    assert.match(offered.querySelector(".open-choice-split > .primary-button").textContent, /Open beside/);
+    assert.ok(offered.querySelector('.open-choice-more[aria-label="Other ways to open"]'));
     assert.equal(panel.querySelector(".services-unreached"), null);
 
     // Closing forgets the proof; deleting leaves nothing listed.
@@ -848,8 +849,8 @@ test("a page not opened on a loopback address says only that its connection reac
     // Once the page confirms Core's port from here, the address is offered as anywhere.
     page.answersHere.set(4380, (challenge) => (challenge === "c4380" ? "a4380" : "nope"));
     button(page, "Check again", panel).click();
-    const link = await waitFor(() => panel.querySelector(".services-open"), "the address is offered");
-    assert.equal(link.getAttribute("href"), "http://127.0.0.1:4380/");
+    const offered = await waitFor(() => panel.querySelector(".services-open"), "the address is offered");
+    assert.equal(offered.querySelector("small").textContent, "127.0.0.1:4380/");
     assert.equal(panel.querySelector(".services-unreached"), null);
     assert.deepEqual(page.errors, []);
   } finally {

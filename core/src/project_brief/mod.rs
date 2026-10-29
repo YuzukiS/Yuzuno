@@ -35,6 +35,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 
+/// The kept file of a section's attachment, in the version given or the
+/// section's latest, for an interactive preview (previews.rs).
+pub(crate) async fn attachment_file(ws: &Arc<Workspace>, project: &str, section: &str, name: &str, version: Option<i64>)
+    -> Result<std::path::PathBuf> {
+    let cache = attachments::dir(&ws.data_dir);
+    let (project, section, name) = (project.to_owned(), section.to_owned(), name.to_owned());
+    let found = ws.stored(move |store| attachments::snapshot_file(store, &cache, &project, &section, &name, version)).await?;
+    found.map(|(path, _)| path).map_err(|missing| anyhow::anyhow!("{}: {}", missing.code, missing.message))
+}
+
 pub(crate) use update::TOOL as UPDATE_TOOL;
 
 pub(crate) const MAX_TOPICS: usize = 12;
