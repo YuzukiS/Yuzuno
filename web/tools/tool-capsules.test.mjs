@@ -71,12 +71,12 @@ test("the capsule keeps the name the harness gave it", () => {
     { id: "m", type: "mcpToolCall", server: "docs", tool: "search" },
     { id: "c", type: "claudeToolUse", name: "mcp__yuzuno__task_get" },
     // A call whose server and tool this version does not have: its kind, not
-    // a guessed name.
+    // a guessed name (T-9: "MCP tool", as its own row says).
     { id: "u", type: "mcpToolCall" },
   ];
   assert.deepEqual(
     toolCapsules(toolActivityCounts(items), false).map((c) => c.label),
-    ["docs/search", "mcp__yuzuno__task_get", "Mcp Tool Call"],
+    ["docs/search", "mcp__yuzuno__task_get", "MCP tool"],
   );
   // The interface language reaches a kind's own word, never a tool's name.
   assert.deepEqual(
