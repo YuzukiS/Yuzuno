@@ -317,7 +317,8 @@ async fn a_listed_command_runs_under_its_kept_id_with_the_model_opencode_gives_i
 /// refusal before its message exists is a refused message (its Turn failed,
 /// its receipt rejected); a run that failed after OpenCode stored its
 /// message is that Turn, ended by OpenCode's record; a request with no
-/// answer and no stored message is unknown, and is not sent again. A list
+/// answer and no stored message is unknown until OpenCode's record has the
+/// message, and is not sent again. A list
 /// OpenCode does not answer refuses `/<name>` rather than sending it as text.
 #[tokio::test]
 async fn a_command_is_refused_only_before_its_message_exists_and_never_sent_again() {
@@ -344,17 +345,26 @@ async fn a_command_is_refused_only_before_its_message_exists_and_never_sent_agai
     lab.control("halt", json!({"sessionID":session,"name":"APIError","message":"overloaded"})).await;
     lab.until("the failure", |d| turn(d, &ran)["status"] == "failed").await;
 
-    // No answer and nothing stored: unknown, and sent once.
+    // No answer and nothing stored: unknown, and sent once. An idle
+    // OpenCode alone decides nothing for it.
     lab.control("mode", json!({"command":"drop"})).await;
     let unknown = lab.send("c3", "/explain z", &[]).await.unwrap();
     assert_eq!(unknown.status, "uncertain", "{unknown:?}");
+    let dropped = unknown.turn_id.clone().unwrap();
     assert_eq!(lab.journaled("opencode/deliveryUnconfirmed").len(), 1);
     let again = lab.send("c3", "/explain z", &[]).await.unwrap();
     assert_eq!(again.status, "uncertain");
     assert_eq!(lab.sent().len(), 3, "each was sent once");
-    lab.control("mode", json!({"command":"run"})).await;
     lab.control("idle", json!({"sessionID":session})).await;
-    lab.until("the unknown Turn's end", |d| d.agent.status == "idle").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(turn(&lab.detail(), &dropped)["status"], "inProgress");
+
+    // OpenCode's record has it after all: accepted under its client ID, and its answer ends the Turn.
+    lab.control("store", json!({"sessionID":session,"messageID":dropped,"text":"Explain z briefly."})).await;
+    lab.until("the late confirmation", |d| d.message_receipts.iter().any(|r| r.input.client_message_id == "c3" && r.status == "accepted")).await;
+    lab.control("mode", json!({"command":"run"})).await;
+    lab.complete(&dropped).await;
+    assert_eq!(lab.sent().len(), 3, "still sent once");
 
     // A list OpenCode does not answer: nothing is sent, not even as text.
     lab.control("mode", json!({"fail":{"/config":500}})).await;
