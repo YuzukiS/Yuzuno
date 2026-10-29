@@ -113,6 +113,10 @@ def store(session, message_id, text, files=()):
         messages.setdefault(session, {})[message_id] = message
     save()
     publish('message.updated', {'sessionID': session, 'info': info})
+    # As OpenCode 1.19.3 saves a prompt (`createUserMessage`): each part
+    # follows, whole, a file part's `data:` URL included.
+    for part in message['parts']:
+        publish('message.part.updated', {'sessionID': session, 'part': part, 'time': info['time']['created']})
     return message
 
 

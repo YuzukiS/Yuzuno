@@ -64,6 +64,7 @@ use crate::{
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     path::PathBuf,
     sync::{atomic::Ordering, Arc, Weak},
@@ -558,6 +559,7 @@ impl Workspace {
         let kind = event["type"].as_str().unwrap_or("unknown");
         c.learn(kind, event);
         let journal = format!("opencode/{kind}");
+        let kept = journaled(event);
         if session != c.session {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
@@ -565,7 +567,7 @@ impl Workspace {
             if !requested(kind) {
                 return;
             }
-            let written = self.store.record_event(id, &journal, event, Sel::Open, |d| {
+            let written = self.store.record_event(id, &journal, &kept, Sel::Open, |d| {
                 request(d, generation, session, Some(&child), event);
                 refresh_status(d);
             });
@@ -579,13 +581,13 @@ impl Workspace {
             // Text as it streams: the completed part replaces it.
             "message.part.delta" => return,
             kind if projected(kind) => event_turns(&self.store, id, event).and_then(|turns| {
-                self.store.record_event(id, &journal, event, Sel::Turns(turns), |d| {
+                self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
                     project(d, generation, &c.session, event);
                     refresh_status(d);
                 }).map(drop)
             }),
             // Kept as evidence; it changes nothing here.
-            _ => self.store.update_meta(id, &journal, event, |_| {}).map(drop),
+            _ => self.store.update_meta(id, &journal, &kept, |_| {}).map(drop),
         };
         if let Err(error) = written {
             eprintln!("Workspace OpenCode event not recorded: {error:#}");
@@ -968,6 +970,44 @@ fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
         turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
     }
     Ok(turns)
+}
+
+/// An event as the journal keeps it: each `data:` URL in it (a file part's
+/// `url`, such as an image sent inline, which OpenCode sends back in the
+/// stored message's `message.part.updated`) as its media type and length
+/// only (T-10). Image bytes stay in Core's managed files, never in its
+/// database.
+fn journaled(event: &Value) -> Cow<'_, Value> {
+    fn inline(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => map.iter().any(|(key, v)| (key == "url" && v.as_str().is_some_and(|u| u.starts_with("data:"))) || inline(v)),
+            Value::Array(items) => items.iter().any(inline),
+            _ => false,
+        }
+    }
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, v) in map.iter_mut() {
+                    match v.as_str() {
+                        Some(url) if key == "url" && url.starts_with("data:") => {
+                            let kind = url.split_once(',').map_or("data:", |(kind, _)| kind);
+                            *v = format!("{kind},… ({} characters not kept)", url.len()).into();
+                        }
+                        _ => strip(v),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    if !inline(event) {
+        return Cow::Borrowed(event);
+    }
+    let mut kept = event.clone();
+    strip(&mut kept);
+    Cow::Owned(kept)
 }
 
 /// Event types this module applies to the record.

@@ -825,6 +825,7 @@ fn png(width: u32, height: u32, color: u8) -> Vec<u8> {
 /// model that doesn't read them, nothing is sent and no receipt is kept,
 /// where OpenCode itself would put a line of text in each image's place and
 /// take the message. The same message again under its client ID is sent once.
+/// What OpenCode sends back of the images is journaled without their bytes.
 #[tokio::test]
 async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     let lab = lab(&[], true).await;
@@ -897,6 +898,35 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     assert_eq!(items(turn(&d, &first), "userMessage")[0]["content"],
         json!([{"type":"text","text":"look"}, shown(&small), shown(&wide)]), "the conversation shows the originals");
     assert_eq!(d.message_receipts[0].input.images, both, "the receipt keeps which images it sent");
+
+    // OpenCode sends the stored message back, its file parts whole. The
+    // journal keeps each as what it is, never its bytes, and no image's
+    // bytes are anywhere in Core's database.
+    let journaled = || {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/message.part.updated'").unwrap();
+        query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap)
+            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["properties"]["part"].clone())
+            .filter(|part| part["type"] == "file").collect::<Vec<_>>()
+    };
+    for _ in 0..400 {
+        if journaled().len() == 2 { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let kept = journaled();
+    assert_eq!(kept.len(), 2, "both file parts came back and were journaled");
+    for (kept, sent) in kept.iter().zip(&parts[1..]) {
+        let url = sent["url"].as_str().unwrap();
+        assert_eq!((&kept["filename"], &kept["url"]), (&sent["filename"], &json!(format!("data:image/png;base64,… ({} characters not kept)", url.len()))));
+        let data = url.split_once(',').unwrap().1.as_bytes();
+        for entry in std::fs::read_dir(lab.dir.path().join("data")).unwrap().map(Result::unwrap) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("workspace.sqlite") {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                assert!(!bytes.windows(data.len()).any(|w| w == data), "{name} holds the bytes of {}", sent["filename"]);
+            }
+        }
+    }
 
     // The same message again: its receipt, and nothing sent again. Other
     // images under that client ID are refused.
