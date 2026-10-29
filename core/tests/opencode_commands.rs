@@ -47,14 +47,18 @@ fn agent(id: &str, cwd: &str, harness: &str) -> AgentDetail {
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
 }
 
-/// A Workspace with one OpenCode Agent, connected.
-async fn lab() -> Lab {
+/// A Workspace with one OpenCode Agent, connected. `collaboration` turns
+/// Workspace MCP on first, as a test that serves the HTTP router needs.
+async fn lab(collaboration: bool) -> Lab {
     program();
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
     std::fs::create_dir_all(dir.path().join("data/opencode").join(ID)).unwrap();
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    if collaboration {
+        ws.start_collaboration(4999);
+    }
     ws.store.insert(&agent(ID, &work.to_string_lossy(), "opencode")).unwrap();
     let d = ws.reconnect(ID).await.unwrap();
     assert_eq!(d.agent.connection_state, "connected");
@@ -175,7 +179,7 @@ async fn get(router: &axum::Router, uri: &str) -> (u16, Value) {
 /// lists nothing, and says why.
 #[tokio::test]
 async fn commands_are_listed_from_opencodes_configuration_and_nothing_else_of_it_is_kept() {
-    let lab = lab().await;
+    let lab = lab(true).await;
     let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4999);
     let (status, view) = get(&router, &format!("/api/agents/{ID}/opencode/commands")).await;
     assert_eq!(status, 200, "{view}");
@@ -237,7 +241,7 @@ async fn commands_are_listed_from_opencodes_configuration_and_nothing_else_of_it
 /// Any other text, an unlisted name included, is a prompt.
 #[tokio::test]
 async fn a_listed_command_runs_under_its_kept_id_with_the_model_opencode_gives_it() {
-    let lab = lab().await;
+    let lab = lab(false).await;
     let session = lab.session();
     lab.ws.opencode_set_choice(ID, "deepseek/deepseek-flash".into(), Some(Some("max".into()))).await.unwrap();
 
@@ -317,18 +321,17 @@ async fn a_listed_command_runs_under_its_kept_id_with_the_model_opencode_gives_i
 /// OpenCode does not answer refuses `/<name>` rather than sending it as text.
 #[tokio::test]
 async fn a_command_is_refused_only_before_its_message_exists_and_never_sent_again() {
-    let lab = lab().await;
+    let lab = lab(false).await;
     let session = lab.session();
     let path = format!("/session/{session}/command");
 
     // Refused before anything exists.
     lab.control("mode", json!({"fail":{path.clone():400}})).await;
     let refused = lab.send("c1", "/explain x", &[]).await.unwrap();
-    assert_eq!((refused.status.as_str(), refused.turn_id.as_deref()), ("rejected", None));
+    assert_eq!(refused.status, "rejected");
     assert!(refused.error.as_deref().unwrap().contains("OpenCode 拒绝了这条消息（HTTP 400）"), "{refused:?}");
     let d = lab.detail();
-    let failed = d.turns.last().unwrap();
-    assert_eq!(failed["status"], "failed");
+    assert_eq!(turn(&d, refused.turn_id.as_deref().unwrap())["status"], "failed", "its Turn, recorded before the request, failed");
     assert_eq!(d.agent.status, "idle");
     lab.control("mode", json!({"fail":{}})).await;
 
@@ -374,7 +377,7 @@ fn png() -> Vec<u8> {
 /// prompt does.
 #[tokio::test]
 async fn a_command_with_images_is_refused_before_anything_is_recorded() {
-    let lab = lab().await;
+    let lab = lab(true).await;
     let session = lab.session();
     let mut providers = lab.control("mode", json!({})).await["providers"].clone();
     for provider in providers["providers"].as_array_mut().unwrap().iter_mut().filter(|p| p["id"] == "deepseek") {

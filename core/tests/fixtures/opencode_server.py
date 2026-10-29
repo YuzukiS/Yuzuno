@@ -358,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
         if (method, *rest) == ('POST', 'prompt_async'):
             return self.prompt(session, body)
         if (method, *rest) == ('POST', 'command'):
-            return self.command(session, body)
+            return self.run_command(session, body)
         if (method, *rest) == ('GET', 'message'):
             stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
             return self.reply(200, stored)
@@ -425,7 +425,7 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         return None
 
-    def command(self, session, body):
+    def run_command(self, session, body):
         """As OpenCode 1.19.3's command endpoint (`handlers/session.ts`,
         `session/prompt.ts` command): an unknown command is published as a
         session error and refused before any message exists; a known one is
