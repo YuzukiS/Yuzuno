@@ -216,6 +216,11 @@
   }
   :root:not([data-keyboard]) .app.phone
     .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+    > .conversation-scroll {
+    margin-bottom: 0;
+  }
+  :root:not([data-keyboard]) .app.phone
+    .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
     > .conversation-scroll
     > .conversation-inner {
     padding-bottom: 25px;
