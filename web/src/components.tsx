@@ -10,7 +10,7 @@ import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
 import { messageSkills } from "./skill-refs";
 import { SkillChips } from "./SkillChips";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -48,7 +48,8 @@ import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
-import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts } from "./conversation-blocks";
+import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts, type ConversationBlock } from "./conversation-blocks";
+import { InputReading } from "./input-reading";
 import { deliveryNote } from "./delivery-note";
 import { SubAgentAnchors } from "./SubAgentPanels";
 import { ActivityElapsed } from "./ActivityElapsed";
@@ -70,6 +71,7 @@ import { langTag, useLanguage, useStrings } from "./i18n";
 import { turnWords, type TurnWords } from "./turn-text";
 import { requestWords, shownError } from "./request-text";
 import "./tool-activity.css";
+import "./input-segments.css";
 import { QuestionAnchor } from "./QuestionAnchor";
 import { ClaudeCheckpointButton } from "./ClaudeCheckpoint";
 import { questionKey } from "./pending-questions";
@@ -607,6 +609,64 @@ function CodexPlanItem({ item, notice, opened, onOpenChange }: {
 
 /** A run of tool calls between messages. `live`: it arrived while the turn
  * was on screen; see tool-motion.ts for how it moves. */
+/** A failed call, said outside the fold that holds it. */
+function failedCall(item: NativeItem) {
+  return item.status === "failed" || (typeof item.exitCode === "number" && item.exitCode !== 0);
+}
+
+/**
+ * Mail, reminders, automatic continues and Claude's own inputs, with the
+ * tools and sub-agents around them, as one row (T-6): what they are, counted,
+ * and closed unless something here is being read, waits for an approval or
+ * is the latest work. A failed call is said beside it, folded or not.
+ */
+function CollaborationFold({ id, members, open, revealing, children }: {
+  id: string;
+  members: ConversationBlock[];
+  open: boolean;
+  /** A link or a search leads into it: it stays open once there. */
+  revealing: boolean;
+  children: React.ReactNode;
+}) {
+  const t = turnWords(useLanguage());
+  const [opened, setOpened] = useConversationDisclosure(id, false);
+  useLayoutEffect(() => {
+    // Commit the disclosure choice before App clears the navigation hint,
+    // as ToolActivity does: the message led to would close again with it.
+    if (revealing) setOpened(true);
+  }, [revealing]);
+  const shown = opened || open || revealing;
+  const inputs = members.flatMap((block) => (block.kind === "user" ? [block.item] : []));
+  const mails = inputs.filter((item) => item._yuzunoInput === "peer").length;
+  const automatic = inputs.length - mails;
+  const tools = members.flatMap((block) => (block.kind === "tools" ? block.items : []));
+  const failed = tools.filter(failedCall);
+  const counts = [mails && t.mails(mails), automatic && t.automatic(automatic), tools.length && t.toolSteps(tools.length)]
+    .filter(Boolean).join(" · ");
+  return (
+    <>
+      <details className="execution collaboration-fold" open={shown}
+        onToggle={(event) => {
+          if (event.target === event.currentTarget && event.currentTarget.open !== shown) setOpened(event.currentTarget.open);
+        }}>
+        <summary>
+          <ChevronRight size={13} />
+          <span>{t.collaboration}</span>
+          {counts && <span className="execution-count">{counts}</span>}
+        </summary>
+        {shown && <div className="execution-items collaboration-items">{children}</div>}
+      </details>
+      {!shown && failed.map((item) => (
+        <p key={item.id} className="collaboration-failure" role="note">
+          <span aria-hidden="true">✕</span> {t.failedStep} · {String(item.command ?? item.name ?? item.type)}
+          {typeof item.exitCode === "number" && ` · ${item.exitCode}`}
+          <button type="button" className="inline-link" onClick={() => setOpened(true)}>{t.view}</button>
+        </p>
+      ))}
+    </>
+  );
+}
+
 function ToolActivity({
   items,
   calls,
@@ -716,6 +776,7 @@ export function Turn({
   timeMarks,
   time,
   backgroundShells,
+  inputNumbers,
 }: {
   turn: NativeTurn;
   index: number;
@@ -741,6 +802,9 @@ export function Turn({
   time: TimeDisplay;
   /** Shown only on the latest agent turn. */
   backgroundShells?: BackgroundShells | null;
+  /** The number of each of the person's inputs among all of them, by
+   * `${turnId}\n${itemId}`, where the inputs read so far say (T-6). */
+  inputNumbers?: ReadonlyMap<string, number>;
 }) {
   // Set once the turn is on screen: tool blocks that arrive after that are
   // live and unfold into place.
@@ -752,6 +816,8 @@ export function Turn({
   const target = useConversationTarget(turn.id);
   const reveal = useConversationReveal(turn.id);
   const windowed = useConversationWindowed();
+  const reportInput = useContext(InputReading);
+  const readingPlaces = useRef<{ prefix?: [number, -1 | 0 | 1]; blocks?: [number, -1 | 0 | 1] }>({});
   useEffect(() => { drawn.current = true; }, []);
   const plan = turn._yuzunoPlan;
   const planSourceId = `yuzuno-plan-${turn.id}`;
@@ -771,6 +837,21 @@ export function Turn({
   const timeOf = (item: NativeItem) => timeMarks?.get(timeMarkKey(turn.id, item.id));
   const language = useLanguage();
   const t = turnWords(language);
+  // Reading by your inputs (T-6): each input of yours, or one no record
+  // attributes, opens a part of the Turn; mail, reminders, automatic
+  // continues and Claude's own inputs fold with the tools around them.
+  const yours = (item: NativeItem) => ["you", "home", "form", "answer"].includes(item._yuzunoInput ?? "");
+  const unconfirmed = (item: NativeItem) => item._yuzunoInput === "unconfirmed";
+  const opener = firstUser && (yours(firstUser) || unconfirmed(firstUser)) ? firstUser : undefined;
+  const turnNumber = `${t.turn(!!loadedNumbering)} ${String(index + 1).padStart(2, "0")}`;
+  const inputLabel = (item: NativeItem) =>
+    unconfirmed(item) ? t.earlierInput : t.yourInput(inputNumbers?.get(`${turn.id}\n${item.id}`) ?? null);
+  const inputDivider = (item: NativeItem) => item !== opener && (yours(item) || unconfirmed(item)) ? (
+    <div className="turn-divider input-divider">
+      <span><span className="input-divider-label">{inputLabel(item)}</span> · {turnNumber} {t.midTurn}</span>
+      <div />
+    </div>
+  ) : null;
   const footer = running ? [] : turnFooter(turn, isLatestAgentTurn ? backgroundShells : null, time, language);
   const footerAt = blocks.reduce(
     (last, block, i) => block.kind === "message" && block.item.phase !== "commentary" ? i : last, -1,
@@ -831,7 +912,9 @@ export function Turn({
       ) : (
         <>
           <div className="message-label">
-            <span className="you-avatar">Y</span>{t.you}
+            {unconfirmed(item)
+              ? <><span className="you-avatar unconfirmed-avatar" aria-hidden="true">?</span>{t.unconfirmedLabel}</>
+              : <><span className="you-avatar">Y</span>{t.you}</>}
             <MessageTime mark={timeOf(item)} />
             {!item.clientId && item._yuzunoClientMessageId && sendingInTurn?.has(item._yuzunoClientMessageId) && (
               <small role="status" className="message-delivery">{deliveryNote("sending", agentHarnessName(agent), null, false, language)}</small>
@@ -848,6 +931,7 @@ export function Turn({
             <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
           {userBody(item)}
+          {unconfirmed(item) && <p className="unconfirmed-note">{t.unconfirmedNote}</p>}
           <SkillChips skills={messageSkills(item.content)} />
           <ImageAttachments images={messageImages(item.content)} onAnnotate={!pointFix ? undefined : ((image) => pointFix({
             name: image.name || "Image",
@@ -863,90 +947,8 @@ export function Turn({
       )}
     </div>
   );
-  return (
-    <article
-      className={`turn${highlightSource ? " source-highlight" : ""}`}
-      id={`turn-${turn.id}`}
-      data-turn-id={turn.id}
-      tabIndex={-1}
-      onDragStart={event => {
-        // Selected text dragged out of one message also carries where it came
-        // from, so an Agent in the rail can take it (T-152). The text the
-        // browser drags is left as it is.
-        if (event.dataTransfer.types.includes(HANDOFF_TYPE)) return;
-        const selection = window.getSelection();
-        const text = selection?.toString() || "";
-        if (!selection || !text.trim()) return;
-        const message = (node: Node | null) =>
-          (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-item-id]");
-        const from = message(selection.anchorNode);
-        if (!from || from !== message(selection.focusNode) || !event.currentTarget.contains(from)) return;
-        const item = turn.items.find(i => i.id === from.dataset.itemId);
-        const source = item && messageHandoff(agent, turn, item, text);
-        if (source) startHandoffDrag(event, source);
-      }}
-    >
-      <div className="turn-divider">
-        <span>{t.turn(!!loadedNumbering)} {String(index + 1).padStart(2, "0")}</span>
-        <div />
-        <CopyButton text={() => copyTurnText(agent.id, turn)} label={t.copyTurn} />
-      </div>
-      {turn._yuzunoSource === "native" && (
-        <div className="user-message native-turn-notice">
-          <span className="message-label">
-            <span className="you-avatar"><RefreshCw size={13} /></span>
-            {nativeTurnLabel(turn, t)}
-          </span>
-        </div>
-      )}
-      <ConversationRows id={`users:${turn.id}`} items={userPrefix}
-        itemKey={block => "item" in block ? block.item.id : block.items[0].id}
-        estimate={() => 120} targetKey={target?.itemId}>
-        {block => block.kind === "user" && userMessage(block.item)}
-      </ConversationRows>
-      <div className="agent-message">
-        {agentLabel}
-        {!!plan?.length && (
-          <details className="execution" open={planOpen || revealingPlan}
-            onToggle={event => {
-              if (event.target === event.currentTarget && event.currentTarget.open !== planOpen)
-                setPlanOpen(event.currentTarget.open);
-            }}>
-            <summary>
-              <ChevronRight size={13} />
-              <span>{t.agentPlan}</span>
-              <span className="execution-count">
-                {t.steps(plan.filter((step) => step.status === "completed").length, plan.length)}
-              </span>
-            </summary>
-            {(!windowed || planOpen || revealingPlan) && <div
-              id={`item-${planSourceId}`}
-              data-item-id={planSourceId}
-              tabIndex={-1}
-              className={`execution-items${sourceItemId === planSourceId ? " source-highlight" : ""}`}
-            >
-              <div role="list" aria-label={t.planList}>
-                <ConversationRows id={`plan:${turn.id}`} items={plan} itemKey={(_, index) => String(index)}
-                  estimate={() => 36} targetKey={revealingPlan ? String(Math.max(0, plan.findIndex(step => step.status === "inProgress"))) : undefined}>
-                {(step, stepIndex) => (
-                  <div role="listitem" aria-posinset={stepIndex + 1} aria-setsize={plan.length} data-plan-status={step.status}>
-                    {step.step}{" "}
-                    <small>
-                      · {step.status === "inProgress" ? t.stepInProgress : step.status === "completed" ? t.stepDone : t.stepToDo}
-                    </small>
-                  </div>
-                )}</ConversationRows>
-              </div>
-            </div>}
-          </details>
-        )}
-        <ClaudeSubAgentScope agentId={agent.id} turn={turn} live={agent.connectionState === "connected"}>
-        <ConversationRows id={`blocks:${turn.id}`} items={blocks}
-          itemKey={block => "item" in block ? block.item.id : block.items[0].id}
-          estimate={block => block.kind === "tools" ? 70 : block.kind === "subagents" ? 0 : 220}
-          targetKey={targetBlock ? ("item" in targetBlock ? targetBlock.item.id : targetBlock.items[0].id) : undefined}>
-        {(block, blockIndex) => {
-          if (block.kind === "user") return userMessage(block.item);
+  const renderBlock = (block: ConversationBlock, blockIndex: number) => {
+          if (block.kind === "user") return <Fragment key={block.item.id}>{inputDivider(block.item)}{userMessage(block.item)}</Fragment>;
           if (block.kind === "preview") return <HistoryPreview item={block.item} agentId={agent.id} turnId={turn.id} />;
           // Sub-agents show in the left dock and leave only anchors here, so
           // the Agent's label goes with the first block people can see.
@@ -1018,7 +1020,143 @@ export function Turn({
               </div>
             </Fragment>
           );
-        }}</ConversationRows>
+  };
+  // Runs of folded blocks become one row; a run of tools and sub-agents
+  // alone keeps its own rows, as before.
+  const folds = (block: ConversationBlock) => block.kind === "tools" || block.kind === "subagents"
+    || (block.kind === "user" && !!block.item._yuzunoInput && !yours(block.item) && !unconfirmed(block.item));
+  type Row = { block: ConversationBlock; at: number } | { fold: { block: ConversationBlock; at: number }[] };
+  const runs: Row[] = [];
+  blocks.forEach((block, at) => {
+    const last = runs.at(-1);
+    if (folds(block) && last && "fold" in last) last.fold.push({ block, at });
+    else runs.push(folds(block) ? { fold: [{ block, at }] } : { block, at });
+  });
+  const rows = runs.flatMap((row): Row[] => "fold" in row && !row.fold.some(member => member.block.kind === "user")
+    ? row.fold.map(member => ({ block: member.block, at: member.at })) : [row]);
+  const blockKey = (block: ConversationBlock) => "item" in block ? block.item.id : block.items[0].id;
+  const rowKey = (row: Row) => "fold" in row ? `fold:${blockKey(row.fold[0].block)}` : blockKey(row.block);
+  const targetRow = targetBlock ? rows.find(row => "fold" in row ? row.fold.some(member => member.block === targetBlock) : row.block === targetBlock) : undefined;
+  // The input this Turn is read at (T-6): the last of yours at or before the
+  // row at the reading line, by the rows' own positions, in the messages the
+  // Turn opens with (userPrefix) and then in its blocks; before any, none.
+  const inputOf = (block: ConversationBlock) => block.kind === "user" && (yours(block.item) || unconfirmed(block.item)) ? block.item.id : null;
+  const prefixInputs = userPrefix.map(inputOf);
+  const inputRows = rows.map(row => "fold" in row ? null : inputOf(row.block));
+  const lastInput = (inputs: (string | null)[], at: number, before: string | null) => {
+    let input = before;
+    for (let index = 0; index <= at; index++) input = inputs[index] ?? input;
+    return input;
+  };
+  // A Turn whose first block is the Agent's still opens with its first input.
+  const prefixInput = lastInput(prefixInputs, prefixInputs.length - 1, userPrefix.length ? null : opener?.id ?? null);
+  const reportReading = () => {
+    const { prefix, blocks: inBlocks } = readingPlaces.current;
+    reportInput?.(turn.id, inBlocks && inBlocks[1] >= 0 ? lastInput(inputRows, inBlocks[0], prefixInput)
+      : prefix && prefix[1] <= 0 ? lastInput(prefixInputs, prefix[0], null)
+      : prefixInput);
+  };
+  const readPrefix = (block: ConversationBlock, place: -1 | 0 | 1) => {
+    readingPlaces.current.prefix = [userPrefix.indexOf(block), place];
+    reportReading();
+  };
+  const readAt = (row: Row, place: -1 | 0 | 1) => {
+    readingPlaces.current.blocks = [rows.indexOf(row), place];
+    reportReading();
+  };
+  return (
+    <article
+      className={`turn${highlightSource ? " source-highlight" : ""}`}
+      id={`turn-${turn.id}`}
+      data-turn-id={turn.id}
+      tabIndex={-1}
+      onDragStart={event => {
+        // Selected text dragged out of one message also carries where it came
+        // from, so an Agent in the rail can take it (T-152). The text the
+        // browser drags is left as it is.
+        if (event.dataTransfer.types.includes(HANDOFF_TYPE)) return;
+        const selection = window.getSelection();
+        const text = selection?.toString() || "";
+        if (!selection || !text.trim()) return;
+        const message = (node: Node | null) =>
+          (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-item-id]");
+        const from = message(selection.anchorNode);
+        if (!from || from !== message(selection.focusNode) || !event.currentTarget.contains(from)) return;
+        const item = turn.items.find(i => i.id === from.dataset.itemId);
+        const source = item && messageHandoff(agent, turn, item, text);
+        if (source) startHandoffDrag(event, source);
+      }}
+    >
+      <div className="turn-divider">
+        <span>{opener && <><span className="input-divider-label">{inputLabel(opener)}</span> · </>}{turnNumber}</span>
+        <div />
+        <CopyButton text={() => copyTurnText(agent.id, turn)} label={t.copyTurn} />
+      </div>
+      {turn._yuzunoSource === "native" && (
+        <div className="user-message native-turn-notice">
+          <span className="message-label">
+            <span className="you-avatar"><RefreshCw size={13} /></span>
+            {nativeTurnLabel(turn, t)}
+          </span>
+        </div>
+      )}
+      <ConversationRows id={`users:${turn.id}`} items={userPrefix}
+        itemKey={block => "item" in block ? block.item.id : block.items[0].id}
+        estimate={() => 120} targetKey={target?.itemId}
+        onReading={reportInput ? readPrefix : undefined}>
+        {block => block.kind === "user" && <>{inputDivider(block.item)}{userMessage(block.item)}</>}
+      </ConversationRows>
+      <div className="agent-message">
+        {agentLabel}
+        {!!plan?.length && (
+          <details className="execution" open={planOpen || revealingPlan}
+            onToggle={event => {
+              if (event.target === event.currentTarget && event.currentTarget.open !== planOpen)
+                setPlanOpen(event.currentTarget.open);
+            }}>
+            <summary>
+              <ChevronRight size={13} />
+              <span>{t.agentPlan}</span>
+              <span className="execution-count">
+                {t.steps(plan.filter((step) => step.status === "completed").length, plan.length)}
+              </span>
+            </summary>
+            {(!windowed || planOpen || revealingPlan) && <div
+              id={`item-${planSourceId}`}
+              data-item-id={planSourceId}
+              tabIndex={-1}
+              className={`execution-items${sourceItemId === planSourceId ? " source-highlight" : ""}`}
+            >
+              <div role="list" aria-label={t.planList}>
+                <ConversationRows id={`plan:${turn.id}`} items={plan} itemKey={(_, index) => String(index)}
+                  estimate={() => 36} targetKey={revealingPlan ? String(Math.max(0, plan.findIndex(step => step.status === "inProgress"))) : undefined}>
+                {(step, stepIndex) => (
+                  <div role="listitem" aria-posinset={stepIndex + 1} aria-setsize={plan.length} data-plan-status={step.status}>
+                    {step.step}{" "}
+                    <small>
+                      · {step.status === "inProgress" ? t.stepInProgress : step.status === "completed" ? t.stepDone : t.stepToDo}
+                    </small>
+                  </div>
+                )}</ConversationRows>
+              </div>
+            </div>}
+          </details>
+        )}
+        <ClaudeSubAgentScope agentId={agent.id} turn={turn} live={agent.connectionState === "connected"}>
+        <ConversationRows id={`blocks:${turn.id}`} items={rows}
+          itemKey={rowKey}
+          estimate={row => "fold" in row ? 44 : row.block.kind === "tools" ? 70 : row.block.kind === "subagents" ? 0 : 220}
+          targetKey={targetRow ? rowKey(targetRow) : undefined}
+          onReading={reportInput ? readAt : undefined}>
+        {row => "fold" in row ? (
+          <CollaborationFold key={rowKey(row)} id={`collab:${turn.id}:${rowKey(row)}`} members={row.fold.map(member => member.block)}
+            open={row.fold.some(member => !!shownItemId(member.block, windowed ? target?.itemId : sourceItemId)
+              || blockItems(member.block).some(item => pendingToolIds?.has(item.id))
+              || (isLatestAgentTurn && member.at > lastMessage))}
+            revealing={row.fold.some(member => !!(reveal?.itemId && shownItemId(member.block, reveal.itemId)))}>
+            {row.fold.map(member => renderBlock(member.block, member.at))}
+          </CollaborationFold>
+        ) : renderBlock(row.block, row.at)}</ConversationRows>
         </ClaudeSubAgentScope>
         <TurnResults agentId={agent.id} turn={turn} onFile={onFile} onDraft={onAnswer} onInteract={onResultInteract} />
         {!running && <TurnFiles agent={agent} turn={turn} onSource={onFile} />}

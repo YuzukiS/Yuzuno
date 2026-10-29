@@ -1,0 +1,41 @@
+/* Reading by your inputs (T-6, components.tsx Turn): the label of the part
+   each of your inputs opens, an input no record attributes to you, and the
+   row mail and automatic messages fold into with the tools around them.
+   Colours are the palette's own. */
+.input-divider-label {
+  color: var(--accent-ink);
+}
+.turn-divider.input-divider {
+  padding-top: 6px;
+}
+.you-avatar.unconfirmed-avatar {
+  border: 1.5px dashed var(--line);
+  background: transparent;
+  color: var(--text-quiet);
+}
+.unconfirmed-note {
+  margin: 4px 0 0;
+  color: var(--text-quiet);
+  font-size: calc(8px + var(--font-adjust, 3px));
+}
+.collaboration-fold > summary {
+  color: var(--text-quiet);
+}
+.collaboration-fold .execution-count {
+  color: var(--text-secondary);
+}
+.collaboration-items {
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+.collaboration-failure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 10px;
+  color: var(--error-ink, var(--coral));
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.collaboration-failure .inline-link {
+  margin-left: auto;
+}

@@ -17,12 +17,16 @@ const text = strings({
   work: "Jobs, CI and sub-agents",
   turns: "Turns",
   reading: (turn: number, turns: number) => `Turns: reading turn ${turn} of ${turns}`,
+  inputs: "Your inputs",
+  readingInput: (input: number, inputs: number) => `Your inputs: reading input ${input} of ${inputs}`,
 }, {
   closeWork: "关闭 Job 与 CI",
   closeTurns: "关闭 Turn",
   work: "Job、CI 与子 Agent",
   turns: "Turn",
   reading: (turn, turns) => `Turn：正在阅读第 ${turn} 个，共 ${turns} 个`,
+  inputs: "你的输入",
+  readingInput: (input, inputs) => `你的输入：正在阅读第 ${input} 条，共 ${inputs} 条`,
 });
 
 export type PhoneDock = "work" | "turns" | null;
@@ -32,12 +36,15 @@ export function PhoneDockButtons({
   onOpen,
   turn,
   turns,
+  inputs = false,
 }: {
   open: PhoneDock;
   onOpen: (dock: PhoneDock) => void;
   /** The Turn being read, counted from 1, and how many there are. */
   turn: number;
   turns: number;
+  /** The dock reads by inputs (T-6): `turn` and `turns` count inputs. */
+  inputs?: boolean;
 }) {
   const t = useStrings(text);
   // Escape closes the open panel, as tapping outside it does, and only that:
@@ -77,8 +84,8 @@ export function PhoneDockButtons({
         type="button"
         className="phone-dock-button phone-dock-turns"
         aria-expanded={open === "turns"}
-        aria-label={t.reading(turn, turns)}
-        title={t.turns}
+        aria-label={inputs ? t.readingInput(turn, turns) : t.reading(turn, turns)}
+        title={inputs ? t.inputs : t.turns}
         onClick={() => onOpen(open === "turns" ? null : "turns")}
       >
         <History size={14} aria-hidden="true" />
