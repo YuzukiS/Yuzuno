@@ -185,6 +185,30 @@ impl FilePart {
     }
 }
 
+/// A command OpenCode's configuration defines (`/config`'s `command`, T-10),
+/// and only what lists and runs it. Its template, which may hold shell lines
+/// (`!`) or paths, and everything else of `/config` (provider keys and
+/// options among it) are never kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandChoice {
+    pub name: String,
+    pub description: String,
+    /// Whether its template takes arguments (`$ARGUMENTS`, `$1`–`$9`).
+    pub takes_arguments: bool,
+    /// Whether it runs as a sub-agent (`subtask`).
+    pub subtask: bool,
+    /// The model it runs with by its own configuration, which OpenCode uses
+    /// over the caller's (`session/prompt.ts` command): its own `model`,
+    /// else that of the agent it names.
+    pub model: Option<String>,
+}
+
+/// Whether a command template takes arguments: OpenCode replaces
+/// `$ARGUMENTS` and `$1`–`$9` in it.
+fn takes_arguments(template: &str) -> bool {
+    template.contains("$ARGUMENTS") || (1..=9).any(|n| template.contains(&format!("${n}")))
+}
+
 /// Variant names mildest first, as OpenCode derives them (`none`, `low`, …,
 /// `max`, `provider/transform.ts`); other names after them, by name.
 fn variant_order(name: &str) -> (usize, &str) {
@@ -515,6 +539,53 @@ impl Server {
         }
         models.sort_by(|a, b| (&a.provider_name, &a.name, &a.model).cmp(&(&b.provider_name, &b.name, &b.model)));
         Ok(models)
+    }
+
+    /// The commands OpenCode's configuration defines now, by name. Nothing
+    /// else of `/config` is kept, not even a command's template.
+    pub async fn commands(&self) -> Result<Vec<CommandChoice>> {
+        let config = self.json(Method::GET, "/config", None).await?;
+        let named = |model: &Value| model.as_str().filter(|m| !m.is_empty()).map(str::to_owned);
+        let mut commands: Vec<CommandChoice> = config["command"].as_object().into_iter().flatten().map(|(name, info)| CommandChoice {
+            name: name.clone(),
+            description: info["description"].as_str().unwrap_or_default().into(),
+            takes_arguments: takes_arguments(info["template"].as_str().unwrap_or_default()),
+            subtask: info["subtask"] == true,
+            model: named(&info["model"]).or_else(|| info["agent"].as_str().and_then(|agent| named(&config["agent"][agent]["model"]))),
+        }).collect();
+        commands.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(commands)
+    }
+
+    /// The request that runs the command `name` with `arguments` under `id`,
+    /// once: an ID this server was given before is refused here, whatever
+    /// became of it. `model` is `"provider/model"`, as the command endpoint
+    /// takes it. OpenCode 1.19.3 answers only once the run has ended, and
+    /// every failure as 400 (`handlers/session.ts` command), so the request
+    /// has no time limit of its own, and holds nothing of this server: it
+    /// does not keep OpenCode from being stopped. Its answer says nothing a
+    /// caller can wait for about delivery.
+    pub fn command(&self, session: &str, id: &MessageId, name: &str, arguments: &str, model: Option<&str>, variant: Option<&str>)
+        -> Result<impl std::future::Future<Output = Submission> + Send + 'static> {
+        let path = format!("/session/{}/command", segment(session)?);
+        ensure!(self.submitted.lock().unwrap().insert(id.clone()),
+            "Message {} was submitted already; it is never sent again", id.as_str());
+        let mut body = json!({"messageID": id.as_str(), "command": name, "arguments": arguments});
+        if let Some(model) = model {
+            body["model"] = model.into();
+        }
+        if let Some(variant) = variant {
+            body["variant"] = variant.into();
+        }
+        let request = self.request(Method::POST, &path).json(&body);
+        Ok(async move {
+            match request.send().await {
+                Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().is_success() => Submission::Accepted,
+                Ok(response) if response.status().is_client_error() => Submission::Refused(status(response).await),
+                Ok(response) => Submission::Unknown(status(response).await.to_string()),
+            }
+        })
     }
 
     /// The sessions OpenCode started under `session` (its `task` tool's
