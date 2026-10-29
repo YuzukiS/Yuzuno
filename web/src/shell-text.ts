@@ -99,7 +99,7 @@ export const shellText = strings({
   addImages: "Add images",
   addImagesTitle: (claude: string | null) =>
     `Add images · paste or choose PNG, JPEG or WebP, up to 8 per message; a photo over 10 MiB or 24 megapixels is made smaller here first${claude ? ` · ${claude}` : ""}`,
-  imagesOnly: "Images are available for Codex and Claude Agents",
+  imagesOnly: "Images are available for Codex, Claude and OpenCode Agents",
   chooseToMark: "Choose an image to mark",
   markUp: "Mark up an image",
   markUpTitle: "Point & Fix · mark areas on a screenshot or image and add your notes to a draft",
@@ -118,6 +118,8 @@ export const shellText = strings({
   addInput: "Add input to the current turn",
   // Core fits a large image to Yuzuno's Claude budget (core/src/input_images.rs).
   claudeImages: "Large images are scaled or compressed when sent to Claude · originals are kept",
+  // OpenCode takes images only for a chosen model that reads them (core/src/opencode_agent.rs).
+  openCodeImages: "Images need a model chosen in Settings that reads images · large ones are scaled or compressed when sent · originals are kept",
   // The context panel (T-189 slice 19); the work summary, names, paths and
   // the session ID stay as they came.
   atGlance: "At a glance",
@@ -257,7 +259,7 @@ export const shellText = strings({
   savingImages: "正在保存图片…",
   addImages: "添加图片",
   addImagesTitle: (claude) => `添加图片 · 粘贴或选择 PNG、JPEG 或 WebP，每条消息最多 8 张；超过 10 MiB 或 2400 万像素的照片会先在这里缩小${claude ? ` · ${claude}` : ""}`,
-  imagesOnly: "Codex 和 Claude Agent 可以使用图片",
+  imagesOnly: "Codex、Claude 和 OpenCode Agent 可以使用图片",
   chooseToMark: "选择要标注的图片",
   markUp: "标注图片",
   markUpTitle: "Point & Fix · 在截图或图片上标出区域，并把你的说明加入草稿",
@@ -275,6 +277,7 @@ export const shellText = strings({
   reconnectLast: "请先重新连接并核对上一个 Turn",
   addInput: "向当前 Turn 添加输入",
   claudeImages: "发送给 Claude 时，大图片会被缩放或压缩 · 原图会保留",
+  openCodeImages: "需要在设置里选定能读图片的模型 · 发送时大图片会被缩放或压缩 · 原图会保留",
   atGlance: "概览",
   closePanel: "关闭上下文面板",
   currentWork: "当前工作",

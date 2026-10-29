@@ -1,4 +1,4 @@
-//! Codex and Claude input images. Opaque, agent-scoped immutable files; no caller paths.
+//! Codex, Claude and OpenCode input images. Opaque, agent-scoped immutable files; no caller paths.
 //! The existing browser boundary protects these routes. Images never enter SQLite,
 //! SSE or draft JSON. Upload decoding and reads run off the async workers.
 use crate::{model::Agent, workspace::Workspace};
@@ -38,8 +38,8 @@ pub struct UploadedImage {
 }
 
 pub fn supported(agent: &Agent) -> Result<()> {
-    ensure!(matches!(agent.harness.as_str(), "codex" | "claude"),
-        "Images are supported by Codex and Claude Agents.");
+    ensure!(matches!(agent.harness.as_str(), "codex" | "claude" | "opencode"),
+        "Images are supported by Codex, Claude and OpenCode Agents.");
     Ok(())
 }
 fn safe_agent(agent: &str) -> Result<()> {
@@ -331,6 +331,26 @@ pub fn claude_images(root: &FsPath, agent: &str, images: &[String]) -> Result<Ve
         Ok(())
     })?;
     Ok(refs)
+}
+
+/// A message's images as OpenCode is given them (T-10): each checked as for
+/// every Agent and sent inline as the same file Claude is given, so within
+/// the 2000 px and 5 MiB of base64 OpenCode fits an image to itself
+/// (`image/image.ts`), and OpenCode never changes or refuses one.
+pub fn opencode_images(root: &FsPath, agent: &str, images: &[String]) -> Result<Vec<crate::opencode::FilePart>> {
+    let mut files = vec![];
+    each_owned(root, agent, images, |id, path, bytes| {
+        let data = bounded_read(&claude_fit(path, id, bytes)?, CLAUDE_MAX_BYTES)?;
+        let mime = match image::guess_format(&data)? {
+            ImageFormat::Png => "image/png",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::WebP => "image/webp",
+            _ => anyhow::bail!("Unsupported image for OpenCode; attach it again"),
+        };
+        files.push(crate::opencode::FilePart { mime, filename: id.to_owned(), data });
+        Ok(())
+    })?;
+    Ok(files)
 }
 
 /// The images of a sent message as its conversation item shows them: the

@@ -37,7 +37,7 @@ export function useImageUploads(
     try {
       if (!supported)
         throw new Error(
-          "Images are supported by Codex and Claude Agents.",
+          "Images are supported by Codex, Claude and OpenCode Agents.",
         );
       if (active.current.has(target))
         throw new Error(

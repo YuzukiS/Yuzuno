@@ -40,12 +40,20 @@
 //! provider's record holds (its key, options or headers) or what a variant
 //! sets.
 //!
+//! A message's images (T-10) go with it inline, as file parts after its
+//! text, and only to a chosen model OpenCode lists as reading images
+//! (`capabilities.input.image`): OpenCode would give any other model a line
+//! of text in place of each image (`unsupportedParts`,
+//! `provider/transform.ts`) and still take the message, and which model its
+//! own default is can't be known before it answers. Either is refused before
+//! anything is sent.
+//!
 //! Not yet: no model is chosen when the Agent is created, and no OpenCode
 //! `agent` at all; a sub-agent's own conversation is not shown, nor are
 //! background sub-agents (OpenCode's experimental flag); a sub-agent of a
 //! sub-agent (`subagent_depth` above OpenCode's default of 1) is followed as
 //! it starts but not found again after the event stream breaks; no message
-//! joins a running Turn; no images or remote machines.
+//! joins a running Turn; no remote machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
     opencode::{self, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
@@ -208,6 +216,13 @@ fn chosen_variant(model: Option<&ModelChoice>, variant: Option<&str>) -> Result<
     ensure!(model.variants.iter().any(|v| v == variant),
         "所选变体 {variant} 已不在 OpenCode 为 {} 列出的变体中；这条消息没有发送，草稿保留。请在设置里另选", model.id());
     Ok(Some(variant.to_owned()))
+}
+
+/// Images go only to a chosen model that reads them, as OpenCode lists it now.
+fn takes_images(model: Option<&ModelChoice>) -> Result<()> {
+    let model = model.context("发送图片需要先在设置里选定一个能读图片的模型：无法事先确认 OpenCode 自己的默认模型能否读图片；这条消息没有发送，草稿和图片保留")?;
+    ensure!(model.image, "所选模型 {} 在 OpenCode 的配置中不能读图片；这条消息没有发送，草稿和图片保留。请在设置里另选能读图片的模型", model.id());
+    Ok(())
 }
 
 impl Workspace {
@@ -626,6 +641,9 @@ impl Workspace {
         // A chosen model or variant OpenCode no longer lists: refused before a receipt.
         let model = chosen(&c.server, &detail.agent.model).await?;
         chosen_variant(model.as_ref(), detail.agent.settings.reasoning_effort.as_deref())?;
+        if !input.images.is_empty() {
+            takes_images(model.as_ref())?;
+        }
         self.require_collaboration(id).await
     }
 
@@ -650,8 +668,13 @@ impl Workspace {
     /// OpenCode stored it under its ID; a send whose outcome is unknown is an
     /// `OutcomeUnknown`, and is never sent again.
     pub(crate) async fn opencode_send_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>) -> Result<Value> {
+        self.opencode_send_images_locked(id, text, client_id, &[]).await
+    }
+
+    /// As `opencode_send_locked`, with the message's images (T-10).
+    pub(crate) async fn opencode_send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String]) -> Result<Value> {
         let mut sent = false;
-        let result = self.opencode_send_once(id, text, client_id, &mut sent).await;
+        let result = self.opencode_send_once(id, text, client_id, images, &mut sent).await;
         if let (Err(error), false, Some(client)) = (&result, sent, client_id) {
             // It was never sent, or OpenCode refused it. Its receipt says so,
             // even if a connection that ended meanwhile settled it as unknown.
@@ -674,7 +697,7 @@ impl Workspace {
     }
 
     /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
-    async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, sent: &mut bool) -> Result<Value> {
+    async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], sent: &mut bool) -> Result<Value> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
@@ -683,14 +706,24 @@ impl Workspace {
         // The model and variant it goes with, as OpenCode lists them now (or its own).
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
+        // Its images, for that model only, each this Agent's own and as it
+        // was saved, read off the async workers: what OpenCode is given and
+        // what the conversation shows.
+        let (files, shown) = if images.is_empty() { (vec![], vec![]) } else {
+            takes_images(model.as_ref())?;
+            let (root, agent, images) = (self.data_dir.clone(), id.to_owned(), images.to_vec());
+            tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
+                crate::input_images::history_images(&root, &agent, &images)))).await??
+        };
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
         // Recorded before it is sent: its ID is the only way to learn what
         // became of it.
-        let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), json!([{"type":"text","text":text}]));
+        let words = (!text.is_empty()).then(|| json!({"type":"text","text":text}));
+        let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), Value::Array(words.into_iter().chain(shown).collect()));
         self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text,
-            "model":model.as_ref().map(ModelChoice::id),"variant":variant}),
+            "images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant}),
             Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
@@ -705,7 +738,7 @@ impl Workspace {
         }).await?;
         self.changed(id);
         *sent = true;
-        let submitted = c.server.submit_with(&c.session, &message, &text, model.as_ref(), variant.as_deref()).await;
+        let submitted = c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await;
         let refused = match &submitted {
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.

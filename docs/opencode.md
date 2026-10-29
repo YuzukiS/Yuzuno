@@ -19,6 +19,13 @@ OpenCode Agent keeps working either way.
   **Reject**; nothing lasting is offered. OpenCode rejects the session's other
   waiting requests along with a rejected one. Its questions are answered in
   its own form.
+- **Images:** a message can carry images, as for Codex and Claude, when the
+  Agent has a model chosen in its settings that OpenCode lists as reading
+  images. With OpenCode's own default, or a model that doesn't read images,
+  the message is refused and the draft keeps its text and images: OpenCode
+  itself would give such a model a line of text in place of each image and
+  send the rest. Large images are scaled or compressed as for Claude; the
+  conversation shows the originals.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
@@ -46,5 +53,5 @@ OpenCode Agent keeps working either way.
 
 ## Not yet
 
-Remote machines, images, rewind, slash commands, model choice, messages added
+Remote machines, rewind, slash commands, model choice, messages added
 to a running turn, and following OpenCode's sub-agent sessions.

@@ -102,10 +102,12 @@ def load():
         counter[0] = state['counter']
 
 
-def store(session, message_id, text):
+def store(session, message_id, text, files=()):
     info = {'id': message_id, 'sessionID': session, 'role': 'user', 'time': {'created': int(time.time() * 1000)}}
     message = {'info': info, 'parts': [{'id': new_id('prt'), 'sessionID': session, 'messageID': message_id,
                                          'type': 'text', 'text': text}]}
+    # A file part as OpenCode stores one sent inline: its `data:` URL kept as it is.
+    message['parts'] += [{'id': new_id('prt'), 'sessionID': session, 'messageID': message_id, **f} for f in files]
     with lock:
         # As in OpenCode, the same ID replaces the stored message.
         messages.setdefault(session, {})[message_id] = message
@@ -367,10 +369,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def prompt(self, session, body):
         message_id = body.get('messageID') or new_id('msg')
-        text = ''.join(p.get('text', '') for p in body.get('parts', []))
+        text = ''.join(p.get('text', '') for p in body.get('parts', []) if p.get('type') == 'text')
+        # As OpenCode 1.19.3's `FilePartInput` (`schema/src/v1/session.ts`):
+        # a `mime` and a `url` are required, anything else is refused (400).
+        files = [p for p in body.get('parts', []) if p.get('type') == 'file']
+        if any(not isinstance(f.get('mime'), str) or not isinstance(f.get('url'), str) for f in files):
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: a file part needs mime and url'}})
+        files = [{k: f[k] for k in ('type', 'mime', 'filename', 'url') if k in f} for f in files]
         mode = modes['prompt']
         if mode == 'store':
-            store(session, message_id, text)
+            store(session, message_id, text, files)
             self.reply(204)
             # The run starts: OpenCode is busy until it ends.
             statuses[session] = {'type': 'busy'}
