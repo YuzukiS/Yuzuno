@@ -20,14 +20,17 @@ const HOVER_MS = 250;
  *  - `name`: the name as shown, with any hint after it.
  *  - `result`: said at the end instead of the state, such as a command's
  *    exit code or a sub-agent's status.
+ *  - `raw`: the row opens to the raw input and result (not a sub-agent's
+ *    detail or a plan).
  */
-export function ToolCallSummary({ icon, name, facts, result, resultTitle, open }: {
+export function ToolCallSummary({ icon, name, facts, result, resultTitle, open, raw = true }: {
   icon: ReactNode;
   name: ReactNode;
   facts: CallFacts;
   result?: string | null;
   resultTitle?: string;
   open: boolean;
+  raw?: boolean;
 }) {
   const language = useLanguage();
   const t = callWords(language);
@@ -81,7 +84,8 @@ export function ToolCallSummary({ icon, name, facts, result, resultTitle, open }
       <span className="tool-call-name">{name}</span>
       {facts.note && <span className="tool-call-note" lang={facts.noteGiven ? "" : undefined}>{facts.note}</span>}
       {end && <span className="tool-result" title={resultTitle}>{end}</span>}
-      {shown && summary.current && createPortal(<CallTip id={id} anchor={summary.current} facts={facts} open={open}
+      {shown && summary.current && createPortal(<CallTip id={id} anchor={summary.current} facts={facts}
+        hint={raw ? open ? t.hideRaw : t.showRaw : open ? t.hideRow : t.showRow}
         state={end && end !== facts.note ? end : facts.tone ? t.tone[facts.tone] : null} />, document.body)}
     </summary>
   );
@@ -112,11 +116,10 @@ export function CallName({ name }: { name: string }) {
 }
 
 /** The few more facts of a call, beside its capsule. */
-function CallTip({ id, anchor, facts, open, state }: {
-  id: string; anchor: HTMLElement; facts: CallFacts; open: boolean; state: string | null;
+function CallTip({ id, anchor, facts, hint, state }: {
+  id: string; anchor: HTMLElement; facts: CallFacts; hint: string; state: string | null;
 }) {
   const language = useLanguage();
-  const t = callWords(language);
   const tip = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
@@ -131,10 +134,11 @@ function CallTip({ id, anchor, facts, open, state }: {
   return (
     <div ref={tip} id={id} role="tooltip" className="tool-call-tip" lang={langTag(language)}
       style={place ?? { left: 8, top: 8, visibility: "hidden" }}>
-      <p className="tool-call-tip-name" lang="">{facts.fullName}</p>
+      {/* A command can run to pages; its start names it. */}
+      <p className="tool-call-tip-name" lang="">{facts.fullName.length > 300 ? `${facts.fullName.slice(0, 299)}…` : facts.fullName}</p>
       {state && <p className="tool-call-tip-state" data-tone={facts.tone || undefined}>{state}</p>}
       <CallDetails facts={facts} />
-      <p className="tool-call-tip-hint">{open ? t.hideRaw : t.showRaw}</p>
+      <p className="tool-call-tip-hint">{hint}</p>
     </div>
   );
 }

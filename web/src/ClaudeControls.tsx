@@ -212,7 +212,7 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
     data-subagent-status={entry?.status} open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange?.(event.currentTarget.open);
     }}>
-    <ToolCallSummary open={!!opened} facts={facts} result={result}
+    <ToolCallSummary open={!!opened} facts={facts} result={result} raw={!entry && plan === null}
       icon={entry ? <Bot size={14} /> : callIcon(item, <SquareTerminal size={14} />)}
       name={facts.name !== name ? <CallName name={facts.name} /> : <><strong>{name}</strong>{hint ? ` · ${String(hint)}` : ""}</>} />
     <div className="tool-content">
