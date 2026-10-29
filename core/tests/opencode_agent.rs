@@ -812,6 +812,152 @@ async fn a_variant_the_chosen_model_lists_goes_with_the_next_messages() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+fn png(width: u32, height: u32, color: u8) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(width, height, image::Rgb([color, 0, 0])).write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// A message's images go to OpenCode inline (T-10): file parts after its
+/// text, each this Agent's own image as it was saved, sized as for Claude,
+/// while the conversation shows the originals. Only a chosen model OpenCode
+/// lists as reading images gets them. With OpenCode's own default, or a
+/// model that doesn't read them, nothing is sent and no receipt is kept,
+/// where OpenCode itself would put a line of text in each image's place and
+/// take the message. The same message again under its client ID is sent once.
+/// What OpenCode sends back of the images is journaled without their bytes.
+#[tokio::test]
+async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
+    let lab = lab(&[], true).await;
+    let session = lab.session();
+    // The stand-in's DeepSeek model reads images; its OpenRouter one doesn't say so.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    for provider in providers["providers"].as_array_mut().unwrap().iter_mut().filter(|p| p["id"] == "deepseek") {
+        provider["models"]["deepseek-flash"]["capabilities"] = json!({"input":{"text":true,"image":true}});
+    }
+    lab.control("mode", json!({"providers":providers})).await;
+
+    // Saved through the upload route, as the composer saves them; one for another Agent.
+    let mut other = agent(&lab.dir.path().to_string_lossy());
+    other.agent.id = "oc2".into();
+    lab.ws.store.insert(&other).unwrap();
+    let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4999);
+    let upload = |agent: &str, bytes: Vec<u8>| {
+        let request = Request::builder().method("POST").uri(format!("/api/agents/{agent}/images"))
+            .header("host", "localhost:4999").header("x-yuzuno-client", "desktop").body(Body::from(bytes)).unwrap();
+        let router = router.clone();
+        async move {
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+            serde_json::from_slice::<Value>(&body).unwrap()["id"].as_str().unwrap().to_owned()
+        }
+    };
+    let small = upload(ID, png(4, 4, 10)).await;
+    let wide = upload(ID, png(2400, 600, 80)).await;
+    let foreign = upload("oc2", png(4, 4, 200)).await;
+    let both = vec![small.clone(), wide.clone()];
+    let send = |client: &str, text: &str, images: &[String]| {
+        let input: MessageInput = serde_json::from_value(json!({"clientMessageId":client,"text":text,"images":images})).unwrap();
+        let ws = lab.ws.clone();
+        async move { ws.send_message(ID, input).await }
+    };
+
+    // OpenCode's own default, then a chosen model that doesn't read images:
+    // refused before anything is sent, and no receipt is kept.
+    let default = send("c1", "look", &both).await.unwrap_err().to_string();
+    assert!(default.contains("默认模型") && default.contains("没有发送"), "{default}");
+    lab.ws.opencode_set_model(ID, "openrouter/anthropic/claude-x".into()).await.unwrap();
+    let text_only = send("c1", "look", &both).await.unwrap_err().to_string();
+    assert!(text_only.contains("openrouter/anthropic/claude-x 在 OpenCode 的配置中不能读图片") && text_only.contains("没有发送"), "{text_only}");
+    assert!(lab.prompts().is_empty(), "nothing was sent");
+    assert!(lab.detail().message_receipts.is_empty(), "no receipt was recorded");
+
+    // A model that reads them: the text, then each image inline under its ID.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    let receipt = send("c1", "look", &both).await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    let first = receipt.turn_id.clone().unwrap();
+    let parts = lab.prompts()[0]["body"]["parts"].as_array().unwrap().clone();
+    assert_eq!((parts.len(), &parts[0]), (3, &json!({"type":"text","text":"look"})));
+    for (part, id) in parts[1..].iter().zip(&both) {
+        assert_eq!((&part["type"], &part["mime"], &part["filename"]), (&json!("file"), &json!("image/png"), &json!(id)));
+    }
+    let inline = |part: &Value| {
+        use base64::Engine;
+        let data = part["url"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();
+        base64::engine::general_purpose::STANDARD.decode(data).unwrap()
+    };
+    let saved = lab.dir.path().join("data/input-images").join(ID).canonicalize().unwrap();
+    assert_eq!(inline(&parts[1]), std::fs::read(saved.join(&small)).unwrap(), "a small image as it was saved");
+    let fitted = image::load_from_memory(&inline(&parts[2])).unwrap();
+    assert_eq!((fitted.width(), fitted.height()), (2000, 500), "a wide one fitted as for Claude");
+    let shown = |id: &str| json!({"type":"localImage","path":saved.join(id)});
+    let d = lab.detail();
+    assert_eq!(items(turn(&d, &first), "userMessage")[0]["content"],
+        json!([{"type":"text","text":"look"}, shown(&small), shown(&wide)]), "the conversation shows the originals");
+    assert_eq!(d.message_receipts[0].input.images, both, "the receipt keeps which images it sent");
+
+    // OpenCode sends the stored message back, its file parts whole. The
+    // journal keeps each as what it is, never its bytes, and no image's
+    // bytes are anywhere in Core's database.
+    let journaled = || {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/message.part.updated'").unwrap();
+        query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap)
+            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["properties"]["part"].clone())
+            .filter(|part| part["type"] == "file").collect::<Vec<_>>()
+    };
+    for _ in 0..400 {
+        if journaled().len() == 2 { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let kept = journaled();
+    assert_eq!(kept.len(), 2, "both file parts came back and were journaled");
+    for (kept, sent) in kept.iter().zip(&parts[1..]) {
+        let url = sent["url"].as_str().unwrap();
+        assert_eq!((&kept["filename"], &kept["url"]), (&sent["filename"], &json!(format!("data:image/png;base64,… ({} characters not kept)", url.len()))));
+        let data = url.split_once(',').unwrap().1.as_bytes();
+        for entry in std::fs::read_dir(lab.dir.path().join("data")).unwrap().map(Result::unwrap) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("workspace.sqlite") {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                assert!(!bytes.windows(data.len()).any(|w| w == data), "{name} holds the bytes of {}", sent["filename"]);
+            }
+        }
+    }
+
+    // The same message again: its receipt, and nothing sent again. Other
+    // images under that client ID are refused.
+    let again = send("c1", "look", &both).await.unwrap();
+    assert_eq!((again.status.as_str(), again.turn_id.as_deref()), ("accepted", Some(first.as_str())));
+    let changed = send("c1", "look", &both[..1]).await.unwrap_err().to_string();
+    assert!(changed.contains("同一消息编号不能提交不同的内容"), "{changed}");
+    assert_eq!(lab.prompts().len(), 1, "sent once");
+    lab.control("reply", json!({"sessionID":session,"text":"Seen."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+
+    // Images alone: no empty text part before them.
+    let second = send("c2", "", &both[1..]).await.unwrap().turn_id.unwrap();
+    let parts = lab.prompts()[1]["body"]["parts"].as_array().unwrap().clone();
+    assert_eq!((parts.len(), &parts[0]["filename"]), (1, &json!(wide)));
+    assert_eq!(items(turn(&lab.detail(), &second), "userMessage")[0]["content"], json!([shown(&wide)]));
+    lab.control("reply", json!({"sessionID":session,"text":"Seen."})).await;
+    lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
+
+    // Another Agent's image, or one changed since it was saved: refused by
+    // the check every Agent's images pass, and nothing is sent.
+    std::fs::write(saved.join(&small), png(4, 4, 11)).unwrap();
+    for (client, image, refusal) in [("c3", &foreign, "Saved image is missing"), ("c4", &small, "Saved image changed")] {
+        let refused = send(client, "this one", std::slice::from_ref(image)).await.unwrap();
+        assert_eq!((refused.status.as_str(), refused.turn_id.as_deref()), ("rejected", None), "{client}");
+        assert!(refused.error.as_deref().unwrap_or_default().contains(refusal), "{client}: {:?}", refused.error);
+    }
+    assert_eq!(lab.prompts().len(), 2, "neither was sent");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 #[tokio::test]
 async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session() {
     // OpenCode reports the Workspace MCP server failed: nothing is sent.

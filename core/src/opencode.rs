@@ -153,6 +153,9 @@ pub struct ModelChoice {
     /// The names of its variants (`model.variants`, such as `low` or `max`),
     /// mildest first; never what each one sets.
     pub variants: Vec<String>,
+    /// Whether it reads images (`capabilities.input.image`, from models.dev's
+    /// `modalities.input`, `provider/provider.ts`).
+    pub image: bool,
 }
 
 impl ModelChoice {
@@ -160,6 +163,25 @@ impl ModelChoice {
     /// configuration does (`cfg.model`).
     pub fn id(&self) -> String {
         format!("{}/{}", self.provider, self.model)
+    }
+}
+
+/// An image for a prompt (T-10), inline: OpenCode's `FilePartInput`
+/// (`schema/src/v1/session.ts`) with a `data:` URL, which OpenCode keeps as
+/// it is for any media type but `text/plain` (`session/prompt.ts`).
+pub struct FilePart {
+    /// `image/png`, `image/jpeg` or `image/webp`.
+    pub mime: &'static str,
+    /// Yuzuno's ID for the image, the name OpenCode's record gives it.
+    pub filename: String,
+    pub data: Vec<u8>,
+}
+
+impl FilePart {
+    fn input(&self) -> Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&self.data);
+        json!({"type": "file", "mime": self.mime, "filename": self.filename, "url": format!("data:{};base64,{data}", self.mime)})
     }
 }
 
@@ -392,17 +414,20 @@ impl Server {
     /// Sends one text prompt under `id`, once: an ID this server was given
     /// before is refused here, whatever became of it.
     pub async fn submit(&self, session: &str, id: &MessageId, text: &str) -> Result<Submission> {
-        self.submit_with(session, id, text, None, None).await
+        self.submit_with(session, id, text, &[], None, None).await
     }
 
-    /// As `submit`, with the model to answer it and that model's variant;
-    /// without them OpenCode decides (its agent's model and variant, the
-    /// session's last, then its configured default).
-    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, model: Option<&ModelChoice>, variant: Option<&str>) -> Result<Submission> {
+    /// As `submit`, with its images as file parts after the text (and no
+    /// empty text part before them), the model to answer it and that model's
+    /// variant; without them OpenCode decides (its agent's model and variant,
+    /// the session's last, then its configured default).
+    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, files: &[FilePart], model: Option<&ModelChoice>, variant: Option<&str>) -> Result<Submission> {
         let path = format!("/session/{}/prompt_async", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
-        let mut body = json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": text}]});
+        let text = (!text.is_empty() || files.is_empty()).then(|| json!({"type": "text", "text": text}));
+        let parts: Vec<Value> = text.into_iter().chain(files.iter().map(FilePart::input)).collect();
+        let mut body = json!({"messageID": id.as_str(), "parts": parts});
         if let Some(model) = model {
             body["model"] = json!({"providerID": model.provider, "modelID": model.model});
         }
@@ -484,6 +509,7 @@ impl Server {
                     name: model["name"].as_str().unwrap_or(model_id).into(),
                     status: model["status"].as_str().unwrap_or("active").into(),
                     variants,
+                    image: model["capabilities"]["input"]["image"] == true,
                 });
             }
         }

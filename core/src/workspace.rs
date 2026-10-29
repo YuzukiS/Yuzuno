@@ -1729,7 +1729,7 @@ impl Workspace {
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
         let result = if detail.agent.harness == "opencode" {
-            self.opencode_send_locked(id, input.text.clone(), Some(&input.client_message_id)).await
+            self.opencode_send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images).await
         } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
             self.claude_answer_form_locked(id, &input).await
         } else if input.question.is_some() || input.clarification.is_some() {

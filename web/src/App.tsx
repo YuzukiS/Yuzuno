@@ -855,7 +855,9 @@ export function App() {
     ),
   ), [currentDetail?.pending]);
   const hasDraft = hasDraftContent(draft);
-  const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude");
+  const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode");
+  // What happens to an image on its way to this Agent, said beside the image button.
+  const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages : null;
   const imageUploads = useImageUploads(selected, imageSupported && !previewMode && !draftBlocked, getDraft, setDraft);
   const imagePicker = useRef<HTMLInputElement>(null);
   const pointFixPicker = useRef<HTMLInputElement>(null);
@@ -3220,7 +3222,7 @@ export function App() {
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
                   />
-                  <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? shell.claudeImages : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
+                  <ImageAttachments images={draft.images || []} description={imageNote ?? undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
                   {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}
                   <SkillChips skills={draft.skills || []}
@@ -3242,7 +3244,7 @@ export function App() {
                         disabled={previewMode || draftBlocked || imageUploads.busy}
                         title={
                           imageSupported
-                            ? shell.addImagesTitle(agent?.harness === "claude" ? shell.claudeImages : null)
+                            ? shell.addImagesTitle(imageNote)
                             : shell.imagesOnly
                         }
                         onClick={() => { if (imageSupported) imagePicker.current?.click(); }}

@@ -209,7 +209,7 @@ export function useConversationSend(
         : messages.map((m, i) => (i === index ? next : m));
     });
   async function submit(text: string, question: QuestionSource | null = null, images: readonly string[] = [], clarification?: MessageInput["clarification"], textBlocks?: MessageInput["textBlocks"], skills: readonly SkillRef[] = []) {
-    if (images.length && (harness !== "codex" && harness !== "claude")) throw new Error("Images are supported by Codex and Claude Agents.");
+    if (images.length && (harness !== "codex" && harness !== "claude" && harness !== "opencode")) throw new Error("Images are supported by Codex, Claude and OpenCode Agents.");
     if (skills.length && (harness !== "codex" || question || clarification)) throw new Error("Skills are sent only to a Codex Agent, in a new or follow-up message.");
     // Covers both the composer and answers to nonblocking model questions.
     // Native pending approvals use their own respond endpoint and stay usable.
