@@ -114,6 +114,30 @@ async fn a_form_an_opencode_agent_publishes_is_answered_once_as_a_new_message() 
     ws.close_agent("oc").await.unwrap();
 }
 
+/// Choosing a model waits for the Agent gate (T-10), as a close or a
+/// reconnect does, so it never changes an Agent a close is ending.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn choosing_a_model_waits_for_the_agent_gate() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let gate = ws.gate("oc").await;
+    let held = gate.lock().await;
+    let chosen = tokio::spawn({
+        let ws = ws.clone();
+        async move { ws.opencode_set_model("oc", "deepseek/deepseek-flash".into()).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!chosen.is_finished(), "it waits while the gate is held");
+    assert_eq!(ws.store.detail("oc").unwrap().agent.model, "");
+    drop(held);
+    assert_eq!(chosen.await.unwrap().unwrap().model, "deepseek/deepseek-flash");
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// A part of an answer to a Turn that ended, arriving after a newer Turn
 /// began, is the ended Turn's (T-140): the change reads that Turn, not only
 /// the open and newest ones.

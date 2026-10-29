@@ -1414,7 +1414,7 @@ export function App() {
     requestAnimationFrame(() => {
     if (destination.kind === "agent") {
       const chosen = workspace?.agents.find((item) => item.id === destination.agentId && !item.closedAt);
-      if (!chosen || chosen.harness === "opencode" ||
+      if (!chosen || (chosen.harness === "opencode" && destination.section !== "model") ||
         (destination.section === "context" && chosen.harness !== "codex") ||
         (destination.section === "auto-continue" && (chosen.harness !== "claude" || chosen.remote))) return;
       selectAgent(chosen.id);
@@ -2608,7 +2608,7 @@ export function App() {
                 lang={langTag(language)}
                 aria-label={shell.conversationTools}
               >
-                {!isOpenCode && <AgentSettings
+                <AgentSettings
                   key={`settings-${selected}`}
                   agent={agent}
                   observedPermissionMode={
@@ -2629,9 +2629,10 @@ export function App() {
                   }}
                   onSaved={() => {
                     refresh();
-                    setNotice(shell.settingsSaved(agent.harness === "claude"));
+                    // Only Codex has context settings to apply.
+                    setNotice(shell.settingsSaved(agent.harness !== "codex"));
                   }}
-                />}
+                />
                 <ConversationSearch
                   savedAgentId={currentDetail?.conversation && !previewMode ? selected : undefined}
                   key={selected}
