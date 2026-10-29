@@ -8,6 +8,7 @@ const PAGE = 100;
 const NONE: ConversationInput[] = [];
 
 interface Loaded {
+  workspaceId: string;
   agentId: string;
   inputs: ConversationInput[];
   hasBefore: boolean;
@@ -23,9 +24,10 @@ const key = (input: ConversationInput) => `${input.turnId}\u0000${input.itemId}`
  * each Agent opened, so whether there are any is known in either mode;
  * while `following` (the dock reads by them), read again whenever `changed`,
  * the conversation's newest state, moves, and joined to the pages already
- * read.
+ * read. `workspaceId` is part of whose they are, as in useAgentDetail (T-195):
+ * an Agent id can name another Agent in another Workspace at this address.
  */
-export function useConversationInputs(agentId: string, enabled: boolean, following: boolean, changed: string) {
+export function useConversationInputs(workspaceId: string, agentId: string, enabled: boolean, following: boolean, changed: string) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -44,9 +46,9 @@ export function useConversationInputs(agentId: string, enabled: boolean, followi
       // A Core that has no such read answers something else: no inputs.
       if (!Array.isArray(page?.inputs)) throw new Error("No inputs");
       setLoaded(current => {
-        const kept = current?.agentId === agentId ? current.inputs : [];
+        const kept = current?.workspaceId === workspaceId && current.agentId === agentId ? current.inputs : [];
         if (before) {
-          return { agentId, inputs: [...page.inputs, ...kept], hasBefore: page.hasBefore, total: page.total };
+          return { workspaceId, agentId, inputs: [...page.inputs, ...kept], hasBefore: page.hasBefore, total: page.total };
         }
         // The newest page again: earlier pages stay in front of it while they
         // join it, so the numbering has no gap.
@@ -55,7 +57,7 @@ export function useConversationInputs(agentId: string, enabled: boolean, followi
         const joins = !page.hasBefore || kept.some(input => newest.has(key(input)));
         const earlier = first && joins ? kept.filter(input => !newest.has(key(input)) && (input.position[0] < first.position[0]
           || (input.position[0] === first.position[0] && input.position[1] < first.position[1]))) : [];
-        return { agentId, inputs: [...earlier, ...page.inputs], total: page.total,
+        return { workspaceId, agentId, inputs: [...earlier, ...page.inputs], total: page.total,
           hasBefore: earlier.length ? (current?.hasBefore ?? page.hasBefore) : page.hasBefore };
       });
     } catch (failure) {
@@ -66,24 +68,24 @@ export function useConversationInputs(agentId: string, enabled: boolean, followi
         setLoading(false);
       }
     }
-  }, [agentId]);
+  }, [workspaceId, agentId]);
   useEffect(() => {
     setLoaded(null);
     return () => request.current?.abort();
-  }, [agentId]);
+  }, [workspaceId, agentId]);
   // What asks for a read: while following, each newest state; otherwise one
   // read for each Agent opened (one that fails leaves the dock by Turn, as a
   // Core without this read does, until the Agent is opened again).
-  const known = loaded?.agentId === agentId;
+  const known = loaded?.workspaceId === workspaceId && loaded.agentId === agentId;
   const due = !enabled ? null : following ? `follow:${changed}` : known ? null : "once";
   useEffect(() => {
     if (due !== null) void read();
   }, [due, read]);
   const loadEarlier = useCallback(() => {
-    const first = loaded?.agentId === agentId ? loaded.inputs[0] : undefined;
+    const first = known && loaded ? loaded.inputs[0] : undefined;
     if (first && loaded?.hasBefore && !loading) void read(JSON.stringify([first.turnId, first.itemId]));
-  }, [agentId, loaded, loading, read]);
-  const shown = loaded?.agentId === agentId ? loaded : null;
+  }, [known, loaded, loading, read]);
+  const shown = known ? loaded : null;
   return {
     inputs: shown?.inputs ?? NONE,
     hasBefore: shown?.hasBefore ?? false,

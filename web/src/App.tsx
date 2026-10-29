@@ -866,7 +866,7 @@ export function App() {
   // switch shows in either mode, and while the dock shows them, the newest
   // page first, again when the newest Turn or its messages change.
   const lastTurn = logicalTurns.at(-1);
-  const conversationInputs = useConversationInputs(selected, !!agent && !previewMode && logicalTurns.length > 0, readBy === "inputs",
+  const conversationInputs = useConversationInputs(workspaceId, selected, !!agent && !previewMode && logicalTurns.length > 0, readBy === "inputs",
     `${logicalTurns.length}:${lastTurn?.id}:${lastTurn?._yuzunoRequestCount ?? lastTurn?.items?.length}`);
   // With no inputs to read by (none recorded yet), the dock reads by Turn and
   // offers no switch.

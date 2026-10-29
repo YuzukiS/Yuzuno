@@ -122,7 +122,7 @@ async function mount({
   inputs,
 } = {}) {
   const calls = [];
-  const core = { noWorkspaceId };
+  const core = { noWorkspaceId, workspaceIdentity };
   const eventUrls = [];
   const eventSources = [];
   const metrics = { detailInFlight: 0, maxDetailInFlight: 0 };
@@ -181,7 +181,7 @@ async function mount({
         // A real Core always says which Workspace this is, and the page keeps
         // drafts, unsent messages and reading places per Workspace (T-195),
         // so the fixture says it too.
-        ...(core.noWorkspaceId ? {} : { workspace: { id: workspaceIdentity || "ci-fixture" } }),
+        ...(core.noWorkspaceId ? {} : { workspace: { id: core.workspaceIdentity || "ci-fixture" } }),
         agents: agents.map((a) =>
           a.id === "a"
             ? {
@@ -3725,6 +3725,64 @@ test("by Turn, an Agent with no inputs offers no switch, and a late answer for t
     await open("Mori", "a");
     await until(() => pressed() === "Turns", "Mori's switch is back, by Turn");
     assert.equal(reads("a"), 3);
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("the same Agent id in another Workspace at this address: its inputs are read again, none of the last Workspace's shown (T-6)", async () => {
+  const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: "you" });
+  const extraTurns = [
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read")] },
+    { id: "t-b", status: "completed", items: [user("u2", "Keep Back to latest as it is")] },
+    { id: "t-c", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (itemId, at, preview) => ({ turnId: `t-${"abc"[at - 1]}`, itemId, position: [at, 0], by: "you", preview });
+  const pages = {
+    "ws-1": { inputs: [input("u1", 1, "first"), input("u2", 2, "second"), input("u3", 3, "third")], hasBefore: false, total: 3 },
+    "ws-2": { inputs: [input("u3", 3, "the only one here")], hasBefore: false, total: 1 },
+  };
+  const reads = { "ws-1": 0, "ws-2": 0 };
+  // Workspace 1's second read answers only when let go: after Workspace 2 is back.
+  let letGo;
+  const held = new Promise((resolve) => { letGo = () => resolve(pages["ws-1"]); });
+  let page;
+  page = await mount({ workspaceIdentity: "ws-1", extraTurns, inputs: () => {
+    const ws = page?.core.workspaceIdentity ?? "ws-1";
+    reads[ws]++;
+    return ws === "ws-1" && reads[ws] === 2 ? held : pages[ws];
+  } });
+  try {
+    await pause(); await pause();
+    const by = () => page.document.querySelector(".turn-dock .turn-dock-by");
+    const pressed = () => by()?.querySelector('[aria-pressed="true"]')?.textContent;
+    const choose = (label) => [...by().querySelectorAll("button")].find((b) => b.textContent === label).click();
+    const position = () => page.document.querySelector(".turn-dock-position")?.textContent ?? "";
+    const chips = () => [...page.document.querySelectorAll(".turn-dock .turn-dock-chip")].map((chip) => chip.textContent);
+    // Another Workspace answers at this address; Mori's id is the same in it.
+    const workspace = (id) => {
+      page.core.workspaceIdentity = id;
+      page.eventSources.at(-1).onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }) });
+    };
+    await until(() => /^3\s*\/ 3$/.test(position()), "Workspace 1: three inputs");
+    choose("Turns");
+    await pause();
+    workspace("ws-2");
+    await until(() => reads["ws-2"] >= 1, "by Turn too, the new Workspace's inputs are read");
+    await until(() => pressed() === "Turns", "its switch, still by Turn");
+    choose("Inputs");
+    await until(() => /^1\s*\/ 1$/.test(position()), "Workspace 2's one input");
+    assert.deepEqual(chips(), ["1"], "and nothing of Workspace 1's");
+    // Workspace 1 again, its read on its way, then Workspace 2 before it answers.
+    const before = reads["ws-1"];
+    workspace("ws-1");
+    await until(() => reads["ws-1"] > before, "Workspace 1 read again");
+    workspace("ws-2");
+    await until(() => /^1\s*\/ 1$/.test(position()), "Workspace 2 again");
+    letGo();
+    await pause(); await pause(); await pause();
+    assert.match(position(), /^1\s*\/ 1$/, "Workspace 1's late answer shows nothing");
+    assert.deepEqual(chips(), ["1"]);
     assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
