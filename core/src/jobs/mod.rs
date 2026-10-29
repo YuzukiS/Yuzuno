@@ -1423,8 +1423,9 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
 
 /// service in short (T-5): what the services list then says about it is
 /// service_jobs.rs.
-const SERVICE: &str = "The web service this command serves on this Core's host, so that it is the Project's service and the \
-    Portal shows whether it is served: name and port (and path, default /) for a new service of the task's Project, or serviceId to \
+const SERVICE: &str = "The web service this command serves on this Core's host, so that it is the Project's service and \
+    the Project's services list names the Job serving it, whether that Job's own listener answers and, with healthPath, its \
+    health: name and port (and path, default /) for a new service of the task's Project, or serviceId to \
     serve an existing one anew, which is how a service is restarted: once its earlier Job has ended (cancel it first; one whose \
     outcome is unknown still counts as serving). healthPath: a path whose HTTP 2xx answer means the app is healthy; without it no \
     health is shown. An ordinary Job otherwise: the same budget, slot and timeoutSeconds, stopped by its own cancel, never \

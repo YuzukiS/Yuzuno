@@ -247,8 +247,12 @@ pub(crate) async fn with_jobs(ws: &Workspace, services: &[Service], mut views: V
             "status": status,
             "owner": owner,
             "earlierJobIds": link.earlier,
-            // Stop is the Job's own cancel, which decides who may cancel it.
-            "canStop": matches!(status.as_str(), "queued" | "waiting" | "running"),
+            // Stop is the Job's own cancel, which decides who may cancel it
+            // and takes one queued or waiting, or an attempt that still holds
+            // its reservation (starting, running, or of unknown outcome, which
+            // blocks a restart until stopped) whose cancel isn't asked yet.
+            "canStop": matches!(status.as_str(), "queued" | "waiting")
+                || (link.job["reserved"] == true && status != "cancelling" && link.job["cancelRequestedAt"].is_null()),
         });
         view["health"] = match &link.health_path {
             None => json!({"declared": false}),

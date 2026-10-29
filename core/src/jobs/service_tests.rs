@@ -141,6 +141,29 @@ async fn a_restart_is_a_new_job_only_once_the_earlier_one_has_ended() {
 }
 
 #[tokio::test]
+async fn a_service_job_starting_or_of_unknown_outcome_can_be_stopped() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let id = service(&lab, "Vite", "local", free_port()).await;
+    let job = create(s, served("a", "T-1", &id, None)).unwrap();
+    // Reserved and launching: its cancel is taken, so Stop is offered.
+    s.reserve_next_job(None, None, None).unwrap().unwrap();
+    let view = listed(&lab, &id).await;
+    assert_eq!((view["job"]["status"].as_str(), view["job"]["canStop"].as_bool()), (Some("starting"), Some(true)));
+    // Of unknown outcome it keeps its reservation and blocks a restart:
+    // stopping it is the way out, so it is offered.
+    s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":job["attempt"],"status":"unknown",
+        "reason":"its process could not be read"}))
+        .unwrap();
+    let view = listed(&lab, &id).await;
+    assert_eq!((view["job"]["status"].as_str(), view["job"]["canStop"].as_bool()), (Some("unknown"), Some(true)));
+    // Asked to stop: not offered again.
+    s.request_job_cancel(None, job["id"].as_str().unwrap()).unwrap();
+    let view = listed(&lab, &id).await;
+    assert_eq!((view["job"]["status"].as_str(), view["job"]["canStop"].as_bool()), (Some("cancelling"), Some(false)));
+}
+
+#[tokio::test]
 async fn a_job_serves_only_a_service_of_its_tasks_project_on_this_host() {
     let lab = lab();
     let s = &lab.ws.store;
