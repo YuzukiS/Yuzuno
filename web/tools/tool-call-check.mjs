@@ -201,6 +201,8 @@ try {
       // The result gives way first: a Yuzuno tool's name stays whole beside it.
       const names = shown.filter((c) => c.name.startsWith("yuzuno/") && c.nameCut).map((c) => c.id);
       assert.deepEqual(names, [], `${view.name}: names cut short: ${JSON.stringify(shown)}`);
+      // The measure sees a cut: at 393 px the long MCP name is one.
+      if (view.touch) assert.ok(shown.find((c) => c.id === "long").nameCut, `${view.name}: the long name is cut short`);
       const overview = await page.locator("#turn-done .tool-activity > summary .tool-overview-part").allTextContents();
       assert.deepEqual(overview, ["11 tool steps", "1 failed", "1 refused"]);
       assert.equal(await page.locator(".tool-activity .tool-count").count(), 0, "no capsule stack in the heading");
