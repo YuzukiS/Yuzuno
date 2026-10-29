@@ -376,6 +376,8 @@
 }
 .turn-file-meta strong {
   font-weight: 600;
+  /* Its own colour: inherited, it was a dim green on the dark theme's card. */
+  color: var(--ink);
 }
 .turn-file-meta small {
   font-size: 0.8em;

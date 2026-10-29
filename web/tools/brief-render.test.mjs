@@ -28,7 +28,9 @@ import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-
 import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
 import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
+import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 const root=createRoot(document.getElementById('root'));
+window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
 // With a density, as Home draws its cards (T-9); without one, as anywhere else.
@@ -736,6 +738,44 @@ test("a table's view belongs to the Workspace it was set in", async (t) => {
     "the other Workspace's view was not written over",
   );
   assert.equal(window.localStorage.getItem(viewKey("")), null, "and nothing was saved for no Workspace");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a table's own words follow the UI language; titles, labels and cells stay as written", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, {
+    op: "put", key: KEY, kind: "report", title: "Runs",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["runs"] },
+      runs: { type: "Table", props: { id: "runs", title: "运行",
+        columns: [{ key: "run", label: "名称" }, { key: "score", label: "得分" }],
+        rows: [["甲", 60], ["乙", 67], ["丙", 74]].map(([run, score], i) => ({ id: `r${i}`, cells: { run, score } })) } },
+    } },
+  }, { version: 1 });
+  const input = () => document.querySelector(".result-filter input");
+  const caption = () => document.querySelector(".result-table-caption span").textContent;
+  const type = (value) => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input(), value);
+    input().dispatchEvent(new window.Event("input", { bubbles: true }));
+  };
+  window.chooseLanguage("zh-Hans");
+  window.renderSection(section, PROJECT, {}, "ws");
+  await until(() => input()?.placeholder === "筛选…", "the Chinese filter");
+  assert.equal(input().getAttribute("aria-label"), "筛选运行");
+  assert.equal(document.querySelector(".result-table-scroll").getAttribute("aria-label"), "运行表格");
+  assert.equal(caption(), "3 / 3 行");
+  assert.deepEqual([...document.querySelectorAll(".result-table-scroll thead th")].map((th) => th.textContent), ["名称", "得分"]);
+  type("没有");
+  await until(() => document.querySelector(".result-empty")?.textContent === "没有匹配的行，换个筛选词试试。", "no matches, in Chinese");
+  assert.equal(caption(), "0 / 3 行");
+  type("");
+  window.chooseLanguage("en");
+  await until(() => input().placeholder === "Filter…", "back in English");
+  assert.equal(input().getAttribute("aria-label"), "Filter 运行");
+  assert.equal(caption(), "3 of 3 rows");
+  window.unmountSection();
   assert.deepEqual(page.errors, []);
 });
 
