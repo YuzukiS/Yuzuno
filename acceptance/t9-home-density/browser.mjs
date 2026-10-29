@@ -276,6 +276,22 @@ try {
   await shoot('mobile-low.png');
   check('393 px wide: both densities without horizontal overflow');
 
+  // 320 px with two projects: the header (title, both densities, Reorder,
+  // Refresh) wraps, and every control stays on screen.
+  await page.setViewportSize({ width: 320, height: 700 });
+  await card('numbers').waitFor();
+  assert.equal(await page.locator('.home-header').getByRole('button', { name: 'Reorder', exact: true }).count(), 1, 'two projects: Reorder shows');
+  const headerFits = () => page.locator('.home-header button').evaluateAll(buttons =>
+    buttons.every(button => { const r = button.getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.right <= document.documentElement.clientWidth + 1; }));
+  for (const label of ['Low density', 'High density']) {
+    await choose(label);
+    assert.ok(await headerFits(), `every header control is on screen at 320 px, ${label}`);
+    assert.ok(await noOverflow(), `no horizontal overflow at 320 px, ${label}`);
+    await shoot(`mobile-320-${label.startsWith('Low') ? 'low' : 'high'}.png`);
+  }
+  await choose('Low density');
+  check('320 px wide with two projects: the header wraps, every control stays on screen, no horizontal overflow');
+
   await page.setViewportSize({ width: 1440, height: 1000 });
   // One block edited: the others, a draft, focus and a table filter stay.
   const filter = card('numbers').getByRole('textbox', { name: 'Filter Runs', exact: true });

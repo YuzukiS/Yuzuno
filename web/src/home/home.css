@@ -190,11 +190,14 @@
 .home-widget-add:hover {
   border-color: var(--home-focus);
 }
+/* The title and its tools share a row while they fit; on a narrow phone
+   the tools wrap below it, right-aligned, never past the edge. */
 .home-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   margin-bottom: 16px;
 }
 .home-header h1 {
@@ -207,8 +210,12 @@
 }
 .home-header-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
+  min-width: 0;
+  margin-left: auto;
 }
 .home-header-tools .is-active {
   color: var(--home-new);

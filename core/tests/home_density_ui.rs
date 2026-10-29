@@ -55,6 +55,8 @@ for line in sys.stdin:
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     let ws = Workspace::new(lab.path().join("data"), lab.path().to_string_lossy().into(), script.to_string_lossy().into()).unwrap();
     let project = ws.store.create_project("Density lab", BTreeMap::new()).unwrap().id;
+    // A second project, so Home's header carries Reorder too (the narrowest header).
+    ws.store.create_project("Second lab", BTreeMap::new()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     assert_ne!(port, 4317);
