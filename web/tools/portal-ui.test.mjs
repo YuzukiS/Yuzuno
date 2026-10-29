@@ -243,6 +243,23 @@ test("opening and closing beside the chat keeps the card it was opened from wher
   assert.equal(top, 745, "and back by as much when the chat widens again");
   assert.equal(main.getBoundingClientRect().top, 255);
   assert.equal(page.document.activeElement, main, "focus back on it");
+  // Scrolled away from the card while the page is open: closing keeps that place, not the card's.
+  page.click(main);
+  await until(() => html.dataset.portal === "side", "open again");
+  assert.equal(top, 1245);
+  top = 2245;
+  const line = page.document.createElement("p");
+  scroller.append(line);
+  line.getBoundingClientRect = () => {
+    const y = (html.dataset.portal === "side" ? 2500 : 1800) - top;
+    return { top: y, bottom: y + 20, left: 0, right: 300, height: 20, width: 300 };
+  };
+  page.document.elementFromPoint = () => line;
+  assert.equal(line.getBoundingClientRect().top, 255, "the line read now");
+  page.click(page.button("Close preview"));
+  await until(() => !page.panel(), "closed again");
+  assert.equal(line.getBoundingClientRect().top, 255, "the line read stays where it was");
+  assert.equal(top, 1545, "not pulled back to the card");
   assert.deepEqual(page.errors, []);
 });
 

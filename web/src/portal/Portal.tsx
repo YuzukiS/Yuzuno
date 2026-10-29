@@ -159,13 +159,22 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
 
 /**
  * Runs a change that resizes the conversation (the Portal opening, closing or
- * widening), keeping `anchor` (what it was opened from) where the reader saw
- * it in its scrolling box. Rows measured after the width change move it
- * again, so it is held for a few frames more.
+ * widening), keeping what the reader is at where they saw it in its
+ * scrolling box: the card the page was opened from while it shows, else the
+ * line a quarter down (they scrolled away from the card while it was open).
+ * Rows measured after the width change move it again, so it is held for a
+ * few frames more; nothing else scrolls the conversation.
  */
-function keepInPlace(anchor: HTMLElement | null, change: () => void) {
-  const scroller = anchor?.isConnected ? scrollParent(anchor) : null;
-  if (!anchor || !scroller) return change();
+function keepInPlace(opener: HTMLElement | null, change: () => void) {
+  const scroller = opener?.isConnected ? scrollParent(opener) : null;
+  if (!opener || !scroller) return change();
+  const box = scroller.getBoundingClientRect();
+  const card = opener.getBoundingClientRect();
+  let anchor: Element = opener;
+  if ((card.bottom <= box.top || card.top >= box.bottom) && typeof document.elementFromPoint === "function") {
+    const at = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 4);
+    if (at && at !== scroller && scroller.contains(at)) anchor = at;
+  }
   const offset = () => anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   const before = offset();
   change();
