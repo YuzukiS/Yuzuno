@@ -121,7 +121,7 @@ def load():
         counter[0] = state['counter']
 
 
-def store(session, message_id, text, files=()):
+def store(session, message_id, text, files=(), announce=True):
     info = {'id': message_id, 'sessionID': session, 'role': 'user', 'time': {'created': int(time.time() * 1000)}}
     message = {'info': info, 'parts': [{'id': new_id('prt'), 'sessionID': session, 'messageID': message_id,
                                          'type': 'text', 'text': text}]}
@@ -131,6 +131,9 @@ def store(session, message_id, text, files=()):
         # As in OpenCode, the same ID replaces the stored message.
         messages.setdefault(session, {})[message_id] = message
     save()
+    if not announce:
+        # Stored, with no event Core sees (as when its stream missed them).
+        return message
     publish('message.updated', {'sessionID': session, 'info': info})
     # As OpenCode 1.19.3 saves a prompt (`createUserMessage`): each part
     # follows, whole, a file part's `data:` URL included.
@@ -363,6 +366,8 @@ class Handler(BaseHTTPRequestHandler):
             stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
             return self.reply(200, stored)
         if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
+            if modes.get('failMessageReads'):
+                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: message read failed'}})
             found = messages.get(session, {}).get(rest[1])
             return self.reply(200, found) if found else self.missing(f'Message {rest[1]}')
         if (method, *rest) == ('POST', 'abort'):
@@ -433,8 +438,10 @@ class Handler(BaseHTTPRequestHandler):
         only once its run has ended (an answer to it, then idle), with that
         answer; every failure is a 400. A `subtask` command's run starts a
         sub-agent session under this one, as the task tool does. Mode
-        `command`: `run`, `fail` (stored, then the run fails: 400) or `drop`
-        (the connection ends with nothing stored or answered)."""
+        `command`: `run`, `fail` (stored, then the run fails: 400),
+        `fail-unannounced` (as `fail`, with no event for the stored message)
+        or `drop` (the connection ends with nothing stored or answered).
+        `failMessageReads` makes reading one message a 500."""
         command = modes['config'].get('command', {}).get(body.get('command'))
         if command is None or not isinstance(body.get('arguments'), str) or not isinstance(body.get('model', ''), str):
             error = {'name': 'UnknownError', 'data': {'message': f'Command not found: "{body.get("command")}".'}}
@@ -449,13 +456,13 @@ class Handler(BaseHTTPRequestHandler):
         text = command['template'].replace('$ARGUMENTS', body['arguments'])
         for n in range(1, 10):
             text = text.replace(f'${n}', arguments[n - 1] if n <= len(arguments) else '')
-        store(session, message_id, text)
+        store(session, message_id, text, announce=mode != 'fail-unannounced')
         statuses[session] = {'type': 'busy'}
         publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
         if command.get('subtask'):
             agent = command.get('agent', 'general')
             control('child', {'parentID': session, 'title': f'{command.get("description", "")} (@{agent} subagent)', 'agent': agent})
-        if mode == 'fail':
+        if mode in ('fail', 'fail-unannounced'):
             return self.reply(400, {'name': 'UnknownError', 'data': {'message': 'fixture: the run failed'}})
         deadline = time.time() + 60
         while time.time() < deadline:

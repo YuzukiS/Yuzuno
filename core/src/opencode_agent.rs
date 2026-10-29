@@ -784,7 +784,7 @@ impl Workspace {
             // the Agent's model and variant go only with one that names none.
             Some((command, arguments)) => {
                 let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
-                self.opencode_command_started(&c, &message, &command.name, arguments, model.as_deref(), variant).await
+                self.opencode_command_started(id, &c, &message, &command.name, arguments, model.as_deref(), variant).await
             }
             None => c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await,
         };
@@ -822,24 +822,36 @@ impl Workspace {
 
     /// Starts a command under `message` (T-10), its request held open for
     /// the run (`Server::command`), and says what is known of its start:
-    /// refused when OpenCode answered 400 while it has no message under that
-    /// ID (as for an unknown command, refused before it runs); accepted once
-    /// OpenCode stored the message, or answered; otherwise unknown after
-    /// COMMAND_START. A 400 once the message exists is the run's own failure,
-    /// which OpenCode's record of the Turn tells, as for a prompt.
-    async fn opencode_command_started(&self, c: &Connection, message: &MessageId, name: &str, arguments: &str,
+    /// refused when OpenCode answered 400 and its record, read after that
+    /// answer, has no message under that ID (as for an unknown command,
+    /// refused before it runs); accepted once OpenCode stored the message, or
+    /// answered; otherwise unknown: after COMMAND_START, or when that record
+    /// could not be read. A 400 once the message exists is the run's own
+    /// failure, which OpenCode's record of the Turn tells, as for a prompt.
+    async fn opencode_command_started(&self, id: &str, c: &Connection, message: &MessageId, name: &str, arguments: &str,
         model: Option<&str>, variant: Option<&str>) -> Result<Submission> {
         let request = c.server.command(&c.session, message, name, arguments, model, variant)?;
         let (tx, mut answer) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _ = tx.send(request.await);
         });
-        let stored = || async { c.server.message(&c.session, message).await.is_ok_and(|m| m.is_some()) };
+        // Whether OpenCode holds the message: by the event that confirmed
+        // it, else by its record; None when that record could not be read.
+        let stored = || async {
+            if self.send_view(id).await.is_ok_and(|d| d.turns.iter().any(|t| t["id"] == message.as_str() && t["_opencodeConfirmed"] == true)) {
+                return Some(true);
+            }
+            c.server.message(&c.session, message).await.ok().map(|m| m.is_some())
+        };
         let deadline = Instant::now() + COMMAND_START;
         loop {
             match answer.try_recv() {
                 Ok(Submission::Refused(status)) => {
-                    return Ok(if stored().await { Submission::Accepted } else { Submission::Refused(status) });
+                    return Ok(match stored().await {
+                        Some(true) => Submission::Accepted,
+                        Some(false) => Submission::Refused(status),
+                        None => Submission::Unknown(format!("{status}, and its record of the message could not be read")),
+                    });
                 }
                 Ok(other) => return Ok(other),
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
@@ -847,7 +859,7 @@ impl Workspace {
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             }
-            if stored().await {
+            if stored().await == Some(true) {
                 return Ok(Submission::Accepted);
             }
             if Instant::now() >= deadline {
