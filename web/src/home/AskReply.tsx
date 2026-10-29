@@ -363,39 +363,39 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       ) : form === undefined ? (
         <p className="home-note">{t.formUnavailable}</p>
       ) : null}
-      {(freeText || form === undefined || (!reply.options?.length && !reply.choice && !form)) && (
-        <>
-          {otherVersion && draft ? (
-            <p className="home-note home-ask-draft-note" role="status">
-              {t.askDraftOtherVersion(draft.version, section.version)}{" "}
-              <button type="button" className="inline-link" disabled={busy} onClick={() => write({ version: section.version })}>
-                {t.referTo(section.version)}
-              </button>{" "}
-              <button type="button" className="inline-link" disabled={busy} onClick={() => keep(null)}>
-                {t.discard}
-              </button>
-            </p>
-          ) : (
-            restored && !!draft?.text.trim() && <p className="home-note">{t.askDraftKept(draft.version)}</p>
-          )}
-          <TextReply
-            label={t.replyField(section.title)}
-            placeholder={prompt}
-            text={draft?.text ?? ""}
-            onText={writeText}
-            disabled={disabled}
-            held={otherVersion}
-            busy={busy}
-            onSend={async (text) => {
-              await deliver(text);
-              // Only what was sent leaves: anything written while it was being sent stays.
-              if (!latest.current || latest.current.text.trim() === text) keep(null);
-              setRestored(false);
-            }}
-          />
-          {onlyHere && <p className="home-note">{t.askDraftOnlyHere}</p>}
-        </>
+      {/* Always offered, whatever the ask declares: answering in your own
+          words is yours, not something an Agent turns on with `freeText`,
+          which only names the field. Core takes text for any ask, with or
+          without a choice (project_brief/home.rs). */}
+      {otherVersion && draft ? (
+        <p className="home-note home-ask-draft-note" role="status">
+          {t.askDraftOtherVersion(draft.version, section.version)}{" "}
+          <button type="button" className="inline-link" disabled={busy} onClick={() => write({ version: section.version })}>
+            {t.referTo(section.version)}
+          </button>{" "}
+          <button type="button" className="inline-link" disabled={busy} onClick={() => keep(null)}>
+            {t.discard}
+          </button>
+        </p>
+      ) : (
+        restored && !!draft?.text.trim() && <p className="home-note">{t.askDraftKept(draft.version)}</p>
       )}
+      <TextReply
+        label={t.replyField(section.title)}
+        placeholder={prompt}
+        text={draft?.text ?? ""}
+        onText={writeText}
+        disabled={disabled}
+        held={otherVersion}
+        busy={busy}
+        onSend={async (text) => {
+          await deliver(text);
+          // Only what was sent leaves: anything written while it was being sent stays.
+          if (!latest.current || latest.current.text.trim() === text) keep(null);
+          setRestored(false);
+        }}
+      />
+      {onlyHere && <p className="home-note">{t.askDraftOnlyHere}</p>}
       {busy && <p className="home-note" role="status">{t.sending}</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
     </div>
