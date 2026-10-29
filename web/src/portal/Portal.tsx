@@ -48,7 +48,9 @@ const text = strings({
   notSet: "Not set",
   linked: "Linked to this Job",
   otherProcess: "Another program answers on its port",
-  notListening: "This Job doesn't listen on the port yet",
+  notListening: "This Job isn't listening on the port",
+  ownerUnknown: "Can't confirm whose program answers on the port",
+  checkedAt: (time: string) => `checked ${time}`,
   reachable: "Reachable",
   notReachable: "Not reachable",
   disconnect: "Disconnect",
@@ -60,8 +62,9 @@ const text = strings({
   stopCancel: "Keep it",
   stopNote: "Stopping ends this Job's process; the preview closes its page.",
   jobStates: {
-    queued: "Queued", waiting: "Waiting", running: "Running", succeeded: "Ended", failed: "Failed",
-    cancelled: "Stopped", interrupted: "Interrupted", unknown: "Unknown",
+    queued: "Queued", waiting: "Waiting", starting: "Starting", running: "Running", cancelling: "Stopping",
+    succeeded: "Ended", failed: "Failed", cancelled: "Stopped", interrupted: "Interrupted", rejected: "Not started",
+    unknown: "Unknown",
   } as Record<string, string>,
   healthStates: { ok: "Healthy", failing: "Failing", unknown: "Unknown" } as Record<string, string>,
 }, {
@@ -92,7 +95,9 @@ const text = strings({
   notSet: "未设置",
   linked: "关联此 Job",
   otherProcess: "端口上是别的程序",
-  notListening: "此 Job 还没有在端口上监听",
+  notListening: "此 Job 没有在端口上监听",
+  ownerUnknown: "无法确认端口上是谁在应答",
+  checkedAt: (time) => `${time} 检查`,
   reachable: "可访问",
   notReachable: "无法访问",
   disconnect: "断开连接",
@@ -104,8 +109,9 @@ const text = strings({
   stopCancel: "保留",
   stopNote: "停止会结束这个 Job 的进程；预览里的页面也会断开。",
   jobStates: {
-    queued: "排队中", waiting: "等待中", running: "运行中", succeeded: "已结束", failed: "失败",
-    cancelled: "已停止", interrupted: "已中断", unknown: "未知",
+    queued: "排队中", waiting: "等待中", starting: "启动中", running: "运行中", cancelling: "正在停止",
+    succeeded: "已结束", failed: "失败", cancelled: "已停止", interrupted: "已中断", rejected: "未启动",
+    unknown: "未知",
   },
   healthStates: { ok: "正常", failing: "异常", unknown: "未知" },
 });
@@ -482,14 +488,20 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
           <small>{t.page}</small>
           <b><span className="portal-dot" />{reachable ? t.reachable : t.notReachable}</b>
           <em>
-            {c.httpStatus ? `HTTP ${c.httpStatus}` : ""}
-            {job ? ` · ${job.owner === "otherProcess" ? t.otherProcess : job.owner === "notListening" ? t.notListening : t.linked}` : ""}
+            {[
+              c.httpStatus ? `HTTP ${c.httpStatus}` : "",
+              // Only a verified listener is the Job's own; nothing else is guessed.
+              job ? ({ verified: t.linked, otherProcess: t.otherProcess, notListening: t.notListening } as Record<string, string>)[job.owner] ?? t.ownerUnknown : "",
+              // The page is checked when the way is opened or checked again, not continuously.
+              c.since ? t.checkedAt(timeOf(c.since)) : "",
+            ].filter(Boolean).join(" · ")}
           </em>
         </div>
         {job && (
           <div className="portal-fact" data-state={health?.declared ? health.state : "unset"}>
             <small>{t.health}</small>
             <b>{health?.declared ? t.healthStates[health.state] ?? health.state : t.notSet}</b>
+            {health?.declared && health.state !== "ok" && health.reason && <em>{health.reason}</em>}
           </div>
         )}
       </div>

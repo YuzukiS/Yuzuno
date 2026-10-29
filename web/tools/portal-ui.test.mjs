@@ -282,6 +282,20 @@ test("a service's Job: running, reachable and health apart; stop only for its ow
   const other = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Another program")), "the conflict");
   assert.match(other.textContent, /Another program answers on its port/);
   assert.match(other.textContent, /Health checkFailing/);
+  // Whose listener it is can't be told: never called the Job's. The page's check says when it was.
+  page.window.portal.open(serviceTarget(service({ since: "2026-10-29T00:37:00Z" }, {
+    job: { ...job, status: "starting", owner: "unknown" }, health: { declared: true, path: "/health", state: "failing", reason: "HTTP 500" } })));
+  const unsure = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Can't confirm")), "the unknown owner");
+  assert.doesNotMatch(unsure.textContent, /Linked to this Job/);
+  assert.match(unsure.textContent, /HTTP 200 · Can't confirm whose program answers on the port · checked \d{1,2}:\d{2}/);
+  assert.match(unsure.textContent, /ProcessStarting/);
+  assert.match(unsure.textContent, /Health checkFailingHTTP 500/);
+  assert.ok(page.button("Stop Job…", unsure), "a starting Job can still be stopped (canStop)");
+  // While it is being stopped: said so, and no second stop.
+  page.window.portal.open(serviceTarget(service({}, { job: { ...job, status: "cancelling", owner: "notListening", canStop: false } })));
+  const stopping = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Stopping")), "the stopping Job");
+  assert.match(stopping.textContent, /This Job isn't listening on the port/);
+  assert.equal(page.button("Stop Job…", stopping), undefined);
 });
 
 test("a finished Turn's HTML files are offered as prototypes; a deleted one or a running Turn's are not", async (t) => {
