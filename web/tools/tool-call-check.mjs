@@ -144,8 +144,10 @@ const capsules = (page) => page.evaluate(() => [...document.querySelectorAll(".t
     height: Math.round(box.height),
     inside: box.left >= holder.left - 1 && box.right <= holder.right + 1,
     endInView: !end || end.getBoundingClientRect().right <= box.right + 1,
-    noteCut: note ? note.scrollWidth > note.clientWidth + 1 : false,
-    nameCut: part(".tool-call-name").scrollWidth > part(".tool-call-name").clientWidth + 1,
+    // The name and the result are one run of text cut at its end: what
+    // reaches past that end is what the ellipsis took.
+    noteCut: note ? note.getBoundingClientRect().right > part(".tool-call-text").getBoundingClientRect().right + 0.5 : false,
+    nameCut: part(".tool-call-name").getBoundingClientRect().right > part(".tool-call-text").getBoundingClientRect().right + 0.5,
     radius: Math.round(parseFloat(getComputedStyle(summary).borderTopLeftRadius)),
   };
 }));

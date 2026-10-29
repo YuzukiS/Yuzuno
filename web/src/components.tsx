@@ -603,7 +603,7 @@ function CodexPlanItem({ item, notice, opened, onOpenChange }: {
       <summary className="tool-call">
         <ChevronRight size={12} />
         <ListChecks size={14} />
-        <span className="tool-call-name"><strong>{t.proposedPlan}</strong>{title ? ` · ${title}` : ""}</span>
+        <span className="tool-call-text"><span className="tool-call-name"><strong>{t.proposedPlan}</strong>{title ? ` · ${title}` : ""}</span></span>
       </summary>
       <div className="tool-content">
         {notice}

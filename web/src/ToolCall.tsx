@@ -81,8 +81,13 @@ export function ToolCallSummary({ icon, name, facts, result, resultTitle, open, 
       onBlur={() => { pressed.current = false; hide(); }}>
       <ChevronRight size={12} />
       {icon}
-      <span className="tool-call-name">{name}</span>
-      {facts.note && <span className="tool-call-note" lang={facts.noteGiven ? "" : undefined}>{facts.note}</span>}
+      {/* The name and its result are one run of text, so the line is cut
+          from its end: the result gives way first, and the name only when it
+          alone is too long. */}
+      <span className="tool-call-text">
+        <span className="tool-call-name">{name}</span>
+        {facts.note && <span className="tool-call-note" lang={facts.noteGiven ? "" : undefined}>{facts.note}</span>}
+      </span>
       {end && <span className="tool-result" title={resultTitle}>{end}</span>}
       {shown && summary.current && createPortal(<CallTip id={id} anchor={summary.current} facts={facts}
         hint={raw ? open ? t.hideRaw : t.showRaw : open ? t.hideRow : t.showRow}

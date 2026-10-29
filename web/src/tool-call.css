@@ -19,22 +19,22 @@
 .tool-call > svg {
   flex-shrink: 0;
 }
-/* When the line is full, the result gives way first, down to its first few
-   letters; only then does the name. */
-.tool-call > .tool-call-name {
+/* The name and the result are one run of text, cut from its end when the
+   line is full: the result gives way first, the name only when it alone is
+   too long. The state at the end stays whole. */
+.tool-item > summary.tool-call > .tool-call-text {
   flex: 0 1 auto;
   min-width: 2em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .tool-call-note {
-  flex: 0 1000 auto;
-  min-width: 3em;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--text-secondary);
 }
 .tool-call-note::before {
   content: "·" / "";
-  margin-right: 6px;
+  margin: 0 6px;
   opacity: 0.7;
 }
 .tool-item > summary.tool-call > .tool-result {
@@ -42,11 +42,6 @@
   margin-left: 0;
   padding-left: 6px;
   border-left: 1px solid color-mix(in srgb, currentColor 22%, transparent);
-}
-/* A call named alone says its state without a divider. */
-.tool-call > .tool-call-name + .tool-result {
-  padding-left: 0;
-  border-left: none;
 }
 .tool-call-name .tool-call-server {
   color: var(--text-secondary);
@@ -57,7 +52,7 @@
   border-color: color-mix(in srgb, var(--error-ink, #a37961) 42%, transparent);
   background-color: color-mix(in srgb, var(--error-ink, #a37961) 8%, transparent);
 }
-.tool-call:is([data-tone="failed"], [data-tone="refused"]) > :is(.tool-result, .tool-call-note) {
+.tool-call:is([data-tone="failed"], [data-tone="refused"]) :is(.tool-result, .tool-call-note) {
   color: var(--error-ink, #a37961);
 }
 .tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) {
@@ -66,7 +61,7 @@
 .tool-call:is([data-tone="unconfirmed"], [data-tone="queued"]) > .tool-result {
   color: var(--accent-ink, #786637);
 }
-.tool-call[data-to-expand] > .tool-call-note {
+.tool-call[data-to-expand] .tool-call-note {
   font-style: italic;
 }
 @media (forced-colors: active) {
