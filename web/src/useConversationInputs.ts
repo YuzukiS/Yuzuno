@@ -18,12 +18,14 @@ const key = (input: ConversationInput) => `${input.turnId}\u0000${input.itemId}`
 
 /**
  * The inputs a person wrote, or may have, to read the conversation by them
- * (T-6): read only while `active`, the newest page first and each earlier
- * page when asked for, from Core's light index (never the bodies). `changed`
- * names the conversation's newest state; when it moves the newest page is
- * read again and joined to the pages already read.
+ * (T-6): the newest page first and each earlier page when asked for, from
+ * Core's light index (never the bodies), only while `enabled`. Read once for
+ * each Agent opened, so whether there are any is known in either mode;
+ * while `following` (the dock reads by them), read again whenever `changed`,
+ * the conversation's newest state, moves, and joined to the pages already
+ * read.
  */
-export function useConversationInputs(agentId: string, active: boolean, changed: string) {
+export function useConversationInputs(agentId: string, enabled: boolean, following: boolean, changed: string) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -69,9 +71,14 @@ export function useConversationInputs(agentId: string, active: boolean, changed:
     setLoaded(null);
     return () => request.current?.abort();
   }, [agentId]);
+  // What asks for a read: while following, each newest state; otherwise one
+  // read for each Agent opened (one that fails leaves the dock by Turn, as a
+  // Core without this read does, until the Agent is opened again).
+  const known = loaded?.agentId === agentId;
+  const due = !enabled ? null : following ? `follow:${changed}` : known ? null : "once";
   useEffect(() => {
-    if (active) void read();
-  }, [active, changed, read]);
+    if (due !== null) void read();
+  }, [due, read]);
   const loadEarlier = useCallback(() => {
     const first = loaded?.agentId === agentId ? loaded.inputs[0] : undefined;
     if (first && loaded?.hasBefore && !loading) void read(JSON.stringify([first.turnId, first.itemId]));

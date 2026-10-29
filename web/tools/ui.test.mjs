@@ -3643,6 +3643,44 @@ test("the dock reads by your inputs: numbered among all, an unknown source apart
   } finally { page.close(); }
 });
 
+test("chose Turns, then opened another Agent: its inputs are read once and the switch stays (T-6)", async () => {
+  const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: "you" });
+  const extraTurns = [
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read")] },
+    { id: "t-b", status: "completed", items: [user("u2", "Keep Back to latest as it is")] },
+    { id: "t-c", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (itemId, at) => ({ turnId: `t-${"abc"[at - 1]}`, itemId, position: [at, 0], by: "you", preview: itemId });
+  const page = await mount({ extraTurns, inputs: () => ({ inputs: [input("u1", 1), input("u2", 2), input("u3", 3)], hasBefore: false, total: 3 }) });
+  try {
+    await pause(); await pause();
+    const by = () => page.document.querySelector(".turn-dock .turn-dock-by");
+    const pressed = () => by()?.querySelector('[aria-pressed="true"]')?.textContent;
+    const choose = (label) => [...by().querySelectorAll("button")].find((b) => b.textContent === label).click();
+    const open = (name) => [...page.document.querySelectorAll(".agent-row")].find((el) => el.textContent.includes(name)).querySelector(".agent-select").click();
+    const reads = (agent) => page.calls.filter((call) => call.url.startsWith(`/api/agents/${agent}/conversation/inputs`)).length;
+    assert.equal(pressed(), "Inputs");
+    choose("Turns");
+    await pause();
+    assert.equal(pressed(), "Turns");
+    open("Hana");
+    await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === "b", "Hana is open");
+    await until(() => pressed() === "Turns", "Hana's dock offers the switch, still by Turn");
+    await pause(); await pause();
+    assert.equal(reads("b"), 1, "Hana's inputs read once, to know there are some");
+    // And back to Inputs from there.
+    choose("Inputs");
+    await pause(); await pause();
+    assert.equal(pressed(), "Inputs");
+    assert.match(page.document.querySelector(".turn-dock-position").textContent, /^3\s*\/ 3$/);
+    open("Mori");
+    await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === "a", "Mori is open");
+    await until(() => pressed() === "Inputs", "Mori's dock, by inputs");
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays in view (T-6)", async () => {
   const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
   const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });

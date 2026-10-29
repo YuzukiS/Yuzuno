@@ -862,10 +862,11 @@ export function App() {
   // The Turn being read, counted from 1: the latest while none is.
   const readingIndex = readingTurn ? logicalTurns.findIndex((turn) => turn.id === readingTurn) : -1;
   const readingTurnNumber = readingIndex >= 0 ? readingIndex + 1 : logicalTurns.length;
-  // Reading by your inputs (T-6): read while the dock shows them, the newest
+  // Reading by your inputs (T-6): read once for each Agent opened, so the
+  // switch shows in either mode, and while the dock shows them, the newest
   // page first, again when the newest Turn or its messages change.
   const lastTurn = logicalTurns.at(-1);
-  const conversationInputs = useConversationInputs(selected, readBy === "inputs" && !!agent && !previewMode && logicalTurns.length > 0,
+  const conversationInputs = useConversationInputs(selected, !!agent && !previewMode && logicalTurns.length > 0, readBy === "inputs",
     `${logicalTurns.length}:${lastTurn?.id}:${lastTurn?._yuzunoRequestCount ?? lastTurn?.items?.length}`);
   // With no inputs to read by (none recorded yet), the dock reads by Turn and
   // offers no switch.
