@@ -3709,6 +3709,11 @@ test("a link to folded mail opens its fold, which stays open once the link has l
     assert.ok(fold().open, "the fold stays open");
     assert.ok(fold().querySelector('[data-item-id="p1"] .mailbox-notice'), "with the mail in it");
     assert.equal(page.document.activeElement?.dataset.itemId, "p1", "which keeps the focus");
+    // Still the user's to close.
+    fold().querySelector("summary").click();
+    await pause(); await pause();
+    assert.ok(!fold().open, "closed again by hand");
+    assert.ok(!page.document.querySelector('[data-item-id="p1"]'), "with its mail");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
