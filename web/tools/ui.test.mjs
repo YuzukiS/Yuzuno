@@ -3826,6 +3826,64 @@ test("a jump from the dock still on its way when the Workspace changes is droppe
   } finally { page.close(); }
 });
 
+test("a dock jump that is done leaves nothing behind: in another Workspace, the running Turn's View still goes to the same Turn id (T-6)", async () => {
+  const requests = [];
+  const turns = [1, 2, 3, 4, 5].map((n) => ({ id: `t${n}`, status: n === 5 ? "inProgress" : "completed", items: [
+    { id: `t${n}-u`, type: "userMessage", content: [{ type: "text", text: `Question ${n}` }], _yuzunoInput: "you" },
+    { id: `t${n}-r`, type: "agentMessage", phase: n === 5 ? "commentary" : "final_answer", text: `Answer ${n}` },
+  ] }));
+  const all = turns.flatMap((turn) => turn.items.map((item) => JSON.stringify([turn.id, item.id])));
+  const windowFrom = (from) => {
+    const shown = all.slice(Math.max(0, from), Math.max(0, from) + 3);
+    const start = all.indexOf(shown[0]), end = start + shown.length - 1;
+    return {
+      turns: turns.map((turn) => ({ ...turn, items: turn.items.filter((item) => shown.includes(JSON.stringify([turn.id, item.id]))) }))
+        .filter((turn) => turn.items.length),
+      conversation: { index: turns.map((turn, i) => ({ ...turn, number: i + 1, itemCount: 2, _yuzunoIndex: true })), questions: [], nativeClientIds: [],
+        start: shown[0], end: shown.at(-1), hasBefore: start > 0, hasAfter: end < all.length - 1, totalItems: all.length },
+    };
+  };
+  let page;
+  const beforeLoad = (window) => {
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      const [path, search = ""] = url.split("?");
+      if (!/\/api\/agents\/a$/.test(path)) return fetch(url, init);
+      const ws = page?.core.workspaceIdentity ?? "ws-1";
+      requests.push(`${ws} ${search}`);
+      const query = new URLSearchParams(search);
+      const response = await fetch(path, init);
+      const turn = query.has("turnId") && turns.find((t) => t.id === query.get("turnId"));
+      // Workspace 2 opens at its start: its running Turn is only in the index.
+      const from = turn ? all.indexOf(JSON.stringify([turn.id, query.get("itemId") || turn.items[0].id]))
+        : query.has("before") ? all.indexOf(query.get("before")) - 2
+        : query.has("after") ? all.indexOf(query.get("after"))
+        : ws === "ws-2" ? 0 : all.length - 3;
+      const body = { ...(await response.json()), ...windowFrom(from) };
+      return { ...response, json: async () => body };
+    };
+  };
+  const inputs = { inputs: turns.map((turn, i) => ({ turnId: turn.id, itemId: `${turn.id}-u`, position: [i, 0], by: "you", preview: `Question ${i + 1}` })),
+    hasBefore: false, total: 5 };
+  page = await mount({ status: "working", workspaceIdentity: "ws-1", beforeLoad, inputs: () => inputs });
+  try {
+    await pause(); await pause();
+    // Workspace 1: input 5 from the dock, read there; the jump is done.
+    const choice = () => [...page.document.querySelectorAll("[data-turn-choice]")].find((b) => b.dataset.turnChoice === JSON.stringify(["t5", "t5-u"]));
+    await until(() => choice(), "the dock lists input 5");
+    choice().click();
+    await until(() => page.document.activeElement?.dataset.itemId === "t5-u", "input 5 is read");
+    // Another Workspace answers here: Mori's id and its Turn ids the same.
+    page.core.workspaceIdentity = "ws-2";
+    page.eventSources.at(-1).onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }) });
+    const view = () => [...page.document.querySelectorAll(".current-turn-prompt button")].find((b) => b.textContent === "View in conversation");
+    await until(() => view(), "Workspace 2 opens at its start, its running Turn offered with View");
+    view().click();
+    await until(() => requests.some((r) => r.startsWith("ws-2 ") && r.includes("turnId=t5")), "View goes to that Turn in Workspace 2");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays in view (T-6)", async () => {
   const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
   const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });

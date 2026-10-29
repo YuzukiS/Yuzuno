@@ -429,13 +429,20 @@ export function App() {
     "home",
   );
   const [atBottom, setAtBottom] = useState(true);
-  const [jumpToTurn, setJumpToTurn] = useState<string | null>(null);
+  const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
   // Whose conversation a jump from its dock was asked in (T-6): one still on
   // its way when the Workspace or the Agent changes is dropped, not taken into
   // the other conversation, where the same Turn id names nothing of its.
   const jumpScope = useRef<{ turnId: string; scope: string } | null>(null);
+  // Any jump has no scope but one from the dock, whose scope ends with it,
+  // done or dropped: left behind, it would drop a later jump to the same
+  // Turn id from anywhere else.
+  const setJumpToTurn = (turnId: string | null) => {
+    jumpScope.current = null;
+    setJumpTarget(turnId);
+  };
   // The turn dock reads by the person's inputs unless switched to Turns.
   const [readBy, setReadBy] = useState<ReadBy>("inputs");
   const [readingTurn, setReadingTurn] = useState<string>();
@@ -1767,13 +1774,13 @@ export function App() {
   // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
     jumpItem.current = null;
-    jumpScope.current = { turnId, scope: JSON.stringify([workspaceId, selected]) };
     setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
     setAtBottom(false);
     setSourceJump(false);
     setJumpToTurn(turnId);
+    jumpScope.current = { turnId, scope: JSON.stringify([workspaceId, selected]) };
     stickToBottom.current = false;
   }
   /** Reads from one of the person's inputs (T-6): its Turn, at the input. */
