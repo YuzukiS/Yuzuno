@@ -118,9 +118,11 @@ async function mount({
   reconnectResponse,
   otherAgentFields,
   codexHandoff,
+  // The conversation's inputs (T-6): url -> page.
+  inputs,
 } = {}) {
   const calls = [];
-  const core = { noWorkspaceId };
+  const core = { noWorkspaceId, workspaceIdentity };
   const eventUrls = [];
   const eventSources = [];
   const metrics = { detailInFlight: 0, maxDetailInFlight: 0 };
@@ -172,13 +174,14 @@ async function mount({
     if (url.includes("/api/artifact?") && artifactResponse)
       return artifactResponse(url, init);
     let body;
-    if (url.includes("/history?") && historyPage) body = historyPage;
+    if (url.includes("/conversation/inputs") && inputs) body = inputs(url);
+    else if (url.includes("/history?") && historyPage) body = historyPage;
     else if (url.endsWith("/api/workspace"))
       body = {
         // A real Core always says which Workspace this is, and the page keeps
         // drafts, unsent messages and reading places per Workspace (T-195),
         // so the fixture says it too.
-        ...(core.noWorkspaceId ? {} : { workspace: { id: workspaceIdentity || "ci-fixture" } }),
+        ...(core.noWorkspaceId ? {} : { workspace: { id: core.workspaceIdentity || "ci-fixture" } }),
         agents: agents.map((a) =>
           a.id === "a"
             ? {
@@ -3584,6 +3587,376 @@ test("the dock follows the reading marker; the wheel walks it while the pointer 
     assert.equal(dock.querySelector('[aria-current="location"]').dataset.turnChoice, 'scroll-68');
     assert.deepEqual(numbers(), ['scroll-66', 'scroll-67', 'scroll-68', 'scroll-69', 'scroll-70']);
     assert.equal(page.calls.filter((r) => r.init.method === 'POST').length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("the dock reads by your inputs: numbered among all, an unknown source apart, earlier ones on demand (T-6)", async () => {
+  const user = (id, text, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], ...extra });
+  const extraTurns = [
+    { id: "t-old", status: "completed", items: [user("u0", "Tidy the release list")] },
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read"),
+      user("p1", "Mail from Dev 9", { _yuzunoSource: "peer" }), user("u2", "Keep Back to latest as it is")] },
+    { id: "t-b", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (turnId, itemId, at, by, preview) => ({ turnId, itemId, position: at, by, preview });
+  const all = [input("t-old", "u0", [1, 0], "unconfirmed", "Tidy the release list"),
+    input("t-a", "u1", [2, 0], "you", "Make history easier to read"),
+    input("t-a", "u2", [2, 2], "you", "Keep Back to latest as it is"),
+    input("t-b", "u3", [3, 0], "you", "Ship it after CI")];
+  const page = await mount({ extraTurns, inputs: (url) => new URL(url, "http://x").searchParams.get("before")
+    ? { inputs: all.slice(0, 1), hasBefore: false, total: 4 }
+    : { inputs: all.slice(1), hasBefore: true, total: 4 } });
+  try {
+    await pause(); await pause();
+    const dock = page.document.querySelector(".turn-dock");
+    const chips = () => [...dock.querySelectorAll(".turn-dock-chip")].map((chip) => chip.textContent);
+    const by = dock.querySelector(".turn-dock-by");
+    assert.ok(by, "the switch shows once there are inputs");
+    assert.equal(by.querySelector('[aria-pressed="true"]').textContent, "Inputs");
+    // The newest page: numbered among all four.
+    assert.deepEqual(chips(), ["2", "3", "4"]);
+    assert.match(dock.querySelector(".turn-dock-position").textContent, /^4\s*\/ 4$/);
+    const reads = () => page.calls.filter((call) => call.url.includes("/conversation/inputs")).map((call) => call.url);
+    assert.deepEqual(reads(), ["/api/agents/a/conversation/inputs?limit=100"]);
+    // An earlier page on demand, before the first input shown.
+    dock.querySelector(".turn-dock-earlier").click();
+    await pause(); await pause();
+    assert.equal(reads()[1], `/api/agents/a/conversation/inputs?limit=100&before=${encodeURIComponent(JSON.stringify(["t-a", "u1"]))}`);
+    assert.deepEqual(chips(), ["·", "2", "3", "4"]);
+    assert.ok(!dock.querySelector(".turn-dock-earlier"), "nothing earlier now");
+    const choice = (turnId, itemId) => [...page.document.querySelectorAll("[data-turn-choice]")]
+      .find((b) => b.dataset.turnChoice === JSON.stringify([turnId, itemId]));
+    const unknown = choice("t-old", "u0");
+    assert.match(unknown.getAttribute("aria-label"), /^Earlier input · source not recorded/);
+    assert.ok(unknown.querySelector('.turn-dock-chip[data-unconfirmed]'));
+    // An input in the middle of a Turn: read from that input itself.
+    choice("t-a", "u2").click();
+    await pause(); await pause();
+    assert.equal(page.document.activeElement?.dataset.itemId, "u2");
+    // Back to Turns: the dock as it always was.
+    [...by.querySelectorAll("button")].find((b) => b.textContent === "Turns").click();
+    await pause();
+    const turns = page.document.querySelector(".turn-dock");
+    assert.equal(turns.querySelector('.turn-dock-by [aria-pressed="true"]').textContent, "Turns");
+    assert.ok(turns.querySelector('[data-turn-choice="t-b"]'));
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("chose Turns, then opened another Agent: its inputs are read once and the switch stays (T-6)", async () => {
+  const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: "you" });
+  const extraTurns = [
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read")] },
+    { id: "t-b", status: "completed", items: [user("u2", "Keep Back to latest as it is")] },
+    { id: "t-c", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (itemId, at) => ({ turnId: `t-${"abc"[at - 1]}`, itemId, position: [at, 0], by: "you", preview: itemId });
+  const page = await mount({ extraTurns, inputs: () => ({ inputs: [input("u1", 1), input("u2", 2), input("u3", 3)], hasBefore: false, total: 3 }) });
+  try {
+    await pause(); await pause();
+    const by = () => page.document.querySelector(".turn-dock .turn-dock-by");
+    const pressed = () => by()?.querySelector('[aria-pressed="true"]')?.textContent;
+    const choose = (label) => [...by().querySelectorAll("button")].find((b) => b.textContent === label).click();
+    const open = (name) => [...page.document.querySelectorAll(".agent-row")].find((el) => el.textContent.includes(name)).querySelector(".agent-select").click();
+    const reads = (agent) => page.calls.filter((call) => call.url.startsWith(`/api/agents/${agent}/conversation/inputs`)).length;
+    assert.equal(pressed(), "Inputs");
+    choose("Turns");
+    await pause();
+    assert.equal(pressed(), "Turns");
+    open("Hana");
+    await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === "b", "Hana is open");
+    await until(() => pressed() === "Turns", "Hana's dock offers the switch, still by Turn");
+    await pause(); await pause();
+    assert.equal(reads("b"), 1, "Hana's inputs read once, to know there are some");
+    // And back to Inputs from there.
+    choose("Inputs");
+    await pause(); await pause();
+    assert.equal(pressed(), "Inputs");
+    assert.match(page.document.querySelector(".turn-dock-position").textContent, /^3\s*\/ 3$/);
+    open("Mori");
+    await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === "a", "Mori is open");
+    await until(() => pressed() === "Inputs", "Mori's dock, by inputs");
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("by Turn, an Agent with no inputs offers no switch, and a late answer for the last Agent changes nothing (T-6)", async () => {
+  const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: "you" });
+  const extraTurns = [
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read")] },
+    { id: "t-b", status: "completed", items: [user("u2", "Keep Back to latest as it is")] },
+    { id: "t-c", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (itemId, at) => ({ turnId: `t-${"abc"[at - 1]}`, itemId, position: [at, 0], by: "you", preview: itemId });
+  const mori = { inputs: [input("u1", 1), input("u2", 2), input("u3", 3)], hasBefore: false, total: 3 };
+  // Mori's second read answers only when let go: after Hana is open again.
+  let letGo;
+  const held = new Promise((resolve) => { letGo = () => resolve(mori); });
+  let moriReads = 0;
+  const page = await mount({ extraTurns, inputs: (url) => url.includes("/agents/b/")
+    ? { inputs: [], hasBefore: false, total: 0 }
+    : (++moriReads === 2 ? held : mori) });
+  try {
+    await pause(); await pause();
+    const by = () => page.document.querySelector(".turn-dock .turn-dock-by");
+    const pressed = () => by()?.querySelector('[aria-pressed="true"]')?.textContent;
+    const open = async (name, id) => {
+      [...page.document.querySelectorAll(".agent-row")].find((el) => el.textContent.includes(name)).querySelector(".agent-select").click();
+      await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === id, `${name} is open`);
+      await pause(); await pause();
+    };
+    const reads = (agent) => page.calls.filter((call) => call.url.startsWith(`/api/agents/${agent}/conversation/inputs`)).length;
+    [...by().querySelectorAll("button")].find((b) => b.textContent === "Turns").click();
+    await pause();
+    await open("Hana", "b");
+    assert.equal(reads("b"), 1, "Hana's inputs read once");
+    assert.ok(page.document.querySelector(".turn-dock") && !by(), "none: by Turn, no switch");
+    // Mori again, its read still on its way, then Hana before it answers.
+    await open("Mori", "a");
+    assert.equal(moriReads, 2);
+    await open("Hana", "b");
+    letGo();
+    await pause(); await pause(); await pause();
+    assert.equal(page.document.querySelector(".agent-row.selected")?.dataset.agentId, "b");
+    assert.ok(!by(), "Mori's late answer offers Hana no switch");
+    assert.equal(reads("b"), 2, "once each time Hana is opened");
+    // Mori, read again, offers it, still by Turn.
+    await open("Mori", "a");
+    await until(() => pressed() === "Turns", "Mori's switch is back, by Turn");
+    assert.equal(reads("a"), 3);
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("the same Agent id in another Workspace at this address: its inputs are read again, none of the last Workspace's shown (T-6)", async () => {
+  const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: "you" });
+  const extraTurns = [
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read")] },
+    { id: "t-b", status: "completed", items: [user("u2", "Keep Back to latest as it is")] },
+    { id: "t-c", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (itemId, at, preview) => ({ turnId: `t-${"abc"[at - 1]}`, itemId, position: [at, 0], by: "you", preview });
+  const pages = {
+    "ws-1": { inputs: [input("u1", 1, "first"), input("u2", 2, "second"), input("u3", 3, "third")], hasBefore: false, total: 3 },
+    "ws-2": { inputs: [input("u3", 3, "the only one here")], hasBefore: false, total: 1 },
+  };
+  const reads = { "ws-1": 0, "ws-2": 0 };
+  // Workspace 1's second read answers only when let go: after Workspace 2 is back.
+  let letGo;
+  const held = new Promise((resolve) => { letGo = () => resolve(pages["ws-1"]); });
+  let page;
+  page = await mount({ workspaceIdentity: "ws-1", extraTurns, inputs: () => {
+    const ws = page?.core.workspaceIdentity ?? "ws-1";
+    reads[ws]++;
+    return ws === "ws-1" && reads[ws] === 2 ? held : pages[ws];
+  } });
+  try {
+    await pause(); await pause();
+    const by = () => page.document.querySelector(".turn-dock .turn-dock-by");
+    const pressed = () => by()?.querySelector('[aria-pressed="true"]')?.textContent;
+    const choose = (label) => [...by().querySelectorAll("button")].find((b) => b.textContent === label).click();
+    const position = () => page.document.querySelector(".turn-dock-position")?.textContent ?? "";
+    const chips = () => [...page.document.querySelectorAll(".turn-dock .turn-dock-chip")].map((chip) => chip.textContent);
+    // Another Workspace answers at this address; Mori's id is the same in it.
+    const workspace = (id) => {
+      page.core.workspaceIdentity = id;
+      page.eventSources.at(-1).onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }) });
+    };
+    await until(() => /^3\s*\/ 3$/.test(position()), "Workspace 1: three inputs");
+    choose("Turns");
+    await pause();
+    workspace("ws-2");
+    await until(() => reads["ws-2"] >= 1, "by Turn too, the new Workspace's inputs are read");
+    await until(() => pressed() === "Turns", "its switch, still by Turn");
+    choose("Inputs");
+    await until(() => /^1\s*\/ 1$/.test(position()), "Workspace 2's one input");
+    assert.deepEqual(chips(), ["1"], "and nothing of Workspace 1's");
+    // Workspace 1 again, its read on its way, then Workspace 2 before it answers.
+    const before = reads["ws-1"];
+    workspace("ws-1");
+    await until(() => reads["ws-1"] > before, "Workspace 1 read again");
+    workspace("ws-2");
+    await until(() => /^1\s*\/ 1$/.test(position()), "Workspace 2 again");
+    letGo();
+    await pause(); await pause(); await pause();
+    assert.match(position(), /^1\s*\/ 1$/, "Workspace 1's late answer shows nothing");
+    assert.deepEqual(chips(), ["1"]);
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a jump from the dock still on its way when the Workspace changes is dropped, not taken into the other one (T-6)", async () => {
+  const requests = [];
+  // Input 1's window answers only when let go: after the Workspace changed.
+  const asked = [];
+  let letGo;
+  const gate = new Promise((resolve) => { letGo = resolve; });
+  const held = (window) => {
+    windowedMori(requests)(window);
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      if (url.includes("turnId=t1")) { asked.push(url); await gate; }
+      return fetch(url, init);
+    };
+  };
+  const input = (n) => ({ turnId: `t${n}`, itemId: `t${n}-u`, position: [n - 1, 0], by: "you", preview: `Question ${n}` });
+  const pages = { "ws-1": { inputs: [input(1), input(5)], hasBefore: false, total: 2 }, "ws-2": { inputs: [input(5)], hasBefore: false, total: 1 } };
+  let page;
+  page = await mount({ workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, beforeLoad: held,
+    inputs: () => pages[page?.core.workspaceIdentity ?? "ws-1"] });
+  try {
+    await pause(); await pause();
+    const choice = () => [...page.document.querySelectorAll("[data-turn-choice]")].find((b) => b.dataset.turnChoice === JSON.stringify(["t1", "t1-u"]));
+    await until(() => choice(), "the dock lists input 1");
+    choice().click();
+    await until(() => asked.length === 1, "input 1's window is asked for");
+    // Before it answers, the Core here turns out to be another Workspace, Mori's id the same.
+    page.core.workspaceIdentity = "ws-2";
+    page.eventSources.at(-1).onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }) });
+    await until(() => /^1\s*\/ 1$/.test(page.document.querySelector(".turn-dock-position")?.textContent ?? ""), "Workspace 2's dock");
+    letGo();
+    await pause(); await pause(); await pause();
+    assert.equal(asked.length, 1, "Workspace 1's jump is not asked for again in Workspace 2");
+    assert.notEqual(page.document.activeElement?.dataset.itemId, "t1-u", "nor read there");
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a dock jump that is done leaves nothing behind: in another Workspace, the running Turn's View still goes to the same Turn id (T-6)", async () => {
+  const requests = [];
+  const turns = [1, 2, 3, 4, 5].map((n) => ({ id: `t${n}`, status: n === 5 ? "inProgress" : "completed", items: [
+    { id: `t${n}-u`, type: "userMessage", content: [{ type: "text", text: `Question ${n}` }], _yuzunoInput: "you" },
+    { id: `t${n}-r`, type: "agentMessage", phase: n === 5 ? "commentary" : "final_answer", text: `Answer ${n}` },
+  ] }));
+  const all = turns.flatMap((turn) => turn.items.map((item) => JSON.stringify([turn.id, item.id])));
+  const windowFrom = (from) => {
+    const shown = all.slice(Math.max(0, from), Math.max(0, from) + 3);
+    const start = all.indexOf(shown[0]), end = start + shown.length - 1;
+    return {
+      turns: turns.map((turn) => ({ ...turn, items: turn.items.filter((item) => shown.includes(JSON.stringify([turn.id, item.id]))) }))
+        .filter((turn) => turn.items.length),
+      conversation: { index: turns.map((turn, i) => ({ ...turn, number: i + 1, itemCount: 2, _yuzunoIndex: true })), questions: [], nativeClientIds: [],
+        start: shown[0], end: shown.at(-1), hasBefore: start > 0, hasAfter: end < all.length - 1, totalItems: all.length },
+    };
+  };
+  let page;
+  const beforeLoad = (window) => {
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      const [path, search = ""] = url.split("?");
+      if (!/\/api\/agents\/a$/.test(path)) return fetch(url, init);
+      const ws = page?.core.workspaceIdentity ?? "ws-1";
+      requests.push(`${ws} ${search}`);
+      const query = new URLSearchParams(search);
+      const response = await fetch(path, init);
+      const turn = query.has("turnId") && turns.find((t) => t.id === query.get("turnId"));
+      // Workspace 2 opens at its start: its running Turn is only in the index.
+      const from = turn ? all.indexOf(JSON.stringify([turn.id, query.get("itemId") || turn.items[0].id]))
+        : query.has("before") ? all.indexOf(query.get("before")) - 2
+        : query.has("after") ? all.indexOf(query.get("after"))
+        : ws === "ws-2" ? 0 : all.length - 3;
+      const body = { ...(await response.json()), ...windowFrom(from) };
+      return { ...response, json: async () => body };
+    };
+  };
+  const inputs = { inputs: turns.map((turn, i) => ({ turnId: turn.id, itemId: `${turn.id}-u`, position: [i, 0], by: "you", preview: `Question ${i + 1}` })),
+    hasBefore: false, total: 5 };
+  page = await mount({ status: "working", workspaceIdentity: "ws-1", beforeLoad, inputs: () => inputs });
+  try {
+    await pause(); await pause();
+    // Workspace 1: input 5 from the dock, read there; the jump is done.
+    const choice = () => [...page.document.querySelectorAll("[data-turn-choice]")].find((b) => b.dataset.turnChoice === JSON.stringify(["t5", "t5-u"]));
+    await until(() => choice(), "the dock lists input 5");
+    choice().click();
+    await until(() => page.document.activeElement?.dataset.itemId === "t5-u", "input 5 is read");
+    // Another Workspace answers here: Mori's id and its Turn ids the same.
+    page.core.workspaceIdentity = "ws-2";
+    page.eventSources.at(-1).onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }) });
+    const view = () => [...page.document.querySelectorAll(".current-turn-prompt button")].find((b) => b.textContent === "View in conversation");
+    await until(() => view(), "Workspace 2 opens at its start, its running Turn offered with View");
+    view().click();
+    await until(() => requests.some((r) => r.startsWith("ws-2 ") && r.includes("turnId=t5")), "View goes to that Turn in Workspace 2");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays in view (T-6)", async () => {
+  const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
+  const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+  const extraTurns = [
+    { id: "t-old", status: "completed", items: [user("u0", "Tidy the release list", "unconfirmed"), reply("r0", "Tidied.")] },
+    { id: "t-work", status: "completed", items: [
+      user("u1", "Make history easier to read", "you"), reply("r1", "Merged the two blocks."),
+      user("p1", "Mail from Dev 9: rerun CI on the new main", "peer", { _yuzunoSource: "peer" }),
+      { id: "c1", type: "commandExecution", command: "npm run typecheck", status: "failed", exitCode: 2, aggregatedOutput: "error" },
+      reply("r2", "Typecheck failed; looking."),
+      user("u2", "Keep Back to latest as it is", "you"), reply("r3", "Kept."),
+    ] },
+  ];
+  const input = (turnId, itemId, by, preview) => ({ turnId, itemId, position: [0, 0], by, preview });
+  const page = await mount({ extraTurns, inputs: () => ({ inputs: [input("t-old", "u0", "unconfirmed", "Tidy"),
+    input("t-work", "u1", "you", "Make"), input("t-work", "u2", "you", "Keep")], hasBefore: false, total: 3 }) });
+  try {
+    await pause(); await pause();
+    const work = page.document.getElementById("turn-t-work");
+    const dividers = [...work.querySelectorAll(".turn-divider > span")].map((span) => span.textContent.replace(/\s+/g, " ").trim());
+    assert.match(dividers[0], /^YOUR INPUT 2 · TURN \d+$/);
+    assert.match(dividers[1], /^YOUR INPUT 3 · TURN \d+ MID-TURN$/);
+    // The mail and the tools around it: one row, closed, counted.
+    const fold = work.querySelector(".collaboration-fold");
+    assert.ok(fold && !fold.open);
+    assert.match(fold.querySelector("summary").textContent, /Collaboration and execution\s*1 message from Agents · 1 tool step/);
+    assert.ok(!work.querySelector(".mailbox-notice"), "the mail is folded");
+    // The failure stays in view, and opens the fold.
+    const failure = work.querySelector(".collaboration-failure");
+    assert.match(failure.textContent, /Failed · npm run typecheck · 2/);
+    [...failure.querySelectorAll("button")].find((b) => b.textContent === "View").click();
+    await pause();
+    assert.ok(work.querySelector(".collaboration-fold").open);
+    assert.ok(work.querySelector(".collaboration-fold .mailbox-notice"), "the mail, inside the fold");
+    // Replies and your inputs are never folded.
+    assert.ok(work.querySelector('[data-item-id="r2"]') && work.querySelector('[data-item-id="u2"]'));
+    // No record of who wrote it: not yours.
+    const old = page.document.getElementById("turn-t-old");
+    assert.match(old.querySelector(".turn-divider > span").textContent, /^EARLIER INPUT · SOURCE NOT RECORDED · TURN/);
+    assert.ok(old.querySelector(".you-avatar.unconfirmed-avatar"));
+    assert.match(old.querySelector('[data-item-id="u0"]').textContent, /Earlier input.*No record says where this message came from/s);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a link to folded mail opens its fold, which stays open once the link has led there (T-6)", async () => {
+  const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
+  const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+  const extraTurns = [{ id: "t-work", status: "completed", items: [
+    user("u1", "Make history easier to read", "you"), reply("r1", "Merged the two blocks."),
+    user("p1", "Mail from Dev 9: rerun CI on the new main", "peer", { _yuzunoSource: "peer" }),
+    { id: "c1", type: "commandExecution", command: "npm test", status: "completed", exitCode: 0, aggregatedOutput: "ok" },
+    reply("r2", "Reran CI."),
+  ] }];
+  const page = await mount({ workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, extraTurns });
+  try {
+    await pause(); await pause();
+    const fold = () => page.document.querySelector("#turn-t-work .collaboration-fold");
+    assert.ok(!fold().open, "closed to begin with");
+    page.window.location.hash = "#/message?w=ws-1&a=a&t=t-work&i=p1&s=thread-1";
+    await until(() => page.document.activeElement?.dataset.itemId === "p1", "the linked mail has the focus");
+    // App has cleared its one-shot target by now: the fold is the user's.
+    await pause(); await pause();
+    assert.ok(fold().open, "the fold stays open");
+    assert.ok(fold().querySelector('[data-item-id="p1"] .mailbox-notice'), "with the mail in it");
+    assert.equal(page.document.activeElement?.dataset.itemId, "p1", "which keeps the focus");
+    // Still the user's to close.
+    fold().querySelector("summary").click();
+    await pause(); await pause();
+    assert.ok(!fold().open, "closed again by hand");
+    assert.ok(!page.document.querySelector('[data-item-id="p1"]'), "with its mail");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

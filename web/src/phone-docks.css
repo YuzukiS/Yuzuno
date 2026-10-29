@@ -23,20 +23,22 @@
 }
 
 /* The buttons sit in the conversation's bottom corners, either side of Back
-   to latest, never over the composer or Send. The column ends far enough
-   below the last reply that they cover none of it, while they show. With
-   the on-screen keyboard up (keyboard-viewport.ts) they wait, as the turn
-   dock always has: the conversation is short then, and keeps no room for
-   them below its last reply (T-170: it pushed an approval under the pin). */
+   to latest, never over the composer or Send. The conversation scrolls
+   above the strip they sit in, so they cover none of it while they show.
+   With the on-screen keyboard up (keyboard-viewport.ts) they wait, as the
+   turn dock always has: the conversation is short then, and keeps no room
+   for them (T-170: it pushed an approval under the pin). */
 :root:not([data-keyboard]) .app.phone .conversation-body:has(> .work-dock:not(:empty)) > .phone-dock-work,
 :root:not([data-keyboard]) .app.phone .conversation-body:has(> .turn-dock) > .phone-dock-turns {
   display: inline-flex;
 }
 :root:not([data-keyboard]) .app.phone
   .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
-  > .conversation-scroll
-  > .conversation-inner {
-  padding-bottom: 64px;
+  > .conversation-scroll {
+  /* A strip of their own: the conversation scrolls above it, so nothing it
+     shows ever passes under them, a reply's actions included (T-6: Rewind
+     did, short of the end). Back to latest sits in it too. */
+  margin-bottom: 56px;
 }
 .app.phone .phone-dock-button {
   position: absolute;
@@ -211,6 +213,11 @@
   .app.phone .conversation-body[class] {
     --gutter-left: 84px;
     --gutter-right: 84px;
+  }
+  :root:not([data-keyboard]) .app.phone
+    .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+    > .conversation-scroll {
+    margin-bottom: 0;
   }
   :root:not([data-keyboard]) .app.phone
     .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
