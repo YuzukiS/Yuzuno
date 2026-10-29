@@ -149,6 +149,40 @@ function layout(dragged: number | null): Layout {
   return { mode: "side", width, rail: Math.round(rail) };
 }
 
+/** The nearest box around `el` that scrolls, if one does. */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let at = el.parentElement; at && at !== document.body; at = at.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight) return at;
+  }
+  return null;
+}
+
+/**
+ * Runs a change that resizes the conversation (the Portal opening, closing or
+ * widening), keeping `anchor` (what it was opened from) where the reader saw
+ * it in its scrolling box. Rows measured after the width change move it
+ * again, so it is held for a few frames more.
+ */
+function keepInPlace(anchor: HTMLElement | null, change: () => void) {
+  const scroller = anchor?.isConnected ? scrollParent(anchor) : null;
+  if (!anchor || !scroller) return change();
+  const offset = () => anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  const before = offset();
+  change();
+  const settle = () => {
+    if (!anchor.isConnected) return false;
+    const drift = offset() - before;
+    if (Math.abs(drift) > 1) scroller.scrollTop += drift;
+    return true;
+  };
+  settle();
+  let frames = 0;
+  const again = () => {
+    if (settle() && ++frames < 10) requestAnimationFrame(again);
+  };
+  requestAnimationFrame(again);
+}
+
 /** The app's grid gives the Portal its column; nothing else of the app moves. */
 function apply(shape: Layout | null) {
   const html = document.documentElement;
@@ -175,12 +209,15 @@ function PortalHost() {
   latest.current = dragged;
   const [shape, setShape] = useState<Layout | null>(null);
   const panel = useRef<HTMLElement>(null);
+  // What the page was opened from, kept past closing: the reading stays there.
+  const anchor = useRef<HTMLElement | null>(null);
+  if (shown?.opener) anchor.current = shown.opener;
   const relayout = useCallback(() => setShape(shown ? layout(dragged) : null), [shown, dragged]);
   useLayoutEffect(() => {
     relayout();
   }, [relayout]);
   useLayoutEffect(() => {
-    apply(shape);
+    keepInPlace(anchor.current, () => apply(shape));
   }, [shape]);
   useEffect(() => () => apply(null), []);
   useEffect(() => {

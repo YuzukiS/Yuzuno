@@ -214,6 +214,38 @@ test("on a narrow window the Portal is full screen, as a dialog with a way back"
   await until(() => !page.panel(), "closed");
 });
 
+test("opening and closing beside the chat keeps the card it was opened from where the reader saw it", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.window.renderChoice(snapshot);
+  const html = page.document.documentElement;
+  // The conversation scrolls; the narrower chat beside the Portal is 500 px taller above the card.
+  const scroller = page.document.querySelector(".main-panel");
+  scroller.style.overflowY = "auto";
+  let top = 745;
+  Object.defineProperty(scroller, "scrollHeight", { value: 5000, configurable: true });
+  Object.defineProperty(scroller, "clientHeight", { value: 600, configurable: true });
+  Object.defineProperty(scroller, "scrollTop", { get: () => top, set: (v) => { top = v; }, configurable: true });
+  scroller.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 0, right: 400, height: 600, width: 400 });
+  const main = page.document.querySelector(".open-choice-split .primary-button");
+  main.getBoundingClientRect = () => {
+    const y = (html.dataset.portal === "side" ? 1500 : 1000) - top;
+    return { top: y, bottom: y + 40, left: 0, right: 200, height: 40, width: 200 };
+  };
+  assert.equal(main.getBoundingClientRect().top, 255);
+  page.click(main);
+  await until(page.frame, "the prototype's frame");
+  await until(() => html.dataset.portal === "side", "beside the chat");
+  assert.equal(top, 1245, "scrolled by the 500 px the chat grew");
+  assert.equal(main.getBoundingClientRect().top, 255, "the card stays where it was");
+  page.click(page.button("Close preview"));
+  await until(() => !page.panel(), "closed");
+  assert.equal(top, 745, "and back by as much when the chat widens again");
+  assert.equal(main.getBoundingClientRect().top, 255);
+  assert.equal(page.document.activeElement, main, "focus back on it");
+  assert.deepEqual(page.errors, []);
+});
+
 test("the panel's width follows the grip and is kept on this device", async (t) => {
   const page = mount();
   t.after(page.close);
