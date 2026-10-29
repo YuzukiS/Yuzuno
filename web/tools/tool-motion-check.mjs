@@ -144,7 +144,7 @@ async function checkLiveMotion() {
   await refresh();
   await page.locator("#item-tool-b").waitFor();
   const arriving = await running();
-  for (const [name, target] of [["tool-unfold", "item-tool-b"], ["tool-count-tick", "tool-count-number"], ["tool-result", "tool-result"]])
+  for (const [name, target] of [["tool-unfold", "item-tool-b"], ["tool-count-tick", "tool-overview-part"], ["tool-result", "tool-result"]])
     assert.ok(arriving.some((a) => a.name === name && a.target === target), `${name} on ${target}: ${JSON.stringify(arriving)}`);
   const tops = await glide(380);
   const steps = new Set(tops).size;

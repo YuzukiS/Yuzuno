@@ -217,7 +217,7 @@ try {
   await refresh();
   await page
     .locator("#item-tool-a .tool-result")
-    .filter({ hasText: "completed" })
+    .filter({ hasText: "returned" })
     .waitFor();
   assert.equal(await isOpen(group), true);
   assert.equal(await page.locator('[data-item-id="next-progress"]').count(), 0);
@@ -289,7 +289,7 @@ try {
   await refresh();
   await page
     .locator("#item-tool-b .tool-result")
-    .filter({ hasText: "completed" })
+    .filter({ hasText: "returned" })
     .waitFor({ state: "attached" });
   assert.equal(await isOpen(second), false);
   await group.locator(":scope > summary").click();
@@ -400,20 +400,14 @@ try {
     await page.locator(".conversation-header .status-label").innerText(),
     "Compacting",
   );
-  assert.deepEqual(
+  // How many steps; each call says the rest in its own capsule (T-9).
+  assert.equal(
     await page
       .locator('[data-turn-id="live"] .tool-activity')
       .last()
-      .locator(".tool-count")
-      .evaluateAll((capsules) => capsules.map((capsule) =>
-        capsule.querySelector(".tool-count-name").textContent + capsule.querySelector(".tool-count-number").textContent)),
-    [
-      "Shell×2",
-      "Edit×1",
-      "documentation/search_reference_for_current_project×2",
-      "documentation/fetch×1",
-      "Compaction×1",
-    ],
+      .locator(":scope > summary .tool-overview")
+      .innerText(),
+    "7 tool steps",
   );
   assert.ok(
     Math.abs(
@@ -423,7 +417,7 @@ try {
     ) < 2,
   );
   record(
-    "Tool counts aggregate per native tool; real compaction uses a distinct character animation without changing reading position",
+    "The heading counts the tool steps; real compaction uses a distinct character animation without changing reading position",
     motion,
   );
   await page.emulateMedia({ reducedMotion: "reduce" });

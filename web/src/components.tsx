@@ -48,7 +48,7 @@ import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
-import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts, toolLabel, type ConversationBlock } from "./conversation-blocks";
+import { blockItems, conversationBlocks, isCompacting, shownItemId, toolLabel, type ConversationBlock } from "./conversation-blocks";
 import { InputReading } from "./input-reading";
 import { deliveryNote } from "./delivery-note";
 import { SubAgentAnchors } from "./SubAgentPanels";
@@ -66,7 +66,8 @@ import { htmlFile } from "./portal/html-file";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
-import { toolCapsules } from "./tool-capsules";
+import { callFacts, callWords, toolOverview } from "./tool-call";
+import { CallDetails, CallName, ToolCallSummary, callIcon } from "./ToolCall";
 import { langTag, useLanguage, useStrings } from "./i18n";
 import { turnWords, type TurnWords } from "./turn-text";
 import { requestWords, shownError } from "./request-text";
@@ -535,26 +536,25 @@ function ToolItem({
         : item.type === "enteredReviewMode"
           ? t.codexReview(item.review)
           : null;
-  // Any other call by what it names, as its group's summary names it: an MCP
-  // call's server and tool, in full on hover when the row cuts it short.
+  // Any other call by what it names: an MCP call's server and tool, in full
+  // in its tip when the capsule cuts it short.
   const tool = own === null ? toolLabel(item, language) : null;
   const label = own ?? tool!.label;
   const named = !!tool?.named;
+  const facts = callFacts(item, label, language, executionUnconfirmed);
   return (
     <details className="tool-item" id={`item-${item.id}`} data-running={running || undefined}
       open={opened} onToggle={event => {
         if (event.target === event.currentTarget && event.currentTarget.open !== opened) setOpened(event.currentTarget.open);
       }}>
-      <summary>
-        <ChevronRight size={12} />
-        {isCommand ? <SquareTerminal size={14} /> : <FileCode2 size={14} />}
-        <span title={named ? label : undefined}>{named ? <strong>{label}</strong> : label}</span>
-        <span className="tool-result" title={unconfirmed ? t.unconfirmedTitle : undefined}>
-          {item.exitCode != null ? t.exit(item.exitCode) : unconfirmed ? t.unconfirmed : item.status || ""}
-        </span>
-      </summary>
+      <ToolCallSummary open={opened} facts={facts}
+        icon={callIcon(item, isCommand ? <SquareTerminal size={14} /> : <FileCode2 size={14} />)}
+        name={named ? <CallName name={label} /> : label}
+        result={item.exitCode != null ? t.exit(item.exitCode) : unconfirmed ? t.unconfirmed : undefined}
+        resultTitle={unconfirmed ? t.unconfirmedTitle : undefined} />
       <div className="tool-content">
         {notice}
+        <CallDetails facts={facts} />
         {isFile ? (
           <>
             {item.changes?.map((c, index) => (
@@ -600,10 +600,10 @@ function CodexPlanItem({ item, notice, opened, onOpenChange }: {
     <details className="tool-item codex-plan" id={`item-${item.id}`} open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange(event.currentTarget.open);
     }}>
-      <summary>
+      <summary className="tool-call">
         <ChevronRight size={12} />
         <ListChecks size={14} />
-        <span><strong>{t.proposedPlan}</strong>{title ? ` · ${title}` : ""}</span>
+        <span className="tool-call-name"><strong>{t.proposedPlan}</strong>{title ? ` · ${title}` : ""}</span>
       </summary>
       <div className="tool-content">
         {notice}
@@ -702,6 +702,8 @@ function ToolActivity({
   const block = useRef<HTMLDetailsElement>(null);
   const language = useLanguage();
   const t = turnWords(language);
+  const words = callWords(language);
+  const overview = useMemo(() => toolOverview(items, language, executionUnconfirmed), [items, language, executionUnconfirmed]);
   const key = `tools:${turnId}:${items[0]?.id}`;
   const [opened, setOpened] = useConversationDisclosure(key, open);
   const firstMount = useFirstConversationMount(key);
@@ -733,15 +735,13 @@ function ToolActivity({
       <summary>
         <ChevronRight size={13} />
         <span className="tool-activity-label">{active ? t.runningTools : t.toolActivity}</span>
-        {/* One capsule per tool, named as the harness named it, with the
-            calls' own state; see tool-capsules.ts for what a state means. */}
-        <span className="execution-count tool-counts">
-          {toolCapsules(toolActivityCounts(items, language), executionUnconfirmed).map(({ key, label, count, state, part }) => (
-            <span className="tool-count" key={key} data-count-key={key} data-state={state || undefined}>
-              <span className="tool-count-name">{label}</span><span className="tool-count-number">×{count}</span>
-              {state && state !== "returned" && <span className="tool-count-state">
-                {part < count ? t.toolStatePart(part, t.toolState[state]) : t.toolState[state]}
-              </span>}
+        {/* How many steps, and the calls worth knowing about while it is
+            closed; each call says the rest in its own capsule (T-9). */}
+        <span className="execution-count tool-overview">
+          <span className="tool-overview-part" data-count-key="steps">{t.toolSteps(overview.steps)}</span>
+          {overview.notable.map(({ tone, count }) => (
+            <span className="tool-overview-part" key={tone} data-count-key={tone} data-tone={tone}>
+              {t.toolStatePart(count, words.tone[tone])}
             </span>
           ))}
         </span>

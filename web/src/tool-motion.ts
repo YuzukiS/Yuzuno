@@ -59,11 +59,8 @@ type Look = {
 
 function look(block: HTMLElement): Look {
   const counts: Look["counts"] = new Map();
-  for (const chip of block.querySelectorAll(":scope > summary .tool-count"))
-    counts.set(chip.getAttribute("data-count-key") || "", {
-      chip,
-      number: chip.querySelector(".tool-count-number")?.textContent || "",
-    });
+  for (const chip of block.querySelectorAll(":scope > summary .tool-overview-part"))
+    counts.set(chip.getAttribute("data-count-key") || "", { chip, number: chip.textContent || "" });
   const rows: Look["rows"] = new Map();
   for (const row of block.querySelectorAll<HTMLElement>(":scope > .execution-items > .tool-item, :scope > .execution-items > .conversation-window > .conversation-window-row > .tool-item"))
     rows.set(row.id, {
@@ -113,7 +110,7 @@ export function useToolMotion(
       if (!was)
         play(chip, [{ opacity: 0, scale: 0.8 }, { opacity: 1, scale: 1 }], "tool-count-in");
       else if (was.number !== number)
-        play(chip.querySelector(".tool-count-number"), RISE, "tool-count-tick");
+        play(chip, RISE, "tool-count-tick");
     }
     // Rows that land in a closed block stay out of sight until it opens.
     // First inspection exposes existing rows; record them without presenting

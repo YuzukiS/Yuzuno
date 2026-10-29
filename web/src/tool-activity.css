@@ -8,79 +8,24 @@
 .tool-activity > summary > svg {
   flex-shrink: 0;
 }
-.tool-counts {
-  display: flex;
-  flex: 1 1 10rem;
-  flex-wrap: wrap;
-  min-width: 0;
-  gap: 4px 6px;
-  color: var(--text-secondary);
-}
-/* One capsule per tool: the name the harness gave it, how many calls it
-   holds, and what those calls' own fields say (tool-capsules.ts). Calls that
-   returned keep the plain capsule — nothing here reads as success. The tints
-   are mixed from the row's own colour, so every palette and dark keep them. */
-.tool-count {
+/* The heading's overview (T-9): how many steps, and the calls worth
+   knowing about while it is closed. Each call is its own capsule below. */
+.tool-overview {
   display: inline-flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  max-width: 100%;
+  gap: 0 8px;
   min-width: 0;
-  padding: 1px 9px;
-  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
-  border-radius: 999px;
-  background-color: color-mix(in srgb, currentColor 7%, transparent);
 }
-/* A long MCP name wraps inside its capsule rather than being cut off. */
-.tool-count-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.tool-count-number {
-  padding-left: 4px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.tool-count-state {
-  margin-left: 6px;
-  padding-left: 6px;
-  border-left: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+.tool-overview-part {
+  display: inline-block;
   white-space: nowrap;
 }
-.tool-count[data-state="failed"] {
-  border-color: color-mix(in srgb, var(--error-ink, #a37961) 42%, transparent);
-  background-color: color-mix(in srgb, var(--error-ink, #a37961) 9%, transparent);
-}
-.tool-count[data-state="failed"] .tool-count-state {
+.tool-overview-part[data-tone="failed"],
+.tool-overview-part[data-tone="refused"] {
   color: var(--error-ink, #a37961);
 }
-.tool-count[data-state="unconfirmed"] {
-  border-color: color-mix(in srgb, var(--accent-ink, #786637) 40%, transparent);
-  background-color: color-mix(in srgb, var(--accent-ink, #786637) 9%, transparent);
-}
-.tool-count[data-state="unconfirmed"] .tool-count-state {
+.tool-overview-part[data-tone="unconfirmed"] {
   color: var(--accent-ink, #786637);
-}
-/* Running stays quiet: the block's own spinner says work is going on. */
-.tool-count[data-state="running"] .tool-count-state {
-  color: var(--text-quiet, #7e8c71);
-}
-/* Mixed colours are not what forced colours show; keep the outline. */
-@media (forced-colors: active) {
-  .tool-count,
-  .tool-count-state {
-    border-color: CanvasText;
-  }
-}
-/* On a phone the capsules take the line under the label, so a long MCP name
-   is read whole instead of being squeezed beside it. */
-@media (max-width: 520px) {
-  .tool-activity > summary > .tool-counts {
-    flex-basis: 100%;
-    margin-left: 0;
-    padding-left: 0;
-    border-left: none;
-  }
 }
 
 .turn-activity .activity-elapsed {
@@ -196,8 +141,7 @@ details[data-source-jump][open]::details-content {
 .tool-item[data-unfolding] {
   overflow: clip;
 }
-.tool-activity-label,
-.tool-count-number {
+.tool-activity-label {
   display: inline-block;
 }
 

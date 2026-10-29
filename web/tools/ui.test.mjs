@@ -1060,7 +1060,7 @@ test("the live log shows ongoing work outside tools, distinguishes waiting and u
   }
 });
 
-test("tool counts distinguish native kinds, named MCP tools and Claude tools", async () => {
+test("each call is its own capsule, named by its kind, its MCP server and tool or its Claude tool; the heading counts the steps", async () => {
   const turn = { id: "counts", status: "inProgress", items: [
     { id: "sh1", type: "commandExecution", command: "pwd", status: "inProgress" },
     { id: "sh2", type: "commandExecution", command: "ls", status: "completed" },
@@ -1077,26 +1077,25 @@ test("tool counts distinguish native kinds, named MCP tools and Claude tools", a
   ] };
   const page = await mount({ extraTurns: [turn] });
   try {
-    // The name and the number; what the calls reported is tool-capsules-ui's.
-    const labels = () => [...page.document.querySelectorAll('[data-turn-id="counts"] .tool-count')]
-      .map(el => el.querySelector(".tool-count-name").textContent + el.querySelector(".tool-count-number").textContent);
-    assert.deepEqual(labels(), ["Shell×2", "Edit×1", "docs/search×2", "docs/fetch×1", "other/search×1", "lookup×1", "MCP tool×1", "Bash×1", "Read×2"]);
-    // Each Codex MCP row is named as the summary names it (T-9).
+    // How many steps; each call says the rest in its own capsule (T-9).
+    const overview = () => page.document.querySelector('[data-turn-id="counts"] .tool-activity > summary .tool-overview').textContent;
+    assert.equal(overview(), "12 tool steps");
+    assert.equal(page.document.querySelectorAll('[data-turn-id="counts"] .tool-count').length, 0);
     const group = page.document.querySelector('[data-turn-id="counts"] .tool-activity');
     if (!group.open) { group.querySelector("summary").click(); await pause(); }
     const row = (id) => page.document.querySelector(`[data-turn-id="counts"] [id="item-${id}"] > summary > span:first-of-type`);
-    for (const [id, name] of [["mcp1", "docs/search"], ["mcp3", "docs/fetch"], ["mcp5", "lookup"]]) {
+    for (const [id, name, tool] of [["mcp1", "docs/search", "search"], ["mcp3", "docs/fetch", "fetch"], ["mcp5", "lookup", "lookup"]]) {
       assert.equal(row(id).textContent, name);
-      assert.equal(row(id).querySelector("strong")?.textContent, name);
-      assert.equal(row(id).title, name);
+      assert.equal(row(id).querySelector("strong")?.textContent, tool);
     }
     assert.equal(row("mcp6").textContent, "MCP tool");
-    assert.equal(row("mcp6").getAttribute("title"), null);
+    assert.equal(row("mcp6").querySelector("strong"), null);
+    assert.deepEqual(["sh2", "edit", "bash", "read2"].map((id) => row(id).textContent), ["ls", "2 file changes", "Bash", "Read"]);
     turn.items[0].status = "completed";
     turn.items[0].aggregatedOutput = "New output must not count as a new call";
     page.window.dispatchEvent(new page.window.Event("focus"));
     await pause(); await pause();
-    assert.equal(labels()[0], "Shell×2");
+    assert.equal(overview(), "12 tool steps");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -3500,7 +3499,7 @@ test("tool activity that arrives live unfolds and settles; what loads with the p
     turn.items[2] = shell("tool-a", "completed", 0);
     turn.items.push(shell("tool-b"));
     await refresh();
-    assert.deepEqual(played.sort(), ["tool-count-tick:tool-count-number", "tool-result:tool-result", "tool-unfold:item-tool-b"]);
+    assert.deepEqual(played.sort(), ["tool-count-tick:tool-overview-part", "tool-result:tool-result", "tool-unfold:item-tool-b"]);
     assert.equal(row("tool-a")?.hasAttribute("data-running"), false);
     // Commentary folds the block, whose rows then change out of sight; the
     // heading settles and the next block unfolds.

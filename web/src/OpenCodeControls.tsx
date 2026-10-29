@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
+import { LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
 import { errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import type { NativeItem, PendingRequest } from "./types";
-import { langTag, useLanguage, useStrings } from "./i18n";
+import { langTag, useLanguage } from "./i18n";
 import { cardWords } from "./subagent-text";
+import { callFacts } from "./tool-call";
+import { CallDetails, CallName, ToolCallSummary, callIcon } from "./ToolCall";
 import { requestWords, shownError } from "./request-text";
 import "./opencode.css";
 
@@ -19,21 +21,24 @@ export function OpenCodeTool({ item, unconfirmed, notice, opened, onOpenChange }
   item: NativeItem; unconfirmed: boolean; notice?: ReactNode;
   opened?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
-  const t = useStrings(cardWords);
+  const language = useLanguage();
+  const t = cardWords(language);
   const input = (item.input || {}) as Record<string, unknown>;
   const hint = input.command || input.filePath || input.pattern || input.url || input.description || "";
   const running = !unconfirmed && /inProgress|running/.test(item.status || "");
-  const result = unconfirmed || item.status === "unknown" ? t.unconfirmed : item.status === "inProgress" ? t.running : item.status;
+  // A call not done says so; any other says what its capsule reads of it.
+  const result = unconfirmed || item.status === "unknown" ? t.unconfirmed : item.status === "inProgress" ? t.running : undefined;
+  const name = String(item.name || t.tool);
+  const facts = callFacts(item, name, language, unconfirmed);
   return <details className="tool-item opencode-tool" id={`item-${item.id}`} data-running={running || undefined}
     open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange?.(event.currentTarget.open);
     }}>
-    <summary><ChevronRight size={12} /><SquareTerminal size={14} />
-      <span><strong>{String(item.name || t.tool)}</strong>{hint ? ` · ${String(hint)}` : ""}</span>
-      <span className="tool-result">{result}</span>
-    </summary>
+    <ToolCallSummary open={!!opened} facts={facts} result={result} icon={callIcon(item, <SquareTerminal size={14} />)}
+      name={facts.name !== name ? <CallName name={facts.name} /> : <><strong>{name}</strong>{hint ? ` · ${String(hint)}` : ""}</>} />
     <div className="tool-content">
       {notice}
+      <CallDetails facts={facts} />
       <span className="section-eyebrow">{t.input}</span><pre>{JSON.stringify(input, null, 2)}</pre>
       <span className="section-eyebrow">{item.status === "failed" ? t.error : t.result}</span>
       <pre>{item.output == null ? t.noResultYet : shown(item.output)}</pre>
