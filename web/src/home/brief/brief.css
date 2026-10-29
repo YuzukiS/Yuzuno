@@ -46,9 +46,13 @@
 .brief-body :is(h4, p, ul, ol, dl) {
   margin: 0;
 }
+/* A block's or group's title: the card's own structure, so it stands above
+ * the body it introduces and above the headings written inside it, which an
+ * explicit h1 alone outranks. */
 .brief-body h4 {
-  font-size: 0.86rem;
+  font-size: 1.05rem;
   font-weight: 600;
+  color: var(--ink);
 }
 /* The section card is the only frame. A group inside it is a title and its
  * blocks, set apart by space, and by a rule from the group before it. */
@@ -134,9 +138,49 @@
 .brief-body .brief-markdown :is(p, ul, ol) {
   margin: 0 0 10px;
 }
+/* An Agent's own heading levels. Home used to draw h1, h2 and h3 at one
+ * size, which left its writing flat; each level is a step again, with the
+ * size and weight carrying it, since a theme may draw heading and body in
+ * the same ink. A heading binds to the text under it: more space above it
+ * than below. */
 .brief-body .brief-markdown :is(h1, h2, h3) {
-  margin: 14px 0 8px;
-  font-size: 0.95rem;
+  margin: 18px 0 7px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.brief-body .brief-markdown h1 {
+  font-size: 1.14rem;
+}
+.brief-body .brief-markdown h2 {
+  font-size: 1rem;
+}
+.brief-body .brief-markdown h3 {
+  margin-top: 14px;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+/* An Agent may write deeper than h3. Those are Markdown headings, not the
+   card's own structure, so they stay below h3 and out of the block-title
+   rule above, which would otherwise draw an h4 larger than the h2 above it. */
+.brief-body .brief-markdown :is(h4, h5, h6) {
+  margin: 12px 0 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
+/* A block begins at its own top, whatever it begins with. */
+.brief-body .brief-markdown > :first-child {
+  margin-top: 0;
+}
+/* Emphasis is a full step of weight rather than a tint. Chinese showed none
+ * of it while the bundled Han subset carried no variation data: every weight
+ * drew the same outlines, whatever this rule asked for. That is the font's
+ * to fix, not this rule's (acceptance/cjk-font-weights). */
+.brief-body .brief-markdown strong {
+  font-weight: 700;
+  color: var(--ink);
 }
 .brief-body .brief-markdown pre {
   max-height: 22em;
