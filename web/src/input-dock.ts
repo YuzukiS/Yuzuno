@@ -37,30 +37,16 @@ export function entryInput(id: string) {
 }
 
 /**
- * The entry being read: the last input at or before the reading line. Inputs
- * of Turns before the one being read are passed. Those of the Turn being read
- * are placed by where they are drawn. ConversationRows draws the rows around
- * what is on screen, so an input not drawn comes before the first one drawn
- * or after the last: passed, or not reached.
+ * The entry being read: the input the Turn being read reported, or, before
+ * its first input, the last input of an earlier Turn. Until the Turn has
+ * reported, its first input.
  */
-export function readingEntry(entries: NativeTurn[], turns: NativeTurn[], readingTurn: string | undefined, line: number | null) {
+export function readingEntry(entries: NativeTurn[], turns: NativeTurn[], readingTurn: string | undefined, reported: string | null | undefined) {
   const at = new Map(turns.map((turn, index) => [turn.id, index]));
   const reading = readingTurn === undefined ? turns.length - 1 : (at.get(readingTurn) ?? turns.length - 1);
   const turnOf = (entry: NativeTurn) => at.get(entry._yuzunoInputOf!.turnId) ?? entry._yuzunoInputOf!.turn - 1;
   const passed = entries.filter(entry => turnOf(entry) < reading).at(-1)?.id;
   const here = entries.filter(entry => turnOf(entry) === reading);
-  if (!here.length) return passed;
-  if (line === null) return here[0].id;
-  const drawn = Array.from(document.getElementById(`turn-${here[0]._yuzunoInputOf!.turnId}`)?.querySelectorAll<HTMLElement>("[data-item-id]") ?? []);
-  const tops = here.map(entry => drawn.find(element => element.dataset.itemId === entry._yuzunoInputOf!.itemId)?.getBoundingClientRect().top);
-  let above = -1;
-  tops.forEach((top, index) => { if (top !== undefined && top <= line) above = index; });
-  if (above >= 0) return here[above].id;
-  const below = tops.findIndex(top => top !== undefined);
-  // The first drawn input is below the line: the one before it is passed,
-  // or, before the Turn's first input, the previous Turn's last.
-  if (below > 0) return here[below - 1].id;
-  if (below === 0) return passed ?? here[0].id;
-  // None drawn while this Turn is read: its first input is passed.
-  return here[0].id;
+  if (reported === null) return passed;
+  return here.find(entry => entry._yuzunoInputOf!.itemId === reported)?.id ?? here[0]?.id ?? passed;
 }

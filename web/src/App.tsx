@@ -178,6 +178,7 @@ import { clearLiveCI, refreshLiveCI } from "./live-ci";
 import { TurnNavigator } from "./TurnNavigator";
 import { useConversationInputs } from "./useConversationInputs";
 import { entryInput, inputEntries, readingEntry, type ReadBy } from "./input-dock";
+import { InputReading } from "./input-reading";
 import { ConversationWindow, ConversationRows } from "./ConversationWindow";
 import { HistoryEntry } from "./HistoryEntry";
 import { ConversationMetadata } from "./ConversationMetadata";
@@ -872,29 +873,18 @@ export function App() {
   const canReadByInputs = conversationInputs.total > 0;
   const inputDockEntries = useMemo(() => inputEntries(conversationInputs.inputs, logicalTurns),
     [conversationInputs.inputs, logicalTurns]);
-  // The input being read (T-6): placed against the reading line again on
-  // every scroll of the conversation, a frame at a time, as well as when the
-  // inputs, the Turns or the Turn being read change.
-  const [readingInputId, setReadingInputId] = useState<string>();
-  useLayoutEffect(() => {
-    const pane = scroll.current;
-    if (readingBy !== "inputs" || !pane) {
-      setReadingInputId(undefined);
-      return;
-    }
-    let frame = 0;
-    const update = () => {
-      frame = 0;
-      setReadingInputId(readingEntry(inputDockEntries, logicalTurns, readingTurn, pane.getBoundingClientRect().top + 32));
-    };
-    update();
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
-    pane.addEventListener("scroll", schedule, { passive: true });
-    return () => {
-      pane.removeEventListener("scroll", schedule);
-      cancelAnimationFrame(frame);
-    };
-  }, [readingBy, inputDockEntries, logicalTurns, readingTurn]);
+  // The input being read (T-6): as the Turn being read reports it from its
+  // rows at the reading line, on every scroll (InputReading).
+  const inputReading = useRef(new Map<string, string | null>());
+  const [inputReadingChanged, setInputReadingChanged] = useState(0);
+  const reportInput = useCallback((turnId: string, itemId: string | null) => {
+    if (inputReading.current.get(turnId) === itemId) return;
+    inputReading.current.set(turnId, itemId);
+    setInputReadingChanged(n => n + 1);
+  }, []);
+  const readingInputId = useMemo(() => readingBy === "inputs"
+    ? readingEntry(inputDockEntries, logicalTurns, readingTurn, readingTurn === undefined ? undefined : inputReading.current.get(readingTurn))
+    : undefined, [readingBy, inputDockEntries, logicalTurns, readingTurn, inputReadingChanged]);
   // Each of the person's inputs read so far, by its number among all of
   // them: the Turns label the parts those inputs open.
   const inputNumbers = useMemo(() => new Map(conversationInputs.inputs.map((input, at) =>
@@ -2870,6 +2860,7 @@ export function App() {
                 }}
               >
                 <div className="conversation-inner" ref={followGrowth}>
+                  <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpToTurn ? { turnId: jumpToTurn, itemId: jumpItem.current ?? undefined } : pageTarget}>
@@ -3006,6 +2997,7 @@ export function App() {
                   {pageSpace === "after" && currentDetail?.conversation?.hasAfter &&
                     <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   </ConversationWindow>
+                  </InputReading.Provider>
                 </div>
               </div>
               {/* Jobs and CI on the left edge; the turn dock is on the right. */}

@@ -10,7 +10,7 @@ import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
 import { messageSkills } from "./skill-refs";
 import { SkillChips } from "./SkillChips";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -49,6 +49,7 @@ import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
 import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts, type ConversationBlock } from "./conversation-blocks";
+import { InputReading } from "./input-reading";
 import { deliveryNote } from "./delivery-note";
 import { SubAgentAnchors } from "./SubAgentPanels";
 import { ActivityElapsed } from "./ActivityElapsed";
@@ -799,6 +800,7 @@ export function Turn({
   const target = useConversationTarget(turn.id);
   const reveal = useConversationReveal(turn.id);
   const windowed = useConversationWindowed();
+  const reportInput = useContext(InputReading);
   useEffect(() => { drawn.current = true; }, []);
   const plan = turn._yuzunoPlan;
   const planSourceId = `yuzuno-plan-${turn.id}`;
@@ -1018,6 +1020,17 @@ export function Turn({
   const blockKey = (block: ConversationBlock) => "item" in block ? block.item.id : block.items[0].id;
   const rowKey = (row: Row) => "fold" in row ? `fold:${blockKey(row.fold[0].block)}` : blockKey(row.block);
   const targetRow = targetBlock ? rows.find(row => "fold" in row ? row.fold.some(member => member.block === targetBlock) : row.block === targetBlock) : undefined;
+  // The input this Turn is read at (T-6): the last of yours at or before the
+  // row at the reading line, by the rows' own positions; before any, the one
+  // the Turn opens with.
+  const inputRows = rows.map(row => !("fold" in row) && row.block.kind === "user" && (yours(row.block.item) || unconfirmed(row.block.item))
+    ? row.block.item.id : null);
+  const readAt = (row: Row) => {
+    const at = rows.indexOf(row);
+    let input = opener?.id ?? null;
+    for (let index = 0; index <= at; index++) input = inputRows[index] ?? input;
+    reportInput?.(turn.id, input);
+  };
   return (
     <article
       className={`turn${highlightSource ? " source-highlight" : ""}`}
@@ -1099,7 +1112,8 @@ export function Turn({
         <ConversationRows id={`blocks:${turn.id}`} items={rows}
           itemKey={rowKey}
           estimate={row => "fold" in row ? 44 : row.block.kind === "tools" ? 70 : row.block.kind === "subagents" ? 0 : 220}
-          targetKey={targetRow ? rowKey(targetRow) : undefined}>
+          targetKey={targetRow ? rowKey(targetRow) : undefined}
+          onReading={reportInput ? readAt : undefined}>
         {row => "fold" in row ? (
           <CollaborationFold key={rowKey(row)} id={`collab:${turn.id}:${rowKey(row)}`} members={row.fold.map(member => member.block)}
             open={row.fold.some(member => !!shownItemId(member.block, windowed ? target?.itemId : sourceItemId)
