@@ -189,7 +189,7 @@ pub(super) fn budget_defaults(cpus: u64, total: u64) -> (super::Resources, u64) 
     };
     (suggested, headroom)
 }
-fn folder(data: &Path, job: &Value) -> Result<PathBuf> {
+pub(super) fn folder(data: &Path, job: &Value) -> Result<PathBuf> {
     let id = job["id"].as_str().context("Job identity missing")?;
     uuid::Uuid::parse_str(id).context("Invalid job identity")?;
     Ok(data.join("jobs").join(id))
