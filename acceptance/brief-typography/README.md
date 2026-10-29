@@ -28,14 +28,56 @@ emphasis a full weight step; nothing running off 320 px; and that the page
 sends nothing but what Home always sends (its seen marks, and the POST that
 reads a Project's repositories).
 
-## Chinese emphasis is not a CSS weight problem
+## Chinese weight: what is measured, and what is not concluded
 
-`chinese-emphasis-options.png` is a separate finding, not part of the fix.
-On this Mac, in Chrome, Chinese renders with **identical ink at 400, 600 and
-700** — measured by drawing the same text at each weight and counting its
-pixels — while Latin gains half as much ink again at 700. Forcing the bundled
-`Yuzuno Han` face directly does not change it, and allowing weight synthesis
-for that span alone does not either. Only CJK emphasis dots (`text-emphasis`)
-made it visible. So no CSS weight value will make Chinese bold show until the
-font asset or the font stack provides a heavier face; the weight here is for
-Latin, and what Chinese emphasis should use is a design decision.
+`font-weight-probe.mjs` is a read-only probe for one question: does Chinese
+text get a heavier face at 600 or 700 in a given build?
+
+```sh
+# from web/, against the same isolated build
+YUZUNO_UI_DIST=/tmp/yuzuno-md-dist node ../acceptance/brief-typography/font-weight-probe.mjs
+```
+
+It writes its full record beside this file as `font-weight-probe.json`, with a
+screenshot. The method is in the script's header; the parts that matter are
+that canvas never loads a web font by itself (so every face is loaded with
+`document.fonts.load(font, sample)` for the exact text first, and
+`document.fonts.check` is recorded after), that `ctx.font` is read back
+because the browser may reject a string silently, that the glyph bounding box
+is reported so clipping cannot be mistaken for less ink, and that CJK glyphs
+keep the same advance width at any weight — so weight shows as ink, never as
+width.
+
+**Measured on this Mac, in Google Chrome** (the record carries the build and
+the date; another machine may differ, and Windows has not been measured):
+
+| sample | ink | pixels over half alpha |
+|---|---|---|
+| 中文 at 400 | 1,347,885 | 5,000 |
+| 中文 at 600 | 1,347,885 | 5,000 |
+| 中文 at 700 | 1,347,885 | 5,000 |
+| 中文 at 700, forced to `'Yuzuno Han'` | 1,347,885 | 5,000 |
+| Latin at 400 | 1,389,461 | 5,482 |
+| Latin at 700 | 2,105,889 | 8,304 |
+
+Chrome's own answer for which file drew the glyphs
+(`CSS.getPlatformFontsForNode`, which is the only one of these that says what
+the DOM actually used — forcing a family name or a passing `fonts.check` does
+not):
+
+```
+中文 400 / 600 / 700 → Noto Sans SC, NotoSansSC-Thin, isCustomFont: true
+Latin 400 → .SFNS-Regular     Latin 700 → .SFNS-Bold
+```
+
+So the bundled face **is** the one drawing Chinese here, and every weight
+resolves to its Thin instance. That is as far as the evidence goes: it does
+not establish what the `woff2` contains, and `fc-scan` on the source font
+reports Regular, Medium and Bold. Allowing `font-synthesis-weight: auto` for
+one span changed nothing here either.
+
+Nothing about this is fixed in this slice: the weight step in `brief.css` is
+for Latin, and what Chinese emphasis should do is a product decision. The
+open question — why a face declared `font-weight: 400 700` resolves to Thin —
+belongs to the font investigation, and this probe is the way to ask it again
+on another machine.
