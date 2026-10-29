@@ -417,3 +417,41 @@ async fn a_command_with_images_is_refused_before_anything_is_recorded() {
     lab.until("completion", |d| turn(d, &id)["status"] == "completed").await;
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// A 400 refuses a command only when OpenCode's record, read after it, has
+/// no message under its ID (R2 98039b83). With that record unreadable, an
+/// event that confirmed the message still makes it delivered; without one,
+/// what became of it is unknown: its Turn is not failed, and nothing is sent
+/// again. OpenCode's record decides it once it shows the message.
+#[tokio::test]
+async fn a_failed_command_whose_message_cannot_be_read_is_not_refused() {
+    let lab = lab(false).await;
+    let session = lab.session();
+
+    // Stored and announced, then the run's 400, while message reads fail: delivered.
+    lab.control("mode", json!({"command":"fail","failMessageReads":true})).await;
+    let announced = lab.send("c1", "/explain x", &[]).await.unwrap();
+    assert_eq!(announced.status, "accepted", "{announced:?}");
+    let first = announced.turn_id.unwrap();
+    assert_eq!(turn(&lab.detail(), &first)["status"], "inProgress", "its run's end is OpenCode's record to tell");
+    lab.control("mode", json!({"failMessageReads":false})).await;
+    lab.control("halt", json!({"sessionID":session,"name":"APIError","message":"overloaded"})).await;
+    lab.until("the failure", |d| turn(d, &first)["status"] == "failed").await;
+
+    // Stored with no event Core saw, then the 400, while message reads fail: unknown, not refused.
+    lab.control("mode", json!({"command":"fail-unannounced","failMessageReads":true})).await;
+    let unknown = lab.send("c2", "/explain y", &[]).await.unwrap();
+    assert_eq!(unknown.status, "uncertain", "{unknown:?}");
+    let second = unknown.turn_id.clone().unwrap();
+    assert_eq!(turn(&lab.detail(), &second)["status"], "inProgress", "not failed: it may have run");
+    assert!(lab.journaled("opencode/promptRefused").is_empty(), "nothing was recorded as refused");
+    assert_eq!(lab.sent().len(), 2, "each was sent once");
+
+    // OpenCode's record shows it: accepted under its client ID, and its answer ends the Turn.
+    lab.control("mode", json!({"command":"run","failMessageReads":false})).await;
+    lab.control("store", json!({"sessionID":session,"messageID":second,"text":"Explain y briefly."})).await;
+    lab.until("the late confirmation", |d| d.message_receipts.iter().any(|r| r.input.client_message_id == "c2" && r.status == "accepted")).await;
+    lab.complete(&second).await;
+    assert_eq!(lab.sent().len(), 2, "still sent once");
+    lab.ws.close_agent(ID).await.unwrap();
+}
