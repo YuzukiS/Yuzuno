@@ -1933,7 +1933,7 @@ test("T-9 card density another window saves while Home is closed here shows when
   }
 });
 
-test("T-9 card density a device refuses to keep still applies in this window and says it was not kept", async () => {
+test("T-9 card density a device refuses to keep still applies in this window, says it was not kept, and outlasts another Workspace's update", async () => {
   const p = await mount();
   try {
     const setItem = p.w.Storage.prototype.setItem;
@@ -1948,6 +1948,12 @@ test("T-9 card density a device refuses to keep still applies in this window and
     } finally {
       p.w.Storage.prototype.setItem = setItem;
     }
+    // Another Workspace's choice saved in another window leaves this unsaved one as it is.
+    p.w.localStorage.setItem("yuzuno.homeDensity.ws-other", '"low"');
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.homeDensity.ws-other" }));
+    await pause(100);
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "high", "still high in this window");
+    assert.ok(p.doc.querySelector(".home-density-note"), "still said not to be kept");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

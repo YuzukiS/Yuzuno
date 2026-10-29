@@ -32,10 +32,20 @@ const current = new Map<string, Density>();
 const refusals = new Map<string, SaveOutcome>();
 const notify = () => listeners.forEach((listener) => listener());
 const onStorage = (event: StorageEvent) => {
-  if (event.key !== null && !event.key.startsWith(storageKey(""))) return;
-  // Only saved choices are read again; the preview's stays.
-  for (const id of [...current.keys()]) if (id) current.delete(id);
-  refusals.clear();
+  const prefix = storageKey("");
+  if (event.key !== null && !event.key.startsWith(prefix)) return;
+  if (event.key !== null) {
+    // Another window saved this Workspace's choice: it is read again. No
+    // other Workspace's choice changes, an unsaved one included.
+    const id = event.key.slice(prefix.length);
+    if (!id) return;
+    current.delete(id);
+    refusals.delete(id);
+  } else {
+    // Storage was cleared: saved choices are read again; one this device
+    // refused to keep, and the preview's, still apply in this window.
+    for (const id of [...current.keys()]) if (id && !refusals.has(id)) current.delete(id);
+  }
   notify();
 };
 // What is read is kept for this window's life, so another window's choice
