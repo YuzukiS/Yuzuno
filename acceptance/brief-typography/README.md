@@ -31,8 +31,11 @@ palette matters: outside Garden, `appearance.css` draws body, `strong` and
 h1–h3 in one ink, so the levels there rest on size and spacing alone, and the
 check asserts that heading and body really are the same colour before
 measuring the levels.
-It asserts three heading steps, each above body text; a block title above the
-body and above the headings inside it, with only an explicit `h1` leading;
+It asserts three heading steps, each above body text; that an Agent writing
+deeper than `h3` stays under it — `####` used to come out *smaller than body
+text*, and under the first draft of this fix it would have come out larger
+than `##` — a block title above the body and above every heading inside it,
+including a written `h4`, with only an explicit `h1` leading;
 emphasis a full weight step; nothing running off 320 px; and that the page
 sends nothing but what Home always sends (its seen marks, and the POST that
 reads a Project's repositories).

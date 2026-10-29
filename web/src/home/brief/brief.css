@@ -160,6 +160,16 @@
   font-size: 0.92rem;
   font-weight: 600;
 }
+/* An Agent may write deeper than h3. Those are Markdown headings, not the
+   card's own structure, so they stay below h3 and out of the block-title
+   rule above, which would otherwise draw an h4 larger than the h2 above it. */
+.brief-body .brief-markdown :is(h4, h5, h6) {
+  margin: 12px 0 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
 /* A block begins at its own top, whatever it begins with. */
 .brief-body .brief-markdown > :first-child {
   margin-top: 0;

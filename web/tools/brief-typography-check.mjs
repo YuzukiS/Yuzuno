@@ -94,6 +94,12 @@ const sample = section("typography", "字体层级小样", spec([
     "",
     "### 三级标题 · Heading 3",
     "",
+    "#### 四级标题 · Heading 4",
+    "",
+    "正文：四级标题下的一段，用来看它是否仍低于三级。",
+    "",
+    "##### 五级标题 · Heading 5",
+    "",
     "- 列表项：短行文字",
     "- 列表项：`行内代码` 与普通文字",
     "",
@@ -176,6 +182,8 @@ const levels = (page) =>
       h1: of(markdown.querySelector("h1")),
       h2: of(markdown.querySelector("h2")),
       h3: of(markdown.querySelector("h3")),
+      h4: of(markdown.querySelector("h4")),
+      h5: of(markdown.querySelector("h5")),
       body: of(markdown.querySelector("p")),
       strong: of(markdown.querySelector("strong")),
       em: of(markdown.querySelector("em")),
@@ -224,12 +232,19 @@ try {
             assert.ok(shown.h1.size > shown.h2.size + 0.5, `${where}: h1 over h2 ${JSON.stringify(shown)}`);
             assert.ok(shown.h2.size > shown.h3.size + 0.5, `${where}: h2 over h3 ${JSON.stringify(shown)}`);
             assert.ok(shown.h3.size > shown.body.size, `${where}: h3 over body ${JSON.stringify(shown)}`);
+            // An Agent may write deeper than h3; those levels stay under it
+            // and never reach past the block title above them.
+            assert.ok(shown.h4.size <= shown.h3.size, `${where}: h4 under h3 ${JSON.stringify(shown)}`);
+            assert.ok(shown.h5.size <= shown.h4.size, `${where}: h5 under h4 ${JSON.stringify(shown)}`);
+            assert.ok(shown.h4.size >= shown.body.size, `${where}: h4 still reads as a heading ${JSON.stringify(shown)}`);
+            assert.ok(shown.h4.weight > shown.body.weight, `${where}: h4 heavier than body ${JSON.stringify(shown)}`);
             assert.ok(shown.h1.weight >= 700 && shown.h2.weight >= 700, `${where}: headings carry weight ${JSON.stringify(shown)}`);
             assert.ok(shown.h3.weight > shown.body.weight, `${where}: h3 heavier than body ${JSON.stringify(shown)}`);
             // A block's title stands above the body it introduces, and above
             // the headings written inside it; only an explicit h1 outranks it.
             assert.ok(heads.group.size > heads.body.size, `${where}: group title over body ${JSON.stringify(heads)}`);
             assert.ok(heads.group.size >= shown.h2.size, `${where}: group title over h2 ${JSON.stringify({ heads, h2: shown.h2 })}`);
+            assert.ok(heads.group.size > shown.h4.size, `${where}: a written h4 never outranks the block title ${JSON.stringify({ heads, h4: shown.h4 })}`);
             assert.ok(heads.group.size < shown.h1.size, `${where}: an explicit h1 still leads ${JSON.stringify({ heads, h1: shown.h1 })}`);
             // Emphasis: a full step of weight, not a tint alone.
             assert.ok(shown.strong.weight >= 700, `${where}: strong is heavier ${JSON.stringify(shown)}`);
