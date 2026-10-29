@@ -6089,15 +6089,36 @@ test("Claude: /model drops an effort the new model lacks exactly as the model ch
   assert.equal(chip.saved.model, "sonnet");
 });
 
-test("an OpenCode Agent at work takes no message into its turn and shows OpenCode's own facts", async () => {
+test("an OpenCode Agent at work takes a message into its running turn, not while it waits for you, and shows OpenCode's own facts", async () => {
+  // Waiting for your answer to a request: nothing joins the turn.
+  const waiting = await mount({ harness: "opencode", status: "waiting", agentFields: { opencodeSessionId: "ses_0123456789" } });
+  try {
+    setValue(waiting.window, waiting.document.querySelector("[data-composer-input]"), "One more thing");
+    await pause();
+    const send = waiting.document.querySelector('[aria-label="Send message"]');
+    assert.equal(send?.disabled, true, "not while a request waits for you");
+    assert.equal(send.title, "Wait for this turn to finish, or interrupt");
+    assert.equal(waiting.document.querySelector('[aria-label="Send while working"]'), null);
+    assert.equal(waiting.calls.filter((call) => call.init.method === "POST").length, 0);
+  } finally { waiting.close(); }
+
   const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789" } });
   try {
-    setValue(page.window, page.document.querySelector("[data-composer-input]"), "One more thing");
-    await pause();
-    const send = page.document.querySelector('[aria-label="Send message"]');
-    assert.equal(send?.disabled, true, "OpenCode takes no message into a running turn");
-    assert.equal(send.title, "Wait for this turn to finish, or interrupt");
-    assert.equal(page.document.querySelector('[aria-label="Send while working"]'), null);
+    const field = page.document.querySelector("[data-composer-input]");
+    setValue(page.window, field, "One more thing");
+    const send = await until(() => {
+      const button = page.document.querySelector('[aria-label="Send while working"]');
+      return button && !button.disabled && button;
+    }, "Send while working to accept the draft");
+    assert.equal(send.title, "Add input to the current turn");
+    send.click();
+    await pause(); await pause();
+    const posts = page.calls.filter((call) => call.init.method === "POST");
+    assert.deepEqual(posts.map((call) => call.url.split("/").at(-1)), ["messages"], "one message into the turn, never a new one");
+    const body = JSON.parse(posts[0].init.body);
+    assert.equal(body.expectedTurnId, "t1", "the running turn it joins (T-10)");
+    assert.equal(body.text, "One more thing");
+    assert.equal(composerText(field), "");
     // Its Agent settings choose only its model (T-10); permissions stay OpenCode's own.
     assert.ok(page.document.querySelector('[aria-label="Agent settings"]') !== null, "its model is chosen in its Agent settings");
     const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();

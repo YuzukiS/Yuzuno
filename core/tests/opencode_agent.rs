@@ -1250,6 +1250,23 @@ async fn an_added_message_opencode_refuses_or_never_confirms_is_not_sent_again()
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
     assert_eq!(lab.prompts().len(), 3, "each sent once: the first, the refused one and the unknown one");
+
+    // A 400 decides by OpenCode's record, as for a command (#435): stored
+    // (here announced too) is delivered; a record that cannot be read leaves
+    // it unknown, sent once, and never refused.
+    let second = lab.send("c4", "Again").await.unwrap().turn_id.unwrap();
+    lab.control("mode", json!({"prompt":"store-then-400"})).await;
+    let kept = lab.add("c5", "Kept", &second).await.unwrap();
+    assert_eq!((kept.status.as_str(), kept.turn_id.as_deref()), ("accepted", Some(second.as_str())), "{kept:?}");
+    let mut fail = serde_json::Map::new();
+    fail.insert(format!("/session/{session}/prompt_async"), json!(400));
+    lab.control("mode", json!({"fail":fail,"failMessageReads":true})).await;
+    let unread = lab.add("c6", "Unread", &second).await.unwrap();
+    assert_eq!(unread.status, "uncertain", "{unread:?}");
+    assert_eq!(journal(&lab).iter().filter(|k| *k == "opencode/inputRefused").count(), 1, "only the refusal above");
+    assert_eq!(input_of_native(&lab.detail(), &second, "Unread")["deliveryUnconfirmed"], true, "kept in the Turn, unconfirmed");
+    assert_eq!(lab.prompts().len(), 6, "each sent once");
+    lab.control("mode", json!({"fail":{},"failMessageReads":false,"prompt":"store"})).await;
     lab.ws.close_agent(ID).await.unwrap();
 }
 

@@ -424,6 +424,10 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
+        if mode == 'store-then-400':
+            # Stored and announced, then answered as refused.
+            store(session, message_id, text, files)
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused after storing'}})
         if mode == 'store-then-drop':
             store(session, message_id, text)
         # store-then-drop and drop: the connection ends without an answer.

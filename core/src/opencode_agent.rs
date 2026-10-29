@@ -841,7 +841,21 @@ impl Workspace {
         let held = self.send_view(id).await?.turns.iter().any(|t| t["id"] == expected && t["_opencodeInputs"].get(&input).is_some());
         ensure!(held, "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
         *sent = true;
-        let submitted = c.server.submit_with(&c.session, &message, text, &files, model.as_ref(), variant.as_deref()).await;
+        let mut submitted = c.server.submit_with(&c.session, &message, text, &files, model.as_ref(), variant.as_deref()).await;
+        // A 400 refuses it only when OpenCode's record, read after it, has no
+        // message under its ID, as for a command (#435): an event that already
+        // confirmed it makes it delivered, and a record that could not be read
+        // leaves it unknown.
+        if let Ok(Submission::Refused(status)) = &submitted {
+            let confirmed = self.send_view(id).await.is_ok_and(|d| d.turns.iter()
+                .any(|t| t["id"] == expected && t["_opencodeInputs"][&input]["confirmed"] == true));
+            let stored = if confirmed { Some(true) } else { c.server.message(&c.session, &message).await.ok().map(|m| m.is_some()) };
+            match stored {
+                Some(true) => submitted = Ok(Submission::Accepted),
+                Some(false) => {}
+                None => submitted = Ok(Submission::Unknown(format!("{status}, and its record of the message could not be read"))),
+            }
+        }
         let refused = match &submitted {
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条补充消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             Err(error) => Some(format!("补充消息没有发送：{error}")),
