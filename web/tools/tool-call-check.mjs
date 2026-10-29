@@ -145,6 +145,7 @@ const capsules = (page) => page.evaluate(() => [...document.querySelectorAll(".t
     inside: box.left >= holder.left - 1 && box.right <= holder.right + 1,
     endInView: !end || end.getBoundingClientRect().right <= box.right + 1,
     noteCut: note ? note.scrollWidth > note.clientWidth + 1 : false,
+    nameCut: part(".tool-call-name").scrollWidth > part(".tool-call-name").clientWidth + 1,
     radius: Math.round(parseFloat(getComputedStyle(summary).borderTopLeftRadius)),
   };
 }));
@@ -195,6 +196,9 @@ try {
       assert.ok(over.page <= 0 && (over.pane === null || over.pane <= 0), `${view.name}: nothing sideways ${JSON.stringify(over)}`);
       const cut = shown.filter((c) => c.noteCut).map((c) => c.id);
       assert.ok(cut.includes("lost-mail"), `${view.name}: a long result is cut short on its one line: ${JSON.stringify(cut)}`);
+      // The result gives way first: a Yuzuno tool's name stays whole beside it.
+      const names = shown.filter((c) => c.name.startsWith("yuzuno/") && c.nameCut).map((c) => c.id);
+      assert.deepEqual(names, [], `${view.name}: names cut short: ${JSON.stringify(shown)}`);
       const overview = await page.locator("#turn-done .tool-activity > summary .tool-overview-part").allTextContents();
       assert.deepEqual(overview, ["11 tool steps", "1 failed", "1 refused"]);
       assert.equal(await page.locator(".tool-activity .tool-count").count(), 0, "no capsule stack in the heading");

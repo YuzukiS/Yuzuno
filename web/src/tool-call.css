@@ -19,15 +19,15 @@
 .tool-call > svg {
   flex-shrink: 0;
 }
-/* When the line is full, the result gives way before the name does; both
-   keep a little of themselves. */
+/* When the line is full, the result gives way first, down to its first few
+   letters; only then does the name. */
 .tool-call > .tool-call-name {
   flex: 0 1 auto;
   min-width: 2em;
 }
 .tool-call-note {
-  flex: 0 2 auto;
-  min-width: 2em;
+  flex: 0 1000 auto;
+  min-width: 3em;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-secondary);
