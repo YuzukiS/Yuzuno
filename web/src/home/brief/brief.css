@@ -46,9 +46,13 @@
 .brief-body :is(h4, p, ul, ol, dl) {
   margin: 0;
 }
+/* A block's or group's title: the card's own structure, so it stands above
+ * the body it introduces and above the headings written inside it, which an
+ * explicit h1 alone outranks. */
 .brief-body h4 {
-  font-size: 0.86rem;
+  font-size: 1.05rem;
   font-weight: 600;
+  color: var(--ink);
 }
 /* The section card is the only frame. A group inside it is a title and its
  * blocks, set apart by space, and by a rule from the group before it. */
@@ -134,9 +138,38 @@
 .brief-body .brief-markdown :is(p, ul, ol) {
   margin: 0 0 10px;
 }
+/* An Agent's own heading levels. Home used to draw h1, h2 and h3 at one
+ * size, which left its writing flat; each level is a step again, with the
+ * size and weight carrying it, since a theme may draw heading and body in
+ * the same ink. A heading binds to the text under it: more space above it
+ * than below. */
 .brief-body .brief-markdown :is(h1, h2, h3) {
-  margin: 14px 0 8px;
-  font-size: 0.95rem;
+  margin: 18px 0 7px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.brief-body .brief-markdown h1 {
+  font-size: 1.14rem;
+}
+.brief-body .brief-markdown h2 {
+  font-size: 1rem;
+}
+.brief-body .brief-markdown h3 {
+  margin-top: 14px;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+/* A block begins at its own top, whatever it begins with. */
+.brief-body .brief-markdown > :first-child {
+  margin-top: 0;
+}
+/* Emphasis has to read in Chinese too. The bundled Han face is a variable
+ * font with real 400-700 weights (assets/fonts/fonts.css), so this is a full
+ * step in weight, not a tint; `font-synthesis: none` never comes into it. */
+.brief-body .brief-markdown strong {
+  font-weight: 700;
+  color: var(--ink);
 }
 .brief-body .brief-markdown pre {
   max-height: 22em;
