@@ -48,6 +48,16 @@
 //! own default is can't be known before it answers. Either is refused before
 //! anything is sent.
 //!
+//! A command (T-10) OpenCode's configuration defines (`/config`'s `command`)
+//! runs when the user sends `/<name> [arguments]` for it: a Turn as a prompt
+//! is, recorded under its message ID before it is sent (`POST
+//! /session/:id/command`) and confirmed by the message OpenCode stores under
+//! it. That request is answered only when the run ends, so it goes in the
+//! background and its answer decides nothing once the message exists. A
+//! command's own model, or its agent's, is OpenCode's choice over the
+//! Agent's, whose model and variant go only with one that names none. It
+//! takes no images. Text from anyone else is always a prompt.
+//!
 //! Not yet: no model is chosen when the Agent is created, and no OpenCode
 //! `agent` at all; a sub-agent's own conversation is not shown, nor are
 //! background sub-agents (OpenCode's experimental flag); a sub-agent of a
@@ -56,7 +66,7 @@
 //! joins a running Turn; no remote machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
-    opencode::{self, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
+    opencode::{self, CommandChoice, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
     workspace::Workspace,
@@ -220,6 +230,25 @@ fn chosen_variant(model: Option<&ModelChoice>, variant: Option<&str>) -> Result<
 }
 
 /// Images go only to a chosen model that reads them, as OpenCode lists it now.
+/// A command can carry no images here (T-10).
+const IMAGES_WITH_COMMAND: &str = "OpenCode 命令不能附带图片；这条消息没有发送，草稿保留";
+/// How long a command's start is waited for: its answer comes only when its run ends.
+const COMMAND_START: Duration = Duration::from_secs(15);
+
+/// The command a message names as `/<name> [arguments]`, if OpenCode's
+/// configuration defines `<name>` now (T-10); None for any other text,
+/// which is a prompt. A list it cannot read refuses the message rather than
+/// sending a command's name to the model as text.
+async fn listed_command(server: &Server, text: &str) -> Result<Option<(CommandChoice, String)>> {
+    let Some(rest) = text.strip_prefix('/') else { return Ok(None) };
+    let (name, arguments) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(name, arguments)| (name, arguments.trim()));
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let commands = server.commands().await.context("没有读到 OpenCode 的命令；这条消息没有发送，草稿保留")?;
+    Ok(commands.into_iter().find(|c| c.name == name).map(|c| (c, arguments.to_owned())))
+}
+
 fn takes_images(model: Option<&ModelChoice>) -> Result<()> {
     let model = model.context("发送图片需要先在设置里选定一个能读图片的模型：无法事先确认 OpenCode 自己的默认模型能否读图片；这条消息没有发送，草稿和图片保留")?;
     ensure!(model.image, "所选模型 {} 在 OpenCode 的配置中不能读图片；这条消息没有发送，草稿和图片保留。请在设置里另选能读图片的模型", model.id());
@@ -645,6 +674,7 @@ impl Workspace {
         chosen_variant(model.as_ref(), detail.agent.settings.reasoning_effort.as_deref())?;
         if !input.images.is_empty() {
             takes_images(model.as_ref())?;
+            ensure!(listed_command(&c.server, &input.text).await?.is_none(), IMAGES_WITH_COMMAND);
         }
         self.require_collaboration(id).await
     }
@@ -670,13 +700,16 @@ impl Workspace {
     /// OpenCode stored it under its ID; a send whose outcome is unknown is an
     /// `OutcomeUnknown`, and is never sent again.
     pub(crate) async fn opencode_send_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>) -> Result<Value> {
-        self.opencode_send_images_locked(id, text, client_id, &[]).await
+        self.opencode_send_images_locked(id, text, client_id, &[], false).await
     }
 
-    /// As `opencode_send_locked`, with the message's images (T-10).
-    pub(crate) async fn opencode_send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String]) -> Result<Value> {
+    /// As `opencode_send_locked`, with the message's images (T-10). With
+    /// `commands`, a message the user sent as `/<name> [arguments]` for a
+    /// command OpenCode defines runs as that command; other callers' text is
+    /// always a prompt.
+    pub(crate) async fn opencode_send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], commands: bool) -> Result<Value> {
         let mut sent = false;
-        let result = self.opencode_send_once(id, text, client_id, images, &mut sent).await;
+        let result = self.opencode_send_once(id, text, client_id, images, commands, &mut sent).await;
         if let (Err(error), false, Some(client)) = (&result, sent, client_id) {
             // It was never sent, or OpenCode refused it. Its receipt says so,
             // even if a connection that ended meanwhile settled it as unknown.
@@ -699,7 +732,7 @@ impl Workspace {
     }
 
     /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
-    async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], sent: &mut bool) -> Result<Value> {
+    async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], commands: bool, sent: &mut bool) -> Result<Value> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
@@ -708,6 +741,10 @@ impl Workspace {
         // The model and variant it goes with, as OpenCode lists them now (or its own).
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
+        // A command OpenCode defines, as `/<name> [arguments]` (T-10): run as
+        // that command, with no images.
+        let command = if commands { listed_command(&c.server, &text).await? } else { None };
+        ensure!(command.is_none() || images.is_empty(), IMAGES_WITH_COMMAND);
         // Its images, for that model only, each this Agent's own and as it
         // was saved, read off the async workers: what OpenCode is given and
         // what the conversation shows.
@@ -724,8 +761,10 @@ impl Workspace {
         // became of it.
         let words = (!text.is_empty()).then(|| json!({"type":"text","text":text}));
         let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), Value::Array(words.into_iter().chain(shown).collect()));
+        let (named, arguments, own_model) = command.as_ref().map_or((None, None, None), |(c, a)| (Some(c.name.clone()), Some(a.clone()), c.model.clone()));
         self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text,
-            "images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant}),
+            "images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant,
+            "command":named,"arguments":arguments,"commandModel":own_model}),
             Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
@@ -740,7 +779,15 @@ impl Workspace {
         }).await?;
         self.changed(id);
         *sent = true;
-        let submitted = c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await;
+        let submitted = match &command {
+            // A command's own model is OpenCode's choice over the Agent's:
+            // the Agent's model and variant go only with one that names none.
+            Some((command, arguments)) => {
+                let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
+                self.opencode_command_started(&c, &message, &command.name, arguments, model.as_deref(), variant).await
+            }
+            None => c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await,
+        };
         let refused = match &submitted {
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.
@@ -771,6 +818,43 @@ impl Workspace {
         }).await?;
         self.changed(id);
         Err(OutcomeUnknown(format!("OpenCode 没有按这条消息的编号确认收到它（{detail}）；不会重发。若它已收下，结果仍会显示在这一轮。")).into())
+    }
+
+    /// Starts a command under `message` (T-10), its request held open for
+    /// the run (`Server::command`), and says what is known of its start:
+    /// refused when OpenCode answered 400 while it has no message under that
+    /// ID (as for an unknown command, refused before it runs); accepted once
+    /// OpenCode stored the message, or answered; otherwise unknown after
+    /// COMMAND_START. A 400 once the message exists is the run's own failure,
+    /// which OpenCode's record of the Turn tells, as for a prompt.
+    async fn opencode_command_started(&self, c: &Connection, message: &MessageId, name: &str, arguments: &str,
+        model: Option<&str>, variant: Option<&str>) -> Result<Submission> {
+        let request = c.server.command(&c.session, message, name, arguments, model, variant)?;
+        let (tx, mut answer) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(request.await);
+        });
+        let stored = || async { c.server.message(&c.session, message).await.is_ok_and(|m| m.is_some()) };
+        let deadline = Instant::now() + COMMAND_START;
+        loop {
+            match answer.try_recv() {
+                Ok(Submission::Refused(status)) => {
+                    return Ok(if stored().await { Submission::Accepted } else { Submission::Refused(status) });
+                }
+                Ok(other) => return Ok(other),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    return Ok(Submission::Unknown("the command's request ended without an answer".into()));
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            }
+            if stored().await {
+                return Ok(Submission::Accepted);
+            }
+            if Instant::now() >= deadline {
+                return Ok(Submission::Unknown("no answer yet: a command's request is answered when its run ends".into()));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Whether OpenCode stored the message sent under `message`, by its own

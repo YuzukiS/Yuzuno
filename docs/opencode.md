@@ -30,6 +30,19 @@ OpenCode Agent keeps working either way.
   itself would give such a model a line of text in place of each image and
   send the rest. Large images are scaled or compressed as for Claude; the
   conversation shows the originals.
+- **Commands:** typing `/` lists the commands OpenCode's configuration
+  defines (`/config`'s `command`): their names and descriptions only, never
+  a template or anything else of the configuration. A message
+  `/<name> [arguments]` for a listed one runs as that command, once, under
+  the message's ID: OpenCode expands its template, shell lines (`!`)
+  included, as it would in OpenCode itself. A command that names a model of
+  its own, or an agent that has one, runs with that model; otherwise the
+  Agent's chosen model and variant go with it. A command can't carry images:
+  the message is refused and the draft keeps its text and images. Any other
+  text, an unlisted `/<name>` included, is sent as a message. A command that
+  runs as a sub-agent asks through that sub-agent's session. Delivery is
+  confirmed when OpenCode stores the message; one whose shell lines run
+  longer than about 20 seconds shows as unconfirmed until it is.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
@@ -57,5 +70,7 @@ OpenCode Agent keeps working either way.
 
 ## Not yet
 
-Remote machines, rewind, slash commands, messages added
-to a running turn, and following OpenCode's sub-agent sessions.
+Remote machines, rewind, messages added to a running turn, and following
+OpenCode's sub-agent sessions. Commands OpenCode makes of its MCP servers'
+prompts and of its skills are not in its configuration, so they are not
+listed, and `/<name>` for one is sent as text.
