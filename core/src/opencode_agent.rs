@@ -58,12 +58,21 @@
 //! Agent's, whose model and variant go only with one that names none. It
 //! takes no images. Text from anyone else is always a prompt.
 //!
+//! A message the user adds to the running Turn (T-10, "send while working")
+//! goes as a prompt under a message ID of its own, recorded in that Turn
+//! before it is sent: OpenCode 1.19.3 stores it at once and its running run
+//! answers it from the next step (one run, answering the newest message).
+//! The Turn's answers are those to any of its messages, and it ends once
+//! every one of them is stored and the newest is answered. Only while its
+//! prompt is stored, no interrupt is asked and no request waits for the user;
+//! never a command.
+//!
 //! Not yet: no model is chosen when the Agent is created, and no OpenCode
 //! `agent` at all; a sub-agent's own conversation is not shown, nor are
 //! background sub-agents (OpenCode's experimental flag); a sub-agent of a
 //! sub-agent (`subagent_depth` above OpenCode's default of 1) is followed as
-//! it starts but not found again after the event stream breaks; no message
-//! joins a running Turn; no remote machines.
+//! it starts but not found again after the event stream breaks; no remote
+//! machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
     opencode::{self, CommandChoice, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
@@ -247,6 +256,24 @@ async fn listed_command(server: &Server, text: &str) -> Result<Option<(CommandCh
     }
     let commands = server.commands().await.context("没有读到 OpenCode 的命令；这条消息没有发送，草稿保留")?;
     Ok(commands.into_iter().find(|c| c.name == name).map(|c| (c, arguments.to_owned())))
+}
+
+/// A command runs as a Turn of its own, so it is not added to a running one.
+const COMMAND_WHILE_RUNNING: &str = "OpenCode 命令只能在空闲时发送；补充消息未发送，草稿保留";
+
+/// Whether a message may be added to `expected` (T-10): the Agent's running
+/// Turn, its prompt and every message added to it stored, no interrupt asked
+/// of it, and no request waiting for the user (answered first, as OpenCode's
+/// run waits on it).
+fn joinable(d: &AgentDetail, expected: &str) -> Result<()> {
+    let running = d.turns.iter().rev().find(|t| t["status"] == "inProgress").filter(|t| t["id"] == expected);
+    let turn = running.context("原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送")?;
+    let stored = turn["_opencodeConfirmed"] == true
+        && turn["_opencodeInputs"].as_object().is_none_or(|inputs| inputs.values().all(|i| i["confirmed"] == true));
+    ensure!(stored, "这一轮的消息尚未确认送达；补充消息未发送，草稿保留");
+    ensure!(turn["interruptRequested"] != true, "这一轮正在中断；补充消息未发送，草稿保留");
+    ensure!(!d.pending.iter().any(|p| !p.stale), "OpenCode 正在等待你的回应；请先回答，再补充消息。草稿保留");
+    Ok(())
 }
 
 fn takes_images(model: Option<&ModelChoice>) -> Result<()> {
@@ -664,8 +691,10 @@ impl Workspace {
     /// takes is a new message while it is idle, with Workspace MCP ready.
     pub(crate) async fn opencode_admit(self: &Arc<Self>, id: &str, input: &crate::model::MessageInput, detail: &AgentDetail) -> Result<()> {
         // A form's answers are a new message too, checked before (send_message).
-        ensure!(input.question.is_none() && input.expected_turn_id.is_none(),
-            "OpenCode Agent 目前只接受空闲时的新消息；草稿保留");
+        ensure!(input.question.is_none(), "OpenCode Agent 目前只接受空闲时的新消息；草稿保留");
+        if let Some(expected) = &input.expected_turn_id {
+            return self.opencode_admit_input(id, input, detail, expected).await;
+        }
         self.opencode_after_restart(id, detail).await?;
         ensure!(!busy(detail), "OpenCode 正在执行或等待回应；这条消息没有发送，草稿保留");
         let c = self.opencode_ensure(id).await?;
@@ -676,6 +705,20 @@ impl Workspace {
             takes_images(model.as_ref())?;
             ensure!(listed_command(&c.server, &input.text).await?.is_none(), IMAGES_WITH_COMMAND);
         }
+        self.require_collaboration(id).await
+    }
+
+    /// Before the receipt of a message added to the running Turn `expected`
+    /// (T-10): only on the connection that runs it, never one started for it.
+    async fn opencode_admit_input(self: &Arc<Self>, id: &str, input: &crate::model::MessageInput, detail: &AgentDetail, expected: &str) -> Result<()> {
+        joinable(detail, expected)?;
+        let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
+        let model = chosen(&c.server, &detail.agent.model).await?;
+        chosen_variant(model.as_ref(), detail.agent.settings.reasoning_effort.as_deref())?;
+        if !input.images.is_empty() {
+            takes_images(model.as_ref())?;
+        }
+        ensure!(listed_command(&c.server, &input.text).await?.is_none(), COMMAND_WHILE_RUNNING);
         self.require_collaboration(id).await
     }
 
@@ -711,24 +754,158 @@ impl Workspace {
         let mut sent = false;
         let result = self.opencode_send_once(id, text, client_id, images, commands, &mut sent).await;
         if let (Err(error), false, Some(client)) = (&result, sent, client_id) {
-            // It was never sent, or OpenCode refused it. Its receipt says so,
-            // even if a connection that ended meanwhile settled it as unknown.
-            let (client, message) = (client.to_owned(), error.to_string());
-            let named = client.clone();
-            let recorded = self.record_receipt(id, "opencode/notSent", json!({"clientMessageId":client,"error":message}), &named, move |m| {
-                if let Some(receipt) = m.message_receipts.iter_mut().find(|r| r.input.client_message_id == client) {
-                    if matches!(receipt.status.as_str(), "sending" | "unknown") {
-                        receipt.status = "rejected".into();
-                        receipt.error = Some(message);
-                    }
-                }
-            }).await;
-            if let Err(error) = recorded {
-                eprintln!("Workspace OpenCode receipt not corrected: {error:#}");
-            }
-            self.changed(id);
+            self.opencode_not_sent(id, client, error.to_string()).await;
         }
         result
+    }
+
+    /// It was never sent, or OpenCode refused it. Its receipt says so, even
+    /// if a connection that ended meanwhile settled it as unknown.
+    async fn opencode_not_sent(&self, id: &str, client: &str, message: String) {
+        let client = client.to_owned();
+        let named = client.clone();
+        let recorded = self.record_receipt(id, "opencode/notSent", json!({"clientMessageId":client,"error":message}), &named, move |m| {
+            if let Some(receipt) = m.message_receipts.iter_mut().find(|r| r.input.client_message_id == client) {
+                if matches!(receipt.status.as_str(), "sending" | "unknown") {
+                    receipt.status = "rejected".into();
+                    receipt.error = Some(message);
+                }
+            }
+        }).await;
+        if let Err(error) = recorded {
+            eprintln!("Workspace OpenCode receipt not corrected: {error:#}");
+        }
+        self.changed(id);
+    }
+
+    /// Under the Agent gate: a message the user adds to the running Turn
+    /// `expected` (T-10). OpenCode 1.19.3 stores a prompt sent while its run
+    /// goes on, and that run answers it from its next step: `prompt` stores
+    /// it and joins the running run (`SessionRunState.ensureRunning`), whose
+    /// loop answers the newest user message. It is recorded in that Turn
+    /// before it is sent, under a message ID of its own, confirmed by the
+    /// message OpenCode stores under it, and never sent again.
+    pub(crate) async fn opencode_add_input_locked(self: &Arc<Self>, id: &str, text: &str, expected: &str, client_id: &str, images: &[String]) -> Result<Value> {
+        let mut sent = false;
+        let result = self.opencode_add_input_once(id, text, expected, client_id, images, &mut sent).await;
+        if let (Err(error), false) = (&result, sent) {
+            self.opencode_not_sent(id, client_id, error.to_string()).await;
+        }
+        result
+    }
+
+    async fn opencode_add_input_once(self: &Arc<Self>, id: &str, text: &str, expected: &str, client_id: &str, images: &[String], sent: &mut bool) -> Result<Value> {
+        let d = self.send_view(id).await?;
+        ensure_agent_open(&d.agent)?;
+        joinable(&d, expected)?;
+        let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
+        self.require_collaboration(id).await?;
+        let model = chosen(&c.server, &d.agent.model).await?;
+        let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
+        ensure!(listed_command(&c.server, text).await?.is_none(), COMMAND_WHILE_RUNNING);
+        let (files, shown) = if images.is_empty() { (vec![], vec![]) } else {
+            takes_images(model.as_ref())?;
+            let (root, agent, images) = (self.data_dir.clone(), id.to_owned(), images.to_vec());
+            tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
+                crate::input_images::history_images(&root, &agent, &images)))).await??
+        };
+        ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，补充消息未发送；草稿保留");
+        let message = MessageId::new();
+        let input = message.as_str().to_owned();
+        let words = (!text.is_empty()).then(|| json!({"type":"text","text":text}));
+        let content = Value::Array(words.into_iter().chain(shown).collect());
+        let (turn, added, client) = (expected.to_owned(), input.clone(), client_id.to_owned());
+        // Added only while that Turn still runs: one that ended meanwhile
+        // takes nothing, and the message is not sent.
+        self.record_update(id, "opencode/inputRequested", json!({"turnId":expected,"messageId":input,"clientMessageId":client_id,
+            "text":text,"images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant}),
+            Sel::Turns(vec![turn.clone()]), move |d| {
+            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str() && t["status"] == "inProgress") else { return };
+            if !entry["_opencodeInputs"].is_object() {
+                entry["_opencodeInputs"] = json!({});
+            }
+            let previous = entry["_opencodeLastInput"].clone();
+            entry["_opencodeInputs"][&added] = json!({"clientMessageId":client,"confirmed":false,"previous":previous});
+            entry["_opencodeLastInput"] = added.clone().into();
+            let mut item = json!({"id":format!("{added}:input"),"type":"userMessage","content":content,"nativeMessageId":added});
+            crate::conversation_time::stamp_message(&mut item, Some(crate::conversation_time::now_ms()), "core");
+            if !entry["items"].is_array() {
+                entry["items"] = json!([]);
+            }
+            entry["items"].as_array_mut().expect("turn items").push(item);
+            if let Some(receipt) = d.message_receipts.iter_mut().find(|r| r.input.client_message_id == client) {
+                receipt.turn_id = Some(turn.clone());
+            }
+        }).await?;
+        self.changed(id);
+        let held = self.send_view(id).await?.turns.iter().any(|t| t["id"] == expected && t["_opencodeInputs"].get(&input).is_some());
+        ensure!(held, "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
+        *sent = true;
+        let submitted = c.server.submit_with(&c.session, &message, text, &files, model.as_ref(), variant.as_deref()).await;
+        let refused = match &submitted {
+            Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条补充消息（HTTP {}），它没有收下：{}", status.code, status.body)),
+            Err(error) => Some(format!("补充消息没有发送：{error}")),
+            Ok(Submission::Accepted | Submission::Unknown(_)) => None,
+        };
+        if let Some(error) = refused {
+            // Not taken: the Turn goes on without it.
+            *sent = false;
+            let (turn, removed) = (expected.to_owned(), input.clone());
+            self.record_update(id, "opencode/inputRefused", json!({"turnId":expected,"messageId":input,"error":error}),
+                Sel::Turns(vec![turn.clone()]), move |d| {
+                let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str()) else { return };
+                let previous = entry["_opencodeInputs"][&removed]["previous"].clone();
+                if let Some(inputs) = entry["_opencodeInputs"].as_object_mut() {
+                    inputs.remove(&removed);
+                }
+                if entry["_opencodeLastInput"] == removed.as_str() {
+                    entry["_opencodeLastInput"] = previous;
+                }
+                let shown = format!("{removed}:input");
+                if let Some(items) = entry["items"].as_array_mut() {
+                    items.retain(|i| i["id"] != shown.as_str());
+                }
+            }).await?;
+            self.changed(id);
+            bail!(error);
+        }
+        if self.opencode_confirm_input(id, &c, expected, &message).await {
+            return Ok(json!({"turnId":expected}));
+        }
+        let detail = match &submitted { Ok(Submission::Unknown(reason)) => reason.clone(), _ => "HTTP 204".into() };
+        let (turn, unconfirmed) = (expected.to_owned(), input.clone());
+        self.record_update(id, "opencode/inputUnconfirmed", json!({"turnId":expected,"messageId":input,"submission":detail}),
+            Sel::Turns(vec![turn.clone()]), move |d| {
+            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str()) else { return };
+            entry["_opencodeInputs"][&unconfirmed]["deliveryUnconfirmed"] = true.into();
+            let shown = format!("{unconfirmed}:input");
+            if let Some(item) = entry["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["id"] == shown.as_str())) {
+                item["deliveryUnconfirmed"] = true.into();
+            }
+        }).await?;
+        self.changed(id);
+        Err(OutcomeUnknown(format!("OpenCode 没有按这条补充消息的编号确认收到它（{detail}）；不会重发。若它已收下，结果仍会显示在这一轮。")).into())
+    }
+
+    /// Whether OpenCode stored the message added to `turn` under `message`,
+    /// by its own record or the event that confirmed it, within CONFIRM_LIMIT.
+    async fn opencode_confirm_input(&self, id: &str, c: &Connection, turn: &str, message: &MessageId) -> bool {
+        let deadline = Instant::now() + CONFIRM_LIMIT;
+        loop {
+            let confirmed = self.send_view(id).await.is_ok_and(|d| d.turns.iter()
+                .any(|t| t["id"] == turn && t["_opencodeInputs"][message.as_str()]["confirmed"] == true));
+            if confirmed || c.server.message(&c.session, message).await.is_ok_and(|m| m.is_some()) {
+                let input = message.as_str().to_owned();
+                let _ = self.record_update(id, "opencode/inputConfirmed", json!({"turnId":turn,"messageId":input}),
+                    Sel::Turns(vec![turn.to_owned()]), move |d| confirm_input(d, &input)).await;
+                self.changed(id);
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
@@ -1062,6 +1239,10 @@ const TAIL: usize = 8;
 fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
     let info = &event["properties"]["info"];
     let mut turns: Vec<String> = [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect();
+    // A message added to a running Turn, or an answer to one (T-10).
+    for message in [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str) {
+        turns.extend(store.turn_holding(id, "_opencodeInputs", message)?);
+    }
     if let Some(message) = event["properties"]["part"]["messageID"].as_str() {
         turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
     }
@@ -1180,15 +1361,20 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
 fn message(d: &mut AgentDetail, info: &Value) {
     let Some(id) = info["id"].as_str() else { return };
     match info["role"].as_str() {
-        Some("user") => confirm(d, id),
+        Some("user") => {
+            confirm(d, id);
+            confirm_input(d, id);
+        }
         Some("assistant") => {
-            let Some(turn) = info["parentID"].as_str().and_then(|parent| d.turns.iter_mut().find(|t| t["id"] == parent)) else {
+            // Its Turn: the one whose prompt it answers, or whose added message (T-10).
+            let Some(parent) = info["parentID"].as_str() else { return };
+            let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
                 return;
             };
             if !turn["_opencodeAnswers"].is_object() {
                 turn["_opencodeAnswers"] = json!({});
             }
-            turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"]});
+            turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"],"parent":parent});
         }
         _ => {}
     }
@@ -1202,13 +1388,35 @@ fn message(d: &mut AgentDetail, info: &Value) {
 fn confirm(d: &mut AgentDetail, turn: &str) {
     let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn) else { return };
     entry["_opencodeConfirmed"] = true.into();
-    if let Some(receipt) = d.message_receipts.iter_mut().find(|r| r.turn_id.as_deref() == Some(turn)) {
+    // The receipts of messages added to it (T-10) are bound to it too.
+    let added: Vec<Value> = entry["_opencodeInputs"].as_object().map(|i| i.values().map(|v| v["clientMessageId"].clone()).collect()).unwrap_or_default();
+    if let Some(receipt) = d.message_receipts.iter_mut()
+        .find(|r| r.turn_id.as_deref() == Some(turn) && !added.contains(&Value::from(r.input.client_message_id.clone()))) {
         if receipt.status != "rejected" {
             receipt.status = "accepted".into();
             receipt.error = None;
             let input = format!("{turn}:input");
             if let Some(message) = entry["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["id"] == input.as_str())) {
                 message["clientId"] = receipt.input.client_message_id.clone().into();
+            }
+        }
+    }
+}
+
+/// OpenCode stored the message added to a running Turn under `input` (T-10):
+/// it was delivered, and its user message carries its client ID, as a
+/// prompt's does (`confirm`).
+fn confirm_input(d: &mut AgentDetail, input: &str) {
+    let Some(entry) = d.turns.iter_mut().find(|t| t["_opencodeInputs"].get(input).is_some()) else { return };
+    entry["_opencodeInputs"][input]["confirmed"] = true.into();
+    let client = entry["_opencodeInputs"][input]["clientMessageId"].as_str().unwrap_or_default().to_owned();
+    if let Some(receipt) = d.message_receipts.iter_mut().find(|r| r.input.client_message_id == client) {
+        if receipt.status != "rejected" {
+            receipt.status = "accepted".into();
+            receipt.error = None;
+            let shown = format!("{input}:input");
+            if let Some(message) = entry["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["id"] == shown.as_str())) {
+                message["clientId"] = client.into();
             }
         }
     }
@@ -1267,6 +1475,16 @@ fn running(d: &mut AgentDetail) -> Option<&mut Value> {
 fn settle(turn: &mut Value) {
     if turn["_opencodeConfirmed"] != true {
         return;
+    }
+    // A message added to it (T-10) not stored yet, or the newest one not yet
+    // answered: OpenCode's run answers the newest, so the Turn goes on.
+    if turn["_opencodeInputs"].as_object().is_some_and(|inputs| inputs.values().any(|i| i["confirmed"] != true)) {
+        return;
+    }
+    if let Some(last) = turn["_opencodeLastInput"].as_str() {
+        if !turn["_opencodeAnswers"].as_object().is_some_and(|answers| answers.values().any(|a| a["parent"] == last)) {
+            return;
+        }
     }
     let answers: Vec<Value> = turn["_opencodeAnswers"].as_object().map(|a| a.values().cloned().collect()).unwrap_or_default();
     if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {

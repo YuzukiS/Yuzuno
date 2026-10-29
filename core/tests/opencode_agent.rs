@@ -120,6 +120,12 @@ impl Lab {
         let input: MessageInput = serde_json::from_value(json!({"clientMessageId":client,"text":text})).unwrap();
         self.ws.send_message(ID, input).await
     }
+
+    /// A message added to the running Turn `running` ("send while working").
+    async fn add(&self, client: &str, text: &str, running: &str) -> anyhow::Result<yuzuno_workspace::model::MessageReceipt> {
+        let input: MessageInput = serde_json::from_value(json!({"clientMessageId":client,"text":text,"expectedTurnId":running})).unwrap();
+        self.ws.send_message(ID, input).await
+    }
 }
 
 fn turn<'a>(d: &'a AgentDetail, id: &str) -> &'a Value {
@@ -1109,5 +1115,162 @@ async fn a_closed_opencode_agent_is_refused_before_anything_starts() {
     assert_ne!(lab.seen()["pid"].as_u64().unwrap(), pid, "a new OpenCode for it");
     assert_eq!(lab.detail().agent.connection_state, "connected");
     assert!(lab.prompts().is_empty(), "nothing was sent");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// The user message of `turn_id` sent under the client ID `client`.
+fn input_of<'a>(d: &'a AgentDetail, turn_id: &str, client: &str) -> &'a Value {
+    items(turn(d, turn_id), "userMessage").into_iter().find(|i| i["clientId"] == client)
+        .unwrap_or_else(|| panic!("no user message {client} in {turn_id}: {:#?}", turn(d, turn_id)))
+}
+
+/// A message added while OpenCode works (T-10) goes as a prompt under an ID
+/// of its own, recorded in the running Turn before it is sent and confirmed
+/// by the message OpenCode stores under it, with the Agent's model and
+/// variant. OpenCode's run answers the newest message (here, the stand-in's
+/// answer goes to the last prompt), and the one Turn ends on that answer:
+/// no Turn of its own. The same message again is its receipt, sent once.
+#[tokio::test]
+async fn a_message_added_while_opencode_works_joins_the_running_turn_once() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.ws.opencode_set_choice(ID, "deepseek/deepseek-flash".into(), Some(Some("max".into()))).await.unwrap();
+    let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+
+    let added = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!((added.status.as_str(), added.turn_id.as_deref()), ("accepted", Some(first.as_str())), "{added:?}");
+    let d = lab.detail();
+    let joined = input_of(&d, &first, "c2");
+    let message = joined["nativeMessageId"].as_str().unwrap().to_owned();
+    assert!(message.starts_with("msg_") && message != first, "{message}");
+    assert_eq!(joined["content"], json!([{"type":"text","text":"Also run the tests"}]));
+    let prompts = lab.prompts();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[1]["body"], json!({"messageID":message,"parts":[{"type":"text","text":"Also run the tests"}],
+        "model":{"providerID":"deepseek","modelID":"deepseek-flash"},"variant":"max"}));
+    let kinds = journal(&lab);
+    let requested = kinds.iter().position(|k| k == "opencode/inputRequested").unwrap();
+    let confirmed = kinds.iter().position(|k| k == "opencode/inputConfirmed").unwrap();
+    assert!(requested < confirmed, "recorded before it was sent: {kinds:?}");
+    assert_eq!(d.turns.len(), 1, "no Turn of its own");
+    assert_eq!(turn(&d, &first)["status"], "inProgress");
+
+    // The same message again: its receipt, and nothing sent again.
+    let again = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!((again.status.as_str(), again.turn_id.as_deref()), ("accepted", Some(first.as_str())));
+    assert_eq!(lab.prompts().len(), 2, "sent once");
+
+    // OpenCode's answer to the newest message ends the one Turn.
+    lab.control("reply", json!({"sessionID":session,"text":"Built, and the tests pass."})).await;
+    let d = lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+    let replies = items(turn(&d, &first), "agentMessage");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["text"], "Built, and the tests pass.");
+    assert_eq!(items(turn(&d, &first), "userMessage").len(), 2);
+    assert_eq!(d.agent.status, "idle");
+    assert_eq!(d.message_receipts.iter().map(|r| (r.input.client_message_id.as_str(), r.status.as_str())).collect::<Vec<_>>(),
+        [("c1", "accepted"), ("c2", "accepted")]);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message is added only to the Agent's running Turn it names, with its
+/// prompt stored and nothing waiting for the user, and never as a command:
+/// otherwise it is refused before its receipt, the draft kept, and nothing
+/// is sent.
+#[tokio::test]
+async fn a_message_is_added_only_to_the_running_turn_it_names() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let refused = |text: anyhow::Result<yuzuno_workspace::model::MessageReceipt>| text.unwrap_err().to_string();
+
+    // Idle: no running Turn.
+    let done = lab.send("c1", "One").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &done)["status"] == "completed").await;
+    let finished = refused(lab.add("c2", "More", &done).await);
+    assert!(finished.contains("原 Turn 已结束或发生变化"), "{finished}");
+
+    // Running, but another Turn named; a command; a request waiting.
+    let running = lab.send("c3", "Two").await.unwrap().turn_id.unwrap();
+    let other = refused(lab.add("c4", "More", &done).await);
+    assert!(other.contains("原 Turn 已结束或发生变化"), "{other}");
+    let command = refused(lab.add("c5", "/explain closures", &running).await);
+    assert!(command.contains("OpenCode 命令只能在空闲时发送"), "{command}");
+    lab.control("ask", json!({"sessionID":session})).await;
+    lab.until("the request", |d| !d.pending.is_empty()).await;
+    let waiting = refused(lab.add("c6", "More", &running).await);
+    assert!(waiting.contains("请先回答"), "{waiting}");
+
+    let d = lab.detail();
+    assert_eq!(lab.prompts().len(), 2, "none of them was sent");
+    assert!(d.message_receipts.iter().all(|r| !["c2", "c4", "c5", "c6"].contains(&r.input.client_message_id.as_str())), "no receipt was recorded");
+    assert_eq!(items(turn(&d, &running), "userMessage").len(), 1);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// An added message OpenCode refuses leaves the Turn as it was; one it never
+/// confirms is unknown and is not sent again, and the Turn waits for it on
+/// an idle that says nothing about it, ending once OpenCode's record has it
+/// and its newest message is answered.
+#[tokio::test]
+async fn an_added_message_opencode_refuses_or_never_confirms_is_not_sent_again() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+
+    // Refused (HTTP 400): rejected; the Turn goes on without it.
+    let mut fail = serde_json::Map::new();
+    fail.insert(format!("/session/{session}/prompt_async"), json!(400));
+    lab.control("mode", json!({"fail":fail})).await;
+    let refused = lab.add("c2", "Refused", &first).await.unwrap();
+    assert_eq!(refused.status, "rejected", "{refused:?}");
+    assert!(refused.error.as_deref().unwrap().contains("OpenCode 拒绝了这条补充消息（HTTP 400）"), "{refused:?}");
+    let d = lab.detail();
+    assert_eq!(items(turn(&d, &first), "userMessage").len(), 1, "not shown in the Turn");
+    assert_eq!(turn(&d, &first)["status"], "inProgress");
+    lab.control("mode", json!({"fail":{}})).await;
+
+    // Answered but never stored: unknown, sent once; an idle decides nothing.
+    lab.control("mode", json!({"prompt":"unstored"})).await;
+    let unknown = lab.add("c3", "Later", &first).await.unwrap();
+    assert_eq!(unknown.status, "uncertain", "{unknown:?}");
+    let d = lab.detail();
+    let pending_input = input_of_native(&d, &first, "Later");
+    assert_eq!(pending_input["deliveryUnconfirmed"], true);
+    let message = pending_input["nativeMessageId"].as_str().unwrap().to_owned();
+    lab.control("mode", json!({"prompt":"store"})).await;
+    lab.control("idle", json!({"sessionID":session})).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(turn(&lab.detail(), &first)["status"], "inProgress", "its added message is not stored yet");
+
+    // OpenCode's record has it after all: accepted, and the answer to it ends the Turn.
+    lab.control("store", json!({"sessionID":session,"messageID":message,"text":"Later"})).await;
+    lab.until("the late confirmation", |d| d.message_receipts.iter().any(|r| r.input.client_message_id == "c3" && r.status == "accepted")).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+    assert_eq!(lab.prompts().len(), 3, "each sent once: the first, the refused one and the unknown one");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// The user message of `turn_id` whose text is `text`.
+fn input_of_native<'a>(d: &'a AgentDetail, turn_id: &str, text: &str) -> &'a Value {
+    items(turn(d, turn_id), "userMessage").into_iter().find(|i| i["content"][0]["text"] == text)
+        .unwrap_or_else(|| panic!("no user message {text:?} in {turn_id}: {:#?}", turn(d, turn_id)))
+}
+
+/// An interrupt aborts the one run: the Turn ends interrupted with the
+/// messages added to it.
+#[tokio::test]
+async fn an_interrupt_ends_the_turn_with_its_added_messages() {
+    let lab = lab(&[], false).await;
+    let first = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.add("c2", "And this", &first).await.unwrap();
+    lab.control("busy", json!({"sessionID":lab.session()})).await;
+    lab.ws.interrupt(ID).await.unwrap();
+    let d = lab.until("the interrupt", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "interrupted");
+    assert_eq!(items(turn(&d, &first), "userMessage").len(), 2);
+    assert_eq!(lab.prompts().len(), 2);
     lab.ws.close_agent(ID).await.unwrap();
 }

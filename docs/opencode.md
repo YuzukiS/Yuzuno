@@ -43,6 +43,13 @@ OpenCode Agent keeps working either way.
   runs as a sub-agent asks through that sub-agent's session. Delivery is
   confirmed when OpenCode stores the message; one whose shell lines run
   longer than about 20 seconds shows as unconfirmed until it is.
+- **Adding to a running turn:** while OpenCode works, a message sent with
+  the composer's "send while working" joins that turn. OpenCode stores it at
+  once and answers it from its next step, in the same run, as its own TUI does
+  (where it shows as queued until then). The turn ends once its newest
+  message is answered. It is refused, and the draft kept, while a permission
+  or question waits for you, while the turn is being interrupted, or for a
+  command, which only runs on its own.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
@@ -70,7 +77,6 @@ OpenCode Agent keeps working either way.
 
 ## Not yet
 
-Remote machines, rewind, messages added to a running turn, and following
-OpenCode's sub-agent sessions. Commands OpenCode makes of its MCP servers'
+Remote machines, rewind, and following OpenCode's sub-agent sessions. Commands OpenCode makes of its MCP servers'
 prompts and of its skills are not in its configuration, so they are not
 listed, and `/<name>` for one is sent as text.
