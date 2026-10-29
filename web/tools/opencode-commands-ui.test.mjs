@@ -62,8 +62,10 @@ async function until(f, what, ms = 2000) {
 // What Core answers (T-10, Dev 3's interface): a name, a description, an
 // argument hint and whether it runs as a sub-agent; nothing of the template.
 const command = (name, extra = {}) => ({ name, description: `${name} does a thing`, argumentHint: "", aliases: [], source: "custom", subtask: false, ...extra });
-const ready = (commands, extra = {}) => ({ state: "ready", reason: "listed", source: "session", sessionId: "ses_1", observedAt: "2026-10-29T20:00:00Z",
+const ready = (commands, extra = {}) => ({ state: "ready", reason: "listed", source: "session", sessionId: "ses_1", observedAt: "2026-10-29T21:05:00.123456789+00:00",
   commands, total: commands.length, truncated: false, skillsKnown: true, ...extra });
+// Not listed: the same shape, with nothing in it (as Claude's `View::not`).
+const not = (state, reason) => ({ state, reason, source: null, sessionId: null, observedAt: null, commands: [], total: 0, truncated: false, skillsKnown: false });
 const catalog = [
   command("review", { argumentHint: "<arguments>", description: "Review the diff against main" }),
   command("plan-it", { subtask: true }),
@@ -163,10 +165,10 @@ test("why OpenCode's commands are not listed is said; a failed read or a Core wi
   const p = page(answers);
   try {
     for (const [answer, said] of [
-      [{ state: "unavailable", reason: "disconnected" }, "OpenCode isn't connected; reconnect it, then type / again."],
-      [{ state: "unavailable", reason: "closed" }, "This Agent is closed."],
-      [{ state: "unavailable", reason: "changed" }, "OpenCode's connection changed; type / again."],
-      [{ state: "failed", reason: "read_failed" }, "Could not read OpenCode's commands."],
+      [not("unavailable", "disconnected"), "OpenCode isn't connected; reconnect it, then type / again."],
+      [not("unavailable", "closed"), "This Agent is closed."],
+      [not("unavailable", "changed"), "OpenCode's connection changed; type / again."],
+      [not("failed", "read_failed"), "Could not read OpenCode's commands."],
       ["fail", "Could not read OpenCode's commands."],
       [undefined, "Could not read OpenCode's commands."],
     ]) {
