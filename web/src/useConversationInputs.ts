@@ -4,6 +4,8 @@ import type { ConversationInput, ConversationInputs } from "./types";
 
 /** How many inputs one read asks for (Core's MAX_INPUTS). */
 const PAGE = 100;
+/** None yet: one array, so what is derived from it keeps its identity. */
+const NONE: ConversationInput[] = [];
 
 interface Loaded {
   agentId: string;
@@ -76,7 +78,7 @@ export function useConversationInputs(agentId: string, active: boolean, changed:
   }, [agentId, loaded, loading, read]);
   const shown = loaded?.agentId === agentId ? loaded : null;
   return {
-    inputs: shown?.inputs ?? [],
+    inputs: shown?.inputs ?? NONE,
     hasBefore: shown?.hasBefore ?? false,
     total: shown?.total ?? 0,
     loading,
