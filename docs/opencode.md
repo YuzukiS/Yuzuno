@@ -12,9 +12,13 @@ OpenCode Agent keeps working either way.
 - **Where:** the machine running Core only, in the folder you choose. Core
   starts one `opencode serve` per Agent, listening on `127.0.0.1` behind a
   password of its own, and ends it with the Agent.
-- **Model, login and permissions:** OpenCode's own configuration. Yuzuno
-  offers no model choice, reads no OpenCode credentials or configuration, and
-  adds no permission rules.
+- **Model, login and permissions:** OpenCode's own configuration, unless a
+  model, and one of its variants, is chosen in the Agent's settings from what
+  its OpenCode's configured providers list (`/config/providers`, names only).
+  The choice goes with each new message, and one OpenCode no longer lists
+  refuses the message before anything is sent. Yuzuno reads no OpenCode
+  credentials, keeps nothing else of a provider's record, and adds no
+  permission rules.
 - **Requests:** a permission OpenCode asks for is answered **Allow once** or
   **Reject**; nothing lasting is offered. OpenCode rejects the session's other
   waiting requests along with a rejected one. Its questions are answered in
@@ -53,5 +57,5 @@ OpenCode Agent keeps working either way.
 
 ## Not yet
 
-Remote machines, rewind, slash commands, model choice, messages added
+Remote machines, rewind, slash commands, messages added
 to a running turn, and following OpenCode's sub-agent sessions.
