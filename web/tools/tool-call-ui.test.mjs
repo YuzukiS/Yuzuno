@@ -217,6 +217,76 @@ test("a refusal comes first; a cut or unreadable answer is left to expand; other
   assert.deepEqual(page.errors, []);
 });
 
+test("a call's own error flag comes first: never returned, never a summary of what it returned, always counted", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const text = (value) => [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }];
+  page.render([
+    // Codex can call a call completed whose MCP result says isError.
+    codex("e1", "task_comment", null, { result: { content: text("Error: the tool crashed\nat line 3"), isError: true } }),
+    // An error flag on what looks like an answer: still not that answer.
+    codex("e2", "task_comment", null, { result: { content: text(answers.task_comment), structuredContent: answers.task_comment, isError: true } }),
+    // Core's own error, flagged: refused, in Core's words.
+    codex("e3", "task_update", null, { result: { content: text({ error: "forbidden: not your task" }), structuredContent: { error: "forbidden: not your task" }, isError: true } }),
+    // Any other tool's error flag, and a dynamic tool that did not succeed.
+    { id: "e4", type: "mcpToolCall", server: "docs", tool: "search", status: "completed", result: { content: text("rate limited"), isError: true } },
+    { id: "e5", type: "dynamicToolCall", tool: "lookup", status: "completed", success: false, contentItems: [] },
+    // Claude's is_error is its status.
+    claude("e6", "task_comment", answers.task_comment, { status: "failed" }),
+  ]);
+  await page.openTools();
+  assert.deepEqual(["e1", "e2", "e3", "e4", "e5", "e6"].map(page.capsule), [
+    { name: "yuzuno/task_comment", note: "Error: the tool crashed", end: "failed", tone: "failed" },
+    { name: "yuzuno/task_comment", note: null, end: "failed", tone: "failed" },
+    { name: "yuzuno/task_update", note: "forbidden", end: "refused", tone: "refused" },
+    { name: "docs/search", note: null, end: "failed", tone: "failed" },
+    { name: "lookup", note: null, end: "failed", tone: "failed" },
+    { name: "yuzuno/task_comment", note: null, end: "failed", tone: "failed" },
+  ]);
+  assert.deepEqual([...page.document.querySelectorAll(".tool-overview-part")].map((part) => part.textContent),
+    ["6 tool steps", "5 failed", "1 refused"]);
+  // Nor does its tip or its opened row read it as saved.
+  const summary = page.row("e2").querySelector(":scope > summary");
+  summary.focus();
+  await tick();
+  assert.match(page.tip().textContent, /failed/);
+  assert.doesNotMatch(page.tip().textContent, /saved/);
+  summary.click();
+  await tick();
+  assert.equal(page.row("e2").querySelector(".tool-call-details"), null);
+  assert.deepEqual(page.calls, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("an answer longer than the limit is left to expand and never parsed whole", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const sizes = [];
+  const parse = page.window.JSON.parse;
+  page.window.JSON.parse = function (value, reviver) {
+    if (typeof value === "string") sizes.push(value.length);
+    return parse.call(this, value, reviver);
+  };
+  const long = JSON.stringify({ ...answers.task_comment, padding: "x".repeat(70_000) });
+  page.render([
+    // Read in full (no preview mark), and longer than the limit.
+    { id: "big", type: "mcpToolCall", server: "yuzuno", tool: "task_comment", status: "completed", result: { content: [{ type: "text", text: long }] } },
+    claude("cbig", "peer_read", null, { output: long }),
+    // A long error says its first line.
+    { id: "ebig", type: "mcpToolCall", server: "yuzuno", tool: "peer_send", status: "completed",
+      result: { content: [{ type: "text", text: `Error: queue full\n${"y".repeat(100_000)}` }], isError: true } },
+  ]);
+  await page.openTools();
+  assert.deepEqual(["big", "cbig", "ebig"].map(page.capsule).map((c) => [c.note, c.end, c.tone]), [
+    ["result to expand", null, "returned"],
+    ["result to expand", null, "returned"],
+    ["Error: queue full", "failed", "failed"],
+  ]);
+  assert.ok(Math.max(0, ...sizes) <= 64 * 1024, `nothing past the limit is parsed: ${Math.max(0, ...sizes)}`);
+  assert.deepEqual(page.calls, []);
+  assert.deepEqual(page.errors, []);
+});
+
 test("a call still reported as running is not confirmed once its turn is no longer followed", async (t) => {
   const page = mount();
   t.after(page.close);

@@ -67,6 +67,7 @@ import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } fr
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
 import { callFacts, callWords, toolOverview } from "./tool-call";
+import { reportedError } from "./tool-capsules";
 import { CallDetails, CallName, ToolCallSummary, callIcon } from "./ToolCall";
 import { langTag, useLanguage, useStrings } from "./i18n";
 import { turnWords, type TurnWords } from "./turn-text";
@@ -541,6 +542,7 @@ function ToolItem({
   const tool = own === null ? toolLabel(item, language) : null;
   const label = own ?? tool!.label;
   const named = !!tool?.named;
+  // Bounded by ANSWER_LIMIT: a result read in full is not parsed whole.
   const facts = callFacts(item, label, language, executionUnconfirmed);
   return (
     <details className="tool-item" id={`item-${item.id}`} data-running={running || undefined}
@@ -615,9 +617,10 @@ function CodexPlanItem({ item, notice, opened, onOpenChange }: {
 
 /** A run of tool calls between messages. `live`: it arrived while the turn
  * was on screen; see tool-motion.ts for how it moves. */
-/** A failed call, said outside the fold that holds it. */
+/** A failed call, said outside the fold that holds it: also one whose own
+ * result says it is an error (tool-capsules.ts). */
 function failedCall(item: NativeItem) {
-  return item.status === "failed" || (typeof item.exitCode === "number" && item.exitCode !== 0);
+  return item.status === "failed" || reportedError(item) || (typeof item.exitCode === "number" && item.exitCode !== 0);
 }
 
 /**

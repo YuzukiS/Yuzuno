@@ -54,6 +54,8 @@ const detail = {
       call("send", "peer_send", { message: { id: "m1", seq: 210, recipient: { id: "d7", name: "Dev 7" }, delivery: { state: "pending" }, firstReadAt: null, taskId: "T-9" } }),
       { id: "lost-mail", type: "mcpToolCall", server: "yuzuno", tool: "peer_send", status: "failed", result: null,
         error: { message: "MCP server closed the connection before it answered; the request may or may not have been handled" } },
+      // Codex calls it completed; its MCP result says it is an error.
+      call("crash", "peer_read", null, { result: { content: [{ type: "text", text: "Error: mailbox unavailable" }], isError: true } }),
       call("cut", "peer_read", { messages: [], hasMore: false }, { _yuzunoTruncated: { result: { bytes: 96_000, keep: "head" } } }),
       { id: "long", type: "mcpToolCall", server: "a-very-long-documentation-server-name", tool: "search_reference_for_the_current_project_in_full", status: "completed" },
       { id: "sh", type: "commandExecution", command: "npm test -- tools/tool-call-ui.test.mjs", status: "completed", exitCode: 0, aggregatedOutput: "ok\n" },
@@ -171,6 +173,7 @@ const expected = {
     ["conflict", "yuzuno/brief_update", "version_conflict", "refused", "refused"],
     ["send", "yuzuno/peer_send", "to Dev 7", "queued", "queued"],
     ["lost-mail", "yuzuno/peer_send", "MCP server closed the connection before it answered; the request may or may not have been handled", "failed", "failed"],
+    ["crash", "yuzuno/peer_read", "Error: mailbox unavailable", "failed", "failed"],
     ["cut", "yuzuno/peer_read", "result to expand", null, "returned"],
     ["long", "a-very-long-documentation-server-name/search_reference_for_the_current_project_in_full", null, "returned", "returned"],
     ["sh", "npm test -- tools/tool-call-ui.test.mjs", null, "exit 0", "returned"],
@@ -204,7 +207,7 @@ try {
       // The measure sees a cut: at 393 px the long MCP name is one.
       if (view.touch) assert.ok(shown.find((c) => c.id === "long").nameCut, `${view.name}: the long name is cut short`);
       const overview = await page.locator("#turn-done .tool-activity > summary .tool-overview-part").allTextContents();
-      assert.deepEqual(overview, ["11 tool steps", "1 failed", "1 refused"]);
+      assert.deepEqual(overview, ["12 tool steps", "2 failed", "1 refused"]);
       assert.equal(await page.locator(".tool-activity .tool-count").count(), 0, "no capsule stack in the heading");
       record(`${view.name}: one capsule per call, one line inside its row, nothing sideways; the heading is an overview`, { cut, over, overview });
       await shoot(page.locator("#turn-done .tool-activity").first(), `${view.name}-calls`);
@@ -261,6 +264,14 @@ try {
         assert.equal(await tip(page).count(), 0, "no tip over the opened row");
         assert.match(await page.locator("#item-conflict .tool-call-details").innerText(), /Reason\s*brief_rejected: version_conflict/);
         await shoot(page.locator("#item-conflict"), `${view.name}-refused-opened`);
+        // An error flag on a call called completed is failed, styled and counted as one.
+        const crash = await page.locator("#item-crash > summary").evaluate((el) => ({
+          tone: el.dataset.tone, end: getComputedStyle(el.querySelector(".tool-result")).color,
+          plain: getComputedStyle(document.querySelector("#item-comment > summary .tool-call-note")).color,
+        }));
+        assert.equal(crash.tone, "failed");
+        assert.notEqual(crash.end, crash.plain, `the failure has its own colour: ${JSON.stringify(crash)}`);
+        await shoot(page.locator("#item-crash"), `${view.name}-error-flag`);
         await page.locator("#item-conflict > summary").click();
         record(`${view.name}: a click opens the row with its facts and no tip`);
       } else {
@@ -305,6 +316,7 @@ try {
         ["conflict", "version_conflict", "被拒绝"],
         ["send", "给 Dev 7", "排队中"],
         ["lost-mail", "MCP server closed the connection before it answered; the request may or may not have been handled", "失败"],
+        ["crash", "Error: mailbox unavailable", "失败"],
         ["cut", "结果待展开", null],
         ["long", null, "已返回"],
         ["sh", null, "退出码 0"],

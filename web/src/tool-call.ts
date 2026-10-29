@@ -14,7 +14,8 @@ import type { NativeItem } from "./types";
  * `problems`, or the harness's failure. A task's status is the task record,
  * not code merged or released; a mail's delivery is as it stood when it was
  * sent, never that it was read or acted on. A result the preview cut short,
- * or one that doesn't read as Core's answer, is "to expand", never guessed.
+ * one longer than ANSWER_LIMIT, or one that doesn't read as Core's answer,
+ * is "to expand", never guessed.
  */
 export type CallTone = CallState | "refused" | "queued";
 
@@ -203,19 +204,33 @@ export function capsuleName(item: NativeItem, label: string): string {
   return call ? `yuzuno/${call.tool}` : label;
 }
 
-/** Core's answer from what the harness kept: Codex's structuredContent, or
- * the JSON text every harness keeps of it. null: it doesn't read as one. */
-function coreAnswer(kept: unknown): Answer | null {
-  if (record(kept) && record(kept.structuredContent)) return kept.structuredContent;
-  const parts = record(kept) && Array.isArray(kept.content) ? kept.content : Array.isArray(kept) ? kept : null;
-  const body = typeof kept === "string" ? kept
-    : parts ? parts.map((part) => (record(part) && typeof part.text === "string" ? part.text : "")).join("") : null;
-  if (body === null) return null;
+/** The longest answer text read here, in UTF-16 code units. A preview is
+ * far shorter; a result read in full can be megabytes, and is not parsed
+ * again on every render to say a line about it. */
+export const ANSWER_LIMIT = 64 * 1024;
+
+/** What the harness kept of Core's answer: Codex's structuredContent as it
+ * is, or the JSON text every harness keeps, parsed only when it is no longer
+ * than ANSWER_LIMIT. `head`: the start of that text, for a failure to be said
+ * by; `tooLong`: there was more than the limit. */
+function keptAnswer(kept: unknown): { answer: Answer | null; head: string; tooLong: boolean } {
+  if (record(kept) && record(kept.structuredContent)) return { answer: kept.structuredContent, head: "", tooLong: false };
+  const parts = typeof kept === "string" ? [kept] : record(kept) && Array.isArray(kept.content) ? kept.content : Array.isArray(kept) ? kept : [];
+  const texts: string[] = [];
+  let size = 0;
+  for (const part of parts) {
+    const piece = typeof part === "string" ? part : record(part) && typeof part.text === "string" ? part.text : "";
+    texts.push(size + piece.length > ANSWER_LIMIT ? piece.slice(0, ANSWER_LIMIT - size) : piece);
+    size += piece.length;
+    if (size > ANSWER_LIMIT) break;
+  }
+  const head = texts.join("").slice(0, 2000);
+  if (size > ANSWER_LIMIT) return { answer: null, head, tooLong: true };
   try {
-    const answer: unknown = JSON.parse(body);
-    return record(answer) ? answer : null;
+    const answer: unknown = JSON.parse(texts.join(""));
+    return { answer: record(answer) ? answer : null, head, tooLong: false };
   } catch {
-    return null;
+    return { answer: null, head, tooLong: false };
   }
 }
 
@@ -305,7 +320,8 @@ const readers: Record<YuzunoTool, (answer: Answer, t: Words, language: Language)
   peer_read(answer, t) {
     const messages = Array.isArray(answer.messages) ? answer.messages : null;
     if (!messages || typeof answer.hasMore !== "boolean") return null;
-    const senders = [...new Set(messages.map((message) => (record(message) && record(message.sender) ? text(message.sender.name) : null))
+    // Who wrote the first page of a long read is enough to say.
+    const senders = [...new Set(messages.slice(0, 50).map((message) => (record(message) && record(message.sender) ? text(message.sender.name) : null))
       .filter((name): name is string => !!name))];
     const through = scalar(answer.nextAfterSeq);
     return {
@@ -356,13 +372,21 @@ export function callFacts(item: NativeItem, label: string, language: Language, e
   const call = yuzunoCall(item);
   // Still running or not confirmed: there is no answer to read yet.
   if (!call || state === "running" || state === "unconfirmed" || call.answer == null) return facts;
+  // Cut short by the preview: the error flag above still holds; nothing is
+  // read from what is left.
   if (item._yuzunoTruncated?.[call.field]) return { ...facts, toExpand: true, note: facts.note ?? t.toExpand };
-  const answer = coreAnswer(call.answer);
-  if (!answer) return { ...facts, toExpand: true, note: facts.note ?? t.toExpand };
-  const refused = refusal(answer, t);
+  const { answer, head, tooLong } = keptAnswer(call.answer);
+  const refused = answer && refusal(answer, t);
   if (refused) return { ...facts, tone: "refused", state: t.tone.refused, note: refused.note, noteGiven: true, details: refused.details };
-  // A failure the answer doesn't explain stays the harness's failure.
-  if (state === "failed") return facts;
+  // A failure the answer doesn't explain stays a failure: never a summary
+  // of what it returned. Its own words are said when they are words, not
+  // data that looks like an answer.
+  if (state === "failed") {
+    if (facts.note || answer || !head.trim()) return facts;
+    const said = head.trim().split("\n")[0];
+    return { ...facts, note: clip(said, 200), noteGiven: true, details: [{ label: t.reason, value: clip(head.trim()), given: true }] };
+  }
+  if (!answer || tooLong) return { ...facts, toExpand: true, note: t.toExpand };
   const read = readers[call.tool](answer, t, language);
   if (!read) return { ...facts, toExpand: true, note: t.toExpand };
   return { ...facts, ...read, tone: read.tone ?? facts.tone, state: read.state ?? facts.state };

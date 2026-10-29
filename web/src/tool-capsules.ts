@@ -9,7 +9,10 @@ import type { NativeItem } from "./types";
  *  - `running`: last reported as running, with this turn still followed.
  *  - `unconfirmed`: reported as running with the turn no longer followed, or
  *    reported as unknown. Both are what a tool row shows as Unconfirmed.
- *  - `failed`: the harness said failed, or a command exited non-zero.
+ *  - `failed`: the harness said failed, the call's own result says it is an
+ *    error (an MCP result's `isError`, a dynamic tool's `success: false`,
+ *    which Codex can report on a call it calls completed), or a command
+ *    exited non-zero.
  *  - `returned`: it ended and reported a result.
  * An Item that carries no state of its own — a reasoning summary, a proposed
  * plan — has none, and its capsule says nothing about one. Neither does a
@@ -24,9 +27,15 @@ export function callState(item: NativeItem, executionUnconfirmed: boolean): Call
   if (isSubAgentCall(item)) return null;
   const status = typeof item.status === "string" ? item.status : "";
   if (/inProgress|running/.test(status)) return executionUnconfirmed ? "unconfirmed" : "running";
-  if (status === "failed") return "failed";
+  if (status === "failed" || reportedError(item)) return "failed";
   if (status === "unknown") return "unconfirmed";
   // A non-zero exit is the command's own report, not a verdict on the work.
   if (typeof item.exitCode === "number") return item.exitCode === 0 ? "returned" : "failed";
   return status ? "returned" : null;
+}
+
+/** The call's own result says it is an error, whatever its status says. */
+export function reportedError(item: NativeItem): boolean {
+  const result = item.result;
+  return (!!result && typeof result === "object" && (result as { isError?: unknown }).isError === true) || item.success === false;
 }
