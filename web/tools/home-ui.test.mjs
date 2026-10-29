@@ -1869,3 +1869,93 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
     refused.close();
   }
 });
+
+test("T-9 card density: low by default, high on a click, kept on this device for this Workspace and sent nowhere", async () => {
+  const p = await mount();
+  try {
+    const group = p.doc.querySelector('.home-header .home-density[role="group"]');
+    assert.ok(group, "the choice is in Home's header");
+    assert.equal(group.getAttribute("aria-label"), "Card density");
+    const option = (label) => [...group.querySelectorAll("button")].find((b) => b.textContent === label);
+    assert.equal(option("Low density").getAttribute("aria-pressed"), "true", "low is Home's default");
+    assert.equal(option("Low density").title, "Spacious: each card’s main point");
+    assert.equal(option("High density").title, "Compact: every field and row");
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "low");
+    const before = p.calls.length;
+    option("High density").click();
+    await waitFor(() => p.doc.querySelector(".home-view").dataset.density === "high", "high applies");
+    assert.equal(option("High density").getAttribute("aria-pressed"), "true");
+    assert.equal(p.w.localStorage.getItem("yuzuno.homeDensity.ws-home"), '"high"', "kept on this device for this Workspace");
+    assert.equal(p.w.localStorage.getItem("yuzuno.homeDensity"), null, "not for every Workspace");
+    // Home's repository read is a POST of its own; nothing else is sent.
+    assert.deepEqual(
+      p.calls.slice(before).filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url),
+      [],
+      "nothing is sent to Core or an Agent",
+    );
+    assert.ok(!p.doc.querySelector(".home-density-note"), "no note when kept");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+  const stored = { "yuzuno.homeDensity.ws-home": '"high"' };
+  // Read again on this device, for this Workspace only.
+  const again = await mount({ storage: stored });
+  try {
+    assert.equal(again.doc.querySelector(".home-view").dataset.density, "high");
+  } finally {
+    again.close();
+  }
+  const other = await mount({ storage: stored, workspace: "ws-other" });
+  try {
+    assert.equal(other.doc.querySelector(".home-view").dataset.density, "low", "another Workspace keeps its own, low until chosen");
+  } finally {
+    other.close();
+  }
+});
+
+test("T-9 card density another window saves while Home is closed here shows when Home opens again", async () => {
+  const p = await mount();
+  try {
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "low");
+    p.button("Sora", p.panel("p-res").querySelector(".home-error")).click();
+    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Sora", "Sora's conversation is open");
+    assert.ok(!p.doc.querySelector(".home-view"), "Home is closed");
+    // Another window of this device chooses high density for this Workspace.
+    p.w.localStorage.setItem("yuzuno.homeDensity.ws-home", '"high"');
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.homeDensity.ws-home" }));
+    p.button("Back to Home").click();
+    await waitFor(() => p.doc.querySelector(".home-view [data-home-project]"), "back on Home");
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "high", "the choice made meanwhile, not the one read before");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 card density a device refuses to keep still applies in this window, says it was not kept, and outlasts another Workspace's update", async () => {
+  const p = await mount();
+  try {
+    const setItem = p.w.Storage.prototype.setItem;
+    p.w.Storage.prototype.setItem = function () {
+      throw new p.w.DOMException("full", "QuotaExceededError");
+    };
+    try {
+      [...p.doc.querySelectorAll(".home-density button")].find((b) => b.textContent === "High density").click();
+      await waitFor(() => p.doc.querySelector(".home-view").dataset.density === "high", "high applies here");
+      await waitFor(() => p.doc.querySelector(".home-density-note"), "the note says it was not kept");
+      assert.match(p.doc.querySelector(".home-density-note").textContent, /not kept on this device: this browser’s storage for Yuzuno is full/);
+    } finally {
+      p.w.Storage.prototype.setItem = setItem;
+    }
+    // Another Workspace's choice saved in another window leaves this unsaved one as it is.
+    p.w.localStorage.setItem("yuzuno.homeDensity.ws-other", '"low"');
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.homeDensity.ws-other" }));
+    await pause(100);
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "high", "still high in this window");
+    assert.ok(p.doc.querySelector(".home-density-note"), "still said not to be kept");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

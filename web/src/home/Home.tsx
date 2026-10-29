@@ -19,6 +19,7 @@ import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type 
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
+import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDensityRefusal } from "./home-density";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -70,6 +71,11 @@ export function Home({
 }) {
   const language = useLanguage();
   const t = homeText(language);
+  // How much each card shows, kept on this device for each Workspace (the
+  // preview keeps none): the same content either way.
+  const densityWorkspace = readOnly ? "" : workspaceId;
+  const density = useHomeDensity(densityWorkspace);
+  const densityRefusal = useHomeDensityRefusal(densityWorkspace);
   const [data, setData] = useState<HomeData | null>(readOnly ? previewHome : null);
   // What went wrong, worded when shown so it follows the language (T-189):
   // a reply Home can't use, an order not saved, or Core's reason as it came.
@@ -305,13 +311,28 @@ export function Home({
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
-    <div className="home-view" lang={langTag(language)}>
+    <BriefDensity.Provider value={density}>
+    <div className="home-view" lang={langTag(language)} data-density={density}>
       <header className="home-header">
         <h1>
           <House size={18} />
           {t.home}
         </h1>
         <span className="home-header-tools">
+          <span className="home-density" role="group" aria-label={t.density} title={t.densityHelp}>
+            {densities.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className="home-density-option"
+                aria-pressed={density === option}
+                title={option === "low" ? t.densityLowHelp : t.densityHighHelp}
+                onClick={() => chooseHomeDensity(densityWorkspace, option)}
+              >
+                {option === "low" ? t.densityLow : t.densityHigh}
+              </button>
+            ))}
+          </span>
           {data && panels.length > 1 && !readOnly && (
             <button
               type="button"
@@ -330,6 +351,11 @@ export function Home({
           )}
         </span>
       </header>
+      {densityRefusal && !densityRefusal.saved && (
+        <p className="home-note home-density-note" role="status">
+          {t.densityNotKept(densityRefusal.detail)}
+        </p>
+      )}
       {error && (
         <p className="inline-error home-error-banner" role="alert">
           {error.kind === "unavailable" ? t.unavailable : error.kind === "order" ? t.orderNotSaved(error.reason) : error.reason}
@@ -394,6 +420,7 @@ export function Home({
         </div>
       )}
     </div>
+    </BriefDensity.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>

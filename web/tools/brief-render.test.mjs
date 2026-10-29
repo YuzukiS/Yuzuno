@@ -27,10 +27,12 @@ import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/
 import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
 import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
+import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
-window.renderSection=(section,projectId,extra={},workspaceId='')=>flushSync(()=>root.render(<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>));
+// With a density, as Home draws its cards (T-9); without one, as anywhere else.
+window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
 window.unmountSection=()=>flushSync(()=>root.render(null));`,
   );
   const result = await build({
@@ -848,4 +850,216 @@ test("a broken body or part stays local, and a failed chart read keeps its place
   assert.ok(state, "the error sits inside the fixed-height plot");
   await until(() => /Preview unavailable/.test(document.body.textContent), "the preview error");
   assert.ok(document.querySelector("p.brief-preview-frame"), "the failed preview keeps its frame");
+});
+
+// T-9: the same body at Home's two densities, chosen per device. Low shows a
+// card's main point, high every field and row; nothing is dropped silently,
+// nothing unknown becomes 0, and switching keeps the section's state.
+const dense = (elements, children, attachments = []) => ({
+  op: "put",
+  key: KEY,
+  kind: "report",
+  title: "Density",
+  attachments: attachments.map((name) => ({ name, path: `/runs/${name}` })),
+  body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children }, ...elements } },
+});
+
+test("T-9 low density: a plan is a short timeline from just before its current step, a blocked step never folded; high shows every step", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const steps = Array.from({ length: 10 }, (_, i) => ({
+    id: `s${i}`,
+    text: `Step ${i + 1}\nWhy step ${i + 1}`,
+    state: i < 3 ? "done" : i === 3 ? "doing" : i === 9 ? "blocked" : "todo",
+  }));
+  const section = readSection(page, dense({ plan: { type: "Plan", props: { title: "Plan", steps } } }, ["plan"]));
+  const items = () => [...document.querySelectorAll(".brief-plan li")];
+  window.renderSection(section, PROJECT, {}, "", "low");
+  assert.equal(document.querySelector(".brief-plan").dataset.density, "low");
+  assert.deepEqual(items().map((li) => li.querySelector("strong").textContent), ["Step 3", "Step 4", "Step 5", "Step 6", "Step 7", "Step 10"]);
+  assert.deepEqual(items().map((li) => li.value), [3, 4, 5, 6, 7, 10], "numbered as in the whole plan");
+  assert.deepEqual(items().map((li) => li.dataset.gap), [undefined, undefined, undefined, undefined, undefined, "true"], "the blocked step after a gap");
+  assert.equal(items()[5].querySelector(".brief-chip").textContent, "Blocked");
+  assert.equal(items()[5].querySelector(".brief-plan-more").textContent, "Why step 10");
+  assert.equal(items()[1].querySelector(".brief-plan-more").textContent, "Why step 4");
+  assert.equal(items()[1].querySelector(".brief-chip").textContent, "Doing");
+  assert.match(document.querySelector(".brief-plan header span").textContent, /3 of 10 done/);
+  const all = document.querySelector(".brief-plan-all");
+  assert.equal(all.textContent, "Show all 10 steps");
+  all.click();
+  await until(() => items().length === 10, "every step after Show all");
+  assert.equal(items().filter((li) => li.dataset.gap).length, 0, "no gap once every step shows");
+  window.renderSection(section, PROJECT, {}, "", "high");
+  assert.equal(document.querySelector(".brief-plan").dataset.density, "high");
+  assert.equal(items().length, 10);
+  assert.ok(!document.querySelector(".brief-plan-all"), "high has nothing folded");
+  assert.match(document.querySelector(".brief-plan header span").textContent, /3 of 10 done/, "the same count in both");
+  assert.deepEqual(page.errors, []);
+});
+
+test("T-9 low density: metrics lead with the first value, count the rest and show them on request; units and unknown values stay as written", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const items = [
+    { label: "Memory", value: 86, unit: "MiB", previous: 90, detail: "latest sample" },
+    { label: "Threads", value: 39 },
+    { label: "Reads", value: "—" },
+    { label: "Held", value: 0 },
+    { label: "Failed", value: 1 },
+    { label: "Gap", value: "unknown" },
+  ];
+  const section = readSection(page, dense({ m: { type: "Metrics", props: { items } } }, ["m"]));
+  const metrics = () => [...document.querySelectorAll(".brief-metrics > div")];
+  const value = (label) => metrics().find((div) => div.querySelector("dt").textContent === label)?.querySelector("dd").textContent;
+  window.renderSection(section, PROJECT, {}, "", "low");
+  assert.equal(metrics().length, 4, "the first and three more");
+  assert.equal(document.querySelectorAll(".brief-metrics > [data-lead]").length, 1);
+  assert.equal(metrics()[0].querySelector("dd").textContent, "86MiB");
+  assert.match(metrics()[0].textContent, /latest sample/);
+  assert.match(metrics()[0].querySelector(".brief-delta").textContent, /−4 MiB/, "the comparison keeps its unit");
+  assert.equal(value("Reads"), "—", "not 0");
+  const more = document.querySelector(".brief-metrics-more");
+  assert.equal(more.tagName, "BUTTON");
+  assert.equal(more.textContent, "Show 2 more");
+  assert.equal(more.getAttribute("aria-expanded"), "false");
+  more.click();
+  await until(() => metrics().length === 6, "every metric after Show 2 more");
+  assert.equal(value("Gap"), "unknown");
+  assert.equal(document.querySelector(".brief-metrics-more").textContent, "Show fewer");
+  assert.equal(document.querySelector(".brief-metrics-more").getAttribute("aria-expanded"), "true");
+  window.renderSection(section, PROJECT, {}, "", "high");
+  assert.equal(metrics().length, 6);
+  assert.ok(!document.querySelector(".brief-metrics-more"), "high has nothing folded");
+  assert.equal(value("Gap"), "unknown");
+  assert.equal(value("Held"), "0", "a real 0 is shown as 0");
+  assert.equal(metrics()[0].querySelector("dd").textContent, "86MiB", "the same value in both");
+  assert.match(metrics()[0].querySelector(".brief-delta").textContent, /−4 MiB/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("T-9 low density: a line chart is a compact trend, other charts as before; an empty series says so, never 0", async (t) => {
+  // A body can't write an empty series (Core refuses it); a data file can
+  // still have no points.
+  const page = mount((url) =>
+    url === `${base}/chart/${encodedKey}/empty?version=3`
+      ? { body: { series: [{ name: "RSS", points: [] }], x: { label: "Time" }, y: { label: "Memory", unit: "MiB" }, downsampled: false, sourcePoints: 0 } }
+      : respond(url),
+  );
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, dense({
+    trend: {
+      type: "LineChart",
+      props: { id: "trend", title: "trend", x: { label: "Time" }, y: { label: "Memory", unit: "MiB" }, series: [{ name: "RSS", points: [[1, 80], [2, 86]] }] },
+    },
+    empty: {
+      type: "LineChart",
+      props: { id: "empty", title: "empty", x: { label: "Time" }, y: { label: "Memory", unit: "MiB" }, data: { attachment: "rss.csv", x: "t", series: [{ name: "RSS", column: "rss" }] } },
+    },
+    bars: { type: "BarChart", props: { id: "bars", title: "bars", x: { label: "Run" }, y: { label: "Cost" }, series: [{ name: "A", points: [["r1", 4]] }] } },
+  }, ["trend", "empty", "bars"], ["rss.csv"]), { attachments: [attachment("rss.csv", "data", "text/csv")] });
+  const chart = (title) => document.querySelector(`.brief-chart[aria-label="${title}"]`);
+  const state = () => chart("empty").querySelector(".brief-chart-state")?.textContent;
+  window.renderSection(section, PROJECT, {}, "", "low");
+  assert.equal(chart("trend").dataset.density, "low");
+  assert.equal(chart("bars").dataset.density, undefined, "bars keep their one form");
+  await until(() => state() === "No points to show.", "the empty series says so");
+  assert.match(chart("empty").querySelector(".brief-chart-foot").textContent, /Data: rss\.csv · snapshot/, "its source stays");
+  assert.ok(chart("trend").querySelector("details.brief-chart-data"), "the values stay reachable in the data table");
+  window.renderSection(section, PROJECT, {}, "", "high");
+  assert.equal(chart("trend").dataset.density, undefined);
+  await until(() => state() === "No points to show.", "the same in high density");
+  assert.deepEqual(page.errors, []);
+});
+
+test("T-9 low density: attachments lead with the first deliverable; the rest are one click away", (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const names = ["one.png", "two.png", "three.png"];
+  const put = dense({ files: { type: "Attachments", props: { items: names.map((name) => ({ name, caption: `Shot ${name}` })) } } }, ["files"], names);
+  const section = readSection(page, put, { attachments: names.map((name) => attachment(name, "image", "image/png")) });
+  const shown = () => [...document.querySelectorAll(".brief-attachments > li strong")].map((s) => s.textContent);
+  window.renderSection(section, PROJECT, {}, "", "low");
+  assert.deepEqual(shown(), ["one.png"]);
+  assert.equal(document.querySelector(".brief-attachments-block").dataset.density, "low");
+  assert.equal(document.querySelector(".brief-attachments-more").textContent, "Show all 3 attachments");
+  assert.match(document.querySelector(".brief-attachment-caption").textContent, /Shot one\.png/);
+  window.renderSection(section, PROJECT, {}, "", "high");
+  assert.deepEqual(shown(), names);
+  assert.ok(!document.querySelector(".brief-attachments-more"), "high has nothing folded");
+  assert.deepEqual(page.errors, []);
+});
+
+test("T-9 low density never folds away an attachment that warns: gone, not kept or may change", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const names = ["one.png", "two.png", "moving.log", "ref.png", "gone.png"];
+  const put = dense({ files: { type: "Attachments", props: { items: names.map((name) => ({ name })) } } }, ["files"], names);
+  const section = readSection(page, put, {
+    attachments: [
+      attachment("one.png", "image", "image/png"),
+      attachment("two.png", "image", "image/png"),
+      attachment("moving.log", "text", "text/plain", { mayChange: true }),
+      attachment("ref.png", "image", "image/png", { snapshot: false, path: "/runs/ref.png" }),
+    ],
+  });
+  const shown = () => [...document.querySelectorAll(".brief-attachments > li strong")].map((s) => s.textContent);
+  window.renderSection(section, PROJECT, {}, "", "low");
+  assert.deepEqual(shown(), ["one.png", "moving.log", "ref.png", "gone.png"], "only the plain one folds");
+  const block = document.querySelector(".brief-attachments-block");
+  assert.match(block.textContent, /Not kept by Yuzuno/);
+  assert.match(block.textContent, /May have changed/);
+  assert.match(block.textContent, /no longer part of the section/);
+  const button = document.querySelector(".brief-attachments-more");
+  assert.equal(button.textContent, "Show all 5 attachments");
+  button.click();
+  await until(() => shown().length === 5, "every attachment after Show all");
+  assert.deepEqual(shown(), names);
+  assert.equal(document.querySelector(".brief-attachments-more").textContent, "Show fewer");
+  assert.deepEqual(page.errors, []);
+});
+
+test("T-9 switching density keeps the section's state: the same nodes, a table's filter, an open data table and focus", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, dense({
+    note: { type: "Markdown", props: { text: "Runs so far." } },
+    runs: {
+      type: "Table",
+      props: {
+        id: "runs",
+        title: "Runs",
+        columns: [{ key: "run", label: "Run" }],
+        rows: [{ id: "r1", cells: { run: "1" } }, { id: "r2", cells: { run: "2" } }, { id: "r12", cells: { run: "12" } }],
+      },
+    },
+    trend: { type: "LineChart", props: { id: "trend", title: "Trend", x: { label: "Run" }, y: { label: "Score" }, series: [{ name: "S", points: [[1, 2], [2, 3]] }] } },
+  }, ["note", "runs", "trend"]));
+  window.renderSection(section, PROJECT, {}, "ws-density", "high");
+  const body = document.querySelector(".brief-body");
+  const note = document.querySelector(".brief-markdown");
+  const filter = () => document.querySelector('input[aria-label="Filter Runs"]');
+  const input = filter();
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, "2");
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await until(() => document.querySelectorAll(".result-table-scroll tbody tr").length === 2, "the filtered table");
+  const data = document.querySelector("details.brief-chart-data");
+  data.open = true;
+  await until(() => data.querySelector("tbody tr"), "the opened data table");
+  input.focus();
+  window.renderSection(section, PROJECT, {}, "ws-density", "low");
+  assert.ok(document.querySelector(".brief-body") === body, "the section is not drawn again");
+  assert.ok(document.querySelector(".brief-markdown") === note, "an unchanged block keeps its node");
+  assert.ok(filter() === input, "the filter input is the same node");
+  assert.equal(filter().value, "2", "the filter stays");
+  assert.equal(document.querySelectorAll(".result-table-scroll tbody tr").length, 2);
+  assert.ok(document.querySelector("details.brief-chart-data") === data, "the data table is the same node");
+  assert.ok(data.open, "the data table stays open");
+  assert.ok(document.activeElement === input, "focus stays where it was");
+  assert.deepEqual(page.errors, []);
 });
