@@ -872,9 +872,29 @@ export function App() {
   const canReadByInputs = conversationInputs.total > 0;
   const inputDockEntries = useMemo(() => inputEntries(conversationInputs.inputs, logicalTurns),
     [conversationInputs.inputs, logicalTurns]);
-  const readingInputId = readingBy === "inputs"
-    ? readingEntry(inputDockEntries, logicalTurns, readingTurn, scroll.current ? scroll.current.getBoundingClientRect().top + 32 : null)
-    : undefined;
+  // The input being read (T-6): placed against the reading line again on
+  // every scroll of the conversation, a frame at a time, as well as when the
+  // inputs, the Turns or the Turn being read change.
+  const [readingInputId, setReadingInputId] = useState<string>();
+  useLayoutEffect(() => {
+    const pane = scroll.current;
+    if (readingBy !== "inputs" || !pane) {
+      setReadingInputId(undefined);
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      setReadingInputId(readingEntry(inputDockEntries, logicalTurns, readingTurn, pane.getBoundingClientRect().top + 32));
+    };
+    update();
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+    pane.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      pane.removeEventListener("scroll", schedule);
+      cancelAnimationFrame(frame);
+    };
+  }, [readingBy, inputDockEntries, logicalTurns, readingTurn]);
   // Each of the person's inputs read so far, by its number among all of
   // them: the Turns label the parts those inputs open.
   const inputNumbers = useMemo(() => new Map(conversationInputs.inputs.map((input, at) =>
