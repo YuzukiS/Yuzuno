@@ -579,6 +579,7 @@ test("the contract's examples render without a failed part", async (t) => {
     tasks: ["their budget is your call", "T-13", "Ablations; the form sets their scope."],
     overview: ["Where we are", "one decision", "Run 12, larger batch", "Validation loss falls 6% once warm-up ends.", "Choose the run 13 split"],
     decision: ["The larger split costs about 6% of training data."],
+    form: ["cannot tell a gap under about 5% from noise"],
   };
   const reads = {
     image: [attachment("layout.png", "image", "image/png")],
@@ -588,6 +589,7 @@ test("the contract's examples render without a failed part", async (t) => {
     tasks: [],
     overview: [],
     decision: [],
+    form: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {

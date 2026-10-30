@@ -1017,7 +1017,7 @@ export const BRIEF_EXAMPLES = {
         },
         next: { type: "Group", props: { title: "Decisions and Jobs" }, children: ["decisions", "jobs"] },
         decisions: { type: "Checklist", props: { items: [{ id: "split", text: "Choose the run 13 split", done: false }] } },
-        jobs: { type: "LiveRefs", props: { items: [{ kind: "task", id: "T-12", label: "Run 12" }] } },
+        jobs: { type: "LiveRefs", props: { items: [{ kind: "job", id: "6f2b8c1e-4d3a-4b7e-9a10-2c5d8e7f9b31", label: "Run 12 training" }] } },
       },
     },
   },
@@ -1038,6 +1038,46 @@ export const BRIEF_EXAMPLES = {
       elements: {
         body: { type: "BriefBody", props: {}, children: ["why"] },
         why: { type: "Markdown", props: { text: "The larger split costs about 6% of training data." } },
+      },
+    },
+  },
+  form: {
+    op: "put",
+    key: "ablations",
+    kind: "ask",
+    title: "What the ablations cover",
+    ask: {
+      question: "Which ablations should run after run 12, and on what budget?",
+      reply: {
+        form: {
+          id: "ablations",
+          title: "Ablations",
+          fields: [
+            {
+              id: "runs",
+              type: "multi",
+              label: "Ablations to run",
+              required: true,
+              options: [{ id: "warmup", label: "Shorter warm-up" }, { id: "batch", label: "Batch size" }, { id: "augment", label: "No augmentation" }],
+              default: { value: ["warmup", "batch"], source: "Run 12 findings" },
+            },
+            {
+              id: "budget",
+              type: "single",
+              label: "Budget",
+              required: true,
+              options: [{ id: "small", label: "1 GPU-day, one seed each" }, { id: "large", label: "3 GPU-days, three seeds each" }],
+            },
+          ],
+        },
+        freeText: { prompt: "Anything else to try?" },
+      },
+    },
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: {}, children: ["why"] },
+        why: { type: "Markdown", props: { text: "One seed each costs a third as much but cannot tell a gap under about 5% from noise." } },
       },
     },
   },
@@ -1067,6 +1107,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- question: 1-${L.questionChars} characters. reply needs at least one of options, freeText, form or choice; otherwise the change is rejected.`,
     `- options: ${L.askOptionsMin}-${L.askOptionsMax} buttons; each sends one prefilled reply message to you. freeText: true, or {prompt} to label the text box. choice: two approaches a and b.`,
     formatComponentGuide("form", clarificationSchema, COMPONENT_DESCRIPTIONS.Clarification, spaced(`At most ${L.formFields} fields, ${L.formOptions} options each.`)),
+    `Use options for one choice and a form for several related answers, as in the decision and form examples.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
     `openAsks counts your unresolved asks, open or replied; at most ${L.openAsksPerAgent} per Agent.`,
@@ -1077,6 +1118,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     ...(Object.keys(briefComponentProps) as BriefComponent[]).filter((type) => !isChart(type)).map(componentLine),
     `- ${CHARTS.join(", ")}: see charts.`,
     `Table and chart ids, row ids, item ids and column keys are unique. Sources hrefs are http(s) URLs or local file paths (optionally :line); Table rows cite them by id in sourceIds.`,
+    `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
@@ -1116,7 +1158,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
-    `Core also rejects version_conflict (the Brief changed; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), and changes that break owner, topic or open-ask rules.`,
+    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
     `Each is one change for brief_update changes.`,

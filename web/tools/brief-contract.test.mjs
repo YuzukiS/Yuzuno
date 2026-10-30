@@ -464,6 +464,9 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(briefGuide("examples"), /"LineChart".*"attachment":"loss.csv"/);
   assert.match(briefGuide("examples"), /"Findings"/);
   assert.match(briefGuide("examples"), /"kind":"ask".*"options"/);
+  assert.match(briefGuide("examples"), /"kind":"ask".*"form":\{.*"type":"multi"/);
+  // What a reference's state is, and what the two missing states ask of the Agent (T-9).
+  assert.match(briefGuide("content"), /not found: check its id\. One Core could not read just then shows as couldn't read: leave it/);
   // The shared formatter's line shape, as T-86 agreed: "- Name {signature}: description notes".
   assert.match(guide, /^- Group \{title\?≤\d+, tone\?="plain"\|"accent"\|"muted"\}: A group of components with an optional title\. .* Children: at most 24\.$/m);
   // Enums come from the schema (T-131): every value a prop takes, in the legend's notation.

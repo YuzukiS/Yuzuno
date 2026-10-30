@@ -9,7 +9,7 @@
 use super::{
     attachments,
     sections::{self, Owners, Row},
-    *,
+    writes, *,
 };
 use crate::results::{reliable_turn, Pinned, Validator};
 use std::collections::{BTreeMap, BTreeSet};
@@ -418,15 +418,39 @@ fn latest(store: &Store, db: &Connection, project: &str) -> Result<Value> {
     Ok(json!({"version":sections::brief_version(db, project)?,"sections":listed}))
 }
 
-fn conflict(store: &Store, db: &Connection, ctx: &Caller, expected: i64) -> Result<Option<Value>> {
-    let current = sections::brief_version(db, &ctx.project)?;
-    if current == expected {
+/// Whether the update was based on a version too old for what it changes
+/// (T-9): a section it changes was written after `expectedVersion`. Other
+/// sections' writes don't make it stale, and a noChange changes none. A
+/// version the Brief never had yet is always refused, and where Core's
+/// record of writes can't tell (writes.rs), the whole Brief must be as read.
+fn conflict(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Result<Option<Value>> {
+    let (current, expected) = (sections::brief_version(db, &ctx.project)?, request.expected);
+    if current == expected || (expected < current && request.no_change) {
         return Ok(None);
     }
-    let problems = vec![problem("version_conflict", "expectedVersion",
+    let whole = || vec![problem("version_conflict", "expectedVersion",
         format!("The Brief is at version {current}, not {expected}: it changed since you read it. \
             latest holds it now; merge your changes into it and send them with expectedVersion {current}."),
         "errors")];
+    let problems = if expected > current {
+        whole()
+    } else {
+        let keys: Vec<&str> = request.changes.iter().map(|change| change.key.as_str()).collect();
+        match writes::stale(db, &ctx.project, current, expected, &keys)? {
+            None => whole(),
+            Some(stale) if stale.is_empty() => return Ok(None),
+            Some(stale) => stale.into_iter().map(|(index, written)| {
+                let key = keys[index];
+                let changed = match written {
+                    Some(version) => format!("{key} was written at Brief version {version}, after version {expected} that you read."),
+                    None => format!("Core's record of {key}'s writes doesn't go back to version {expected} that you read, so it may have changed since."),
+                };
+                problem("version_conflict", format!("changes[{index}].key"),
+                    format!("{changed} latest holds the Brief now; merge your change into that section and send it with expectedVersion {current}."),
+                    "errors")
+            }).collect(),
+        }
+    };
     Ok(Some(rejection(problems, Some(latest(store, db, &ctx.project)?))))
 }
 
@@ -626,7 +650,7 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
         Ok(ctx) => ctx,
         Err(problems) => return Ok(Start::Reject(rejection(problems, None))),
     };
-    if let Some(rejected) = conflict(store, &db, &ctx, request.expected)? {
+    if let Some(rejected) = conflict(store, &db, &ctx, &request)? {
         return Ok(Start::Reject(rejected));
     }
     let problems = rules(store, &db, &ctx, &request)?;
@@ -640,7 +664,8 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
             continue;
         }
         // rules found it live and the caller's. The commit only goes ahead
-        // at this same Brief version, so this row is the one it changes.
+        // while no write to this key came after expectedVersion (conflict),
+        // so this row is the one it changes.
         let row = sections::live_key(&db, &ctx.project, &change.key)?.context("the section changed while it was being read")?;
         match edited(&row, &change.edit, index) {
             Ok(section) => {
@@ -698,6 +723,50 @@ fn an_edit_revoked_during_validation_cannot_commit() {
     assert_eq!(sections::brief_version(&db, &project).unwrap(), 1);
     assert_eq!(sections::live_key(&db, &project, "plan").unwrap().unwrap().data["body"], body("First."));
     assert!(replay(&db, "a", "edit", &edit).unwrap().is_none());
+}
+
+#[cfg(test)]
+#[test]
+fn an_edit_checked_before_its_section_is_written_again_cannot_commit_but_another_sections_write_does_not_stop_it() {
+    let (_dir, ws, project) = super::tests::lab();
+    let body = |text: &str| json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["note"]},
+        "note":{"type":"Markdown","props":{"text":text}}}});
+    let put = |id: &str, version: i64, key: &str, text: &str| json!({"requestId":id,"expectedVersion":version,
+        "changes":[{"op":"put","key":key,"kind":"report","title":"Plan","body":body(text)}]});
+    let edit = |id: &str, version: i64, text: &str| json!({"requestId":id,"expectedVersion":version,
+        "changes":[{"op":"edit","key":"plan","elements":{"note":{"type":"Markdown","props":{"text":text}}}}]});
+    let check = |actor: &str, id: &str, input: &Value| {
+        let Start::Check(request, _, turn) = start(&ws.store, actor, id, input).unwrap() else { panic!("{id} passes the check") };
+        (request, turn)
+    };
+    let write = |actor: &str, id: &str, input: &Value, (request, turn): (Request, Pinned)| {
+        let normalized: Vec<Value> = request.changes.iter().map(|change| change.section.clone()).collect();
+        commit(&ws.store, actor, id, input, &turn, &request, &normalized, &[vec![]]).unwrap()
+    };
+    let stored = || sections::live_key(&ws.store.db.read().unwrap(), &project, "plan").unwrap().unwrap().data["body"].clone();
+    let first = put("p1", 0, "plan", "First.");
+    assert!(write("a", "p1", &first, check("a", "p1", &first)).0.is_ok());
+
+    // Checked at 1, composed from "First."; plan is written again before the commit.
+    let late = edit("e1", 1, "Edited.");
+    let checked = check("a", "e1", &late);
+    let second = put("p2", 1, "plan", "Second.");
+    assert!(write("a", "p2", &second, check("a", "p2", &second)).0.is_ok());
+    let (answer, changed) = write("a", "e1", &late, checked);
+    let rejected = answer.unwrap_err();
+    assert_eq!((rejected["problems"][0]["code"].clone(), rejected["problems"][0]["path"].clone()),
+        (json!("version_conflict"), json!("changes[0].key")));
+    assert!(changed.is_none());
+    assert_eq!(stored(), body("Second."));
+
+    // Checked at 2; another section is written before the commit: it goes through.
+    let edit2 = edit("e2", 2, "Edited.");
+    let checked = check("a", "e2", &edit2);
+    let notes = put("n1", 2, "notes", "Notes.");
+    assert!(write("b", "n1", &notes, check("b", "n1", &notes)).0.is_ok());
+    let (answer, _) = write("a", "e2", &edit2, checked);
+    assert_eq!(answer.unwrap()["version"], 4);
+    assert_eq!(stored(), body("Edited."));
 }
 
 /// An edit's section: the stored one with the edited blocks in place, in
@@ -880,7 +949,7 @@ fn commit(
             "Your Turn ended or changed while the update was checked; nothing was changed. Read the Brief again in your current Turn.",
             "errors")], None)), None));
     }
-    if let Some(rejected) = conflict(store, &tx, &ctx, request.expected)? {
+    if let Some(rejected) = conflict(store, &tx, &ctx, request)? {
         return Ok((Err(rejected), None));
     }
     let problems = rules(store, &tx, &ctx, request)?;
@@ -896,15 +965,21 @@ fn commit(
                 or reference large files by a path above 25 MB.", SNAPSHOT_BRIEF_BYTES / 1024 / 1024),
             "attachments")], None)), None));
     }
+    let before = sections::brief_version(&tx, &ctx.project)?;
     let version = if request.no_change {
-        sections::brief_version(&tx, &ctx.project)?
+        before
     } else {
         tx.execute(
             "INSERT INTO project_briefs(project_id,version,updated_at) VALUES(?1,1,?2)
              ON CONFLICT(project_id) DO UPDATE SET version=version+1,updated_at=excluded.updated_at",
             params![ctx.project, now()],
         )?;
-        sections::brief_version(&tx, &ctx.project)?
+        let version = sections::brief_version(&tx, &ctx.project)?;
+        // The keys `apply` changed: each change writes its own key, and no
+        // op changes another section.
+        let keys: Vec<&str> = request.changes.iter().map(|change| change.key.as_str()).collect();
+        writes::record(&tx, &ctx.project, before, version, &keys)?;
+        version
     };
     let receipt = uuid::Uuid::new_v4().to_string();
     let kind = if request.no_change { "noChange" } else { "updated" };
