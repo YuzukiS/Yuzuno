@@ -147,8 +147,8 @@ export const homeText = strings({
     `Your reply to version ${sent} of this ask was delivered before, so nothing more was sent. Home shows version ${now}: reply again to answer it.`,
   askNotConfirmed: (version: number | null, what: string) =>
     version === null
-      ? `An earlier reply here was not confirmed: “${what}”.`
-      : `An earlier reply to version ${version} of this ask was not confirmed: “${what}”.`,
+      ? `An earlier reply here was not confirmed: “${what}”. It may already have been delivered; sent again as it was, it is not delivered twice.`
+      : `An earlier reply to version ${version} of this ask was not confirmed: “${what}”. It may already have been delivered; sent again as it was, it is not delivered twice.`,
   askSendAsItWas: (version: number | null) =>
     version === null ? "Send it again as it was" : `Send it again as it was (version ${version})`,
   askDiscardUnconfirmed: "Discard it",
@@ -405,7 +405,9 @@ export const homeText = strings({
   askReloadHome: "没有发送任何内容：请重新加载 Home 后再在这里回复。",
   askSentBefore: (sent, now) => `你对这个提问版本 ${sent} 的回复此前已送达，因此没有再次发送。Home 现在显示版本 ${now}：如需回答，请再次回复。`,
   askNotConfirmed: (version, what) =>
-    version === null ? `这里之前的一条回复未得到确认：“${what}”。` : `之前对这个提问版本 ${version} 的回复未得到确认：“${what}”。`,
+    version === null
+      ? `这里之前的一条回复未得到确认：“${what}”。它可能已经送达；按原样重新发送不会重复送达。`
+      : `之前对这个提问版本 ${version} 的回复未得到确认：“${what}”。它可能已经送达；按原样重新发送不会重复送达。`,
   askSendAsItWas: (version) => (version === null ? "按原样重新发送" : `按原样重新发送（版本 ${version}）`),
   askDiscardUnconfirmed: "丢弃它",
   askUnconfirmedDiscarded: "只在这里丢弃：它可能已经送达。再次回复前请先查看会话。",
