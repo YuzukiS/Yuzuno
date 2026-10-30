@@ -333,6 +333,7 @@ export function HomeReturnOverview({
                   <details className="home-return-question">
                     <summary>{t.question}</summary>
                     <p>{entry.section.ask?.question}</p>
+                    <p className="home-note">{t.questionVersionNote}</p>
                   </details>
                   <div className="home-return-detail-footer">
                     <span>{t.noReplyNeeded}</span>
@@ -357,7 +358,7 @@ export function HomeReturnOverview({
                             })
                           }
                         >
-                          {t.conversation}
+                          {t.conversation(entry.section.owner.name)}
                           <ArrowRight size={13} />
                         </button>
                       )

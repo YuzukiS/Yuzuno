@@ -194,7 +194,7 @@ test("reply states are honest, show original text, and read-only views send noth
     await until(() => p.doc.querySelector(".home-return-dialog"));
     const text = p.doc.querySelector(".home-return-dialog").textContent;
     assert.match(text, /Your recorded replyYes, keep the cards/);
-    assert.match(text, /Current owner: Mina/);
+    assert.match(text, /Owner at this reading: Mina/);
     assert.match(text, /Marked resolved/);
     assert.equal(p.requests.length, 0);
     assert.deepEqual(p.errors, []);
@@ -297,6 +297,55 @@ test("failed refresh keeps the reading, exposes its age, and disables applying i
   }
 });
 
+test("a held receipt does not claim the current owner or bind its question to the reply", async () => {
+  const p = mount();
+  try {
+    const first = data();
+    p.w.renderOverview(first);
+    await until(() => p.doc.querySelector(".home-return-overview"));
+    const next = structuredClone(first);
+    const changed = next.projects[0].brief.sections[1];
+    changed.owner = { agentId: "b", name: "Iris", state: "active" };
+    changed.version = 2;
+    changed.ask.question = "A revised question after your reply";
+    p.w.renderOverview(next);
+    await until(() => p.doc.querySelector(".home-return-refresh.has-update"));
+    click(p, ".home-return-receipt");
+    await until(() => p.doc.querySelector(".home-return-dialog"));
+    const receipt = p.doc.querySelector(".home-return-reply-detail");
+    assert.match(receipt.textContent, /Owner at this reading: Mina/);
+    assert.match(receipt.textContent, /Card version at this reading: 1/);
+    assert.match(receipt.textContent, /Card question at this reading/);
+    assert.match(
+      receipt.textContent,
+      /not a verified copy of the question when you replied/,
+    );
+    assert.doesNotMatch(
+      receipt.textContent,
+      /Current owner|Replied to version|A revised question/,
+    );
+    click(p, '[aria-label="Close overview"]');
+    await until(() => !p.doc.querySelector(".home-return-dialog"));
+    click(p, ".home-return-refresh");
+    click(p, ".home-return-receipt");
+    await until(() =>
+      p.doc
+        .querySelector(".home-return-dialog")
+        ?.textContent.includes("Owner at this reading: Iris"),
+    );
+    assert.match(
+      p.doc.querySelector(".home-return-dialog").textContent,
+      /A revised question after your reply/,
+    );
+    assert.match(
+      p.doc.querySelector(".home-return-dialog").textContent,
+      /Your recorded replyYes, keep the cards/,
+    );
+  } finally {
+    p.close();
+  }
+});
+
 test("actual Home drops a previous workspace response and late failure", async () => {
   const homeReads = [];
   const p = mount({
@@ -352,8 +401,12 @@ test("actual Home drops a previous workspace response and late failure", async (
       /Old request failed late|New workspace result/,
     );
     assert.ok(
-      p.requests.every((r) => r.method === "GET"),
-      "Home does not mark Seen on read",
+      p.requests.every(
+        (r) =>
+          r.method === "GET" ||
+          r.url === "/api/collaboration/github_repositories",
+      ),
+      "Only reads are allowed: repository discovery is a read-only POST; no Seen, reply, order or action writes",
     );
   } finally {
     p.close();
