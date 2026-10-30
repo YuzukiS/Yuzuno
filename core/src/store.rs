@@ -3348,7 +3348,7 @@ impl AgentDetail {
     /// The record without its Turns (its metadata and receipts), copied.
     pub(crate) fn clone_meta(&self) -> AgentDetail {
         let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage, message_receipts, claude_runtime,
-            codex_handoff } = self;
+            codex_handoff, opencode_usage_seen } = self;
         AgentDetail {
             agent: agent.clone(),
             turns: Vec::new(),
@@ -3359,6 +3359,7 @@ impl AgentDetail {
             message_receipts: message_receipts.clone(),
             claude_runtime: claude_runtime.clone(),
             codex_handoff: codex_handoff.clone(),
+            opencode_usage_seen: opencode_usage_seen.clone(),
         }
     }
 }

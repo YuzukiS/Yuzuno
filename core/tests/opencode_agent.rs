@@ -1871,9 +1871,10 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
 }
 
 /// R5 0aa6e52c: an answer to an earlier Turn says nothing of now, however
-/// late it comes. With an earlier Turn measured and a newer Turn's answer
-/// unmeasurable, a late answer to the earlier Turn, newer than what was
-/// measured and older than that answer, changes nothing.
+/// late it comes, after a resync or a reconnect too. With an earlier Turn
+/// measured and a newer Turn's answer unmeasurable, a late answer to the
+/// earlier Turn, newer than what was measured and older than that answer,
+/// changes nothing; a newer valid answer measures.
 #[tokio::test]
 async fn context_usage_a_late_answer_of_an_earlier_turn_never_measures() {
     let lab = lab(&[], false).await;
@@ -1882,26 +1883,91 @@ async fn context_usage_a_late_answer_of_an_earlier_turn_never_measures() {
     let (first, measured) = answered(&lab, "c1", flash(json!(100))).await;
     assert_eq!(measured, Some((100, 1000, first.clone(), false)));
     let last_known = Some((100, 1000, first.clone(), true));
-    let (second, unknown) = answered(&lab, "c2", flash(json!(-1))).await;
-    assert_eq!(unknown, last_known, "the newer Turn's answer can't be measured");
+    let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
+    let newer = lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!(-1))})).await;
+    let d = lab.until("its end", |d| turn(d, &second)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), last_known, "the newer Turn's answer can't be measured");
 
-    // A late answer to the earlier Turn, between what was measured and the newer Turn's answer.
-    let d = lab.detail();
+    // A late answer to the earlier Turn, between what was measured and the
+    // newer Turn's answer, stored as OpenCode would.
     let measured_at = chrono::DateTime::parse_from_rfc3339(&d.context_usage.as_ref().unwrap().updated_at).unwrap().timestamp_millis();
-    let newer = turn(&d, &second)["_opencodeUsageSeen"]["at"].as_i64().unwrap();
     let at = measured_at + 1;
-    assert!(at < newer, "{at} before {newer}");
-    let late = json!({"id":"msg_late","sessionID":session,"role":"assistant","parentID":first,
-        "time":{"created":at,"completed":at},"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":900}});
-    // Its record change, the one that measures it or not, is journaled.
+    assert!(at < newer["time"]["completed"].as_i64().unwrap(), "{at} before the newer answer");
+    let mut late = flash(json!(900));
+    late["time"] = json!({"created":at,"completed":at});
+    // Each answer's record change, the one that measures it or not, is journaled.
     let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
     let handled = updates(&lab);
-    lab.control("event", json!({"type":"message.updated","properties":{"sessionID":session,"info":late}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
     for _ in 0..200 {
         if updates(&lab) > handled { break; }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(updates(&lab) > handled, "the late answer handled");
     assert_eq!(usage_of(&lab.detail()), last_known, "a late answer to an earlier Turn measures nothing");
+
+    // A newer valid answer measures.
+    let (third, measured) = answered(&lab, "c3", flash(json!(300))).await;
+    let fresh = Some((300, 1000, third.clone(), false));
+    assert_eq!(measured, fresh);
+
+    // Read again, the late answer among the stored ones: nothing changes.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(usage_of(&lab.detail()), fresh, "after a resync");
+
+    // A lost connection makes it last known; the new connection reads every
+    // stored answer again, with nothing of the old one's memory, and that
+    // changes nothing.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    assert!(ends(old).await);
+    let last_known = Some((300, 1000, third, true));
+    assert_eq!(usage_of(&lab.detail()), last_known);
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), last_known, "after a reconnect");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R5 0aa6e52c, the latest input's side: once a newer Turn is asked, a late
+/// answer to the earlier one, newer than any answer considered, still says
+/// nothing of now. What was measured stays last known until the new
+/// input's own answer.
+#[tokio::test]
+async fn context_usage_a_late_answer_after_a_new_input_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(json!(100))).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
+    let d = lab.detail();
+    let last_known = Some((100, 1000, first.clone(), true));
+    assert_eq!(usage_of(&d), last_known, "a new input");
+
+    // Newer than the measured answer, the newest considered.
+    let at = chrono::DateTime::parse_from_rfc3339(&d.context_usage.as_ref().unwrap().updated_at).unwrap().timestamp_millis() + 1;
+    let mut late = flash(json!(900));
+    late["time"] = json!({"created":at,"completed":at});
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    assert_eq!(usage_of(&lab.detail()), last_known, "a late answer to the earlier Turn measures nothing");
+
+    // The new input's own answer measures.
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!(300))})).await;
+    let d = lab.until("its end", |d| turn(d, &second)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((300, 1000, second, false)));
     lab.ws.close_agent(ID).await.unwrap();
 }

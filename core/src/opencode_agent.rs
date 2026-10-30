@@ -75,7 +75,7 @@
 //! it starts but not found again after the event stream breaks; no remote
 //! machines.
 use crate::{
-    model::{ensure_agent_open, now, AgentDetail, ContextUsage, PendingRequest},
+    model::{ensure_agent_open, now, AgentDetail, ContextUsage, PendingRequest, UsageSeen},
     opencode::{self, CommandChoice, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
@@ -469,6 +469,7 @@ impl Workspace {
             message_receipts: vec![],
             claude_runtime: None,
             codex_handoff: None,
+            opencode_usage_seen: None,
         };
         self.stored(move |store| store.insert_created(&detail)).await?;
         self.changed(&id);
@@ -713,13 +714,14 @@ impl Workspace {
         let (agent, data, usage) = (id.to_owned(), json!({"model":model,"window":window}), c.clone());
         let turn = pending.turn.clone();
         let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/contextWindow", &data, Sel::Turns(vec![turn]), move |d| {
-            // Checked as it is written: still the newest answer of the newest
-            // Turn, and nothing since made it stale.
+            // Checked as it is written: still the newest answer considered in
+            // this session, to the latest input of the newest Turn, and
+            // nothing since made it stale.
             let current = usage.usage.lock().unwrap().epoch == pending.epoch;
             let turn = d.turns.last().filter(|t| t["id"] == pending.turn.as_str());
             let latest = turn.and_then(latest_input) == Some(pending.parent.as_str());
-            let newest = turn.and_then(seen) == Some((pending.at, pending.answer.as_str()));
-            if current && latest && newest && not_before_measured(d, pending.at) {
+            let newest = seen(d, &usage.session) == Some((pending.at, pending.answer.as_str()));
+            if current && latest && newest {
                 if let Some(at) = chrono::DateTime::from_timestamp_millis(pending.at) {
                     if let Some(measured) = ContextUsage::measured(pending.used, window, &pending.turn, at) {
                         d.context_usage = Some(measured);
@@ -1517,11 +1519,12 @@ fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&V
 
 /// The Agent's context usage from an answer of its own session (T-10,
 /// contract on T-10 #757): the newest completed answer to the latest input
-/// of its newest Turn, against the window of the model that answered. A compaction makes
-/// what was measured before it last known; an answer that can't be measured
-/// does too, never 0. An answer replayed, or older than what was measured,
-/// changes nothing. An answer whose model the connection's list didn't have
-/// waits, alone, for one read of the catalog (`wanted`).
+/// of its newest Turn, against the window of the model that answered. A
+/// compaction makes what was measured before it last known; an answer that
+/// can't be measured does too, never 0. An answer replayed, or no newer than
+/// the newest one considered in the session (`seen`), changes nothing. An
+/// answer whose model the connection's list didn't have waits, alone, for
+/// one read of the catalog (`wanted`).
 fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
     if info["role"] != "assistant" {
         return;
@@ -1541,20 +1544,21 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
         else { return };
     // An answer to an earlier input, completed late, says nothing of now:
     // one to an earlier Turn (every change holds the newest one, last; R5
-    // 0aa6e52c), or to an earlier input of its Turn; nor does one older
-    // than the last measurement.
-    if index + 1 != d.turns.len() || latest_input(&d.turns[index]) != Some(parent) || !not_before_measured(d, at) {
+    // 0aa6e52c), or to an earlier input of its Turn.
+    if index + 1 != d.turns.len() || latest_input(&d.turns[index]) != Some(parent) {
         return;
     }
-    // Once considered for its Turn, measured or not, an answer never
-    // measures here again, nor does one older than it: a replay of the
-    // record or a late answer (R3 eb8dff5f). Of two that completed in the
-    // same millisecond, the later ID is the newer (OpenCode's IDs ascend).
-    if seen(&d.turns[index]).is_some_and(|seen| (at, answer) <= seen) {
+    // Once considered, measured or not, an answer never measures here
+    // again, nor does one older than it, whatever its Turn: a replay of the
+    // record, after a reconnect too, or a late answer (R3 eb8dff5f, R5
+    // 0aa6e52c). What was measured is shown; it is not this boundary. Of two
+    // that completed in the same millisecond, the later ID is the newer
+    // (OpenCode's IDs ascend).
+    if seen(d, &c.session).is_some_and(|seen| (at, answer) <= seen) {
         return;
     }
     let Some(turn) = d.turns[index]["id"].as_str().map(str::to_owned) else { return };
-    d.turns[index]["_opencodeUsageSeen"] = json!({"at":at,"answer":answer});
+    d.opencode_usage_seen = Some(UsageSeen { session: c.session.clone(), at, answer: answer.to_owned() });
     let used = context_used(&info["tokens"]);
     let model = info["providerID"].as_str().zip(info["modelID"].as_str()).map(|(provider, model)| format!("{provider}/{model}"));
     let mut usage = c.usage.lock().unwrap();
@@ -1611,19 +1615,10 @@ fn latest_input(turn: &Value) -> Option<&str> {
     }
 }
 
-/// The newest answer considered for a Turn's context usage, measured or not,
-/// as when it completed and its ID.
-fn seen(turn: &Value) -> Option<(i64, &str)> {
-    turn["_opencodeUsageSeen"]["at"].as_i64().zip(turn["_opencodeUsageSeen"]["answer"].as_str())
-}
-
-/// Whether an answer completed at `at` (ms) isn't older than what was last
-/// measured: one in the same millisecond may be the newer, which its Turn's
-/// `seen` decides.
-fn not_before_measured(d: &AgentDetail, at: i64) -> bool {
-    d.context_usage.as_ref()
-        .and_then(|usage| chrono::DateTime::parse_from_rfc3339(&usage.updated_at).ok())
-        .is_none_or(|measured| at >= measured.timestamp_millis())
+/// The newest answer of `session` considered for the context usage, measured
+/// or not, as when it completed and its ID; none of another session.
+fn seen<'a>(d: &'a AgentDetail, session: &str) -> Option<(i64, &'a str)> {
+    d.opencode_usage_seen.as_ref().filter(|seen| seen.session == session).map(|seen| (seen.at, seen.answer.as_str()))
 }
 
 /// Whether `at` (ms) is after what was last measured, or nothing was.

@@ -720,6 +720,7 @@ impl Workspace {
             message_receipts: vec![],
             claude_runtime: None,
             codex_handoff: None,
+            opencode_usage_seen: None,
         };
         self.stored(move |store| store.insert_created(&detail)).await?;
         self.changed(&id);

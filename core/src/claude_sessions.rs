@@ -194,7 +194,7 @@ impl Workspace {
                 reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
             },
             turns: vec![], history: None, pending: vec![], artifacts: vec![], context_usage: None,
-            message_receipts: vec![], claude_runtime: None, codex_handoff: None,
+            message_receipts: vec![], claude_runtime: None, codex_handoff: None, opencode_usage_seen: None,
         };
         let read = {
             let _read = self.session_read().await?;

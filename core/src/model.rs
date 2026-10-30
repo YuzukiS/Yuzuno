@@ -100,6 +100,19 @@ impl ContextUsage {
     }
 }
 
+/// The newest answer of an OpenCode Agent's own session that was considered
+/// for its context usage, measured or not (T-10, R5): the boundary between
+/// newer and older answers, which `ContextUsage` (shown) is not. Kept for
+/// the native `session` it was seen in only: another one starts with none.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSeen {
+    pub session: String,
+    /// When the answer completed (ms).
+    pub at: i64,
+    pub answer: String,
+}
+
 /// Facts the native Claude runtime reported, kept for display. Account
 /// labels come from initialization; no credential or key source is stored.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -408,6 +421,8 @@ pub struct AgentDetail {
     pub claude_runtime: Option<ClaudeRuntime>,
     #[serde(default, rename = "codexHandoff", skip_serializing_if = "Option::is_none")]
     pub codex_handoff: Option<CodexHandoff>,
+    #[serde(default, rename = "opencodeUsageSeen", skip_serializing_if = "Option::is_none")]
+    pub opencode_usage_seen: Option<UsageSeen>,
 }
 
 impl AgentDetail {

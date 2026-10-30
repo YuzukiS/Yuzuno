@@ -479,6 +479,7 @@ impl Workspace {
             history: Some(HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor }),
             turns: page.turns, pending: vec![], artifacts: vec![], context_usage: None, message_receipts: vec![], claude_runtime: None,
             codex_handoff: None,
+            opencode_usage_seen: None,
         };
         detail.refresh_snapshot_evidence();
         let agent = self.stored(move |store| store.insert_codex_import(&detail, &baseline)).await?;
@@ -848,6 +849,7 @@ impl Workspace {
             turns: page.turns, pending: vec![], artifacts: vec![], context_usage: None, message_receipts: vec![],
             claude_runtime: None,
             codex_handoff: Some(CodexHandoff { forked_from: Some(link(&source.agent.id, &row.source_thread_id)), ..Default::default() }),
+            opencode_usage_seen: None,
         };
         detail.refresh_snapshot_evidence();
         let forked_to = link("", &fork_thread);
