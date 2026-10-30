@@ -192,7 +192,11 @@ try {
     before,
   );
   await snap(page, "desktop-compact");
-  await page.getByRole("button", { name: "成果与证据", exact: true }).click();
+  const outcomeTrigger = page.getByRole("button", {
+    name: "成果与证据",
+    exact: true,
+  });
+  await outcomeTrigger.click();
   await page.locator(".outcome-drawer .outcome-author-report").waitFor();
   await snap(page, "desktop-outcome");
   await page.getByRole("tab", { name: "逐项依据", exact: true }).click();
@@ -221,10 +225,17 @@ try {
   assert.equal(await page.locator(".outcome-drawer a[download]").count(), 0);
   await snap(page, "desktop-historical-mismatch");
   await page.getByRole("button", { name: "关闭成果详情" }).click();
-  assert.equal(
-    await page.evaluate(() => document.activeElement?.textContent),
-    "成果与证据",
+  await page
+    .locator(".outcome-drawer")
+    .waitFor({ state: "detached", timeout: 5000 });
+  await page.waitForFunction(
+    (trigger) => document.activeElement === trigger,
+    await outcomeTrigger.elementHandle(),
+    { timeout: 5000 },
   );
+  report.checks.push({
+    name: "closing historical evidence restores focus to its exact trigger",
+  });
   await page.getByRole("button", { name: "更新结果", exact: true }).click();
   const draft = page.locator(".collab-result textarea").first();
   await draft.fill("不会被后台刷新抹掉的草稿");
@@ -300,6 +311,18 @@ try {
   assert.deepEqual(report.writes, []);
 } catch (error) {
   report.failures.push(error.stack || String(error));
+  report.focusAtFailure = await activePage
+    ?.evaluate(() => ({
+      active: document.activeElement?.outerHTML.slice(0, 1000),
+      drawerPresent: !!document.querySelector(".outcome-drawer"),
+      triggers: [...document.querySelectorAll(".task-outcome button")].map(
+        (button) => ({
+          text: button.textContent,
+          connected: button.isConnected,
+        }),
+      ),
+    }))
+    .catch(() => null);
   await activePage
     ?.screenshot({ path: resolve(output, "failure.png") })
     .catch(() => {});
