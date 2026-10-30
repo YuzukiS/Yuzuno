@@ -82,6 +82,9 @@ fn setup() -> (tempfile::TempDir, Store, String) {
         .as_str()
         .unwrap()
         .to_owned();
+    let task = crate::collaboration_store::task_key(&store.db.read().unwrap(), &task)
+        .unwrap()
+        .0;
     store
         .github_link_object(
             &task,
@@ -192,6 +195,21 @@ fn compact_page_retains_decisions_and_omits_heavy_evidence_while_gui_and_detail_
         crate::mcp_views::answer("review_get", full.clone(), Some("full")),
         full
     );
+    store
+        .github_refresh_object(
+            "7:pull:1",
+            Ok((
+                Repository {
+                    id: 7,
+                    full_name: "example/repo".into(),
+                },
+                json!({"baseSha":"d".repeat(40),"headSha":"b".repeat(40)}),
+            )),
+        )
+        .unwrap();
+    let changed = store.list_pr_review_summaries("T-1", None).unwrap();
+    assert_eq!(changed["reviews"][0]["outdated"], true);
+    assert!(conforms(&list_schema(), &changed));
 }
 
 #[test]
@@ -210,6 +228,9 @@ fn compact_pages_keep_task_identity_order_and_cursors_across_new_insertions() {
         .as_str()
         .unwrap()
         .to_owned();
+    let other = crate::collaboration_store::task_key(&store.db.read().unwrap(), &other)
+        .unwrap()
+        .0;
     insert(&store, &other, "other-review", 1);
     let mut seen = Vec::new();
     let mut before = None;
