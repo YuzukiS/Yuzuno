@@ -308,9 +308,9 @@ async fn advice_is_only_about_what_this_call_changed() {
 #[tokio::test]
 async fn a_preview_says_whether_every_step_was_checked() {
     let (_dir, ws, _project) = lab();
-    // Stopped before the validator (the version), and at it (later steps not run).
+    // Stopped before the validator (plan's version), and at it (later steps not run).
     update::update(&ws, &FAKE, "a", input("a1", 0, vec![put("plan")])).await.unwrap().unwrap();
-    assert_eq!(preview(&ws, "a", input("p1", 0, vec![put("notes")])).await["checkedAll"], false);
+    assert_eq!(preview(&ws, "a", input("p1", 0, vec![put("plan")])).await["checkedAll"], false);
     assert_eq!(preview(&ws, "a", input("p2", 1, vec![invalid("notes")])).await["checkedAll"], false);
     // Attachments are the last step: their problems come after every other check.
     let mut own = put("own");
