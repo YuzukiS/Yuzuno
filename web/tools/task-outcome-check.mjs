@@ -295,6 +295,32 @@ try {
       .isVisible(),
     false,
   );
+  const sourceDetails = mobile.page.locator(".outcome-source-details").first();
+  const sourceSummary = sourceDetails.locator(":scope > summary");
+  const closedMarker = await sourceSummary.evaluate(
+    (element) => getComputedStyle(element, "::after").content,
+  );
+  assert.notEqual(
+    closedMarker,
+    '"−"',
+    "closed source does not inherit the open criterion marker",
+  );
+  await sourceSummary.click();
+  assert.equal(
+    await sourceDetails.locator("code").first().isVisible(),
+    true,
+    "source opens independently",
+  );
+  await sourceSummary.click();
+  assert.equal(
+    await sourceDetails.locator("code").first().isVisible(),
+    false,
+    "source closes independently",
+  );
+  report.checks.push({
+    name: "nested source disclosure keeps its own closed marker and open state",
+    closedMarker,
+  });
   await snap(mobile.page, "mobile-evidence");
   const size = await mobile.page.locator(".outcome-drawer").boundingBox();
   assert.ok(size.width >= 388 && size.height >= 842, "mobile full screen");

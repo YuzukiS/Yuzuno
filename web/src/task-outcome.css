@@ -355,7 +355,7 @@
   border-radius: 10px;
   background: var(--paper);
 }
-.outcome-criterion summary {
+.outcome-criterion > summary {
   padding: 16px;
   display: flex;
   align-items: center;
@@ -363,26 +363,26 @@
   cursor: pointer;
   list-style: none;
 }
-.outcome-criterion summary::-webkit-details-marker {
+.outcome-criterion > summary::-webkit-details-marker {
   display: none;
 }
-.outcome-criterion summary::after {
+.outcome-criterion > summary::after {
   content: "+";
   color: var(--text-secondary);
 }
-.outcome-criterion[open] summary::after {
+.outcome-criterion[open] > summary::after {
   content: "−";
 }
-.outcome-criterion summary > svg {
+.outcome-criterion > summary > svg {
   flex-shrink: 0;
   color: var(--green);
 }
-.outcome-criterion summary strong {
+.outcome-criterion > summary strong {
   flex: 1;
   font-size: 0.89rem;
   line-height: 1.6;
 }
-.outcome-criterion summary .outcome-chip {
+.outcome-criterion > summary .outcome-chip {
   max-width: 135px;
   flex-shrink: 0;
   font-size: 0.68rem;
@@ -520,7 +520,7 @@
   font-size: 0.78rem;
   overflow-wrap: anywhere;
 }
-.outcome-drawer-content[data-density="high"] .outcome-criterion summary {
+.outcome-drawer-content[data-density="high"] .outcome-criterion > summary {
   padding: 11px 13px;
 }
 .outcome-drawer-content[data-density="high"] .outcome-author-report {
@@ -547,19 +547,19 @@
   .outcome-tiles {
     grid-template-columns: 1fr;
   }
-  .outcome-criterion summary {
+  .outcome-criterion > summary {
     flex-wrap: wrap;
     gap: 7px;
     padding: 12px;
   }
-  .outcome-criterion summary strong {
+  .outcome-criterion > summary strong {
     flex-basis: calc(100% - 40px);
   }
-  .outcome-criterion summary .outcome-chip {
+  .outcome-criterion > summary .outcome-chip {
     max-width: none;
     margin-left: 24px;
   }
-  .outcome-criterion summary::after {
+  .outcome-criterion > summary::after {
     margin-left: auto;
   }
   .outcome-facts {
