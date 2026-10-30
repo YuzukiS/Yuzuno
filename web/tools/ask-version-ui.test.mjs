@@ -84,6 +84,8 @@ function mount(answer = accepted) {
   const posts = [];
   let ids = 0;
   window.crypto.randomUUID = () => `client-${++ids}`;
+  // A form copies its answers on submit (clarification-ui.test.mjs does the same).
+  window.structuredClone = structuredClone;
   const box = { answer, sent: 0 };
   window.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;

@@ -589,7 +589,10 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 2, "the reply was retried");
     const [first, retry] = p.posts(/\/brief\/reply$/);
     assert.match(first.url, /\/api\/projects\/p-app\/brief\/reply$/);
-    assert.deepEqual(Object.keys(first.body).sort(), ["agentId", "clientMessageId", "key", "text"]);
+    // A reply to an ask names the version answered and the Workspace (T-9).
+    assert.deepEqual(Object.keys(first.body).sort(), ["agentId", "askVersion", "clientMessageId", "key", "text", "workspaceId"]);
+    assert.deepEqual([first.body.askVersion, first.body.workspaceId], [3, "ws-home"]);
+    assert.equal(retry.body.askVersion, first.body.askVersion, "the same version on retry");
     assert.equal(first.body.key, "release");
     assert.equal(first.body.agentId, "a");
     assert.equal(first.body.text, "Ship it after the docs fix");
@@ -1780,7 +1783,9 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     answer();
     await waitFor(() => /Replied · waiting for/.test(card(again, "p-app", "release").textContent), "delivered");
     const [sent] = again.posts(/\/brief\/reply$/);
-    assert.deepEqual(keys(sent.body), ["agentId", "clientMessageId", "key", "text"], "an Ask's reply names no version or title");
+    // The version the reply was begun on and the Workspace, never a card's version or title (T-9).
+    assert.deepEqual(keys(sent.body), ["agentId", "askVersion", "clientMessageId", "key", "text", "workspaceId"]);
+    assert.deepEqual([sent.body.askVersion, sent.body.workspaceId], [3, "ws-home"]);
     assert.deepEqual([sent.body.key, sent.body.agentId, sent.body.text], ["release", "b", "Only after the docs land."]);
     assert.equal(askDrafts(again)[releaseSlot()].text, "Only after the docs land. And the changelog.");
     assert.match(card(again, "p-app", "release").textContent, /A reply you wrote here is kept, not sent: Reply again to see it\./);
@@ -1821,7 +1826,8 @@ test("an Ask asked again under its key holds a reply begun on the earlier versio
     assert.equal(send().disabled, false);
     send().click();
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "sent once referred");
-    assert.deepEqual(keys(p.posts(/\/brief\/reply$/)[0].body), ["agentId", "clientMessageId", "key", "text"]);
+    assert.deepEqual(keys(p.posts(/\/brief\/reply$/)[0].body), ["agentId", "askVersion", "clientMessageId", "key", "text", "workspaceId"]);
+    assert.equal(p.posts(/\/brief\/reply$/)[0].body.askVersion, 4, "to the version it was referred to");
     await waitFor(() => p.w.localStorage.getItem(ASK_DRAFTS) === null, "no draft after delivery");
     // Begun again, then the question changes again: Discard drops it, sending nothing.
     p.button("Reply again", release()).click();
