@@ -91,7 +91,7 @@ async function mount(width = 1440, theme = "light") {
       );
       localStorage.setItem(
         "yuzuno.appearance",
-        JSON.stringify({ theme, palette: "sunroom", fontSize: 16 }),
+        JSON.stringify({ theme, palette: "garden", fontSize: 16 }),
       );
     },
     { theme },
@@ -130,7 +130,24 @@ async function mount(width = 1440, theme = "light") {
             agent: fixture.agents.find((a) =>
               url.pathname.endsWith("/" + a.id),
             ),
-            turns: [],
+            turns: [
+              {
+                id: "turn-synthetic",
+                status: "completed",
+                items: [
+                  {
+                    id: "synthetic-input",
+                    type: "userMessage",
+                    content: [{ type: "text", text: "Synthetic source input" }],
+                  },
+                  {
+                    id: "synthetic-output",
+                    type: "agentMessage",
+                    text: "Synthetic source report",
+                  },
+                ],
+              },
+            ],
             pending: [],
             artifacts: [],
             messageReceipts: [],
@@ -187,7 +204,7 @@ try {
   );
   assert.match(
     await page.locator(".outcome-drawer").innerText(),
-    /暂无逐项独立核对记录/,
+    /独立核对.*用户接受/,
   );
   await page.getByRole("tab", { name: "版本记录", exact: true }).click();
   await snap(page, "desktop-versions");
@@ -226,6 +243,22 @@ try {
   assert.equal(await draft.inputValue(), "不会被后台刷新抹掉的草稿");
   assert.equal(await draft.evaluate((e) => e === document.activeElement), true);
   report.checks.push({ name: "background refresh preserves draft and focus" });
+  await page.getByRole("button", { name: "查看原始对话", exact: true }).click();
+  await page
+    .locator('[data-agent-id="writer"] [data-turn-id="turn-synthetic"]')
+    .waitFor();
+  await page.waitForFunction(
+    () =>
+      document.activeElement?.getAttribute("data-turn-id") === "turn-synthetic",
+  );
+  report.checks.push({
+    name: "full App source link opens the exact author and native turn",
+    agentId: "writer",
+    turnId: "turn-synthetic",
+  });
+  await settle(page);
+  await page.screenshot({ path: resolve(output, "source-navigation.png") });
+  report.screenshots.push("source-navigation.png");
   await context.close();
   const mobile = await mount(390);
   await mobile.page.locator(".task-outcome").scrollIntoViewIfNeeded();
@@ -236,6 +269,21 @@ try {
   await mobile.page.locator(".outcome-drawer .outcome-author-report").waitFor();
   await mobile.page.getByRole("tab", { name: "逐项依据", exact: true }).click();
   await mobile.page.locator(".outcome-criterion summary").first().click();
+  assert.equal(
+    await mobile.page
+      .locator(".outcome-source-details")
+      .first()
+      .getAttribute("open"),
+    null,
+    "technical identity starts folded on mobile",
+  );
+  assert.equal(
+    await mobile.page
+      .locator(".outcome-source-details code")
+      .first()
+      .isVisible(),
+    false,
+  );
   await snap(mobile.page, "mobile-evidence");
   const size = await mobile.page.locator(".outcome-drawer").boundingBox();
   assert.ok(size.width >= 388 && size.height >= 842, "mobile full screen");

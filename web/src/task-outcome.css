@@ -294,22 +294,35 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.outcome-verification {
-  margin: 22px 0;
+.outcome-verification-summary {
+  margin: 20px 0;
+  padding: 12px 0;
   border-top: 1px solid var(--line);
-}
-.outcome-verification section {
-  padding: 15px 0;
   border-bottom: 1px solid var(--line);
 }
-.outcome-verification h4 {
-  font-size: 0.87rem;
-  margin: 0 0 7px;
+.outcome-verification-summary > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 0.82rem;
 }
-.outcome-verification p {
-  font-size: 0.81rem;
+.outcome-verification-summary > p {
   color: var(--text-secondary);
+  font-size: 0.78rem;
   line-height: 1.65;
+  margin: 10px 0 0;
+}
+.outcome-source-details {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  margin-top: 12px;
+}
+.outcome-source-details > summary {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  cursor: pointer;
 }
 .outcome-warning {
   padding: 12px 14px;

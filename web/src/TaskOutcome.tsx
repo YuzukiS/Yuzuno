@@ -271,10 +271,12 @@ function Artifact({
   artifact,
   taskId,
   t,
+  dense = false,
 }: {
   artifact: OutcomeArtifact;
   taskId: string;
   t: Text;
+  dense?: boolean;
 }) {
   const state =
     {
@@ -295,37 +297,7 @@ function Artifact({
       >
         {state}
       </span>
-      <dl className="outcome-facts">
-        <dt>{t.jobState}</dt>
-        <dd>{artifact.jobStatus || t.unavailable}</dd>
-        <dt>{t.attempt}</dt>
-        <dd>
-          <code>{artifact.attempt}</code>
-        </dd>
-        <dt>SHA-256</dt>
-        <dd>
-          <code>{artifact.sha256}</code>
-        </dd>
-        {artifact.machineName && (
-          <>
-            <dt>{t.machine}</dt>
-            <dd>{artifact.machineName}</dd>
-          </>
-        )}
-        {artifact.checkedAt && (
-          <>
-            <dt>{t.recordedAt}</dt>
-            <dd>{date(artifact.checkedAt)}</dd>
-          </>
-        )}
-        {artifact.finishedAt && (
-          <>
-            <dt>{t.finishedAt}</dt>
-            <dd>{date(artifact.finishedAt)}</dd>
-          </>
-        )}
-      </dl>
-      <p className="outcome-note">{t.bytesNotChecked}</p>
+      <p className="outcome-note">{t.fileNotRechecked}</p>
       <div className="outcome-actions">
         <button
           type="button"
@@ -350,22 +322,57 @@ function Artifact({
           </span>
         )}
       </div>
+      <details className="outcome-source-details" open={dense || undefined}>
+        <summary>{t.sourceDetails}</summary>
+        <dl className="outcome-facts">
+          <dt>{t.jobState}</dt>
+          <dd>{artifact.jobStatus || t.unavailable}</dd>
+          <dt>{t.attempt}</dt>
+          <dd>
+            <code>{artifact.attempt}</code>
+          </dd>
+          <dt>SHA-256</dt>
+          <dd>
+            <code>{artifact.sha256}</code>
+          </dd>
+          {artifact.machineName && (
+            <>
+              <dt>{t.machine}</dt>
+              <dd>{artifact.machineName}</dd>
+            </>
+          )}
+          {artifact.checkedAt && (
+            <>
+              <dt>{t.recordedAt}</dt>
+              <dd>{date(artifact.checkedAt)}</dd>
+            </>
+          )}
+          {artifact.finishedAt && (
+            <>
+              <dt>{t.finishedAt}</dt>
+              <dd>{date(artifact.finishedAt)}</dd>
+            </>
+          )}
+        </dl>
+        <p className="outcome-note">{t.bytesNotChecked}</p>
+      </details>
     </article>
   );
 }
 
 function MissingRecords({ t }: { t: Text }) {
   return (
-    <div className="outcome-verification">
-      <section>
-        <h4>{t.independent}</h4>
-        <p>{t.noVerification}</p>
-      </section>
-      <section>
-        <h4>{t.userAcceptance}</h4>
-        <p>{t.noAcceptance}</p>
-      </section>
-    </div>
+    <details className="outcome-verification-summary">
+      <summary>
+        <span>
+          {t.independent} / {t.userAcceptance}
+        </span>
+        <span className="outcome-chip">{t.noRecords}</span>
+      </summary>
+      <p>{t.noVerification}</p>
+      <p>{t.noAcceptance}</p>
+      <p>{t.separateReview}</p>
+    </details>
   );
 }
 
@@ -751,7 +758,6 @@ export function TaskOutcome({
                         </section>
                       )}
                     </div>
-                    <p className="outcome-note">{t.notVerification}</p>
                     {selected.source &&
                       availableAgents.includes(selected.source.agentId) && (
                         <button
@@ -777,7 +783,6 @@ export function TaskOutcome({
                   </div>
                 )}
                 <MissingRecords t={t} />
-                <p className="outcome-note">{t.separateReview}</p>
               </section>
               <section
                 id={`${prefix}-evidence-pane`}
@@ -850,6 +855,7 @@ export function TaskOutcome({
                                 <Artifact
                                   key={`${a.jobId}:${a.attempt}:${a.path}`}
                                   artifact={a}
+                                  dense={density === "high"}
                                   taskId={task.id}
                                   t={t}
                                 />
@@ -857,7 +863,6 @@ export function TaskOutcome({
                             ) : (
                               <p className="outcome-note">{t.noArtifacts}</p>
                             )}
-                            <p className="outcome-note">{t.noVerification}</p>
                           </div>
                         </details>
                       );

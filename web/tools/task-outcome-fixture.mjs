@@ -26,6 +26,7 @@ export function outcomeFixture() {
     links: [{ label: "阅读界面成果", url: "https://example.invalid/outcome" }],
     reportedAt: at,
     reportedBy: author,
+    source: { agentId: "writer", turnId: "turn-synthetic" },
     outcome: {
       criteria: [
         criterion,
