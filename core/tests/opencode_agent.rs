@@ -1576,3 +1576,46 @@ async fn context_usage_is_fresh_again_only_from_a_newer_answer_to_the_latest_inp
     let d = ws.store.detail(ID).unwrap();
     assert_eq!(usage_of(&d), Some((90, 1000, tenth, true)));
 }
+
+/// R1 cca110b3: after a compaction, the answer OpenCode gives under its own
+/// continuation message is the newest of the Turn, and measures. A newer
+/// answer to the same input that can't be measured leaves an older answer
+/// waiting for a catalog read unmeasured, however late the read comes.
+#[tokio::test]
+async fn context_usage_follows_a_compactions_continuation_and_only_the_newest_answer() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,"info":flash(json!({"total":100}))})).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+
+    // A compaction, then OpenCode's own continuation under a later message of its own.
+    let now = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"message.updated","properties":{"sessionID":session,"info":{
+        "id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":now},"tokens":{"total":900}}}})).await;
+    lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    let continued = "msg_fffffffffffffffffffffffffff";
+    lab.control("store", json!({"sessionID":session,"messageID":continued,"text":"Continue if you have next steps"})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Continued.","parentID":continued,"idle":false,"info":flash(json!({"total":300}))})).await;
+    let d = lab.until("the continuation's answer", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    assert_eq!(usage_of(&d), Some((300, 1000, running.clone(), false)), "measured under its Turn");
+
+    // An answer whose model waits for a slow catalog read, then a newer one that can't be measured.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut slow = deepseek["models"]["deepseek-flash"].clone();
+    slow["id"] = json!("deepseek-slow");
+    slow["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-slow"] = slow;
+    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Slow.","parentID":continued,"idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","parentID":continued,"info":flash(json!({"total":-1}))})).await;
+    lab.until("the end", |d| turn(d, &running)["status"] != "inProgress").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    assert_eq!(usage_of(&lab.detail()), Some((300, 1000, running, true)), "the newest answer was unmeasurable: last known");
+    lab.ws.close_agent(ID).await.unwrap();
+}

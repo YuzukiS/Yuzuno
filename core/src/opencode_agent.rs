@@ -144,6 +144,16 @@ struct Pending {
     model: String,
 }
 
+impl Usage {
+    /// An answer completed at `at`, measured or not, is newer than one
+    /// waiting from before it: that one is no longer the newest (R1 cca110b3).
+    fn superseded(&mut self, at: i64) {
+        if self.pending.as_ref().is_some_and(|pending| at >= pending.at) {
+            self.pending = None;
+        }
+    }
+}
+
 impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default() }
@@ -1510,7 +1520,8 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
         return;
     }
     let (Some(at), Some(parent)) = (info["time"]["completed"].as_i64(), info["parentID"].as_str()) else { return };
-    let Some(turn) = d.turns.iter().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else { return };
+    let Some(turn) = d.turns.iter().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some() || t["_opencodeFollowed"] == parent)
+        else { return };
     // An answer to an earlier input, completed late, says nothing of now.
     if latest_input(turn) != Some(parent) || !measured_before(d, at) {
         return;
@@ -1518,26 +1529,30 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
     let Some(turn) = turn["id"].as_str().map(str::to_owned) else { return };
     let used = context_used(&info["tokens"]);
     let model = info["providerID"].as_str().zip(info["modelID"].as_str()).map(|(provider, model)| format!("{provider}/{model}"));
+    let mut usage = c.usage.lock().unwrap();
     let (Some(used), Some(model), Some(time)) = (used, model, chrono::DateTime::from_timestamp_millis(at)) else {
         stale(d);
+        usage.superseded(at);
         return;
     };
-    let mut usage = c.usage.lock().unwrap();
     match usage.windows.get(&model).copied() {
-        Some(window) => match ContextUsage::measured(used, window, &turn, time) {
-            Some(measured) => {
-                d.context_usage = Some(measured);
-                usage.pending = None;
+        Some(window) => {
+            usage.superseded(at);
+            match ContextUsage::measured(used, window, &turn, time) {
+                Some(measured) => d.context_usage = Some(measured),
+                // A window of 0: unknown.
+                None => stale(d),
             }
-            // A window of 0: unknown.
-            None => stale(d),
-        },
+        }
         None => {
             stale(d);
-            let epoch = usage.epoch;
-            usage.pending = Some(Pending { epoch, turn, parent: parent.to_owned(), at, used, model: model.clone() });
-            if usage.refreshed.insert(model.clone()) {
-                usage.wanted = Some(model);
+            // Waiting alone, and only if it is the newest that waits.
+            if usage.pending.as_ref().is_none_or(|pending| at >= pending.at) {
+                let epoch = usage.epoch;
+                usage.pending = Some(Pending { epoch, turn, parent: parent.to_owned(), at, used, model: model.clone() });
+                if usage.refreshed.insert(model.clone()) {
+                    usage.wanted = Some(model);
+                }
             }
         }
     }
@@ -1562,9 +1577,15 @@ fn context_used(tokens: &Value) -> Option<u64> {
     (used > 0).then_some(used)
 }
 
-/// A Turn's latest input: its newest added message, else its prompt.
+/// A Turn's latest input: its newest added message, else its prompt, or a
+/// later user message of OpenCode's own that it went on under, such as a
+/// compaction's continuation (`followed`; OpenCode's IDs ascend).
 fn latest_input(turn: &Value) -> Option<&str> {
-    turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str())
+    let input = turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str());
+    match (input, turn["_opencodeFollowed"].as_str()) {
+        (Some(input), Some(after)) if after > input => Some(after),
+        (input, _) => input,
+    }
 }
 
 /// Whether `at` (ms) is after what was last measured, or nothing was.
@@ -1674,13 +1695,14 @@ fn confirm_input(d: &mut AgentDetail, input: &str) {
 /// running Turn (T-10): an auto-compaction's, or the "continue" or replay
 /// that follows one (`session/compaction.ts`). The run goes on under it, and
 /// its answers name it, so the Turn does not wait for one to the added
-/// message. OpenCode's message IDs ascend.
+/// message. OpenCode's message IDs ascend. Noted after a prompt alone too:
+/// its answers are the newest of the Turn's context usage (T-10).
 fn followed(d: &mut AgentDetail, id: &str) {
     if d.turns.iter().any(|t| t["id"] == id || t["_opencodeInputs"].get(id).is_some()) {
         return;
     }
     let Some(turn) = running(d) else { return };
-    if turn["_opencodeLastInput"].as_str().is_some_and(|last| id > last) {
+    if turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str()).is_some_and(|last| id > last) {
         turn["_opencodeFollowed"] = id.into();
     }
 }
