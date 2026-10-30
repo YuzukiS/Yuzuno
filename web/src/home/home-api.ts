@@ -24,6 +24,12 @@ export type HomeReplyInput = {
    * to exactly that version or sends nothing. */
   version?: number;
   title?: string;
+  /** A reply to an ask (T-9): the version of the ask the user answered and
+   * the Workspace that page showed. Core sends it only while that version is
+   * the live, unresolved ask, and marks only that version replied. Never
+   * `version`, which is a card's. */
+  askVersion?: number;
+  workspaceId?: string;
 };
 
 export type LinkedRepositories = {
@@ -105,14 +111,17 @@ export const sentStatus = (receipt: MessageReceipt) =>
   receipt.status === "accepted" || receipt.status === "queued";
 
 /**
- * Sends one reply. Retrying the same text to the same Agent (and, for a card,
- * the same version) reuses the client id; anything else is a new message.
- * Throws when it was not delivered.
+ * Sends one reply. Retrying the same text to the same Agent (and, for a card
+ * or an ask, the same version) reuses the client id; anything else is a new
+ * message. Throws when it was not delivered.
  */
 export async function sendReply(
   slot: string,
   projectId: string,
-  reply: { key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string },
+  reply: {
+    key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string;
+    askVersion?: number; workspaceId?: string;
+  },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
   const kept = outbox[slot];
@@ -122,7 +131,9 @@ export async function sendReply(
     kept.text === reply.text &&
     (kept.choice ?? null) === (reply.choice ?? null) &&
     (kept.version ?? null) === (reply.version ?? null) &&
-    (kept.title ?? null) === (reply.title ?? null);
+    (kept.title ?? null) === (reply.title ?? null) &&
+    (kept.askVersion ?? null) === (reply.askVersion ?? null) &&
+    (kept.workspaceId ?? null) === (reply.workspaceId ?? null);
   const input: Outbound = same
     ? kept
     : {
@@ -131,6 +142,7 @@ export async function sendReply(
         clientMessageId: crypto.randomUUID(),
         ...(reply.choice ? { choice: reply.choice } : {}),
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
+        ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
       };
   saveOutbox({ ...outbox, [slot]: input });
   const settle = () => {

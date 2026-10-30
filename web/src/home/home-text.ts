@@ -137,6 +137,12 @@ export const homeText = strings({
   askDraftOtherVersion: (began: number, now: number) =>
     `You began this reply on version ${began} of this ask; Home shows version ${now}. Read it again, then refer the reply to version ${now} or discard it.`,
   askDraftOnlyHere: "This browser didn't keep the draft: it is only in this window.",
+  // Core refused a reply to an ask before anything was sent (T-9); what was
+  // written stays where it was.
+  askChanged: "The question changed before your reply was sent, so nothing was sent. Read it again, then reply.",
+  askResolved: "This ask was resolved before your reply was sent, so nothing was sent.",
+  askRemoved: "This ask was removed before your reply was sent, so nothing was sent.",
+  askReloadHome: "Nothing was sent: reload Home to reply here.",
   askDraftAfterReply: "A reply you wrote here is kept, not sent: Reply again to see it.",
   notConfirmedHere: "An earlier reply here was not confirmed. Sending the same text again will not deliver it twice.",
   notConfirmed: "An earlier reply was not confirmed. Sending the same text again will not deliver it twice.",
@@ -380,6 +386,10 @@ export const homeText = strings({
   askDraftKept: (version) => `之前写的回复已保留、尚未发送：针对这个提问的版本 ${version}。`,
   askDraftOtherVersion: (began, now) => `你是在这个提问的版本 ${began} 上开始写这条回复的；Home 现在显示版本 ${now}。请重新阅读，然后改为指向版本 ${now}，或丢弃它。`,
   askDraftOnlyHere: "浏览器没有保存这份草稿：它只在这个窗口里。",
+  askChanged: "你的回复发出前，这个提问已经改变，因此没有发送任何内容。请重新阅读后再回复。",
+  askResolved: "你的回复发出前，这个提问已被处理完毕，因此没有发送任何内容。",
+  askRemoved: "你的回复发出前，这个提问已被移除，因此没有发送任何内容。",
+  askReloadHome: "没有发送任何内容：请重新加载 Home 后再在这里回复。",
   askDraftAfterReply: "你在这里写的一条回复已保留、尚未发送：点“再次回复”查看。",
   notConfirmedHere: "这里之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
   notConfirmed: "之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
