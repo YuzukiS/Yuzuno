@@ -85,7 +85,7 @@ export const outcomeText = strings(
     reportBy: "Reported by",
     links: "Deliverables",
     unsafeLink: "Link unavailable",
-    original: "Open original conversation",
+    original: "View original conversation",
     keepReport:
       "The itemized author report and fixed artifact references will accompany this new submission.",
     addReport: "Add itemized author report",

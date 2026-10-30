@@ -1,23 +1,55 @@
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { build } from "vite";
+import react from "@vitejs/plugin-react";
 import { outcomeFixture } from "./task-outcome-fixture.mjs";
-const dist = pathToFileURL(resolve(process.env.YUZUNO_UI_DIST || "dist") + "/");
-const html = await readFile(new URL("index.html", dist), "utf8");
-const bundle = await uiTestBundle(
-  new URL(html.match(/src="\/(assets\/[^" ]+\.js)"/)[1], dist),
-);
+// Mount the production component with an explicit React root so even failed
+// nested-dialog assertions unmount effects before the JSDOM window closes.
+// Whole-product bundle loading and layout are covered in task-outcome-check.
+const web = fileURLToPath(new URL("../", import.meta.url));
+await mkdir(resolve(web, "node_modules/.cache"), { recursive: true });
+const temp = await mkdtemp(resolve(web, "node_modules/.cache/outcome-ui-"));
+let bundle;
+try {
+  const entry = resolve(temp, "entry.tsx");
+  await writeFile(
+    entry,
+    `import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {CollaborationBoard} from ${JSON.stringify(resolve(web, "src/CollaborationBoard.tsx"))};
+const root=createRoot(document.getElementById('root'));
+window.renderBoard=props=>root.render(<CollaborationBoard {...props}/>);
+window.unmountBoard=()=>root.unmount();`,
+  );
+  const output = await build({
+    root: web,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [react()],
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    build: {
+      write: false,
+      lib: { entry, name: "OutcomeUI", formats: ["iife"] },
+    },
+  });
+  bundle = (Array.isArray(output) ? output[0] : output).output.find(
+    (item) => item.type === "chunk",
+  ).code;
+} finally {
+  await rm(temp, { recursive: true, force: true });
+}
 const pause = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 async function until(fn, message) {
   for (let i = 0; i < 200; i++) {
     if (fn()) return;
     await pause();
   }
+  console.error(`Outcome wait failed: ${message}`);
   assert.ok(fn(), message);
 }
 async function mount() {
@@ -71,9 +103,28 @@ async function mount() {
       (b) => b.textContent.trim() === name,
     );
   w.eval(bundle);
-  await until(() => button("Tasks & messages"), "ready");
-  button("Tasks & messages").click();
-  await until(() => doc.querySelector('[data-task-id="T-1"]'), "tasks");
+  let revision = 0;
+  const render = () =>
+    w.renderBoard({
+      open: true,
+      onOpenChange() {},
+      agents: fixture.agents,
+      projects: fixture.projects,
+      onOpenAgent() {},
+      revision,
+    });
+  const refresh = () => {
+    revision++;
+    render();
+  };
+  render();
+  try {
+    await until(() => doc.querySelector('[data-task-id="T-1"]'), "tasks");
+  } catch (error) {
+    w.unmountBoard();
+    w.close();
+    throw error;
+  }
   const openTask = async (id) => {
     doc.querySelector(`button[data-task-id="${id}"]`).click();
     await until(
@@ -99,8 +150,11 @@ async function mount() {
     button,
     openTask,
     openOutcome,
-    events: () => events,
-    close: () => w.close(),
+    refresh,
+    close: () => {
+      w.unmountBoard();
+      w.close();
+    },
   };
 }
 test("outcome first, author claims separate, immutable version and matched Job are not acceptance", async () => {
@@ -253,9 +307,7 @@ test("density, keyboard tabs and background refresh retain result form drafts an
     assert.equal(p.doc.activeElement.textContent, "Item by item");
     assert.equal(p.doc.activeElement.getAttribute("aria-selected"), "true");
     p.fixture.addNewResult();
-    p.events()?.onmessage?.({
-      data: JSON.stringify({ collaboration: true, tasks: true }),
-    });
+    p.refresh();
     await pause(200);
     assert.equal(
       drawer
@@ -348,6 +400,45 @@ test("fresh result reads beat stale task props and idless history never becomes 
       /Replacement report/,
     );
     assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the existing result form preserves fixed artifact references and sends only author input", async () => {
+  const p = await mount();
+  try {
+    await p.openTask("T-1");
+    p.button("Update result").click();
+    await until(() => p.doc.querySelector(".outcome-editor"), "editor");
+    const form = p.doc.querySelector(".collab-result form");
+    form.dispatchEvent(
+      new p.w.Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await until(
+      () => p.fixture.calls.some((c) => c.path.endsWith("task_submit_result")),
+      "submitted",
+    );
+    const { body } = p.fixture.calls.find((c) =>
+      c.path.endsWith("task_submit_result"),
+    );
+    assert.equal(body.expectedVersion, 7);
+    assert.equal(body.outcome.criteria.length, 2);
+    assert.deepEqual(
+      body.outcome.criteria[0].artifacts,
+      p.fixture.current.outcome.criteria[0].artifacts,
+    );
+    assert.equal(body.outcome.nextAgentId, "writer");
+    assert.equal(
+      Object.hasOwn(body.outcome, "nextAgent"),
+      false,
+      "actor snapshot belongs to Core",
+    );
+    assert.equal(
+      Object.hasOwn(body, "acceptanceContext"),
+      false,
+      "acceptance snapshot belongs to Core",
+    );
   } finally {
     p.close();
   }

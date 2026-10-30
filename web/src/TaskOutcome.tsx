@@ -582,6 +582,22 @@ export function TaskOutcome({
             {result?.reportedBy?.name || t.author}
             {result?.reportedAt && <> · {date(result.reportedAt)}</>}
           </span>
+          {result?.source &&
+            availableAgents.includes(result.source.agentId) && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  onOpenAgent?.(
+                    result.source!.agentId,
+                    result.source!.turnId || undefined,
+                  )
+                }
+              >
+                {t.original}
+                <ArrowUpRight size={14} />
+              </button>
+            )}
           <button
             type="button"
             className="text-button"
