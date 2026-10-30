@@ -578,6 +578,7 @@ test("the contract's examples render without a failed part", async (t) => {
     compare: ["6% lower validation loss", "One seed each", "Validation loss, lower is better"],
     overview: ["Where we are", "one decision", "Run 12, larger batch", "Validation loss falls 6% once warm-up ends.", "Choose the run 13 split"],
     decision: ["The larger split costs about 6% of training data."],
+    form: ["cannot tell a gap under about 5% from noise"],
   };
   const reads = {
     image: [attachment("layout.png", "image", "image/png")],
@@ -586,6 +587,7 @@ test("the contract's examples render without a failed part", async (t) => {
     compare: [attachment("runs.csv", "data", "text/csv", { caption: "Validation loss of each run" })],
     overview: [],
     decision: [],
+    form: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
