@@ -1631,3 +1631,42 @@ async fn context_usage_an_answer_waiting_for_the_catalog_yields_to_a_newer_one()
     assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running, true)), "the newest answer was unmeasurable: last known");
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// R2 63d96eab: an answer older than one already seen never measures, even
+/// arriving after it: a newer answer that couldn't be measured is still the
+/// newest, so the older one doesn't wait for a catalog read either.
+#[tokio::test]
+async fn context_usage_an_older_answer_arriving_after_a_newer_one_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":100}}}})).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+    // A model OpenCode lists now, which this connection's list doesn't have yet.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut later = deepseek["models"]["deepseek-flash"].clone();
+    later["id"] = json!("deepseek-later");
+    later["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-later"] = later;
+    lab.control("mode", json!({"providers":providers})).await;
+    let reads = providers_reads(&lab);
+
+    // The newer answer first, unmeasurable; then the older one, naming that model.
+    let now = chrono::Utc::now().timestamp_millis();
+    let answer = |id: &str, completed: i64, info: Value| {
+        let mut info = info;
+        info["id"] = json!(id);
+        info["sessionID"] = json!(session);
+        info["role"] = json!("assistant");
+        info["parentID"] = json!(running);
+        info["time"] = json!({"created":completed,"completed":completed});
+        json!({"type":"message.updated","properties":{"sessionID":session,"info":info}})
+    };
+    lab.control("event", answer("msg_newer", now + 2000, json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":-1}}))).await;
+    lab.control("event", answer("msg_older", now + 1000, json!({"providerID":"deepseek","modelID":"deepseek-later","tokens":{"total":500}}))).await;
+    unchanged(&lab, "an older answer after a newer one", &Some((100, 1000, running, true))).await;
+    assert_eq!(providers_reads(&lab), reads, "the older answer read no catalog");
+    lab.ws.close_agent(ID).await.unwrap();
+}

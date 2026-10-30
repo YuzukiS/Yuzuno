@@ -125,6 +125,10 @@ struct Usage {
     /// variant chosen, a compaction. An answer waiting from before it is
     /// not measured.
     epoch: u64,
+    /// The newest answer to a latest input, by when it completed and its ID
+    /// (OpenCode's IDs ascend), whether it could be measured or not: only
+    /// that answer may measure (R2 63d96eab).
+    newest: Option<(i64, String)>,
     pending: Option<Pending>,
     /// Models the catalog was read again for, once each.
     refreshed: HashSet<String>,
@@ -137,6 +141,7 @@ struct Usage {
 /// it needs, and nothing more.
 struct Pending {
     epoch: u64,
+    answer: String,
     turn: String,
     parent: String,
     at: i64,
@@ -701,7 +706,11 @@ impl Workspace {
         let (agent, data, usage) = (id.to_owned(), json!({"model":model,"window":window}), c.clone());
         let turn = pending.turn.clone();
         let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/contextWindow", &data, Sel::Turns(vec![turn]), move |d| {
-            let current = usage.usage.lock().unwrap().epoch == pending.epoch;
+            // Checked as it is written: still the newest answer, and nothing since made it stale.
+            let current = {
+                let usage = usage.usage.lock().unwrap();
+                usage.epoch == pending.epoch && usage.newest.as_ref().is_some_and(|(at, answer)| *at == pending.at && *answer == pending.answer)
+            };
             let latest = d.turns.iter().find(|t| t["id"] == pending.turn.as_str()).and_then(latest_input) == Some(pending.parent.as_str());
             if current && latest && measured_before(d, pending.at) {
                 if let Some(at) = chrono::DateTime::from_timestamp_millis(pending.at) {
@@ -1529,30 +1538,32 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
     let Some(turn) = turn["id"].as_str().map(str::to_owned) else { return };
     let used = context_used(&info["tokens"]);
     let model = info["providerID"].as_str().zip(info["modelID"].as_str()).map(|(provider, model)| format!("{provider}/{model}"));
+    let Some(answer) = info["id"].as_str() else { return };
     let mut usage = c.usage.lock().unwrap();
+    // Older than an answer already seen, measured or not: it says nothing of now.
+    let this = (at, answer.to_owned());
+    if usage.newest.as_ref().is_some_and(|newest| &this < newest) {
+        return;
+    }
+    usage.newest = Some(this);
+    usage.superseded(at);
     let (Some(used), Some(model), Some(time)) = (used, model, chrono::DateTime::from_timestamp_millis(at)) else {
         stale(d);
-        usage.superseded(at);
         return;
     };
     match usage.windows.get(&model).copied() {
-        Some(window) => {
-            usage.superseded(at);
-            match ContextUsage::measured(used, window, &turn, time) {
-                Some(measured) => d.context_usage = Some(measured),
-                // A window of 0: unknown.
-                None => stale(d),
-            }
-        }
+        Some(window) => match ContextUsage::measured(used, window, &turn, time) {
+            Some(measured) => d.context_usage = Some(measured),
+            // A window of 0: unknown.
+            None => stale(d),
+        },
         None => {
             stale(d);
-            // Waiting alone, and only if it is the newest that waits.
-            if usage.pending.as_ref().is_none_or(|pending| at >= pending.at) {
-                let epoch = usage.epoch;
-                usage.pending = Some(Pending { epoch, turn, parent: parent.to_owned(), at, used, model: model.clone() });
-                if usage.refreshed.insert(model.clone()) {
-                    usage.wanted = Some(model);
-                }
+            // The newest answer, waiting alone for its window.
+            let epoch = usage.epoch;
+            usage.pending = Some(Pending { epoch, answer: answer.to_owned(), turn, parent: parent.to_owned(), at, used, model: model.clone() });
+            if usage.refreshed.insert(model.clone()) {
+                usage.wanted = Some(model);
             }
         }
     }
