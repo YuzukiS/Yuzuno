@@ -57,12 +57,15 @@ export function returnOverview(data: HomeData): ReturnOverview {
     const current = new Map(
       live.map((s) => [overviewIdentity(panel.project.id, s), s]),
     );
-    const history = [...panel.brief.history].sort(
-      (a, b) => b.version - a.version,
-    );
-    for (const section of history) {
+    const liveIds = new Set(current.keys());
+    // Choose the newest revision within a lineage without sorting unrelated
+    // questions by their version numbers. Their order remains Core's order.
+    for (const section of panel.brief.history) {
       const id = overviewIdentity(panel.project.id, section);
-      if (!current.has(id)) current.set(id, section);
+      if (liveIds.has(id)) continue;
+      const previous = current.get(id);
+      if (!previous || previous.version < section.version)
+        current.set(id, section);
     }
     for (const section of current.values()) {
       const ask = section.ask;

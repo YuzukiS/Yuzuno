@@ -182,3 +182,24 @@ test("null and non-integer identities use separate legacy revisions, not one sha
     assert.notEqual(rows[0].identity, rows[1].identity);
   }
 });
+
+test("unrelated history keeps Core's order; only revisions of the same identity are replaced", () => {
+  const resolved = (id, version) =>
+    section(id, {
+      kind: "ask",
+      version,
+      history: true,
+      historyReason: "resolved",
+      ask: ask("resolved", { replyText: `Answer ${id}` }),
+    });
+  const result = returnOverview(
+    home([], [resolved(51, 1), resolved(50, 9), resolved(51, 2)]),
+  );
+  assert.deepEqual(
+    result.replies.map((row) => [row.section.id, row.section.version]),
+    [
+      [51, 2],
+      [50, 9],
+    ],
+  );
+});
