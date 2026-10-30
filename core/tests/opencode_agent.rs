@@ -1780,6 +1780,18 @@ async fn context_usage_a_replayed_summary_leaves_a_newer_waiting_answer_waiting(
     assert_eq!(usage_of(&lab.detail()), Some((100, 1000, first, true)), "the read hasn't come back yet");
     let d = lab.until("the window read", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
     lab.control("mode", json!({"slow":{}})).await;
-    assert_eq!(usage_of(&d), Some((500, 4000, second, false)), "the newer answer kept waiting, and measured");
+    let measured = Some((500, 4000, second, false));
+    assert_eq!(usage_of(&d), measured, "the newer answer kept waiting, and measured");
+    // Read again, twice more: the summary and the answer replayed change nothing.
+    for _ in 0..2 {
+        let before = resyncs(&lab);
+        lab.control("drop", json!({})).await;
+        for _ in 0..200 {
+            if resyncs(&lab) > before { break; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(resyncs(&lab) > before, "read again");
+        assert_eq!(usage_of(&lab.detail()), measured, "replayed once more");
+    }
     lab.ws.close_agent(ID).await.unwrap();
 }
