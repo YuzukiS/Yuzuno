@@ -1641,7 +1641,7 @@ async fn context_usage_an_older_answer_arriving_after_a_newer_one_never_measures
     let session = lab.session();
     let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
     lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,
-        "info":{"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":100}}}})).await;
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":100}}})).await;
     lab.until("the first answer", |d| d.context_usage.is_some()).await;
     // A model OpenCode lists now, which this connection's list doesn't have yet.
     let mut providers = lab.control("mode", json!({})).await["providers"].clone();
