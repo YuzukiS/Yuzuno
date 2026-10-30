@@ -713,10 +713,10 @@ impl Workspace {
         let (agent, data, usage) = (id.to_owned(), json!({"model":model,"window":window}), c.clone());
         let turn = pending.turn.clone();
         let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/contextWindow", &data, Sel::Turns(vec![turn]), move |d| {
-            // Checked as it is written: still its Turn's newest answer, and
-            // nothing since made it stale.
+            // Checked as it is written: still the newest answer of the newest
+            // Turn, and nothing since made it stale.
             let current = usage.usage.lock().unwrap().epoch == pending.epoch;
-            let turn = d.turns.iter().find(|t| t["id"] == pending.turn.as_str());
+            let turn = d.turns.last().filter(|t| t["id"] == pending.turn.as_str());
             let latest = turn.and_then(latest_input) == Some(pending.parent.as_str());
             let newest = turn.and_then(seen) == Some((pending.at, pending.answer.as_str()));
             if current && latest && newest && not_before_measured(d, pending.at) {
@@ -1516,8 +1516,8 @@ fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&V
 }
 
 /// The Agent's context usage from an answer of its own session (T-10,
-/// contract on T-10 #757): the newest completed answer to its Turn's latest
-/// input, against the window of the model that answered. A compaction makes
+/// contract on T-10 #757): the newest completed answer to the latest input
+/// of its newest Turn, against the window of the model that answered. A compaction makes
 /// what was measured before it last known; an answer that can't be measured
 /// does too, never 0. An answer replayed, or older than what was measured,
 /// changes nothing. An answer whose model the connection's list didn't have
@@ -1539,9 +1539,11 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
         else { return };
     let Some(index) = d.turns.iter().position(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some() || t["_opencodeFollowed"] == parent)
         else { return };
-    // An answer to an earlier input, completed late, says nothing of now;
-    // nor does one older than the last measurement.
-    if latest_input(&d.turns[index]) != Some(parent) || !not_before_measured(d, at) {
+    // An answer to an earlier input, completed late, says nothing of now:
+    // one to an earlier Turn (every change holds the newest one, last; R5
+    // 0aa6e52c), or to an earlier input of its Turn; nor does one older
+    // than the last measurement.
+    if index + 1 != d.turns.len() || latest_input(&d.turns[index]) != Some(parent) || !not_before_measured(d, at) {
         return;
     }
     // Once considered for its Turn, measured or not, an answer never
