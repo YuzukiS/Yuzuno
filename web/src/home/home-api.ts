@@ -106,7 +106,8 @@ export function pendingReply(slot: string): Outbound | undefined {
   return loadOutbox()[slot];
 }
 
-/** Forgets a reply Core refused before reading it (it was never submitted). */
+/** Forgets an unconfirmed reply: one Core refused before reading it (never
+ * submitted), or one the user discarded here (it may have been delivered). */
 export function dropPendingReply(slot: string) {
   const outbox = loadOutbox();
   delete outbox[slot];
@@ -150,7 +151,23 @@ export async function sendReply(
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
         ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
       };
-  saveOutbox({ ...outbox, [slot]: input });
+  return postOutbound(slot, projectId, reply.key, input);
+}
+
+/**
+ * Sends again exactly what an unconfirmed reply sent (T-9): the same body,
+ * version and client id, whatever the screen shows now. Core then returns
+ * its receipt if it was delivered, or refuses it and sends nothing.
+ */
+export async function resendReply(slot: string, projectId: string, key?: string): Promise<MessageReceipt> {
+  const kept = loadOutbox()[slot];
+  if (!kept) throw new Error("No unconfirmed reply here to send again.");
+  return postOutbound(slot, projectId, key, kept);
+}
+
+/** Sends one outbox record and settles it as Core answers. */
+async function postOutbound(slot: string, projectId: string, key: string | undefined, input: Outbound): Promise<MessageReceipt> {
+  saveOutbox({ ...loadOutbox(), [slot]: input });
   const settle = () => {
     const current = loadOutbox();
     if (current[slot]?.clientMessageId === input.clientMessageId) {
@@ -161,7 +178,7 @@ export async function sendReply(
   let receipt: MessageReceipt;
   try {
     receipt = await postReply(projectId, {
-      ...(reply.key ? { key: reply.key } : {}),
+      ...(key ? { key } : {}),
       ...input,
     });
   } catch (error) {

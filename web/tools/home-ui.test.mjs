@@ -581,11 +581,11 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
   try {
     const release = card(p, "p-app", "release");
     assert.equal(release.querySelector(".home-reply-target select").value, "a", "the owner is the default recipient");
-    // The first send fails; the retry must reuse its client id.
+    // The first send fails; it goes again only as it was, reusing its client id.
     await type(p, release.querySelector("textarea"), "Ship it after the docs fix");
     p.button("Send", release).click();
     await waitFor(() => release.querySelector('[role="alert"]'), "the failure is shown");
-    p.button("Send", release).click();
+    p.button("Send it again as it was (version 3)", release).click();
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 2, "the reply was retried");
     const [first, retry] = p.posts(/\/brief\/reply$/);
     assert.match(first.url, /\/api\/projects\/p-app\/brief\/reply$/);

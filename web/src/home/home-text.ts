@@ -145,6 +145,17 @@ export const homeText = strings({
   askReloadHome: "Nothing was sent: reload Home to reply here.",
   askSentBefore: (sent: number, now: number) =>
     `Your reply to version ${sent} of this ask was delivered before, so nothing more was sent. Home shows version ${now}: reply again to answer it.`,
+  askNotConfirmed: (version: number | null, what: string) =>
+    version === null
+      ? `An earlier reply here was not confirmed: “${what}”.`
+      : `An earlier reply to version ${version} of this ask was not confirmed: “${what}”.`,
+  askSendAsItWas: (version: number | null) =>
+    version === null ? "Send it again as it was" : `Send it again as it was (version ${version})`,
+  askDiscardUnconfirmed: "Discard it",
+  askUnconfirmedDiscarded: "Discarded here only: it may already have been delivered. Check the conversation before you reply again.",
+  askUnconfirmedFirst: "Send the unconfirmed reply again as it was, or discard it, first.",
+  askAnswersEarlierVersion: (now: number) =>
+    `These answers were begun on an earlier version of this ask; Home shows version ${now}. Read it again, then refer them to version ${now} or discard them.`,
   askDraftAfterReply: "A reply you wrote here is kept, not sent: Reply again to see it.",
   notConfirmedHere: "An earlier reply here was not confirmed. Sending the same text again will not deliver it twice.",
   notConfirmed: "An earlier reply was not confirmed. Sending the same text again will not deliver it twice.",
@@ -393,6 +404,14 @@ export const homeText = strings({
   askRemoved: "你的回复发出前，这个提问已被移除，因此没有发送任何内容。",
   askReloadHome: "没有发送任何内容：请重新加载 Home 后再在这里回复。",
   askSentBefore: (sent, now) => `你对这个提问版本 ${sent} 的回复此前已送达，因此没有再次发送。Home 现在显示版本 ${now}：如需回答，请再次回复。`,
+  askNotConfirmed: (version, what) =>
+    version === null ? `这里之前的一条回复未得到确认：“${what}”。` : `之前对这个提问版本 ${version} 的回复未得到确认：“${what}”。`,
+  askSendAsItWas: (version) => (version === null ? "按原样重新发送" : `按原样重新发送（版本 ${version}）`),
+  askDiscardUnconfirmed: "丢弃它",
+  askUnconfirmedDiscarded: "只在这里丢弃：它可能已经送达。再次回复前请先查看会话。",
+  askUnconfirmedFirst: "请先按原样重新发送这条未确认的回复，或将其丢弃。",
+  askAnswersEarlierVersion: (now) =>
+    `这些答案是在这个提问的较早版本上开始填写的；Home 现在显示版本 ${now}。请重新阅读，然后改为指向版本 ${now}，或丢弃它们。`,
   askDraftAfterReply: "你在这里写的一条回复已保留、尚未发送：点“再次回复”查看。",
   notConfirmedHere: "这里之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
   notConfirmed: "之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
