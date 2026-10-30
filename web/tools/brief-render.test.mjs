@@ -576,6 +576,7 @@ test("the contract's examples render without a failed part", async (t) => {
     status: ["Validation loss", "−0.025", "+35 samples/s", "18k of 40k", "Loss"],
     result: ["213 of 214", "not in a release yet", "FAIL brief limits", "A stale version is accepted after a restart."],
     compare: ["6% lower validation loss", "One seed each", "Validation loss, lower is better"],
+    tasks: ["their budget is your call", "T-13", "Ablations; the form sets their scope."],
     overview: ["Where we are", "one decision", "Run 12, larger batch", "Validation loss falls 6% once warm-up ends.", "Choose the run 13 split"],
     decision: ["The larger split costs about 6% of training data."],
   };
@@ -584,6 +585,7 @@ test("the contract's examples render without a failed part", async (t) => {
     status: [attachment("loss.csv", "data", "text/csv", { caption: "Loss per step" })],
     result: [],
     compare: [attachment("runs.csv", "data", "text/csv", { caption: "Validation loss of each run" })],
+    tasks: [],
     overview: [],
     decision: [],
   };
