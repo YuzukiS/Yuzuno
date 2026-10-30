@@ -334,6 +334,8 @@ test("② a choice whose outcome is unknown goes again as it was after its label
   const changed = { ...everything, choice: { a: { id: "plan-a", label: "Plan A, now in one release" }, b: { id: "plan-b", label: "Plan B, now in two" } } };
   page.reload();
   page.render(section("pick", 3, changed));
+  assert.ok(page.notes().some((n) => /An earlier reply to version 2 of this ask was not confirmed: “I choose: Plan B”\./.test(n)),
+    `shown as it went, not as the ask names it now: ${JSON.stringify(page.notes())}`);
   assert.equal(planB().disabled, true, "the same choice is neither its retry nor a new reply meanwhile");
   sendAgainButton(page, 2).click();
   await tick();
@@ -420,6 +422,8 @@ test("① a form whose outcome is unknown goes again as it was after its wording
   assert.ok(page.replies().every((body) => body.clientMessageId === first.clientMessageId),
     `an unconfirmed reply is never replaced by one with a new client id: ${JSON.stringify(page.replies())}`);
   assert.ok(f.notes().some((n) => /Send the unconfirmed reply again as it was, or discard it, first/.test(n)), JSON.stringify(f.notes()));
+  assert.ok(page.notes().some((n) => /not confirmed: “Answers to “Which parts ship first\?”: - First part: The UI”/.test(n)),
+    `shown as it went, not in the form's words now: ${JSON.stringify(page.notes())}`);
   sendAgainButton(page, 2).click();
   await tick();
   const second = page.replies()[1];
@@ -429,32 +433,63 @@ test("① a form whose outcome is unknown goes again as it was after its wording
   assert.deepEqual(page.errors, []);
 });
 
-test("answers kept without the version they were begun on (that record went) are held for refer or discard after a reload; a new form's defaults are not", async (t) => {
+const formVersions = (page) => Object.keys(JSON.parse(page.window.localStorage.getItem("yuzuno.home-ask-form-versions.v1") || "{}"));
+const unknownNote = (n) => /Home can't confirm which version of this ask these answers were begun on; it shows version 2/.test(n);
+
+test("answers whose version record was evicted are held after a reload, and stay so when changed; a new form's defaults are not held", async (t) => {
   const page = mount();
   t.after(page.close);
   const f = formOf(page);
   page.render(section("form", 1, { form }));
   f.radio("Core").click();
   await tick();
-  // The record of their version goes (its store keeps the newest 50 for 30 days); the answers stay.
-  page.window.localStorage.removeItem("yuzuno.home-ask-form-versions.v1");
+  // Fifty forms begun since: that store keeps the newest 50 (for 30 days), so this one's record goes; its answers stay.
+  for (let i = 0; i < 50; i += 1) {
+    page.render(section(`other-${i}`, 1, { form }));
+    f.radio("The UI").click();
+    await tick();
+  }
+  assert.equal(formVersions(page).length, 50);
+  assert.ok(!formVersions(page).some((k) => k.includes(":p1:form:")), "its version record was evicted");
+  assert.ok(Object.keys(page.window.localStorage).some((k) => k.startsWith("yuzuno.clarification.v1:") && k.includes(":p1:form:")), "its answers were not");
   page.reload();
   page.render(section("form", 2, { form }));
-  assert.ok(f.notes().some((n) => /These answers were begun on an earlier version of this ask; Home shows version 2/.test(n)),
-    `answers of an unknown version are not taken for version 2's: ${JSON.stringify(f.notes())}`);
+  assert.ok(f.notes().some(unknownNote), `answers of an unknown version are not taken for version 2's: ${JSON.stringify(f.notes())}`);
   assert.equal(f.submit().disabled, true, "not sent to version 2 by itself");
   assert.equal(f.radio("Core").checked, true, "the answers stay");
+  // Changing an answer does not settle it: only Refer or Discard does.
+  f.radio("The UI").click();
+  await tick();
+  assert.ok(f.notes().some(unknownNote), JSON.stringify(f.notes()));
+  assert.ok(!formVersions(page).some((k) => k.includes(":p1:form:")), "no version bound by a change");
   assert.equal(page.replies().length, 0);
   page.button("Refer it to version 2").click();
   await tick();
+  const chosen = f.radio("Core").checked ? "Core" : "The UI";
   f.submit().click();
   await tick();
   const [referred] = page.replies();
   assert.equal(referred.askVersion, 2);
-  assert.match(referred.text, /- First part: Core/);
+  assert.match(referred.text, new RegExp(`- First part: ${chosen}`));
   // A new form at its defaults has nothing kept: never taken for answers from before.
   page.render(section("fresh", 2, { form: defaulted("ui") }));
-  assert.ok(!f.notes().some((n) => /earlier version/.test(n)), JSON.stringify(f.notes()));
+  assert.ok(!f.notes().some((n) => /can't confirm|You began this reply/.test(n)), JSON.stringify(f.notes()));
+  assert.equal(f.submit().disabled, false);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a changed schema alone is never an edit: an untouched form follows the question in place and keeps no answers or version", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const f = formOf(page);
+  page.render(section("form", 1, { form: defaulted("ui") }));
+  page.render(section("form", 2, { form: { ...changedForm, fields: [{ ...changedForm.fields[0], default: { value: "docs", source: "The plan" } }] } }));
+  assert.equal(f.radio("The docs").checked, true, "version 2's own default");
+  page.render(section("form", 3, { form: defaulted("core") }));
+  assert.equal(f.radio("Core").checked, true, "version 3's own default");
+  assert.ok(!f.notes().some((n) => /can't confirm|You began this reply/.test(n)), JSON.stringify(f.notes()));
+  assert.ok(!Object.keys(page.window.localStorage).some((k) => k.startsWith("yuzuno.clarification.v1:")), "no answers kept");
+  assert.deepEqual(formVersions(page), [], "no version kept");
   assert.equal(f.submit().disabled, false);
   assert.deepEqual(page.errors, []);
 });
@@ -485,6 +520,96 @@ test("a new edit is told apart from the unconfirmed send: that send goes again a
   assert.notEqual(third.clientMessageId, first.clientMessageId, "the edit is a new reply");
   assert.equal(c.delivered.size, 2);
   assert.deepEqual(page.errors, []);
+});
+
+test("a draft written after the unconfirmed send stays when that send goes again, even with the same words", async (t) => {
+  const c = core();
+  const page = mount((body) => c.answer(body));
+  t.after(page.close);
+  c.lose(true);
+  page.render(section("plan", 2));
+  await page.type("Ship on Friday.");
+  page.sendButton().click();
+  await tick();
+  await page.type("");
+  await page.type("Ship on Friday.");
+  sendAgainButton(page, 2).click();
+  await tick();
+  assert.ok(page.notes().some((n) => /A reply you wrote here is kept, not sent/.test(n)), JSON.stringify(page.notes()));
+  page.button("Reply again").click();
+  await tick();
+  assert.equal(page.field().value, "Ship on Friday.", "the newer draft stays, though its words are the same");
+  assert.equal(c.delivered.size, 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test("sent again on an ask resolved or removed since, the unconfirmed reply is refused there: its record goes, the refusal shows and the ask opens again", async (t) => {
+  for (const [code, said] of [["ask_resolved", /This ask was resolved before your reply was sent/], ["section_removed", /This ask was removed before your reply was sent/]]) {
+    const c = core(() => `${code}: version 2 of the ask \`opt\` can't be answered now`);
+    const page = mount((body) => c.answer(body));
+    try {
+      c.lose(false);
+      page.render(section("opt", 2));
+      page.button("Ship today").click();
+      await tick();
+      assert.equal(page.button("Ship today").disabled, true, code);
+      sendAgainButton(page, 2).click();
+      await tick();
+      const [first, second] = page.replies();
+      assert.deepEqual(second, first, `${code}: sent again as it was`);
+      assert.ok(page.notes().some((n) => said.test(n)), `${code}: ${JSON.stringify(page.notes())}`);
+      assert.deepEqual(page.outbox(), [], `${code}: never submitted, no record`);
+      assert.equal(page.button("Ship today").disabled, false, `${code}: open again`);
+      assert.equal(c.delivered.size, 0);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("while the unconfirmed reply is being sent again it can be neither sent again nor discarded; its record goes only with its own answer", async (t) => {
+  let calls = 0;
+  let release;
+  const page = mount((body) => {
+    calls += 1;
+    if (calls === 1) throw new TypeError("Failed to fetch");
+    return new Promise((resolve) => { release = () => resolve(accepted(body)); });
+  });
+  t.after(page.close);
+  page.render(section("plan", 2));
+  await page.type("Ship on Friday.");
+  page.sendButton().click();
+  await tick();
+  sendAgainButton(page, 2).click();
+  await tick();
+  assert.equal(sendAgainButton(page, 2), undefined, "not sent twice at once");
+  assert.equal(page.button("Discard it"), undefined, "not discarded while its answer may still come");
+  assert.equal(page.outbox().length, 1, "its record stays while it is on its way");
+  release();
+  await tick();
+  assert.deepEqual(page.outbox(), [], "gone with its own answer");
+  assert.equal(page.replies().length, 2);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a reply whose answer was lost or uncertain stays to be sent again; one Core rejected, or says it can never confirm, does not", async (t) => {
+  for (const [status, kept] of [["uncertain", true], ["rejected", false], ["unknown", false]]) {
+    const page = mount((body) => ({ status: 200, body: { input: { text: body.text, clientMessageId: body.clientMessageId }, status, turnId: null,
+      error: status === "rejected" ? "The Agent refused it." : null } }));
+    try {
+      page.render(section("plan", 2));
+      await page.type("Ship on Friday.");
+      page.sendButton().click();
+      await tick();
+      assert.equal(!!sendAgainButton(page, 2), kept, status);
+      assert.equal(page.outbox().length, kept ? 1 : 0, status);
+      assert.equal(page.field().value, "Ship on Friday.", `${status}: the words stay`);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
 });
 
 test("④ discarding the unconfirmed reply forgets it here and says it may have been delivered; clearing a draft does not discard it", async (t) => {

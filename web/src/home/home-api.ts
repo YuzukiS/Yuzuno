@@ -74,7 +74,12 @@ export const readLinkedRepositories = (projectId: string, signal?: AbortSignal) 
 // across a reload, as the composer's outbox does (useConversationSend.ts).
 // Core never delivers one client id twice.
 const OUTBOX = "yuzuno.home-outbox.v1";
-type Outbound = Omit<HomeReplyInput, "key">;
+type Outbound = Omit<HomeReplyInput, "key"> & {
+  /** Kept here only, never sent (T-9): what this window showed as sent, and
+   * when it was sent, so an unconfirmed reply is shown as it went. */
+  shown?: string;
+  sentAt?: string;
+};
 // What this window last wrote while this browser would not keep it (private
 // browsing, a full store): read from here until a save succeeds, so a retry
 // in this window keeps its client id. A reload cannot.
@@ -127,7 +132,7 @@ export async function sendReply(
   projectId: string,
   reply: {
     key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string;
-    askVersion?: number; workspaceId?: string;
+    askVersion?: number; workspaceId?: string; shown?: string;
   },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
@@ -150,6 +155,8 @@ export async function sendReply(
         ...(reply.choice ? { choice: reply.choice } : {}),
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
         ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
+        shown: reply.shown ?? reply.text,
+        sentAt: new Date().toISOString(),
       };
   return postOutbound(slot, projectId, reply.key, input);
 }
@@ -175,11 +182,15 @@ async function postOutbound(slot: string, projectId: string, key: string | undef
       saveOutbox(current);
     }
   };
+  // What Core gets: the record without what is kept here only.
+  const body: Outbound = { ...input };
+  delete body.shown;
+  delete body.sentAt;
   let receipt: MessageReceipt;
   try {
     receipt = await postReply(projectId, {
       ...(key ? { key } : {}),
-      ...input,
+      ...body,
     });
   } catch (error) {
     // Core says nothing was submitted: sending again is a new message.

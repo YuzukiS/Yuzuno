@@ -57,10 +57,11 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
-  /** `askVersion`: the version of the ask this answers, for a reply to one. */
-  const send = (agentId: string, text: string, choice?: string, askVersion?: number) =>
+  /** `askVersion`: the version of the ask this answers, for a reply to one;
+   * `shown`: what this window shows as sent, kept with it here only. */
+  const send = (agentId: string, text: string, choice?: string, askVersion?: number, shown?: string) =>
     run(askVersion, () => sendReply(slot, projectId, {
-      key, agentId, text, choice,
+      key, agentId, text, choice, shown,
       ...(askVersion !== undefined ? { askVersion, workspaceId } : {}),
     }));
   /** The unconfirmed reply again, exactly as it was sent. */
@@ -335,7 +336,9 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   function formChanged(target: EventTarget) {
     if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
     formTouched.current = true;
-    if (formBegun === null) setFormBegun(section.version);
+    // Answers of an unknown version stay so when changed: only Refer or
+    // Discard settles them.
+    if (formBegun === null && !formUnknown) setFormBegun(section.version);
     else setFormEdits((n) => n + 1);
   }
   function discardForm() {
@@ -387,20 +390,17 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const deliver = async (text: string, choice: string | undefined, shown: string, version: number) => {
     setSentBefore(null);
     setDiscarded(false);
-    const value = await send(target, text, choice, version);
+    const value = await send(target, text, choice, version, shown);
     setSentVersion(version);
     setSentText(shown);
     setAgain(false);
     return value;
   };
-  // What an unconfirmed reply said: its option as this ask names it, when
-  // it still offers that id, or its words.
-  const summaryOf = (was: { choice?: string; text: string }) => {
-    const named = was.choice
-      ? (reply.options?.find((o) => o.id === was.choice) ?? [reply.choice?.a, reply.choice?.b].find((o) => o?.id === was.choice))?.label
-      : undefined;
-    const words = was.text.replace(/\s+/g, " ").trim();
-    return named || was.choice || (words.length > 80 ? `${words.slice(0, 79)}…` : words);
+  // What an unconfirmed reply said, as it went: what this window showed as
+  // sent (a form's answers without their ids), never the ask as it is now.
+  const summaryOf = (was: { choice?: string; text: string; shown?: string }) => {
+    const words = (was.shown ?? (was.text || was.choice || "")).replace(/\n\n\{[\s\S]*\}$/, "").replace(/\s+/g, " ").trim();
+    return words.length > 80 ? `${words.slice(0, 79)}…` : words;
   };
   // The unconfirmed reply again, exactly as it was sent.
   const sendAgain = async () => {
@@ -418,8 +418,11 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     setAgain(false);
     // Delivered to an earlier version of the ask: this one is still open.
     if (version !== null && version !== section.version) setSentBefore(version);
-    // A draft of exactly those words was that reply.
-    if (!was.choice && latest.current?.text.trim() === was.text) {
+    // The draft that reply was sent from goes with it; one written since is
+    // newer, whatever its words, and stays.
+    const written = latest.current;
+    if (!was.choice && written && written.text.trim() === was.text && was.sentAt && written.at
+      && Date.parse(written.at) <= Date.parse(was.sentAt)) {
       keep(null);
       setRestored(false);
     }
@@ -539,7 +542,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
                   : formOtherVersion && formBegun !== null
                     ? t.askDraftOtherVersion(formBegun, section.version)
                     : formUnknown
-                      ? t.askAnswersEarlierVersion(section.version)
+                      ? t.askAnswersVersionUnknown(section.version)
                       : undefined
             }
             // Its delivery is that of the version it answered.
