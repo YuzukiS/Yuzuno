@@ -143,6 +143,8 @@ export const homeText = strings({
   askResolved: "This ask was resolved before your reply was sent, so nothing was sent.",
   askRemoved: "This ask was removed before your reply was sent, so nothing was sent.",
   askReloadHome: "Nothing was sent: reload Home to reply here.",
+  askSentBefore: (sent: number, now: number) =>
+    `Your reply to version ${sent} of this ask was delivered before, so nothing more was sent. Home shows version ${now}: reply again to answer it.`,
   askDraftAfterReply: "A reply you wrote here is kept, not sent: Reply again to see it.",
   notConfirmedHere: "An earlier reply here was not confirmed. Sending the same text again will not deliver it twice.",
   notConfirmed: "An earlier reply was not confirmed. Sending the same text again will not deliver it twice.",
@@ -390,6 +392,7 @@ export const homeText = strings({
   askResolved: "你的回复发出前，这个提问已被处理完毕，因此没有发送任何内容。",
   askRemoved: "你的回复发出前，这个提问已被移除，因此没有发送任何内容。",
   askReloadHome: "没有发送任何内容：请重新加载 Home 后再在这里回复。",
+  askSentBefore: (sent, now) => `你对这个提问版本 ${sent} 的回复此前已送达，因此没有再次发送。Home 现在显示版本 ${now}：如需回答，请再次回复。`,
   askDraftAfterReply: "你在这里写的一条回复已保留、尚未发送：点“再次回复”查看。",
   notConfirmedHere: "这里之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
   notConfirmed: "之前的一条回复未得到确认。再次发送相同文字不会重复送达。",

@@ -230,6 +230,132 @@ test("a send not confirmed goes again as it was when its words had spaces around
   assert.deepEqual(page.errors, []);
 });
 
+test("an option not confirmed, picked again after the ask is asked again, goes as it was; found delivered, the next pick answers the new version", async (t) => {
+  let lost = true;
+  const page = mount((body) => {
+    if (lost) { lost = false; throw new TypeError("Failed to fetch"); }
+    return accepted(body);
+  });
+  t.after(page.close);
+  page.render(section("opt", 2));
+  page.button("Ship today").click();
+  await tick();
+  page.render(section("opt", 3));
+  assert.ok(page.notes().some((n) => /not confirmed/.test(n)), JSON.stringify(page.notes()));
+  page.button("Ship today").click();
+  await tick();
+  const [first, second] = page.replies();
+  assert.deepEqual(second, first, "same version, choice and client id");
+  assert.equal(second.askVersion, 2);
+  assert.ok(page.notes().some((n) => /Your reply to version 2 of this ask was delivered before, so nothing more was sent\. Home shows version 3/.test(n)),
+    JSON.stringify(page.notes()));
+  page.button("Ship today").click();
+  await tick();
+  const third = page.replies()[2];
+  assert.deepEqual([third.choice, third.askVersion], ["ship", 3]);
+  assert.notEqual(third.clientMessageId, first.clientMessageId, "an answer to version 3 is another message");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a choice not confirmed, chosen again after the ask is asked again, goes as it was; refused there, the next one answers the new version", async (t) => {
+  let calls = 0;
+  const page = mount((body) => {
+    calls += 1;
+    if (calls === 1) throw new TypeError("Failed to fetch");
+    return body.askVersion === 2 ? refused("ask_changed: version 2 of the ask `pick` can't be answered now") : accepted(body);
+  });
+  t.after(page.close);
+  const planB = () => page.document.querySelectorAll(".home-choice button")[1];
+  page.render(section("pick", 2));
+  planB().click();
+  await tick();
+  page.render(section("pick", 3));
+  planB().click();
+  await tick();
+  const [first, second] = page.replies();
+  assert.deepEqual(second, first, "same version, choice and client id");
+  assert.ok(page.notes().some((n) => /The question changed before your reply was sent, so nothing was sent/.test(n)), JSON.stringify(page.notes()));
+  assert.equal(page.window.localStorage.getItem("yuzuno.home-outbox.v1"), null, "never submitted: no retry record");
+  planB().click();
+  await tick();
+  const third = page.replies()[2];
+  assert.deepEqual([third.choice, third.askVersion], ["plan-b", 3]);
+  assert.notEqual(third.clientMessageId, first.clientMessageId);
+  assert.deepEqual(page.errors, []);
+});
+
+/** The form's controls in `page`. */
+const formOf = (page) => ({
+  radio: (label) => [...page.document.querySelectorAll(".clarification label")].find((l) => l.textContent.includes(label)).querySelector("input"),
+  submit: () => page.document.querySelector(".clarification footer .primary-button"),
+  notes: () => [...page.document.querySelectorAll(".clarification-delivery")].map((n) => n.textContent),
+});
+const formReferNote = (n) => /You began this reply on version 2 of this ask; Home shows version 3/.test(n);
+
+test("form answers begun on version 2 go to version 3 only once the user refers them, or start afresh when discarded", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const f = formOf(page);
+  page.render(section("form", 2, { form }));
+  f.radio("Core").click();
+  await tick();
+  page.render(section("form", 3, { form }));
+  assert.ok(f.notes().some(formReferNote), JSON.stringify(f.notes()));
+  assert.equal(f.submit().disabled, true, "not sent to version 3 by itself");
+  assert.equal(f.radio("Core").checked, true, "the answers stay");
+  page.button("Refer it to version 3").click();
+  await tick();
+  assert.ok(!f.notes().some(formReferNote), JSON.stringify(f.notes()));
+  assert.equal(f.submit().disabled, false);
+  f.submit().click();
+  await tick();
+  const referred = page.replies()[0];
+  assert.equal(referred.askVersion, 3);
+  assert.match(referred.text, /- First part: Core/);
+  // Discarded: what was begun on version 2 is gone, and the form answers version 3.
+  page.render(section("drop", 2, { form }));
+  f.radio("Core").click();
+  await tick();
+  page.render(section("drop", 3, { form }));
+  page.button("Discard").click();
+  await tick();
+  assert.ok(!f.notes().some(formReferNote), JSON.stringify(f.notes()));
+  assert.equal(f.radio("Core").checked, false, "the answers begun on version 2 are gone");
+  f.radio("The UI").click();
+  await tick();
+  f.submit().click();
+  await tick();
+  const fresh = page.replies()[1];
+  assert.equal(fresh.askVersion, 3);
+  assert.match(fresh.text, /- First part: The UI/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a form send not confirmed goes again as it was after the ask is asked again: same version, answers and client id", async (t) => {
+  let lost = true;
+  const page = mount((body) => {
+    if (lost) { lost = false; throw new TypeError("Failed to fetch"); }
+    return accepted(body);
+  });
+  t.after(page.close);
+  const f = formOf(page);
+  page.render(section("form", 2, { form }));
+  f.radio("The UI").click();
+  await tick();
+  f.submit().click();
+  await tick();
+  page.render(section("form", 3, { form }));
+  assert.ok(!f.notes().some(formReferNote), JSON.stringify(f.notes()));
+  assert.equal(f.submit().disabled, false, "the unconfirmed answers can be sent again");
+  f.submit().click();
+  await tick();
+  const [first, second] = page.replies();
+  assert.deepEqual(second, first, "same version, answers and client id");
+  assert.equal(second.askVersion, 2);
+  assert.ok(page.notes().some((n) => /Your reply to version 2 of this ask was delivered before/.test(n)), JSON.stringify(page.notes()));
+  assert.deepEqual(page.errors, []);
+});
+
 test("a pick refused because the ask was resolved or removed says so and sends nothing more", async (t) => {
   const answers = [refused("ask_resolved: the ask was resolved"), refused("section_removed: no such section")];
   const page = mount(() => answers.shift());

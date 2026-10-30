@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { LoaderCircle, MessageSquareReply, Send } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
 import { useLanguage, useStrings } from "../i18n";
@@ -6,7 +6,9 @@ import type { Agent, MessageReceipt } from "../types";
 import { Clarification } from "../intelligent-ui/ClarificationForm";
 import {
   clarificationAnswers,
+  clarificationDraftKey,
   clarificationSchema,
+  readClarificationDraft,
   type ClarificationProps,
   type ClarificationValues,
 } from "../intelligent-ui/clarification";
@@ -205,6 +207,14 @@ type AskDraft = { key: string; text: string; version: number; agentId: string; a
 const askDrafts = draftStore<AskDraft>("yuzuno.home-ask-drafts.v1");
 
 /**
+ * The version of the ask a form's answers were begun on (T-9), under the key
+ * the form keeps the answers themselves. Like free text, answers begun on
+ * one version go to another only once the user says so.
+ */
+type FormBegun = { version: number; at: string };
+const formVersions = draftStore<FormBegun>("yuzuno.home-ask-form-versions.v1");
+
+/**
  * The reply controls an ask section declares. Every one of them sends one
  * user message through Core, to the section's owner unless the user picks
  * another Agent. Nothing here acts on the Agent's behalf.
@@ -286,6 +296,62 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     const parsed = clarificationSchema.safeParse(reply.form);
     return parsed.success ? parsed.data : undefined;
   }, [reply.form]);
+  // The form saves its answers under this identity and key, the form's own;
+  // the version they were begun on is kept under the same key. A discard
+  // starts the form afresh.
+  const formIdentity = `home:${context.workspaceId}:${context.projectId}:${section.key}`;
+  const formKey = form && context.workspaceId ? clarificationDraftKey(formIdentity, form) : null;
+  const [formEpoch, setFormEpoch] = useState(0);
+  // Read again whenever the form changes: the answers it saved and their version.
+  const [, setFormEdits] = useState(0);
+  // Begun before the Workspace was known: kept here until it is (T-195).
+  const begunHere = useRef<{ formId: string; version: number } | null>(null);
+  const formBegun = !form ? null
+    : formKey ? formVersions.load()[formKey]?.version ?? null
+    : begunHere.current?.formId === form.id ? begunHere.current.version : null;
+  function setFormBegun(version: number | null) {
+    if (formKey) formVersions.save(formKey, version === null ? null : { version, at: new Date().toISOString() });
+    begunHere.current = !formKey && form && version !== null ? { formId: form.id, version } : null;
+    setFormEdits((n) => n + 1);
+  }
+  // Learning the Workspace keeps what was begun before it, as the form keeps
+  // the answers; another Workspace's form has its own.
+  useEffect(() => {
+    const here = begunHere.current;
+    if (!formKey || !here) return;
+    begunHere.current = null;
+    if (here.formId === form?.id) formVersions.save(formKey, { version: here.version, at: new Date().toISOString() });
+    setFormEdits((n) => n + 1);
+  }, [formKey, form]);
+  // Begun on the version on screen when first changed.
+  function formChanged(target: EventTarget) {
+    if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
+    if (formBegun === null) setFormBegun(section.version);
+    else setFormEdits((n) => n + 1);
+  }
+  function discardForm() {
+    try {
+      if (formKey) localStorage.removeItem(formKey);
+    } catch {
+      /* The form below starts afresh all the same. */
+    }
+    setFormBegun(null);
+    setFormEpoch((n) => n + 1);
+  }
+  // The answers on screen as the form would send them, when they are complete.
+  let formAnswer: string | null = null;
+  try {
+    if (form && formKey) formAnswer = formText(form, readClarificationDraft(localStorage, formKey, form));
+  } catch {
+    formAnswer = null;
+  }
+  // A form send not confirmed goes again as it was, as free text does.
+  const formRetrying = !!pending && !pending.choice && formAnswer === pending.text
+    && pending.askVersion === formBegun && pending.agentId === target;
+  const formOtherVersion = !!form && formBegun !== null && formBegun !== section.version && !formRetrying;
+  // A reply that went again as an unconfirmed one, and Core found it
+  // delivered before: that earlier version of the ask, not this one.
+  const [sentBefore, setSentBefore] = useState<number | null>(null);
   // Shown as replied from Core's record, or from this window's delivery until
   // Core's next read. Only the owner resolves it.
   const replied =
@@ -298,12 +364,21 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const freeText = reply.freeText;
   const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : t.writeReply;
   // `shown` is what this window shows as sent until Core's next read;
-  // `version` is the version of the ask it answers, as the user saw it.
+  // `version` is the version of the ask it answers, as the user saw it. The
+  // same reply as a send not confirmed goes again as that send, to the
+  // version it answered and under its client id (sendReply), whatever way it
+  // is given: Core then finds it delivered, or refuses it and sends nothing,
+  // and the next reply answers the ask as it is now.
   const deliver = async (text: string, choice: string | undefined, shown: string, version: number) => {
-    const value = await send(target, text, choice, version);
-    setSentVersion(version);
+    const before = pendingReply(slot);
+    const answers = before && before.askVersion !== undefined && before.agentId === target
+      && (before.choice ?? "") === (choice ?? "") && before.text === text ? before.askVersion : version;
+    setSentBefore(null);
+    const value = await send(target, text, choice, answers);
+    setSentVersion(answers);
     setSentText(shown);
     setAgain(false);
+    if (answers !== section.version) setSentBefore(answers);
     return value;
   };
   // A pick sends only its id: Core quotes the label, and text would repeat it.
@@ -328,7 +403,14 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       </div>
     );
   return (
-    <div className="home-ask-reply">
+    <div
+      className="home-ask-reply"
+      onChangeCapture={(event) => formChanged(event.target)}
+      onClickCapture={(event) => {
+        // Clearing a choice changes the answers too.
+        if ((event.target as HTMLElement).closest?.(".clarification-options button")) formChanged(event.target);
+      }}
+    >
       <TargetPicker
         agents={context.agents}
         value={target}
@@ -341,6 +423,9 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
         </p>
       )}
       {pending && <p className="home-note">{t.notConfirmedHere}</p>}
+      {sentBefore !== null && sentBefore !== section.version && (
+        <p className="home-note" role="status">{t.askSentBefore(sentBefore, section.version)}</p>
+      )}
       {reply.options && reply.options.length > 0 && (
         <div className="home-ask-options" role="group" aria-label={t.replyOptions}>
           {reply.options.map((option) => (
@@ -378,24 +463,39 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
         </div>
       )}
       {form ? (
-        <Clarification
-          identity={`home:${context.workspaceId}:${context.projectId}:${section.key}`}
-          // Home's reply drafts already name their Workspace; this keeps the
-          // key they are saved under exactly as it was (T-195).
-          draftIdentity={
-            context.workspaceId
-              ? `home:${context.workspaceId}:${context.projectId}:${section.key}`
-              : null
-          }
-          form={form}
-          agentName={targetName}
-          blockedReason={!targetOpen ? "Choose who should get the reply." : undefined}
-          delivery={receipt ? { status: receipt.status, error: receipt.error } : undefined}
-          onSubmit={context.readOnly ? undefined : async (values) => {
-            const text = formText(form, values);
-            await deliver(text, undefined, text, section.version);
-          }}
-        />
+        <>
+          <Clarification
+            identity={formEpoch ? `${formIdentity}#${formEpoch}` : formIdentity}
+            // Home's reply drafts already name their Workspace; this keeps the
+            // key they are saved under exactly as it was (T-195).
+            draftIdentity={context.workspaceId ? formIdentity : null}
+            form={form}
+            agentName={targetName}
+            blockedReason={
+              !targetOpen
+                ? "Choose who should get the reply."
+                : formOtherVersion && formBegun !== null
+                  ? t.askDraftOtherVersion(formBegun, section.version)
+                  : undefined
+            }
+            // Its delivery is that of the version it answered.
+            delivery={receipt && sentVersion === section.version ? { status: receipt.status, error: receipt.error } : undefined}
+            onSubmit={context.readOnly ? undefined : async (values) => {
+              const text = formText(form, values);
+              await deliver(text, undefined, text, section.version);
+            }}
+          />
+          {formOtherVersion && (
+            <p className="home-note home-ask-draft-note">
+              <button type="button" className="inline-link" disabled={busy} onClick={() => setFormBegun(section.version)}>
+                {t.referTo(section.version)}
+              </button>{" "}
+              <button type="button" className="inline-link" disabled={busy} onClick={discardForm}>
+                {t.discard}
+              </button>
+            </p>
+          )}
+        </>
       ) : form === undefined ? (
         <p className="home-note">{t.formUnavailable}</p>
       ) : null}
