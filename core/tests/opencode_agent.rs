@@ -1742,3 +1742,44 @@ async fn context_usage_a_newer_answer_in_the_same_millisecond_counts() {
     assert_eq!(usage_of(&lab.detail()), Some((200, 1000, running, false)));
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// R4 46270ae8: a compaction makes last known only what is older than it.
+/// When a resync replays its summary while a newer answer waits for its
+/// model's window, that answer keeps waiting, and measures when the window
+/// comes.
+#[tokio::test]
+async fn context_usage_a_replayed_summary_leaves_a_newer_waiting_answer_waiting() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    // A compaction OpenCode stores, so that a resync reads its summary again.
+    lab.control("reply", json!({"sessionID":session,"text":"Summary.","parentID":"msg_compaction","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","summary":true,"tokens":{"total":900}}})).await;
+    lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+
+    // A newer answer, whose model this connection's list doesn't have, waits for a slow read.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut waiting = deepseek["models"]["deepseek-flash"].clone();
+    waiting["id"] = json!("deepseek-wait");
+    waiting["limit"]["context"] = json!(4000);
+    deepseek["models"]["deepseek-wait"] = waiting;
+    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":3.0}})).await;
+    let (second, _) = answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-wait","tokens":{"total":500}})).await;
+
+    // The stream breaks; the resync replays the summary while the read is under way.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, first, true)), "the read hasn't come back yet");
+    let d = lab.until("the window read", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    assert_eq!(usage_of(&d), Some((500, 4000, second, false)), "the newer answer kept waiting, and measured");
+    lab.ws.close_agent(ID).await.unwrap();
+}

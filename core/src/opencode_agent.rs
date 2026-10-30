@@ -165,6 +165,17 @@ impl Connection {
         self.usage.lock().unwrap().windows = models.iter().map(|m| (m.id(), m.context)).collect();
     }
 
+    /// A compaction at `at` (ms): what was measured before it no longer
+    /// holds, nor does an answer waiting from before it. One newer than it
+    /// keeps waiting, as when a resync replays the summary (R4 46270ae8).
+    fn compacted(&self, at: i64) {
+        let mut usage = self.usage.lock().unwrap();
+        if usage.pending.as_ref().is_none_or(|pending| pending.at <= at) {
+            usage.epoch += 1;
+            usage.pending = None;
+        }
+    }
+
     /// What was measured no longer holds; an answer waiting from before is dropped.
     fn unmeasured(&self) {
         let mut usage = self.usage.lock().unwrap();
@@ -1518,9 +1529,9 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
     if info["summary"] == true {
         // A compaction's summary counts what was there before it.
         let at = info["time"]["completed"].as_i64().or_else(|| info["time"]["created"].as_i64());
-        if at.is_some_and(|at| measured_before(d, at)) {
+        if let Some(at) = at.filter(|at| measured_before(d, *at)) {
             stale(d);
-            c.unmeasured();
+            c.compacted(at);
         }
         return;
     }
