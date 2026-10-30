@@ -1,3 +1,5 @@
+import { TaskOutcome, TaskOutcomeEditor } from "./TaskOutcome";
+import { outcomeInput, type OutcomeReport, type OutcomeResult } from "./task-outcome";
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
@@ -67,18 +69,12 @@ export interface SharedTask {
   assignee?: Person | null;
   progress?: string | null;
   blocker?: string | null;
-  result?: {
-    summary: string;
-    links: ResultLink[];
-    reportedAt?: string;
-    reportedBy?: Person;
-    source?: ExecutionSource | null;
-  } | null;
+  result?: OutcomeResult | null;
   archivedAt?: string | null;
   /** Project membership; null or absent means no project. */
   projectId?: string | null;
   /** Registered work materials (full view only); paths are information. */
-  materials?: { worktree?: string | null } | null;
+  materials?: { worktree?: string | null; acceptance?: string | null } | null;
   version: number;
   createdAt: string;
   createdBy: Person;
@@ -160,7 +156,7 @@ const taskDraft = (task: SharedTask): TaskDraft => ({
   blocker: task.blocker || "",
   projectId: task.projectId || "",
 });
-const actorName = (actor: Person | null | undefined, t: BoardText) =>
+const actorName = (actor: { kind: string; name: string } | null | undefined, t: BoardText) =>
   actor?.name || (actor?.kind === "user" ? t.you : t.agent);
 const activeAgents = (agents: Agent[]) =>
   agents.filter((agent) => !agent.closedAt);
@@ -1202,6 +1198,7 @@ function TaskPane({
   const [urgent, setUrgent] = useState(false);
   const [comment, setComment] = useState("");
   const [result, setResult] = useState("");
+  const [resultOutcome, setResultOutcome] = useState<OutcomeReport | undefined>();
   const [resultStatus, setResultStatus] = useState<ResultStatus>("review");
   const [resultVersion, setResultVersion] = useState(0);
   const [deliveryCandidate, setDeliveryCandidate] = useState<DeliveryCandidate | null>(null);
@@ -1314,6 +1311,7 @@ function TaskPane({
         taskId: id,
         expectedVersion: resultVersion,
         summary: result.trim(),
+        ...(resultOutcome ? { outcome: outcomeInput(resultOutcome) } : {}),
         links: links.map((link) => {
           const url = safeCollaborationLink(link.url)!;
           return { label: link.label.trim() || new URL(url).hostname, url };
@@ -1342,8 +1340,8 @@ function TaskPane({
       void load();
     }
   };
-  // The result belongs to where things stand once there is one; until then
-  // its place (and Add result) follows the description.
+  // Outcomes and gaps lead the detail; CRUD and the original result transaction
+  // stay alongside them. Older reports keep their historical label.
   const current = task && (task.status === "review" || task.status === "done");
   const resultSection = task && (
           <section className="collab-section collab-result">
@@ -1360,6 +1358,7 @@ function TaskPane({
                   setResultVersion(task.version);
                   setResultStatus(task.status === "done" ? "done" : "review");
                   setResult(task.result?.summary || "");
+                  setResultOutcome(task.result?.outcome || undefined);
                   setLinks(task.result?.links || []);
                   mutation.clearError();
                 }}
@@ -1367,56 +1366,7 @@ function TaskPane({
                 {task.result ? t.updateResult : t.addResult}
               </button>
             </div>
-            {task.result ? (
-              <>
-                <Prose text={task.result.summary} />
-                {!!task.result.links?.length && (
-                  <div className="collab-result-links">
-                    {task.result.links.map((link, index) => {
-                      const url = safeCollaborationLink(link.url);
-                      return url ? (
-                        <a
-                          key={index}
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {link.label || link.url}
-                          <ArrowUpRight size={14} />
-                        </a>
-                      ) : (
-                        <span key={index}>
-                          {link.label || link.url}
-                          <small>{t.linkUnavailable}</small>
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-                <p className="collab-hint">
-                  {t.reportedBy(actorName(task.result.reportedBy, t), task.result.reportedAt ? timeLabel(task.result.reportedAt) : "")}
-                </p>
-                {task.result.source &&
-                  agents.some(
-                    (agent) => agent.id === task.result?.source?.agentId,
-                  ) && (
-                    <button
-                      className="text-button"
-                      onClick={() =>
-                        onOpenAgent(
-                          task.result!.source!.agentId,
-                          task.result!.source!.turnId || undefined,
-                        )
-                      }
-                    >
-                      {t.viewOriginal}
-                      <ArrowUpRight size={14} />
-                    </button>
-                  )}
-              </>
-            ) : (
-              <p className="collab-hint">{t.resultHint}</p>
-            )}
+            <TaskOutcome task={task} onOpenAgent={onOpenAgent} availableAgents={agents.map(agent => agent.id)} />
             {reporting && (
               <MutationForm
                 pending={mutation.pending}
@@ -1445,6 +1395,7 @@ function TaskPane({
                     onChange={(event) => setResult(event.target.value)}
                   />
                 </label>
+                <TaskOutcomeEditor value={resultOutcome} onChange={setResultOutcome} agents={agents.filter(agent => !agent.closedAt)} />
                 <label className="collab-field">
                   <span>{t.afterResult}</span>
                   <select
@@ -1820,6 +1771,7 @@ function TaskPane({
               </div>
             </MutationForm>
           )}
+          {resultSection}
           {task.blocker && (
             <section className="collab-blocker">
               <CircleAlert size={18} />
@@ -1835,14 +1787,12 @@ function TaskPane({
               <Prose text={task.progress} />
             </section>
           )}
-          {task.result && resultSection}
           {!editing && task.description && (
             <section className="collab-section">
               <h4>{t.theWork}</h4>
               <Prose text={task.description} />
             </section>
           )}
-          {!task.result && resultSection}
           <section className="collab-section collab-delivery" aria-label={t.delivery}>
             <div className="collab-section-heading">
               <h4>{t.delivery}</h4>

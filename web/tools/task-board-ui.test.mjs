@@ -171,7 +171,7 @@ test("the detail opens beside the list, puts where things stand before delivery,
     assert.ok(p.button("Edit task", detail.querySelector(".collab-task-title")), "actions sit with the title");
     const headings = [...detail.querySelectorAll("h4")].map((h) => h.textContent.trim());
     const at = (text) => headings.findIndex((h) => h.startsWith(text));
-    assert.ok(at("Where things stand") >= 0 && at("Earlier result") > at("Where things stand"), headings.join(" | "));
+    assert.ok(at("Earlier result") >= 0 && at("Where things stand") > at("Earlier result"), headings.join(" | "));
     assert.ok(at("The work") > at("Earlier result") && at("Delivery") > at("The work"), headings.join(" | "));
     assert.equal(at("The result"), -1, "an earlier round's result is not called the result");
     // Delivery shows what is linked; managing it is one step away.
