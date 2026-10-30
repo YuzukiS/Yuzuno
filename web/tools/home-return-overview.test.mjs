@@ -145,3 +145,40 @@ test("old Core without ids does not join revisions or cross projects", () => {
   assert.equal(currentOverviewSection(entry, home([old], [], "other")), null);
   assert.equal(returnOverview(home([section(undefined)])).replies.length, 0);
 });
+
+test("null and non-integer identities use separate legacy revisions, not one shared lineage", () => {
+  for (const id of [null, 1.5, "9"]) {
+    const old = section(id, {
+      key: "same",
+      version: 1,
+      kind: "ask",
+      ask: ask("replied", { replyText: "Prior answer" }),
+    });
+    const newer = {
+      ...old,
+      version: 2,
+      ask: ask("replied", { replyText: "New answer" }),
+    };
+    const previous = returnOverview(home([old])).replies[0];
+    assert.equal(currentOverviewSection(previous, home([newer])), null);
+    const rows = returnOverview(
+      home(
+        [newer],
+        [
+          {
+            ...old,
+            history: true,
+            historyReason: "resolved",
+            ask: { ...old.ask, state: "resolved" },
+          },
+        ],
+      ),
+    ).replies;
+    assert.equal(
+      rows.length,
+      2,
+      "different old-Core revisions are not silently joined",
+    );
+    assert.notEqual(rows[0].identity, rows[1].identity);
+  }
+});

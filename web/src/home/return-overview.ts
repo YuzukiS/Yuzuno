@@ -21,7 +21,7 @@ export type ReturnOverview = {
  * matching a key alone could associate a new question with an old answer. */
 export function overviewIdentity(projectId: string, section: Section): string {
   return JSON.stringify(
-    section.id === undefined
+    !Number.isSafeInteger(section.id)
       ? [
           projectId,
           "legacy",

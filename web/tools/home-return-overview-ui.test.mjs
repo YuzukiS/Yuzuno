@@ -24,7 +24,7 @@ import {HomeReturnOverview} from ${JSON.stringify(path.join(web, "src/home/HomeR
 import {BriefDensity} from ${JSON.stringify(path.join(web, "src/home/home-density.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.renderOverview=(data,scope='one',density='low',failed=false)=>root.render(<BriefDensity.Provider value={density}><div><textarea id="preserved-draft" defaultValue="Unsent draft"/><HomeReturnOverview key={scope} data={data} readFailed={failed} onSection={(...args)=>window.actions.push(['section',...args])} onNavigate={target=>window.actions.push(['navigate',target])} onNeedsYou={()=>window.actions.push(['needs'])}/></div></BriefDensity.Provider>);
-window.renderHome=(workspaceId,revision=0)=>root.render(<Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}}/>);`,
+window.renderHome=(workspaceId,revision=0)=>root.render(<Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={window.fixtureAgents||[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}}/>);`,
   );
   const result = await build({
     root: web,
@@ -408,6 +408,106 @@ test("actual Home drops a previous workspace response and late failure", async (
       ),
       "Only reads are allowed: repository discovery is a read-only POST; no Seen, reply, order or action writes",
     );
+  } finally {
+    p.close();
+  }
+});
+
+test("a failure already shown in one workspace is absent while another workspace loads", async () => {
+  const reads = [];
+  const p = mount({
+    fetcher: (url) =>
+      url === "/api/home"
+        ? new Promise((resolve, reject) => reads.push({ resolve, reject }))
+        : { repositories: [], links: [] },
+  });
+  try {
+    p.w.renderHome("failed-workspace");
+    await until(() => reads.length === 1);
+    reads[0].reject(new Error("Failure belonging to the old workspace"));
+    await until(() => p.doc.querySelector(".home-error-banner"));
+    p.w.renderHome("fresh-workspace");
+    await until(() => reads.length === 2);
+    assert.equal(p.doc.querySelector(".home-error-banner"), null);
+    assert.equal(p.doc.querySelector(".home-return-stale"), null);
+    assert.doesNotMatch(p.doc.body.textContent, /Failure belonging to the old/);
+  } finally {
+    p.close();
+  }
+});
+
+test("ordinary revisions preserve the actual Home reply field, its draft and focus", async () => {
+  const reads = [];
+  const p = mount({
+    fetcher: (url) => {
+      if (url === "/api/home")
+        return new Promise((resolve) => reads.push(resolve));
+      if (url === "/api/machine-load")
+        return {
+          at: "2026-10-30T14:30:00Z",
+          cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
+          memory: {
+            totalMiB: 4096,
+            usedMiB: 0,
+            availableMiB: 4096,
+            jobsMiB: 0,
+            agentsMiB: 0,
+          },
+          gpus: null,
+          jobs: [],
+        };
+      return { repositories: [], links: [] };
+    },
+  });
+  try {
+    p.w.fixtureAgents = [{ id: "a", name: "Mina", projectId: "p1" }];
+    const first = data();
+    first.projects[0].brief.sections.push(
+      section(4, "A new question", {
+        kind: "ask",
+        ask: {
+          question: "Choose a reading view?",
+          state: "open",
+          reply: { freeText: true },
+        },
+      }),
+    );
+    p.w.renderHome("same");
+    await until(() => reads.length === 1);
+    reads[0](first);
+    await until(() =>
+      p.doc.querySelector('[data-section-key="card-4"] textarea'),
+    );
+    const draft = p.doc.querySelector('[data-section-key="card-4"] textarea');
+    Object.getOwnPropertyDescriptor(
+      p.w.HTMLTextAreaElement.prototype,
+      "value",
+    ).set.call(draft, "Keep my unsent decision");
+    draft.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+    draft.focus();
+    const overview = p.doc.querySelector(".home-return-overview");
+    const next = structuredClone(first);
+    next.projects[0].brief.sections[0].version++;
+    p.w.renderHome("same", 1);
+    await until(() => reads.length === 2);
+    reads[1](next);
+    await until(() => p.doc.querySelector(".home-return-refresh.has-update"));
+    assert.equal(p.doc.querySelector(".home-return-overview"), overview);
+    assert.equal(
+      p.doc.querySelector('[data-section-key="card-4"] textarea'),
+      draft,
+    );
+    assert.equal(draft.value, "Keep my unsent decision");
+    assert.equal(p.doc.activeElement, draft);
+    p.doc.querySelectorAll(".home-density-option")[1].click();
+    await until(
+      () => p.doc.querySelector(".home-view").dataset.density === "high",
+    );
+    assert.equal(
+      p.doc.querySelector('[data-section-key="card-4"] textarea'),
+      draft,
+    );
+    assert.equal(draft.value, "Keep my unsent decision");
   } finally {
     p.close();
   }
