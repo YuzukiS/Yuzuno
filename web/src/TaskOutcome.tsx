@@ -416,6 +416,9 @@ export function TaskOutcome({
         if (request === generation.current)
           setPage((previous) => ({
             ...next,
+            ...(before != null && previous
+              ? { result: previous.result, artifacts: previous.artifacts }
+              : {}),
             history:
               before != null && previous
                 ? [
@@ -481,11 +484,17 @@ export function TaskOutcome({
       .join(" · ") ||
     t.noGaps;
   const selected = page?.result;
+  const currentResultId =
+    page && page.taskVersion >= task.version
+      ? page.currentResultId
+      : task.result?.id || null;
   const historical =
-    !!selected?.id &&
-    selected.id !== (task.result?.id || page?.currentResultId);
+    !!selected && !!currentResultId && selected.id !== currentResultId;
   const hasUpdate =
-    !!page && !!task.result?.id && task.result.id !== page.currentResultId;
+    !!page &&
+    task.version > page.taskVersion &&
+    !!task.result?.id &&
+    task.result.id !== page.currentResultId;
   const working = !!result && !["review", "done"].includes(task.status);
   const selectedCounts = reportCounts(selected?.outcome);
 
@@ -600,7 +609,17 @@ export function TaskOutcome({
             <span className="outcome-chip">
               {resultVersion(selected) || t.unknownVersion}
             </span>
-            <span>{historical ? t.historical : t.current}</span>
+            <span>
+              {historical
+                ? t.historical
+                : selected?.id
+                  ? t.current
+                  : selected
+                    ? t.unknownVersion
+                    : page
+                      ? t.noResult
+                      : t.loading}
+            </span>
             <button
               type="button"
               className="icon-button"
@@ -643,7 +662,18 @@ export function TaskOutcome({
               </button>
             </div>
           )}
-          {historical && <p className="outcome-warning">{t.oldWarning}</p>}
+          {historical && (
+            <div className="outcome-warning">
+              {t.oldWarning}
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void read()}
+              >
+                {t.latest}
+              </button>
+            </div>
+          )}
           {error && (
             <div className="collab-error" role="alert">
               {error}
@@ -828,7 +858,7 @@ export function TaskOutcome({
                 aria-labelledby={`${prefix}-versions-tab`}
                 hidden={tab !== "versions"}
               >
-                <p className="outcome-note">{t.oldWarning}</p>
+                <p className="outcome-note">{t.historyHelp}</p>
                 <div className="outcome-history">
                   {page.history.map((entry) => (
                     <article key={entry.seq}>
@@ -839,9 +869,11 @@ export function TaskOutcome({
                       <div>
                         <div className="outcome-history-heading">
                           <strong>
-                            {entry.resultId === page.currentResultId
-                              ? t.current
-                              : t.historical}
+                            {!entry.resultId
+                              ? t.unknownVersion
+                              : entry.resultId === currentResultId
+                                ? t.current
+                                : t.historical}
                           </strong>
                           <span>{date(entry.reportedAt)}</span>
                         </div>

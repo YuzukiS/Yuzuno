@@ -272,3 +272,83 @@ test("density, keyboard tabs and background refresh retain result form drafts an
     p.close();
   }
 });
+
+test("fresh result reads beat stale task props and idless history never becomes current by null equality", async () => {
+  const p = await mount();
+  try {
+    await p.openTask("T-1");
+    await p.openOutcome();
+    let drawer = p.doc.querySelector(".outcome-drawer");
+    p.fixture.addNewResult();
+    drawer.querySelector('[aria-label="Refresh recorded evidence"]').click();
+    await until(
+      () =>
+        drawer
+          .querySelector(".outcome-drawer-meta")
+          .textContent.includes("Historical submission"),
+      "old selection stays pinned",
+    );
+    assert.match(
+      drawer.querySelector(".outcome-record-id").textContent,
+      /result-current/,
+    );
+    p.button("View latest outcome", drawer).click();
+    await until(
+      () =>
+        drawer
+          .querySelector(".outcome-record-id")
+          .textContent.includes("result-new"),
+      "new outcome selected",
+    );
+    assert.match(
+      drawer.querySelector(".outcome-drawer-meta").textContent,
+      /Latest submission/,
+    );
+    assert.doesNotMatch(
+      drawer.querySelector(".outcome-drawer-meta").textContent,
+      /Historical submission/,
+    );
+    assert.equal(drawer.querySelectorAll(".outcome-warning").length, 0);
+    drawer.querySelector('[aria-label="Close outcome details"]').click();
+    await until(() => !p.doc.querySelector(".outcome-drawer"), "closed");
+    p.fixture.enableLegacyPaging();
+    await p.openTask("T-2");
+    await p.openOutcome();
+    drawer = p.doc.querySelector(".outcome-drawer");
+    p.button("Versions", drawer).click();
+    await pause();
+    assert.ok(
+      [...drawer.querySelectorAll(".outcome-history-heading")].every(
+        (e) => !e.textContent.includes("Latest submission"),
+      ),
+    );
+    p.fixture.tasks[1].result = {
+      id: "legacy-replacement",
+      taskVersion: 8,
+      summary: "Replacement report",
+      links: [],
+    };
+    p.fixture.tasks[1].version = 8;
+    p.button("Earlier submissions", drawer).click();
+    await until(
+      () =>
+        drawer
+          .querySelector(".outcome-drawer-meta")
+          .textContent.includes("Historical submission"),
+      "legacy selection survives history pagination",
+    );
+    p.button("Outcome & gaps", drawer).click();
+    await pause();
+    assert.match(
+      drawer.querySelector(".outcome-author-report").textContent,
+      /Legacy author/,
+    );
+    assert.doesNotMatch(
+      drawer.querySelector(".outcome-author-report").textContent,
+      /Replacement report/,
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

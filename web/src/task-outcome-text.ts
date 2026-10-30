@@ -51,6 +51,8 @@ export const outcomeText = strings(
     loading: "Reading outcome records…",
     loadMore: "Earlier submissions",
     noHistory: "No outcome history recorded",
+    historyHelp:
+      "Each submission keeps its own report and evidence. Earlier evidence does not establish acceptance of a newer submission.",
     unknownHistory:
       "This older record has no outcome ID; its summary remains available.",
     acceptance: "Acceptance description at submission",
@@ -146,6 +148,8 @@ export const outcomeText = strings(
     loading: "正在读取成果记录…",
     loadMore: "更早的提交",
     noHistory: "暂无成果历史",
+    historyHelp:
+      "每次提交保留自己的报告与证据。旧证据不会自动成为新成果的验收。",
     unknownHistory: "这份旧记录没有成果 ID，仍可查看其摘要。",
     acceptance: "提交时的验收说明",
     currentAcceptance: "当前任务验收说明",

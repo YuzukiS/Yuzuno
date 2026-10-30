@@ -141,12 +141,22 @@ export function outcomeFixture() {
       updatedAt: at,
     },
   ];
+  const retained = new Map([
+    [current.id, current],
+    [earlier.id, earlier],
+  ]);
   const calls = [];
   let failed = false;
+  let legacyPaging = false;
   const outcome = (body) => {
     if (failed) return { error: "synthetic read failure" };
     const task = tasks.find((t) => t.id === body.taskId);
-    const result = body.resultId === earlier.id ? earlier : task.result;
+    const result = body.resultId
+      ? task.id === "T-1"
+        ? retained.get(body.resultId)
+        : undefined
+      : task.result;
+    if (body.resultId && !result) return { error: "result_not_found" };
     const artifact =
       body.resultId === earlier.id
         ? {
@@ -166,9 +176,28 @@ export function outcomeFixture() {
       taskVersion: task.version,
       currentResultId: task.result?.id || null,
       result,
-      history: task.id === "T-1" ? history : [],
-      hasMore: false,
-      nextBefore: task.id === "T-1" ? 9 : null,
+      history:
+        task.id === "T-1"
+          ? history
+          : task.id === "T-2"
+            ? [
+                {
+                  resultId: null,
+                  seq: 2,
+                  summary: "Legacy earlier",
+                  taskVersion: null,
+                },
+                {
+                  resultId: null,
+                  seq: 1,
+                  summary: "Another legacy report",
+                  taskVersion: null,
+                },
+              ]
+            : [],
+      hasMore: legacyPaging && task.id === "T-2" && body.before == null,
+      nextBefore:
+        task.id === "T-1" ? 9 : legacyPaging && task.id === "T-2" ? 1 : null,
       artifacts:
         task.id === "T-1"
           ? [
@@ -253,6 +282,9 @@ export function outcomeFixture() {
     projects,
     calls,
     answer,
+    enableLegacyPaging() {
+      legacyPaging = true;
+    },
     failReads(value = true) {
       failed = value;
     },
@@ -264,6 +296,16 @@ export function outcomeFixture() {
         summary: "A new author report",
       };
       tasks[0].version = 8;
+      retained.set(tasks[0].result.id, tasks[0].result);
+      history.unshift({
+        resultId: tasks[0].result.id,
+        seq: 11,
+        taskVersion: 8,
+        summary: tasks[0].result.summary,
+        reportedAt: at,
+        reportedBy: author,
+        status: "review",
+      });
     },
   };
 }
