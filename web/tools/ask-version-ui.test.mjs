@@ -197,6 +197,39 @@ test("a send not confirmed goes again exactly as it was, even after the ask is a
   assert.deepEqual(page.errors, []);
 });
 
+test("a send not confirmed goes again as it was when its words had spaces around them, here and after a reload", async (t) => {
+  let lost = true;
+  const page = mount((body) => {
+    if (lost) { lost = false; throw new TypeError("Failed to fetch"); }
+    return accepted(body);
+  });
+  t.after(page.close);
+  const referNote = (n) => /You began this reply on version/.test(n);
+  page.render(section("plan", 2));
+  // Sent trimmed; the draft keeps the words as written.
+  await page.type("  Ship on Friday.\n");
+  page.sendButton().click();
+  await tick();
+  assert.equal(page.replies()[0].text, "Ship on Friday.");
+  page.render(section("plan", 3));
+  assert.ok(!page.notes().some(referNote), JSON.stringify(page.notes()));
+  assert.equal(page.sendButton().disabled, false, "the unconfirmed reply can be sent again");
+  // Reloaded: the draft and the retry record are read again.
+  page.render(section("other", 1));
+  page.render(section("plan", 3));
+  assert.equal(page.field().value, "  Ship on Friday.\n");
+  assert.ok(page.notes().some((n) => /Kept from before, not sent yet: your reply to version 2/.test(n)), JSON.stringify(page.notes()));
+  assert.ok(page.notes().some((n) => /not confirmed/.test(n)), JSON.stringify(page.notes()));
+  assert.ok(!page.notes().some(referNote), JSON.stringify(page.notes()));
+  assert.equal(page.sendButton().disabled, false);
+  page.sendButton().click();
+  await tick();
+  const [first, second] = page.replies();
+  assert.deepEqual(second, first, "same version, words and client id");
+  assert.equal(second.askVersion, 2);
+  assert.deepEqual(page.errors, []);
+});
+
 test("a pick refused because the ask was resolved or removed says so and sends nothing more", async (t) => {
   const answers = [refused("ask_resolved: the ask was resolved"), refused("section_removed: no such section")];
   const page = mount(() => answers.shift());

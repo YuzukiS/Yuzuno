@@ -269,9 +269,10 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   };
   // An unconfirmed send (from before a reload, or one that failed here) goes
   // again as it was, to the version it answered, even if the ask has changed
-  // since: Core then finds it delivered, or refuses it and sends nothing.
+  // since: Core then finds it delivered, or refuses it and sends nothing. It
+  // holds the words as sent, trimmed; the draft keeps them as written.
   const pending = busy ? undefined : pendingReply(slot);
-  const retrying = !!pending && !pending.choice && !!draft && draft.text === pending.text
+  const retrying = !!pending && !pending.choice && !!draft && draft.text.trim() === pending.text
     && draft.version === pending.askVersion && draft.agentId === pending.agentId;
   // Begun on another version of the ask: sent only once the user says which.
   const otherVersion = !!draft?.text.trim() && draft.version !== section.version && !retrying;
