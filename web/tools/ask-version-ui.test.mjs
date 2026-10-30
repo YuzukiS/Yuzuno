@@ -472,6 +472,51 @@ test("④ discarding a draft does not take back a send whose outcome is unknown:
   assert.deepEqual(page.errors, []);
 });
 
+/** The same form ID, with `value` as its field's default. */
+const defaulted = (value) => ({
+  ...form,
+  fields: [{ ...form.fields[0], default: { value, source: "The plan" } }],
+});
+
+test("in place, an unedited form shows the new question's own defaults; a form sent with its defaults keeps them for its retry", async (t) => {
+  const c = core();
+  const page = mount((body) => c.answer(body));
+  t.after(page.close);
+  const f = formOf(page);
+  // Nothing written in it: the ask changes in place, without a reload.
+  page.render(section("form", 1, { form: defaulted("ui"), freeText: true }));
+  assert.equal(f.radio("The UI").checked, true);
+  page.field().focus();
+  page.render(section("form", 2, { form: defaulted("core"), freeText: true }));
+  assert.equal(f.radio("Core").checked, true, "the default of version 2");
+  assert.equal(f.radio("The UI").checked, false, "not version 1's");
+  assert.equal(page.document.activeElement, page.field(), "focus stays where the user is");
+  assert.ok(!f.notes().some((n) => /You began this reply on version/.test(n)), JSON.stringify(f.notes()));
+  f.submit().click();
+  await tick();
+  const [fresh] = page.replies();
+  assert.equal(fresh.askVersion, 2);
+  assert.match(fresh.text, /- First part: Core/);
+  // Sent with its defaults, unconfirmed: those answers are that send's, here and after a reload.
+  c.lose(true);
+  page.render(section("sent", 1, { form: defaulted("ui") }));
+  f.submit().click();
+  await tick();
+  page.render(section("sent", 2, { form: defaulted("core") }));
+  assert.equal(f.radio("The UI").checked, true, "the answers sent stay");
+  page.reload();
+  page.render(section("sent", 2, { form: defaulted("core") }));
+  assert.equal(f.radio("The UI").checked, true, "and after a reload");
+  assert.ok(!f.notes().some((n) => /You began this reply on version/.test(n)), JSON.stringify(f.notes()));
+  f.submit().click();
+  await tick();
+  const [, sent, retried] = page.replies();
+  assert.deepEqual(retried, sent, "the same version, answers and client id");
+  assert.equal(retried.askVersion, 1);
+  assert.equal(c.delivered.size, 2);
+  assert.deepEqual(page.errors, []);
+});
+
 test("a pick refused because the ask was resolved or removed says so and sends nothing more", async (t) => {
   const answers = [refused("ask_resolved: the ask was resolved"), refused("section_removed: no such section")];
   const page = mount(() => answers.shift());

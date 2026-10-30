@@ -9,6 +9,7 @@ import {
   clarificationDraftKey,
   clarificationSchema,
   readClarificationDraft,
+  saveClarificationDraft,
   type ClarificationProps,
   type ClarificationValues,
 } from "../intelligent-ui/clarification";
@@ -323,9 +324,13 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     if (here.formId === form?.id) formVersions.save(formKey, { version: here.version, at: new Date().toISOString() });
     setFormEdits((n) => n + 1);
   }, [formKey, form]);
+  // Written in or sent from this form as it is mounted, even if this browser
+  // could not keep that.
+  const formTouched = useRef(false);
   // Begun on the version on screen when first changed.
   function formChanged(target: EventTarget) {
     if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
+    formTouched.current = true;
     if (formBegun === null) setFormBegun(section.version);
     else setFormEdits((n) => n + 1);
   }
@@ -335,8 +340,18 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     } catch {
       /* The form below starts afresh all the same. */
     }
+    formTouched.current = false;
     setFormBegun(null);
     setFormEpoch((n) => n + 1);
+  }
+  // A form nobody wrote in or sent from shows the question as it is now: a
+  // newer one under the same ID brings its own fields and defaults, and the
+  // form starts afresh with them. Answers begun or sent here keep theirs.
+  const formShape = form ? JSON.stringify(form) : "";
+  const [shownShape, setShownShape] = useState(formShape);
+  if (shownShape !== formShape) {
+    setShownShape(formShape);
+    if (formBegun === null && !formTouched.current) setFormEpoch((n) => n + 1);
   }
   // The answers on screen as the form would send them, when they are complete.
   let formAnswer: string | null = null;
@@ -482,6 +497,15 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
             delivery={receipt && sentVersion === section.version ? { status: receipt.status, error: receipt.error } : undefined}
             onSubmit={context.readOnly ? undefined : async (values) => {
               const text = formText(form, values);
+              // Sent, the answers are this version's, defaults included: kept
+              // as written ones are, for a retry and against a newer question.
+              formTouched.current = true;
+              try {
+                if (formKey) saveClarificationDraft(localStorage, formKey, values);
+              } catch {
+                /* Kept on screen in this window all the same. */
+              }
+              if (formBegun === null) setFormBegun(section.version);
               await deliver(text, undefined, text, section.version);
             }}
           />
