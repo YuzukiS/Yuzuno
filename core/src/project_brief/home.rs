@@ -257,6 +257,13 @@ pub(super) struct ReplyInput {
     pub version: Option<i64>,
     #[serde(default)]
     pub title: Option<String>,
+    /// A reply to an ask (T-9): the version of `key` on screen when the user
+    /// began it, and the Workspace whose Home showed it (see ask_reply).
+    /// Never with `version`, which is a card's.
+    #[serde(default)]
+    pub ask_version: Option<i64>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// The option of an ask's reply with this id: (id, label).
@@ -282,9 +289,28 @@ pub(super) fn compose(project: &str, section: Option<&sections::Row>, choice: Op
         return format!("Reply from the user on Home, about the Project Brief of {project}:\n\n{}", text.trim());
     };
     let title = row.data["title"].as_str().unwrap_or_default();
+    quote(format!("Reply from the user on Home, to the Project Brief section `{}` (\"{title}\") of {project}:\n", row.key), row, choice, text)
+}
+
+/// The message a reply to an ask sends (T-9): which version of which ask of
+/// which Project of which Workspace it answers, as the user saw it, then
+/// what compose quotes and adds. Nothing in it is read from the ask as it is
+/// later.
+pub(super) fn compose_ask(workspace: &str, project: &str, project_id: &str, row: &sections::Row, choice: Option<&(String, String)>, text: &str) -> String {
+    let title = row.data["title"].as_str().unwrap_or_default();
+    quote(format!(
+        "Reply from the user on Home, to version {} of the Project Brief section `{}` (\"{title}\") of {project} \
+         (Workspace {workspace}, Project {project_id}):\n",
+        row.version, row.key
+    ), row, choice, text)
+}
+
+/// `message`, then the section's question (or title) quoted, the choice, the
+/// user's own words and, for an ask, how its owner closes it.
+fn quote(mut message: String, row: &sections::Row, choice: Option<&(String, String)>, text: &str) -> String {
+    let title = row.data["title"].as_str().unwrap_or_default();
     let quoted = row.data["ask"]["question"].as_str().filter(|_| row.kind == "ask").unwrap_or(title);
     let quoted: String = quoted.chars().take(500).collect();
-    let mut message = format!("Reply from the user on Home, to the Project Brief section `{}` (\"{title}\") of {project}:\n", row.key);
     for line in quoted.lines() {
         message.push_str(&format!("> {line}\n"));
     }
@@ -353,9 +379,14 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
     ensure!(input.text.len() <= MAX_REPLY, "A reply is at most {MAX_REPLY} bytes");
     if let Some(version) = input.version {
+        ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");
         return card_reply(ws, project, input, version).await;
     }
     ensure!(input.title.is_none(), "A title goes with the version of the card it was shown in");
+    if let Some(version) = input.ask_version {
+        return ask_reply(ws, project, input, version).await;
+    }
+    ensure!(input.workspace_id.is_none(), "A Workspace goes with the version of the ask it was shown in");
     let (id, key) = (project.clone(), input.key.clone());
     let (name, section) = ws.stored(move |store| {
         let db = store.db.read()?;
@@ -367,13 +398,18 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
         };
         Ok((name.clone(), section))
     }).await?;
-    let chosen = match (&input.choice, &section) {
-        (Some(id), Some(row)) => Some(choice(row, id).context("choice_not_found: the ask offers no such option")?),
-        (Some(_), None) => bail!("A choice answers an ask; name its section"),
-        (None, _) => None,
-    };
-    ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
-    let text = compose(&name, section.as_ref(), chosen.as_ref(), &input.text);
+    // An ask is answered only as the version the user saw (ask_reply): one
+    // from a Home that does not say which is refused, never matched to the
+    // ask as it is now.
+    if section.as_ref().is_some_and(|row| row.kind == "ask") {
+        return Err(not_submitted(
+            "ask_version_required: this Home window does not say which version of the ask it showed. Reload Home and reply again; \
+             nothing was sent, and your reply is kept.".into(),
+        ));
+    }
+    ensure!(input.choice.is_none(), "A choice answers an ask; name its section");
+    ensure!(!input.text.trim().is_empty(), "Write a reply");
+    let text = compose(&name, section.as_ref(), None, &input.text);
     let origin = json!({"kind":"home","projectId":project,"key":section.as_ref().map(|row| &row.key),"version":section.as_ref().map(|row| row.version)});
     let detail = ws.send_view(&input.agent_id).await?;
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
@@ -392,16 +428,96 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
             clarification: None,
         },
     };
-    let receipt = ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await?;
-    if let Some(row) = section.filter(|row| row.live && row.unresolved_ask() && delivered(&receipt)) {
+    ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
+}
+
+/// Refused before anything was recorded: the client keeps its reply, and
+/// sending it again is a new message.
+fn not_submitted(message: String) -> anyhow::Error {
+    anyhow::Error::new(crate::collaboration_credentials::MessageNotSubmitted(anyhow::anyhow!(message)))
+}
+
+/// What a reply to an ask says, whatever the ask is now: the option chosen
+/// and the user's words, as a digest its receipt keeps (T-9).
+pub(super) fn reply_digest(choice: Option<&str>, text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(json!([choice, text]).to_string().as_bytes()))
+}
+
+/// A reply to an ask (T-9): bound to exactly the version the user saw, in
+/// the Workspace whose Home showed it. A version Home no longer has, a
+/// resolved or removed ask, or another Workspace sends nothing and says so;
+/// the client keeps the reply. A retry of a message already sent under this
+/// client id returns its receipt even if the ask changed since. A sent reply
+/// marks only that version replied, and only while it is still the live
+/// ask: never a newer one its owner asked under the same key.
+async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, version: i64) -> Result<MessageReceipt> {
+    let key = input.key.clone().context("A reply to an ask names its section")?;
+    let (id, wanted) = (project.clone(), key.clone());
+    let (workspace, name, current) = ws.stored(move |store| {
+        let workspace = store.workspace_id()?;
+        let db = store.db.read()?;
+        let labels = crate::projects::project_labels(&db)?;
+        let (name, _) = labels.get(&id).context("project_not_found: no Project has this ID")?;
+        Ok((workspace, name.clone(), sections::find(&db, &id, &wanted, None)?))
+    }).await?;
+    if input.workspace_id.as_deref() != Some(workspace.as_str()) {
+        return Err(not_submitted(
+            "workspace_changed: this reply was begun on another Workspace's Home. Nothing was sent, and your reply is kept.".into(),
+        ));
+    }
+    let digest = reply_digest(input.choice.as_deref(), &input.text);
+    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,"reply":digest});
+    // The ask as it is now, if it is still the version the user saw.
+    let shown = current.filter(|row| row.live && row.unresolved_ask() && row.version == version);
+    let chosen = match (&input.choice, &shown) {
+        (Some(id), Some(row)) => Some(choice(row, id).context("choice_not_found: the ask offers no such option")?),
+        _ => None,
+    };
+    let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
+    let receipt = if let Some(previous) = ws.stored(move |store| store.receipt(&agent, &client)).await? {
+        // The same reply to the same version, sent before: its receipt.
+        let same = previous.origin.as_ref().is_some_and(|sent| {
+            sent["kind"] == "home" && sent["projectId"] == project && sent["key"] == key
+                && sent["version"] == version && sent["reply"] == digest
+        });
+        ensure!(same, "This clientMessageId was already used for another message");
+        ws.send_message(&input.agent_id, previous.input).await?
+    } else {
+        let Some(row) = &shown else {
+            let (code, why) = match &current {
+                None => ("section_removed", "it is no longer on Home"),
+                Some(row) if row.history_reason.as_deref() == Some("removed") => ("section_removed", "its author removed it"),
+                Some(row) if row.kind == "ask" && !row.unresolved_ask() => ("ask_resolved", "its author resolved it"),
+                _ => ("ask_changed", "it changed after you began this reply"),
+            };
+            return Err(not_submitted(format!(
+                "{code}: version {version} of the ask `{key}` can't be answered now: {why}. Nothing was sent, and your reply is kept."
+            )));
+        };
+        ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
+        let detail = ws.send_view(&input.agent_id).await?;
+        let message = MessageInput {
+            client_message_id: input.client_message_id.clone(),
+            text: compose_ask(&workspace, &name, &project, row, chosen.as_ref(), &input.text),
+            text_blocks: None,
+            images: vec![],
+            expected_turn_id: follow_up_turn(&detail)?,
+            question: None,
+            clarification: None,
+        };
+        ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await?
+    };
+    // Marked on that version only, if it is still the live ask now.
+    if shown.is_some() && delivered(&receipt) {
         let reply = match (&chosen, extra_text(chosen.as_ref(), &input.text)) {
             (Some((_, label)), None) => label.clone(),
             (Some((_, label)), Some(text)) => format!("{label}: {text}"),
             (None, text) => text.unwrap_or_default().to_owned(),
         };
         let reply: String = reply.chars().take(2000).collect();
-        let (store, key, id) = (ws.store.clone(), row.key.clone(), project.clone());
-        if crate::db::blocking(move || sections::mark_replied(&store, &id, &key, &reply)).await? {
+        let (store, key, id) = (ws.store.clone(), key.clone(), project.clone());
+        if crate::db::blocking(move || sections::mark_replied(&store, &id, &key, version, &reply)).await? {
             announce(ws, Some(&project));
         }
     }

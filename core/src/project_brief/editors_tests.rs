@@ -25,11 +25,11 @@ async fn policy_limits_every_operation_without_bypassing_section_ownership() {
     assert!(codes(&reject(&ws, "a", input("other-owner", 2, vec![put("old", "status")])).await).contains(&"not_owner".into()));
     accept(&ws, "a", input("editor", 2, vec![put("summary", "status")])).await;
     accept(&ws, "b", input("ask", 3, vec![put("summary/question", "ask")])).await;
-    assert!(sections::mark_replied(&ws.store, &project, "summary/question", "Left").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "summary/question", "Left").unwrap());
     assert_eq!(section(&brief(&ws, "b"), "summary/question")["ask"]["state"], "replied");
     accept(&ws, "b", input("ask-edit", 4, vec![put("summary/question", "ask")])).await;
     assert!(codes(&reject(&ws, "b", input("ask-convert", 5, vec![put("summary/question", "report")])).await).contains(&"ask_only".into()));
-    assert!(sections::mark_replied(&ws.store, &project, "summary/question", "Left").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "summary/question", "Left").unwrap());
     accept(&ws, "b", input("resolved", 5, vec![op("resolve", "summary/question")])).await;
     // Optional noChange is still a normal accepted, turn-bound receipt.
     running(&ws, "b", "t2");
@@ -49,7 +49,7 @@ async fn home_filters_sources_without_seen_and_keeps_asks_approvals_and_totals()
     accept(&ws, "b", input("worker", 1, vec![put("worker", "report"), put("worker/question", "ask")])).await;
     // A replied Ask stays live too, even when its author is Ask-only.
     accept(&ws, "b", input("second", 2, vec![put("reply", "ask")])).await;
-    sections::mark_replied(&ws.store, &project, "reply", "Left").unwrap();
+    sections::mark_replied_live(&ws.store, &project, "reply", "Left").unwrap();
     record_turn_outcome(&ws.store, "b", "missed", &project, "missing").unwrap();
     record_turn_outcome(&ws.store, "a", "missed", &project, "missing").unwrap();
     // Hidden outcomes must not exhaust the visible editor's 50-row window.
