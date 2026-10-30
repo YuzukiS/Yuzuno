@@ -203,3 +203,63 @@ test("unrelated history keeps Core's order; only revisions of the same identity 
     ],
   );
 });
+
+test("R1 project renames change both report-only and reply-only signatures without a card revision", () => {
+  for (const item of [
+    section(1),
+    section(2, { kind: "ask", ask: ask("replied", { replyText: "Keep it" }) }),
+  ]) {
+    const original = home([item]);
+    const renamed = structuredClone(original);
+    renamed.projects[0].project.name = "Renamed project";
+    assert.equal(renamed.projects[0].brief.sections[0].version, item.version);
+    assert.notEqual(
+      returnOverview(renamed).signature,
+      returnOverview(original).signature,
+    );
+  }
+});
+
+test("R1 a report owner's name and state change its signature without unrelated replies", () => {
+  const original = home([section(1)]);
+  for (const change of [
+    { name: "Iris" },
+    { state: "closed" },
+    { agentId: "b" },
+  ]) {
+    const renamed = structuredClone(original);
+    renamed.projects[0].brief.sections[0].owner = { ...owner, ...change };
+    assert.equal(renamed.projects[0].brief.sections[0].version, 2);
+    assert.notEqual(
+      returnOverview(renamed).signature,
+      returnOverview(original).signature,
+    );
+  }
+});
+
+test("R1 displayed receipt title and question changes are observable, but a read timestamp alone is not", () => {
+  const original = home([
+    section(2, { kind: "ask", ask: ask("replied", { replyText: "Keep it" }) }),
+  ]);
+  for (const mutate of [
+    (s) => {
+      s.title = "Renamed receipt";
+    },
+    (s) => {
+      s.ask.question = "Reworded card question";
+    },
+  ]) {
+    const changed = structuredClone(original);
+    mutate(changed.projects[0].brief.sections[0]);
+    assert.notEqual(
+      returnOverview(changed).signature,
+      returnOverview(original).signature,
+    );
+  }
+  const reread = structuredClone(original);
+  reread.generatedAt = "2026-10-30T15:30:00Z";
+  assert.equal(
+    returnOverview(reread).signature,
+    returnOverview(original).signature,
+  );
+});

@@ -88,19 +88,26 @@ export function returnOverview(data: HomeData): ReturnOverview {
     }
   }
   // Preserve Core's project/card order; do not make a new urgency ranking.
+  // Project and owner metadata can change without a card revision. Compare
+  // the fields this reading shows, not generatedAt (a read is not a change).
   const signature = JSON.stringify({
-    changes: changes.map(({ identity, section: s }) => [
+    changes: changes.map(({ identity, projectName, section: s }) => [
       identity,
+      projectName,
       s.version,
       s.title,
+      [s.owner.agentId, s.owner.name, s.owner.state],
       s.seen?.version,
       s.status?.stale,
     ]),
-    replies: replies.map(({ identity, section: s, state }) => [
+    replies: replies.map(({ identity, projectName, section: s, state }) => [
       identity,
+      projectName,
       s.version,
+      s.title,
       state,
-      s.owner,
+      [s.owner.agentId, s.owner.name, s.owner.state],
+      s.ask?.question,
       s.ask?.repliedAt,
       s.ask?.replyText,
     ]),

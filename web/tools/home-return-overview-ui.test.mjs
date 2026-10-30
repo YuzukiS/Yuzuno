@@ -512,3 +512,99 @@ test("ordinary revisions preserve the actual Home reply field, its draft and foc
     p.close();
   }
 });
+
+for (const scenario of [
+  {
+    name: "report project rename",
+    kind: "report",
+    before: "Northstar",
+    after: "Renamed project",
+    change: (project) => {
+      project.project.name = "Renamed project";
+    },
+  },
+  {
+    name: "reply project rename",
+    kind: "ask",
+    before: "Northstar",
+    after: "Renamed project",
+    change: (project) => {
+      project.project.name = "Renamed project";
+    },
+  },
+  {
+    name: "report owner rename",
+    kind: "report",
+    before: "Owner at this reading: Mina",
+    after: "Owner at this reading: Iris",
+    change: (project) => {
+      project.brief.sections[0].owner = {
+        ...project.brief.sections[0].owner,
+        name: "Iris",
+      };
+    },
+  },
+]) {
+  test(`R1 ${scenario.name} enables explicit refresh and preserves the held reading, focus and draft`, async () => {
+    const p = mount();
+    try {
+      const first = data();
+      first.projects[0].brief.sections =
+        first.projects[0].brief.sections.filter(
+          (s) => s.kind === scenario.kind,
+        );
+      first.projects[0].brief.history = [];
+      p.w.renderOverview(first);
+      await until(() => p.doc.querySelector(".home-return-overview"));
+      const draft = p.doc.querySelector("#preserved-draft");
+      draft.value = "My unsent decision";
+      draft.focus();
+      assert.equal(p.doc.querySelector(".home-return-refresh").disabled, true);
+      const next = structuredClone(first);
+      scenario.change(next.projects[0]);
+      assert.deepEqual(
+        next.projects[0].brief.sections.map((s) => s.version),
+        first.projects[0].brief.sections.map((s) => s.version),
+      );
+      p.w.renderOverview(next);
+      await until(
+        () => !p.doc.querySelector(".home-return-refresh").disabled,
+        scenario.name,
+      );
+      assert.equal(p.doc.activeElement, draft);
+      assert.equal(draft.value, "My unsent decision");
+      const showDetails = () =>
+        p.doc
+          .querySelectorAll(".home-return-tile")
+          [scenario.kind === "ask" ? 1 : 0].click();
+      showDetails();
+      await until(() => p.doc.querySelector(".home-return-dialog"));
+      assert.ok(
+        p.doc
+          .querySelector(".home-return-dialog")
+          .textContent.includes(scenario.before),
+      );
+      assert.ok(
+        !p.doc
+          .querySelector(".home-return-dialog")
+          .textContent.includes(scenario.after),
+      );
+      click(p, '[aria-label="Close overview"]');
+      await until(() => !p.doc.querySelector(".home-return-dialog"));
+      click(p, ".home-return-refresh");
+      await until(() => p.doc.querySelector(".home-return-refresh").disabled);
+      assert.equal(p.doc.querySelector("#preserved-draft"), draft);
+      assert.equal(draft.value, "My unsent decision");
+      showDetails();
+      await until(() =>
+        p.doc
+          .querySelector(".home-return-dialog")
+          ?.textContent.includes(scenario.after),
+      );
+      assert.equal(p.requests.length, 0);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  });
+}
