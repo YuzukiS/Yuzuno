@@ -69,7 +69,13 @@ impl Workspace {
                 call.as_str(),
                 "peers_list" | "projects_list" | "peer_read" | "task_list" | "task_get" | "delivery_get"
             ) {
-                let _ = ws.changes.send(json!({"collaboration":true}));
+                // A task's row changed: Home reads its live task references
+                // again (T-9). Mail and comments leave those rows as they are.
+                let tasks = matches!(
+                    call.as_str(),
+                    "task_create" | "task_update" | "task_claim" | "task_submit_result" | "task_dispatch"
+                );
+                let _ = ws.changes.send(json!({"collaboration":true,"tasks":tasks}));
                 ws.collaboration_wakeup.notify_one();
                 ws.delivery.wake.notify_one();
             }
@@ -958,6 +964,30 @@ for line in sys.stdin:
         let done = json!({"turn":{"id":"native-turn","status":"completed"}});
         ws.store.update("a", "turn/completed", &done, |d| d.apply("turn/completed", &done)).unwrap();
         ws.close_agent("a").await.unwrap();
+    }
+
+    /// T-9: a write that changes a task's row says so on its notice, so Home
+    /// reads its live task references again; mail does not.
+    #[tokio::test]
+    async fn a_task_write_marks_its_notice_for_home_and_mail_does_not() {
+        let (_dir, ws) = fixture().await;
+        let mut live = ws.changes.subscribe(None);
+        let notices = |live: &mut crate::events::Subscription| {
+            let mut found = vec![];
+            while let Some(entry) = live.try_next() {
+                let message = serde_json::from_str::<Value>(&entry.data).unwrap();
+                if message["scope"] == "collaboration" { found.push(message["tasks"].clone()); }
+            }
+            found
+        };
+        let task = ws.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Live"})).await.unwrap();
+        assert_eq!(notices(&mut live), vec![json!(true)]);
+        ws.collaboration_call(None, "task_comment", json!({"requestId":"c","taskId":task["task"]["id"],"body":"note"})).await.unwrap();
+        ws.collaboration_call(None, "peer_send", json!({"requestId":"mail","toAgentId":"a","body":"Please look"})).await.unwrap();
+        assert_eq!(notices(&mut live), vec![json!(false), json!(false)]);
+        ws.collaboration_call(None, "task_update", json!({"requestId":"u","taskId":task["task"]["id"],
+            "expectedVersion":task["task"]["version"],"patch":{"status":"doing"}})).await.unwrap();
+        assert_eq!(notices(&mut live), vec![json!(true)]);
     }
 
     #[tokio::test]

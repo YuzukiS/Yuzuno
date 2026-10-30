@@ -600,7 +600,12 @@ export function App() {
         }
         case "workspace.changed":
           // A conversation that shows mail delivery gets its own notice.
-          if (event.scope === "collaboration") boardRefresh.now();
+          if (event.scope === "collaboration") {
+            boardRefresh.now();
+            // A task's row changed: Home's live task references read it
+            // again, one read for a burst of changes (T-9).
+            if (event.tasks) homeRefresh.atMostEvery(2_000);
+          }
           else if (event.scope === "jobs") jobsRefresh.now();
           else if (event.scope === "machines") machinesRefresh.now();
           else if (event.scope === "brief" || event.scope === "home") {

@@ -42,6 +42,13 @@ fn summary(text: &str) -> Value {
 }
 
 impl Row {
+    /// What a Live Reference to the task shows (T-9): its title, status,
+    /// assignee, last update and whether it is archived, nothing else.
+    pub(super) fn live(&self) -> Value {
+        json!({"title":self.title,"status":self.status,"assignee":self.assignee,"updatedAt":self.updated_at,
+            "archived":self.archived_at.is_some()})
+    }
+
     pub(super) fn value(&self) -> Value {
         json!({"id":self.id,"seq":self.seq,"title":self.title,"status":self.status,"version":self.version,
             "assignee":self.assignee,"updatedAt":self.updated_at,"progress":summary(&self.progress),

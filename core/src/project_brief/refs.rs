@@ -1,7 +1,9 @@
 //! Live References: the items a section's LiveRefs blocks name, with their
 //! current state as Core's own stores hold it. Agents only name an item;
 //! nothing here calls GitHub or a machine, and an item Core does not know
-//! is shown as not found, never guessed.
+//! is shown as not found, never guessed. They are made for each read and
+//! never saved, so a section's body and version do not change when its
+//! items do, and nothing of the read's own time is in them.
 use super::*;
 use std::collections::HashMap;
 
@@ -54,11 +56,16 @@ impl<'a> Refs<'a> {
                 let (Some(kind), Some(id)) = (item["kind"].as_str(), item["id"].as_str()) else { continue };
                 let key = format!("{kind}:{id}");
                 if !self.known.contains_key(&key) {
-                    let resolved = self.resolve(kind, id).unwrap_or_else(|error| {
-                        eprintln!("Brief reference {key} unresolved: {error:#}");
-                        None
-                    });
-                    let mut shown = resolved.unwrap_or_else(|| json!({"found":false}));
+                    // A read that failed says so: it is not an item Core
+                    // does not know, and nothing is guessed for it.
+                    let mut shown = match self.resolve(kind, id) {
+                        Ok(Some(found)) => found,
+                        Ok(None) => json!({"found":false}),
+                        Err(error) => {
+                            eprintln!("Brief reference {key} unresolved: {error:#}");
+                            json!({"found":false,"unavailable":true})
+                        }
+                    };
                     shown["kind"] = json!(kind);
                     shown["id"] = json!(id);
                     self.known.insert(key.clone(), shown);
@@ -72,12 +79,17 @@ impl<'a> Refs<'a> {
     fn resolve(&self, kind: &str, id: &str) -> Result<Option<Value>> {
         let db = self.db;
         Ok(match kind {
-            "task" => {
-                let Ok((task, _)) = crate::collaboration_store::task_key(db, id) else { return Ok(None) };
-                data(db, "SELECT data FROM collaboration_tasks WHERE id=?1", &task)?.map(|task| {
-                    state(json!({"found":true,"title":task["title"]}), task["status"].as_str().unwrap_or("unknown"))
-                })
-            }
+            // The task's compact row: who has it and when it last changed,
+            // for a list the Agent ordered (T-9), and never its text.
+            "task" => crate::collaboration_store::task_live(db, id)?.map(|task| {
+                let mut shown = state(json!({"found":true,"title":task["title"]}), task["status"].as_str().unwrap_or("unknown"));
+                shown["assignee"] = task["assignee"].clone();
+                shown["updatedAt"] = task["updatedAt"].clone();
+                if task["archived"] == true {
+                    shown["archived"] = json!(true);
+                }
+                shown
+            }),
             "job" => data(db, "SELECT data FROM local_jobs WHERE id=?1", id)?.map(|job| {
                 let mut shown = state(json!({"found":true,"title":job["name"]}), job["status"].as_str().unwrap_or("unknown"));
                 shown["taskId"] = job["taskRef"].clone();

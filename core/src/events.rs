@@ -37,6 +37,8 @@
 //! - `workspace.changed` `{scope, <scope>: true}`: `collaboration`,
 //!   `projects`, `machines` or `runtime`; `{scope: "appearance-preset"}` when
 //!   the Workspace's shared Appearance preset was saved (appearance_preset.rs).
+//!   A `collaboration` one has `tasks: true` when a task's row (title, status,
+//!   assignee) may have changed, so Home reads its live task references again.
 //! - `reset` `{refresh: true, reason}` and `resumed` `{from}`, as above.
 //!
 //! `rev` is the Agent record's revision once that change is applied (see

@@ -105,8 +105,9 @@ function Chip({ item }: { item: LiveRef }) {
       {full && <span className="sr-only">: {full}</span>}
       {name !== item.id && <small>{item.id}</small>}
       {state && !state.found ? (
+        // Core said it couldn't read the item (T-9): not the same as not found.
         <em className="brief-ref-state" data-tone="missing">
-          {t.notFound}
+          {state.unavailable ? t.refUnavailable : t.notFound}
         </em>
       ) : (
         state?.state && (

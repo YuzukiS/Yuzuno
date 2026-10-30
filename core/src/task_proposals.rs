@@ -368,7 +368,7 @@ impl Workspace {
                 hold_task_update(&held);
                 let answer = ws.store.collaboration_call_from(None, Some(source), "task_update", input);
                 if answer.is_ok() {
-                    let _ = ws.changes.send(json!({"collaboration":true}));
+                    let _ = ws.changes.send(json!({"collaboration":true,"tasks":true}));
                     ws.collaboration_wakeup.notify_one();
                     ws.delivery.wake.notify_one();
                 }

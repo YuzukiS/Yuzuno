@@ -43,6 +43,7 @@ export const briefText = strings({
   refAsOf: (at: string) => ` · as of ${at}`,
   open: (what: string) => `Open ${what}`,
   notFound: "not found",
+  refUnavailable: "couldn't read",
   // Charts.
   chartUnreadable: "Core answered with chart data this view can't read.",
   chartNoData: "This chart has no data.",
@@ -113,6 +114,7 @@ export const briefText = strings({
   refAsOf: (at) => ` · 截至 ${at}`,
   open: (what) => `打开 ${what}`,
   notFound: "未找到",
+  refUnavailable: "读取失败",
   chartUnreadable: "Core 返回的图表数据无法在此视图中读取。",
   chartNoData: "此图表没有数据。",
   chartNotFound: "无法在这张卡片中找到此图表。",
