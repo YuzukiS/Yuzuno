@@ -1797,8 +1797,10 @@ async fn context_usage_a_replayed_summary_leaves_a_newer_waiting_answer_waiting(
 }
 
 /// R4 46270ae8, the other side: a compaction newer than an answer waiting
-/// for its model's window drops that answer; the read coming back measures
-/// nothing, and what was measured stays last known.
+/// for its model's window drops that answer; the catalog read that follows
+/// measures nothing, and what was measured stays last known. Both come while
+/// no stream is open, so the resync reads the catalog before it returns, and
+/// an event after it is handled only once that read and any write are done.
 #[tokio::test]
 async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalog() {
     let lab = lab(&[], false).await;
@@ -1806,26 +1808,47 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
     let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
     let (first, measured) = answered(&lab, "c1", flash(100)).await;
     assert_eq!(measured, Some((100, 1000, first.clone(), false)));
-
-    // An answer whose model waits for a slow catalog read, then a compaction newer than it.
+    // A model this connection's list doesn't have.
     let mut providers = lab.control("mode", json!({})).await["providers"].clone();
     let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
     let mut slow = deepseek["models"]["deepseek-flash"].clone();
     slow["id"] = json!("deepseek-slow");
     slow["limit"]["context"] = json!(5000);
     deepseek["models"]["deepseek-slow"] = slow;
-    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":3.0}})).await;
-    let reads = providers_reads(&lab);
-    let last_known = Some((100, 1000, first, true));
-    let (_, waiting) = answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}})).await;
-    assert_eq!(waiting, last_known, "waiting for its model's window");
-    let now = chrono::Utc::now().timestamp_millis();
-    lab.control("event", json!({"type":"message.updated","properties":{"sessionID":session,"info":{
-        "id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
-        "time":{"created":now},"tokens":{"total":900}}}})).await;
-    tokio::time::sleep(Duration::from_millis(4000)).await;
-    lab.control("mode", json!({"slow":{}})).await;
+    lab.control("mode", json!({"providers":providers})).await;
+
+    // The stream breaks and can't reopen at once; meanwhile an answer of that model, then a compaction newer than it.
+    let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
+    let subscribed = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/event").count();
+    let (reads, before, opened) = (providers_reads(&lab), resyncs(&lab), subscribed(&lab));
+    lab.control("refuseEvents", json!({"seconds":0.4})).await;
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if subscribed(&lab) > opened { break; }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(subscribed(&lab) > opened, "the stream ended, and opening it again was refused");
+    lab.control("reply", json!({"sessionID":session,"text":"Slow.","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Summary.","parentID":"msg_compaction",
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","summary":true,"tokens":{"total":900}}})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    // Events of the new stream are handled once the resync, its catalog read included, has returned.
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    let handled = statuses(&lab);
+    lab.control("idle", json!({"sessionID":session})).await;
+    for _ in 0..200 {
+        if statuses(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(statuses(&lab) > handled, "an event after the resync");
     assert!(providers_reads(&lab) > reads, "the catalog was read");
-    assert_eq!(usage_of(&lab.detail()), last_known, "the read measured nothing");
+    let d = lab.detail();
+    assert_eq!(turn(&d, &second)["status"], "completed");
+    assert_eq!(usage_of(&d), Some((100, 1000, first, true)), "the read measured nothing");
     lab.ws.close_agent(ID).await.unwrap();
 }
