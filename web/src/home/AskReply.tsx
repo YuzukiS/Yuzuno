@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { LoaderCircle, MessageSquareReply, Send } from "lucide-react";
+import { LoaderCircle, MessageSquareReply, RotateCcw, Send, Trash2 } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
 import { useLanguage, useStrings } from "../i18n";
 import type { Agent, MessageReceipt } from "../types";
@@ -284,6 +284,10 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   // delivered, or refuses it and sends nothing. Until it is sent again or
   // discarded, nothing else is sent from here; drafts can still be written.
   const pending = busy ? undefined : pendingReply(slot);
+  // Being sent again: still shown, its two actions held, until Core answers.
+  const [resending, setResending] = useState<ReturnType<typeof pendingReply>>(undefined);
+  const unconfirmed = pending ?? resending;
+  const [wholePreview, setWholePreview] = useState(false);
   const [discarded, setDiscarded] = useState(false);
   // Begun on another version of the ask: sent only once the user says which.
   const otherVersion = !!draft?.text.trim() && draft.version !== section.version;
@@ -398,23 +402,24 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   };
   // What an unconfirmed reply said, as it went: what this window showed as
   // sent (a form's answers without their ids), never the ask as it is now.
-  const summaryOf = (was: { choice?: string; text: string; shown?: string }) => {
-    const words = (was.shown ?? (was.text || was.choice || "")).replace(/\n\n\{[\s\S]*\}$/, "").replace(/\s+/g, " ").trim();
-    return words.length > 80 ? `${words.slice(0, 79)}…` : words;
-  };
+  const previewOf = (was: { choice?: string; text: string; shown?: string }) =>
+    (was.shown ?? (was.text || was.choice || "")).replace(/\n\n\{[\s\S]*\}$/, "").trim();
   // The unconfirmed reply again, exactly as it was sent.
   const sendAgain = async () => {
     const was = pendingReply(slot);
     if (!was) return;
     setSentBefore(null);
+    setResending(was);
     try {
       await resend();
     } catch {
       return;
+    } finally {
+      setResending(undefined);
     }
     const version = was.askVersion ?? null;
     setSentVersion(version);
-    setSentText(summaryOf(was));
+    setSentText(previewOf(was));
     setAgain(false);
     // Delivered to an earlier version of the ask: this one is still open.
     if (version !== null && version !== section.version) setSentBefore(version);
@@ -474,17 +479,34 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           {t.chooseAskRecipient(section.owner.name, section.owner.state === "active" ? t.askNotInProject : t.askOwnerState(section.owner.state))}
         </p>
       )}
-      {pending && (
-        <p className="home-note home-ask-draft-note" role="status">
-          {t.askNotConfirmed(pending.askVersion ?? null, summaryOf(pending))}{" "}
-          <button type="button" className="inline-link" disabled={busy} onClick={() => void sendAgain()}>
-            {t.askSendAsItWas(pending.askVersion ?? null)}
-          </button>{" "}
-          <button type="button" className="inline-link" disabled={busy} onClick={discardPending}>
-            {t.askDiscardUnconfirmed}
-          </button>
-        </p>
-      )}
+      {unconfirmed && (() => {
+        const preview = previewOf(unconfirmed);
+        const long = preview.length > 240;
+        return (
+          <div className="home-kept-reply home-ask-unconfirmed" role="status">
+            <p className="home-note">
+              <strong>{t.askPendingTitle}</strong>
+              {unconfirmed.askVersion !== undefined && <span>{t.askPendingVersion(unconfirmed.askVersion)}</span>}
+            </p>
+            <blockquote>{long && !wholePreview ? `${preview.slice(0, 239)}…` : preview}</blockquote>
+            {long && (
+              <button type="button" className="inline-link" onClick={() => setWholePreview((whole) => !whole)}>
+                {wholePreview ? t.showLess : t.showMore}
+              </button>
+            )}
+            <p className="home-note">{t.askPendingMayHave}</p>
+            <div className="home-ask-options" role="group" aria-label={t.askPendingTitle}>
+              <button type="button" className="secondary-button" disabled={busy} onClick={() => void sendAgain()}>
+                {resending ? <LoaderCircle size={13} className="spin" /> : <RotateCcw size={13} />}
+                {resending ? t.sending : t.askRetryPrevious}
+              </button>
+              <button type="button" className="quiet-button" disabled={busy} onClick={discardPending}>
+                <Trash2 size={13} /> {t.askClearPending}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
       {discarded && !pending && <p className="home-note" role="status">{t.askUnconfirmedDiscarded}</p>}
       {sentBefore !== null && sentBefore !== section.version && (
         <p className="home-note" role="status">{t.askSentBefore(sentBefore, section.version)}</p>
@@ -525,6 +547,19 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           })}
         </div>
       )}
+      {form && formUnknown && !pending && (
+        <div className="home-kept-reply home-ask-unknown" role="status">
+          <p className="home-note">{t.askAnswersVersionUnknown}</p>
+          <div className="home-ask-options" role="group" aria-label={t.askAnswersVersionUnknown}>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setFormBegun(section.version)}>
+              {t.askUseForCurrent}
+            </button>
+            <button type="button" className="quiet-button" disabled={busy} onClick={discardForm}>
+              <Trash2 size={13} /> {t.askClearOldAnswers}
+            </button>
+          </div>
+        </div>
+      )}
       {form ? (
         <>
           <Clarification
@@ -542,7 +577,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
                   : formOtherVersion && formBegun !== null
                     ? t.askDraftOtherVersion(formBegun, section.version)
                     : formUnknown
-                      ? t.askAnswersVersionUnknown(section.version)
+                      ? t.askUseOrClearFirst
                       : undefined
             }
             // Its delivery is that of the version it answered.
@@ -561,7 +596,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
               await deliver(text, undefined, text, section.version);
             }}
           />
-          {(formOtherVersion || formUnknown) && !pending && (
+          {formOtherVersion && !pending && (
             <p className="home-note home-ask-draft-note">
               <button type="button" className="inline-link" disabled={busy} onClick={() => setFormBegun(section.version)}>
                 {t.referTo(section.version)}

@@ -585,7 +585,7 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     await type(p, release.querySelector("textarea"), "Ship it after the docs fix");
     p.button("Send", release).click();
     await waitFor(() => release.querySelector('[role="alert"]'), "the failure is shown");
-    p.button("Send it again as it was (version 3)", release).click();
+    p.button("Retry previous reply", release).click();
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 2, "the reply was retried");
     const [first, retry] = p.posts(/\/brief\/reply$/);
     assert.match(first.url, /\/api\/projects\/p-app\/brief\/reply$/);

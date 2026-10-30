@@ -145,17 +145,17 @@ export const homeText = strings({
   askReloadHome: "Nothing was sent: reload Home to reply here.",
   askSentBefore: (sent: number, now: number) =>
     `Your reply to version ${sent} of this ask was delivered before, so nothing more was sent. Home shows version ${now}: reply again to answer it.`,
-  askNotConfirmed: (version: number | null, what: string) =>
-    version === null
-      ? `An earlier reply here was not confirmed: “${what}”. It may already have been delivered; sent again as it was, it is not delivered twice.`
-      : `An earlier reply to version ${version} of this ask was not confirmed: “${what}”. It may already have been delivered; sent again as it was, it is not delivered twice.`,
-  askSendAsItWas: (version: number | null) =>
-    version === null ? "Send it again as it was" : `Send it again as it was (version ${version})`,
-  askDiscardUnconfirmed: "Discard it",
-  askUnconfirmedDiscarded: "Discarded here only: it may already have been delivered. Check the conversation before you reply again.",
-  askUnconfirmedFirst: "Send the unconfirmed reply again as it was, or discard it, first.",
-  askAnswersVersionUnknown: (now: number) =>
-    `Home can't confirm which version of this ask these answers were begun on; it shows version ${now}. Read it again, then refer them to version ${now} or discard them.`,
+  askPendingTitle: "Previous reply not confirmed yet",
+  askPendingVersion: (version: number) => `Sent to version ${version} of this ask.`,
+  askPendingMayHave: "It may already have been delivered; a retry won't deliver it twice.",
+  askRetryPrevious: "Retry previous reply",
+  askClearPending: "Clear pending record",
+  askUnconfirmedDiscarded: "Cleared here only: it may already have been delivered. Check the conversation before you reply again.",
+  askUnconfirmedFirst: "Retry or clear the previous reply first.",
+  askAnswersVersionUnknown: "The question version for these saved answers is unknown.",
+  askUseForCurrent: "Use for the current question",
+  askClearOldAnswers: "Clear old answers",
+  askUseOrClearFirst: "Use the saved answers for the current question, or clear them, first.",
   askDraftAfterReply: "A reply you wrote here is kept, not sent: Reply again to see it.",
   notConfirmedHere: "An earlier reply here was not confirmed. Sending the same text again will not deliver it twice.",
   notConfirmed: "An earlier reply was not confirmed. Sending the same text again will not deliver it twice.",
@@ -404,16 +404,17 @@ export const homeText = strings({
   askRemoved: "你的回复发出前，这个提问已被移除，因此没有发送任何内容。",
   askReloadHome: "没有发送任何内容：请重新加载 Home 后再在这里回复。",
   askSentBefore: (sent, now) => `你对这个提问版本 ${sent} 的回复此前已送达，因此没有再次发送。Home 现在显示版本 ${now}：如需回答，请再次回复。`,
-  askNotConfirmed: (version, what) =>
-    version === null
-      ? `这里之前的一条回复未得到确认：“${what}”。它可能已经送达；按原样重新发送不会重复送达。`
-      : `之前对这个提问版本 ${version} 的回复未得到确认：“${what}”。它可能已经送达；按原样重新发送不会重复送达。`,
-  askSendAsItWas: (version) => (version === null ? "按原样重新发送" : `按原样重新发送（版本 ${version}）`),
-  askDiscardUnconfirmed: "丢弃它",
-  askUnconfirmedDiscarded: "只在这里丢弃：它可能已经送达。再次回复前请先查看会话。",
-  askUnconfirmedFirst: "请先按原样重新发送这条未确认的回复，或将其丢弃。",
-  askAnswersVersionUnknown: (now) =>
-    `Home 无法确认这些答案是在这个提问的哪个版本上开始填写的；现在显示的是版本 ${now}。请重新阅读，然后改为指向版本 ${now}，或丢弃它们。`,
+  askPendingTitle: "上次回复尚未确认",
+  askPendingVersion: (version) => `发往这个提问的版本 ${version}。`,
+  askPendingMayHave: "它可能已经送达；重试不会重复送达。",
+  askRetryPrevious: "重试上次回复",
+  askClearPending: "清除待确认记录",
+  askUnconfirmedDiscarded: "只在这里清除：它可能已经送达。再次回复前请先查看会话。",
+  askUnconfirmedFirst: "请先重试或清除上次回复。",
+  askAnswersVersionUnknown: "这份已保存答案的原问题版本不明。",
+  askUseForCurrent: "用于当前问题",
+  askClearOldAnswers: "清除旧答案",
+  askUseOrClearFirst: "请先把已保存的答案用于当前问题，或将其清除。",
   askDraftAfterReply: "你在这里写的一条回复已保留、尚未发送：点“再次回复”查看。",
   notConfirmedHere: "这里之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
   notConfirmed: "之前的一条回复未得到确认。再次发送相同文字不会重复送达。",
