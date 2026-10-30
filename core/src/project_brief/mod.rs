@@ -24,6 +24,7 @@ mod presentation;
 mod refs;
 mod sections;
 mod update;
+mod writes;
 #[cfg(test)]
 mod preview_tests;
 #[cfg(test)]
@@ -128,7 +129,7 @@ fn description(tool: &str) -> &'static str {
     let generated = brief_contract().and_then(|brief| contract_text(&brief["toolDescriptions"][tool]));
     generated.unwrap_or(match tool {
         "brief_get" => "Read your Project's Brief: its version and sections (with owners and ask state), what you own, your asks the user replied to, and the limits. Call it before brief_update; its version is your expectedVersion.",
-        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; a stale version is rejected with the latest Brief attached. Rejections list problems to fix; see brief_guide.",
+        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with the latest Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide.",
         _ => "The Project Brief guide: section kinds, keys and owners, asks, content blocks, charts, attachments, limits and rejection codes, with examples. Pass part to read one part.",
     })
 }
@@ -295,6 +296,12 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // The Brief version of each key's last Agent write, and a base row per
+    // Project (writes.rs): section-level checks of brief_update (T-9).
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_brief_writes(
+        project_id TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(project_id,key));",
+    )?;
     Ok(())
 }
 
