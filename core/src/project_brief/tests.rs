@@ -688,13 +688,59 @@ async fn live_references_show_core_state_or_not_found() {
             {"kind":"job","id":"nope"},{"kind":"machine","id":"local"}]}}}});
     accept(&ws, "a", input("a1", 0, vec![change])).await;
     let refs = section(&brief(&ws, "a"), "refs")["refs"].clone();
-    assert_eq!(refs[format!("task:{id}")], json!({"kind":"task","id":id,"found":true,"title":"Ship it","state":"doing","tone":"active"}));
+    let updated = task["task"]["updatedAt"].clone();
+    assert_eq!(refs[format!("task:{id}")], json!({"kind":"task","id":id,"found":true,"title":"Ship it","state":"doing","tone":"active",
+        "assignee":null,"updatedAt":updated}));
     assert_eq!(refs["agent:b"]["state"], "working");
     assert_eq!(refs["job:nope"], json!({"kind":"job","id":"nope","found":false}));
     assert_eq!(refs["machine:local"]["title"], "Core host");
     let home = home::build(&ws.store).unwrap();
     assert_eq!(home["projects"][0]["brief"]["sections"][0]["refs"]["agent:b"]["title"], "Agent b");
     let _ = project;
+}
+
+/// T-9: a task the Agent names shows as its compact row is now: who has it
+/// and when it changed. The section's body and version stay
+/// as written while the tasks change; an unknown task is not found, and one
+/// that can't be read says so rather than looking unknown.
+#[tokio::test]
+async fn live_task_references_follow_the_task_without_rewriting_the_section() {
+    let (_dir, ws, _project) = lab();
+    let created = ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Ask versions","status":"todo"})).unwrap();
+    let id = created["task"]["id"].as_str().unwrap().to_owned();
+    let broken = ws.store.collaboration_call(None, "task_create", json!({"requestId":"u","title":"Broken","status":"todo"})).unwrap();
+    let broken = broken["task"]["id"].as_str().unwrap().to_owned();
+    let mut change = put("work", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"task","id":id},
+            {"kind":"task","id":"T-999"},{"kind":"task","id":broken}]}}}});
+    accept(&ws, "a", input("w1", 0, vec![change])).await;
+    let before = section(&brief(&ws, "a"), "work").clone();
+    assert_eq!(before["refs"][format!("task:{id}")]["state"], "todo");
+    assert_eq!(before["refs"][format!("task:{id}")]["assignee"], Value::Null);
+    assert_eq!(before["refs"]["task:T-999"], json!({"kind":"task","id":"T-999","found":false}));
+
+    // The task moves on: assigned, in review, retitled.
+    let version = created["task"]["version"].as_i64().unwrap();
+    let moved = ws.store.collaboration_call(None, "task_update", json!({"requestId":"m","taskId":id,"expectedVersion":version,
+        "patch":{"status":"review","assigneeAgentId":"b","title":"Ask versions, both halves"}})).unwrap();
+    // Home reads the same facts.
+    let home = home::build(&ws.store).unwrap();
+    let card = home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "work").unwrap().clone();
+    assert_eq!(card["refs"][format!("task:{id}")]["state"], "review");
+    // One stored row stops reading as a task; nothing else is touched.
+    ws.store.db.write().unwrap().execute("UPDATE collaboration_tasks SET data='{' WHERE seq=?1",
+        [broken.trim_start_matches("T-").parse::<i64>().unwrap()]).unwrap();
+    let after = section(&brief(&ws, "a"), "work").clone();
+    let shown = &after["refs"][format!("task:{id}")];
+    assert_eq!((shown["title"].as_str(), shown["state"].as_str(), shown["tone"].as_str()),
+        (Some("Ask versions, both halves"), Some("review"), Some("active")));
+    assert_eq!((shown["assignee"]["id"].as_str(), shown["assignee"]["name"].as_str()), (Some("b"), Some("Agent b")));
+    assert_eq!(shown["updatedAt"], moved["task"]["updatedAt"]);
+    assert_eq!(after["refs"][format!("task:{broken}")], json!({"kind":"task","id":broken,"found":false,"unavailable":true}));
+    // What the Agent wrote, and its version, are as they were.
+    assert_eq!((after["version"].clone(), after["body"].clone(), after["updatedAt"].clone()),
+        (before["version"].clone(), before["body"].clone(), before["updatedAt"].clone()));
 }
 
 #[tokio::test]

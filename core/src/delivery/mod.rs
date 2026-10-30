@@ -62,7 +62,8 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         }
         let changed = ws.stored(move |s| s.delivery_reconcile(&task)).await?;
         if changed {
-            ws.changes.send(json!({"collaboration":true}));
+            // Reconciling can move a task's status (T-9's live references).
+            ws.changes.send(json!({"collaboration":true,"tasks":true}));
             ws.collaboration_wakeup.notify_one();
         }
     }

@@ -341,6 +341,15 @@ pub(crate) fn task_key(db: &Connection, reference: &str) -> Result<(String, i64)
     row.context("task_not_found: Task does not exist")
 }
 
+/// One task as a Live Reference shows it (T-9): read as its compact row
+/// (compact.rs), so nothing past the title, status, assignee, update time and
+/// archive mark is kept. None when no task has this reference.
+pub(crate) fn task_live(db: &Connection, reference: &str) -> Result<Option<Value>> {
+    let Ok((id, _)) = task_key(db, reference) else { return Ok(None) };
+    let raw: Option<String> = db.query_row("SELECT data FROM collaboration_tasks WHERE id=?1", [&id], |r| r.get(0)).optional()?;
+    raw.map(|raw| Ok(serde_json::from_str::<compact::Row>(&raw)?.live())).transpose()
+}
+
 fn normalize_task_input(db: &Connection, operation: &str, mut input: Value) -> Result<Value> {
     if matches!(
         operation,

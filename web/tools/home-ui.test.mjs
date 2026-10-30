@@ -1977,3 +1977,28 @@ test("T-9 card density a device refuses to keep still applies in this window, sa
     p.close();
   }
 });
+
+test("T-9 a task change Core announces reads Home again, once for a burst; other collaboration changes don't", async () => {
+  const p = await mount();
+  const reads = () => p.calls.filter((c) => c.url.endsWith("/api/home")).length;
+  try {
+    await waitFor(() => reads() > 0, "Home's first read");
+    // Hidden, the page's own polling and Home's safety net read nothing, so
+    // every read counted here is an event's.
+    p.setVisibility("hidden");
+    await pause(2_500);
+    const before = reads();
+    // Mail, comments and GitHub syncs say collaboration without tasks.
+    p.event({ type: "workspace.changed", scope: "collaboration", collaboration: true });
+    await pause(2_500);
+    assert.equal(reads(), before, "no Home read for a collaboration change without tasks");
+    // A burst of task changes is one read.
+    for (let i = 0; i < 5; i++) p.event({ type: "workspace.changed", scope: "collaboration", collaboration: true, tasks: true });
+    await waitFor(() => reads() > before, "a task change reads Home again");
+    await pause(2_500);
+    assert.equal(reads(), before + 1, `one read for the burst: ${reads() - before}`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

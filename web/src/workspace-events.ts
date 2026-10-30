@@ -66,6 +66,8 @@ export interface AgentProgressEvent {
 export interface WorkspaceChangedEvent {
   type: "workspace.changed";
   scope: "collaboration" | "projects" | "machines" | "runtime" | string;
+  /** A collaboration change that may have changed a task's row (T-9). */
+  tasks?: boolean;
 }
 /** Refetch everything shown: Core said so, live updates may have been
  * missed, or the stream is not open (polling). */
@@ -166,6 +168,7 @@ export function parseWorkspaceEvent(data: unknown): WorkspaceEvent {
       return {
         type: "workspace.changed",
         scope: isText(value.scope) ? value.scope : "workspace",
+        ...(value.tasks === true ? { tasks: true } : {}),
       };
     case "reset":
       return { type: "reset", reason: isText(value.reason) ? value.reason : "reset" };
