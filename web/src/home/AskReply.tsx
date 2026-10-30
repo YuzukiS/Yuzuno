@@ -305,23 +305,28 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const [formEpoch, setFormEpoch] = useState(0);
   // Read again whenever the form changes: the answers it saved and their version.
   const [, setFormEdits] = useState(0);
-  // Begun before the Workspace was known: kept here until it is (T-195).
-  const begunHere = useRef<{ formId: string; version: number } | null>(null);
+  // What this window set, for the form it set it on (its key, or its ID
+  // before the Workspace is known, T-195): this browser keeps it if it can,
+  // and this window keeps it whether or not it could.
+  const formRef = formKey ?? (form ? `id:${form.id}` : "");
+  const begunHere = useRef<{ form: string; version: number | null } | null>(null);
   const formBegun = !form ? null
+    : begunHere.current?.form === formRef ? begunHere.current.version
     : formKey ? formVersions.load()[formKey]?.version ?? null
-    : begunHere.current?.formId === form.id ? begunHere.current.version : null;
+    : null;
   function setFormBegun(version: number | null) {
+    if (!form) return;
+    begunHere.current = { form: formRef, version };
     if (formKey) formVersions.save(formKey, version === null ? null : { version, at: new Date().toISOString() });
-    begunHere.current = !formKey && form && version !== null ? { formId: form.id, version } : null;
     setFormEdits((n) => n + 1);
   }
   // Learning the Workspace keeps what was begun before it, as the form keeps
   // the answers; another Workspace's form has its own.
   useEffect(() => {
     const here = begunHere.current;
-    if (!formKey || !here) return;
-    begunHere.current = null;
-    if (here.formId === form?.id) formVersions.save(formKey, { version: here.version, at: new Date().toISOString() });
+    if (!formKey || !form || here?.form !== `id:${form.id}`) return;
+    begunHere.current = { form: formKey, version: here.version };
+    formVersions.save(formKey, here.version === null ? null : { version: here.version, at: new Date().toISOString() });
     setFormEdits((n) => n + 1);
   }, [formKey, form]);
   // Written in or sent from this form as it is mounted, even if this browser

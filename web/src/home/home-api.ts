@@ -75,7 +75,12 @@ export const readLinkedRepositories = (projectId: string, signal?: AbortSignal) 
 // Core never delivers one client id twice.
 const OUTBOX = "yuzuno.home-outbox.v1";
 type Outbound = Omit<HomeReplyInput, "key">;
+// What this window last wrote while this browser would not keep it (private
+// browsing, a full store): read from here until a save succeeds, so a retry
+// in this window keeps its client id. A reload cannot.
+let unsaved: Record<string, Outbound> | null = null;
 function loadOutbox(): Record<string, Outbound> {
+  if (unsaved) return { ...unsaved };
   try {
     const value = JSON.parse(localStorage.getItem(OUTBOX) || "{}");
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -87,8 +92,9 @@ function saveOutbox(value: Record<string, Outbound>) {
   try {
     if (Object.keys(value).length) localStorage.setItem(OUTBOX, JSON.stringify(value));
     else localStorage.removeItem(OUTBOX);
+    unsaved = null;
   } catch {
-    /* The in-memory attempt still keeps its id for this window. */
+    unsaved = { ...value };
   }
 }
 /** A card reply has its own slot: the same key may also hold an ask's reply. */

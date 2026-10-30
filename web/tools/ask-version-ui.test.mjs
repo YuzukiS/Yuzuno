@@ -517,6 +517,40 @@ test("in place, an unedited form shows the new question's own defaults; a form s
   assert.deepEqual(page.errors, []);
 });
 
+test("when this browser keeps nothing, a form begun on version 1 is still held at version 2, and a retry here keeps its client id", async (t) => {
+  const c = core();
+  const page = mount((body) => c.answer(body));
+  t.after(page.close);
+  // Private browsing or a full store: every write is refused.
+  page.window.Storage.prototype.setItem = function () {
+    throw new page.window.DOMException("The quota has been exceeded.", "QuotaExceededError");
+  };
+  const f = formOf(page);
+  page.render(section("form", 1, { form }));
+  f.radio("Core").click();
+  await tick();
+  page.render(section("form", 2, { form }));
+  assert.ok(f.notes().some((n) => /You began this reply on version 1 of this ask; Home shows version 2/.test(n)), JSON.stringify(f.notes()));
+  assert.equal(f.submit().disabled, true, "not sent to version 2 by itself");
+  assert.equal(f.radio("Core").checked, true, "the answers stay");
+  assert.ok(page.button("Refer it to version 2") && page.button("Discard"));
+  assert.equal(page.replies().length, 0, "nothing sent");
+  // Free text whose outcome is unknown goes again under its client id.
+  c.lose(true);
+  page.render(section("plan", 1));
+  await page.type("Ship on Friday.");
+  page.sendButton().click();
+  await tick();
+  page.render(section("plan", 2));
+  assert.ok(page.notes().some((n) => /not confirmed/.test(n)), JSON.stringify(page.notes()));
+  page.sendButton().click();
+  await tick();
+  const [first, second] = page.replies();
+  assert.deepEqual(second, first, "the same version, words and client id");
+  assert.equal(c.delivered.size, 1, "Core delivered it once");
+  assert.deepEqual(page.errors, []);
+});
+
 test("a pick refused because the ask was resolved or removed says so and sends nothing more", async (t) => {
   const answers = [refused("ask_resolved: the ask was resolved"), refused("section_removed: no such section")];
   const page = mount(() => answers.shift());
