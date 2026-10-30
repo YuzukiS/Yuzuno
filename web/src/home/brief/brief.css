@@ -521,6 +521,16 @@
   font-family: var(--brief-mono);
   font-size: 0.68rem;
 }
+/* The title wraps where it must; an ID and a state word never break inside
+   (T-9: "doi/ng" and "T-/9" on a phone). */
+.brief-ref > span:first-of-type {
+  min-width: 0;
+}
+:is(.brief-ref, .brief-ref-row-main) :is(small, .brief-ref-state) {
+  flex: none;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
 :is(a, button).brief-ref {
   cursor: pointer;
 }
@@ -574,6 +584,143 @@ span.brief-ref {
 }
 .brief-ref-state[data-tone="missing"]::before {
   display: none;
+}
+
+/* A list of references in the Agent's order (T-9): each row leads with the
+   chip's own look, Core's state word and, for a task, who has it and when
+   it last changed; the Agent's note follows. */
+.brief-ref-list-block {
+  display: grid;
+  gap: 6px;
+}
+.brief-ref-list-stale {
+  margin: 0;
+  padding: 5px 9px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.74rem;
+}
+.brief-ref-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.brief-ref-row {
+  --tone: var(--muted);
+  display: grid;
+  gap: 2px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+.brief-ref-row:first-child {
+  border-top: none;
+}
+.brief-ref-row[data-tone="ok"] {
+  --tone: var(--brief-done);
+}
+.brief-ref-row[data-tone="active"] {
+  --tone: var(--brief-working);
+}
+.brief-ref-row[data-tone="attention"] {
+  --tone: var(--brief-error);
+}
+.brief-ref-row[data-tone="missing"] .brief-ref-row-open {
+  border-style: dashed;
+  color: var(--text-secondary, var(--muted));
+}
+.brief-ref-row[data-stale] {
+  color: var(--text-secondary, var(--muted));
+}
+.brief-ref-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.brief-ref-row-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-raised, var(--paper));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: left;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.brief-ref-row-open > svg {
+  flex: none;
+  color: var(--muted);
+}
+.brief-ref-row-open small {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--brief-mono);
+  font-size: 0.68rem;
+}
+:is(a, button).brief-ref-row-open {
+  cursor: pointer;
+}
+:is(a, button).brief-ref-row-open:hover {
+  background: var(--surface-hover, var(--cream));
+}
+:is(a, button).brief-ref-row-open:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+/* Changed in Core's latest read: a quiet word, kept until a later read
+   finds the row unchanged; nothing flashes or moves. */
+.brief-ref-row-changed {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.68rem;
+}
+.brief-ref-row-changed::before {
+  content: "·" / "";
+  margin-right: 6px;
+}
+.brief-ref-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding-left: 9px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+/* Who is responsible: the task record's assignee, at either density, quieter
+   than the task's own title and state. */
+.brief-ref-row-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.72rem;
+}
+/* The Agent's note, said as the Agent's: never one of Core's facts. */
+.brief-ref-row-note {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.brief-ref-row-note-by {
+  font-style: italic;
+}
+.brief-ref-list-read {
+  margin: 0;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.68rem;
 }
 
 /* Attachments. Previews keep fixed frames. */

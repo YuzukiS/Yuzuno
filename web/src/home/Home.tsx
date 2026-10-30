@@ -9,6 +9,7 @@ import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
+import { HomeReadContext, type HomeRead } from "./home-read";
 import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
@@ -82,6 +83,10 @@ export function Home({
   const [error, setError] = useState<{ kind: "unavailable" | "order" | "read"; reason: string } | null>(null);
   // Whether the last read failed, so pinned sections say they are not current.
   const [readFailed, setReadFailed] = useState(false);
+  // When the last read succeeded, for live lists to say how old their facts
+  // are while a read fails (T-9).
+  const [readAt, setReadAt] = useState<string | null>(null);
+  const homeRead = useMemo<HomeRead>(() => ({ at: readAt, failed: readFailed }), [readAt, readFailed]);
   const [tick, setTick] = useState(0);
   const [reordering, setReordering] = useState(false);
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
@@ -105,6 +110,7 @@ export function Home({
         onNeedsYou?.(value.needsYou);
         setError(null);
         setReadFailed(false);
+        setReadAt(new Date().toISOString());
       })
       .catch((e) => {
         // The last read stays on screen; nothing is blanked while retrying.
@@ -312,6 +318,7 @@ export function Home({
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
     <BriefDensity.Provider value={density}>
+    <HomeReadContext.Provider value={readOnly ? null : homeRead}>
     <div className="home-view" lang={langTag(language)} data-density={density}>
       <header className="home-header">
         <h1>
@@ -420,6 +427,7 @@ export function Home({
         </div>
       )}
     </div>
+    </HomeReadContext.Provider>
     </BriefDensity.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
