@@ -484,9 +484,12 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
         const long = preview.length > 240;
         return (
           <div className="home-kept-reply home-ask-unconfirmed" role="status">
+            {/* One run of text, so a narrow card wraps it as a sentence. */}
             <p className="home-note">
-              <strong>{t.askPendingTitle}</strong>
-              {unconfirmed.askVersion !== undefined && <span>{t.askPendingVersion(unconfirmed.askVersion)}</span>}
+              <span>
+                <strong>{t.askPendingTitle}</strong>
+                {unconfirmed.askVersion !== undefined && ` ${t.askPendingVersion(unconfirmed.askVersion)}`}
+              </span>
             </p>
             <blockquote>{long && !wholePreview ? `${preview.slice(0, 239)}…` : preview}</blockquote>
             {long && (
