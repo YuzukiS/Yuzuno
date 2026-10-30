@@ -114,7 +114,9 @@ fn review_summary(value: &Value) -> Value {
         "phase", "conclusion", "nativeCorrectness", "error", "reasonCodes", "outdated", "baseSha", "headSha",
         "mergeBaseSha", "comparison", "commitCount", "createdAt", "finishedAt", "actualModel", "actualHarness",
         "contextIncomplete", "acknowledgedUnreviewable", "explanation", "findings", "evidence",
-        "kind", "parentReviewId", "previousReviewId", "settledFindings"]);
+        "kind", "parentReviewId", "previousReviewId", "settledFindings", "cursor", "policyVersion", "coveragePolicyVersion"]);
+    // Unknown freshness must stay explicit, rather than disappear through pick.
+    out["outdated"] = value["outdated"].clone();
     // The earlier round's identity and verdict; its findings are carried in
     // `findings` or `settledFindings`, its ledger and reads stay in "full".
     let earlier = &value["incremental"];

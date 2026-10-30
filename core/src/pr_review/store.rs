@@ -387,6 +387,15 @@ impl Store {
     }
 
     pub(crate) fn list_pr_reviews(&self, task: &str, before: Option<i64>) -> Result<Value> {
+        self.pr_reviews_page(task, before, false)
+    }
+
+    /// Agent discovery reads compact rows; the GUI keeps its original records.
+    pub(crate) fn list_pr_review_summaries(&self, task: &str, before: Option<i64>) -> Result<Value> {
+        self.pr_reviews_page(task, before, true)
+    }
+
+    fn pr_reviews_page(&self, task: &str, before: Option<i64>, compact: bool) -> Result<Value> {
         let db = self.db.read()?;
         let task = crate::collaboration_store::task_key(&db, task)?.0;
         let links = crate::github::store::task_links(&db, &task)?;
@@ -403,7 +412,12 @@ impl Store {
                 .iter()
                 .find(|l| l["id"] == data["linkId"])
                 .map_or(Value::Null, |link| outdated(&data, &link["snapshot"]));
-            super::evidence::attach(&db, &task, &mut data)?;
+            if compact {
+                // Do not read or attach per-path evidence only to discard it.
+                data = super::mcp::list_row(&data);
+            } else {
+                super::evidence::attach(&db, &task, &mut data)?;
+            }
             records.push(data);
         }
         let has_more = records.len() > 20;
@@ -411,9 +425,11 @@ impl Store {
         // What a new review of this task would use, and where it comes from (T-190).
         let (settings, source) = super::settings::resolve(&db, &task)?;
         let settings = super::settings::sourced(settings, source)?;
-        Ok(
-            json!({"settings":settings,"reviews":records,"hasMore":has_more,"nextBefore":records.last().map(|r|r["cursor"].clone())}),
-        )
+        let mut page = json!({"settings":settings,"reviews":records,"hasMore":has_more,"nextBefore":records.last().map(|r|r["cursor"].clone())});
+        if compact {
+            page["more"] = json!(super::mcp::LIST_MORE);
+        }
+        Ok(page)
     }
 
     /// One page of every review in the Workspace, newest first, for the Jobs
@@ -470,39 +486,7 @@ impl Store {
                 .iter()
                 .find(|l| l["id"] == data["linkId"])
                 .map_or(Value::Null, |link| outdated(&data, &link["snapshot"]));
-            let summary = [
-                "id",
-                "taskId",
-                "linkId",
-                "repository",
-                "number",
-                "url",
-                "round",
-                "kind",
-                "parentReviewId",
-                "previousReviewId",
-                "status",
-                "phase",
-                "conclusion",
-                "policyVersion",
-                "coveragePolicyVersion",
-                "reasonCodes",
-                "requestedHarness",
-                "requestedModel",
-                "actualHarness",
-                "actualModel",
-                "baseSha",
-                "headSha",
-                "mergeBaseSha",
-                "createdAt",
-                "finishedAt",
-                "error",
-                "requestedBy",
-            ];
-            let mut row = serde_json::Map::new();
-            for key in summary {
-                row.insert(key.into(), data.get(key).cloned().unwrap_or(Value::Null));
-            }
+            let mut row = super::mcp::index_row(&data);
             row.insert("taskRef".into(), json!(format!("T-{seq}")));
             row.insert("taskTitle".into(), json!(title));
             row.insert(

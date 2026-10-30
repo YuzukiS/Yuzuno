@@ -4,6 +4,7 @@ mod claude;
 mod continuation;
 mod evidence;
 mod incremental;
+mod mcp;
 pub(crate) mod policy;
 mod reviewer;
 pub(crate) mod settings;
@@ -188,7 +189,13 @@ pub async fn call(
     if operation == "review_list" {
         let input: Scope = serde_json::from_value(input)?;
         return ws
-            .stored(move |s| s.list_pr_reviews(&input.task_id, input.before))
+            .stored(move |s| {
+                if actor.is_some() {
+                    s.list_pr_review_summaries(&input.task_id, input.before)
+                } else {
+                    s.list_pr_reviews(&input.task_id, input.before)
+                }
+            })
             .await;
     }
     ensure!(
@@ -616,7 +623,16 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         schema
     };
     let task = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
-    let definition = |name: &str, description: &str, properties: Value, required: &[&str]| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
+    let definition = |name: &str, description: &str, properties: Value, required: &[&str]| {
+        let mut tool = json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
+        if matches!(name, "review_list" | "review_get") {
+            tool["annotations"] = json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false});
+        }
+        if name == "review_list" {
+            tool["outputSchema"] = mcp::list_schema();
+        }
+        tool
+    };
     vec![
       definition("review_start","Explicitly request an independent read-only review with the review Harness/model settings for its task (its project's, else the Workspace's, else built in) of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
         "baseSha":resolved("Optional: the PR's own base as github_links shows it (snapshot.baseSha), in lowercase; not the current tip of the target branch, which may have moved on. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
@@ -627,7 +643,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "baseSha":fixed("The parent round's fixed base, in lowercase."),
         "headSha":fixed("The parent round's fixed head, in lowercase."),
         "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. Required when the parent also found paths no review of this snapshot can cover; it only acknowledges that they stay unreviewed, so the result can't pass."}}), &["requestId","taskId","reviewId","baseSha","headSha"]),
-      definition("review_list","List retained review runs for an existing task, newest first. Use nextBefore while hasMore. Outdated compares both fixed base and head; null means the current version is unverified.",json!({"taskId":task,"before":{"type":"integer"}}), &["taskId"]),
+      definition("review_list","List compact summaries of retained review runs for an existing task, newest first, 20 per page. Keeps fixed revisions, status, conclusion, failure reasons, findingsCount and coverage/scope counts; null means unrecorded or unverified, never zero or passing. No findings bodies, reports, reads, ledger or per-file evidence. Use nextBefore as before while hasMore, preserving taskId. Outdated compares both fixed base and head; null means the current version is unverified. review_get(taskId, reviewId) reads findings and uncovered paths; view full adds the original report and evidence. This reads retained local records, without refreshing GitHub.",json!({"taskId":task,"before":{"type":"integer"}}), &["taskId"]),
       definition("review_get","Read the same durable review shown in task details, including original report, model, fixed range, findings, policyVersion, coveragePolicyVersion, per-file coverage evidence, reasonCodes and, from coverage policy 3, scope: every changed path with its frozen revision, blob and modes and one state (covered with its evidenceKind, excluded, unsupported with its reason such as binary, symlink or submodule, budget_exhausted as diff_exceeds_context or context_exhausted, read_failed, or not_read). A continuation's (review_continue) coverage, scope and conclusion are over both rounds, and each covered path names the review that read it. An incremental round (review_start with previousReviewId) keeps the earlier round's unsettled findings with their origin and lists the ones it settled, with their fix paths, in settledFindings. Links, submodules and paths the base's .yuzuno/review-scope.json excludes are known before the reviewer starts; binary or non-UTF-8 sources and diffs larger than the review context are recorded when the reviewer meets them or by Core's bounded check after it finishes. They keep the review incomplete; another round of the same head can't cover them. A complete correct review with only P3 suggestions can be approved_with_notes; unknown is never passing and approval never merges the PR. Your default view \"summary\" has the conclusion, findings, coverage and scope counts and every path not covered, and for a continuation or incremental round the round it follows and the findings it settled; view \"full\" adds the original report, context reads and per-file evidence.",json!({"taskId":task,"reviewId":text,"view":{"type":"string","enum":["summary","full"]}}), &["taskId","reviewId"]),
       definition("review_evidence_add","Record evidence for one changed path of a review that couldn't cover it (for example a prebuilt binary): a source review, build provenance, an artifact hash, a signature or a behaviour test, by reference to another review or Job of this task, a CI run of the reviewed repository (its ci_list runKey), or an https link. It is bound to that review's frozen base, head, merge base and the path's blobs and modes, and shown beside reviews as bound to this candidate only when all of them match; after a new head it shows as another candidate's. Core records the reference without fetching or checking it, and the note is yours; nothing here verifies the evidence or changes any review's conclusion, scope or whether it passes. To bind it to a newer review, add it again with previousEvidenceId; the old record stays. Reuse requestId only to retry the same call.",json!({"requestId":text,"taskId":task,"reviewId":text,"path":text,
         "kind":{"type":"string","enum":evidence::KINDS},
