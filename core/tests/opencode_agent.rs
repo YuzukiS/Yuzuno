@@ -1348,3 +1348,231 @@ async fn an_added_message_refused_after_the_run_ended_still_ends_the_turn() {
     lab.control("mode", json!({"prompt":"store"})).await;
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// The Agent's context usage as a `(used, window, Turn, stale)` tuple.
+fn usage_of(d: &AgentDetail) -> Option<(u64, u64, String, bool)> {
+    d.context_usage.as_ref().map(|u| (u.used_tokens, u.window_tokens, u.turn_id.clone(), u.stale))
+}
+
+/// How often Core read OpenCode's configured providers.
+fn providers_reads(lab: &Lab) -> usize {
+    lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/config/providers").count()
+}
+
+/// A new message, and OpenCode's answer to it with `info` (its tokens, model
+/// or summary flag), until its Turn ends: that Turn, and the usage then.
+async fn answered(lab: &Lab, client: &str, info: Value) -> (String, Option<(u64, u64, String, bool)>) {
+    let id = lab.send(client, "next").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":lab.session(),"text":"Done.","info":info})).await;
+    let d = lab.until("its end", |d| turn(d, &id)["status"] != "inProgress").await;
+    (id, usage_of(&d))
+}
+
+/// Whether the usage has stayed `expected` after `what`, once events had time to arrive.
+async fn unchanged(lab: &Lab, what: &str, expected: &Option<(u64, u64, String, bool)>) {
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(&usage_of(&lab.detail()), expected, "{what}");
+}
+
+/// An OpenCode Agent's context usage (T-10, contract on T-10 #757): the
+/// newest completed answer of its own session, against the window of the
+/// model that answered, whatever model is chosen. Used is OpenCode's `total`
+/// when it is a positive whole number, else its stored parts each once,
+/// reasoning among them; anything else is unknown and keeps what was known
+/// as last known, never 0%. An answer of a sub-agent, an older one replayed
+/// and a compaction's summary don't measure; a compaction makes it last
+/// known. Answers don't read the catalog, and no provider secret is kept.
+#[tokio::test]
+async fn context_usage_is_the_newest_answer_against_its_own_models_window() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    // DeepSeek's model has a window of 2000, OpenRouter's none (0); a catalog read notes them.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    for provider in providers["providers"].as_array_mut().unwrap() {
+        let window = if provider["id"] == "deepseek" { 2000 } else { 0 };
+        for (_, model) in provider["models"].as_object_mut().unwrap() {
+            model["limit"]["context"] = json!(window);
+        }
+    }
+    lab.control("mode", json!({"providers":providers})).await;
+    lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    lab.ws.opencode_set_model(ID, "openrouter/anthropic/claude-x".into()).await.unwrap();
+    let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
+    let parts = |input: u64, output: u64, reasoning: u64, read: u64, write: u64|
+        json!({"input":input,"output":output,"reasoning":reasoning,"cache":{"read":read,"write":write}});
+
+    // OpenCode's total, against the answering model's window, not the chosen one's.
+    let mut tokens = parts(1, 1, 0, 0, 0);
+    tokens["total"] = json!(500);
+    let (first, measured) = answered(&lab, "c1", flash(tokens)).await;
+    assert_eq!(measured, Some((500, 2000, first, false)));
+    assert_eq!(lab.detail().context_usage.unwrap().used_percent, 25.0);
+    // No total: each part once, reasoning too (OpenCode's overflow estimate would say 170).
+    let (second, measured) = answered(&lab, "c2", flash(parts(100, 50, 30, 15, 5))).await;
+    assert_eq!(measured, Some((200, 2000, second, false)));
+    // A total of 0: the parts.
+    let mut tokens = parts(1, 2, 3, 4, 5);
+    tokens["total"] = json!(0);
+    let (third, measured) = answered(&lab, "c3", flash(tokens)).await;
+    let known = Some((15, 2000, third.clone(), false));
+    assert_eq!(measured, known);
+
+    // Unknown, never 0%: what was known stays, as last known.
+    let last_known = Some((15, 2000, third.clone(), true));
+    let mut invalid_total = parts(1, 1, 1, 1, 1);
+    invalid_total["total"] = json!(-5);
+    let mut fractional_total = parts(1, 1, 1, 1, 1);
+    fractional_total["total"] = json!(1.5);
+    let mut missing_part = parts(1, 1, 1, 1, 1);
+    missing_part["cache"].as_object_mut().unwrap().remove("write");
+    let too_large = json!({"input":u64::MAX,"output":1,"reasoning":0,"cache":{"read":0,"write":0}});
+    for (client, info) in [
+        ("c4", flash(invalid_total)), ("c5", flash(fractional_total)), ("c6", flash(missing_part)),
+        ("c7", flash(too_large)), ("c8", flash(parts(0, 0, 0, 0, 0))),
+        ("c9", json!({"providerID":"openrouter","modelID":"anthropic/claude-x","tokens":{"total":100}})),
+        ("c10", json!({"tokens":{"total":100}})),
+    ] {
+        assert_eq!(answered(&lab, client, info).await.1, last_known, "{client}");
+    }
+    let (eleventh, measured) = answered(&lab, "c11", flash(json!({"total":700}))).await;
+    let fresh = Some((700, 2000, eleventh.clone(), false));
+    assert_eq!(measured, fresh);
+
+    // A sub-agent's answer, and an older answer replayed, change nothing.
+    let child = lab.control("child", json!({"parentID":session,"title":"a sub-agent"})).await["id"].as_str().unwrap().to_owned();
+    lab.control("reply", json!({"sessionID":child,"text":"Found.","info":flash(json!({"total":9}))})).await;
+    unchanged(&lab, "a sub-agent's answer", &fresh).await;
+    let event = |info: Value| json!({"type":"message.updated","properties":{"sessionID":session,"info":info}});
+    let older = json!({"id":"msg_older","sessionID":session,"role":"assistant","parentID":eleventh,
+        "time":{"created":1,"completed":1},"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":9}});
+    lab.control("event", event(older)).await;
+    unchanged(&lab, "an older answer", &fresh).await;
+
+    // A compaction: what was measured is last known until a normal answer measures again.
+    let now = chrono::Utc::now().timestamp_millis();
+    let summary = json!({"id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":now},"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":1900}});
+    lab.control("event", event(summary)).await;
+    lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    assert_eq!(usage_of(&lab.detail()), Some((700, 2000, eleventh, true)));
+    let (twelfth, measured) = answered(&lab, "c12", flash(json!({"total":800}))).await;
+    let fresh = Some((800, 2000, twelfth, false));
+    assert_eq!(measured, fresh);
+    // An older compaction's summary replayed doesn't make it last known.
+    let replayed = json!({"id":"msg_summary_old","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":1,"completed":1},"tokens":{"total":1}});
+    lab.control("event", event(replayed)).await;
+    unchanged(&lab, "an older summary", &fresh).await;
+
+    // An answer's events read no catalog; no provider secret is anywhere in Core's data.
+    let reads = providers_reads(&lab);
+    let id = lab.send("c13", "next").await.unwrap().turn_id.unwrap();
+    let sent = providers_reads(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!({"total":900}))})).await;
+    lab.until("its end", |d| turn(d, &id)["status"] != "inProgress").await;
+    assert!(sent >= reads);
+    assert_eq!(providers_reads(&lab), sent, "the answer and its parts read no catalog");
+    assert_eq!(holds_a_secret(&lab.dir.path().join("data")), None);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// What makes the usage last known, and what alone makes it fresh again
+/// (T-10, contract on T-10 #757). After a message is added to a running
+/// Turn, a late answer to the earlier one doesn't measure; the answer to the
+/// newest does. An answer whose model the list didn't have is measured after
+/// one read of the catalog, unless a new input came meanwhile, and a model
+/// still unlisted is never read for again. A model chosen, a lost connection
+/// and a Core restart make it last known; a snapshot of the same answer
+/// doesn't make it fresh, a newer answer does.
+#[tokio::test]
+async fn context_usage_is_fresh_again_only_from_a_newer_answer_to_the_latest_input() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first, false)));
+
+    // A message added to the running Turn: the late answer to the first input stays unmeasured.
+    let running = lab.send("c2", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    lab.add("c3", "Also run the tests", &running).await.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Fixed.","parentID":running,"idle":false,"info":flash(300)})).await;
+    lab.until("the late answer", |d| turn(d, &running)["_opencodeAnswers"].as_object().is_some_and(|a| a.len() == 1)).await;
+    assert_eq!(usage_of(&lab.detail()).map(|u| (u.0, u.3)), Some((100, true)), "last known");
+    lab.control("reply", json!({"sessionID":session,"text":"Tested.","info":flash(400)})).await;
+    let d = lab.until("the end", |d| turn(d, &running)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((400, 1000, running, false)), "the newest input's answer");
+
+    // A model the list didn't have: one catalog read, then that same answer.
+    let listing = |name: &str, window: u64| {
+        let lab = &lab;
+        let name = name.to_owned();
+        async move {
+            let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+            let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+            let mut model = deepseek["models"]["deepseek-flash"].clone();
+            model["id"] = json!(name);
+            model["limit"]["context"] = json!(window);
+            deepseek["models"][&name] = model;
+            lab.control("mode", json!({"providers":providers})).await;
+        }
+    };
+    listing("deepseek-pro", 8000).await;
+    let reads = providers_reads(&lab);
+    let pro = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-pro","tokens":{"total":total}});
+    let (fourth, _) = answered(&lab, "c4", pro(1000)).await;
+    let d = lab.until("the window read", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    assert_eq!(usage_of(&d), Some((1000, 8000, fourth.clone(), false)));
+    assert_eq!(providers_reads(&lab), reads + 1, "one read");
+
+    // A model OpenCode doesn't list: one read, and never another for it.
+    let ghost = json!({"providerID":"ghost","modelID":"never","tokens":{"total":50}});
+    answered(&lab, "c5", ghost.clone()).await;
+    for _ in 0..80 {
+        if providers_reads(&lab) == reads + 2 { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    answered(&lab, "c6", ghost).await;
+    unchanged(&lab, "an unlisted model", &Some((1000, 8000, fourth.clone(), true))).await;
+    assert_eq!(providers_reads(&lab), reads + 2, "one read for it, not one per answer");
+
+    // A new input while the read is under way: the answer that asked for it isn't measured.
+    listing("deepseek-late", 3000).await;
+    lab.control("mode", json!({"slow":{"/config/providers":1.0}})).await;
+    let late = json!({"providerID":"deepseek","modelID":"deepseek-late","tokens":{"total":60}});
+    answered(&lab, "c7", late).await;
+    let next = lab.send("c8", "next").await.unwrap().turn_id.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    assert_eq!(providers_reads(&lab), reads + 3);
+    assert_eq!(usage_of(&lab.detail()), Some((1000, 8000, fourth, true)), "the read came after a new input");
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(70)})).await;
+    let d = lab.until("its end", |d| turn(d, &next)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((70, 1000, next.clone(), false)));
+
+    // A model chosen: last known.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), Some((70, 1000, next.clone(), true)));
+    let (ninth, measured) = answered(&lab, "c9", flash(80)).await;
+    assert_eq!(measured, Some((80, 1000, ninth.clone(), false)));
+
+    // A lost connection: last known; the snapshot of the same answer leaves it so; a newer answer doesn't.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    assert!(ends(old).await);
+    assert_eq!(usage_of(&lab.detail()), Some((80, 1000, ninth.clone(), true)));
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), Some((80, 1000, ninth, true)), "the same answer, read again");
+    let (tenth, measured) = answered(&lab, "c10", flash(90)).await;
+    assert_eq!(measured, Some((90, 1000, tenth.clone(), false)));
+
+    // Core restarted: last known.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    let Lab { dir, ws } = lab;
+    drop(ws);
+    assert!(ends(old).await, "OpenCode ended with the Workspace");
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let d = ws.store.detail(ID).unwrap();
+    assert_eq!(usage_of(&d), Some((90, 1000, tenth, true)));
+}
