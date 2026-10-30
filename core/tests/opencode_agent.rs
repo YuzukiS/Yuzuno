@@ -1850,5 +1850,22 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
     let d = lab.detail();
     assert_eq!(turn(&d, &second)["status"], "completed");
     assert_eq!(usage_of(&d), Some((100, 1000, first, true)), "the read measured nothing");
+
+    // That resync read both from its snapshot, not from events after it: one more holds as many messages.
+    let held = |lab: &Lab| -> Vec<u64> {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/resynced' ORDER BY seq").unwrap();
+        query.query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["messages"].as_u64().unwrap()).collect()
+    };
+    let again = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > again { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > again, "read once more");
+    let counts = held(&lab);
+    assert_eq!(counts[before], counts[counts.len() - 1], "the first resync's snapshot held the answer and the compaction");
     lab.ws.close_agent(ID).await.unwrap();
 }
