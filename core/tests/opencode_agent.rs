@@ -1670,3 +1670,75 @@ async fn context_usage_an_older_answer_arriving_after_a_newer_one_never_measures
     assert_eq!(providers_reads(&lab), reads, "the older answer read no catalog");
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// How many times OpenCode's session was read again whole after its stream broke.
+fn resyncs(lab: &Lab) -> usize {
+    journal(lab).iter().filter(|k| *k == "opencode/resynced").count()
+}
+
+/// R3 eb8dff5f: an answer considered once, measured or not, never measures
+/// when the record is read again. One that waited for its model's window
+/// while a new Turn began stays unmeasured after a resync, whose snapshot
+/// holds it with its window now known: the new Turn's usage is last known
+/// until its own answer.
+#[tokio::test]
+async fn context_usage_an_answer_read_again_after_a_resync_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    // A model OpenCode lists that this connection's list doesn't have, read slowly.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut waiting = deepseek["models"]["deepseek-flash"].clone();
+    waiting["id"] = json!("deepseek-wait");
+    waiting["limit"]["context"] = json!(4000);
+    deepseek["models"]["deepseek-wait"] = waiting;
+    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
+    answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-wait","tokens":{"total":500}})).await;
+    // A new Turn while the read is under way: the waiting answer is dropped.
+    let third = lab.send("c3", "next").await.unwrap().turn_id.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    let last_known = Some((100, 1000, first.clone(), true));
+    assert_eq!(usage_of(&lab.detail()), last_known);
+
+    // The stream breaks; the snapshot read again holds the waiting answer, its window known now.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(usage_of(&lab.detail()), last_known, "the answer read again doesn't measure");
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(300)})).await;
+    let d = lab.until("its end", |d| turn(d, &third)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((300, 1000, third, false)), "the new Turn's own answer");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R3 eb8dff5f: of two answers to the same input completing in the same
+/// millisecond, the later ID is the newer. A newer one that can't be
+/// measured makes the usage last known; a newer one that can measures.
+#[tokio::test]
+async fn context_usage_a_newer_answer_in_the_same_millisecond_counts() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    let at = chrono::Utc::now().timestamp_millis() + 1000;
+    let answer = |id: &str, tokens: Value| json!({"type":"message.updated","properties":{"sessionID":session,"info":{
+        "id":id,"sessionID":session,"role":"assistant","parentID":running,"time":{"created":at,"completed":at},
+        "providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens}}});
+    lab.control("event", answer("msg_same_a", json!({"total":100}))).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running.clone(), false)));
+    lab.control("event", answer("msg_same_b", json!({"total":-1}))).await;
+    lab.until("the newer, unmeasurable answer", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running.clone(), true)), "last known");
+    lab.control("event", answer("msg_same_c", json!({"total":200}))).await;
+    lab.until("the newest answer", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    assert_eq!(usage_of(&lab.detail()), Some((200, 1000, running, false)));
+    lab.ws.close_agent(ID).await.unwrap();
+}

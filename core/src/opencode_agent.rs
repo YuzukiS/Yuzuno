@@ -125,10 +125,6 @@ struct Usage {
     /// variant chosen, a compaction. An answer waiting from before it is
     /// not measured.
     epoch: u64,
-    /// The newest answer to a latest input, by when it completed and its ID
-    /// (OpenCode's IDs ascend), whether it could be measured or not: only
-    /// that answer may measure (R2 63d96eab).
-    newest: Option<(i64, String)>,
     pending: Option<Pending>,
     /// Models the catalog was read again for, once each.
     refreshed: HashSet<String>,
@@ -706,13 +702,13 @@ impl Workspace {
         let (agent, data, usage) = (id.to_owned(), json!({"model":model,"window":window}), c.clone());
         let turn = pending.turn.clone();
         let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/contextWindow", &data, Sel::Turns(vec![turn]), move |d| {
-            // Checked as it is written: still the newest answer, and nothing since made it stale.
-            let current = {
-                let usage = usage.usage.lock().unwrap();
-                usage.epoch == pending.epoch && usage.newest.as_ref().is_some_and(|(at, answer)| *at == pending.at && *answer == pending.answer)
-            };
-            let latest = d.turns.iter().find(|t| t["id"] == pending.turn.as_str()).and_then(latest_input) == Some(pending.parent.as_str());
-            if current && latest && measured_before(d, pending.at) {
+            // Checked as it is written: still its Turn's newest answer, and
+            // nothing since made it stale.
+            let current = usage.usage.lock().unwrap().epoch == pending.epoch;
+            let turn = d.turns.iter().find(|t| t["id"] == pending.turn.as_str());
+            let latest = turn.and_then(latest_input) == Some(pending.parent.as_str());
+            let newest = turn.and_then(seen) == Some((pending.at, pending.answer.as_str()));
+            if current && latest && newest && not_before_measured(d, pending.at) {
                 if let Some(at) = chrono::DateTime::from_timestamp_millis(pending.at) {
                     if let Some(measured) = ContextUsage::measured(pending.used, window, &pending.turn, at) {
                         d.context_usage = Some(measured);
@@ -1528,24 +1524,27 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
         }
         return;
     }
-    let (Some(at), Some(parent)) = (info["time"]["completed"].as_i64(), info["parentID"].as_str()) else { return };
-    let Some(turn) = d.turns.iter().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some() || t["_opencodeFollowed"] == parent)
+    let (Some(at), Some(parent), Some(answer)) = (info["time"]["completed"].as_i64(), info["parentID"].as_str(), info["id"].as_str())
         else { return };
-    // An answer to an earlier input, completed late, says nothing of now.
-    if latest_input(turn) != Some(parent) || !measured_before(d, at) {
+    let Some(index) = d.turns.iter().position(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some() || t["_opencodeFollowed"] == parent)
+        else { return };
+    // An answer to an earlier input, completed late, says nothing of now;
+    // nor does one older than the last measurement.
+    if latest_input(&d.turns[index]) != Some(parent) || !not_before_measured(d, at) {
         return;
     }
-    let Some(turn) = turn["id"].as_str().map(str::to_owned) else { return };
+    // Once considered for its Turn, measured or not, an answer never
+    // measures here again, nor does one older than it: a replay of the
+    // record or a late answer (R3 eb8dff5f). Of two that completed in the
+    // same millisecond, the later ID is the newer (OpenCode's IDs ascend).
+    if seen(&d.turns[index]).is_some_and(|seen| (at, answer) <= seen) {
+        return;
+    }
+    let Some(turn) = d.turns[index]["id"].as_str().map(str::to_owned) else { return };
+    d.turns[index]["_opencodeUsageSeen"] = json!({"at":at,"answer":answer});
     let used = context_used(&info["tokens"]);
     let model = info["providerID"].as_str().zip(info["modelID"].as_str()).map(|(provider, model)| format!("{provider}/{model}"));
-    let Some(answer) = info["id"].as_str() else { return };
     let mut usage = c.usage.lock().unwrap();
-    // Older than an answer already seen, measured or not: it says nothing of now.
-    let this = (at, answer.to_owned());
-    if usage.newest.as_ref().is_some_and(|newest| &this < newest) {
-        return;
-    }
-    usage.newest = Some(this);
     usage.superseded(at);
     let (Some(used), Some(model), Some(time)) = (used, model, chrono::DateTime::from_timestamp_millis(at)) else {
         stale(d);
@@ -1597,6 +1596,21 @@ fn latest_input(turn: &Value) -> Option<&str> {
         (Some(input), Some(after)) if after > input => Some(after),
         (input, _) => input,
     }
+}
+
+/// The newest answer considered for a Turn's context usage, measured or not,
+/// as when it completed and its ID.
+fn seen(turn: &Value) -> Option<(i64, &str)> {
+    turn["_opencodeUsageSeen"]["at"].as_i64().zip(turn["_opencodeUsageSeen"]["answer"].as_str())
+}
+
+/// Whether an answer completed at `at` (ms) isn't older than what was last
+/// measured: one in the same millisecond may be the newer, which its Turn's
+/// `seen` decides.
+fn not_before_measured(d: &AgentDetail, at: i64) -> bool {
+    d.context_usage.as_ref()
+        .and_then(|usage| chrono::DateTime::parse_from_rfc3339(&usage.updated_at).ok())
+        .is_none_or(|measured| at >= measured.timestamp_millis())
 }
 
 /// Whether `at` (ms) is after what was last measured, or nothing was.
