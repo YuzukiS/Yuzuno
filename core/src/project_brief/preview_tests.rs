@@ -57,6 +57,7 @@ fn footprint(ws: &Workspace, project: &str) -> Value {
     json!({"version":sections::brief_version(&db, project).unwrap(),
         "receipts":count("project_brief_receipts"),"requests":count("collaboration_requests"),
         "snapshots":count("project_brief_snapshots"),"sections":count("project_brief_sections"),
+        "writes":count("project_brief_writes"),
         "cache":attachments::dir(&ws.data_dir).exists(),"events":ws.changes.head()})
 }
 
@@ -140,12 +141,15 @@ async fn more_problems_than_shown_are_counted_in_both() {
 }
 
 #[tokio::test]
-async fn a_stale_version_previews_as_a_conflict_with_the_latest_brief() {
+async fn a_stale_write_previews_as_a_conflict_with_the_latest_brief() {
     let (_dir, ws, project) = lab();
     update::update(&ws, &FAKE, "a", input("a1", 0, vec![put("plan")])).await.unwrap().unwrap();
-    let rejected = same_problems(&ws, &project, "b", input("b1", 0, vec![put("notes")])).await;
+    let rejected = same_problems(&ws, &project, "a", input("a2", 0, vec![put("plan")])).await;
     assert_eq!(codes(&rejected), ["version_conflict"]);
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].key");
     assert_eq!(rejected["latest"]["version"], 1);
+    // Another section from the same read previews as it would be written (T-9).
+    assert_eq!(preview(&ws, "b", input("b1", 0, vec![put("notes")])).await["valid"], true);
 }
 
 #[tokio::test]

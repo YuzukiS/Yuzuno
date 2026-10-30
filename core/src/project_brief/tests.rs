@@ -190,19 +190,20 @@ async fn without_a_reliable_turn_nothing_counts_and_an_old_receipt_never_counts_
 }
 
 #[tokio::test]
-async fn a_stale_version_is_rejected_with_the_latest_brief_and_changes_nothing() {
+async fn a_stale_write_to_a_section_is_rejected_with_the_latest_brief_and_changes_nothing() {
     let (_dir, ws, project) = lab();
     accept(&ws, "a", input("a1", 0, vec![put("plan", "report")])).await;
-    let rejected = reject(&ws, "b", input("b1", 0, vec![put("notes", "report")])).await;
+    // Read at 0, before plan was written (T-9: per section; cas_tests has the rest).
+    let rejected = reject(&ws, "a", input("a2", 0, vec![put("plan", "status")])).await;
     assert_eq!(codes(&rejected), ["version_conflict"]);
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].key");
     assert_eq!(rejected["latest"]["version"], 1);
     assert_eq!(rejected["latest"]["sections"][0]["key"], "plan");
     assert_eq!(rejected["latest"]["sections"][0]["owner"], json!({"agentId":"a","name":"Agent a","state":"active"}));
-    // So does a "no change" from a stale read.
-    assert_eq!(codes(&reject(&ws, "c", json!({"requestId":"c1","expectedVersion":0,"noChange":true})).await), ["version_conflict"]);
-    assert_eq!(version(&ws, &project), 1);
-    assert_eq!(brief(&ws, "b")["sections"].as_array().unwrap().len(), 1);
-    accept(&ws, "b", input("b2", 1, vec![put("notes", "report")])).await;
+    assert_eq!((version(&ws, &project), section(&brief(&ws, "a"), "plan")["kind"].clone()), (1, json!("report")));
+    // Another section from the same read is not stale.
+    accept(&ws, "b", input("b1", 0, vec![put("notes", "report")])).await;
+    assert_eq!(brief(&ws, "b")["sections"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -1059,6 +1060,8 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
 
 #[path = "editors_tests.rs"]
 mod editors_tests;
+#[path = "cas_tests.rs"]
+mod cas_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {
