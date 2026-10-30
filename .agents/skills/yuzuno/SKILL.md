@@ -86,7 +86,7 @@ Three small shapes cover most other cards; `brief_guide examples` has each, as `
 
 - **Result**: what changed and whether it can be used now, in a sentence or two with its stage (tested, merged, installed) and the limit that matters, and a `LiveRefs` link to the task that holds the evidence.
 - **Compare**: the answer in one sentence, then one chart or a short `Table` of measured values, with the sample and what it cannot show beside them.
-- **Decision**: an Ask with the question, the options and what each costs, in a few lines; the background stays on the task.
+- **Decision**: an Ask with the question, the options and what each costs, in a few lines; the background stays on the task. Several related answers go in one form, as in the `form` example.
 
 ### Maintain the section
 
