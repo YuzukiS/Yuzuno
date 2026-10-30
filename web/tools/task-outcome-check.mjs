@@ -196,7 +196,7 @@ try {
   await page.locator(".outcome-drawer .outcome-author-report").waitFor();
   await snap(page, "desktop-outcome");
   await page.getByRole("tab", { name: "逐项依据", exact: true }).click();
-  await page.locator(".outcome-criterion summary").first().click();
+  await page.locator(".outcome-criterion > summary").first().click();
   await snap(page, "desktop-evidence");
   assert.match(
     await page.locator(".outcome-drawer").innerText(),
@@ -217,7 +217,7 @@ try {
     .locator(".outcome-record-id")
     .filter({ hasText: "result-earlier" })
     .waitFor();
-  await page.locator(".outcome-criterion summary").click();
+  await page.locator(".outcome-criterion > summary").click();
   assert.equal(await page.locator(".outcome-drawer a[download]").count(), 0);
   await snap(page, "desktop-historical-mismatch");
   await page.getByRole("button", { name: "关闭成果详情" }).click();
@@ -268,7 +268,7 @@ try {
     .click();
   await mobile.page.locator(".outcome-drawer .outcome-author-report").waitFor();
   await mobile.page.getByRole("tab", { name: "逐项依据", exact: true }).click();
-  await mobile.page.locator(".outcome-criterion summary").first().click();
+  await mobile.page.locator(".outcome-criterion > summary").first().click();
   assert.equal(
     await mobile.page
       .locator(".outcome-source-details")
