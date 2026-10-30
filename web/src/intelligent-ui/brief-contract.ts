@@ -53,6 +53,7 @@ export const BRIEF_LIMITS = {
   chartPoints: 500,
   chartPointsPerSeriesFromData: 5000,
   liveRefs: 50,
+  refNoteChars: 200,
   sources: 30,
   attachments: 12,
   askOptionsMin: 2,
@@ -167,12 +168,17 @@ export const briefComponentProps = {
   BarChart: chartProps(z.union([z.number().finite(), z.string().min(1).max(64)])),
   ScatterChart: chartProps(z.number().finite()),
   LiveRefs: z.strictObject({
+    // T-9: chips by default; list, one row per item in the order given, for
+    // a task list or a split of work: Core fills in each task's title,
+    // state, assignee and last update, so the Agent never writes them.
+    layout: z.enum(["chips", "list"]).optional(),
     items: z
       .array(
         z.strictObject({
           kind: z.enum(["task", "pr", "ci", "job", "review", "agent", "machine"]),
           id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/, "Use the 1-200 character id the matching yuzuno tool uses."),
           label: short.optional(),
+          note: z.string().min(1).max(L.refNoteChars).optional(),
         }),
       )
       .min(1)
@@ -206,7 +212,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   LineChart: "A line chart from inline points or a data attachment.",
   BarChart: "A bar chart from inline points or a data attachment; x is usually a label.",
   ScatterChart: "A scatter plot with numeric x, from inline points or a data attachment.",
-  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id.",
+  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
   Attachments: "Shows this section's attachments by name with optional captions.",
   Sources: "Explicit HTTPS or local file references; Table rows cite them by id in sourceIds.",
 } as const satisfies Record<BriefComponent, string>;
@@ -951,6 +957,31 @@ export const BRIEF_EXAMPLES = {
             x: { label: "Run" },
             y: { label: "Loss" },
             data: { attachment: "runs.csv", x: "run", series: [{ name: "Validation loss", column: "val_loss" }] },
+          },
+        },
+      },
+    },
+  },
+  tasks: {
+    op: "put",
+    key: "work",
+    kind: "status",
+    title: "Who has what",
+    status: { asOf: "2026-10-18T05:00:00Z", validFor: 86400 },
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: {}, children: ["summary", "tasks"] },
+        summary: { type: "Markdown", props: { text: "Run 12 decides the ablations; **their budget is your call** in the form." } },
+        tasks: {
+          type: "LiveRefs",
+          props: {
+            layout: "list",
+            items: [
+              { kind: "task", id: "T-12", note: "The larger batch against the baseline." },
+              { kind: "task", id: "T-13", note: "Ablations; the form sets their scope." },
+              { kind: "task", id: "T-14" },
+            ],
           },
         },
       },
