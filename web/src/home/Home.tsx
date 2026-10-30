@@ -11,6 +11,7 @@ import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
 import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
+import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
 import { PinnedSection } from "./PinnedSection";
@@ -77,7 +78,10 @@ export function Home({
   const densityWorkspace = readOnly ? "" : workspaceId;
   const density = useHomeDensity(densityWorkspace);
   const densityRefusal = useHomeDensityRefusal(densityWorkspace);
-  const [data, setData] = useState<HomeData | null>(readOnly ? previewHome : null);
+  // A late read from a previous Workspace must never seed the new
+  // Workspace's overview (or its cards). Abort is checked before writes.
+  const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
+  const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
   // What went wrong, worded when shown so it follows the language (T-189):
   // a reply Home can't use, an order not saved, or Core's reason as it came.
   const [error, setError] = useState<{ kind: "unavailable" | "order" | "read"; reason: string } | null>(null);
@@ -106,7 +110,10 @@ export function Home({
           setReadFailed(true);
           return;
         }
-        setData((previous) => keepUnchanged(previous, value));
+        setReading((previous) => ({
+          workspaceId,
+          value: keepUnchanged(previous?.workspaceId === workspaceId ? previous.value : null, value),
+        }));
         onNeedsYou?.(value.needsYou);
         setError(null);
         setReadFailed(false);
@@ -121,7 +128,7 @@ export function Home({
     return () => controller.abort();
     // A new report callback is not a reason to read again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnly, revision, jobsRevision, tick]);
+  }, [readOnly, workspaceId, revision, jobsRevision, tick]);
   useEffect(() => {
     if (readOnly) return;
     const timer = setInterval(() => {
@@ -380,7 +387,19 @@ export function Home({
         // Needs you first, on its own; then My widgets, two columns where
         // the pane is wide; then the projects.
         <div className="home-layout">
-          <div className="home-needs-area">
+          <HomeReturnOverview
+            key={readOnly ? "preview" : workspaceId}
+            data={data}
+            readFailed={readFailed}
+            onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
+            onNeedsYou={() => {
+              const target = document.getElementById("home-current-needs");
+              target?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+              target?.focus({ preventScroll: true });
+            }}
+            onNavigate={onNavigate}
+          />
+          <div className="home-needs-area" id="home-current-needs" tabIndex={-1}>
             <NeedsYou items={data.needsYou} projectName={projectName} onJump={jump} />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}
