@@ -414,6 +414,6 @@ pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64
 /// up a replied ask.
 #[cfg(test)]
 pub(super) fn mark_replied_live(store: &Store, project: &str, key: &str, text: &str) -> Result<bool> {
-    let version = live_key(&store.db.read()?, project, key)?.map_or(0, |row| row.version);
+    let version = live_key(&*store.db.read()?, project, key)?.map_or(0, |row| row.version);
     mark_replied(store, project, key, version, text)
 }

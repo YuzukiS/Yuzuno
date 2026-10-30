@@ -469,7 +469,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
     let digest = reply_digest(input.choice.as_deref(), &input.text);
     let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,"reply":digest});
     // The ask as it is now, if it is still the version the user saw.
-    let shown = current.filter(|row| row.live && row.unresolved_ask() && row.version == version);
+    let shown = current.as_ref().filter(|row| row.live && row.unresolved_ask() && row.version == version).cloned();
     let chosen = match (&input.choice, &shown) {
         (Some(id), Some(row)) => Some(choice(row, id).context("choice_not_found: the ask offers no such option")?),
         _ => None,
