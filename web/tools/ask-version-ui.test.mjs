@@ -548,6 +548,21 @@ test("when this browser keeps nothing, a form begun on version 1 is still held a
   const [first, second] = page.replies();
   assert.deepEqual(second, first, "the same version, words and client id");
   assert.equal(c.delivered.size, 1, "Core delivered it once");
+  // So does a form, compared with the answers it sent rather than ones this browser did not keep.
+  c.lose(true);
+  page.render(section("sent", 1, { form }));
+  f.radio("The UI").click();
+  await tick();
+  f.submit().click();
+  await tick();
+  page.render(section("sent", 2, { form }));
+  assert.ok(!f.notes().some((n) => /You began this reply on version/.test(n)), JSON.stringify(f.notes()));
+  assert.equal(f.submit().disabled, false, "the unconfirmed answers can be sent again");
+  f.submit().click();
+  await tick();
+  const [, , formFirst, formSecond] = page.replies();
+  assert.deepEqual(formSecond, formFirst, "the same version, answers and client id");
+  assert.equal(c.delivered.size, 2, "Core delivered each once");
   assert.deepEqual(page.errors, []);
 });
 

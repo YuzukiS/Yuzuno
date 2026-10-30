@@ -332,10 +332,14 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   // Written in or sent from this form as it is mounted, even if this browser
   // could not keep that.
   const formTouched = useRef(false);
+  // The answers last sent from this form, until it changes again: what its
+  // retry is compared with, whether or not this browser kept them.
+  const sentHere = useRef<{ form: string; values: ClarificationValues } | null>(null);
   // Begun on the version on screen when first changed.
   function formChanged(target: EventTarget) {
     if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
     formTouched.current = true;
+    sentHere.current = null;
     if (formBegun === null) setFormBegun(section.version);
     else setFormEdits((n) => n + 1);
   }
@@ -346,6 +350,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       /* The form below starts afresh all the same. */
     }
     formTouched.current = false;
+    sentHere.current = null;
     setFormBegun(null);
     setFormEpoch((n) => n + 1);
   }
@@ -358,10 +363,13 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     setShownShape(formShape);
     if (formBegun === null && !formTouched.current) setFormEpoch((n) => n + 1);
   }
-  // The answers on screen as the form would send them, when they are complete.
+  // The answers on screen as the form would send them, when they are
+  // complete: the ones sent from here while unchanged since, else the ones
+  // this browser kept.
   let formAnswer: string | null = null;
   try {
-    if (form && formKey) formAnswer = formText(form, readClarificationDraft(localStorage, formKey, form));
+    if (form && sentHere.current?.form === formRef) formAnswer = formText(form, sentHere.current.values);
+    else if (form && formKey) formAnswer = formText(form, readClarificationDraft(localStorage, formKey, form));
   } catch {
     formAnswer = null;
   }
@@ -505,6 +513,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
               // Sent, the answers are this version's, defaults included: kept
               // as written ones are, for a retry and against a newer question.
               formTouched.current = true;
+              sentHere.current = { form: formRef, values };
               try {
                 if (formKey) saveClarificationDraft(localStorage, formKey, values);
               } catch {
