@@ -1578,11 +1578,9 @@ async fn context_usage_is_fresh_again_only_from_a_newer_answer_to_the_latest_inp
 }
 
 /// R1 cca110b3: after a compaction, the answer OpenCode gives under its own
-/// continuation message is the newest of the Turn, and measures. A newer
-/// answer to the same input that can't be measured leaves an older answer
-/// waiting for a catalog read unmeasured, however late the read comes.
+/// continuation message is the newest of the Turn, and measures under it.
 #[tokio::test]
-async fn context_usage_follows_a_compactions_continuation_and_only_the_newest_answer() {
+async fn context_usage_measures_the_answer_to_a_compactions_continuation() {
     let lab = lab(&[], false).await;
     let session = lab.session();
     let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
@@ -1598,9 +1596,23 @@ async fn context_usage_follows_a_compactions_continuation_and_only_the_newest_an
     lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
     let continued = "msg_fffffffffffffffffffffffffff";
     lab.control("store", json!({"sessionID":session,"messageID":continued,"text":"Continue if you have next steps"})).await;
-    lab.control("reply", json!({"sessionID":session,"text":"Continued.","parentID":continued,"idle":false,"info":flash(json!({"total":300}))})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Continued.","parentID":continued,"info":flash(json!({"total":300}))})).await;
     let d = lab.until("the continuation's answer", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
-    assert_eq!(usage_of(&d), Some((300, 1000, running.clone(), false)), "measured under its Turn");
+    assert_eq!(usage_of(&d), Some((300, 1000, running, false)), "measured under its Turn");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R1 cca110b3: an answer waiting for a catalog read is no longer the newest
+/// once a newer answer to the same input completes, even one that can't be
+/// measured: however late the read comes, it measures nothing.
+#[tokio::test]
+async fn context_usage_an_answer_waiting_for_the_catalog_yields_to_a_newer_one() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,"info":flash(json!({"total":100}))})).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
 
     // An answer whose model waits for a slow catalog read, then a newer one that can't be measured.
     let mut providers = lab.control("mode", json!({})).await["providers"].clone();
@@ -1610,12 +1622,12 @@ async fn context_usage_follows_a_compactions_continuation_and_only_the_newest_an
     slow["limit"]["context"] = json!(5000);
     deepseek["models"]["deepseek-slow"] = slow;
     lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
-    lab.control("reply", json!({"sessionID":session,"text":"Slow.","parentID":continued,"idle":false,
+    lab.control("reply", json!({"sessionID":session,"text":"Slow.","idle":false,
         "info":{"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}}})).await;
-    lab.control("reply", json!({"sessionID":session,"text":"Done.","parentID":continued,"info":flash(json!({"total":-1}))})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!({"total":-1}))})).await;
     lab.until("the end", |d| turn(d, &running)["status"] != "inProgress").await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     lab.control("mode", json!({"slow":{}})).await;
-    assert_eq!(usage_of(&lab.detail()), Some((300, 1000, running, true)), "the newest answer was unmeasurable: last known");
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running, true)), "the newest answer was unmeasurable: last known");
     lab.ws.close_agent(ID).await.unwrap();
 }
