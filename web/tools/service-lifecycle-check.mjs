@@ -413,11 +413,12 @@ try {
       assert.match(await page.locator(".portal-panel .portal-idle").textContent(), /^运行期限到了/);
       await shoot(page, `${view.name}-expired`);
       await refresh(page, scenes.unknown(), state);
-      await waitHeadline(page, "运行情况还待核实");
+      await waitHeadline(page, "运行情况还在核对");
       assert.match(await page.locator(".portal-panel .portal-idle").textContent(), /^先确认原来的运行/);
       assert.equal(await lifecycle(page).getByRole("button", { name: "再启动一次…" }).count(), 0, "no start while the run is unknown");
+      assert.equal(await lifecycle(page).getByRole("button", { name: "停止服务…" }).count(), 1, "a stop may be asked of an unknown run");
       assert.deepEqual(await sideways(page), { page: 0, panel: 0, lifecycle: [] });
-      record(`${view.name}: expired and unknown each say why there is no page; unknown offers no start`);
+      record(`${view.name}: expired and unknown each say why there is no page; unknown offers a stop request, no start`);
       await shoot(page, `${view.name}-unknown`);
 
       // Closing the preview stops nothing.

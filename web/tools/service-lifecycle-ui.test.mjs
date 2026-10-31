@@ -374,14 +374,44 @@ test("no start while a run may still hold the service; a passed time limit alone
   await reopen(service({ job: job({ status: "unknown", owner: "unknown" }) }));
   await until(() => page.headline() === "This run still needs checking", "unknown");
   assert.match(page.fact("browser"), /Doesn't confirm the original process$/);
-  // Nor a stop from here, as the design has it; Jobs keeps the Job's own cancel.
-  assert.equal(page.button("Stop service…", page.lifecycle()), undefined);
+  // A stop may be asked of it (design v3.4 §6); the next test follows one.
+  assert.ok(page.button("Stop service…", page.lifecycle()));
   assert.ok(page.button("Open in Jobs", page.lifecycle()));
   // Long past its planned end and still running: running, not expired.
   await reopen(service({ job: job({ startedAt: "2026-10-01T00:00:00Z", timeoutSeconds: 60 }) }));
   await until(() => page.headline() === "Running, with a preview connection", "still running");
   assert.ok(page.frame());
   assert.deepEqual(page.requests.filter((r) => r.method === "POST"), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("an outcome still being checked: a stop is only asked for, and the run stays to be checked until Jobs confirms its end", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const unknown = job({ status: "unknown", owner: "unknown" });
+  page.core.service = service({ job: unknown, intent: intent(3) });
+  page.core.control = (action, body) => {
+    // Core records the choice and asks Jobs to cancel; the outcome stays unknown.
+    page.core.service = service({ job: { ...unknown, canStop: false, cancelRequestedAt: "2026-10-31T00:50:00Z" },
+      intent: userStopped(body.expectedIntentRevision + 1, body.requestId) });
+    return { body: receipt(action, body, "j1", "unknown") };
+  };
+  page.window.portal.open(target(page.core.service));
+  await until(() => page.headline() === "This run still needs checking", "the unknown run");
+  assert.equal(page.button("Start again…", page.lifecycle()), undefined, "no start while the outcome is unknown");
+  page.click(page.button("Stop service…", page.lifecycle()));
+  await until(page.dialog, "the stop confirmation");
+  assert.match(page.dialog().textContent, /This run's outcome isn't confirmed yet\. Stopping records your choice and asks for the run to end; until that end is confirmed, it still needs checking\./);
+  assert.doesNotMatch(page.dialog().textContent, /disconnects its page/, "no promise that the page ends now");
+  page.click(page.button("Stop service", page.dialog()));
+  await until(() => page.lifecycle().textContent.includes("Still needs checking · stop requested, waiting for confirmation"), "the requested stop");
+  assert.deepEqual(page.posts("stop").map((r) => [r.body.expectedJobId, r.body.expectedIntentRevision]), [["j1", 3]]);
+  assert.equal(page.headline(), "This run still needs checking");
+  assert.equal(page.button("Stop service…", page.lifecycle()), undefined, "asked once");
+  assert.equal(page.button("Start again…", page.lifecycle()), undefined, "still no start");
+  assert.ok(page.button("Refresh status", page.lifecycle()));
+  assert.doesNotMatch(page.lifecycle().textContent, /Stopped as you requested|Your choice to keep it stopped/, "not stopped before Jobs confirms it");
+  assert.match(page.panel().querySelector(".portal-idle").textContent, /^Check the original run first/);
   assert.deepEqual(page.errors, []);
 });
 
