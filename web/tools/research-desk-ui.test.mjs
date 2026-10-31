@@ -237,7 +237,7 @@ test("definitions keep every version, show what a change moved, and plans only p
     const aside = page.document.querySelector(".research-aside");
     assert.ok(aside.textContent.includes("SHA-256 aaaaaaaaaaaa"));
     assert.ok(aside.textContent.includes("The source file has not been checked again since."));
-    assert.ok(aside.textContent.includes("Not the file content the Agent's SHA-256 names"), "the paper's stated hash differs");
+    assert.ok(aside.textContent.includes("Differs from the SHA-256 the Agent gave"), "the paper's stated hash differs");
     assert.ok(aside.textContent.includes("As described by the Agent"));
     // History: both versions, before and after, the affected claim and an unapplied draft.
     radio(page.document, "Views of this desk", "Definitions").click();

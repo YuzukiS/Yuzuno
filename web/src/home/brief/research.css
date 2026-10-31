@@ -257,7 +257,7 @@
 }
 .research-row {
   display: grid;
-  grid-template-columns: minmax(80px, 0.8fr) minmax(140px, 2.6fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(80px, 0.8fr) minmax(120px, 2.6fr) minmax(max-content, 1.2fr);
   align-items: center;
   gap: 10px;
   padding: 6px 6px;
@@ -300,7 +300,7 @@
 }
 .research-row-value {
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .research-row-interval {
   color: var(--text-secondary, var(--muted));
@@ -444,6 +444,7 @@
   text-decoration: underline;
   cursor: pointer;
   font: inherit;
+  text-align: left;
 }
 .research-versions {
   display: flex;

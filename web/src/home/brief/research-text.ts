@@ -49,7 +49,7 @@ export const researchText = strings({
   snapshotMissing: "This snapshot is no longer kept",
   stated: {
     same: "Same file content as the SHA-256 the Agent gave (file identity only)",
-    different: "Not the file content the Agent's SHA-256 names",
+    different: "Differs from the SHA-256 the Agent gave",
     unknown: "No snapshot to compare the Agent's SHA-256 with",
   } as Record<"same" | "different" | "unknown", string>,
   described: "As described by the Agent",
@@ -131,7 +131,7 @@ export const researchText = strings({
   snapshotMissing: "这个快照已不再保存",
   stated: {
     same: "与 Agent 给出的 SHA-256 内容相同（仅是文件身份比对）",
-    different: "不是 Agent 给出的 SHA-256 所指的文件内容",
+    different: "与 Agent 给出的 SHA-256 不同",
     unknown: "没有快照可与 Agent 给出的 SHA-256 比对",
   },
   described: "Agent 的描述",
