@@ -1348,3 +1348,729 @@ async fn an_added_message_refused_after_the_run_ended_still_ends_the_turn() {
     lab.control("mode", json!({"prompt":"store"})).await;
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// The Agent's context usage as a `(used, window, Turn, stale)` tuple.
+fn usage_of(d: &AgentDetail) -> Option<(u64, u64, String, bool)> {
+    d.context_usage.as_ref().map(|u| (u.used_tokens, u.window_tokens, u.turn_id.clone(), u.stale))
+}
+
+/// How often Core read OpenCode's configured providers.
+fn providers_reads(lab: &Lab) -> usize {
+    lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/config/providers").count()
+}
+
+/// A new message, and OpenCode's answer to it with `info` (its tokens, model
+/// or summary flag), until its Turn ends: that Turn, and the usage then.
+async fn answered(lab: &Lab, client: &str, info: Value) -> (String, Option<(u64, u64, String, bool)>) {
+    let id = lab.send(client, "next").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":lab.session(),"text":"Done.","info":info})).await;
+    let d = lab.until("its end", |d| turn(d, &id)["status"] != "inProgress").await;
+    (id, usage_of(&d))
+}
+
+/// Whether the usage has stayed `expected` after `what`, once events had time to arrive.
+async fn unchanged(lab: &Lab, what: &str, expected: &Option<(u64, u64, String, bool)>) {
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(&usage_of(&lab.detail()), expected, "{what}");
+}
+
+/// An OpenCode Agent's context usage (T-10, contract on T-10 #757): the
+/// newest completed answer of its own session, against the window of the
+/// model that answered, whatever model is chosen. Used is OpenCode's `total`
+/// when it is a positive whole number, else its stored parts each once,
+/// reasoning among them; anything else is unknown and keeps what was known
+/// as last known, never 0%. An answer of a sub-agent, an older one replayed
+/// and a compaction's summary don't measure; a compaction makes it last
+/// known. Answers don't read the catalog, and no provider secret is kept.
+#[tokio::test]
+async fn context_usage_is_the_newest_answer_against_its_own_models_window() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    // DeepSeek's model has a window of 2000, OpenRouter's none (0); a catalog read notes them.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    for provider in providers["providers"].as_array_mut().unwrap() {
+        let window = if provider["id"] == "deepseek" { 2000 } else { 0 };
+        for (_, model) in provider["models"].as_object_mut().unwrap() {
+            model["limit"]["context"] = json!(window);
+        }
+    }
+    lab.control("mode", json!({"providers":providers})).await;
+    lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    lab.ws.opencode_set_model(ID, "openrouter/anthropic/claude-x".into()).await.unwrap();
+    let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
+    let parts = |input: u64, output: u64, reasoning: u64, read: u64, write: u64|
+        json!({"input":input,"output":output,"reasoning":reasoning,"cache":{"read":read,"write":write}});
+
+    // OpenCode's total, against the answering model's window, not the chosen one's.
+    let mut tokens = parts(1, 1, 0, 0, 0);
+    tokens["total"] = json!(500);
+    let (first, measured) = answered(&lab, "c1", flash(tokens)).await;
+    assert_eq!(measured, Some((500, 2000, first, false)));
+    assert_eq!(lab.detail().context_usage.unwrap().used_percent, 25.0);
+    // No total: each part once, reasoning too (OpenCode's overflow estimate would say 170).
+    let (second, measured) = answered(&lab, "c2", flash(parts(100, 50, 30, 15, 5))).await;
+    assert_eq!(measured, Some((200, 2000, second, false)));
+    // A total of 0: the parts.
+    let mut tokens = parts(1, 2, 3, 4, 5);
+    tokens["total"] = json!(0);
+    let (third, measured) = answered(&lab, "c3", flash(tokens)).await;
+    let known = Some((15, 2000, third.clone(), false));
+    assert_eq!(measured, known);
+
+    // Unknown, never 0%: what was known stays, as last known.
+    let last_known = Some((15, 2000, third.clone(), true));
+    let mut invalid_total = parts(1, 1, 1, 1, 1);
+    invalid_total["total"] = json!(-5);
+    let mut fractional_total = parts(1, 1, 1, 1, 1);
+    fractional_total["total"] = json!(1.5);
+    let mut missing_part = parts(1, 1, 1, 1, 1);
+    missing_part["cache"].as_object_mut().unwrap().remove("write");
+    let too_large = json!({"input":u64::MAX,"output":1,"reasoning":0,"cache":{"read":0,"write":0}});
+    for (client, info) in [
+        ("c4", flash(invalid_total)), ("c5", flash(fractional_total)), ("c6", flash(missing_part)),
+        ("c7", flash(too_large)), ("c8", flash(parts(0, 0, 0, 0, 0))),
+        ("c9", json!({"providerID":"openrouter","modelID":"anthropic/claude-x","tokens":{"total":100}})),
+        ("c10", json!({"tokens":{"total":100}})),
+    ] {
+        assert_eq!(answered(&lab, client, info).await.1, last_known, "{client}");
+    }
+    let (eleventh, measured) = answered(&lab, "c11", flash(json!({"total":700}))).await;
+    let fresh = Some((700, 2000, eleventh.clone(), false));
+    assert_eq!(measured, fresh);
+
+    // A sub-agent's answer, and an older answer replayed, change nothing.
+    let child = lab.control("child", json!({"parentID":session,"title":"a sub-agent"})).await["id"].as_str().unwrap().to_owned();
+    lab.control("reply", json!({"sessionID":child,"text":"Found.","info":flash(json!({"total":9}))})).await;
+    unchanged(&lab, "a sub-agent's answer", &fresh).await;
+    let event = |info: Value| json!({"type":"message.updated","properties":{"sessionID":session,"info":info}});
+    let older = json!({"id":"msg_older","sessionID":session,"role":"assistant","parentID":eleventh,
+        "time":{"created":1,"completed":1},"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":9}});
+    lab.control("event", event(older)).await;
+    unchanged(&lab, "an older answer", &fresh).await;
+
+    // A compaction: what was measured is last known until a normal answer measures again.
+    let now = chrono::Utc::now().timestamp_millis();
+    let summary = json!({"id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":now},"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":1900}});
+    lab.control("event", event(summary)).await;
+    lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    assert_eq!(usage_of(&lab.detail()), Some((700, 2000, eleventh, true)));
+    let (twelfth, measured) = answered(&lab, "c12", flash(json!({"total":800}))).await;
+    let fresh = Some((800, 2000, twelfth, false));
+    assert_eq!(measured, fresh);
+    // An older compaction's summary replayed doesn't make it last known.
+    let replayed = json!({"id":"msg_summary_old","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":1,"completed":1},"tokens":{"total":1}});
+    lab.control("event", event(replayed)).await;
+    unchanged(&lab, "an older summary", &fresh).await;
+
+    // An answer's events read no catalog; no provider secret is anywhere in Core's data.
+    let reads = providers_reads(&lab);
+    let id = lab.send("c13", "next").await.unwrap().turn_id.unwrap();
+    let sent = providers_reads(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!({"total":900}))})).await;
+    lab.until("its end", |d| turn(d, &id)["status"] != "inProgress").await;
+    assert!(sent >= reads);
+    assert_eq!(providers_reads(&lab), sent, "the answer and its parts read no catalog");
+    assert_eq!(holds_a_secret(&lab.dir.path().join("data")), None);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// What makes the usage last known, and what alone makes it fresh again
+/// (T-10, contract on T-10 #757). After a message is added to a running
+/// Turn, a late answer to the earlier one doesn't measure; the answer to the
+/// newest does. An answer whose model the list didn't have is measured after
+/// one read of the catalog, unless a new input came meanwhile, and a model
+/// still unlisted is never read for again. A model chosen, a lost connection
+/// and a Core restart make it last known; a snapshot of the same answer
+/// doesn't make it fresh, a newer answer does.
+#[tokio::test]
+async fn context_usage_is_fresh_again_only_from_a_newer_answer_to_the_latest_input() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first, false)));
+
+    // A message added to the running Turn: the late answer to the first input stays unmeasured.
+    let running = lab.send("c2", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    lab.add("c3", "Also run the tests", &running).await.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Fixed.","parentID":running,"idle":false,"info":flash(300)})).await;
+    lab.until("the late answer", |d| turn(d, &running)["_opencodeAnswers"].as_object().is_some_and(|a| a.len() == 1)).await;
+    assert_eq!(usage_of(&lab.detail()).map(|u| (u.0, u.3)), Some((100, true)), "last known");
+    lab.control("reply", json!({"sessionID":session,"text":"Tested.","info":flash(400)})).await;
+    let d = lab.until("the end", |d| turn(d, &running)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((400, 1000, running, false)), "the newest input's answer");
+
+    // A model the list didn't have: one catalog read, then that same answer.
+    let listing = |name: &str, window: u64| {
+        let lab = &lab;
+        let name = name.to_owned();
+        async move {
+            let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+            let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+            let mut model = deepseek["models"]["deepseek-flash"].clone();
+            model["id"] = json!(name);
+            model["limit"]["context"] = json!(window);
+            deepseek["models"][&name] = model;
+            lab.control("mode", json!({"providers":providers})).await;
+        }
+    };
+    listing("deepseek-pro", 8000).await;
+    let reads = providers_reads(&lab);
+    let pro = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-pro","tokens":{"total":total}});
+    let (fourth, _) = answered(&lab, "c4", pro(1000)).await;
+    let d = lab.until("the window read", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    assert_eq!(usage_of(&d), Some((1000, 8000, fourth.clone(), false)));
+    assert_eq!(providers_reads(&lab), reads + 1, "one read");
+
+    // A model OpenCode doesn't list: one read, and never another for it.
+    let ghost = json!({"providerID":"ghost","modelID":"never","tokens":{"total":50}});
+    answered(&lab, "c5", ghost.clone()).await;
+    for _ in 0..80 {
+        if providers_reads(&lab) == reads + 2 { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    answered(&lab, "c6", ghost).await;
+    unchanged(&lab, "an unlisted model", &Some((1000, 8000, fourth.clone(), true))).await;
+    assert_eq!(providers_reads(&lab), reads + 2, "one read for it, not one per answer");
+
+    // A new input while the read is under way: the answer that asked for it isn't measured.
+    listing("deepseek-late", 3000).await;
+    lab.control("mode", json!({"slow":{"/config/providers":1.0}})).await;
+    let late = json!({"providerID":"deepseek","modelID":"deepseek-late","tokens":{"total":60}});
+    answered(&lab, "c7", late).await;
+    let next = lab.send("c8", "next").await.unwrap().turn_id.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    assert_eq!(providers_reads(&lab), reads + 3);
+    assert_eq!(usage_of(&lab.detail()), Some((1000, 8000, fourth, true)), "the read came after a new input");
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(70)})).await;
+    let d = lab.until("its end", |d| turn(d, &next)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((70, 1000, next.clone(), false)));
+
+    // A model chosen: last known.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), Some((70, 1000, next.clone(), true)));
+    let (ninth, measured) = answered(&lab, "c9", flash(80)).await;
+    assert_eq!(measured, Some((80, 1000, ninth.clone(), false)));
+
+    // A lost connection: last known; the snapshot of the same answer leaves it so; a newer answer doesn't.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    assert!(ends(old).await);
+    assert_eq!(usage_of(&lab.detail()), Some((80, 1000, ninth.clone(), true)));
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), Some((80, 1000, ninth, true)), "the same answer, read again");
+    let (tenth, measured) = answered(&lab, "c10", flash(90)).await;
+    assert_eq!(measured, Some((90, 1000, tenth.clone(), false)));
+
+    // Core restarted: last known.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    let Lab { dir, ws } = lab;
+    drop(ws);
+    assert!(ends(old).await, "OpenCode ended with the Workspace");
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let d = ws.store.detail(ID).unwrap();
+    assert_eq!(usage_of(&d), Some((90, 1000, tenth, true)));
+}
+
+/// R1 cca110b3: after a compaction, the answer OpenCode gives under its own
+/// continuation message is the newest of the Turn, and measures under it.
+#[tokio::test]
+async fn context_usage_measures_the_answer_to_a_compactions_continuation() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,"info":flash(json!({"total":100}))})).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+
+    // A compaction, then OpenCode's own continuation under a later message of its own.
+    let now = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"message.updated","properties":{"sessionID":session,"info":{
+        "id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":now},"tokens":{"total":900}}}})).await;
+    lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    let continued = "msg_fffffffffffffffffffffffffff";
+    lab.control("store", json!({"sessionID":session,"messageID":continued,"text":"Continue if you have next steps"})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Continued.","parentID":continued,"info":flash(json!({"total":300}))})).await;
+    let d = lab.until("the continuation's answer", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    assert_eq!(usage_of(&d), Some((300, 1000, running, false)), "measured under its Turn");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R1 cca110b3: an answer waiting for a catalog read is no longer the newest
+/// once a newer answer to the same input completes, even one that can't be
+/// measured: however late the read comes, it measures nothing.
+#[tokio::test]
+async fn context_usage_an_answer_waiting_for_the_catalog_yields_to_a_newer_one() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |tokens: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens});
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,"info":flash(json!({"total":100}))})).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+
+    // An answer whose model waits for a slow catalog read, then a newer one that can't be measured.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut slow = deepseek["models"]["deepseek-flash"].clone();
+    slow["id"] = json!("deepseek-slow");
+    slow["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-slow"] = slow;
+    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Slow.","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!({"total":-1}))})).await;
+    lab.until("the end", |d| turn(d, &running)["status"] != "inProgress").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running, true)), "the newest answer was unmeasurable: last known");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R2 63d96eab: an answer older than one already seen never measures, even
+/// arriving after it: a newer answer that couldn't be measured is still the
+/// newest, so the older one doesn't wait for a catalog read either.
+#[tokio::test]
+async fn context_usage_an_older_answer_arriving_after_a_newer_one_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Working.","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":100}}})).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+    // A model OpenCode lists now, which this connection's list doesn't have yet.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut later = deepseek["models"]["deepseek-flash"].clone();
+    later["id"] = json!("deepseek-later");
+    later["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-later"] = later;
+    lab.control("mode", json!({"providers":providers})).await;
+    let reads = providers_reads(&lab);
+
+    // The newer answer first, unmeasurable; then the older one, naming that model.
+    let now = chrono::Utc::now().timestamp_millis();
+    let answer = |id: &str, completed: i64, info: Value| {
+        let mut info = info;
+        info["id"] = json!(id);
+        info["sessionID"] = json!(session);
+        info["role"] = json!("assistant");
+        info["parentID"] = json!(running);
+        info["time"] = json!({"created":completed,"completed":completed});
+        json!({"type":"message.updated","properties":{"sessionID":session,"info":info}})
+    };
+    lab.control("event", answer("msg_newer", now + 2000, json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":-1}}))).await;
+    lab.control("event", answer("msg_older", now + 1000, json!({"providerID":"deepseek","modelID":"deepseek-later","tokens":{"total":500}}))).await;
+    unchanged(&lab, "an older answer after a newer one", &Some((100, 1000, running, true))).await;
+    assert_eq!(providers_reads(&lab), reads, "the older answer read no catalog");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// How many times OpenCode's session was read again whole after its stream broke.
+fn resyncs(lab: &Lab) -> usize {
+    journal(lab).iter().filter(|k| *k == "opencode/resynced").count()
+}
+
+/// R3 eb8dff5f: an answer considered once, measured or not, never measures
+/// when the record is read again. One that waited for its model's window
+/// while a new Turn began stays unmeasured after a resync, whose snapshot
+/// holds it with its window now known: the new Turn's usage is last known
+/// until its own answer.
+#[tokio::test]
+async fn context_usage_an_answer_read_again_after_a_resync_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    // A model OpenCode lists that this connection's list doesn't have, read slowly.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut waiting = deepseek["models"]["deepseek-flash"].clone();
+    waiting["id"] = json!("deepseek-wait");
+    waiting["limit"]["context"] = json!(4000);
+    deepseek["models"]["deepseek-wait"] = waiting;
+    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
+    answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-wait","tokens":{"total":500}})).await;
+    // A new Turn while the read is under way: the waiting answer is dropped.
+    let third = lab.send("c3", "next").await.unwrap().turn_id.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    let last_known = Some((100, 1000, first.clone(), true));
+    assert_eq!(usage_of(&lab.detail()), last_known);
+
+    // The stream breaks; the snapshot read again holds the waiting answer, its window known now.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(usage_of(&lab.detail()), last_known, "the answer read again doesn't measure");
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(300)})).await;
+    let d = lab.until("its end", |d| turn(d, &third)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((300, 1000, third, false)), "the new Turn's own answer");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R3 eb8dff5f: of two answers to the same input completing in the same
+/// millisecond, the later ID is the newer. A newer one that can't be
+/// measured makes the usage last known; a newer one that can measures.
+#[tokio::test]
+async fn context_usage_a_newer_answer_in_the_same_millisecond_counts() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "Start").await.unwrap().turn_id.unwrap();
+    let at = chrono::Utc::now().timestamp_millis() + 1000;
+    let answer = |id: &str, tokens: Value| json!({"type":"message.updated","properties":{"sessionID":session,"info":{
+        "id":id,"sessionID":session,"role":"assistant","parentID":running,"time":{"created":at,"completed":at},
+        "providerID":"deepseek","modelID":"deepseek-flash","tokens":tokens}}});
+    lab.control("event", answer("msg_same_a", json!({"total":100}))).await;
+    lab.until("the first answer", |d| d.context_usage.is_some()).await;
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running.clone(), false)));
+    lab.control("event", answer("msg_same_b", json!({"total":-1}))).await;
+    lab.until("the newer, unmeasurable answer", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, running.clone(), true)), "last known");
+    lab.control("event", answer("msg_same_c", json!({"total":200}))).await;
+    lab.until("the newest answer", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    assert_eq!(usage_of(&lab.detail()), Some((200, 1000, running, false)));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R4 46270ae8: a compaction makes last known only what is older than it.
+/// When a resync replays its summary while a newer answer waits for its
+/// model's window, that answer keeps waiting, and measures when the window
+/// comes.
+#[tokio::test]
+async fn context_usage_a_replayed_summary_leaves_a_newer_waiting_answer_waiting() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    // A compaction OpenCode stores, so that a resync reads its summary again.
+    lab.control("reply", json!({"sessionID":session,"text":"Summary.","parentID":"msg_compaction","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","summary":true,"tokens":{"total":900}}})).await;
+    lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+
+    // A newer answer, whose model this connection's list doesn't have, waits for a slow read.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut waiting = deepseek["models"]["deepseek-flash"].clone();
+    waiting["id"] = json!("deepseek-wait");
+    waiting["limit"]["context"] = json!(4000);
+    deepseek["models"]["deepseek-wait"] = waiting;
+    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":3.0}})).await;
+    let (second, _) = answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-wait","tokens":{"total":500}})).await;
+
+    // The stream breaks; the resync replays the summary while the read is under way.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(usage_of(&lab.detail()), Some((100, 1000, first, true)), "the read hasn't come back yet");
+    let d = lab.until("the window read", |d| d.context_usage.as_ref().is_some_and(|u| !u.stale)).await;
+    lab.control("mode", json!({"slow":{}})).await;
+    let measured = Some((500, 4000, second, false));
+    assert_eq!(usage_of(&d), measured, "the newer answer kept waiting, and measured");
+    // Read again, twice more: the summary and the answer replayed change nothing.
+    for _ in 0..2 {
+        let before = resyncs(&lab);
+        lab.control("drop", json!({})).await;
+        for _ in 0..200 {
+            if resyncs(&lab) > before { break; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(resyncs(&lab) > before, "read again");
+        assert_eq!(usage_of(&lab.detail()), measured, "replayed once more");
+    }
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R4 46270ae8, the other side: a compaction newer than an answer waiting
+/// for its model's window drops that answer; the catalog read that follows
+/// measures nothing, and what was measured stays last known. Both come while
+/// no stream is open, so the resync reads the catalog before it returns, and
+/// an event after it is handled only once that read and any write are done.
+#[tokio::test]
+async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalog() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: u64| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(100)).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    // A model this connection's list doesn't have.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut slow = deepseek["models"]["deepseek-flash"].clone();
+    slow["id"] = json!("deepseek-slow");
+    slow["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-slow"] = slow;
+    lab.control("mode", json!({"providers":providers})).await;
+
+    // The stream breaks and can't reopen at once; meanwhile an answer of that model, then a compaction newer than it.
+    let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
+    let subscribed = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/event").count();
+    let (reads, before, opened) = (providers_reads(&lab), resyncs(&lab), subscribed(&lab));
+    lab.control("refuseEvents", json!({"seconds":0.4})).await;
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if subscribed(&lab) > opened { break; }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(subscribed(&lab) > opened, "the stream ended, and opening it again was refused");
+    lab.control("reply", json!({"sessionID":session,"text":"Slow.","idle":false,
+        "info":{"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}}})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Summary.","parentID":"msg_compaction",
+        "info":{"providerID":"deepseek","modelID":"deepseek-flash","summary":true,"tokens":{"total":900}}})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    // Events of the new stream are handled once the resync, its catalog read included, has returned.
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    let handled = statuses(&lab);
+    lab.control("idle", json!({"sessionID":session})).await;
+    for _ in 0..200 {
+        if statuses(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(statuses(&lab) > handled, "an event after the resync");
+    assert!(providers_reads(&lab) > reads, "the catalog was read");
+    let d = lab.detail();
+    assert_eq!(turn(&d, &second)["status"], "completed");
+    assert_eq!(usage_of(&d), Some((100, 1000, first, true)), "the read measured nothing");
+
+    // That resync read both from its snapshot, not from events after it: one more holds as many messages.
+    let held = |lab: &Lab| -> Vec<u64> {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/resynced' ORDER BY seq").unwrap();
+        query.query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["messages"].as_u64().unwrap()).collect()
+    };
+    let again = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > again { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > again, "read once more");
+    let counts = held(&lab);
+    assert_eq!(counts[before], counts[counts.len() - 1], "the first resync's snapshot held the answer and the compaction");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R5 0aa6e52c: an answer to an earlier Turn says nothing of now, however
+/// late it comes, after a resync or a reconnect too. With an earlier Turn
+/// measured and a newer Turn's answer unmeasurable, a late answer to the
+/// earlier Turn, newer than what was measured and older than that answer,
+/// changes nothing; a newer valid answer measures.
+#[tokio::test]
+async fn context_usage_a_late_answer_of_an_earlier_turn_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(json!(100))).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    let last_known = Some((100, 1000, first.clone(), true));
+    let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
+    let newer = lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!(-1))})).await;
+    let d = lab.until("its end", |d| turn(d, &second)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), last_known, "the newer Turn's answer can't be measured");
+
+    // A late answer to the earlier Turn, between what was measured and the
+    // newer Turn's answer, stored as OpenCode would.
+    let measured_at = chrono::DateTime::parse_from_rfc3339(&d.context_usage.as_ref().unwrap().updated_at).unwrap().timestamp_millis();
+    let at = measured_at + 1;
+    assert!(at < newer["time"]["completed"].as_i64().unwrap(), "{at} before the newer answer");
+    let mut late = flash(json!(900));
+    late["time"] = json!({"created":at,"completed":at});
+    // Each answer's record change, the one that measures it or not, is journaled.
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    assert_eq!(usage_of(&lab.detail()), last_known, "a late answer to an earlier Turn measures nothing");
+
+    // A newer valid answer measures.
+    let (third, measured) = answered(&lab, "c3", flash(json!(300))).await;
+    let fresh = Some((300, 1000, third.clone(), false));
+    assert_eq!(measured, fresh);
+
+    // Read again, the late answer among the stored ones: nothing changes.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(usage_of(&lab.detail()), fresh, "after a resync");
+
+    // A lost connection makes it last known; the new connection reads every
+    // stored answer again, with nothing of the old one's memory, and that
+    // changes nothing.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    assert!(ends(old).await);
+    let last_known = Some((300, 1000, third, true));
+    assert_eq!(usage_of(&lab.detail()), last_known);
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), last_known, "after a reconnect");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R5 0aa6e52c, the latest input's side: once a newer Turn is asked, a late
+/// answer to the earlier one, newer than any answer considered, still says
+/// nothing of now. What was measured stays last known until the new
+/// input's own answer.
+#[tokio::test]
+async fn context_usage_a_late_answer_after_a_new_input_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let flash = |total: Value| json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":total}});
+    let (first, measured) = answered(&lab, "c1", flash(json!(100))).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
+    let d = lab.detail();
+    let last_known = Some((100, 1000, first.clone(), true));
+    assert_eq!(usage_of(&d), last_known, "a new input");
+
+    // Newer than the measured answer, the newest considered.
+    let at = chrono::DateTime::parse_from_rfc3339(&d.context_usage.as_ref().unwrap().updated_at).unwrap().timestamp_millis() + 1;
+    let mut late = flash(json!(900));
+    late["time"] = json!({"created":at,"completed":at});
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    assert_eq!(usage_of(&lab.detail()), last_known, "a late answer to the earlier Turn measures nothing");
+
+    // The new input's own answer measures.
+    lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!(300))})).await;
+    let d = lab.until("its end", |d| turn(d, &second)["status"] != "inProgress").await;
+    assert_eq!(usage_of(&d), Some((300, 1000, second, false)));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// What R6's two tests share: a measured first answer, then a compaction
+/// 100 ms after it whose summary OpenCode doesn't store (so a reconnect
+/// can't read it again). The first Turn, what is last known after the
+/// compaction, and a time between the two.
+async fn measured_then_compacted(lab: &Lab) -> (String, Option<(u64, u64, String, bool)>, i64) {
+    let session = lab.session();
+    let flash = json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":100}});
+    let (first, measured) = answered(lab, "c1", flash).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    let measured_at = chrono::DateTime::parse_from_rfc3339(&lab.detail().context_usage.as_ref().unwrap().updated_at)
+        .unwrap().timestamp_millis();
+    let compacted_at = measured_at + 100;
+    lab.control("event", json!({"type":"message.updated","properties":{"sessionID":session,"info":{
+        "id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":compacted_at,"completed":compacted_at},"tokens":{"total":900}}}})).await;
+    let d = lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    let last_known = Some((100, 1000, first.clone(), true));
+    assert_eq!(usage_of(&d), last_known);
+    (first, last_known, measured_at + 50)
+}
+
+/// R6 b6556a88: a compaction is a boundary for answers. An answer to the
+/// latest input that completed before it, never considered, newer than the
+/// last one that was, arrives after it: it measures nothing, then or when a
+/// new connection reads it again. An answer after the compaction measures.
+#[tokio::test]
+async fn context_usage_a_late_answer_from_before_a_compaction_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let (first, last_known, before) = measured_then_compacted(&lab).await;
+
+    // The late answer, stored as OpenCode would; its record change is journaled.
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
+        "providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":900},"time":{"created":before,"completed":before}}})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    assert_eq!(usage_of(&lab.detail()), last_known, "an answer from before the compaction measures nothing");
+
+    // A new connection reads the stored late answer again, without the
+    // summary: the boundary is kept with the Agent, so nothing changes.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    assert!(ends(old).await);
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), last_known, "after a reconnect");
+
+    // An answer after the compaction measures.
+    let flash = json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":300}});
+    let (next, measured) = answered(&lab, "c2", flash).await;
+    assert_eq!(measured, Some((300, 1000, next, false)));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R6 b6556a88, the catalog's side: an answer from before a compaction whose
+/// model this connection's list doesn't have starts no catalog read. The
+/// read is decided once the answer's record change is written, before the
+/// next event is handled; that event is the barrier.
+#[tokio::test]
+async fn context_usage_a_late_answer_from_before_a_compaction_reads_no_catalog() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    // A model OpenCode lists that this connection's list doesn't have.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut unlisted = deepseek["models"]["deepseek-flash"].clone();
+    unlisted["id"] = json!("deepseek-unlisted");
+    unlisted["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-unlisted"] = unlisted;
+    lab.control("mode", json!({"providers":providers})).await;
+    let (first, last_known, before) = measured_then_compacted(&lab).await;
+
+    let reads = providers_reads(&lab);
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
+        "providerID":"deepseek","modelID":"deepseek-unlisted","tokens":{"total":500},"time":{"created":before,"completed":before}}})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    // An event after it is handled once that answer's handling, a catalog read decided or not, is done.
+    let status = statuses(&lab);
+    lab.control("idle", json!({"sessionID":session})).await;
+    for _ in 0..200 {
+        if statuses(&lab) > status { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(statuses(&lab) > status, "an event after the late answer");
+    // A read started then would reach OpenCode at once; none did, and nothing measured.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(providers_reads(&lab), reads, "no catalog read for an answer from before the compaction");
+    assert_eq!(usage_of(&lab.detail()), last_known);
+    lab.ws.close_agent(ID).await.unwrap();
+}

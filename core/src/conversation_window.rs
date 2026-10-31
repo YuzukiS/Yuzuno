@@ -176,10 +176,11 @@ pub(crate) fn item_index(item: &Value) -> Value {
 pub(crate) fn header(detail: &AgentDetail) -> AgentDetail {
     // Exhaustive: adding a record field must also preserve it here.
     let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage,
-        message_receipts, claude_runtime, codex_handoff } = detail;
+        message_receipts, claude_runtime, codex_handoff, opencode_usage_seen } = detail;
     AgentDetail { agent:agent.clone(), turns:Vec::new(), history:history.clone(),
         pending:pending.clone(), artifacts:artifacts.clone(), context_usage:context_usage.clone(),
-        message_receipts:message_receipts.clone(), claude_runtime:claude_runtime.clone(), codex_handoff:codex_handoff.clone() }
+        message_receipts:message_receipts.clone(), claude_runtime:claude_runtime.clone(), codex_handoff:codex_handoff.clone(),
+        opencode_usage_seen:opencode_usage_seen.clone() }
 }
 
 pub fn project(detail: &mut AgentDetail, query: &Query) -> Result<Value, Missing> {
