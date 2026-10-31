@@ -62,7 +62,7 @@ import {
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
-import { touchKeyboard } from "./touch-input";
+import { touchKeyboard, useTouchInput } from "./touch-input";
 import { returnSends, useDevicePreferences } from "./device-preferences";
 import { pressed, shortcutKeys, useShortcutKeys } from "./shortcut-keys";
 import {
@@ -381,6 +381,9 @@ export function App() {
   // The list covers the open view instead of replacing it, so its drafts,
   // reading place and any annotation stay as they were.
   const phone = usePhone();
+  // Touch rows wherever a finger is the pointer, not only where the phone
+  // layout applies: a folding phone opened is wide and still all touch (T-15).
+  const touchInput = useTouchInput();
   // On a phone the shell fits what the on-screen keyboard leaves.
   useEffect(() => (phone ? followVisualViewport() : undefined), [phone]);
   const [phoneList, setPhoneList] = useState(true);
@@ -3062,7 +3065,7 @@ export function App() {
                   loading: conversationInputs.loading, onEarlier: conversationInputs.loadEarlier } : undefined}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
-                touch={phone}
+                touch={phone || touchInput}
               />
               {phone && (
                 <PhoneDockButtons
