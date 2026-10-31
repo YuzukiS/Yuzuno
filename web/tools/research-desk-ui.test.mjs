@@ -156,6 +156,9 @@ test("two desks of different shapes draw through one component, each number sayi
       assert.ok(page.document.querySelector(".research-origin").textContent.includes("From a fixed snapshot"));
       assert.ok(!desk.textContent.match(/verified|checked by/i), "nothing is called verified");
       if (put === benchmark) {
+        // Outside its own list a row is named with its group: two groups may hold rows of one label.
+        assert.ok(desk.textContent.includes("Primary result: O2 · o2 · arm"), "the primary row with its group");
+        assert.ok(desk.textContent.includes("O3 · o3 · arm (Runtime change with the pass)"), "a statement's basis with its group");
         // A plot's scale is for display: the evidence says what the file holds.
         radio(page.document, "Views of this desk", "Evidence & limits").click();
         await until(() => page.document.querySelector(".research-main")?.textContent.includes("-0.061 in the file"), "the value as filed");

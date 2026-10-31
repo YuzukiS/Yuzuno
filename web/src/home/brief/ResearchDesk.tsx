@@ -84,6 +84,9 @@ function useResolved(elementKey: string | undefined, wanted: boolean) {
   };
 }
 
+/** A row named with its group, where the row's own list no longer shows the group: two rows may share a label. */
+const named = (row: Row) => (row.group ? `${row.group} · ${row.label}` : row.label);
+
 function shownOf(number: Num | undefined, at: string, resolved: Resolved | null, loading: boolean): Shown | undefined {
   if (number === undefined) return undefined;
   if (typeof number === "number") return { value: number, origin: "provided" };
@@ -451,10 +454,10 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
   /** A row, part or source by its label, for the reader rather than its id. */
   const labelOf = (id: string) => {
     const row = rowById(id);
-    if (row) return `${row.label} (${plotOf(id)?.title ?? ""})`;
+    if (row) return `${named(row)} (${plotOf(id)?.title ?? ""})`;
     const owner = partOwner(id);
     const part = owner?.parts?.find((p) => p.id === id);
-    if (owner && part) return `${owner.label} · ${part.label}`;
+    if (owner && part) return `${named(owner)} · ${part.label}`;
     return sources.get(id)?.label ?? id;
   };
   const plots = claim?.plots?.length ? desk.plots.filter((plot) => claim.plots!.includes(plot.id)) : desk.plots;
@@ -490,7 +493,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
     const [value, low, high] = (["value", "low", "high"] as const).map((field) => shownOf(primary.estimate[field], `${primary.id}.${field}`, resolved, loading));
     return (
       <section className="research-primary">
-        <span className="research-primary-label">{t.primary}: {primary.label}</span>
+        <span className="research-primary-label">{t.primary}: {named(primary)}</span>
         <p className="research-big">
           <b>{format(scaled(value, primaryPlot?.scale), primaryPlot?.digits, signed)}</b>
           {primaryPlot?.unit && <span> {primaryPlot.unit}</span>}
@@ -542,7 +545,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
             </div>
             {showParts ? (
               <>
-                <p className="research-caption">{selectedHere.label}</p>
+                <p className="research-caption">{named(selectedHere)}</p>
                 <Intervals title={item.title} lines={linesOf(selectedHere.parts!, resolved, loading)} digits={item.digits} scale={item.scale} unit={item.unit} signed={false} />
               </>
             ) : (
@@ -581,7 +584,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
   const evidenceView = row && (
     <>
       <header className="research-claim-head">
-        <h4>{row.label}</h4>
+        <h4>{named(row)}</h4>
         {row.note && <p>{row.note}</p>}
       </header>
       <section className="research-panel">
