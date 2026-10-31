@@ -152,10 +152,19 @@ const MIN_SPLIT = 720;
 /** What the app has to lay out in: its own content box, so a system control
  * area at the side (`--safe-*`, styles.css) is already out of it. Reading the
  * window instead counts that area as usable, and every width below is then
- * too large by it (T-15). */
+ * too large by it (T-15).
+ *
+ * Before the app has been laid out there is no content box to read, and a
+ * width of zero would read as no room for anything; the window is what the
+ * insets are taken from, so it is the estimate to fall back to. */
 function appWidth(app: HTMLElement): number {
   const style = getComputedStyle(app);
-  return app.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+  const side = (value: string) => {
+    const px = parseFloat(value);
+    return Number.isFinite(px) ? px : 0;
+  };
+  const inset = side(style.paddingLeft) + side(style.paddingRight);
+  return (app.clientWidth > 0 ? app.clientWidth : window.innerWidth) - inset;
 }
 
 type Layout = { mode: "side"; width: number; rail: number } | { mode: "full" };
