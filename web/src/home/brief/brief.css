@@ -423,8 +423,11 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+/* The arrow goes before a number column's name, so the name ends where the
+ * numbers do. */
 .brief-body .result-table-scroll th[data-numeric] button {
-  justify-content: flex-end;
+  flex-direction: row-reverse;
+  justify-content: flex-start;
 }
 .brief-body .result-table-scroll .result-sources-cell {
   width: 1%;
@@ -835,7 +838,7 @@ span.brief-ref {
 /* Images lead (T-9): wide enough to read a screenshot, one alone takes the
  * card's width; files keep their narrower column. */
 .brief-attachments:has(> li > .brief-attachment[data-kind="image"]) {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   gap: 18px 20px;
 }
 /* No card around an attachment: an image comes first at its own shape,
@@ -1266,12 +1269,14 @@ p.brief-preview-frame {
   align-content: start;
   gap: 6px 18px;
 }
-/* A kept picture (T-9): beside what it shows, its file details below that. */
+/* A kept picture (T-9): beside what it shows, its file details below that.
+ * Its column is the picture's own width, so the words sit next to it. */
 .brief-attachments-block[data-density="low"] .brief-attachment[data-picture] {
   grid-template-areas:
     "image caption"
     "image chip"
     "image info";
+  grid-template-columns: fit-content(60%) minmax(0, 1fr);
   grid-template-rows: auto auto 1fr;
 }
 .brief-attachments-block[data-density="low"] .brief-attachment[data-picture] > .brief-chip {
@@ -1321,6 +1326,7 @@ p.brief-preview-frame {
       "caption"
       "chip"
       "info";
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: none;
   }
 }
