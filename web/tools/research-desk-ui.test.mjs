@@ -480,6 +480,8 @@ test("a part's numbers show the part's own source and definition, never its row'
     assert.ok(!placebo.includes("Analysis output") && !placebo.includes("Definition:") && !placebo.includes("aaaaaaaaaaaa"), `nothing inherited: ${placebo}`);
     // Through the plot: low dose's arm declares the paper, whose snapshot is gone; it does not borrow the row's available one.
     await view("Claim & interval");
+    // The basis opened the plot on the arm's parts: back to the differences to choose another row.
+    radio(page.document, "Show", "Δ = arm − placebo").click();
     const lowRadio = await until(() => radio(page.document, "Recovery time vs placebo (v2): rows", "Low dose"), "the low dose row");
     lowRadio.click();
     await until(() => checked(page.document, "Recovery time vs placebo (v2): rows")?.textContent.includes("Low dose"), "low dose selected");
