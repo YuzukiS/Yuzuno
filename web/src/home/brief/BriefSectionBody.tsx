@@ -20,6 +20,7 @@ import { BriefChecklist, BriefColumns, BriefFindings, BriefGroup, BriefMetrics, 
 import { BriefBarChart, BriefLineChart, BriefScatterChart } from "./Charts";
 import { BriefLiveRefs } from "./LiveRefs";
 import { BriefAttachments } from "./AttachmentView";
+import { BriefResearchDesk } from "./ResearchDesk";
 import { useBriefDensity } from "../home-density";
 import type { BlockChanges } from "./block-changes";
 import { briefText } from "./brief-text";
@@ -152,6 +153,7 @@ const registry: ComponentRegistry = {
   LiveRefs: part(BriefLiveRefs),
   Attachments: part(BriefAttachments),
   Sources: part(BriefSources),
+  ResearchDesk: part(BriefResearchDesk),
 };
 const noActions = Object.freeze({});
 function BriefSources(props: SourcesProps) {
@@ -228,6 +230,8 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
             : given;
         if (node?.type === "Table" && node.props?.title === undefined)
           return [key, { ...node, props: { ...node.props, title: "Table" } }];
+        // A research desk reads its numbers and keeps its selection by its id (T-9).
+        if (node?.type === "ResearchDesk") return [key, { ...node, props: { ...node.props, elementKey: key } }];
         if (!CHART_TYPES.has(node?.type)) return [key, node];
         return [key, { ...node, props: { title: "Chart", ...node.props, elementKey: key } }];
       }),
