@@ -75,6 +75,11 @@ const scenes = {
   unknown: () => service({ job: run({ status: "unknown", owner: "unknown", ownerCheckedAt: iso(-6 * MIN) }),
     health: { declared: true, path: "/health", state: "ok", httpStatus: 200, checkedAt: iso(-6 * MIN) } }),
 };
+// The service's Job, as the Jobs dialog lists it.
+const jobRecord = { id: "demo-84", name: "Northstar 开发预览", requestId: "r-84", taskRef: "T-14", agentId: "iris", agent: { name: "Iris" },
+  machine: { name: "Core 主机" }, resources: { cpuMillis: 500, memoryMiB: 512, swapMiB: 0 }, reservation: { cpuMillis: 600, memoryMiB: 576, swapMiB: 0 },
+  createdAt: iso(-2 * HOUR), startedAt: iso(-2 * HOUR), finishedAt: null, argv: ["npm", "run", "dev"], cwd: "/fixture", env: {}, cursor: 1,
+  reserved: true, status: "running", reason: "Running with verified cgroup limits", timeoutSeconds: 4 * 3600 };
 const page404 = "<!doctype html><meta charset=utf-8><title>Northstar</title><body style=\"font:16px system-ui;margin:40px;color:#2c3a2e;background:#f6f1e7\"><h1>Northstar 阅读界面</h1><p>开发预览（合成示例页面）</p></body>";
 
 const browser = await launchBrowser();
@@ -139,9 +144,14 @@ async function open({ name, width, height, touch, theme }) {
     if (path === "/api/machines") return route.fulfill({ json: { machines: [{ id: "local", name: "Core 主机", kind: "local", defaultCwd: "/fixture" }] } });
     if (path === "/api/projects/p1/home-editors") return route.fulfill({ json: { version: 0, editorAgentIds: null } });
     if (path.endsWith("/models")) return route.fulfill({ json: { models: [] } });
-    if (path.startsWith("/api/jobs/") && path.endsWith("/logs")) return route.fulfill({ json: { text: "15:30  process owner verified\n15:30  GET /health → 200" } });
+    if (path.startsWith("/api/jobs/") && path.endsWith("/logs")) {
+      // A log as Core pages it (the Jobs view reads its size).
+      const text = "15:30  process owner verified\n15:30  GET /health → 200\n";
+      return route.fulfill({ json: { text, offset: 0, nextOffset: text.length, oldestOffset: 0, totalBytes: text.length, truncated: false } });
+    }
     if (path === "/api/updates") return route.fulfill({ json: unmanagedUpdates });
-    if (path === "/api/jobs") return route.fulfill({ json: noJobs });
+    if (path === "/api/jobs") return route.fulfill({ json: { ...noJobs, jobs: [jobRecord] } });
+    if (path === "/api/jobs/demo-84") return route.fulfill({ json: jobRecord });
     if (path === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
     if (path === "/api/jobs/budget") return route.fulfill({ json: idleJobsBudget });
     if (path === "/api/ci/runs") return route.fulfill({ json: noCiRuns });
@@ -208,11 +218,11 @@ const writes = (state, kind) => state.posts.filter((p) => p.path === `/api/servi
  * testing skips such elements, so a covered dialog would still answer clicks
  * and elementFromPoint; for this reading only, every element takes them.
  */
-const dialogShown = (page, primary) => page.evaluate((primary) => {
+const dialogShown = (page, primary, selector = ".modal.service-control-dialog") => page.evaluate(([primary, selector]) => {
   const probe = Object.assign(document.createElement("style"), { textContent: "*{pointer-events:auto!important}" });
   document.head.append(probe);
   try {
-    const dialog = document.querySelector(".modal.service-control-dialog");
+    const dialog = document.querySelector(selector);
     if (!dialog) return { dialog: false };
     const top = (rect) => document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     const button = [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === primary);
@@ -224,7 +234,7 @@ const dialogShown = (page, primary) => page.evaluate((primary) => {
     return {
       dialog: true,
       middle: !!middle && dialog.contains(middle),
-      button: !!pressed && !!button && button.contains(pressed),
+      button: primary === null || (!!pressed && !!button && button.contains(pressed)),
       corner: !!corner?.classList?.contains("modal-overlay"),
       focus: dialog.contains(document.activeElement),
       locked: document.body.hasAttribute("data-scroll-locked"),
@@ -232,7 +242,21 @@ const dialogShown = (page, primary) => page.evaluate((primary) => {
   } finally {
     probe.remove();
   }
-}, primary);
+}, [primary, selector]);
+/** What is painted on top at an element's middle (pointer events on for the reading only, as above). */
+const onTop = (page, selector) => page.evaluate((selector) => {
+  const probe = Object.assign(document.createElement("style"), { textContent: "*{pointer-events:auto!important}" });
+  document.head.append(probe);
+  try {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !!top && el.contains(top);
+  } finally {
+    probe.remove();
+  }
+}, selector);
 const shown = { dialog: true, middle: true, button: true, corner: true, focus: true, locked: true };
 /** The layers as the page's styles stack them now: the full Portal, a
  * dialog's overlay and box, the handoff strip that must stay above a
@@ -284,6 +308,47 @@ try {
         assert.ok(stack.strip > stack.overlay, `the handoff strip stays above a dialog's overlay: ${JSON.stringify(stack)}`);
         assert.ok(stack.menu > stack.dialog, `the actions menu stays above a dialog: ${JSON.stringify(stack)}`);
         record(`${view.name}: over the full Portal, a dialog's overlay and box, the handoff strip above its overlay, the actions menu above all`, { stack });
+
+        // Jobs from the full Portal: its dialog is what is seen.
+        await lifecycle(page).getByRole("button", { name: "在 Jobs 中查看" }).click();
+        const jobs = page.locator(".modal.jobs-dialog");
+        await jobs.waitFor();
+        const row = jobs.locator("button.job-row[draggable=true]").first();
+        await row.waitFor();
+        assert.deepEqual(await dialogShown(page, null, ".modal.jobs-dialog"), shown, "the Jobs dialog is seen, above the full Portal");
+        await shoot(page, `${view.name}-jobs`);
+        if (!view.touch) {
+          // The Job dragged out of the dialog: the strip and its Agent are seen
+          // on top, and the Agent takes the drag. Let go over the dialog, not
+          // the Agent, so nothing is added to a draft.
+          const from = await row.boundingBox();
+          const start = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+          await page.mouse.move(start.x, start.y);
+          await page.mouse.down();
+          await page.mouse.move(start.x + 24, start.y + 24, { steps: 6 });
+          const chip = page.locator('.handoff-strip .handoff-chip[data-agent-id="iris"]');
+          await chip.waitFor({ timeout: 5_000 });
+          const to = await chip.boundingBox();
+          await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 10 });
+          await page.waitForFunction(() => document.querySelector('.handoff-chip[data-agent-id="iris"]')?.classList.contains("handoff-accept"), null, { timeout: 5_000 })
+            .catch(() => assert.fail("the Agent in the strip never takes the drag (no handoff-accept)"));
+          assert.ok(await onTop(page, ".handoff-strip"), "the handoff strip is seen, above the Jobs dialog and the Portal");
+          assert.ok(await onTop(page, '.handoff-chip[data-agent-id="iris"]'), "the Agent to drop on is seen");
+          await shoot(page, `${view.name}-handoff-strip`);
+          const before = report.writes.length;
+          await page.mouse.move(start.x, start.y, { steps: 10 });
+          await page.mouse.up();
+          await page.locator(".handoff-strip").waitFor({ state: "detached", timeout: 5_000 });
+          // Nothing was handed off: a sent handoff closes Jobs and opens the Agent; nothing reached the fixture.
+          await page.waitForTimeout(300);
+          assert.equal(await jobs.count(), 1, "Jobs stays open: no handoff was sent");
+          assert.equal(report.writes.length, before, "no request was sent for the drag");
+          record(`${view.name}: a Job dragged out of Jobs over the full Portal: the strip and its Agent are seen on top and take the drag`);
+        }
+        await page.keyboard.press("Escape");
+        await jobs.waitFor({ state: "detached" });
+        assert.equal(await page.locator(".portal-panel").count(), 1, "closing Jobs leaves the Portal");
+        record(`${view.name}: Jobs opened from the full Portal is seen above it, and closing it leaves the Portal`);
       }
       await shoot(page, `${view.name}-running`);
 
