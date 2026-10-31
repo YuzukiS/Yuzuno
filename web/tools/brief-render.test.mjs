@@ -407,6 +407,45 @@ test("a Brief image opens in the app's preview, not a browser tab; without Point
   assert.deepEqual(page.errors, []);
 });
 
+test("T-9 a Home picture leads with itself and its caption; its file details fold under Image info; one that fails to load says so", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = {
+    op: "put", key: "shots", kind: "report", title: "Screens",
+    attachments: [{ name: "shot.png", path: "/runs/shot.png" }, { name: "plain.png", path: "/runs/plain.png" }],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["files"] },
+      files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Login screen" }, { name: "plain.png" }] } },
+    } },
+  };
+  const attachments = [attachment("shot.png", "image", "image/png"), attachment("plain.png", "image", "image/png")];
+  window.renderSection(readSection(page, put, { attachments }), PROJECT);
+  const [shot, plain] = document.querySelectorAll('.brief-attachment[data-picture]');
+  // The picture, then what it shows; the file's name, size and snapshot wait, folded.
+  assert.deepEqual([...shot.children].map((el) => el.className.split(" ")[0] || el.tagName.toLowerCase()).slice(0, 3),
+    ["brief-image", "brief-attachment-caption", "brief-image-info"]);
+  assert.equal(shot.querySelector(".brief-attachment-caption").textContent, "Login screen");
+  assert.ok(shot.querySelector("button.brief-image .brief-image-zoom"), "the picture says it opens larger");
+  const info = shot.querySelector("details.brief-image-info");
+  assert.equal(info.open, false);
+  assert.equal(info.querySelector("summary").textContent, "Image info");
+  assert.deepEqual([...info.querySelectorAll("dt")].map((dt) => dt.textContent), ["File", "Size", "Snapshot"]);
+  assert.equal(info.querySelector("dd").textContent, "shot.png");
+  assert.ok(info.querySelector("button.brief-attachment-open"), "Open is one of the details");
+  // Without a caption, the file name stands in.
+  assert.equal(plain.querySelector(".brief-attachment-caption.brief-image-name").textContent, "plain.png");
+  // A picture this Core can't read says so, in words, where it would be.
+  shot.querySelector("button.brief-image img").dispatchEvent(new window.Event("error"));
+  await until(() => shot.querySelector(".brief-image-failed"), "the failure is shown");
+  assert.equal(shot.querySelector(".brief-image-failed").getAttribute("role"), "status");
+  assert.equal(shot.querySelector(".brief-image-failed").textContent, "This image couldn't be loaded from this Core.");
+  assert.equal(shot.querySelector("button.brief-image"), null, "no broken picture to open");
+  assert.ok(shot.querySelector("details.brief-image-info"), "its details stay");
+  assert.ok(plain.querySelector("button.brief-image img"), "the other picture is unaffected");
+  assert.deepEqual(page.errors, []);
+});
+
 test("Mark up on a Brief image tells Point & Fix the image shown and its card, kept at that version (T-177)", async (t) => {
   const page = mount(() => ({ text: "png-bytes" }));
   t.after(page.close);
@@ -759,7 +798,8 @@ test("a table's own words follow the UI language; titles, labels and cells stay 
     } },
   }, { version: 1 });
   const input = () => document.querySelector(".result-filter input");
-  const caption = () => document.querySelector(".result-table-caption span").textContent;
+  // On Home a count shows only when it says something: here, once filtered (T-9).
+  const caption = () => document.querySelector(".result-table-caption span")?.textContent ?? null;
   const type = (value) => {
     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input(), value);
     input().dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -769,16 +809,85 @@ test("a table's own words follow the UI language; titles, labels and cells stay 
   await until(() => input()?.placeholder === "筛选…", "the Chinese filter");
   assert.equal(input().getAttribute("aria-label"), "筛选运行");
   assert.equal(document.querySelector(".result-table-scroll").getAttribute("aria-label"), "运行表格");
-  assert.equal(caption(), "3 / 3 行");
+  assert.equal(caption(), null, "every row is shown: no count");
   assert.deepEqual([...document.querySelectorAll(".result-table-scroll thead th")].map((th) => th.textContent), ["名称", "得分"]);
   type("没有");
   await until(() => document.querySelector(".result-empty")?.textContent === "没有匹配的行，换个筛选词试试。", "no matches, in Chinese");
   assert.equal(caption(), "0 / 3 行");
   type("");
+  await until(() => caption() === null, "every row again: no count");
   window.chooseLanguage("en");
   await until(() => input().placeholder === "Filter…", "back in English");
   assert.equal(input().getAttribute("aria-label"), "Filter 运行");
-  assert.equal(caption(), "3 of 3 rows");
+  type("甲");
+  await until(() => caption() === "1 of 3 rows", "the count in English");
+  window.unmountSection();
+  assert.deepEqual(page.errors, []);
+});
+
+test("T-9 a long Home table shows its first rows and how many; sort and filter read every row; Show all keeps the filter and focus", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  // 14 runs: the lowest and highest scores come after the first eight rows.
+  const rows = Array.from({ length: 14 }, (_, i) => ({ id: `r${i}`, cells: {
+    run: `exp-${String(i + 1).padStart(3, "0")}`, model: i < 12 ? "base" : "large", code: String(i + 1).padStart(3, "0"),
+    score: i === 10 ? 1 : i === 12 ? 99 : 50 + i,
+  } }));
+  const section = readSection(page, {
+    op: "put", key: KEY, kind: "report", title: "Runs",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["runs"] },
+      runs: { type: "Table", props: { id: "runs", title: "Runs",
+        columns: [{ key: "run", label: "Run" }, { key: "model", label: "Model" }, { key: "code", label: "Code" }, { key: "score", label: "Score" }], rows } },
+    } },
+  }, { version: 1 });
+  const shown = () => [...document.querySelectorAll(".result-table-scroll tbody tr")].map((row) => row.cells[0].textContent);
+  const caption = () => document.querySelector(".result-table-caption span")?.textContent ?? null;
+  const more = () => document.querySelector("button.result-table-more");
+  const input = () => document.querySelector(".result-filter input");
+  const type = (value) => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input(), value);
+    input().dispatchEvent(new window.Event("input", { bubbles: true }));
+  };
+  window.renderSection(section, PROJECT, {}, "ws", "high");
+  await until(() => shown().length === 8, "the first eight rows");
+  assert.deepEqual(shown(), rows.slice(0, 8).map((row) => row.cells.run));
+  assert.equal(caption(), "8 of 14 rows", "the rows not shown are counted");
+  assert.equal(more().textContent, "Show all 14 rows");
+  assert.equal(more().getAttribute("aria-expanded"), "false");
+  // Numbers line up only where every value is a number: not run names, not zero-padded codes.
+  assert.deepEqual([...document.querySelectorAll(".result-table-scroll thead th")].map((th) => [th.textContent, th.dataset.numeric === "true"]),
+    [["Run", false], ["Model", false], ["Code", false], ["Score", true]]);
+  assert.equal(document.querySelector(".result-table-scroll tbody td[data-primary]").textContent, "exp-001");
+  // Sorting reads every row, then shows the first ones.
+  [...document.querySelectorAll(".result-table-scroll th button")].find((b) => b.textContent === "Score").click();
+  const sorted = await until(() => document.querySelector(".result-table-scroll th[aria-sort]:not([aria-sort=none])"), "sorted by score");
+  assert.equal(shown()[0], sorted.getAttribute("aria-sort") === "descending" ? "exp-013" : "exp-011", "the extreme from beyond the first eight");
+  assert.equal(shown().length, 8);
+  // So does the filter; twelve match, eight are shown, the button says how many there are.
+  type("base");
+  await until(() => caption() === "8 of 14 rows" && more()?.textContent === "Show all 12 rows", "the filtered rows, folded");
+  more().focus();
+  more().click();
+  await until(() => shown().length === 12, "every matching row");
+  assert.equal(more().textContent, "Show fewer");
+  assert.equal(more().getAttribute("aria-expanded"), "true");
+  assert.equal(document.activeElement, more(), "focus stays on the button");
+  assert.equal(input().value, "base", "the filter is kept");
+  assert.equal(caption(), "12 of 14 rows");
+  more().click();
+  await until(() => shown().length === 8, "folded again");
+  assert.equal(document.activeElement, more(), "focus stays on the button");
+  assert.equal(input().value, "base");
+  // A filter that leaves only a few rows needs no button.
+  type("exp-01");
+  await until(() => shown().length === 5 && !more(), "the five matches, without Show all");
+  assert.deepEqual([...shown()].sort(), ["exp-010", "exp-011", "exp-012", "exp-013", "exp-014"]);
+  // Low density shows fewer rows first.
+  type("");
+  window.renderSection(section, PROJECT, {}, "ws", "low");
+  await until(() => shown().length === 5 && more()?.textContent === "Show all 14 rows", "five rows at low density");
   window.unmountSection();
   assert.deepEqual(page.errors, []);
 });

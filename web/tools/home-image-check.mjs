@@ -191,8 +191,11 @@ try {
     assert.equal(writesNow(), 0, "looking writes nothing");
     check(`${viewport.name}: a Home image opens in the app's preview by keyboard and Escape returns to it; nothing written`);
 
-    // Open, then Mark up: the image shown, marked, into its author's draft.
-    await card("shots").locator(".brief-attachment", { hasText: "screen-after.png" }).locator("button.brief-attachment-open").click();
+    // Open, from the picture's folded details, then Mark up: the image shown, marked, into its author's draft.
+    const after = card("shots").locator(".brief-attachment", { hasText: "screen-after.png" });
+    assert.equal(await after.locator("button.brief-attachment-open").isVisible(), false, "Open waits in the folded image info");
+    await after.locator("details.brief-image-info > summary").click();
+    await after.locator("button.brief-attachment-open").click();
     await dialog.waitFor();
     assert.equal(await dialog.locator("h2").innerText(), "screen-after.png");
     await dialog.getByRole("button", { name: "Mark up" }).click();

@@ -369,7 +369,8 @@ try {
           // An image comes first and keeps its own shape (no letterboxed well).
           images: [...card.querySelectorAll(".brief-attachment")].map((a) => {
             // The shape inside its 1 px outline.
-            const img = a.querySelector("img"), box = img.getBoundingClientRect(), head = a.querySelector("header").getBoundingClientRect();
+            // A kept picture leads with itself, then its caption (T-9); others with a header.
+            const img = a.querySelector("img"), box = img.getBoundingClientRect(), head = a.querySelector("header, .brief-attachment-caption").getBoundingClientRect();
             return { first: box.top < head.top, ratio: +(img.clientWidth / img.clientHeight).toFixed(2), natural: +(img.naturalWidth / img.naturalHeight).toFixed(2) };
           }),
         };
@@ -380,7 +381,7 @@ try {
       assert.deepEqual(frames.groups.filter((g) => g.tone).map((g) => [g.tone, g.tinted]), [["accent", true], ["muted", true]], "tones still tint");
       assert.deepEqual(frames.attachments, [false, false], "no card around an attachment");
       for (const image of frames.images) {
-        assert.ok(image.first, "the image comes before its name");
+        assert.ok(image.first, "the image comes before its caption");
         assert.ok(Math.abs(image.ratio - image.natural) < 0.05, `its own shape: ${JSON.stringify(image)}`);
       }
       await card.scrollIntoViewIfNeeded();
