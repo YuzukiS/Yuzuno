@@ -234,6 +234,20 @@ const dialogShown = (page, primary) => page.evaluate((primary) => {
   }
 }, primary);
 const shown = { dialog: true, middle: true, button: true, corner: true, focus: true, locked: true };
+/** The layers as the page's styles stack them now: the full Portal, a
+ * dialog's overlay and box, the handoff strip that must stay above a
+ * dialog's overlay while a handoff is dragged out of it, and the Agent
+ * actions menu. Read from elements of those classes added for the reading. */
+const layers = (page) => page.evaluate(() => {
+  const z = (className) => {
+    const el = Object.assign(document.createElement("div"), { className });
+    el.style.display = "none";
+    document.body.append(el);
+    try { return Number(getComputedStyle(el).zIndex); } finally { el.remove(); }
+  };
+  return { portal: Number(getComputedStyle(document.querySelector(".portal-panel")).zIndex),
+    overlay: z("modal-overlay"), dialog: z("modal"), strip: z("handoff-strip"), menu: z("agent-actions-menu") };
+});
 
 try {
   for (const view of [
@@ -263,6 +277,14 @@ try {
       }
       assert.deepEqual(await sideways(page), { page: 0, panel: 0, lifecycle: [] });
       record(`${view.name}: running; process, health and this browser apart, each with its own time; the saved width and layout kept`, { running });
+      if (view.full) {
+        // Over a full Portal: a dialog's overlay, then its box, then the handoff strip above them, the actions menu above all.
+        const stack = await layers(page);
+        assert.ok(stack.overlay > stack.portal && stack.dialog > stack.overlay, `a dialog shows above the full Portal: ${JSON.stringify(stack)}`);
+        assert.ok(stack.strip > stack.overlay, `the handoff strip stays above a dialog's overlay: ${JSON.stringify(stack)}`);
+        assert.ok(stack.menu > stack.dialog, `the actions menu stays above a dialog: ${JSON.stringify(stack)}`);
+        record(`${view.name}: over the full Portal, a dialog's overlay and box, the handoff strip above its overlay, the actions menu above all`, { stack });
+      }
       await shoot(page, `${view.name}-running`);
 
       // Stopping: the confirmation, then "stop requested", not stopped.

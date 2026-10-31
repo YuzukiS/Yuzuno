@@ -34,13 +34,18 @@
   box-shadow: none;
 }
 /* While the Portal covers the window, a dialog (a confirmation opened from
-   it, or any other) shows above it, its overlay too. The Portal stays above
-   the conversation's own floating layers (tips, previews, menus). */
+   it, or any other) shows above it, its overlay too; the Portal stays above
+   the conversation's tool tips and message previews (50). A handoff dragged
+   out of a dialog keeps its drop strip above that dialog's overlay
+   (send-to-agent.css), and the Agent actions menu (70) stays above all. */
 :root[data-portal="full"] .modal-overlay {
   z-index: 61;
 }
 :root[data-portal="full"] .modal {
   z-index: 62;
+}
+:root[data-portal="full"] .handoff-strip {
+  z-index: 63;
 }
 
 .portal-grip {
