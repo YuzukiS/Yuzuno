@@ -134,7 +134,7 @@
 }
 .research-claim-card[data-checked] {
   border-color: var(--green);
-  box-shadow: inset 3px 0 0 var(--green);
+  background: color-mix(in srgb, var(--green) 8%, var(--paper));
 }
 .research-claim-title {
   font-weight: 600;
@@ -473,8 +473,8 @@
 }
 .research-drafts blockquote {
   margin: 6px 0;
-  padding: 6px 10px;
-  border-left: 3px solid var(--brief-working);
+  padding: 3px 0 3px 14px;
+  border-left: 2px solid var(--research-line);
 }
 .research-yields {
   display: grid;

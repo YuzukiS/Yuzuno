@@ -522,13 +522,14 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
       {plots.map((item) => {
         const signed = !!item.reference && item.reference.value === 0;
         const selectedHere = item.rows.find((r) => r.id === selection.row);
-        const hasParts = item.rows.some((r) => r.parts?.length);
+        // The toggle belongs to the selected row: a row without parts has nothing to show on its own.
+        const hasParts = !!selectedHere?.parts?.length;
         const showParts = selection.mode === "parts" && selectedHere?.parts?.length;
         return (
           <section key={item.id} className="research-plot">
             <div className="research-plot-head">
               <h5>{item.title}</h5>
-              {hasParts && selectedHere && (
+              {hasParts && (
                 <Radios
                   label={t.showAs}
                   options={["diff", "parts"] as const}

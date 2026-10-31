@@ -279,3 +279,26 @@ test("a plan's links show their live state, and the desk speaks Chinese when ask
     page.close();
   }
 });
+
+test("the parts toggle belongs to the selected row: a row without parts offers none", async () => {
+  // One row without parts beside one with them, as a real desk's primary average can be.
+  const mixed = structuredClone(doseStudy);
+  delete mixed.body.elements.desk.props.plots[0].rows[0].parts;
+  const page = mount(serve(mixed));
+  try {
+    page.window.renderSection(section(page, mixed, 3), PROJECT, "ws-1");
+    const label = "Recovery time vs placebo (v2): rows";
+    await until(() => checked(page.document, label)?.textContent.includes("High dose"), "the primary row, which has parts");
+    assert.equal(radios(page.document, "Show").length, 2, "a row with parts offers both");
+    radio(page.document, label, "Low dose").click();
+    await until(() => checked(page.document, label)?.textContent.includes("Low dose"), "the row without parts selected");
+    assert.equal(radios(page.document, "Show").length, 0, "no toggle that could show nothing");
+    radio(page.document, label, "High dose").click();
+    await until(() => radios(page.document, "Show").length === 2, "the toggle with a row that has parts");
+    radio(page.document, "Show", "Each arm's own mean").click();
+    await until(() => page.document.querySelector(".research-caption")?.textContent === "High dose", "its parts");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
