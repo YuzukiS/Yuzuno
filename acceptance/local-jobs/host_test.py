@@ -237,47 +237,76 @@ class SharedEndTests(unittest.TestCase):
                 self.assertIsNone(outcome['evidence']['deadline'])
 
     def reconcile_now(self, status, state):
-        """Core's own reading of an ended unit, before the collector records it."""
+        """Core's own reading of an ended unit, as it may come before or after the collector's."""
         with patch.object(host,'show',return_value=state), patch.object(host,'classify',return_value=status), \
                 patch.object(host,'pids_evidence',return_value=None), patch.object(host,'settled',side_effect=lambda s,f,r:r):
             return host.reconcile(self.spec, self.folder)
 
-    def test_reconciliation_recording_first_keeps_the_end_time_stop(self):
-        marker = {'kind':'stop','at':1061.0,'deadlineAtUnix':1061}
-        host.atomic(self.folder/'deadline.json', marker)
-        signalled = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':'15'}
-        first = self.reconcile_now('failed', signalled)
-        self.assertEqual(first['evidence']['deadline'], marker)
-        self.assertEqual(first['evidence']['systemd'], signalled)
-        # The collector finishes later: the first outcome, its marker included, stays.
-        late = host.result(self.spec, self.folder, 'failed', {'launch':{}, 'systemd':signalled, 'pids':None, 'deadline':marker}, 'signal')
-        self.assertEqual(late, first)
-        self.assertEqual(host.read(self.folder/'result.json')['evidence']['deadline'], marker)
+    def clean(self, *names):
+        for name in names:
+            (self.folder/name).unlink(missing_ok=True)
 
-    def test_collector_recording_first_keeps_it_when_reconciliation_follows(self):
-        marker = {'kind':'stop','at':1061.0,'deadlineAtUnix':1061,'killedAt':1064.0}
-        host.atomic(self.folder/'deadline.json', marker)
-        state = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':'9'}
-        first = host.result(self.spec, self.folder, 'failed', {'launch':{}, 'systemd':state, 'pids':None,
-                                                                'deadline':host.read(self.folder/'deadline.json')}, 'signal')
-        self.assertEqual(self.reconcile_now('failed', state), first)
-        self.assertEqual(first['evidence']['deadline'], marker)
+    def record_in_order(self, first, status, state, reason):
+        """The two writers of one ended attempt; returns what was kept, checking the second gets it too."""
+        collect = lambda: host.result(self.spec, self.folder, status, {'launch':{}, 'systemd':state, 'pids':None,
+                                                                       'deadline':host.read(self.folder/'deadline.json')}, reason)
+        if first == 'reconcile':
+            kept = self.reconcile_now(status, state)
+            self.assertEqual(collect(), kept, 'the first outcome is kept')
+        else:
+            kept = collect()
+            self.assertEqual(self.reconcile_now(status, state), kept, 'the first outcome is kept')
+        self.assertEqual(host.read(self.folder/'result.json'), kept)
+        return kept
 
-    def test_reconciled_refusal_near_the_end_keeps_not_started(self):
-        marker = {'kind':'notStarted','at':1000.0,'deadlineAtUnix':1059.5}
-        host.atomic(self.folder/'deadline.json', marker)
-        host.atomic(self.folder/'input-changed.json', {'reason':host.NOT_STARTED_NEAR_END})
-        exited = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'exit-code','ExecMainStatus':'78'}
-        outcome = self.reconcile_now('rejected', exited)
-        self.assertEqual((outcome['status'], outcome['reason']), ('rejected', host.NOT_STARTED_NEAR_END))
-        self.assertEqual(outcome['evidence']['deadline'], marker)
+    def test_an_end_time_stop_keeps_its_marker_in_either_order(self):
+        # SIGTERM at the end, and the SIGKILL 3 s later, as the collector records them.
+        for code, killed in (('15', None), ('9', 1064.0)):
+            for first in ('reconcile', 'collector'):
+                with self.subTest(signal=code, first=first):
+                    self.clean('result.json', 'deadline.json')
+                    marker = {'kind':'stop','attempt':self.spec['attempt'],'at':1061.0,'deadlineAtUnix':1061}
+                    if killed:
+                        marker['killedAt'] = killed
+                    host.atomic(self.folder/'deadline.json', marker)
+                    state = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':code}
+                    kept = self.record_in_order(first, 'failed', state, 'signal')
+                    self.assertEqual(kept['evidence']['deadline'], marker)
+                    self.assertEqual(kept['evidence']['systemd'], state)
 
-    def test_an_ending_without_a_marker_keeps_its_evidence_as_it_was(self):
-        state = {'InvocationID':'invocation','MainPID':'0','SubState':'exited','Result':'success','ExecMainStatus':'0'}
-        outcome = self.reconcile_now('succeeded', state)
-        self.assertEqual(set(outcome['evidence']), {'systemd','pids'})
-        (self.folder/'result.json').unlink()
-        collected = host.result(self.spec, self.folder, 'succeeded', {'launch':{}, 'systemd':state, 'pids':None, 'deadline':None}, 'success')
+    def test_a_refusal_near_the_end_keeps_its_marker_in_either_order(self):
+        for first in ('reconcile', 'collector'):
+            with self.subTest(first=first):
+                self.clean('result.json', 'deadline.json', 'input-changed.json')
+                marker = {'kind':'notStarted','attempt':self.spec['attempt'],'at':1000.0,'deadlineAtUnix':1059.5}
+                host.atomic(self.folder/'deadline.json', marker)
+                host.atomic(self.folder/'input-changed.json', {'reason':host.NOT_STARTED_NEAR_END})
+                exited = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'exit-code','ExecMainStatus':'78'}
+                kept = self.record_in_order(first, 'rejected', exited, host.NOT_STARTED_NEAR_END)
+                self.assertEqual((kept['status'], kept['reason']), ('rejected', host.NOT_STARTED_NEAR_END))
+                self.assertEqual(kept['evidence']['deadline'], marker)
+
+    def test_a_marker_never_turns_an_unknown_an_interruption_or_another_attempt_into_an_ending(self):
+        host.atomic(self.folder/'deadline.json', {'kind':'stop','attempt':self.spec['attempt'],'at':1061.0,'deadlineAtUnix':1061})
+        running = {'InvocationID':'invocation','MainPID':'42','SubState':'running','Result':'success'}
+        unknown = host.result(self.spec, self.folder, 'unknown', {'launch':{}, 'systemd':running, 'pids':None},
+                              'No conclusive terminal evidence before collector deadline')
+        self.assertNotIn('deadline', unknown['evidence'])
+        interrupted = host.result(self.spec, self.folder, 'interrupted', {'expectedBootId':'earlier','currentBootId':host.boot_id()},
+                                  'OS boot changed; the previous process cannot continue')
+        self.assertEqual(interrupted['status'], 'interrupted', 'an unknown outcome is not kept over a later one')
+        self.assertNotIn('deadline', interrupted['evidence'])
+        self.clean('result.json')
+        host.atomic(self.folder/'deadline.json', {'kind':'stop','attempt':'an-earlier-attempt','at':1061.0,'deadlineAtUnix':1061})
+        crashed = self.reconcile_now('failed', {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':'15'})
+        self.assertNotIn('deadline', crashed['evidence'])
+
+    def test_without_a_marker_a_crash_stays_a_crash_and_its_evidence_is_unchanged(self):
+        crashed = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':'11'}
+        outcome = self.reconcile_now('failed', crashed)
+        self.assertEqual((outcome['status'], set(outcome['evidence'])), ('failed', {'systemd','pids'}))
+        self.clean('result.json')
+        collected = host.result(self.spec, self.folder, 'failed', {'launch':{}, 'systemd':crashed, 'pids':None, 'deadline':None}, 'signal')
         self.assertEqual(set(collected['evidence']), {'launch','systemd','pids','deadline'})
         self.assertIsNone(collected['evidence']['deadline'])
 

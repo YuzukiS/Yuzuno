@@ -384,24 +384,79 @@ async fn changed_inputs_a_refused_launch_and_other_endings_stop_recovery_with_th
     }
 }
 
+/// This attempt stopped at the end time, as the host recorded it: Core's
+/// reconciliation first, or the collector first (which adds its launch).
+fn ended_at_the_end(s: &Store, job: &Value, first: &str, signal: &str) {
+    let attempt = record(s, job)["attempt"].clone();
+    let mut evidence = json!({"systemd":{"Result":"signal","ExecMainStatus":signal},"pids":null,
+        "deadline":{"kind":"stop","attempt":attempt,"at":1.0}});
+    if first == "collector" {
+        evidence["launch"] = json!({"returnCode":0,"stderr":""});
+    }
+    s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":attempt,"status":"failed",
+        "reason":"signal","evidence":evidence}))
+        .unwrap();
+}
+
 #[tokio::test]
-async fn an_outcome_reconciled_with_its_end_time_marker_reads_as_the_end_time() {
-    // What host.py's reconciliation records too since review 453aa6d2: the
-    // signal or refusal the end time caused, with its marker.
+async fn a_stop_at_the_end_time_ends_recovery_whichever_path_recorded_it() {
+    // SIGTERM at the end, or the SIGKILL 3 s later; the marker decides, not
+    // the clock (the end here is still hours away).
+    for (first, signal) in [("reconcile", "15"), ("reconcile", "9"), ("collector", "15"), ("collector", "9")] {
+        // Budget not used up: the root reaches the end.
+        let lab = lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let root = launch(s, &root);
+        ended_at_the_end(s, &root, first, signal);
+        assert_eq!(jobs(s), 2, "{first}/{signal}: no retry follows");
+        let view = recovery(&lab, &id).await;
+        assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("ended"), Some("lifetime_reached")), "{first}/{signal}");
+        assert_eq!(view["attempts"][0]["outcome"], "lifetime");
+
+        // Budget used up: the third retry reaches the end.
+        let lab = self::lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let mut current = launch(s, &root);
+        for _ in 0..3 {
+            crash(s, &current);
+            current = launch(s, &latest(s, &id));
+        }
+        assert_eq!(current["recoveryOf"]["retry"], 3);
+        ended_at_the_end(s, &current, first, signal);
+        assert_eq!(jobs(s), 5, "{first}/{signal}: nothing follows the third retry");
+        let view = recovery(&lab, &id).await;
+        assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("ended"), Some("lifetime_reached")), "{first}/{signal}");
+        assert_eq!(view["retry"], json!({"scheduled":3,"started":3,"max":3}));
+    }
+}
+
+#[tokio::test]
+async fn without_a_marker_a_signal_is_a_crash_and_an_unknown_outcome_stays_unknown() {
+    // The control: a SIGTERM the end time did not cause is a crash.
     let lab = lab();
     let s = &lab.ws.store;
     let (id, root) = armed(&lab).await;
     let root = launch(s, &root);
-    let attempt = record(s, &root)["attempt"].clone();
-    s.update_job_evidence(root["id"].as_str().unwrap(), json!({"jobId":root["id"],"attempt":attempt,"status":"failed","reason":"signal",
-        "evidence":{"systemd":{"Result":"signal","ExecMainStatus":"15"},"pids":null,"deadline":{"kind":"stop","at":1.0}}}))
-        .unwrap();
-    assert_eq!(jobs(s), 2, "the end time's SIGTERM is not a crash: no retry");
-    let view = recovery(&lab, &id).await;
-    assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("ended"), Some("lifetime_reached")));
-    assert_eq!(view["attempts"][0]["outcome"], "lifetime");
+    ended(s, &root, "failed", "signal", "15");
+    assert_eq!(jobs(s), 3, "a retry is queued");
+    assert_eq!(recovery(&lab, &id).await["lastFailure"]["signal"], "SIGTERM");
 
-    // A retry the worker refused just before exec.
+    // A marker never makes an unconfirmed outcome an ending.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    let attempt = record(s, &root)["attempt"].clone();
+    s.update_job_evidence(root["id"].as_str().unwrap(), json!({"jobId":root["id"],"attempt":attempt,"status":"unknown",
+        "reason":"No conclusive terminal evidence","evidence":{"deadline":{"kind":"stop","attempt":attempt,"at":1.0}}}))
+        .unwrap();
+    let view = recovery(&lab, &id).await;
+    assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("halted"), Some("unknown_outcome")));
+    assert_eq!(view["attempts"][0]["outcome"], "unknown");
+
+    // A retry the worker refused just before exec reads as too little time.
     let lab = self::lab();
     let s = &lab.ws.store;
     let (id, root) = armed(&lab).await;
@@ -413,7 +468,8 @@ async fn an_outcome_reconciled_with_its_end_time_marker_reads_as_the_end_time() 
     assert_eq!(reserved["id"], retry["id"]);
     s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],"status":"rejected",
         "reason":"Not started: less than 60 s remain before the end time this service run shares with its automatic retries; no process was created",
-        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"78"},"pids":null,"deadline":{"kind":"notStarted","at":1.0}}}))
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"78"},"pids":null,
+            "deadline":{"kind":"notStarted","attempt":reserved["attempt"],"at":1.0}}}))
         .unwrap();
     let view = recovery(&lab, &id).await;
     assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("ended"), Some("insufficient_time")));

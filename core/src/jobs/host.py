@@ -33,6 +33,9 @@ TASKS_MAX = 512
 # (deadlineAtUnix). With less than this left it is not started at all: the end
 # would stop it within seconds.
 MIN_REMAINING_SECONDS = 60
+# Outcomes classify() confirms from the unit itself; the only ones an end-time
+# marker may explain.
+ENDED_BY_UNIT = ('succeeded', 'failed', 'cancelled', 'rejected')
 # Declared artifacts: larger files are identified by size and modification
 # time only; JSON is parsed whole only up to its own, smaller bound.
 HASH_LIMIT = 1024 * 1024 * 1024
@@ -774,7 +777,7 @@ def worker(spec, folder):
     # The shared end, again just before exec: activation and the checks above
     # count against it, so what supervise() saw may no longer remain.
     if run_time(spec) is None:
-        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'attempt': spec['attempt'], 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
         atomic(folder / 'input-changed.json', {'reason': NOT_STARTED_NEAR_END})
         return 78
     # Clear ambient manager/Core credentials. The submission stores this exact
@@ -864,10 +867,13 @@ def reports(spec, folder):
 
 def result(spec, folder, status, evidence, reason=None):
     # A service retry's end-time marker (T-14) is written before the stop or
-    # refusal it explains, so it goes with whichever outcome is recorded
-    # first: the collector's or Core's reconciliation's.
+    # refusal it explains, so it goes with whichever confirmed outcome is
+    # recorded first: the collector's or Core's reconciliation's. Only this
+    # attempt's marker, and never on an unknown or interrupted outcome: the
+    # marker explains an ending, it does not make one.
     marker = read(folder / 'deadline.json')
-    if marker and isinstance(evidence, dict) and not evidence.get('deadline'):
+    if (status in ENDED_BY_UNIT and marker and marker.get('attempt') == spec['attempt']
+            and isinstance(evidence, dict) and not evidence.get('deadline')):
         evidence = {**evidence, 'deadline': marker}
     value = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'status': status, 'reason': reason, 'finishedAtUnix': time.time(),
@@ -1128,7 +1134,7 @@ def supervise(spec, folder):
         return result(spec, folder, 'cancelled', {'workerStarted': False}, 'Cancelled before worker launch')
     runtime = run_time(spec)
     if runtime is None:
-        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'attempt': spec['attempt'], 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
         return result(spec, folder, 'rejected', {'workerStarted': False, 'deadline': read(folder / 'deadline.json')},
                       NOT_STARTED_NEAR_END)
     resource = spec['resources']
@@ -1170,7 +1176,7 @@ def supervise(spec, folder):
         if past_end(spec):
             stop = read(folder / 'deadline.json')
             if not stop:
-                atomic(folder / 'deadline.json', {'kind': 'stop', 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+                atomic(folder / 'deadline.json', {'kind': 'stop', 'attempt': spec['attempt'], 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
                 command(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGTERM', spec['unit']], check=False)
             elif stop.get('kind') == 'stop' and not stop.get('killedAt') and time.time() - stop['at'] >= 3:
                 atomic(folder / 'deadline.json', {**stop, 'killedAt': time.time()})

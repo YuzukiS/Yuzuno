@@ -74,6 +74,10 @@ const SIGNALS: [(i64, &str); 9] = [(1, "SIGHUP"), (2, "SIGINT"), (4, "SIGILL"), 
 /// (`runs::auto_retry`): systemd's `Result` and the host's own markers.
 fn end_of(job: &Value) -> End {
     let evidence = &job["result"]["evidence"];
+    // An unconfirmed outcome stays unconfirmed, marker or not.
+    if job["status"] == "unknown" {
+        return End::Halted("unknown_outcome");
+    }
     // The shared end time, recorded by the host before it stopped the run
     // or instead of starting it, decides whatever exit status followed.
     match evidence["deadline"]["kind"].as_str() {
@@ -88,7 +92,6 @@ fn end_of(job: &Value) -> End {
         Some("succeeded") => End::Ended(None),
         Some("cancelled") => End::Halted("cancelled"),
         Some("interrupted") => End::Halted("host_restart"),
-        Some("unknown") => End::Halted("unknown_outcome"),
         Some("rejected") => End::Halted(match evidence["recoveryRefusal"].as_str() {
             Some("core_restart") => "core_restart",
             Some("insufficient_time") => return End::Ended(Some("insufficient_time")),
@@ -147,8 +150,9 @@ fn fix_deadline(recovery: &mut Value, root: &Value) -> bool {
 
 /// After a service Job's evidence is recorded, in that same transaction
 /// (`update_job_evidence`, a refusal before launch, or a cancel before
-/// reservation), with the Job already saved in its new state. Only a Job of the active period's lineage that is
-/// the service's current Job is considered.
+/// reservation), with the Job already saved in its new state. Only a Job of
+/// the active period's lineage that is the service's current Job is
+/// considered.
 pub(super) fn after_outcome(store: &Store, tx: &Connection, job: &mut Value) -> Result<()> {
     let Some(link) = link_of(tx, job["id"].as_str().unwrap_or_default())? else {
         return Ok(());
@@ -365,7 +369,7 @@ pub(super) fn superseded(tx: &Connection, service: &str, job: &Value) -> Result<
 
 fn outcome(job: &Value) -> Value {
     let evidence = &job["result"]["evidence"];
-    if evidence["deadline"]["kind"] == "stop" {
+    if evidence["deadline"]["kind"] == "stop" && job["status"] != "unknown" {
         return json!("lifetime");
     }
     match job["status"].as_str() {
