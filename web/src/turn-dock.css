@@ -299,6 +299,26 @@
     padding-inline: 8px;
   }
 }
+/* Touch reads the dock, it does not scroll by it. A finger landing on the
+   thin bars used to press a button -- measured: the bar took the touch -- so
+   the conversation did not move under it. The bars only show where the Turns
+   are now, and the dock's own frame lets a touch through; the numbered Turns
+   and its other controls keep theirs, which is what a finger aims at. A mouse
+   is unchanged: the bars stay clickable for it (T-15). */
+@media (hover: none) and (pointer: coarse) {
+  .turn-dock,
+  .turn-dock-list,
+  .turn-dock-list > li {
+    pointer-events: none;
+  }
+  .turn-dock button,
+  .turn-dock a {
+    pointer-events: auto;
+  }
+  .turn-dock-stop:not(:has(.turn-dock-chip)) {
+    pointer-events: none;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .turn-dock-chip,
   .turn-dock-bar,
