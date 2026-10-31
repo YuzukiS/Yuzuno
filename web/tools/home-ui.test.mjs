@@ -2388,3 +2388,43 @@ test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and
     p.close();
   }
 });
+
+test("T-9 a fence a Markdown block leaves open before a research desk ends with its block: the desk's claims, numbers and sources copy outside code", async () => {
+  const home = withDesk();
+  const report = home.projects[0].brief.sections.at(-1);
+  report.body = { root: "body", elements: { ...doseStudy.body.elements,
+    body: { type: "BriefBody", props: {}, children: ["intro", "desk"] }, intro: mdBlock("Raw notes:\n\n```text\nraw log line") } };
+  const reads = [];
+  let p = await mount({ home, research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  let copied;
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const texts = [];
+    clipboard(p, async (text) => { texts.push(text); });
+    const before = reads.length;
+    p.button("Copy report", card(p, "p-app", "dose-study")).click();
+    await waitFor(() => texts.length === 1, "copied");
+    copied = texts[0];
+    const copyReads = reads.slice(before);
+    assert.ok(copyReads.length >= 1 && copyReads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(copyReads));
+  } finally {
+    p.close();
+  }
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown"), "the pasted copy");
+    const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
+    const code = [...rendered.querySelectorAll("pre")].map((pre) => pre.textContent);
+    assert.deepEqual(code, ["raw log line\n"], "only the notes' own line is code");
+    const headings = [...rendered.querySelectorAll("h4")].map((h) => h.textContent);
+    for (const part of ["Claims", "Sources"]) assert.ok(headings.includes(part), `the desk's ${part} outside code; got ${JSON.stringify(headings)}`);
+    const cells = [...rendered.querySelectorAll("td")].map((td) => td.textContent);
+    assert.ok(cells.includes("-2.04") && cells.includes("snapshot results.json"), `the read number in the desk's table; got ${JSON.stringify(cells)}`);
+    assert.ok([...rendered.querySelectorAll("li")].some((li) => li.textContent.startsWith("Analysis output")), "the desk's source as a list item");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
