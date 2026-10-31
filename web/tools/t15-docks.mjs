@@ -79,16 +79,23 @@ const browser = await launchBrowser();
 const errors = [];
 
 for (const view of VIEWS) {
+  // T15_POINTER=fine asks for a mouse instead: hover:hover and pointer:fine,
+  // which is what a wide window with a trackpad reports.
+  const coarse = (process.env.T15_POINTER || "coarse") !== "fine";
   const context = await browser.newContext({
-    viewport: { width: view.width, height: view.height }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
+    viewport: { width: view.width, height: view.height }, hasTouch: coarse, isMobile: coarse, reducedMotion: "reduce" });
   const page = await context.newPage();
-  await page.addInitScript(() => {
+  await page.addInitScript((right) => {
     window.EventSource = class { close() {} };
+    // What a side system control area gives the page, without a device.
+    if (right)
+      addEventListener("DOMContentLoaded", () =>
+        document.documentElement.style.setProperty("--safe-right", `${right}px`));
     // Set once, so a reload for another theme keeps what the run chose.
     if (!localStorage.getItem("yuzuno.appearance"))
       localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
     localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-  });
+  }, Number(process.env.T15_INSET_RIGHT || 0));
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") return route.fulfill({ json: { ok: true } });
@@ -121,17 +128,37 @@ for (const view of VIEWS) {
       return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top),
         bottom: Math.round(r.bottom), empty: el.children.length === 0 };
     };
-    const work = box(".work-dock"), turn = box(".turn-dock");
+    const work = box(".work-dock"), turn = box(".turn-dock"), app = box(".app"), main = box(".main-panel");
     const composer = box(".composer") || box("form.composer") || box(".conversation-composer");
     const inner = box(".conversation-inner"), body = box(".conversation-body");
     const style = inner && getComputedStyle(document.querySelector(".conversation-inner"));
     const gap = (dock) => (dock && composer ? composer.top - dock.bottom : null);
-    return { work, turn, composer, body, inner,
+    return { work, turn, composer, body, inner, app, main,
       gutter: style?.getPropertyValue("--gutter").trim(), column: style?.getPropertyValue("--column").trim(),
       workGap: gap(work), turnGap: gap(turn),
       nodes: [...document.querySelectorAll(".work-dock-item, .work-dock-heading, .work-dock-more")]
         .map((el) => { const r = el.getBoundingClientRect(); return Math.round(Math.min(r.width, r.height)); })
         .filter((n) => n > 0),
+      pointer: { coarse: matchMedia("(pointer: coarse)").matches, hover: matchMedia("(hover: hover)").matches },
+      // Each Turn row as drawn, and whether anything above it cuts the row
+      // short: a 44px row that its container clips is not a 44px target.
+      rows: [...document.querySelectorAll(".turn-dock-stop")].map((el) => {
+        const r = el.getBoundingClientRect();
+        const row = el.parentElement;
+        const rowRect = row?.getBoundingClientRect();
+        let clip = null;
+        for (let p = row; p; p = p.parentElement) {
+          const o = getComputedStyle(p).overflow;
+          if (o !== "visible") {
+            const pr = p.getBoundingClientRect();
+            const cut = Math.max(0, pr.top - r.top) + Math.max(0, r.bottom - pr.bottom);
+            if (cut > 0) clip = { by: p.className?.toString?.().slice(0, 24), cut: Math.round(cut) };
+            break;
+          }
+        }
+        return { kind: el.querySelector(".turn-dock-chip") ? "number" : "bar",
+          h: Math.round(r.height), rowH: Math.round(rowRect?.height || 0), clip };
+      }),
       // Every clickable thing smaller than 44px in its short side, named.
       small: [...document.querySelectorAll("button, a[href], [role=button], input, select, summary")]
         .map((el) => { const r = el.getBoundingClientRect();
@@ -147,9 +174,17 @@ for (const view of VIEWS) {
   console.log(`  turn-dock ${t ? `${t.w}x${t.h} top ${t.top} bottom ${t.bottom}` : "absent"}`);
   console.log(`  composer  ${c ? `top ${c.top} h ${c.h}` : "absent"}`);
   console.log(`  gap work→composer ${out.workGap}   turn→composer ${out.turnGap}`);
+  console.log(`  app ${out.app?.w}  main-panel ${out.main?.w}`);
   console.log(`  body ${out.body?.w} → reading ${out.inner?.w}  (spend ${out.body && out.inner ? out.body.w - out.inner.w : "?"})`);
   console.log(`  --gutter '${out.gutter}'  --column '${out.column}'`);
   console.log(`  smallest dock node ${out.nodes.length ? Math.min(...out.nodes) : "n/a"}px  (${out.nodes.length} nodes)`);
+  {
+    const n = out.rows.filter((r) => r.kind === "number"), b = out.rows.filter((r) => r.kind === "bar");
+    const hs = (a) => [...new Set(a.map((r) => r.h))].join("/") || "-";
+    const clipped = out.rows.filter((r) => r.clip);
+    console.log(`  pointer coarse=${out.pointer.coarse} hover=${out.pointer.hover}`);
+    console.log(`  rows: ${n.length} number @${hs(n)}px, ${b.length} bar @${hs(b)}px; clipped ${clipped.length}${clipped.length ? ` (${clipped[0].clip.by} cuts ${clipped[0].clip.cut}px)` : ""}`);
+  }
   console.log(`  under 44px: ${out.small.map((e) => `${e.cls} ${e.w}x${e.h}`).join(" | ") || "none"}`);
   if (process.env.T15_SHOT) {
     const dir = resolve(process.env.T15_SHOT);
