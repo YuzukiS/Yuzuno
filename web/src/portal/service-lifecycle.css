@@ -1,0 +1,75 @@
+.portal-lifecycle { padding: 16px 18px 12px; max-height: min(56vh, 500px); overflow: auto; }
+.portal-lifecycle .service-lifecycle-head { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; }
+.service-lifecycle-mark { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; color: var(--success-ink,var(--green)); background: color-mix(in srgb,var(--green) 10%,var(--paper)); }
+.service-lifecycle-mark.state-unknown,.service-lifecycle-mark.state-cancelling { color: var(--warning-ink,var(--ink)); background: var(--accent-wash); }
+.service-lifecycle-heading { flex: 1; min-width: 0; }
+.service-lifecycle-heading h3 { font-size: 0.92rem; font-weight: 650; margin: 0 0 4px; line-height: 1.4; }
+.service-lifecycle-heading p { color: var(--text-secondary,var(--muted)); margin: 0; font-size: 0.73rem; line-height: 1.5; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.service-lifecycle-deadline { display: flex; align-items: flex-start; gap: 6px; margin-left: auto; flex: none; max-width: 38%; }
+.service-lifecycle-deadline svg { color: var(--muted); margin-top: 2px; flex: none; }
+.service-lifecycle-deadline small,.service-lifecycle-deadline strong { display: block; }
+.service-lifecycle-deadline small { font-size: 0.65rem; color: var(--text-secondary,var(--muted)); }
+.service-lifecycle-deadline strong { font-size: 0.75rem; font-weight: 550; overflow-wrap: anywhere; }
+.service-intent { display: flex; align-items: center; gap: 7px; padding: 8px 10px; margin: 0 0 12px; border-radius: 8px; background: var(--surface-soft); font-size: 0.73rem; }
+.service-intent svg { flex: none; color: var(--success-ink,var(--green)); }
+.portal-lifecycle .service-lifecycle-facts { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.portal-lifecycle .portal-fact { display: flex; align-items: flex-start; gap: 7px; border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 0 10px 0 0; background: transparent; }
+.portal-lifecycle .portal-fact:last-child { border: 0; padding-right: 0; }
+.service-fact-icon { display: grid; place-items: center; flex: none; width: 23px; height: 23px; border-radius: 7px; background: var(--surface-soft); color: var(--text-secondary,var(--muted)); }
+.portal-lifecycle .portal-fact>div { min-width: 0; }
+.portal-lifecycle .portal-fact small { font-size: 0.65rem; }
+.portal-lifecycle .portal-fact b { font-size: 0.76rem; display: block; margin: 2px 0; }
+.portal-lifecycle .portal-fact em { font-size: 0.63rem; line-height: 1.6; }
+.service-lifecycle-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; margin-top: 13px; }
+.service-manual { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary,var(--muted)); font-size: 0.65rem; margin-right: auto; }
+.service-manual svg { flex: none; }
+.service-lifecycle-actions button { font-size: 0.68rem; padding: 5px 8px; min-height: 32px; }
+.service-lifecycle-actions .service-stop { color: var(--error-ink); }
+.service-lifecycle-details { margin-top: 9px; font-size: 0.68rem; }
+.service-lifecycle-details summary { color: var(--text-secondary,var(--muted)); cursor: pointer; width: max-content; }
+.service-lifecycle-details dl { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 7px 12px; padding: 11px 12px; border-radius: 9px; background: var(--surface-soft); margin: 10px 0; }
+.service-lifecycle-details dt { color: var(--text-secondary,var(--muted)); }
+.service-lifecycle-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.service-lifecycle-details dd small { display: block; color: var(--text-secondary,var(--muted)); margin-top: 3px; }
+.service-action-note { font-size: 0.74rem; line-height: 1.6; color: var(--text-secondary,var(--muted)); margin: 9px 0 0; }
+.service-action-note p { margin: 0 0 7px; }
+.service-read-failed { font-size: 0.74rem; }
+.modal.service-control-dialog { width: min(520px,calc(100vw - 28px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.service-control-name { font-weight: 600; margin: 0 0 5px; }
+.service-control-reference { color: var(--text-secondary,var(--muted)); font-size: 0.72rem; overflow-wrap: anywhere; margin: 0 0 14px; }
+.service-control-dialog fieldset { margin: 16px 0; padding: 0; border: 0; }
+.service-control-dialog legend { font-size: 0.78rem; font-weight: 550; margin-bottom: 8px; }
+.service-lifetime-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.service-lifetime-options label { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; font-size: 0.78rem; cursor: pointer; }
+.service-lifetime-options label:has(input:checked) { border-color: var(--accent-ink); background: var(--accent-wash); }
+.service-lifetime-options input { accent-color: var(--accent-ink); }
+.service-control-rule { display: flex; gap: 9px; padding: 12px; background: var(--surface-soft); border-radius: 10px; }
+.service-control-rule p { margin: 0; font-size: 0.76rem; line-height: 1.6; }
+.service-control-rule svg { margin-top: 2px; flex: none; }
+.service-control-dialog .modal-actions { flex-wrap: wrap; }
+.services-lifecycle-manage { margin-top: 9px; }
+.services-lifecycle-dialog .portal-lifecycle { border: 0; padding: 0; max-height: none; }
+@media(max-width:1000px) {
+  .service-lifecycle-head { flex-wrap: wrap; }
+  .service-lifecycle-deadline { flex-basis: 100%; margin-left: 44px; max-width: none; }
+  .service-lifecycle-deadline>span { display: flex; align-items: center; gap: 8px; }
+}
+@media(max-width:720px) {
+  .portal-lifecycle { padding: 13px 13px 10px; max-height: 58dvh; }
+  .portal-lifecycle .service-lifecycle-facts { grid-template-columns: minmax(0,1fr); gap: 9px; }
+  .portal-lifecycle .portal-fact { border: 0; padding: 0; align-items: center; }
+  .portal-lifecycle .portal-fact>div { display: grid; grid-template-columns: 95px minmax(0,1fr); gap: 1px 8px; flex: 1; }
+  .portal-lifecycle .portal-fact small { grid-column: 1; grid-row: 1 / 4; align-self: center; }
+  .portal-lifecycle .portal-fact b,.portal-lifecycle .portal-fact em { grid-column: 2; }
+  .service-lifecycle-head h3 { font-size: 0.87rem; }
+  .service-lifecycle-actions { gap: 4px; }
+  .service-manual { flex-basis: 100%; margin-bottom: 2px; }
+  .service-lifecycle-actions button { flex: 1 1 auto; }
+  .service-lifecycle-details dl { grid-template-columns: 70px minmax(0,1fr); }
+}
+/* What stands in the page's place while its run isn't live (Portal). */
+.portal-idle strong { display: block; color: var(--ink); margin-bottom: 6px; }
+.portal-idle p { margin: 0 0 12px; }
+.portal-idle p:last-child { margin-bottom: 0; }
+.portal-idle .primary-button { display: inline-flex; align-items: center; gap: 6px; }
+.portal-idle .inline-error { margin-top: 10px; }

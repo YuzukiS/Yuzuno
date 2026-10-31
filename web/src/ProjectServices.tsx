@@ -9,10 +9,15 @@ import {
   Trash2,
 } from "lucide-react";
 import { api, errorText, post, remove } from "./api";
+import { Modal } from "./components";
 import { strings, useStrings } from "./i18n";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./project-services.css";
 import { OpenChoice } from "./portal/OpenChoice";
+import type { ServiceLifecycleInfo } from "./portal/service-lifecycle";
+import type { ServiceBrowserReach } from "./portal/service-observation";
+import { ServiceLifecycle } from "./portal/ServiceLifecycle";
+import { serviceText } from "./portal/service-text";
 
 /** What Core has open for a service now (core/src/services.rs, Access). */
 export type ServiceConnection = {
@@ -41,6 +46,15 @@ export type ServiceJob = {
   owner: "verified" | "otherProcess" | "notListening" | "unknown";
   earlierJobIds: string[];
   canStop: boolean;
+  reason?: string | null;
+  resultReason?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  timeoutSeconds?: number | null;
+  reserved?: boolean | null;
+  cancelRequestedAt?: string | null;
+  attempt?: string | null;
+  ownerCheckedAt?: string | null;
 };
 export type ServiceHealth =
   | { declared: false }
@@ -58,14 +72,23 @@ export type ProjectService = {
   /** Undefined from a Core without service Jobs; null for a service no Yuzuno Job runs. */
   job?: ServiceJob | null;
   health?: ServiceHealth;
+  /** Absent on older Cores; null for a service not managed by a Job. */
+  lifecycle?: ServiceLifecycleInfo | null;
 };
 type Opened = ProjectService & { proof?: { challenge: string; answer: string } };
 /** Whether this browser reaches Core's port for the service (checked here,
  * never assumed from Core's side). */
 type Reach =
-  | { kind: "checking" }
-  | { kind: "proven"; url: string }
-  | { kind: "unproven"; port: number };
+  | { kind: "checking"; jobId: string | null }
+  | { kind: "proven"; url: string; checkedAt: string; jobId: string | null }
+  | { kind: "unproven"; port: number; checkedAt: string; jobId: string | null };
+
+/** This browser's check, as the service panel shows it. */
+const browserReachOf = (value: Reach | undefined): ServiceBrowserReach | undefined =>
+  !value ? undefined
+    : value.kind === "checking" ? { state: "checking", jobId: value.jobId }
+    : value.kind === "proven" ? { state: "proven", url: value.url, checkedAt: value.checkedAt, jobId: value.jobId }
+    : { state: "unproven", checkedAt: value.checkedAt, jobId: value.jobId };
 
 /** Whether this page was opened on a loopback address, the desktop app's own
  * (`localhost`, `tauri.localhost`) included. Only there can the note about an
@@ -90,7 +113,7 @@ const text = strings({
   } as Record<ServiceConnection["state"], string>,
   title: "Services",
   add: "Add",
-  hint: "Web services that already run on this project’s machines, such as a dev server, Jupyter or TensorBoard. Agents can add them too. Opening one connects to it on the machine; Yuzuno never starts or stops a service.",
+  hint: "Web services for this project. Opening a preview only connects to its page. A service managed by a Yuzuno Job has separate run controls; external services are not started or stopped here.",
   loading: "Loading services…",
   empty: "No services yet.",
   coreHost: "Core host",
@@ -129,7 +152,7 @@ const text = strings({
   },
   title: "服务",
   add: "添加",
-  hint: "已在此项目机器上运行的 Web 服务，例如开发服务器、Jupyter 或 TensorBoard。Agent 也可以添加。打开时会在该机器上连接它；Yuzuno 从不启动或停止服务。",
+  hint: "此项目的 Web 服务。打开预览只连接页面；由 Yuzuno Job 管理的服务另有运行控件，外部服务不会在这里启动或停止。",
   loading: "正在加载服务…",
   empty: "还没有服务。",
   coreHost: "Core 主机",
@@ -190,39 +213,53 @@ export function ProjectServices({
   onOpened?: () => void;
 }) {
   const t = useStrings(text);
+  const lifecycleText = useStrings(serviceText);
   const [services, setServices] = useState<ProjectService[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [reach, setReach] = useState<Record<string, Reach>>({});
+  const [readFailed, setReadFailed] = useState(false);
+  const [managing, setManaging] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", machineId: "local", port: "", path: "/" });
   const mounted = useRef(true);
+  const currentProject = useRef(projectId);
+  currentProject.current = projectId;
+  const readSequence = useRef(0);
   const path = `/projects/${encodeURIComponent(projectId)}/services`;
   const load = useCallback(async () => {
+    const sequence = ++readSequence.current;
     try {
       const page = await api<{ services: ProjectService[] }>(path);
-      if (!mounted.current) return;
+      if (!mounted.current || currentProject.current !== projectId || sequence !== readSequence.current) return;
       setServices(page.services);
       setError("");
+      setReadFailed(false);
       // A way that closed or changed port is no longer proven.
       setReach((current) =>
         Object.fromEntries(
           Object.entries(current).filter(([id, value]) => {
-            const port = page.services.find((s) => s.id === id)?.connection.localPort;
-            return port !== undefined && (value.kind !== "unproven" || value.port === port) &&
+            const current = page.services.find((s) => s.id === id);
+            const port = current?.connection.localPort;
+            return port !== undefined && value.jobId === (current?.job?.jobId ?? null) && (value.kind !== "unproven" || value.port === port) &&
               (value.kind !== "proven" || value.url.startsWith(`http://127.0.0.1:${port}/`));
           }),
         ),
       );
     } catch (e) {
-      if (mounted.current) setError(errorText(e));
+      if (mounted.current && currentProject.current === projectId && sequence === readSequence.current) {
+        setError(errorText(e));
+        setReadFailed(true);
+      }
+      throw e;
     }
-  }, [path]);
+  }, [path, projectId]);
   useEffect(() => {
     mounted.current = true;
-    void load();
+    setServices(null); setManaging(null); setReach({});
+    void load().catch(() => {});
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") void load();
+      if (document.visibilityState !== "hidden") void load().catch(() => {});
     }, 5000);
     return () => {
       mounted.current = false;
@@ -236,29 +273,37 @@ export function ProjectServices({
     try {
       await action();
     } catch (e) {
-      if (mounted.current) setError(errorText(e));
+      if (mounted.current && currentProject.current === projectId) setError(errorText(e));
     } finally {
-      if (mounted.current) setBusy("");
-      void load();
+      if (mounted.current && currentProject.current === projectId) {
+        setBusy("");
+        void load().catch(() => {});
+      }
     }
   };
   const open = (service: ProjectService) =>
     act(service.id, async () => {
       const opened = await post<Opened>(`/services/${encodeURIComponent(service.id)}/open`);
+      if (!mounted.current || currentProject.current !== projectId) return;
       const port = opened.connection.localPort;
-      setServices((current) => current?.map((s) => (s.id === opened.id ? { ...s, connection: opened.connection } : s)) ?? null);
+      const { proof: _proof, ...view } = opened;
+      setServices((current) => current?.map((s) => (s.id === opened.id ? view : s)) ?? null);
       if (port === undefined || !opened.proof) return;
-      setReach((current) => ({ ...current, [service.id]: { kind: "checking" } }));
+      const jobId = opened.job?.jobId ?? null;
+      setReach((current) => ({ ...current, [service.id]: { kind: "checking", jobId } }));
       const proven = await proves(port, opened.proof);
-      if (!mounted.current) return;
+      if (!mounted.current || currentProject.current !== projectId) return;
+      const checkedAt = new Date().toISOString();
       setReach((current) => ({
         ...current,
-        [service.id]: proven ? { kind: "proven", url: `http://127.0.0.1:${port}${service.path}` } : { kind: "unproven", port },
+        [service.id]: proven ? { kind: "proven", url: `http://127.0.0.1:${port}${service.path}`, checkedAt, jobId } : { kind: "unproven", port, checkedAt, jobId },
       }));
     });
   const machineName = (id: string) =>
     machines.find((m) => m.id === id)?.name || (id === "local" ? t.coreHost : id);
   const sshOrLocal = machines.filter((m) => m.kind === "local" || m.kind === "ssh");
+  const managed = services?.find((service) => service.id === managing) ?? null;
+  const managedReach = managed ? reach[managed.id] : undefined;
   return (
     <section className="services-panel" aria-label={t.title}>
       <header>
@@ -351,10 +396,10 @@ export function ProjectServices({
                   <LoaderCircle size={13} className="spin" /> {t.checking(c.localPort)}
                 </p>
               )}
-              {shown?.kind === "proven" && c.state === "available" && (
+              {shown?.kind === "proven" && shown.jobId === (service.job?.jobId ?? null) && c.state === "available" && (
                 <div className="services-open">
                   <OpenChoice
-                    target={() => ({ kind: "service", service, url: shown.url, where: t.where(machineName(service.machineId), service.port) })}
+                    target={() => ({ kind: "service", service, url: shown.url, browserCheckedAt: shown.checkedAt, browserJobId: shown.jobId, where: t.where(machineName(service.machineId), service.port) })}
                     onOpened={onOpened}
                   />
                   <small>{shown.url.replace(/^http:\/\//, "")}</small>
@@ -365,10 +410,14 @@ export function ProjectServices({
                   {loopbackPage() ? t.unreachedHere(shown.port) : t.unreachedRemote(shown.port)}
                 </p>
               )}
+              {service.lifecycle && service.job && <button type="button" className="quiet-button services-lifecycle-manage" onClick={() => setManaging(service.id)}><Server size={13} />{lifecycleText.manage}</button>}
             </li>
           );
         })}
       </ul>
+      <Modal open={managing !== null} onOpenChange={(value) => { if (!value) setManaging(null); }} title={managed?.name || lifecycleText.title} className="services-lifecycle-dialog">
+        {managed?.lifecycle && managed.job ? <ServiceLifecycle key={managed.id} service={managed} disabled={disabled} readFailed={readFailed} onRefresh={load} previewUrl={managed.connection.localPort !== undefined ? `http://127.0.0.1:${managed.connection.localPort}${managed.path}` : null} browserReach={browserReachOf(managedReach)} /> : <p className="services-hint">{lifecycleText.closedView}</p>}
+      </Modal>
       {adding && (
         <form
           className="services-form"
