@@ -18,6 +18,7 @@ fn the_metadata_row_is_the_record_without_turns_or_receipts() {
     full.message_receipts = serde_json::from_value(json!([{"input":{"clientMessageId":"m","text":"hi"},"status":"accepted","turnId":"t"}])).unwrap();
     full.claude_runtime = Some(Default::default());
     full.codex_handoff = Some(crate::model::CodexHandoff { writer_conflict_at: Some("then".into()), ..Default::default() });
+    full.opencode_usage_seen = Some(crate::model::UsageSeen { session: "ses_a".into(), at: 1, answer: "msg_a".into() });
     for detail in [&sparse, &full] {
         let row = MetaBody::of(detail).unwrap().row(&detail.agent).unwrap();
         let mut expected = serde_json::to_value(detail).unwrap();
@@ -27,6 +28,7 @@ fn the_metadata_row_is_the_record_without_turns_or_receipts() {
         let read = from_meta(&row).unwrap();
         assert!(read.turns.is_empty() && read.message_receipts.is_empty());
         assert_eq!(serde_json::to_value(&read.agent).unwrap(), serde_json::to_value(&detail.agent).unwrap());
+        assert_eq!(read.opencode_usage_seen, detail.opencode_usage_seen);
     }
 }
 

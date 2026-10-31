@@ -75,7 +75,7 @@
 //! it starts but not found again after the event stream breaks; no remote
 //! machines.
 use crate::{
-    model::{ensure_agent_open, now, AgentDetail, PendingRequest},
+    model::{ensure_agent_open, now, AgentDetail, ContextUsage, PendingRequest, UsageSeen},
     opencode::{self, CommandChoice, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
@@ -85,7 +85,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::{atomic::Ordering, Arc, Weak},
     time::Duration,
@@ -111,11 +111,80 @@ pub(crate) struct Connection {
     /// of them) on this process, by ID, with what OpenCode says each is
     /// (`title`, `agent`). Their requests are the Agent's to answer.
     pub children: Arc<std::sync::Mutex<BTreeMap<String, Value>>>,
+    /// What measuring the Agent's context needs from this connection (T-10).
+    usage: Arc<std::sync::Mutex<Usage>>,
+}
+
+/// In memory only, for one connection (T-10, contract on T-10 #757): each
+/// listed model's context window by its name, nothing else of a provider's
+/// record, and at most one answer waiting for its model's window.
+#[derive(Default)]
+struct Usage {
+    windows: HashMap<String, u64>,
+    /// Moved on by what makes a measurement stale: a new input, a model or
+    /// variant chosen, a compaction. An answer waiting from before it is
+    /// not measured.
+    epoch: u64,
+    pending: Option<Pending>,
+    /// Models the catalog was read again for, once each.
+    refreshed: HashSet<String>,
+    /// A model to read the catalog again for, once the change that found it
+    /// is recorded.
+    wanted: Option<String>,
+}
+
+/// An answer whose model this connection's list didn't have: what measuring
+/// it needs, and nothing more.
+struct Pending {
+    epoch: u64,
+    answer: String,
+    turn: String,
+    parent: String,
+    at: i64,
+    used: u64,
+    model: String,
+}
+
+impl Usage {
+    /// An answer completed at `at`, measured or not, is newer than one
+    /// waiting from before it: that one is no longer the newest (R1 cca110b3).
+    fn superseded(&mut self, at: i64) {
+        if self.pending.as_ref().is_some_and(|pending| at >= pending.at) {
+            self.pending = None;
+        }
+    }
 }
 
 impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
-        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)) }
+        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default() }
+    }
+
+    /// Each listed model's context window, as OpenCode lists them now.
+    fn windows(&self, models: &[ModelChoice]) {
+        self.usage.lock().unwrap().windows = models.iter().map(|m| (m.id(), m.context)).collect();
+    }
+
+    /// A compaction at `at` (ms): what was measured before it no longer
+    /// holds, nor does an answer waiting from before it. One newer than it
+    /// keeps waiting, as when a resync replays the summary (R4 46270ae8).
+    fn compacted(&self, at: i64) {
+        let mut usage = self.usage.lock().unwrap();
+        if usage.pending.as_ref().is_none_or(|pending| pending.at <= at) {
+            usage.epoch += 1;
+            usage.pending = None;
+        }
+    }
+
+    /// What was measured no longer holds; an answer waiting from before is dropped.
+    fn unmeasured(&self) {
+        let mut usage = self.usage.lock().unwrap();
+        usage.epoch += 1;
+        usage.pending = None;
+    }
+
+    fn wanted(&self) -> Option<String> {
+        self.usage.lock().unwrap().wanted.take()
     }
 
     /// Whether `session` is the Agent's: its own or one of its sub-agents'.
@@ -289,6 +358,7 @@ impl Workspace {
     pub async fn opencode_agent_catalog(self: &Arc<Self>, id: &str) -> Result<Value> {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
         let models = c.server.models().await?;
+        c.windows(&models);
         Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERSION}}))
     }
 
@@ -318,6 +388,7 @@ impl Workspace {
         if !model.is_empty() {
             let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能选择它的模型")?;
             let listed = c.server.models().await?;
+            c.windows(&listed);
             let found = listed.iter().find(|m| m.id() == model).with_context(|| format!("OpenCode 当前配置的模型里没有 {model}；设置未保存"))?;
             if let Some(variant) = &variant {
                 ensure!(found.variants.iter().any(|v| v == variant), "OpenCode 没有为 {model} 列出变体 {variant}；设置未保存");
@@ -329,7 +400,14 @@ impl Workspace {
         self.record_meta(id, "opencode/modelSelected", json!({"model":model,"variant":variant}), move |m| {
             m.agent.model = selected;
             m.agent.settings.reasoning_effort = kept;
+            // Another model, or variant, answers next; what was measured is last known.
+            if let Some(usage) = m.context_usage.as_mut() {
+                usage.stale = true;
+            }
         }).await?;
+        if let Some(c) = self.opencodes.lock().unwrap().get(id) {
+            c.unmeasured();
+        }
         self.changed(id);
         self.listed(id).await
     }
@@ -391,6 +469,7 @@ impl Workspace {
             message_receipts: vec![],
             claude_runtime: None,
             codex_handoff: None,
+            opencode_usage_seen: None,
         };
         self.stored(move |store| store.insert_created(&detail)).await?;
         self.changed(&id);
@@ -496,9 +575,14 @@ impl Workspace {
         let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let c = Connection::new(generation, server.clone(), session.clone(), children.clone());
+        // Each listed model's context window, read once as it connects (T-10).
+        if let Ok(models) = server.models().await {
+            c.windows(&models);
+        }
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
         let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
+        let usage = c.clone();
         // Compared as before, since it changes Turns, without returning a copy
         // of the record nobody reads (T-140).
         let ready = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/ready", &data, Sel::Tail(TAIL), move |d| {
@@ -506,7 +590,7 @@ impl Workspace {
             d.agent.status = "idle".into();
             d.agent.error = None;
             restarted(d);
-            apply_snapshot(d, generation, &session, &snapshot, &children);
+            apply_snapshot(d, generation, &session, &snapshot, &children, &usage);
             refresh_status(d);
         }).map(drop)).await;
         if let Err(error) = ready {
@@ -516,6 +600,11 @@ impl Workspace {
                 connections.remove(id);
             }
             return Err(error);
+        }
+        // The snapshot's newest answer named a model the list didn't have.
+        if let Some(model) = c.wanted() {
+            let (ws, agent, usage) = (self.clone(), id.to_owned(), c.clone());
+            tokio::spawn(async move { ws.opencode_context_window(&agent, &usage, model).await });
         }
         match mcp {
             Some(Mcp::Connected) => self.collaboration_started(id, generation).await,
@@ -586,12 +675,61 @@ impl Workspace {
         let (agent, generation, session) = (id.to_owned(), c.generation, c.session.clone());
         let data = json!({"generation":generation,"messages":snapshot.messages.as_array().map_or(0, Vec::len),
             "status":snapshot.status,"permissions":snapshot.permissions.len(),"questions":snapshot.questions.len()});
+        let usage = c.clone();
         self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/resynced", &data, Sel::Tail(TAIL), move |d| {
-            apply_snapshot(d, generation, &session, &snapshot, &children);
+            apply_snapshot(d, generation, &session, &snapshot, &children, &usage);
             refresh_status(d);
         }).map(drop)).await?;
         self.changed(id);
+        if let Some(model) = c.wanted() {
+            self.opencode_context_window(id, c, model).await;
+        }
         Ok(())
+    }
+
+    /// The catalog read again for a model an answer named that this
+    /// connection's list didn't have (T-10): once for each such model, and
+    /// then that answer measured, if it's still the newest of the Turn's
+    /// latest input and nothing has made it stale since. Otherwise the
+    /// answer stays unmeasured.
+    async fn opencode_context_window(&self, id: &str, c: &Connection, model: String) {
+        let Ok(models) = c.server.models().await else { return };
+        c.windows(&models);
+        let (window, pending) = {
+            let mut usage = c.usage.lock().unwrap();
+            let window = usage.windows.get(&model).copied();
+            match usage.pending.take() {
+                Some(pending) if pending.model == model && pending.epoch == usage.epoch => (window, pending),
+                other => {
+                    usage.pending = other;
+                    return;
+                }
+            }
+        };
+        let Some(window) = window else { return };
+        let owned = self.owner(id).await;
+        if self.opencode_current(id, c.generation).is_none() {
+            return;
+        }
+        let (agent, data, usage) = (id.to_owned(), json!({"model":model,"window":window}), c.clone());
+        let turn = pending.turn.clone();
+        let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/contextWindow", &data, Sel::Turns(vec![turn]), move |d| {
+            // Checked as it is written: still the newest answer considered in
+            // this session, to the latest input of the newest Turn, and
+            // nothing since made it stale.
+            let current = usage.usage.lock().unwrap().epoch == pending.epoch;
+            let turn = d.turns.last().filter(|t| t["id"] == pending.turn.as_str());
+            let latest = turn.and_then(latest_input) == Some(pending.parent.as_str());
+            let newest = seen(d, &usage.session) == Some((pending.at, pending.answer.as_str()));
+            if current && latest && newest {
+                if let Some(at) = chrono::DateTime::from_timestamp_millis(pending.at) {
+                    if let Some(measured) = ContextUsage::measured(pending.used, window, &pending.turn, at) {
+                        d.context_usage = Some(measured);
+                    }
+                }
+            }
+        }).map(drop)).await;
+        self.changed(id);
     }
 
     /// One event, off the async workers, under the Agent's ownership lock,
@@ -599,14 +737,22 @@ impl Workspace {
     pub(crate) async fn dispatch_opencode_event(self: &Arc<Self>, id: &str, generation: u64, event: Value) {
         let _event = self.admission.enter_event();
         let owned = self.owner(id).await;
-        let (ws, id) = (self.clone(), id.to_owned());
+        let (ws, agent) = (self.clone(), id.to_owned());
         let handled = crate::db::blocking(move || {
             let _owned = owned;
-            ws.opencode_event(&id, generation, &event);
+            ws.opencode_event(&agent, generation, &event);
             Ok(())
         });
         if let Err(error) = handled.await {
             eprintln!("Workspace OpenCode event not handled: {error}");
+        }
+        // An answer's model this connection didn't list: read the catalog
+        // again, off the event stream.
+        if let Some(c) = self.opencode_current(id, generation) {
+            if let Some(model) = c.wanted() {
+                let (ws, id) = (self.clone(), id.to_owned());
+                tokio::spawn(async move { ws.opencode_context_window(&id, &c, model).await });
+            }
         }
     }
 
@@ -640,6 +786,9 @@ impl Workspace {
             kind if projected(kind) => event_turns(&self.store, id, event).and_then(|turns| {
                 self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
                     project(d, generation, &c.session, event);
+                    if kind == "message.updated" {
+                        measure(d, &c, &event["properties"]["info"]);
+                    }
                     refresh_status(d);
                 }).map(drop)
             }),
@@ -665,6 +814,7 @@ impl Workspace {
         let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "runtime/error", &data, Sel::Open, move |d| {
             let busy = d.turns.iter().any(|t| t["status"] == "inProgress");
             ended(d, &message);
+            stale(d);
             d.agent.connection_state = "disconnected".into();
             d.agent.status = if busy { "uncertain" } else { "offline" }.into();
             d.agent.error = Some(message);
@@ -816,11 +966,14 @@ impl Workspace {
         let words = (!text.is_empty()).then(|| json!({"type":"text","text":text}));
         let content = Value::Array(words.into_iter().chain(shown).collect());
         let (turn, added, client) = (expected.to_owned(), input.clone(), client_id.to_owned());
+        // A new input: what was measured before it is last known (T-10).
+        c.unmeasured();
         // Added only while that Turn still runs: one that ended meanwhile
         // takes nothing, and the message is not sent.
         self.record_update(id, "opencode/inputRequested", json!({"turnId":expected,"messageId":input,"clientMessageId":client_id,
             "text":text,"images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant}),
             Sel::Turns(vec![turn.clone()]), move |d| {
+            stale(d);
             let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str() && t["status"] == "inProgress") else { return };
             if !entry["_opencodeInputs"].is_object() {
                 entry["_opencodeInputs"] = json!({});
@@ -965,10 +1118,13 @@ impl Workspace {
         let words = (!text.is_empty()).then(|| json!({"type":"text","text":text}));
         let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), Value::Array(words.into_iter().chain(shown).collect()));
         let (named, arguments, own_model) = command.as_ref().map_or((None, None, None), |(c, a)| (Some(c.name.clone()), Some(a.clone()), c.model.clone()));
+        // A new input: what was measured before it is last known (T-10).
+        c.unmeasured();
         self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text,
             "images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant,
             "command":named,"arguments":arguments,"commandModel":own_model}),
             Sel::Turns(vec![turn.clone()]), move |d| {
+            stale(d);
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
             entry["items"] = json!([{"id":format!("{requested}:input"),"type":"userMessage","content":content,"nativeMessageId":requested}]);
@@ -1361,14 +1517,142 @@ fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&V
     }
 }
 
+/// The Agent's context usage from an answer of its own session (T-10,
+/// contract on T-10 #757): the newest completed answer to the latest input
+/// of its newest Turn, against the window of the model that answered. A
+/// compaction makes what was measured before it last known, and no answer
+/// older than it measures after it; an answer that can't be measured makes
+/// it last known too, never 0. An answer replayed, or no newer than the
+/// newest one or compaction considered in the session (`seen`), changes nothing. An
+/// answer whose model the connection's list didn't have waits, alone, for
+/// one read of the catalog (`wanted`).
+fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
+    if info["role"] != "assistant" {
+        return;
+    }
+    if info["summary"] == true {
+        // A compaction's summary counts what was there before it. It is also
+        // a boundary, kept as the session's newest considered (`seen`): an
+        // answer that completed before it, however late it arrives, after a
+        // reconnect too, measures nothing and reads no catalog (R6 b6556a88).
+        let at = info["time"]["completed"].as_i64().or_else(|| info["time"]["created"].as_i64());
+        if let Some(at) = at.filter(|at| measured_before(d, *at)) {
+            stale(d);
+            c.compacted(at);
+            let summary = info["id"].as_str().unwrap_or_default();
+            if seen(d, &c.session).is_none_or(|seen| (at, summary) > seen) {
+                d.opencode_usage_seen = Some(UsageSeen { session: c.session.clone(), at, answer: summary.to_owned() });
+            }
+        }
+        return;
+    }
+    let (Some(at), Some(parent), Some(answer)) = (info["time"]["completed"].as_i64(), info["parentID"].as_str(), info["id"].as_str())
+        else { return };
+    let Some(index) = d.turns.iter().position(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some() || t["_opencodeFollowed"] == parent)
+        else { return };
+    // An answer to an earlier input, completed late, says nothing of now:
+    // one to an earlier Turn (every change holds the newest one, last; R5
+    // 0aa6e52c), or to an earlier input of its Turn.
+    if index + 1 != d.turns.len() || latest_input(&d.turns[index]) != Some(parent) {
+        return;
+    }
+    // Once considered, measured or not, an answer never measures here
+    // again, nor does one older than it, whatever its Turn: a replay of the
+    // record, after a reconnect too, or a late answer (R3 eb8dff5f, R5
+    // 0aa6e52c). What was measured is shown; it is not this boundary. Of two
+    // that completed in the same millisecond, the later ID is the newer
+    // (OpenCode's IDs ascend).
+    if seen(d, &c.session).is_some_and(|seen| (at, answer) <= seen) {
+        return;
+    }
+    let Some(turn) = d.turns[index]["id"].as_str().map(str::to_owned) else { return };
+    d.opencode_usage_seen = Some(UsageSeen { session: c.session.clone(), at, answer: answer.to_owned() });
+    let used = context_used(&info["tokens"]);
+    let model = info["providerID"].as_str().zip(info["modelID"].as_str()).map(|(provider, model)| format!("{provider}/{model}"));
+    let mut usage = c.usage.lock().unwrap();
+    usage.superseded(at);
+    let (Some(used), Some(model), Some(time)) = (used, model, chrono::DateTime::from_timestamp_millis(at)) else {
+        stale(d);
+        return;
+    };
+    match usage.windows.get(&model).copied() {
+        Some(window) => match ContextUsage::measured(used, window, &turn, time) {
+            Some(measured) => d.context_usage = Some(measured),
+            // A window of 0: unknown.
+            None => stale(d),
+        },
+        None => {
+            stale(d);
+            // The newest answer, waiting alone for its window.
+            let epoch = usage.epoch;
+            usage.pending = Some(Pending { epoch, answer: answer.to_owned(), turn, parent: parent.to_owned(), at, used, model: model.clone() });
+            if usage.refreshed.insert(model.clone()) {
+                usage.wanted = Some(model);
+            }
+        }
+    }
+}
+
+/// The context an answer used, in Yuzuno's report (T-10): OpenCode's own
+/// `total` when it is a positive whole number, else the parts it stores
+/// apart (`session.ts`: input without the cache, output without reasoning),
+/// each once, as OpenCode's app adds them. A `total` that is there but no
+/// whole number, a part missing or no whole number, a sum too large, or 0
+/// is unknown.
+fn context_used(tokens: &Value) -> Option<u64> {
+    match &tokens["total"] {
+        Value::Null => {}
+        total => match total.as_u64()? {
+            0 => {}
+            total => return Some(total),
+        },
+    }
+    let parts = [&tokens["input"], &tokens["output"], &tokens["reasoning"], &tokens["cache"]["read"], &tokens["cache"]["write"]];
+    let used = parts.into_iter().try_fold(0u64, |sum, part| sum.checked_add(part.as_u64()?))?;
+    (used > 0).then_some(used)
+}
+
+/// A Turn's latest input: its newest added message, else its prompt, or a
+/// later user message of OpenCode's own that it went on under, such as a
+/// compaction's continuation (`followed`; OpenCode's IDs ascend).
+fn latest_input(turn: &Value) -> Option<&str> {
+    let input = turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str());
+    match (input, turn["_opencodeFollowed"].as_str()) {
+        (Some(input), Some(after)) if after > input => Some(after),
+        (input, _) => input,
+    }
+}
+
+/// The newest answer of `session` considered for the context usage, measured
+/// or not, or a newer compaction's summary, as when it completed and its ID;
+/// none of another session.
+fn seen<'a>(d: &'a AgentDetail, session: &str) -> Option<(i64, &'a str)> {
+    d.opencode_usage_seen.as_ref().filter(|seen| seen.session == session).map(|seen| (seen.at, seen.answer.as_str()))
+}
+
+/// Whether `at` (ms) is after what was last measured, or nothing was.
+fn measured_before(d: &AgentDetail, at: i64) -> bool {
+    d.context_usage.as_ref()
+        .and_then(|usage| chrono::DateTime::parse_from_rfc3339(&usage.updated_at).ok())
+        .is_none_or(|measured| at > measured.timestamp_millis())
+}
+
+/// What was measured is last known.
+fn stale(d: &mut AgentDetail) {
+    if let Some(usage) = &mut d.context_usage {
+        usage.stale = true;
+    }
+}
+
 /// What a snapshot holds, applied as the events it stands for would be; each
 /// part and message replaces its own, so applying one again changes nothing.
-fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot, children: &BTreeMap<String, Value>) {
+fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot, children: &BTreeMap<String, Value>, c: &Connection) {
     for entry in snapshot.messages.as_array().into_iter().flatten() {
         message(d, &entry["info"]);
         for p in entry["parts"].as_array().into_iter().flatten() {
             part(d, p);
         }
+        measure(d, c, &entry["info"]);
     }
     // This process's requests are what it has pending now; it answered or
     // dropped the others while no stream was open.
@@ -1453,13 +1737,14 @@ fn confirm_input(d: &mut AgentDetail, input: &str) {
 /// running Turn (T-10): an auto-compaction's, or the "continue" or replay
 /// that follows one (`session/compaction.ts`). The run goes on under it, and
 /// its answers name it, so the Turn does not wait for one to the added
-/// message. OpenCode's message IDs ascend.
+/// message. OpenCode's message IDs ascend. Noted after a prompt alone too:
+/// its answers are the newest of the Turn's context usage (T-10).
 fn followed(d: &mut AgentDetail, id: &str) {
     if d.turns.iter().any(|t| t["id"] == id || t["_opencodeInputs"].get(id).is_some()) {
         return;
     }
     let Some(turn) = running(d) else { return };
-    if turn["_opencodeLastInput"].as_str().is_some_and(|last| id > last) {
+    if turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str()).is_some_and(|last| id > last) {
         turn["_opencodeFollowed"] = id.into();
     }
 }

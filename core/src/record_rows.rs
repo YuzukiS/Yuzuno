@@ -588,7 +588,7 @@ impl Serialize for AfterAgent<'_> {
         // Listed in full, so a new field of AgentDetail cannot be left out
         // silently: it does not compile until it is added here.
         let AgentDetail { agent: _, turns: _, history, pending, artifacts, context_usage, message_receipts: _,
-            claude_runtime, codex_handoff } = self.0;
+            claude_runtime, codex_handoff, opencode_usage_seen } = self.0;
         let mut map = serializer.serialize_map(None)?;
         if history.is_some() {
             map.serialize_entry("history", history)?;
@@ -601,6 +601,9 @@ impl Serialize for AfterAgent<'_> {
         }
         if codex_handoff.is_some() {
             map.serialize_entry("codexHandoff", codex_handoff)?;
+        }
+        if opencode_usage_seen.is_some() {
+            map.serialize_entry("opencodeUsageSeen", opencode_usage_seen)?;
         }
         map.end()
     }

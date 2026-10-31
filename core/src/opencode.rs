@@ -156,6 +156,9 @@ pub struct ModelChoice {
     /// Whether it reads images (`capabilities.input.image`, from models.dev's
     /// `modalities.input`, `provider/provider.ts`).
     pub image: bool,
+    /// Its context window in tokens (`limit.context`); 0 when OpenCode lists
+    /// none, or none that is a whole number.
+    pub context: u64,
 }
 
 impl ModelChoice {
@@ -541,6 +544,7 @@ impl Server {
                     status: model["status"].as_str().unwrap_or("active").into(),
                     variants,
                     image: model["capabilities"]["input"]["image"] == true,
+                    context: model["limit"]["context"].as_u64().unwrap_or(0),
                 });
             }
         }

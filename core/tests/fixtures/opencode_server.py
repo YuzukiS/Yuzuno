@@ -76,7 +76,7 @@ CONFIG = {
 lock = threading.Lock()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
-modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'abortEvidence': True,
+modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run'}
 streams = []
@@ -147,8 +147,9 @@ def last_prompt(session):
     return max(users, key=lambda m: m['info']['time']['created'])['info']['id'] if users else None
 
 
-def answer_prompt(session, text=None, error=None, completed=True, parent=None):
-    """An assistant message answering the session's last prompt (or `parent`), with a text part."""
+def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None):
+    """An assistant message answering the session's last prompt (or `parent`), with a text part.
+    `extra` adds to its info what OpenCode reports of an answer: `tokens`, `providerID`/`modelID`, `summary`."""
     now = int(time.time() * 1000)
     info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent or last_prompt(session),
             'time': {'created': now}, 'finish': 'stop'}
@@ -156,6 +157,7 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None):
         info['time']['completed'] = now
     if error:
         info['error'] = error
+    info.update(extra or {})
     parts = []
     if text is not None:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text})
@@ -223,7 +225,8 @@ def control(name, body):
     if name == 'store':
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
     if name == 'reply':
-        info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'))
+        info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'),
+                             body.get('info'))
         if body.get('idle', True):
             go_idle(body['sessionID'])
         return info
@@ -307,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
         log({'method': method, 'path': url.path, 'query': parse_qs(url.query), 'body': body, 'authorized': authorized})
         if not authorized:
             return self.reply(401)
+        # A route that answers late (T-10), as a busy OpenCode might.
+        if url.path in modes['slow']:
+            time.sleep(modes['slow'][url.path])
         if url.path in modes['fail']:
             return self.reply(modes['fail'][url.path], {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
         key = (method, *parts)
