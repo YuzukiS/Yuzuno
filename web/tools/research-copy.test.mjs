@@ -46,13 +46,13 @@ test("a desk copies as Markdown: claims, tables of rows saying where each number
 test("without Core's read a number from a snapshot is said to be not read, never guessed", () => {
   const desk = benchmark.body.elements.desk.props;
   const text = researchDeskMarkdown(desk);
-  assert.match(text, /\| o2 · arm \| — \| \[—, —\] \| not read \|/);
+  assert.match(text, /\| O2 · o2 · arm \| — \| \[—, —\] \| not read \|/, "a row's group names it");
   // With Core's read: fractions shown in percent, as the plot asks, and said so.
   const shown = researchDeskMarkdown(desk, resolvedOf(desk));
   assert.match(shown, /Values shown × 100 of the file's\./);
-  assert.match(shown, /\| o2 · arm \| -6\.1 \| \[-8\.0, -4\.2\] \| snapshot bench\.json \|/);
+  assert.match(shown, /\| O2 · o2 · arm \| -6\.1 \| \[-8\.0, -4\.2\] \| snapshot bench\.json \|/);
   assert.doesNotMatch(text, /-6\.1/);
   const piped = structuredClone(desk);
   piped.plots[0].rows[0].label = "a | b\nc";
-  assert.match(researchDeskMarkdown(piped), /\| a \\\| b c \| — \|/, "a cell keeps the table whole");
+  assert.match(researchDeskMarkdown(piped), /\| O2 · a \\\| b c \| — \|/, "a cell keeps the table whole");
 });

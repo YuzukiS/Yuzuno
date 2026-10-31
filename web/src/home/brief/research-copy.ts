@@ -116,10 +116,14 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
     out.push(`#### ${plot.title}${plot.unit ? ` (${plot.unit})` : ""}`, "");
     if (plot.scale) out.push(words.scaled(plot.scale), "");
     out.push(`| ${words.row} | ${words.value} | ${plot.interval ?? words.interval} | ${words.origin} |`, "| --- | --- | --- | --- |");
-    const rows = plot.rows.flatMap((row) => [
-      { id: row.id, label: row.label, estimate: row.estimate },
-      ...(row.parts ?? []).map((part) => ({ id: part.id, label: `${row.label} · ${part.label}`, estimate: part.estimate })),
-    ]);
+    // A row's group is part of its name: two rows may share a label in different groups.
+    const rows = plot.rows.flatMap((row) => {
+      const label = row.group ? `${row.group} · ${row.label}` : row.label;
+      return [
+        { id: row.id, label, estimate: row.estimate },
+        ...(row.parts ?? []).map((part) => ({ id: part.id, label: `${label} · ${part.label}`, estimate: part.estimate })),
+      ];
+    });
     for (const row of rows) {
       const value = number(row.estimate.value, `${row.id}.value`, resolved, plot.digits, plot.scale);
       const low = number(row.estimate.low, `${row.id}.low`, resolved, plot.digits, plot.scale);
