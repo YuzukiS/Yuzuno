@@ -217,14 +217,18 @@ export function RemoteAccessPreviews({
   const operation = started ?? preview.operation;
   const busy = running(operation);
 
-  // The retry key ends with the change it named, once Core recorded how it ended.
-  const last = preview.operation;
-  useEffect(() => {
-    if (pending.current && last?.requestId === pending.current.requestId && !running(last)) {
+  // The retry key ends with the change it named, once Core recorded how it
+  // ended: when a read of the change says so, before anything shows it, or
+  // when the whole view does.
+  const settle = (op: RemoteAccessOperation | null | undefined) => {
+    if (op && pending.current && op.requestId === pending.current.requestId && !running(op)) {
       pending.current = null;
       savePending(workspaceId, null, "previewPending");
     }
-  }, [last, workspaceId]);
+  };
+  const last = preview.operation;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => settle(last), [last, workspaceId]);
   // Once a read of the whole view (Check, say) has the change ended, it is the view's.
   useEffect(() => {
     if (started && last?.id === started.id && !running(last)) setStarted(null);
@@ -247,6 +251,7 @@ export function RemoteAccessPreviews({
           if (controller.signal.aborted) return;
           setError((said) => (said?.kind === "progress" ? null : said));
           if (running(op)) return setStarted(op);
+          settle(op);
           const read = await refresh();
           if (!controller.signal.aborted) setStarted(read ? null : op);
           return;
