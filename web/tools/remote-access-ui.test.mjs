@@ -726,8 +726,13 @@ test("a progress read that fails is tried again, and the change's end still show
   try {
     await waitFor(() => button(p, "Turn on previews"), "the button");
     p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    await waitFor(() => p.alerts().some((a) => /progress could not be read .*trying again/.test(a)), "the failed read, said");
-    await waitFor(() => /Previews are on\./.test(p.text()), "the change's end, from the next read");
+    // The change ends only if the page reads its progress again; the failed read is said meanwhile.
+    let said = false;
+    await waitFor(() => {
+      said ||= p.alerts().some((a) => /progress could not be read .*trying again/.test(a));
+      return /Previews are on\./.test(p.text());
+    }, "the change's end, from a read after the failed one");
+    assert.ok(said, "the failed read was said");
     assert.equal(reads, 2, "read again after the failure");
     assert.ok(!p.alerts().some((a) => /progress could not be read/.test(a)), "the failure is no longer shown");
     assert.equal(button(p, "Turn off previews").disabled, false, "nothing is left waiting");
