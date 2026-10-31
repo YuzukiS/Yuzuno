@@ -91,7 +91,8 @@ function mount(handler, { url = "http://isolated.test/", storage = {} } = {}) {
     window: dom.window, doc, calls, copied,
     writes: () => calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/check")),
     text: () => doc.querySelector("#settings-remote")?.textContent ?? "",
-    states: () => [...doc.querySelectorAll(".remote-access-states li")].map((li) => [li.dataset.tone, li.textContent]),
+    states: () => [...doc.querySelectorAll('ul[aria-label="Phone access status"] li')].map((li) => [li.dataset.tone, li.textContent]),
+    previewStates: () => [...doc.querySelectorAll('ul[aria-label="Phone previews status"] li')].map((li) => [li.dataset.tone, li.textContent]),
     alerts: () => [...doc.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
     applies: () => calls.filter((c) => c.url.endsWith("/api/remote-access/apply")),
     close: () => dom.window.close(),
@@ -565,6 +566,142 @@ test("another Workspace's request, or one saved before requests were kept per Wo
     await waitFor(() => /Turned off\./.test(p.text()), "turned off");
     assert.equal(p.window.localStorage.getItem("yuzuno.remoteAccess.pending:ws-b"), JSON.stringify(theirs), "kept for its Workspace");
     assert.equal(p.window.localStorage.getItem("yuzuno.remoteAccess.pending"), JSON.stringify(older), "the older request is left where it is");
+  } finally {
+    p.close();
+  }
+});
+
+// T-5: previews on the phone, their own entry under phone access.
+const previews = (over = {}) => ({
+  saved: null, listening: null, serve: { state: "unchecked" }, verification: null, operation: null, url: null, startupError: null,
+  defaults: { servePort: 8445, localPort: 4319 }, available: true, ...over,
+});
+const PREVIEWS = "https://desk.example.ts.net:8445";
+const previewsOn = previews({
+  saved: { enabled: true, servePort: 8445, localPort: 4319, savedAt: "x", applied: true },
+  listening: { port: 4319, servePort: 8445, since: "x" },
+  serve: { state: "ours", port: 8445, target: "http://127.0.0.1:4319", observedAt: "x" },
+  verification: { ok: true, at: "x", steps: [] },
+  url: PREVIEWS,
+});
+const PREVIEW_STORE = "yuzuno.remoteAccess.previewPending:ws-a";
+
+test("previews on the phone (T-5): none from an older Core; turning them on is a change of their own, shown by step, then their address", async () => {
+  const older = mount(() => ({ body: on() }));
+  try {
+    await waitFor(() => older.states().length === 4, "phone access");
+    assert.equal(older.doc.querySelector(".remote-access-previews"), null, "a Core from before previews sends none");
+  } finally {
+    older.close();
+  }
+  let current = previews();
+  let polls = 0;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview: current }) };
+    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
+      return { body: { operation: op("running", "validate", { id: "p-1", requestId: body.requestId }) } };
+    }
+    if (url.endsWith("/api/remote-access/preview/operations/p-1")) {
+      polls += 1;
+      if (polls === 1) return { body: op("running", "serve", { id: "p-1" }) };
+      current = { ...previewsOn, operation: op("succeeded", "done", { id: "p-1", requestId: p.calls.find((c) => c.method === "POST").body.requestId }) };
+      return { body: current.operation };
+    }
+    return { status: 404, body: { error: "unexpected" } };
+  });
+  try {
+    await waitFor(() => p.previewStates().length === 4, "the previews' four lines");
+    assert.deepEqual(p.previewStates().map(([tone]) => tone), ["off", "off", "unknown", "unknown"]);
+    assert.match(p.previewStates()[0][1], /Nothing saved/);
+    assert.match(p.text(), /Previews on the phone/);
+    assert.equal(p.doc.querySelector('input[aria-label="Previews\' Serve port"]').placeholder, "8445");
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    await waitFor(() => p.doc.querySelector(".remote-access-previews .remote-access-steps"), "its steps");
+    const sent = p.calls.filter((c) => c.method === "POST");
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].url, "/api/remote-access/preview", "its own change, not phone access's");
+    assert.match(sent[0].body.requestId, /^previews-[0-9a-f]{24}$/);
+    assert.deepEqual(Object.keys(sent[0].body).sort(), ["enabled", "requestId"], "empty ports are Core's defaults");
+    assert.equal(JSON.parse(p.window.localStorage.getItem(PREVIEW_STORE)).requestId, sent[0].body.requestId, "kept for asking again");
+    assert.equal(p.window.localStorage.getItem(STORE), null, "phone access's own request is untouched");
+    await waitFor(() => /Previews are on\./.test(p.text()), "how it ended");
+    assert.deepEqual(p.previewStates().map(([tone]) => tone), ["on", "on", "on", "on"]);
+    assert.match(p.text(), /Previews open at https:\/\/desk\.example\.ts\.net:8445/);
+    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "ended: no retry key");
+    assert.ok(button(p, "Turn off previews"), "it can be turned off");
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/apply")).length, 0, "phone access was not asked to change");
+  } finally {
+    p.close();
+  }
+});
+
+test("previews need phone access, show a taken Serve port before they are turned on, and only show on the phone entry", async () => {
+  const without = mount(() => ({ body: checkedView({ preview: previews({ available: false }) }) }));
+  try {
+    await waitFor(() => without.previewStates().length === 4, "the previews' lines");
+    assert.match(without.text(), /Turn on phone access first: previews open through it\./);
+    assert.equal(button(without, "Turn on previews"), undefined);
+  } finally {
+    without.close();
+  }
+  const { _note, ...conflict } = structuredClone(examples.previewConflict);
+  const taken = mount(() => ({ body: on({ preview: conflict }) }));
+  try {
+    await waitFor(() => taken.previewStates().length === 4, "the previews' lines");
+    assert.deepEqual(taken.previewStates()[2], ["warn", `Tailscale Serve${conflict.serve.detail}`]);
+    assert.deepEqual(taken.previewStates()[3], ["warn", "VerificationNot ready: port 8445 is taken; choose another Serve port under Advanced"]);
+    assert.ok(button(taken, "Turn on previews"), "another port can be chosen");
+  } finally {
+    taken.close();
+  }
+  const phone = mount(() => ({ body: on({ canChange: false, readOnlyReason: "Read only here.", preview: previewsOn }) }), { url: `${ENTRY}/` });
+  try {
+    await waitFor(() => phone.previewStates().length === 4, "the previews' lines");
+    assert.match(phone.text(), /Previews open at https:\/\/desk\.example\.ts\.net:8445/);
+    assert.equal(button(phone, "Turn off previews"), undefined, "no change through the phone entry");
+    assert.equal(button(phone, "Turn on previews"), undefined);
+  } finally {
+    phone.close();
+  }
+});
+
+test("a lost answer to turning previews on is asked again as the same request; a busy Core is said so", async () => {
+  let lose = true;
+  let busy = false;
+  let ended = null;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview: previews({ operation: ended }) }) };
+    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
+      if (lose) throw new TypeError("Failed to fetch");
+      if (busy) return { status: 400, body: { error: "remote_access_busy: another phone access change is running; wait for it to finish" } };
+      return { body: { operation: op("running", "validate", { id: "p-2", requestId: body.requestId }) } };
+    }
+    if (url.endsWith("/api/remote-access/preview/operations/p-2")) {
+      const requestId = p.calls.filter((c) => c.method === "POST").at(-1).body.requestId;
+      ended = op("failed", "validate", { id: "p-2", requestId, error: "Phone access is off: turn it on first, then phone previews" });
+      return { body: ended };
+    }
+    return { status: 404, body: {} };
+  });
+  try {
+    await waitFor(() => button(p, "Turn on previews"), "the button");
+    type(p, "Previews' Serve port", "9445");
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    await waitFor(() => p.alerts().some((a) => /answer did not arrive/.test(a)), "the lost answer");
+    const first = p.calls.filter((c) => c.method === "POST")[0].body;
+    assert.deepEqual({ ...first, requestId: undefined }, { requestId: undefined, enabled: true, servePort: 9445 });
+    lose = false;
+    busy = true;
+    await waitFor(() => !button(p, "Turn on previews").disabled, "ready again");
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    await waitFor(() => p.alerts().some((a) => /Another phone access change is already running/.test(a)), "busy");
+    const posts = p.calls.filter((c) => c.method === "POST");
+    assert.equal(posts[1].body.requestId, first.requestId, "the same request");
+    busy = false;
+    await waitFor(() => !button(p, "Turn on previews").disabled, "ready again");
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    await waitFor(() => p.alerts().some((a) => /stopped at “Check the settings and the Serve port”: Phone access is off/.test(a)), "Core's reason with its step");
+    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "ended: the next try is new");
   } finally {
     p.close();
   }

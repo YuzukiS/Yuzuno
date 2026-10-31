@@ -18,6 +18,7 @@ import {
   type RemoteAccessOperation,
   type RemoteAccessView,
 } from "./remote-access";
+import { RemoteAccessPreviews } from "./RemoteAccessPreviews";
 import "./remote-access.css";
 
 /** The advanced fields as typed: empty means Core's default. */
@@ -662,6 +663,15 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
             <p className="updates-error" role="alert" ref={errorLine}>
               {saidText(error, language)}
             </p>
+          )}
+          {supported && view.preview && (
+            <RemoteAccessPreviews
+              preview={view.preview}
+              canChange={view.canChange}
+              workspaceId={workspaceId}
+              phoneBusy={busy || sending}
+              refresh={refresh}
+            />
           )}
         </>
       )}

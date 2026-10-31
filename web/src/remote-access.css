@@ -1,7 +1,7 @@
 /* Settings → Phone access (T-185). Rows and buttons are the
    settings pane's own (updates.css); this adds the hosts, the four state
-   lines, the verification steps, the address with its code, and the
-   change's steps. */
+   lines, the verification steps, the address with its code, the
+   change's steps, and previews on the phone (T-5). */
 .remote-access-hosts {
   display: grid;
   margin: 0;
@@ -166,6 +166,25 @@
   padding: 10px 16px 0;
   color: var(--text-secondary);
   font-size: calc(10px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+/* Previews on the phone (T-5): their own entry's facts, below phone access's. */
+.remote-access-previews {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.remote-access-previews h4 {
+  margin: 0 0 4px;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.remote-access-previews strong {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 @media (max-width: 640px) {
