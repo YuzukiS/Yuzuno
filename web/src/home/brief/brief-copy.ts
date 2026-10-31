@@ -150,9 +150,12 @@ function standsAlone(markdown: string, page: DocumentFragment): boolean {
 }
 /** A Markdown block exactly as written (its indentation is an indented code
  * block), with a fence or raw HTML block it leaves open closed where the
- * block ends, as it ends on the page. A block that still takes in what
- * follows it (raw HTML cut off mid-tag, say) is copied as the HTML the page
- * shows for it instead, on one line, so it ends there. */
+ * block ends, as it ends on the page. Two kinds of block are copied as the
+ * HTML the page shows for them instead, on one line, so they end there: one
+ * that still takes in what follows it (raw HTML cut off mid-tag, say), and
+ * one that defines link references. Home resolves a block's references
+ * within that block; in one document they would be shared, so another
+ * block's [s] would point at the first [s] defined anywhere. */
 function markdownBlock(value: unknown): string {
   const text = String(value ?? "");
   if (!text.trim()) return "";
@@ -160,7 +163,8 @@ function markdownBlock(value: unknown): string {
   const closed = `${text}${open ? `${/\n$/.test(text) ? "" : "\n"}${open}` : ""}`;
   if (typeof document !== "undefined") {
     const html = briefMarkdownHtml(text);
-    if (!standsAlone(closed, view(html)))
+    const defines = Object.keys(marked.lexer(text, { gfm: true }).links).length > 0;
+    if (defines || !standsAlone(closed, view(html)))
       return html.trim() ? `<div>${html.trim().replace(/\r?\n/g, "&#10;")}</div>` : "";
   }
   // A block whose first line starts indented or with a list marker would
