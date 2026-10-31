@@ -2065,7 +2065,7 @@ const copiedReport = [
   "## Sources",
   // A link keeps its whole address, parentheses included, and its label's brackets.
   "- [Run log](<https://example.test/run/1>)\n- Notes file: /w/app/notes.md\n- [Raw \\[v2\\] notes](<https://example.test/a)b?x=(1)>)" +
-    "\n- [R\\&amp;D query](<https://example.test/?q=\\&amp;x=1>)",
+    "\n- [R\\&amp;D query](<https://example.test/?q=&amp;amp;x=1>)",
 ].join("\n\n") + "\n";
 const withReport = () => {
   const home = homeFixture();
