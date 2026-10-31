@@ -80,7 +80,9 @@ async function open({ width, height, touch }, inset) {
     if (path === "/api/jobs") return route.fulfill({ json: noJobs });
     if (path === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
     if (path === "/api/jobs/budget") return route.fulfill({ json: idleJobsBudget });
-    if (path === "/api/ci/runs") return route.fulfill({ json: noCiRuns });
+    // The conversation asks for /api/ci, not /api/ci/runs (CiJobs.tsx): a
+    // route that never matches leaves the left dock empty whatever it serves.
+    if (path === "/api/ci") return route.fulfill({ json: noCiRuns });
     if (path === "/api/reviews") return route.fulfill({ json: noReviews });
     if (path === "/api/catchup") return route.fulfill({ json: { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } } });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
