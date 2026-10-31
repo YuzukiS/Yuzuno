@@ -94,13 +94,15 @@ const researchZh: ResearchCopyWords = {
 };
 
 /** Text the page shows as written (a title, a table cell, a label, an item,
- * a finding): on one line, with every character Markdown would read as
- * emphasis, code, a link, markup or a table pipe escaped, so it reads back
- * as the same characters. Only Markdown blocks are copied as Markdown. */
-const inline = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\`*_~[\]<>|]/g, "\\$&"));
-/** The same, where it begins a list item's text: a leading "-", "+", "#" or
- * "1." would start a nested list or heading. */
-const itemText = (value: unknown) => inline(value).replace(/^([-+#])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
+ * a finding, a path, a chart's category): on one line, with every character
+ * that means something to Markdown wherever it stands escaped (emphasis,
+ * code, a link, markup, a table pipe, a heading's closing "#", math's "$"),
+ * so it reads back as the same characters. Only Markdown blocks are copied
+ * as Markdown. */
+const inline = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\`*_~[\]<>|#$]/g, "\\$&"));
+/** The same, where it begins a list item's text: a leading "-", "+" or "1."
+ * would start a nested list. */
+const itemText = (value: unknown) => inline(value).replace(/^([-+])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
 const range = (values: (number | string)[]) => {
   const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (numbers.length === values.length && numbers.length > 0) {
@@ -200,12 +202,12 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         return [items.map((item) => {
           const file = attachment(item.name);
           const caption = item.caption || file?.caption;
-          if (!file) return `- ${inline(item.name)}${caption ? ` — ${inline(caption)}` : ""} (${w.notAttached})`;
+          if (!file) return `- ${itemText(item.name)}${caption ? ` — ${inline(caption)}` : ""} (${w.notAttached})`;
           // An external link is its own stable address; a kept file is named
           // with its card and version, never a request address of this Core.
           const linked = file.kind === "link" ? link(caption || file.name, file.url) : null;
           if (linked) return `- ${w.link}: ${linked}`;
-          const where = file.snapshot ? w.snapshotOf(section.key, section.version) : file.path ? w.referencedAt(file.path) : "";
+          const where = file.snapshot ? w.snapshotOf(section.key, section.version) : file.path ? w.referencedAt(inline(file.path)) : "";
           return `- ${file.kind === "image" ? w.image : w.file}: ${inline(file.name)}${caption ? ` — ${inline(caption)}` : ""}${where ? ` (${where})` : ""}`;
         }).join("\n")];
       }
@@ -214,7 +216,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         if (!items.length) return [];
         return [...heading(depth, b.sources), items.map((item) => {
           const linked = link(item.label, item.href);
-          return linked ? `- ${linked}` : `- ${inline(item.label)}: ${inline(item.href)}`;
+          return linked ? `- ${linked}` : `- ${itemText(item.label)}: ${inline(item.href)}`;
         }).join("\n")];
       }
       default: {
@@ -224,7 +226,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         for (const series of chart.series ?? []) {
           const points = series.points as [number | string, number][];
           const last = points.length ? `${points[points.length - 1][1]}` : "";
-          lines.push(`- ${w.seriesSummary(inline(series.name), points.length, range(points.map(([x]) => x)), range(points.map(([, y]) => y)), last)}`);
+          lines.push(`- ${w.seriesSummary(itemText(series.name), points.length, inline(range(points.map(([x]) => x))), inline(range(points.map(([, y]) => y))), inline(last))}`);
         }
         if (chart.data) {
           const columns = chart.data.series.map((series) => `${inline(series.name)} ← ${inline(series.column)}`).join(", ");

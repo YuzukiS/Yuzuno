@@ -2066,7 +2066,7 @@ const copiedReport = [
   "## Loss",
   "Chart · x: Step · y: Loss (nats)\n- train: 3 points; x 0–2; y 1.2–2.5; last 1.2",
   "## References",
-  "- Task T-9: Home · doing — copy slice\n- Pull request acme/app#12: couldn't read",
+  "- Task T-9: Home · doing — copy slice\n- Pull request acme/app\\#12: couldn't read",
   "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](<https://example.test/spec>)",
   "## Sources",
   // A link keeps its whole address, parentheses included, and its label's brackets.
@@ -2237,33 +2237,38 @@ test("T-9 a research desk whose numbers Core can't give for that version copies 
 });
 
 // Every field the page shows as written, each with characters Markdown would
-// read as emphasis, code, a link, markup, a list or a table pipe.
+// read as emphasis, code, a link, markup, a list, a table pipe or a
+// heading's closing "#".
 const plainFields = {
   title: "**Title** _x_", group: "~~old~~ `code`", check: "**required**", dash: "- not a list", numbered: "1. not a list",
   step: "~~enabled~~ <unknown>", source: "a_b_c", finding: "<unknown> **bold** `tick` [x](y)",
   metric: "*rate*", value: "5|6", unit: "<u>", previous: "~~4~~", detail: "`d`",
-  column: "[col](x)", cell: "**a**", slash: "back\\slash", entity: "R&amp;D", refLabel: "**ref**", note: "<b>n</b>",
-  caption: "~~cap~~", sourceLabel: "**src**", chart: "_chart_", axis: "x*y", series: "`s`",
+  column: "[col](x)", cell: "**a**", slash: "back\\slash", entity: "R&amp;D", dollars: "$5 and $6", tableTitle: "Release #",
+  refLabel: "**ref**", note: "<b>n</b>", caption: "~~cap~~", loose: "- loose", path: "/w/_draft_/data.csv",
+  sourceLabel: "**src**", sourceDash: "- src", sourcePath: "/w/_wip_/notes.md",
+  chart: "_chart_", axis: "x*y", series: "`s`", first: "1. first", alpha: "**alpha**", beta: "`beta`",
 };
 const plainReport = () => {
   const f = plainFields;
   return section("plain", "report", f.title, 2, owner("a", "Mori"), {
     body: { root: "body", elements: {
       body: { type: "BriefBody", props: {}, children: ["group", "md", "math"] },
-      group: { type: "Group", props: { title: f.group }, children: ["checks", "plan", "findings", "metrics", "table", "refs", "files", "sources", "chart"] },
+      group: { type: "Group", props: { title: f.group }, children: ["checks", "plan", "findings", "metrics", "table", "refs", "files", "sources", "chart", "bars"] },
       checks: { type: "Checklist", props: { items: [{ id: "a", text: f.check, done: true }, { id: "b", text: f.dash, done: false }, { id: "c", text: f.numbered, done: false }] } },
       plan: { type: "Plan", props: { steps: [{ id: "p", text: f.step, state: "doing" }] } },
       findings: { type: "Findings", props: { items: [{ id: "f", source: f.source, severity: "high", text: f.finding }] } },
       metrics: { type: "Metrics", props: { items: [{ label: f.metric, value: f.value, unit: f.unit, previous: f.previous, detail: f.detail }] } },
-      table: { type: "Table", props: { id: "t", title: "T", columns: [{ key: "k", label: f.column }], rows: [f.cell, f.slash, f.entity].map((k, i) => ({ id: `r${i}`, cells: { k } })) } },
+      table: { type: "Table", props: { id: "t", title: f.tableTitle, columns: [{ key: "k", label: f.column }], rows: [f.cell, f.slash, f.entity, f.dollars].map((k, i) => ({ id: `r${i}`, cells: { k } })) } },
       refs: { type: "LiveRefs", props: { items: [{ kind: "task", id: "T-1", label: f.refLabel, note: f.note }] } },
-      files: { type: "Attachments", props: { items: [{ name: "kept.png", caption: f.caption }] } },
-      sources: { type: "Sources", props: { items: [{ id: "s", label: f.sourceLabel, href: "https://example.test/s" }] } },
+      files: { type: "Attachments", props: { items: [{ name: "kept.png", caption: f.caption }, { name: f.loose }, { name: "data.csv" }] } },
+      sources: { type: "Sources", props: { items: [{ id: "s", label: f.sourceLabel, href: "https://example.test/s" }, { id: "p", label: f.sourceDash, href: f.sourcePath }] } },
       chart: { type: "LineChart", props: { id: "c", title: f.chart, x: { label: f.axis }, y: { label: "y" }, series: [{ name: f.series, points: [[0, 1], [1, 2]] }] } },
+      bars: { type: "BarChart", props: { id: "b", title: "Bars", x: { label: "kind" }, y: { label: "n" }, series: [{ name: f.first, points: [[f.alpha, 1], [f.beta, 2]] }] } },
       md: { type: "Markdown", props: { text: "A **bold** word and `code`." } },
       math: { type: "Math", props: { tex: "x^2 + y_1", display: false } },
     } },
-    attachments: [{ name: "kept.png", kind: "image", mime: "image/png", size: 10, snapshot: true, mayChange: false, takenAt: at(5) }],
+    attachments: [{ name: "kept.png", kind: "image", mime: "image/png", size: 10, snapshot: true, mayChange: false, takenAt: at(5) },
+      { name: "data.csv", kind: "file", mime: "text/csv", size: 10, snapshot: false, mayChange: true, takenAt: at(5), path: f.path }],
     refs: { "task:T-1": { kind: "task", id: "T-1", found: true, title: "Task one", state: "doing" } },
   });
 };
@@ -2291,7 +2296,7 @@ test("T-9 a report's plain fields read back as written once the copy is rendered
     const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
     const visible = rendered.textContent.replace(/\s+/g, " ");
     const lost = Object.entries(plainFields).filter(([, text]) => !visible.includes(text)).map(([field]) => field);
-    assert.deepEqual(lost, [], "every plain field reads back as its characters");
+    assert.deepEqual(lost, [], `every plain field reads back as its characters; lost: ${lost.join(", ")}`);
     assert.ok([...rendered.querySelectorAll("strong")].some((el) => el.textContent === "bold"), "the Markdown block's bold");
     assert.ok([...rendered.querySelectorAll("code")].some((el) => el.textContent === "code"), "the Markdown block's code");
     assert.equal(rendered.querySelectorAll("del, a[href='y']").length, 0, "no strike or link made from a plain field");
