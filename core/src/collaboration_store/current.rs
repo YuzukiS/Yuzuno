@@ -30,7 +30,8 @@ pub(super) const MESSAGE_STATE: &str = "SELECT delivery_state FROM collaboration
 const RESULT_NOTE: &str = "The latest result as reported at reportedAt, never rewritten: statusAtReport and \
     taskVersionAtReport are the task's then, editsSinceReport counts the saved task version changes since, not \
     comments (null when Core did not record it), notification is the mail's state at report and notificationNow \
-    its delivery now. The status, progress and blocker of this view are the task now";
+    its delivery now. The status, progress and blocker of this view are the task now. task_result_get reads \
+    this result's full author report, acceptance context, artifact references and earlier result history";
 /// Where a PR's CI state comes from, beside each observation.
 const CHECKS_SOURCE: &str = "all of this head's checks as GitHub reported them when Core last read the PR (observedAt); github_refresh reads them again";
 const MORE: &str = "task_get view \"activity\" (afterSeq, limit) pages the history; view \"full\" is the whole record with \

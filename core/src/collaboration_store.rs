@@ -13,6 +13,7 @@ pub(crate) const STATUSES: [&str; 6] = ["todo", "doing", "blocked", "review", "d
 
 mod result_dispatch;
 mod result_ack;
+mod result_outcome;
 pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
 mod current;
@@ -119,7 +120,7 @@ impl Store {
         // Listing and reading change nothing (only an Agent's own peer_read
         // records what it read), so they use a reader's snapshot and never wait
         // for the writer. Everything else is one IMMEDIATE write transaction.
-        let read_only = matches!(operation, "peers_list" | "projects_list" | "task_list" | "task_get" | "delivery_get")
+        let read_only = matches!(operation, "peers_list" | "projects_list" | "task_list" | "task_get" | "task_result_get" | "delivery_get")
             || (operation == "peer_read" && actor.is_none());
         let reader = if read_only { Some(self.db.read()?) } else { None };
         let mut writer = if read_only { None } else { Some(self.db.write()?) };
@@ -188,6 +189,7 @@ impl Store {
             "peer_read" => peer_read(&tx, actor, &input)?,
             "task_list" => task_list(&tx, &input)?,
             "task_get" => task_get(&tx, &input)?,
+            "task_result_get" => result_outcome::get(&tx, &input)?,
             "task_create" => task_create(self, &tx, &author, &source, &input)?,
             "task_update" => task_update(self, &tx, &author, &source, &input)?,
             "task_claim" => task_claim(&tx, &author, &source, &input)?,
@@ -354,6 +356,7 @@ fn normalize_task_input(db: &Connection, operation: &str, mut input: Value) -> R
     if matches!(
         operation,
         "task_get"
+            | "task_result_get"
             | "task_update"
             | "task_claim"
             | "task_comment"
@@ -952,6 +955,7 @@ fn task_submit_result(
             "status",
             "dispatchId",
             "delivery",
+            "outcome",
         ],
     )?;
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
@@ -980,13 +984,18 @@ fn task_submit_result(
         matches!(status.as_str(), "review" | "done"),
         "invalid_input: result status must be review or done"
     );
+    let outcome = result_outcome::validate(store, db, &task, input.get("outcome"))?;
+    let acceptance_context = result_outcome::acceptance_context(db, &task, dispatch.as_ref())?;
     let notification = result_dispatch::notification(store, db, dispatch.as_ref())?;
     // The version and status this submission leaves the task at, so a later
     // reader can tell the report from what happened since (T-203).
     task.result = Some(json!({"id":uuid::Uuid::new_v4().to_string(),
         "dispatchId":dispatch.as_ref().map(|d| &d.id),"notification":notification,
         "summary":summary,"links":links,"reportedAt":now(),"reportedBy":actor,"source":source,
-        "taskVersion":task.version + 1,"status":status}));
+        "taskVersion":task.version + 1,"status":status,"acceptanceContext":acceptance_context}));
+    if let Some(outcome) = outcome {
+        task.result.as_mut().unwrap()["outcome"] = outcome;
+    }
     task.status = status;
     crate::delivery::store::submitted(db, &task, actor, input)?;
     save_task(db, &mut task, actor)?;
@@ -1425,7 +1434,8 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
         definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order.", json!({"requestId":request,"taskId":task_reference,"body":string}), &["requestId","taskId","body"]),
-        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links. Defaults to review; choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
+        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references. Defaults to review; choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
+        definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
         definition("task_result_ack", "Record that you have handled a task result Core notified you about, by its exact resultId and dispatchId from that result message. Only the Agent the result notified can acknowledge it; repeats are idempotent. If that notification's wake-up has not been sent yet, Core skips it; one already in flight or delivered is not withdrawn. The message stays in your mailbox and the task is not changed. Reading mail, task_get, setting done or commenting never acknowledges a result.", json!({"requestId":request,"taskId":task_reference,"resultId":{"type":"string","description":"resultId from the result message."},"dispatchId":{"type":"string","description":"dispatchId from the same result message."}}), &["requestId","taskId","resultId","dispatchId"]),
         // Project Briefs; served by `project_brief`, not here.
         crate::project_brief::tool_definition("brief_get"),

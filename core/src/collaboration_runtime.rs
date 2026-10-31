@@ -67,7 +67,7 @@ impl Workspace {
             if call == "peer_read" { ws.project_update_notices(&mut value)?; }
             if !matches!(
                 call.as_str(),
-                "peers_list" | "projects_list" | "peer_read" | "task_list" | "task_get" | "delivery_get"
+                "peers_list" | "projects_list" | "peer_read" | "task_list" | "task_get" | "task_result_get" | "delivery_get"
             ) {
                 // A task's row changed: Home reads its live task references
                 // again (T-9). Mail and comments leave those rows as they are.

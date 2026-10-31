@@ -309,7 +309,7 @@ try {
     }));
     assert.ok(title.lines === 2 && title.clamp === "2", JSON.stringify(title));
     const h = await headings();
-    before(h, "Where things stand", "Earlier result");
+    before(h, "Earlier result", "Where things stand");
     assert.ok(!h.includes("The result"));
     const delivery = detail().locator(".collab-delivery");
     assert.match(await delivery.innerText(), /No Issue or PR linked yet/);
