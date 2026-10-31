@@ -11,6 +11,7 @@ import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
 import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
+import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
 import { PinnedSection } from "./PinnedSection";
@@ -23,6 +24,8 @@ import { homeText } from "./home-text";
 import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDensityRefusal } from "./home-density";
 
 export type { HomeTarget } from "./home-navigation";
+
+type HomeError = { kind: "unavailable" | "order" | "read"; reason: string };
 
 /** Brief changes have no event of their own yet; this catches what the
  * Agent and Job events do not. */
@@ -77,16 +80,26 @@ export function Home({
   const densityWorkspace = readOnly ? "" : workspaceId;
   const density = useHomeDensity(densityWorkspace);
   const densityRefusal = useHomeDensityRefusal(densityWorkspace);
-  const [data, setData] = useState<HomeData | null>(readOnly ? previewHome : null);
+  // A late read from a previous Workspace must never seed the new
+  // Workspace's overview (or its cards). Abort is checked before writes.
+  const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
+  const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
   // What went wrong, worded when shown so it follows the language (T-189):
   // a reply Home can't use, an order not saved, or Core's reason as it came.
-  const [error, setError] = useState<{ kind: "unavailable" | "order" | "read"; reason: string } | null>(null);
-  // Whether the last read failed, so pinned sections say they are not current.
-  const [readFailed, setReadFailed] = useState(false);
-  // When the last read succeeded, for live lists to say how old their facts
-  // are while a read fails (T-9).
-  const [readAt, setReadAt] = useState<string | null>(null);
-  const homeRead = useMemo<HomeRead>(() => ({ at: readAt, failed: readFailed }), [readAt, readFailed]);
+  const activeWorkspace = useRef(workspaceId);
+  activeWorkspace.current = workspaceId;
+  const [errorState, setErrorState] = useState<(HomeError & { workspaceId: string }) | null>(null);
+  const error = errorState?.workspaceId === workspaceId ? errorState : null;
+  const setError = useCallback((value: HomeError | null) => {
+    if (activeWorkspace.current === workspaceId) setErrorState(value ? { workspaceId, ...value } : null);
+  }, [workspaceId]);
+  // A read's age and failure belong to the same Workspace as its data,
+  // including while a new Workspace's first response is still pending.
+  const [readState, setReadState] = useState<(HomeRead & { workspaceId: string }) | null>(null);
+  const homeRead = useMemo<HomeRead>(() => readState?.workspaceId === workspaceId
+    ? { at: readState.at, failed: readState.failed }
+    : { at: null, failed: false }, [readState, workspaceId]);
+  const readFailed = homeRead.failed;
   const [tick, setTick] = useState(0);
   const [reordering, setReordering] = useState(false);
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
@@ -98,30 +111,37 @@ export function Home({
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
+    const failed = () => setReadState((previous) => ({
+      workspaceId,
+      at: previous?.workspaceId === workspaceId ? previous.at : null,
+      failed: true,
+    }));
     readHome(controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
         if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
           setError({ kind: "unavailable", reason: "" });
-          setReadFailed(true);
+          failed();
           return;
         }
-        setData((previous) => keepUnchanged(previous, value));
+        setReading((previous) => ({
+          workspaceId,
+          value: keepUnchanged(previous?.workspaceId === workspaceId ? previous.value : null, value),
+        }));
         onNeedsYou?.(value.needsYou);
         setError(null);
-        setReadFailed(false);
-        setReadAt(new Date().toISOString());
+        setReadState({ workspaceId, at: new Date().toISOString(), failed: false });
       })
       .catch((e) => {
         // The last read stays on screen; nothing is blanked while retrying.
         if (controller.signal.aborted) return;
         setError({ kind: "read", reason: errorText(e) });
-        setReadFailed(true);
+        failed();
       });
     return () => controller.abort();
     // A new report callback is not a reason to read again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnly, revision, jobsRevision, tick]);
+  }, [readOnly, workspaceId, revision, jobsRevision, tick]);
   useEffect(() => {
     if (readOnly) return;
     const timer = setInterval(() => {
@@ -380,7 +400,19 @@ export function Home({
         // Needs you first, on its own; then My widgets, two columns where
         // the pane is wide; then the projects.
         <div className="home-layout">
-          <div className="home-needs-area">
+          <HomeReturnOverview
+            key={readOnly ? "preview" : workspaceId}
+            data={data}
+            readFailed={readFailed}
+            onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
+            onNeedsYou={() => {
+              const target = document.getElementById("home-current-needs");
+              target?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+              target?.focus({ preventScroll: true });
+            }}
+            onNavigate={onNavigate}
+          />
+          <div className="home-needs-area" id="home-current-needs" tabIndex={-1}>
             <NeedsYou items={data.needsYou} projectName={projectName} onJump={jump} />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}
