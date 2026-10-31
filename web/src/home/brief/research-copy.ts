@@ -74,15 +74,17 @@ const ENGLISH: ResearchCopyWords = {
  * A desk's own text as it was written: the desk shows every field as plain
  * text, so the copy keeps it from reading as Markdown. One line; a backslash
  * before each character Markdown would take as markup (`*`, `_`, `` ` ``,
- * `~`, brackets, `<`, `>`, `|`, and `#`, which closes a heading when it ends
- * one), and before an `&` that would read as an entity.
+ * `~`, brackets, `<`, `>`, `|`, `#`, which closes a heading when it ends one,
+ * and math's `$`), and before an `&` that would read as an entity: the same
+ * rule as the report copy's own plain text (brief-copy.ts), so one report
+ * escapes all its plain fields alike.
  */
 const inline = (text: string) =>
   String(text ?? "")
     .replace(/\s*\n\s*/g, " ")
     .trim()
-    .replace(/[\\`*_~[\]<>|#]/g, "\\$&")
-    .replace(/&(?=#?\w+;)/g, "\\&");
+    .replace(/[\\`*_~[\]<>|#$]/g, "\\$&")
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, "\\&");
 /** The same where a line begins: nothing there starts a list. */
 const block = (text: string) => inline(text).replace(/^([-+])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
 
