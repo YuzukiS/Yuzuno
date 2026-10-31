@@ -132,9 +132,50 @@
   min-width: 0;
   gap: 1px;
 }
-/* Nothing shares line one with the name. */
-.agent-select.agent-row-top {
+/* Two lines beside one avatar: the name on the first, what the Agent is and
+   is doing on the second. The avatar stands beside both rather than setting
+   the height of the first, which is what kept a row at 89px (T-15). */
+.agent-list .agent-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 9px;
+  row-gap: 2px;
   align-items: center;
+  position: relative;
+  padding: 8px 14px;
+}
+.agent-list .agent-row > .agent-rail-avatar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+.agent-list .agent-row > .agent-select.agent-row-top {
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+  gap: 0;
+}
+.agent-list .agent-row > .agent-row-state {
+  grid-column: 2;
+  grid-row: 2;
+  margin-top: 0;
+}
+/* Anything else the row says spans both columns, under the two lines. */
+.agent-list .agent-row > .handoff-hint,
+.agent-list .agent-row > .agent-row-bottom {
+  grid-column: 1 / -1;
+}
+/* The whole row opens the Agent, the avatar included, while the actions
+   button and the words on the second line stay reachable above it. */
+.agent-list .agent-row > .agent-select.agent-row-top::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.agent-list .agent-row > .agent-row-menu {
+  z-index: 1;
 }
 .agent-identity > .agent-name {
   flex: none;

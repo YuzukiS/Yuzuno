@@ -63,10 +63,17 @@ await page.waitForTimeout(700);
 
 const rows = () => page.evaluate(() => {
   const w = (el) => (el ? Math.round(el.getBoundingClientRect().width) : null);
+  const fits = (() => {
+    const rail = document.querySelector(".agent-list");
+    if (!rail) return null;
+    const box = rail.getBoundingClientRect();
+    return [...document.querySelectorAll(".agent-row")]
+      .filter((r) => { const b = r.getBoundingClientRect(); return b.top >= box.top - 1 && b.bottom <= box.bottom + 1; }).length;
+  })();
   const head = document.querySelector(".conversation-heading h1");
   const headWhole = head ? head.scrollWidth <= head.clientWidth + 1 : null;
   const headText = head?.textContent ?? null;
-  return { head: { text: headText, whole: headWhole,
+  return { fits, head: { text: headText, whole: headWhole,
       box: head ? Math.round(head.getBoundingClientRect().width) : null },
     rows: [...document.querySelectorAll(".agent-row")].map((row) => {
     const name = row.querySelector(".agent-name");
@@ -82,6 +89,22 @@ const rows = () => page.evaluate(() => {
       activityClipped: activity ? activity.scrollWidth > activity.clientWidth + 1 : null,
       height: Math.round(row.getBoundingClientRect().height),
       menuHit: box ? Math.round(Math.min(box.width, box.height)) : null,
+      // The avatar stands beside the two lines, not above them: a row that
+      // lost its grid would still read correctly but look wrong (T-15).
+      beside: (() => {
+        const a = row.querySelector(".agent-rail-avatar")?.getBoundingClientRect();
+        const n = name?.getBoundingClientRect();
+        if (!a || !n) return null;
+        const lines = row.querySelector(".agent-row-state")?.getBoundingClientRect();
+        const middle = lines ? (n.top + lines.bottom) / 2 : n.top + n.height / 2;
+        return { leftOf: Math.round(n.left - a.right), offCentre: Math.round(Math.abs((a.top + a.bottom) / 2 - middle)) };
+      })(),
+      // The button must not sit over the words on the second line.
+      menuClear: (() => {
+        if (!box || !status) return null;
+        const t = status.getBoundingClientRect();
+        return !(box.left < t.right && box.right > t.left && box.top < t.bottom && box.bottom > t.top);
+      })(),
       // What a reader can actually read: the longest prefix that fits.
       visible: (() => {
         if (!name?.firstChild) return null;
@@ -139,6 +162,13 @@ check(before.filter((r) => r.activityClipped !== null).every((r) => r.activityCl
   "the activity after it is what runs out of room");
 check(before.every((r) => r.height >= 44), `a row is still at least 44px tall (${before.map((r) => r.height).join(", ")})`);
 check(before.every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px (${before[0].menuHit})`);
+check(before.every((r) => r.beside && r.beside.leftOf >= 0),
+  `the avatar stands beside the name, not above it (gap ${before.map((r) => r.beside?.leftOf).join(", ")})`);
+check(before.every((r) => r.beside && r.beside.offCentre <= 3),
+  `and is centred against both lines (off by ${before.map((r) => r.beside?.offCentre).join(", ")})`);
+check(before.every((r) => r.menuClear !== false),
+  "the \u2026 does not sit over the status word");
+console.log(`rows fully on screen: ${seen.fits}`);
 // The acceptance for keeping a 220px rail: these names can be told apart by
 // what is on the screen, not by what a pointer would reveal.
 const visible = before.map((r) => r.visible);

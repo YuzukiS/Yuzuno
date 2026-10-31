@@ -162,6 +162,16 @@ export function AgentRailRow({
         },
       })}
     >
+      {/* Beside both lines, so it is the row's own child rather than the
+          name's. Unread updates ring it, never a dot: dots beside the status
+          say what the Agent is doing. The button below covers the whole row,
+          so pressing the avatar still opens the Agent. */}
+      <span
+        className={`agent-rail-avatar${agent.unreadCount > 0 ? " has-unread" : ""}`}
+        aria-hidden="true"
+      >
+        <Avatar agent={agent} />
+      </span>
       <button
         ref={select}
         className="agent-select agent-row-top"
@@ -171,16 +181,7 @@ export function AgentRailRow({
         aria-current={selected ? "true" : undefined}
         title={t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}
       >
-        {/* Unread updates ring the avatar, never a dot: dots beside the
-            status say what the Agent is doing. */}
-        <span
-          className={`agent-rail-avatar${agent.unreadCount > 0 ? " has-unread" : ""}`}
-        >
-          <Avatar agent={agent} />
-        </span>
-        {/* The machine heads the name, beside the avatar. */}
         <span className="agent-identity">
-          <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
         </span>
       </button>
