@@ -305,3 +305,51 @@ test("the parts toggle belongs to the selected row: a row without parts offers n
     page.close();
   }
 });
+
+test("a statement resting on a row its claim does not show opens that row's evidence", async () => {
+  // The claim shows only the v2 plot; one statement rests on a v1 row.
+  const apart = structuredClone(doseStudy);
+  const claim = apart.body.elements.desk.props.claims[0];
+  claim.plots = ["recovery-v2"];
+  claim.statements[2].basis = ["high-v1"];
+  const page = mount(serve(apart));
+  try {
+    page.window.renderSection(section(page, apart, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+    assert.ok(!page.document.querySelector(".research-main").textContent.includes("−2.60"), "the v1 plot is not in this claim's view");
+    const link = [...page.document.querySelectorAll(".research-link")].find((item) => item.textContent.startsWith("High dose (Recovery time vs placebo (v1, superseded))"));
+    assert.ok(link, "the basis names the v1 row");
+    link.click();
+    const main = await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Evidence & limits") && page.document.querySelector(".research-main"), "the evidence view");
+    await until(() => main.textContent.includes("−2.60"), "the v1 row's own number");
+    assert.equal(main.querySelector("h4").textContent, "High dose");
+    assert.ok(main.textContent.includes("Provided by the Agent"), "the v1 row's numbers are the Agent's");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("while a newer version loads, its numbers show as loading, never the older version's as read", async () => {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const answer = serve(doseStudy, { 4: { "high-v2.value": { status: "read", value: -2.5, from: "results.json" } } });
+  const page = mount(async (url) => {
+    if (url.endsWith("version=4")) await held;
+    return answer(url);
+  });
+  try {
+    page.window.renderSection(section(page, doseStudy, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "version 3's number");
+    page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-1");
+    await until(() => page.document.querySelector('.research-origin[data-origin="loading"]'), "version 4 loading");
+    assert.equal(page.document.querySelectorAll('.research-origin[data-origin="read"]').length, 0, "nothing of version 3 is shown as read");
+    assert.ok(!page.document.querySelector(".research-desk").textContent.includes("−2.04"), "version 3's number is gone");
+    release();
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.50"), "version 4's number");
+    assert.ok(page.document.querySelector('.research-origin[data-origin="read"]'), "read from version 4's snapshot");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
