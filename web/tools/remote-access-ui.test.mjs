@@ -706,3 +706,56 @@ test("a lost answer to turning previews on is asked again as the same request; a
     p.close();
   }
 });
+
+test("a progress read that fails is tried again, and the change's end still shows (R1)", async () => {
+  let reads = 0;
+  let current = previews();
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview: current }) };
+    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
+      return { body: { operation: op("running", "validate", { id: "p-4", requestId: body.requestId }) } };
+    }
+    if (url.endsWith("/api/remote-access/preview/operations/p-4")) {
+      reads += 1;
+      if (reads === 1) throw new TypeError("Failed to fetch");
+      current = { ...previewsOn, operation: op("succeeded", "done", { id: "p-4", requestId: p.calls.find((c) => c.method === "POST").body.requestId }) };
+      return { body: current.operation };
+    }
+    return { status: 404, body: {} };
+  });
+  try {
+    await waitFor(() => button(p, "Turn on previews"), "the button");
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    await waitFor(() => p.alerts().some((a) => /progress could not be read .*trying again/.test(a)), "the failed read, said");
+    await waitFor(() => /Previews are on\./.test(p.text()), "the change's end, from the next read");
+    assert.equal(reads, 2, "read again after the failure");
+    assert.ok(!p.alerts().some((a) => /progress could not be read/.test(a)), "the failure is no longer shown");
+    assert.equal(button(p, "Turn off previews").disabled, false, "nothing is left waiting");
+  } finally {
+    p.close();
+  }
+});
+
+test("a turning off that left their Serve entry can be tried again without turning previews on (R1)", async () => {
+  const left = previews({
+    saved: { enabled: false, servePort: 8445, localPort: 4319, savedAt: "x", applied: true },
+    serve: { state: "ours", port: 8445, target: "http://127.0.0.1:4319", observedAt: "x" },
+    operation: op("failed", "done", { id: "p-5", requestId: "r-off", kind: "disable", error: "Serve port 8445 was not removed: serve config locked" }),
+  });
+  for (const preview of [left, { ...left, serve: { state: "error", detail: "no answer" }, operation: { ...left.operation, state: "uncertain" } }]) {
+    const p = mount((url, method) => {
+      if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview }) };
+      if (url.endsWith("/api/remote-access/preview") && method === "POST") return { body: { operation: op("succeeded", "done", { id: "p-6", kind: "disable" }) } };
+      return { status: 404, body: {} };
+    });
+    try {
+      await waitFor(() => p.previewStates().length === 4, "the previews' lines");
+      assert.match(p.text(), /Serve port 8445 was not removed/);
+      p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn off previews"));
+      await waitFor(() => p.calls.some((c) => c.method === "POST"), "turned off again");
+      assert.deepEqual(p.calls.find((c) => c.method === "POST").body.enabled, false);
+    } finally {
+      p.close();
+    }
+  }
+});

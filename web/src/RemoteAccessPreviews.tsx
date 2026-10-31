@@ -22,6 +22,7 @@ type Said =
   | { kind: "busy" }
   | { kind: "newRequest"; detail: string }
   | { kind: "lost" }
+  | { kind: "progress"; detail: string }
   | { kind: "core"; detail: string };
 
 // The section's own words (T-189); ports, addresses and what Core says are shown as they come.
@@ -48,6 +49,7 @@ const text = strings({
   busy: "Another phone access change is already running; its progress is shown above.",
   newRequest: (detail: string) => `${detail}. Press again to send it as a new change.`,
   lost: "Core's answer did not arrive, so whether it started is not known. What Core recorded is shown here.",
+  progress: (detail: string) => `The change's progress could not be read (${detail}); trying again.`,
   turnOn: "Turn on previews",
   turnOff: "Turn off previews",
   starting: "Starting…",
@@ -92,6 +94,7 @@ const text = strings({
   busy: "另一项手机访问更改正在进行；它的进度显示在上方。",
   newRequest: (detail) => `${detail}。再按一次即可作为新的更改发送。`,
   lost: "Core 的回答没有送达，因此不知道它是否已开始。这里显示的是 Core 记录的情况。",
+  progress: (detail) => `无法读取这项更改的进度（${detail}）；正在重试。`,
   turnOn: "开启预览",
   turnOff: "关闭预览",
   starting: "正在开始…",
@@ -143,6 +146,8 @@ function saidText(said: Said, language: Language): string {
       return t.newRequest(said.detail);
     case "lost":
       return t.lost;
+    case "progress":
+      return t.progress(said.detail);
     case "core":
       return said.detail;
   }
@@ -206,6 +211,8 @@ export function RemoteAccessPreviews({
   const [started, setStarted] = useState<RemoteAccessOperation | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<Said | null>(null);
+  // Bumped when a progress read fails, so the next read is tried.
+  const [retries, setRetries] = useState(0);
   const operation = started ?? preview.operation;
   const busy = running(operation);
 
@@ -217,9 +224,13 @@ export function RemoteAccessPreviews({
       savePending(workspaceId, null, "previewPending");
     }
   }, [last, workspaceId]);
+  // Once a read of the whole view (Check, say) has the change ended, it is the view's.
+  useEffect(() => {
+    if (started && last?.id === started.id && !running(last)) setStarted(null);
+  }, [last, started]);
 
-  // While a change runs, its progress is read about once a second; once it
-  // has ended, the whole view is read again.
+  // While a change runs, its progress is read about once a second, and again
+  // after a read that fails; once it has ended, the whole view is read again.
   useEffect(() => {
     if (!operation || !busy) return;
     const controller = new AbortController();
@@ -229,20 +240,23 @@ export function RemoteAccessPreviews({
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
+        setError((said) => (said?.kind === "progress" ? null : said));
         if (running(op)) setStarted(op);
         else {
           await refresh();
           if (!controller.signal.aborted) setStarted(null);
         }
       } catch (e) {
-        if (!controller.signal.aborted) setError({ kind: "core", detail: errorText(e) });
+        if (controller.signal.aborted) return;
+        setError({ kind: "progress", detail: errorText(e) });
+        setRetries((n) => n + 1);
       }
     }, 1000);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [busy, operation, refresh]);
+  }, [busy, operation, refresh, retries]);
 
   function edit(change: Partial<Fields>) {
     setFields((old) => ({ ...old, ...change }));
@@ -288,6 +302,10 @@ export function RemoteAccessPreviews({
 
   const { saved, listening, verification, defaults } = preview;
   const on = !!saved?.enabled || !!listening;
+  // A turning off that could not remove their Serve entry leaves it Core's,
+  // to remove on the next try: it can be turned off until it is gone.
+  const unfinished = operation?.kind === "disable" && ["failed", "uncertain", "interrupted"].includes(operation.state);
+  const removable = on || preview.serve.state === "ours" || unfinished;
   const done = operation ? outcome(operation, language) : null;
   const stepIndex = operation ? operationSteps.indexOf(operation.step) : -1;
   const locked = sending || busy || phoneBusy || !workspaceId;
@@ -357,12 +375,12 @@ export function RemoteAccessPreviews({
           )}
         </div>
       )}
-      {canChange && !preview.available && !on && (
+      {canChange && !preview.available && !removable && (
         <p className="remote-access-note" role="note">
           {t.needsPhone}
         </p>
       )}
-      {canChange && (preview.available || on) && (
+      {canChange && (preview.available || removable) && (
         <div className="settings-group remote-access-form">
           {preview.available && (
             <details className="remote-access-advanced">
@@ -406,7 +424,7 @@ export function RemoteAccessPreviews({
                   {sending ? t.starting : t.turnOn}
                 </button>
               )}
-              {on && (
+              {removable && (
                 <button type="button" className="secondary-button" disabled={locked} onClick={() => void send(false)}>
                   {t.turnOff}
                 </button>
