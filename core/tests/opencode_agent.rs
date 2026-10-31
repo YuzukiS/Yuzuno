@@ -1971,3 +1971,106 @@ async fn context_usage_a_late_answer_after_a_new_input_never_measures() {
     assert_eq!(usage_of(&d), Some((300, 1000, second, false)));
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// What R6's two tests share: a measured first answer, then a compaction
+/// 100 ms after it whose summary OpenCode doesn't store (so a reconnect
+/// can't read it again). The first Turn, what is last known after the
+/// compaction, and a time between the two.
+async fn measured_then_compacted(lab: &Lab) -> (String, Option<(u64, u64, String, bool)>, i64) {
+    let session = lab.session();
+    let flash = json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":100}});
+    let (first, measured) = answered(lab, "c1", flash).await;
+    assert_eq!(measured, Some((100, 1000, first.clone(), false)));
+    let measured_at = chrono::DateTime::parse_from_rfc3339(&lab.detail().context_usage.as_ref().unwrap().updated_at)
+        .unwrap().timestamp_millis();
+    let compacted_at = measured_at + 100;
+    lab.control("event", json!({"type":"message.updated","properties":{"sessionID":session,"info":{
+        "id":"msg_summary","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
+        "time":{"created":compacted_at,"completed":compacted_at},"tokens":{"total":900}}}})).await;
+    let d = lab.until("the compaction", |d| d.context_usage.as_ref().is_some_and(|u| u.stale)).await;
+    let last_known = Some((100, 1000, first.clone(), true));
+    assert_eq!(usage_of(&d), last_known);
+    (first, last_known, measured_at + 50)
+}
+
+/// R6 b6556a88: a compaction is a boundary for answers. An answer to the
+/// latest input that completed before it, never considered, newer than the
+/// last one that was, arrives after it: it measures nothing, then or when a
+/// new connection reads it again. An answer after the compaction measures.
+#[tokio::test]
+async fn context_usage_a_late_answer_from_before_a_compaction_never_measures() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let (first, last_known, before) = measured_then_compacted(&lab).await;
+
+    // The late answer, stored as OpenCode would; its record change is journaled.
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
+        "providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":900},"time":{"created":before,"completed":before}}})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    assert_eq!(usage_of(&lab.detail()), last_known, "an answer from before the compaction measures nothing");
+
+    // A new connection reads the stored late answer again, without the
+    // summary: the boundary is kept with the Agent, so nothing changes.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    assert!(ends(old).await);
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(usage_of(&lab.detail()), last_known, "after a reconnect");
+
+    // An answer after the compaction measures.
+    let flash = json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":300}});
+    let (next, measured) = answered(&lab, "c2", flash).await;
+    assert_eq!(measured, Some((300, 1000, next, false)));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// R6 b6556a88, the catalog's side: an answer from before a compaction whose
+/// model this connection's list doesn't have starts no catalog read. The
+/// read is decided once the answer's record change is written, before the
+/// next event is handled; that event is the barrier.
+#[tokio::test]
+async fn context_usage_a_late_answer_from_before_a_compaction_reads_no_catalog() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    // A model OpenCode lists that this connection's list doesn't have.
+    let mut providers = lab.control("mode", json!({})).await["providers"].clone();
+    let deepseek = providers["providers"].as_array_mut().unwrap().iter_mut().find(|p| p["id"] == "deepseek").unwrap();
+    let mut unlisted = deepseek["models"]["deepseek-flash"].clone();
+    unlisted["id"] = json!("deepseek-unlisted");
+    unlisted["limit"]["context"] = json!(5000);
+    deepseek["models"]["deepseek-unlisted"] = unlisted;
+    lab.control("mode", json!({"providers":providers})).await;
+    let (first, last_known, before) = measured_then_compacted(&lab).await;
+
+    let reads = providers_reads(&lab);
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    let handled = updates(&lab);
+    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
+        "providerID":"deepseek","modelID":"deepseek-unlisted","tokens":{"total":500},"time":{"created":before,"completed":before}}})).await;
+    for _ in 0..200 {
+        if updates(&lab) > handled { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(updates(&lab) > handled, "the late answer handled");
+    // An event after it is handled once that answer's handling, a catalog read decided or not, is done.
+    let status = statuses(&lab);
+    lab.control("idle", json!({"sessionID":session})).await;
+    for _ in 0..200 {
+        if statuses(&lab) > status { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(statuses(&lab) > status, "an event after the late answer");
+    // A read started then would reach OpenCode at once; none did, and nothing measured.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(providers_reads(&lab), reads, "no catalog read for an answer from before the compaction");
+    assert_eq!(usage_of(&lab.detail()), last_known);
+    lab.ws.close_agent(ID).await.unwrap();
+}

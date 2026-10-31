@@ -101,15 +101,17 @@ impl ContextUsage {
 }
 
 /// The newest answer of an OpenCode Agent's own session that was considered
-/// for its context usage, measured or not (T-10, R5): the boundary between
-/// newer and older answers, which `ContextUsage` (shown) is not. Kept for
-/// the native `session` it was seen in only: another one starts with none.
+/// for its context usage, measured or not, or a newer compaction's summary
+/// (T-10, R5, R6): the boundary between newer and older answers, which
+/// `ContextUsage` (shown) is not. Kept for the native `session` it was seen
+/// in only: another one starts with none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSeen {
     pub session: String,
-    /// When the answer completed (ms).
+    /// When the answer or summary completed (ms).
     pub at: i64,
+    /// The answer's or summary's message ID.
     pub answer: String,
 }
 

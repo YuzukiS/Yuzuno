@@ -1520,9 +1520,10 @@ fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&V
 /// The Agent's context usage from an answer of its own session (T-10,
 /// contract on T-10 #757): the newest completed answer to the latest input
 /// of its newest Turn, against the window of the model that answered. A
-/// compaction makes what was measured before it last known; an answer that
-/// can't be measured does too, never 0. An answer replayed, or no newer than
-/// the newest one considered in the session (`seen`), changes nothing. An
+/// compaction makes what was measured before it last known, and no answer
+/// older than it measures after it; an answer that can't be measured makes
+/// it last known too, never 0. An answer replayed, or no newer than the
+/// newest one or compaction considered in the session (`seen`), changes nothing. An
 /// answer whose model the connection's list didn't have waits, alone, for
 /// one read of the catalog (`wanted`).
 fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
@@ -1530,11 +1531,18 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
         return;
     }
     if info["summary"] == true {
-        // A compaction's summary counts what was there before it.
+        // A compaction's summary counts what was there before it. It is also
+        // a boundary, kept as the session's newest considered (`seen`): an
+        // answer that completed before it, however late it arrives, after a
+        // reconnect too, measures nothing and reads no catalog (R6 b6556a88).
         let at = info["time"]["completed"].as_i64().or_else(|| info["time"]["created"].as_i64());
         if let Some(at) = at.filter(|at| measured_before(d, *at)) {
             stale(d);
             c.compacted(at);
+            let summary = info["id"].as_str().unwrap_or_default();
+            if seen(d, &c.session).is_none_or(|seen| (at, summary) > seen) {
+                d.opencode_usage_seen = Some(UsageSeen { session: c.session.clone(), at, answer: summary.to_owned() });
+            }
         }
         return;
     }
@@ -1616,7 +1624,8 @@ fn latest_input(turn: &Value) -> Option<&str> {
 }
 
 /// The newest answer of `session` considered for the context usage, measured
-/// or not, as when it completed and its ID; none of another session.
+/// or not, or a newer compaction's summary, as when it completed and its ID;
+/// none of another session.
 fn seen<'a>(d: &'a AgentDetail, session: &str) -> Option<(i64, &'a str)> {
     d.opencode_usage_seen.as_ref().filter(|seen| seen.session == session).map(|seen| (seen.at, seen.answer.as_str()))
 }
