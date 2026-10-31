@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Search, X } from "lucide-react";
 import {
   flexRender,
@@ -27,6 +27,8 @@ const text = strings({
   count: (shown: number, total: number) => `${shown} of ${total} rows`,
   selected: (count: number) => `${count} selected`,
   clearSelection: "Clear selection",
+  showAllRows: (count: number) => `Show all ${count} rows`,
+  showFewerRows: "Show fewer",
 }, {
   filter: (title) => `筛选${title}`,
   filterHint: "筛选…",
@@ -40,7 +42,20 @@ const text = strings({
   count: (shown, total) => `${shown} / ${total} 行`,
   selected: (count) => `已选 ${count} 行`,
   clearSelection: "清除选择",
+  showAllRows: (count) => `显示全部 ${count} 行`,
+  showFewerRows: "收起",
 });
+
+/** A column every non-empty cell of which is a number: set right, in tabular figures. */
+const numericColumn = (rows: TableProps["rows"], key: string) =>
+  rows.some((row) => typeof row.cells[key] === "number") &&
+  rows.every((row) => {
+    const value = row.cells[key];
+    return value === null || value === undefined || value === "" || typeof value === "number";
+  });
+
+/** Folding leaves at least this many rows out, or shows them all. */
+const FOLD_SLACK = 2;
 
 export function ResultTable({
   id,
@@ -48,7 +63,14 @@ export function ResultTable({
   rows,
   columns: definitions,
   selectable = false,
-}: TableProps) {
+  pageSize,
+}: TableProps & {
+  /** Home (T-9): show this many rows until "Show all", so a long table
+   * reads as part of the page instead of a box that scrolls on its own;
+   * the row count then shows only when it says something. A conversation's
+   * result leaves it unset and shows every row and its count as before. */
+  pageSize?: number;
+}) {
   const t = useStrings(text);
   const { views, update } = useResult();
   const view = views[id] || emptyView;
@@ -79,7 +101,16 @@ export function ResultTable({
     getFilteredRowModel: getFilteredRowModel(),
     getSortedRowModel: getSortedRowModel(),
   });
-  const visibleRows = table.getRowModel().rows;
+  const matching = table.getRowModel().rows;
+  const [all, setAll] = useState(false);
+  const folds = pageSize !== undefined && matching.length > pageSize + FOLD_SLACK;
+  const visibleRows = folds && !all ? matching.slice(0, pageSize) : matching;
+  const numeric = useMemo(
+    () => new Set(definitions.filter((column) => numericColumn(rows, column.key)).map((column) => column.key)),
+    [definitions, rows],
+  );
+  const filtered = matching.length !== rows.length;
+  const showCount = pageSize === undefined || filtered || (folds && !all);
   const validSelected = view.selected.filter((selected) =>
     rows.some((row) => row.id === selected),
   );
@@ -127,6 +158,7 @@ export function ResultTable({
                   <th
                     key={header.id}
                     scope="col"
+                    data-numeric={numeric.has(header.column.id) || undefined}
                     aria-sort={
                       header.column.getIsSorted() === "asc"
                         ? "ascending"
@@ -153,7 +185,7 @@ export function ResultTable({
                     </button>
                   </th>
                 ))}
-                {hasSources && <th scope="col">{t.sources}</th>}
+                {hasSources && <th scope="col" className="result-sources-cell">{t.sources}</th>}
               </tr>
             ))}
           </thead>
@@ -179,13 +211,17 @@ export function ResultTable({
                     />
                   </td>
                 )}
-                {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id}>
+                {row.getVisibleCells().map((cell, index) => (
+                  <td
+                    key={cell.id}
+                    data-numeric={numeric.has(cell.column.id) || undefined}
+                    data-primary={index === 0 || undefined}
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
                 {hasSources && (
-                  <td>
+                  <td className="result-sources-cell">
                     <SourceLinks ids={row.original.sourceIds || []} compact />
                   </td>
                 )}
@@ -199,28 +235,37 @@ export function ResultTable({
           </p>
         )}
       </div>
-      <div className="result-table-caption">
-        <span>
-          {t.count(visibleRows.length, rows.length)}
-        </span>
-        {selectable && (
-          <span>
-            {t.selected(validSelected.length)}
-            {validSelected.length > 0 && (
-              <>
-                {" "}
-                ·{" "}
-                <button
-                  type="button"
-                  onClick={() => update(id, { selected: [] })}
-                >
-                  {t.clearSelection}
-                </button>
-              </>
-            )}
-          </span>
-        )}
-      </div>
+      {(showCount || folds || selectable) && (
+        <div className="result-table-caption">
+          {showCount && (
+            <span>
+              {t.count(pageSize === undefined ? matching.length : visibleRows.length, rows.length)}
+            </span>
+          )}
+          {folds && (
+            <button type="button" className="result-table-more" aria-expanded={all} onClick={() => setAll(!all)}>
+              {all ? t.showFewerRows : t.showAllRows(matching.length)}
+            </button>
+          )}
+          {selectable && (
+            <span>
+              {t.selected(validSelected.length)}
+              {validSelected.length > 0 && (
+                <>
+                  {" "}
+                  ·{" "}
+                  <button
+                    type="button"
+                    onClick={() => update(id, { selected: [] })}
+                  >
+                    {t.clearSelection}
+                  </button>
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      )}
     </section>
   );
 }
