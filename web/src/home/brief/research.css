@@ -207,6 +207,28 @@
   color: var(--research-attention);
 }
 
+/* The claim's primary result: its number first, then its interval and origin. */
+.research-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--research-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--green) 6%, var(--paper));
+}
+.research-big {
+  font-variant-numeric: tabular-nums;
+}
+.research-big b {
+  font-size: 2.1rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.research-desk[data-density="high"] .research-big b {
+  font-size: 1.6rem;
+}
+
 /* Interval rows: label, track, value. */
 .research-scale {
   display: flex;
@@ -231,7 +253,7 @@
 }
 .research-row {
   display: grid;
-  grid-template-columns: minmax(90px, 0.9fr) minmax(120px, 2fr) minmax(0, 1.3fr);
+  grid-template-columns: minmax(80px, 0.8fr) minmax(140px, 2.6fr) minmax(0, 1.2fr);
   align-items: center;
   gap: 10px;
   padding: 6px 6px;
@@ -357,6 +379,9 @@
 .research-snapshot,
 .research-described {
   font-size: 0.8rem;
+}
+.research-snapshot .research-note {
+  display: block;
 }
 .research-snapshot[data-unavailable] {
   color: var(--research-attention);

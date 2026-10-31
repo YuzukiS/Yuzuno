@@ -252,12 +252,11 @@ try {
     assert.ok(Math.abs(shown.claims.left - shown.main.left) < 4, "one column");
     assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
     await shot("phone-390-claim.png");
-    await desk("dose-study").screenshot({ path: resolve(output, "phone-390-desk.png") });
-    report.shots.push("phone-390-desk.png");
+    await shot("phone-390-page.png", true);
     await radio("pass-bench", "Views of this desk", "Next steps").click();
     await until("the linked task", async () => (await desk("pass-bench").innerText()).includes("Quiet machine run"));
-    await desk("pass-bench").screenshot({ path: resolve(output, "phone-390-next.png") });
-    report.shots.push("phone-390-next.png");
+    await desk("pass-bench").scrollIntoViewIfNeeded();
+    await shot("phone-390-next.png");
     await page.close();
   });
   if (report.errors.length) report.failures.push({ name: "console", error: report.errors.join("\n") });

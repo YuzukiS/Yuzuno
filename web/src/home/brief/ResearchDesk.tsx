@@ -382,7 +382,7 @@ function SourceLine({ source, info, lines }: { source: Source; info?: SourceInfo
   );
 }
 
-function Statements({ claim, onBasis }: { claim: Claim; onBasis: (id: string) => void }) {
+function Statements({ claim, onBasis, labelOf }: { claim: Claim; onBasis: (id: string) => void; labelOf: (id: string) => string }) {
   const t = useStrings(researchText);
   const list = (stance: "can" | "cannot") => (claim.statements ?? []).filter((statement) => statement.stance === stance);
   if (!claim.statements?.length) return null;
@@ -402,7 +402,7 @@ function Statements({ claim, onBasis }: { claim: Claim; onBasis: (id: string) =>
                       {t.restsOn}:{" "}
                       {statement.basis.map((id) => (
                         <button key={id} type="button" className="research-link" onClick={() => onBasis(id)}>
-                          {id}
+                          {labelOf(id)}
                         </button>
                       ))}
                     </span>
@@ -443,6 +443,15 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
     choose({ view: "evidence" });
   };
   const sourceInfo = (id: string | undefined) => (id ? resolved?.sources[id] : undefined);
+  /** A row, part or source by its label, for the reader rather than its id. */
+  const labelOf = (id: string) => {
+    const row = rowById(id);
+    if (row) return `${row.label} (${plotOf(id)?.title ?? ""})`;
+    const owner = partOwner(id);
+    const part = owner?.parts?.find((p) => p.id === id);
+    if (owner && part) return `${owner.label} · ${part.label}`;
+    return sources.get(id)?.label ?? id;
+  };
   const plots = claim?.plots?.length ? desk.plots.filter((plot) => claim.plots!.includes(plot.id)) : desk.plots;
   const plot = plotOf(row?.id);
 
@@ -468,6 +477,32 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
     );
   };
 
+  const primary = claim?.primary ? rowById(claim.primary) : undefined;
+  const primaryPlot = plotOf(primary?.id);
+  const primaryCard = primary && (() => {
+    const signed = !!primaryPlot?.reference && primaryPlot.reference.value === 0;
+    const [value, low, high] = (["value", "low", "high"] as const).map((field) => shownOf(primary.estimate[field], `${primary.id}.${field}`, resolved, loading));
+    return (
+      <section className="research-primary">
+        <span className="research-caption">{t.primary}: {primary.label}</span>
+        <p className="research-big">
+          <b>{format(value?.value ?? null, primaryPlot?.digits, signed)}</b>
+          {primaryPlot?.unit && <span> {primaryPlot.unit}</span>}
+        </p>
+        {(low || high) && (
+          <p>
+            {primaryPlot?.interval ?? t.interval} [{format(low?.value ?? null, primaryPlot?.digits, signed)}, {format(high?.value ?? null, primaryPlot?.digits, signed)}]
+          </p>
+        )}
+        {value && (
+          <span className="research-origin-text" data-origin={value.origin}>
+            {t.origin[value.origin]}
+            {value.from && <> · <code>{value.from}</code></>}
+          </span>
+        )}
+      </section>
+    );
+  })();
   const claimView = claim && (
     <>
       <header className="research-claim-head">
@@ -477,6 +512,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
         <h4>{claim.title}</h4>
         <p>{claim.statement}</p>
       </header>
+      {primaryCard}
       {plots.map((item) => {
         const signed = !!item.reference && item.reference.value === 0;
         const selectedHere = item.rows.find((r) => r.id === selection.row);
@@ -517,7 +553,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
           </section>
         );
       })}
-      <Statements claim={claim} onBasis={selectBasis} />
+      <Statements claim={claim} onBasis={selectBasis} labelOf={labelOf} />
       {claim.conditions?.length ? (
         <section className="research-conditions">
           <h5>{t.conditions}</h5>
