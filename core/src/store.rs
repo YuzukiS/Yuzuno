@@ -549,6 +549,9 @@ pub struct Store {
     // the first Core's running agents offline merely because it uses another port.
     // It also keeps older Cores out while they would mishandle this Workspace.
     pub(crate) workspace_lock: crate::older_cores::Guard,
+    /// This opening of the Workspace, new each time Core starts. A service's
+    /// automatic retry made under another one never starts (T-14).
+    pub(crate) instance: String,
 }
 
 impl Drop for Store {
@@ -1219,6 +1222,7 @@ impl Store {
             }),
             records: Mutex::new(HashMap::new()),
             workspace_lock: crate::older_cores::Guard::new(workspace_lock, path.with_extension("lock")),
+            instance: uuid::Uuid::new_v4().to_string(),
         };
         // Disk is historical evidence, never proof a process is still running.
         for a in store.agents()? {

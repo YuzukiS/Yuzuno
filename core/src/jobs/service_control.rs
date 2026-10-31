@@ -18,6 +18,18 @@ pub(crate) struct Request {
     source_job_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_seconds: Option<u64>,
+    /// Start only: the user's choice of automatic retry for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery: Option<Recovery>,
+    /// The recovery action only: "manual" turns automatic retry off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Recovery {
+    mode: String,
 }
 
 impl Request {
@@ -27,16 +39,26 @@ impl Request {
         ensure!(!self.expected_job_id.is_empty() && self.expected_job_id.len() <= 128 && self.expected_intent_revision >= 0,
             "invalid_input: expectedJobId and a nonnegative expectedIntentRevision are required");
         match action {
-            "stop" => ensure!(self.source_job_id.is_none() && self.timeout_seconds.is_none(), "invalid_input: stop takes no launch settings"),
+            "stop" => ensure!(self.source_job_id.is_none() && self.timeout_seconds.is_none() && self.recovery.is_none() && self.mode.is_none(),
+                "invalid_input: stop takes no launch settings"),
             "start" => {
                 ensure!(self.source_job_id.as_deref() == Some(self.expected_job_id.as_str()),
                     "invalid_input: sourceJobId must be the expected current Job");
                 ensure!(self.timeout_seconds.is_some_and(|n| (1..=604800).contains(&n)),
                     "invalid_input: timeoutSeconds must be 1–604800");
+                ensure!(self.mode.is_none() && self.recovery.as_ref().is_none_or(|r| r.mode == "bounded"),
+                    "invalid_input: recovery.mode is \"bounded\", or recovery is left out for a manual run");
             }
+            "recovery" => ensure!(self.source_job_id.is_none() && self.timeout_seconds.is_none() && self.recovery.is_none()
+                && self.mode.as_deref() == Some("manual"),
+                "invalid_input: the recovery action takes only mode \"manual\", which turns automatic retry off"),
             _ => bail!("invalid_input: unknown service action"),
         }
         Ok(())
+    }
+
+    fn bounded(&self) -> bool {
+        self.recovery.is_some()
     }
 }
 
@@ -53,21 +75,41 @@ pub(super) struct StartGuard {
     prepared: Value,
 }
 
+/// Runs each time Core opens the Workspace. Automatic retry is armed only by
+/// a user start in a running Core, so any still on belongs to the Core before
+/// this one: it is closed (`core_restart`) before the queue runs. Nothing it
+/// had queued may start (each retry also carries that Core's instance).
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS project_service_intents(
         service_id TEXT PRIMARY KEY REFERENCES project_services(id) ON DELETE CASCADE,
         data TEXT NOT NULL);
         DELETE FROM project_service_intents WHERE service_id NOT IN (SELECT id FROM project_services);")?;
+    let mut armed = db.prepare("SELECT service_id,data FROM project_service_intents WHERE json_extract(data,'$.recoveryMode')='bounded'")?;
+    let rows = armed.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (service, raw) in rows {
+        let mut value: Value = serde_json::from_str(&raw)?;
+        value["recovery"] = super::service_recovery::closed(&value["recovery"], "halted", "core_restart");
+        value["recoveryMode"] = json!("manual");
+        write_intent(db, &service, &value)?;
+    }
     Ok(())
 }
 
-fn intent(db: &Connection, service: &str) -> Result<Value> {
+pub(super) fn intent(db: &Connection, service: &str) -> Result<Value> {
     let raw: Option<String> = db.query_row("SELECT data FROM project_service_intents WHERE service_id=?1", [service], |r| r.get(0)).optional()?;
     Ok(match raw {
         Some(raw) => serde_json::from_str(&raw)?,
         None => json!({"revision":0,"desiredState":"unspecified","recoveryMode":"manual",
             "requestedAt":null,"requestedBy":null,"appliesToJobId":null,"sourceJobId":null,"requestId":null}),
     })
+}
+
+/// Rewrite a service's intent as given: the recovery bookkeeping only, which
+/// never changes `revision` (only the user's own actions do).
+pub(super) fn write_intent(db: &Connection, service: &str, value: &Value) -> Result<()> {
+    db.execute("INSERT INTO project_service_intents(service_id,data) VALUES(?1,?2)
+        ON CONFLICT(service_id) DO UPDATE SET data=excluded.data", params![service,value.to_string()])?;
+    Ok(())
 }
 
 pub(crate) fn ensure_not_stopped(db: &Connection, service: &str) -> Result<()> {
@@ -114,33 +156,92 @@ fn compare(db: &Connection, service: &str, request: &Request) -> Result<Current>
     Ok(current)
 }
 
-fn save_intent(db: &Connection, service: &str, request: &Request, state: &str, job: &str) -> Result<Value> {
+/// Stop's and opt-out's CAS, scoped to the recovery period: a reading taken
+/// before an automatic retry (which never changes `revision`) still names
+/// that period, so it is accepted when both the Job it saw and the current
+/// Job belong to it. A new manual start (a new revision) or a run that took
+/// over (outside the lineage) still makes it stale.
+fn compare_period(db: &Connection, service: &str, request: &Request) -> Result<Current> {
+    let intent = intent(db, service)?;
+    ensure!(intent["revision"] == request.expected_intent_revision,
+        "stale_service_state: the service intent changed; read the service again before choosing an action");
+    let current = current(db, service)?;
+    if current.job["id"] == request.expected_job_id {
+        return Ok(current);
+    }
+    let recovery = &intent["recovery"];
+    let seen = store::get(db, &request.expected_job_id).ok();
+    ensure!(seen.is_some_and(|seen| super::service_recovery::in_lineage(recovery, &seen))
+        && super::service_recovery::in_lineage(recovery, &current.job),
+        "stale_service_state: this service now refers to another Job; no action was taken on it");
+    Ok(current)
+}
+
+/// A user action's intent: a new revision, with this request's identity.
+fn save_intent(db: &Connection, service: &str, request: &Request, state: &str, job: &str, recovery: Value) -> Result<Value> {
     let revision = request.expected_intent_revision.checked_add(1).context("Service intent revision exhausted")?;
-    let value = json!({"revision":revision,"desiredState":state,"recoveryMode":"manual","requestedAt":now(),
-        "requestedBy":{"kind":"user"},"appliesToJobId":job,"sourceJobId":request.source_job_id,"requestId":request.request_id});
-    db.execute("INSERT INTO project_service_intents(service_id,data) VALUES(?1,?2)
-        ON CONFLICT(service_id) DO UPDATE SET data=excluded.data", params![service,value.to_string()])?;
+    let mode = if recovery["state"] == "active" { "bounded" } else { "manual" };
+    let value = json!({"revision":revision,"desiredState":state,"recoveryMode":mode,"requestedAt":now(),
+        "requestedBy":{"kind":"user"},"appliesToJobId":job,"sourceJobId":request.source_job_id,"requestId":request.request_id,
+        "recovery":recovery});
+    write_intent(db, service, &value)?;
     Ok(value)
 }
 
 fn receipt(db: &Connection, service: &str, action: &str, request: &Request, intent: Value, job: &Value) -> Result<Value> {
+    receipt_with(db, service, action, request, intent, job, json!({}))
+}
+
+fn receipt_with(db: &Connection, service: &str, action: &str, request: &Request, intent: Value, job: &Value, extra: Value) -> Result<Value> {
     // The durable acknowledgment is the state at this action, not a refreshed
     // Job record. Retried responses never expose env, argv or private paths.
-    let output = json!({"serviceId":service,"requestId":request.request_id,"action":action,
+    let mut output = json!({"serviceId":service,"requestId":request.request_id,"action":action,
         "intent":intent,"jobId":job["id"],"status":job["status"]});
+    if let (Some(output), Some(extra)) = (output.as_object_mut(), extra.as_object()) {
+        output.extend(extra.clone());
+    }
     db.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES('user',?1,?2,?3,?4)",
         params![format!("service_{action}"),request.request_id,payload(service,request)?.to_string(),output.to_string()])?;
     Ok(output)
 }
 
+/// The user's Stop closes the whole recovery period: the stop intent, the
+/// current Job's cancel and the halted recovery commit together. A retry not
+/// yet reserved is cancelled outright and never starts; one in launch
+/// preparation or running follows Jobs' cancel, confirmed later.
 fn stop(store: &Store, service: &str, request: &Request) -> Result<Value> {
     let mut db = store.db.write()?;
     let tx = db.transaction()?;
     if let Some(value) = previous(&tx, service, "stop", request)? { return Ok(value); }
-    let current = compare(&tx, service, request)?;
-    let saved = save_intent(&tx, service, request, "stopped", &request.expected_job_id)?;
-    let job = store::request_cancel_in(store, &tx, None, current.job["id"].as_str().context("Missing Job identity")?)?;
+    let current = compare_period(&tx, service, request)?;
+    let recovery = super::service_recovery::closed(&intent(&tx, service)?["recovery"], "halted", "user_stop");
+    let id = current.job["id"].as_str().context("Missing Job identity")?;
+    let saved = save_intent(&tx, service, request, "stopped", id, recovery)?;
+    let job = store::request_cancel_in(store, &tx, None, id)?;
     let answer = receipt(&tx, service, "stop", request, saved, &job)?;
+    tx.commit()?;
+    Ok(answer)
+}
+
+/// The user's opt-out: no later automatic retry. One still queued (not
+/// reserved) is cancelled and never starts; a run in launch preparation or
+/// running keeps this round.
+fn opt_out(store: &Store, service: &str, request: &Request) -> Result<Value> {
+    let mut db = store.db.write()?;
+    let tx = db.transaction()?;
+    if let Some(value) = previous(&tx, service, "recovery", request)? { return Ok(value); }
+    let current = compare_period(&tx, service, request)?;
+    let before = intent(&tx, service)?;
+    ensure!(before["recoveryMode"] == "bounded",
+        "recovery_off: automatic retry is not on for this service; nothing was changed");
+    let recovery = super::service_recovery::closed(&before["recovery"], "off", "opted_out");
+    let id = current.job["id"].as_str().context("Missing Job identity")?.to_owned();
+    let queued_retry = current.job["recoveryOf"].is_object() && current.job["status"] == "queued";
+    let state = before["desiredState"].as_str().unwrap_or("running").to_owned();
+    let saved = save_intent(&tx, service, request, &state, &id, recovery)?;
+    let job = if queued_retry { store::request_cancel_in(store, &tx, None, &id)? } else { current.job };
+    let cancelled = if queued_retry { json!(id) } else { Value::Null };
+    let answer = receipt_with(&tx, service, "recovery", request, saved, &job, json!({"cancelledRetryJobId":cancelled}))?;
     tx.commit()?;
     Ok(answer)
 }
@@ -218,8 +319,17 @@ pub(super) fn check_prepared(guard: &StartGuard, input: &Submit, snapshot: &Valu
     check_snapshot(&guard.source["snapshot"], snapshot)
 }
 
-pub(super) fn started(db: &Connection, guard: &StartGuard, job: &Value) -> Result<()> {
-    let saved = save_intent(db, &guard.service_id, &guard.request, "running", job["id"].as_str().context("Missing Job identity")?)?;
+/// A user start: a new revision, which is also the generation of the
+/// recovery period it arms when the user chose automatic retry.
+pub(super) fn started(db: &Connection, guard: &StartGuard, job: &Value, instance: &str) -> Result<()> {
+    let id = job["id"].as_str().context("Missing Job identity")?;
+    let recovery = if guard.request.bounded() {
+        let generation = guard.request.expected_intent_revision.checked_add(1).context("Service intent revision exhausted")?;
+        super::service_recovery::armed(generation, id, instance)
+    } else {
+        Value::Null
+    };
+    let saved = save_intent(db, &guard.service_id, &guard.request, "running", id, recovery)?;
     receipt(db, &guard.service_id, "start", &guard.request, saved, job)?;
     Ok(())
 }
@@ -232,14 +342,24 @@ pub(crate) fn projection(store: &Store, db: &Connection, service: &str) -> Resul
     let source = current.as_ref().ok().map(|c| c.job["id"].clone());
     let ready = current.and_then(|current| {
         let request = Request {request_id:"capability".into(), expected_job_id:current.job["id"].as_str().unwrap_or_default().into(),
-            expected_intent_revision:intent["revision"].as_i64().unwrap_or(0), source_job_id:None,timeout_seconds:None};
+            expected_intent_revision:intent["revision"].as_i64().unwrap_or(0), source_job_id:None,timeout_seconds:None,recovery:None,mode:None};
         available(store, db, &current, &request).map(|_| ())
     });
     let (code, reason) = match ready {
         Ok(()) => (None,None),
         Err(error) => { let message = error.to_string(); (Some(message.split(':').next().unwrap_or("source_unavailable").to_owned()),Some(message)) },
     };
-    Ok(json!({"intent":intent,"canStart":code.is_none(),"startBlockedCode":code,"startBlockedReason":reason,"sourceJobId":source}))
+    let job = match &source {
+        Some(id) => store::get(db, id.as_str().unwrap_or_default()).ok(),
+        None => None,
+    };
+    // Not confirmed: unknown, or a cancel asked of an attempt whose last
+    // evidence was unknown. Stop may be requested; Start stays closed.
+    let unknown = job.as_ref().is_some_and(|job| job["status"] == "unknown"
+        || (job["status"] == "cancelling" && job["result"]["status"] == "unknown"));
+    let recovery = super::service_recovery::view(db, &intent, job.as_ref())?;
+    Ok(json!({"intent":intent,"canStart":code.is_none(),"startBlockedCode":code,"startBlockedReason":reason,"sourceJobId":source,
+        "outcomeUnknown":unknown,"recovery":recovery}))
 }
 
 /// Only browser routes call this; explicit rejection remains even if a future
@@ -252,8 +372,8 @@ pub(crate) async fn control(ws: Arc<Workspace>, actor: Option<String>, service: 
     let (id, op, retry) = (service.clone(), action.clone(), request.clone());
     if let Some(receipt) = ws.stored(move |s| previous(&*s.db.read()?, &id, &op, &retry)).await? { return Ok(receipt); }
     ws.start_jobs();
-    if action == "stop" {
-        let answer = ws.stored(move |s| stop(s, &service, &request)).await?;
+    if action == "stop" || action == "recovery" {
+        let answer = ws.stored(move |s| if action == "stop" { stop(s, &service, &request) } else { opt_out(s, &service, &request) }).await?;
         super::changed(&ws); ws.jobs.wake.notify_one();
         return Ok(answer);
     }
@@ -336,3 +456,7 @@ fn commit_start(store: &Store, service: &str, request: &Request, mut input: Subm
 #[cfg(test)]
 #[path = "service_control_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "service_recovery_tests.rs"]
+mod recovery_tests;

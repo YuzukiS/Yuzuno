@@ -78,7 +78,10 @@ pub(super) fn order(queued: &[Queued], last_project: Option<&str>) -> Vec<usize>
     order
 }
 
-/// Every queued job, in submission order, with its project key.
+/// Every queued job, in submission order, with its project key. A service's
+/// automatic retry whose delay has not passed (`notBeforeUnix`, T-14) is left
+/// out here, before `order` takes a window: it neither holds a place nor
+/// keeps others out.
 pub(super) fn queued(db: &Connection) -> Result<Vec<Queued>> {
     let mut q = db.prepare(
         "SELECT j.id, j.seq, COALESCE(pt.project_id, pa.project_id, 'agent:' || j.agent_id),
@@ -87,11 +90,13 @@ pub(super) fn queued(db: &Connection) -> Result<Vec<Queued>> {
          FROM local_jobs j
          LEFT JOIN project_tasks pt ON pt.task_id=j.task_id
          LEFT JOIN project_agents pa ON pa.agent_id=j.agent_id
-         WHERE j.status='queued' AND json_extract(j.data,'$.executor') IS NULL ORDER BY j.seq",
+         WHERE j.status='queued' AND json_extract(j.data,'$.executor') IS NULL
+           AND COALESCE(json_extract(j.data,'$.notBeforeUnix'),0) <= ?1 ORDER BY j.seq",
     )?;
     let now = chrono::Utc::now();
+    let unix = now.timestamp_millis() as f64 / 1000.0;
     let rows = q
-        .query_map([], |r| {
+        .query_map([unix], |r| {
             let created: Option<String> = r.get(3)?;
             let waited = created
                 .and_then(|c| chrono::DateTime::parse_from_rfc3339(&c).ok())

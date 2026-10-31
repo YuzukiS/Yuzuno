@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 MODULE = importlib.util.spec_from_file_location('job_host', Path(__file__).resolve().parents[2] / 'core/src/jobs/host.py')
 host = importlib.util.module_from_spec(MODULE)
 MODULE.loader.exec_module(host)
@@ -127,5 +127,113 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotEqual(host.snapshot(spec),changed)
         with self.assertRaisesRegex(RuntimeError,'2 MiB'):
             host.snapshot({**spec,'inputs':['untracked-large']})
+
+class SharedEndTests(unittest.TestCase):
+    """A service retry's absolute end (T-14): cut at launch, refused near it, stopped at it."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        self.clock = [1000.0]
+        self.spec = {'id':'one','attempt':'attempt','bootId':host.boot_id(),'unit':'worker','supervisorUnit':'collector',
+                     'timeoutSeconds':7200,'resources':{'cpuMillis':100,'memoryMiB':64,'swapMiB':0},
+                     'cwd':str(self.folder),'argv':['/bin/true'],'env':{}}
+
+    def tearDown(self): self.tmp.cleanup()
+
+    def fake_time(self):
+        def sleep(seconds): self.clock[0] += seconds
+        return patch.object(host.time,'time',side_effect=lambda: self.clock[0]), patch.object(host.time,'sleep',side_effect=sleep)
+
+    def test_run_time_is_the_timeout_cut_to_the_end_and_none_near_it(self):
+        self.assertEqual(host.run_time(self.spec, 1000), 7200)
+        self.assertFalse(host.past_end(self.spec, 10**10))
+        cases = [(1000+3600, 3600), (1000+100.2, 101), (1000+60, 60), (1000+59.9, None), (999, None)]
+        for end, expected in cases:
+            with self.subTest(end=end):
+                self.assertEqual(host.run_time({**self.spec,'deadlineAtUnix':end}, 1000), expected)
+        self.assertEqual(host.run_time({**self.spec,'timeoutSeconds':30,'deadlineAtUnix':1000+3600}, 1000), 30)
+        spec = {**self.spec,'deadlineAtUnix':1061}
+        self.assertFalse(host.past_end(spec, 1060.9))
+        self.assertTrue(host.past_end(spec, 1061))
+
+    def test_supervise_creates_no_unit_with_less_than_a_minute_left(self):
+        spec = {**self.spec,'deadlineAtUnix':1000+59.5}
+        clock, sleep = self.fake_time()
+        with clock, sleep, patch.object(host,'command') as command:
+            outcome = host.supervise(spec, self.folder)
+            command.assert_not_called()
+        self.assertEqual(outcome['status'],'rejected')
+        self.assertEqual(outcome['reason'],host.NOT_STARTED_NEAR_END)
+        self.assertFalse(outcome['evidence']['workerStarted'])
+        self.assertEqual(outcome['evidence']['deadline']['kind'],'notStarted')
+        self.assertEqual(host.read(self.folder/'deadline.json')['kind'],'notStarted')
+
+    @patch.object(host, 'snapshot', side_effect=lambda spec: spec['snapshot'])
+    @patch.object(host, 'upstream_problem', return_value=None)
+    def test_worker_checks_the_end_again_just_before_exec(self, *_):
+        spec = {**self.spec,'snapshot':{'same':True},'deadlineAtUnix':1000+59.5}
+        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','pids.max':str(host.TASKS_MAX)}
+        class Fake(type(Path())):
+            def read_text(self, *args, **kwargs):
+                if str(self) == '/proc/self/cgroup': return '0::/fake\n'
+                if str(self.parent) == '/sys/fs/cgroup/fake' and self.name in limits: return limits[self.name] + '\n'
+                return super().read_text(*args, **kwargs)
+        clock, sleep = self.fake_time()
+        with clock, sleep, patch.object(host,'Path',Fake), patch.object(host,'pids_snapshot',return_value=None), \
+                patch.object(host.subprocess,'Popen') as popen:
+            self.assertEqual(host.worker(spec, self.folder), 78)
+            popen.assert_not_called()
+        self.assertEqual(host.read(self.folder/'input-changed.json')['reason'],host.NOT_STARTED_NEAR_END)
+        self.assertEqual(host.read(self.folder/'deadline.json')['kind'],'notStarted')
+        self.assertIsNotNone(host.read(self.folder/'started.json'))
+
+    def supervise_until_end(self, spec, ends):
+        """Run supervise against a unit that stays active until `ends(calls)` says it has ended."""
+        calls = []
+        def command(args, timeout=8, check=True):
+            calls.append((self.clock[0], list(args), host.read(self.folder/'deadline.json')))
+            return MagicMock(returncode=0, stdout='', stderr='')
+        state = {'ActiveState':'active','SubState':'running','MainPID':'42','Result':'success'}
+        clock, sleep = self.fake_time()
+        with clock, sleep, patch.object(host,'command',side_effect=command), patch.object(host,'show',return_value=state), \
+                patch.object(host,'pids_evidence',return_value=None), \
+                patch.object(host,'classify',side_effect=lambda *_: ends(calls)), patch.object(host,'terminal_reason',return_value='signal'):
+            outcome = host.supervise(spec, self.folder)
+        return outcome, calls
+
+    def test_supervise_stops_the_unit_at_the_end_with_term_then_kill_and_records_it_first(self):
+        spec = {**self.spec,'deadlineAtUnix':1000+61}
+        killed = lambda calls: 'failed' if any('--signal=SIGKILL' in args for _, args, _ in calls) else None
+        outcome, calls = self.supervise_until_end(spec, killed)
+        launch = calls[0][1]
+        self.assertEqual(launch[0],'systemd-run')
+        self.assertIn('RuntimeMaxSec=61s', launch)
+        kills = [(at, args, marker) for at, args, marker in calls if args[:3] == ['systemctl','--user','kill']]
+        self.assertEqual([args[-2] for _, args, _ in kills], ['--signal=SIGTERM','--signal=SIGKILL'])
+        (term_at, term, before_term), (kill_at, _, before_kill) = kills
+        self.assertEqual(term[-1], 'worker')
+        self.assertIn('--kill-whom=all', term)
+        self.assertEqual(term_at, 1061.0)
+        self.assertTrue(3 <= kill_at - term_at < 3.5)
+        self.assertEqual(before_term['kind'],'stop')
+        self.assertEqual(before_term['at'],1061.0)
+        self.assertNotIn('killedAt', before_term)
+        self.assertEqual(before_kill['killedAt'],kill_at)
+        self.assertEqual(outcome['status'],'failed')
+        self.assertEqual(outcome['evidence']['deadline']['kind'],'stop')
+        self.assertEqual(outcome['evidence']['deadline']['killedAt'],kill_at)
+
+    def test_without_an_end_or_before_it_supervise_never_signals(self):
+        for extra in ({}, {'deadlineAtUnix':1000+3600}):
+            with self.subTest(extra=extra):
+                (self.folder/'launch.json').unlink(missing_ok=True)
+                (self.folder/'result.json').unlink(missing_ok=True)
+                self.clock[0] = 1000.0
+                ended = lambda calls: 'succeeded' if self.clock[0] >= 1100 else None
+                outcome, calls = self.supervise_until_end({**self.spec,**extra}, ended)
+                self.assertIn('RuntimeMaxSec=' + ('7200' if not extra else '3600') + 's', calls[0][1])
+                self.assertFalse([args for _, args, _ in calls if args[:3] == ['systemctl','--user','kill']])
+                self.assertEqual(outcome['status'],'succeeded')
+                self.assertIsNone(outcome['evidence']['deadline'])
 
 if __name__=='__main__':unittest.main()

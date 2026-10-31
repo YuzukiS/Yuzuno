@@ -29,6 +29,10 @@ SEGMENT = 1024 * 1024
 # TasksMax counts threads as well as processes. Keep a finite per-job bound
 # with room for Chromium's renderer/utility threads under the existing budgets.
 TASKS_MAX = 512
+# A service's automatic retry (T-14) shares its run's absolute end time
+# (deadlineAtUnix). With less than this left it is not started at all: the end
+# would stop it within seconds.
+MIN_REMAINING_SECONDS = 60
 # Declared artifacts: larger files are identified by size and modification
 # time only; JSON is parsed whole only up to its own, smaller bound.
 HASH_LIMIT = 1024 * 1024 * 1024
@@ -767,6 +771,12 @@ def worker(spec, folder):
         except OSError as error:
             atomic(folder / 'input-changed.json', {'reason': f'{base} cannot be created for checkpoints: {error.strerror or error}'})
             return 78
+    # The shared end, again just before exec: activation and the checks above
+    # count against it, so what supervise() saw may no longer remain.
+    if run_time(spec) is None:
+        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+        atomic(folder / 'input-changed.json', {'reason': NOT_STARTED_NEAR_END})
+        return 78
     # Clear ambient manager/Core credentials. The submission stores this exact
     # env; Core adds only this attempt's identity and report files.
     total = 0
@@ -1082,6 +1092,25 @@ def cancel(spec, folder):
         return result(spec, folder, 'cancelled', {'before': before, 'after': after, 'groupsEmpty': groups, 'thawedToStop': thawed}, 'Cancellation confirmed: launcher and worker groups have exited. Earlier outcome may be unknown.')
     return result(spec, folder, 'unknown', {'before': before, 'after': after, 'thawedToStop': thawed}, 'Cancellation could not confirm empty process groups')
 
+NOT_STARTED_NEAR_END = ('Not started: less than 60 s remain before the end time this service run shares '
+                        'with its automatic retries; no process was created')
+
+def run_time(spec, now=None):
+    """The unit's run time, in whole seconds. Without deadlineAtUnix it is the
+    Job's own timeout. With it, that timeout is cut to what remains before the
+    shared end, or None when too little remains to start."""
+    end = spec.get('deadlineAtUnix')
+    if end is None:
+        return spec['timeoutSeconds']
+    remaining = end - (time.time() if now is None else now)
+    if remaining < MIN_REMAINING_SECONDS:
+        return None
+    return max(1, min(spec['timeoutSeconds'], math.ceil(remaining)))
+
+def past_end(spec, now=None):
+    end = spec.get('deadlineAtUnix')
+    return end is not None and (time.time() if now is None else now) >= end
+
 def supervise(spec, folder):
     # Unique transient unit plus a durable start intent: no automatic process retry.
     if read(folder / 'launch.json'):
@@ -1091,12 +1120,19 @@ def supervise(spec, folder):
                                   'controlGroup': Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]})
     if read(folder / 'cancel.json'):
         return result(spec, folder, 'cancelled', {'workerStarted': False}, 'Cancelled before worker launch')
+    runtime = run_time(spec)
+    if runtime is None:
+        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+        return result(spec, folder, 'rejected', {'workerStarted': False, 'deadline': read(folder / 'deadline.json')},
+                      NOT_STARTED_NEAR_END)
     resource = spec['resources']
     args = ['systemd-run', '--user', '--quiet', '--unit=' + spec['unit'], '--service-type=exec',
             '-p', 'Description=Yuzuno job ' + spec['attempt'],
             '--expand-environment=no', '-p', 'RemainAfterExit=yes', '-p', 'Restart=no',
             '-p', 'KillMode=control-group', '-p', 'OOMPolicy=kill', '-p', 'TimeoutStopSec=3s',
-            '-p', 'RuntimeMaxSec=' + str(spec['timeoutSeconds']) + 's',
+            # A backstop only: the run's own end is enforced below, because
+            # activation after this cut is not counted against it.
+            '-p', 'RuntimeMaxSec=' + str(runtime) + 's',
             '-p', 'MemoryMax=' + str(resource['memoryMiB']) + 'M',
             '-p', 'MemorySwapMax=' + str(resource['swapMiB']) + 'M',
             '-p', 'CPUQuota=' + str(resource['cpuMillis'] / 10) + '%', '-p', 'TasksMax=' + str(TASKS_MAX),
@@ -1104,7 +1140,7 @@ def supervise(spec, folder):
             '--', sys.executable, str(Path(__file__).resolve()), 'worker', str(folder / 'spec.json')]
     launch = command(args, check=False)
     launch_evidence = {'returnCode': launch.returncode, 'stderr': launch.stderr[:1000]}
-    deadline = time.monotonic() + spec['timeoutSeconds'] + 20
+    deadline = time.monotonic() + runtime + 20
     last = {}
     pids = None
     while time.monotonic() < deadline:
@@ -1112,13 +1148,27 @@ def supervise(spec, folder):
         pids = pids_evidence(spec, folder, last, pids)
         status = classify(spec, folder, last)
         if status:
-            outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids},
+            outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
+                                                    'deadline': read(folder / 'deadline.json')},
                              terminal_reason(spec, folder, status, last, pids))
             command(['systemctl', '--user', 'stop', spec['unit']], check=False)
             command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
             return outcome
         if launch.returncode or (last.get('ActiveState') == 'failed' and not read(folder / 'started.json')):
             return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No verified worker start receipt; reconcile before retry')
+        # The run's absolute end, checked every poll. It is recorded before the
+        # signal, so the outcome reads as the end time whatever exit status
+        # follows. The unit is signalled, not stopped: it stays loaded
+        # (RemainAfterExit) so classify still sees how it ended. SIGKILL
+        # follows after TimeoutStopSec's 3 s.
+        if past_end(spec):
+            stop = read(folder / 'deadline.json')
+            if not stop:
+                atomic(folder / 'deadline.json', {'kind': 'stop', 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+                command(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGTERM', spec['unit']], check=False)
+            elif stop.get('kind') == 'stop' and not stop.get('killedAt') and time.time() - stop['at'] >= 3:
+                atomic(folder / 'deadline.json', {**stop, 'killedAt': time.time()})
+                command(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGKILL', spec['unit']], check=False)
         time.sleep(.5)
     return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No conclusive terminal evidence before collector deadline')
 

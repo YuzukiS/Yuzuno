@@ -568,10 +568,14 @@ impl Store {
         let value = insert_job(&tx, value)?;
         if let Some(link) = &input.service_link {
             crate::service_jobs::insert(&tx, value["id"].as_str().context("Job identity missing")?, link)?;
+            // Another run taking over never inherits automatic retry (T-14).
+            if input.service_control.is_none() {
+                super::service_recovery::superseded(&tx, &link.service_id, &value)?;
+            }
         }
         tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'job_submit',?2,?3,?4)",params![actor_key(actor),input.request_id,payload.to_string(),json!({"jobId":value["id"]}).to_string()])?;
         if let Some(guard) = &input.service_control {
-            super::service_control::started(&tx, guard, &value)?;
+            super::service_control::started(&tx, guard, &value, &self.instance)?;
         }
         let value = QueueState::read(&tx)?.view(value);
         tx.commit()?;
@@ -773,6 +777,7 @@ impl Store {
                     notify(&tx, &mut job)?;
                     save(&tx, &job)?;
                     super::runs::job_changed(self, &tx, &job)?;
+                    super::service_recovery::after_outcome(self, &tx, &mut job)?;
                     changed = true;
                     continue;
                 }
@@ -785,6 +790,22 @@ impl Store {
                 notify(&tx, &mut job)?;
                 save(&tx, &job)?;
                 super::runs::job_changed(self, &tx, &job)?;
+                super::service_recovery::after_outcome(self, &tx, &mut job)?;
+                changed = true;
+                continue;
+            }
+            // A service's automatic retry (T-14): one queued by an earlier Core
+            // never starts, nor one with too little of its run's time left;
+            // otherwise its timeout is cut to what remains.
+            if let Some((code, reason)) = super::service_recovery::reservation(self, &mut job) {
+                job["status"] = json!("rejected");
+                job["reason"] = json!(reason);
+                job["finishedAt"] = json!(now());
+                job["result"] = json!({"status":"rejected","reason":reason,
+                    "evidence":{"coreObservation":true,"notStarted":true,"recoveryRefusal":code}});
+                notify(&tx, &mut job)?;
+                save(&tx, &job)?;
+                super::service_recovery::after_outcome(self, &tx, &mut job)?;
                 changed = true;
                 continue;
             }
@@ -811,6 +832,7 @@ impl Store {
                         notify(&tx, &mut job)?;
                         save(&tx, &job)?;
                         super::runs::job_changed(self, &tx, &job)?;
+                        super::service_recovery::after_outcome(self, &tx, &mut job)?;
                         changed = true;
                         continue;
                     }
@@ -945,6 +967,13 @@ impl Store {
             }
             save(&tx, &job)?;
             super::runs::job_changed(self, &tx, &job)?;
+        }
+        // A service run's automatic retry (T-14) reads this Job as ended and
+        // unreserved: it is saved so first, then the retry, if any, is added
+        // in this same transaction.
+        if job["service"].is_object() {
+            save(&tx, &job)?;
+            super::service_recovery::after_outcome(self, &tx, &mut job)?;
         }
         notify(&tx, &mut job)?;
         save(&tx, &job)?;
