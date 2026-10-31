@@ -681,6 +681,37 @@ test("each end of the window is said, with the current Job's own line after a Co
   assert.deepEqual(page.errors, []);
 });
 
+test("after another run takes over, the earlier window's end time, counts and lines are not the new run's", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  // The window of j1–j3 ended when an ordinary Job (j9) took over. j9 is
+  // queued with its own two-hour limit; the window's end time was 04:00.
+  const takenOver = (run) => withRecovery(service({ job: run, intent: armedIntent }), recovery({ state: "ended", launch: null, haltedReason: "superseded",
+    haltedAt: "2026-10-31T00:50:00Z", retry: { scheduled: 2, started: 2, max: 3 }, retryJobId: "j3", lastFailure, deadlineAt: "2026-10-31T04:00:00Z",
+    attempts: [...history, { retry: 2, jobId: "j3", startedAt: "2026-10-31T00:42:05Z", endedAt: "2026-10-31T00:49:00Z", outcome: "cancelled" }] }));
+  page.core.service = takenOver(job({ jobId: "j9", status: "queued", reserved: false, startedAt: null, timeoutSeconds: 7200, owner: "unknown", ownerCheckedAt: null }));
+  page.window.portal.open(target(page.core.service));
+  await until(() => recoveryText(page)[0] === "Another run took over; automatic retry has ended", "the window's end");
+  assert.equal(page.lifecycle().querySelector(".service-lifecycle-deadline strong").textContent, "2 hours from the actual start", "the new run's own limit");
+  assert.deepEqual(recoveryText(page), ["Another run took over; automatic retry has ended"], "no line about the earlier window's Jobs");
+  assert.equal(page.fact("process").startsWith("ProcessQueued"), true, "this round's facts are the new run's");
+  assert.match(page.lifecycle().querySelector(".service-recovery-details summary").textContent, /^The earlier run's automatic retry$/);
+  assert.match(page.lifecycle().textContent, /RecoveryManual; automatic recovery is off/, "the new run has no recovery of its own");
+  assert.equal(page.headline(), "Waiting for this run to start");
+  // Running now: its own start plus its own limit, not the window's 04:00.
+  page.core.service = takenOver(job({ jobId: "j9", startedAt: "2026-10-31T01:00:00Z", timeoutSeconds: 7200 }));
+  await page.refresh();
+  await until(() => /^(The service is running|Running, with a preview connection)$/.test(page.headline()), "running");
+  const own = page.window.eval(`new Date(Date.parse("2026-10-31T01:00:00Z") + 7200 * 1000).toISOString()`);
+  const windowEnd = "2026-10-31T04:00:00Z";
+  const shown = page.lifecycle().querySelector(".service-lifecycle-deadline strong").textContent;
+  const format = (iso) => page.window.eval(`new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(${JSON.stringify(iso)}))`);
+  assert.equal(shown, format(own), "the deadline is j9's start plus its limit");
+  assert.notEqual(shown, format(windowEnd), "not the earlier window's end");
+  assert.deepEqual(page.requests.filter((r) => r.method === "POST"), []);
+  assert.deepEqual(page.errors, []);
+});
+
 test("on an older Core, the Job's stop keeps the Job its confirmation opened for", async (t) => {
   const page = mount();
   t.after(page.close);

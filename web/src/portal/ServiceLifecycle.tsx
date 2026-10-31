@@ -9,7 +9,7 @@ import { useTimeDisplay } from "../time-preferences";
 import { absolute } from "../home/format";
 import { canOptOut, canStartService, controlReceiptMatches, controlRequest, lineageAtSend, serviceControlCurrent, serviceControlDraft, serviceIdle, userStoppedService, validServiceDuration, type ServiceControlDraft, type ServiceControlRequest } from "./service-lifecycle";
 import { currentBrowserReach, endedServiceStatuses, serviceDeadline, validServiceTime, type ServiceBrowserReach } from "./service-observation";
-import { clockTime, currentRetry, minutesUntil, outcomeUnknown, recoveryActive, recoveryOf, recoveryOffer, recoveryOutcome, recoveryWindow, type RecoveryFailure } from "./service-recovery";
+import { clockTime, currentRetry, minutesUntil, outcomeUnknown, recoveryActive, recoveryLineage, recoveryOf, recoveryOffer, recoveryOutcome, recoveryWindow, type RecoveryFailure } from "./service-recovery";
 import { serviceText } from "./service-text";
 import "./service-lifecycle.css";
 
@@ -80,6 +80,10 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
   const unknownStopAsked = unknown && (stoppingIntent || !!job.cancelRequestedAt);
   const recovery = recoveryOf(service);
   const windowed = recoveryWindow(recovery);
+  // Whether the current Job is one of that window's. After another run takes
+  // over, the block still describes the earlier window: its end time, counts
+  // and failures are that window's, never the new run's.
+  const inWindow = windowed && recoveryLineage(recovery).includes(job.jobId);
   const active = recoveryActive(recovery);
   const retry = currentRetry(service, recovery);
   const offer = recoveryOffer(service);
@@ -114,7 +118,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
     : t.queued;
   // Retries share the window's end, fixed once by Core; a manual run's is
   // its own start plus its limit.
-  const deadline = (windowed && validServiceTime(recovery.deadlineAt) ? recovery.deadlineAt : null) ?? serviceDeadline(job.startedAt, job.timeoutSeconds);
+  const deadline = (inWindow && validServiceTime(recovery.deadlineAt) ? recovery.deadlineAt : null) ?? serviceDeadline(job.startedAt, job.timeoutSeconds);
   const stateName = roundPending ? t.roundNotYetStarted : roundSkipped ? t.roundNotStarted : t.processStates[job.status] || job.status;
   const failure = (value: RecoveryFailure) => value.kind === "exit" ? t.lastExit(value.code ?? NaN)
     : value.kind === "signal" ? t.lastSignal(value.signal || "?") : t.lastCoreDump;
@@ -156,7 +160,9 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
     else if (recovery.state === "exhausted") recoveryLines.push(t.recoveryExhausted(max));
     else recoveryLines.push((recovery.haltedReason && t.halted[recovery.haltedReason]) || t.recoveryEnded);
     // After a Core restart, the current Job's own line (Lead 1488).
-    if (!active && recovery.haltedReason === "core_restart") {
+    if (!inWindow) {
+      // The window ended for another run; this Job's own state is the panel's.
+    } else if (!active && recovery.haltedReason === "core_restart") {
       const own = unknown ? t.restartUnknown + (unknownStopAsked ? t.stopRequestedTail : "")
         : job.status === "running" ? t.restartRunning
         : recovery.launch === "starting" ? t.restartStarting
@@ -166,7 +172,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
   }
   // The user's recorded stop, when the recovery lines don't already say it.
   const stopLine = !stoppingIntent && !unknownStopAsked ? ""
-    : windowed && (unknownStopAsked || recovery.haltedReason === "user_stop") ? ""
+    : inWindow && (unknownStopAsked || recovery.haltedReason === "user_stop") ? ""
     : unknownStopAsked ? t.unknownStopRequested : stoppedByUser ? t.stoppedIntent : t.otherStopIntent;
   const optOut = canOptOut(service);
   // Stop's note by the current Job's launch stage (design v3.4 §6).
@@ -265,7 +271,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
       <div className="portal-fact" data-state={health?.declared ? health.state : "unset"} data-fact="health"><span className="service-fact-icon"><Activity size={15} /></span><div><small>{t.health}</small><b>{health?.declared ? ({ ok: t.healthy, failing: t.unhealthy, unknown: t.healthUnknown })[health.state] : t.healthNotSet}</b><em>{health?.declared && [terminalHealth && healthTime ? t.healthPast : "", health.path, health.httpStatus ? `HTTP ${health.httpStatus}` : "", healthTime || t.timeUnknown].filter(Boolean).join(" · ")}</em></div></div>
       <div className="portal-fact" data-state={browser.state} data-fact="browser"><span className="service-fact-icon"><Globe size={15} /></span><div><small>{t.browser}</small><b>{browser.label}</b>{browser.note && <em>{browser.note}</em>}</div></div>
     </div>
-    {windowed && <details className="service-lifecycle-details service-recovery-details"><summary>{t.recoveryDetails}</summary>
+    {windowed && <details className="service-lifecycle-details service-recovery-details"><summary>{inWindow ? t.recoveryDetails : t.recoveryDetailsEarlier}</summary>
       <dl>
         <dt>{t.recoveryPlan}</dt><dd>{t.recoveryPlanText(recovery.schedule)}</dd>
         <dt>{t.recoveryCounts}</dt><dd>{t.recoveryCountsText(recovery.retry.scheduled, recovery.retry.started, max)}</dd>
@@ -287,7 +293,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
     {notice && <p className="service-action-note" role="status">{notice}</p>}
     {actionError && !confirmation && <p className="inline-error" role="alert">{actionError}</p>}
     {attempt?.state === "unknown" && !confirmation && <div className="service-action-note" role="status"><p>{t.noResult}</p><button type="button" className="secondary-button" disabled={disabled} onClick={() => void submit(true)}>{t.retrySame}</button></div>}
-    <details className="service-lifecycle-details"><summary>{t.details}</summary><dl><dt>{t.job}</dt><dd><code>{job.jobId}</code>{job.attempt && <> · <code>{job.attempt}</code></>}</dd><dt>{t.location}</dt><dd>{service.machineId} · {service.port}{service.path}</dd><dt>{t.recovery}</dt><dd>{active ? t.recoveryBounded : windowed ? t.recoveryEnded : t.manualOnly}</dd><dt>{t.due}</dt><dd>{deadline ? absolute(deadline, time) : t.dueUnknown}<small>{t.deadlineOnly}</small></dd><dt>{t.connectionCheck}</dt><dd>{service.connection.state} · {showDate(service.connection.since)}{service.connection.httpStatus ? ` · HTTP ${service.connection.httpStatus}` : ""}</dd>{job.reason && <><dt>{stateName}</dt><dd>{job.reason}</dd></>}{!service.lifecycle.canStart && service.lifecycle.startBlockedReason && <><dt>{t.start}</dt><dd>{service.lifecycle.startBlockedReason}</dd></>}</dl><div className="portal-actions"><button type="button" className="quiet-button" aria-expanded={showLogs} onClick={() => setShowLogs((value) => !value)}>{t.logs}</button>{onDisconnect && !disconnected && <button className="quiet-button" type="button" disabled={disabled} onClick={() => { void onDisconnect().catch((error) => setActionError(errorText(error))); }}>{t.disconnect}</button>}{onCheckPreview && <button type="button" className="quiet-button" disabled={disabled || readFailed || reading} onClick={() => { void onCheckPreview().catch((error) => setActionError(errorText(error))); }}>{t.previewCheck}</button>}</div>{showLogs && <pre className="portal-logs">{logError || log}</pre>}</details>
+    <details className="service-lifecycle-details"><summary>{t.details}</summary><dl><dt>{t.job}</dt><dd><code>{job.jobId}</code>{job.attempt && <> · <code>{job.attempt}</code></>}</dd><dt>{t.location}</dt><dd>{service.machineId} · {service.port}{service.path}</dd><dt>{t.recovery}</dt><dd>{active ? t.recoveryBounded : inWindow ? t.recoveryEnded : t.manualOnly}</dd><dt>{t.due}</dt><dd>{deadline ? absolute(deadline, time) : t.dueUnknown}<small>{t.deadlineOnly}</small></dd><dt>{t.connectionCheck}</dt><dd>{service.connection.state} · {showDate(service.connection.since)}{service.connection.httpStatus ? ` · HTTP ${service.connection.httpStatus}` : ""}</dd>{job.reason && <><dt>{stateName}</dt><dd>{job.reason}</dd></>}{!service.lifecycle.canStart && service.lifecycle.startBlockedReason && <><dt>{t.start}</dt><dd>{service.lifecycle.startBlockedReason}</dd></>}</dl><div className="portal-actions"><button type="button" className="quiet-button" aria-expanded={showLogs} onClick={() => setShowLogs((value) => !value)}>{t.logs}</button>{onDisconnect && !disconnected && <button className="quiet-button" type="button" disabled={disabled} onClick={() => { void onDisconnect().catch((error) => setActionError(errorText(error))); }}>{t.disconnect}</button>}{onCheckPreview && <button type="button" className="quiet-button" disabled={disabled || readFailed || reading} onClick={() => { void onCheckPreview().catch((error) => setActionError(errorText(error))); }}>{t.previewCheck}</button>}</div>{showLogs && <pre className="portal-logs">{logError || log}</pre>}</details>
     <Modal open={!!confirmation} onOpenChange={(openNow) => { if (!openNow) setConfirmation(null); }} title={confirmation?.action === "start" ? t.startTitle : t.stopTitle} description={confirmation?.action === "start" ? t.startNote : stopDescription} className="service-control-dialog" lang={langTag(language)}>
       {confirmation && (stopRefused ? <div onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}>
         <p className="service-control-name">{confirmation.serviceName}</p>
