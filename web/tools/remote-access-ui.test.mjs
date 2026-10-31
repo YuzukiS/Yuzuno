@@ -805,3 +805,48 @@ test("a failed read of the whole view after a change ends is read again, without
     p.close();
   }
 });
+
+test("the retry key is dropped once the change's end is read, before the view answers (settle order)", async () => {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let views = 0;
+  let reads = 0;
+  let ended = null;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/remote-access") && method === "GET") {
+      views += 1;
+      if (!ended) return { body: on({ preview: previews() }) };
+      // The read after the change's end is held until the test lets it answer.
+      return held.then(() => ({ body: on({ preview: { ...previewsOn, operation: ended } }) }));
+    }
+    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
+      return { body: { operation: op("running", "validate", { id: "p-9", requestId: body.requestId }) } };
+    }
+    if (url.endsWith("/api/remote-access/preview/operations/p-9")) {
+      reads += 1;
+      ended = op("succeeded", "done", { id: "p-9", requestId: p.calls.find((c) => c.method === "POST").body.requestId });
+      return { body: ended };
+    }
+    return { status: 404, body: {} };
+  });
+  try {
+    await waitFor(() => button(p, "Turn on previews"), "the button");
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    await waitFor(() => p.window.localStorage.getItem(PREVIEW_STORE) !== null, "the retry key kept while it runs");
+    // The change's end has been read and the view is being read again, but has not answered.
+    await waitFor(() => views === 2, "the view read again after the change's end");
+    assert.equal(reads, 1);
+    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "the retry key is gone before the view answers");
+    assert.equal(p.calls.filter((c) => c.method === "POST").length, 1);
+    release();
+    await waitFor(() => /Previews open at https:\/\/desk\.example\.ts\.net:8445/.test(p.text()) && !!button(p, "Turn off previews"), "the view's answer, shown");
+    assert.match(p.text(), /Previews are on\./);
+    // Nothing more is read once it shows: a progress read would come a second after the last.
+    const [viewsShown, readsShown] = [views, reads];
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.deepEqual([views, reads], [viewsShown, readsShown], "no further reads");
+    assert.equal(p.calls.filter((c) => c.method === "POST").length, 1, "the change was asked once");
+  } finally {
+    p.close();
+  }
+});
