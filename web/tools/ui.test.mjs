@@ -64,7 +64,7 @@ const permissionCatalog = { presets: [
   { id: "full", available: true, permissions: { approvalPolicy: "never", approvalsReviewer: "user", sandbox: "danger-full-access", profile: null } },
 ] };
 
-async function mount({
+async function openPage({
   preview = false,
   pending = [],
   status = "idle",
@@ -120,7 +120,7 @@ async function mount({
   codexHandoff,
   // The conversation's inputs (T-6): url -> page.
   inputs,
-} = {}) {
+} = {}, opened) {
   const calls = [];
   const core = { noWorkspaceId, workspaceIdentity };
   const eventUrls = [];
@@ -144,6 +144,7 @@ async function mount({
     },
   );
   const { window } = dom;
+  opened(window);
   window.matchMedia = (media) => ({
     media,
     matches: false,
@@ -352,6 +353,20 @@ async function mount({
     close: () => window.close(),
   };
 }
+// A mount that fails (in its setup, the bundle, the wait or the two checks
+// above) returns no page, so its caller's finally has nothing to close. Close
+// the window it opened and rethrow the original error: a live window's timers
+// otherwise keep the run going after its last test (CI 41227166554). A mount
+// that returns hands its window to the caller, who closes it.
+async function mount(options) {
+  let window;
+  try {
+    return await openPage(options, (opened) => { window = opened; });
+  } catch (error) {
+    window?.close();
+    throw error;
+  }
+}
 function button(page, text) {
   return [...page.document.querySelectorAll("button")].find((b) =>
     b.textContent.includes(text),
@@ -377,6 +392,20 @@ function pasteText(page, text) {
   Object.defineProperty(event, "clipboardData", { value: { getData: type => type === "text/plain" ? text : "" } });
   field.dispatchEvent(event);
 }
+
+test("a mount that fails closes the window it opened and keeps its own error", async () => {
+  let opened;
+  await assert.rejects(
+    // The Workspace read never answers, so no conversation mounts in time.
+    mount({ beforeLoad(window) { opened = window; window.fetch = () => new Promise(() => {}); } }),
+    (error) => error instanceof assert.AssertionError && /^(Conversation mounted|Fixture detail loaded)$/.test(error.message),
+  );
+  try {
+    assert.ok(opened, "the mount opened a window");
+    // A closed jsdom window starts no timers: its setTimeout answers 0.
+    assert.ok(opened.setTimeout(() => {}, 0) === 0, "the failed mount closed its window");
+  } finally { opened?.close(); }
+});
 
 test("history, pinned request, dock and rail preserve two identical blocks without closed full-source DOM", async () => {
   const source = "👨‍👩‍👧‍👦e\u0301中文123456" + "\r\n  complete source".repeat(150);
