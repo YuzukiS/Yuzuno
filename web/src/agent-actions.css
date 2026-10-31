@@ -75,8 +75,31 @@
   outline: 2px solid var(--focus, #9caa76);
   outline-offset: 1px;
 }
+/* The "…" stands where the reader is -- the row they are on, under the
+   pointer, or holding focus -- and the name has that width everywhere else.
+   It was reserved on every row at once, which on a narrow rail cost the names
+   more than the button is worth: measured, a name had 23px of a 129px row and
+   showed a quarter of itself. Kept in the page rather than removed, so it can
+   still be reached by keyboard, and a long-press opens the same menu (T-15). */
 .agent-row:has(.agent-row-menu) .agent-row-top {
+  padding-right: 0;
+}
+.agent-row:is(.selected, :hover, :focus-within):has(.agent-row-menu) .agent-row-top {
   padding-right: 18px;
+}
+.agent-row-menu {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.agent-row:is(.selected, :hover, :focus-within) .agent-row-menu {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-row-menu {
+    transition: none;
+  }
 }
 /* A long-press opens this menu, not the system's callout or a selection. */
 .agent-row {
@@ -90,6 +113,9 @@
     height: 38px;
   }
   .agent-row:has(.agent-row-menu) .agent-row-top {
+    padding-right: 0;
+  }
+  .agent-row:is(.selected, :hover, :focus-within):has(.agent-row-menu) .agent-row-top {
     padding-right: 36px;
   }
   .agent-actions-item {
