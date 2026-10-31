@@ -270,7 +270,7 @@ try {
     assert.match(await dialog.locator(".input-image-dialog img").getAttribute("src"), /\/attachments\/shots\/old\.png\?version=1$/);
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    await card("shots").getByRole("button", { name: "Pin “Screens” to Widgets" }).click();
+    await card("shots").getByRole("button", { name: "Pin “Screens” to My widgets" }).click();
     const pinned = page.locator(".home-pinned");
     await pinned.locator("button.brief-image").first().click();
     await dialog.waitFor();
