@@ -3,9 +3,11 @@ import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
+import { CopyButton } from "../components";
 import type { Agent } from "../types";
 import { AskReply, repliedThenUpdated } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
+import { sectionMarkdown } from "./brief/brief-copy";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
@@ -229,6 +231,9 @@ export const SectionCard = memo(function SectionCard({
             {t.reply}
           </button>
         )}
+        {/* Written from the stored body when clicked, so the clipboard write
+            stays in the click (Safari) and a folded card copies in full. */}
+        {section.kind === "report" && <CopyButton text={() => sectionMarkdown(section, language, time)} label={t.copyReport} />}
         {!readOnly && <PinButton section={section} projectId={projectId} />}
         {changed && !readOnly && (
           <button
