@@ -261,6 +261,29 @@
   color: var(--text-quiet);
   font-size: calc(7px + var(--font-adjust, 3px));
 }
+/* A middle-sized pane — a folding phone opened, a split window — is the one
+   size that cannot afford the mirrored gutter: it is past the narrow rule
+   below and still far short of the 890px the column stops at, so keeping a
+   dock's width on the side that has no dock comes straight out of the text.
+   There each side keeps only its own room (T-15). A wider pane is left as it
+   is, mirrored and centred in the whole pane. */
+@container conversation (max-width: 760px) {
+  .conversation-body:is(:has(.turn-dock), :has(> .work-dock:not(:empty)))
+    > .conversation-scroll
+    > .conversation-inner {
+    --room: calc(100% - var(--gutter-left) - var(--gutter-right));
+    --column: min(890px, var(--room));
+    /* Centred in the whole pane, scrollbar included, while that keeps the
+       column clear of the right dock; against its own gutter once it cannot. */
+    margin-left: max(
+      var(--gutter-left),
+      min(
+        calc((100% + var(--conversation-scrollbar) - var(--column)) / 2),
+        calc(100% - var(--gutter-right) - var(--column))
+      )
+    );
+  }
+}
 @container conversation (max-width: 480px) {
   .conversation-body {
     --turn-dock-width: 46px;
