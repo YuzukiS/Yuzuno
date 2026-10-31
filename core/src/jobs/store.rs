@@ -461,6 +461,12 @@ pub(super) fn request_cancel_in(store: &Store, tx: &Connection, actor: Option<&s
     }
     save(tx, &job)?;
     super::runs::job_changed(store, tx, &job)?;
+    // A service's automatic retry cancelled before reservation is never
+    // reconciled again, so its recovery period is settled here (T-14). Stop
+    // and opt-out have already closed it; this changes nothing for them.
+    if job["status"] == "cancelled" && job["service"].is_object() {
+        super::service_recovery::after_outcome(store, tx, &mut job)?;
+    }
     Ok(job)
 }
 

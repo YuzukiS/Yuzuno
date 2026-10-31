@@ -543,3 +543,69 @@ async fn recovery_is_only_a_start_choice_and_opt_out_takes_only_its_mode() {
     assert!(serde_json::from_value::<Request>(json!({"requestId":"r","expectedJobId":"j","expectedIntentRevision":0,
         "recovery":{"mode":"bounded","attempts":9}})).is_err(), "no other recovery settings");
 }
+
+#[tokio::test]
+async fn a_waiting_retry_cancelled_through_jobs_ends_recovery() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    assert_eq!(recovery(&lab, &id).await["state"], "waiting");
+    // Its own cancel through Jobs, by its Agent: not the service's Stop or opt-out.
+    let cancelled = s.request_job_cancel(retry["agentId"].as_str(), retry["id"].as_str().unwrap()).unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(intent_of(s, &id)["recoveryMode"], "manual");
+    let view = recovery(&lab, &id).await;
+    assert_eq!((view["mode"].as_str(), view["state"].as_str(), view["haltedReason"].as_str()),
+        (Some("manual"), Some("halted"), Some("cancelled")));
+    assert!(view["notBefore"].is_null() && view["launch"].is_null());
+    assert!(s.reserve_next_job(None, None, None).unwrap().is_none(), "nothing is left to start");
+}
+
+#[tokio::test]
+async fn a_retry_that_ends_before_it_is_seen_running_still_counts_as_started() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    due(s, &retry);
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(reserved["id"], retry["id"]);
+    // Its start receipt and its crash arrive in one reading.
+    s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],
+        "status":"failed","reason":"exit-code","started":{"at":now_unix()},
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"}}}))
+        .unwrap();
+    assert_eq!(recovery(&lab, &id).await["retry"], json!({"scheduled":2,"started":1,"max":3}));
+    // One refused at launch never started its command and is not counted.
+    let second = latest(s, &id);
+    due(s, &second);
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(reserved["id"], second["id"]);
+    assert!(record(s, &second)["startedAt"].is_string(), "reservation alone sets startedAt");
+    s.update_job_evidence(second["id"].as_str().unwrap(), json!({"jobId":second["id"],"attempt":reserved["attempt"],
+        "status":"rejected","reason":"Guarded inputs changed while queued (README.md); command was not started.",
+        "started":{"at":now_unix()},"evidence":{}}))
+        .unwrap();
+    let view = recovery(&lab, &id).await;
+    assert_eq!(view["retry"], json!({"scheduled":2,"started":1,"max":3}));
+    assert_eq!(view["haltedReason"], "inputs_changed");
+}
+
+#[tokio::test]
+async fn a_retry_keeps_its_runs_complete_identity() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    // A standalone Job's identity is complete at submission and never
+    // recomputed later, so the retry must carry it for artifact reuse.
+    assert!(root["identity"]["sha256"].is_string());
+    assert_eq!(retry["identity"], root["identity"]);
+}

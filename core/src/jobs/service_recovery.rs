@@ -146,8 +146,8 @@ fn fix_deadline(recovery: &mut Value, root: &Value) -> bool {
 }
 
 /// After a service Job's evidence is recorded, in that same transaction
-/// (`update_job_evidence`, or a refusal before launch), with the Job already
-/// saved in its new state. Only a Job of the active period's lineage that is
+/// (`update_job_evidence`, a refusal before launch, or a cancel before
+/// reservation), with the Job already saved in its new state. Only a Job of the active period's lineage that is
 /// the service's current Job is considered.
 pub(super) fn after_outcome(store: &Store, tx: &Connection, job: &mut Value) -> Result<()> {
     let Some(link) = link_of(tx, job["id"].as_str().unwrap_or_default())? else {
@@ -176,6 +176,14 @@ pub(super) fn after_outcome(store: &Store, tx: &Connection, job: &mut Value) -> 
     }
     if retry.is_none() {
         fix_deadline(recovery, job);
+    }
+    // A retry can start and end between two observations: the host's start
+    // receipt then arrives with the outcome, and it still counts as started.
+    // `startedAt` alone is no proof (reservation sets it), and a rejected
+    // attempt never started its command.
+    let receipt = job["result"]["started"].is_object() && job["status"] != "rejected";
+    if let Some(k) = retry.filter(|k| receipt && recovery["started"].as_i64().unwrap_or(0) < *k) {
+        recovery["started"] = json!(k);
     }
     let end = end_of(job);
     let (state, reason, failure) = match end {
@@ -293,7 +301,9 @@ fn new_retry(store: &Store, tx: &Connection, previous: &Value, recovery: &Value,
     job["deadlineAt"] = recovery["deadlineAt"].clone();
     job["deadlineAtUnix"] = json!(end);
     job["guardChecks"] = Value::Null;
-    job["identity"]["sha256"] = Value::Null;
+    // The identity stays the predecessor's: a standalone Job's is complete at
+    // submission (no upstream), and a retry has the same command, frozen
+    // inputs and artifacts. The timeout is not part of it.
     job["status"] = json!("queued");
     job["reserved"] = json!(false);
     job["reason"] = json!(format!("Automatic retry {k} of {}: not before {}", recovery["maxRetries"], at(not_before)));
