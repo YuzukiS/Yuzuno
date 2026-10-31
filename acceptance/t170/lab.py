@@ -297,8 +297,13 @@ class Lab:
         self.check('a message is sent through the remote entry and has its receipt',
                    status == 200 and receipt.get('status') in ('accepted', 'queued'), (status, receipt.get('status')))
         self.finished(before)
+        # An ask is answered as the version on screen, in this Workspace (T-9).
+        _, home = self.remote('GET', '/api/home')
+        asks = [s for p in json.loads(home)['projects'] for s in p['brief']['sections'] if s['key'] == 'phone-ask']
+        _, health = self.remote('GET', '/api/health')
         status, text = self.remote('POST', f'/api/projects/{self.project_id}/brief/reply', {
-            'key': 'phone-ask', 'agentId': self.agent_id, 'text': 'Reads well.', 'clientMessageId': str(uuid.uuid4())})
+            'key': 'phone-ask', 'agentId': self.agent_id, 'text': 'Reads well.', 'clientMessageId': str(uuid.uuid4()),
+            'askVersion': asks[0]['version'], 'workspaceId': json.loads(health)['workspaceId']})
         self.check('the Home Ask is replied to through the remote entry', status == 200, (status, text[:200]))
 
         refused = {

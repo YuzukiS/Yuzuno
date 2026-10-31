@@ -309,7 +309,7 @@ async fn a_replied_ask_waits_for_its_owner_and_a_new_version_asks_again() {
     let needs = |ws: &Workspace| home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter()
         .filter(|n| n["kind"] == "ask").map(|n| n["sectionKey"].clone()).collect::<Vec<_>>();
     assert_eq!(needs(&ws), [json!("decide")]);
-    assert!(sections::mark_replied(&ws.store, &project, "decide", "Left: go").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "decide", "Left: go").unwrap());
     let replied = ask(&ws);
     assert_eq!((replied["state"].clone(), replied["replyText"].clone()), (json!("replied"), json!("Left: go")));
     assert!(replied["repliedAt"].is_string());
@@ -323,7 +323,7 @@ async fn a_replied_ask_waits_for_its_owner_and_a_new_version_asks_again() {
     assert_eq!(again["state"], "open");
     assert!(again["replyText"].is_null() && again["repliedAt"].is_null(), "{again}");
     assert_eq!(needs(&ws), [json!("decide")]);
-    assert!(sections::mark_replied(&ws.store, &project, "decide", "Right").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "decide", "Right").unwrap());
     // It cannot slip away as another kind.
     assert_eq!(codes(&reject(&ws, "a", input("a3", 3, vec![put("decide", "report")])).await), ["ask_unresolved"]);
     assert_eq!(codes(&reject(&ws, "a", input("a4", 3, vec![op("remove", "decide")])).await), ["ask_unresolved"]);
@@ -334,7 +334,7 @@ async fn a_replied_ask_waits_for_its_owner_and_a_new_version_asks_again() {
     let panel = &home::build(&ws.store).unwrap()["projects"][0];
     assert_eq!(panel["brief"]["history"][0]["ask"]["state"], "resolved");
     assert_eq!(panel["brief"]["history"][0]["history"], true);
-    assert!(!sections::mark_replied(&ws.store, &project, "decide", "late").unwrap());
+    assert!(!sections::mark_replied_live(&ws.store, &project, "decide", "late").unwrap());
     assert_eq!(codes(&reject(&ws, "a", input("a6", 4, vec![op("resolve", "decide")])).await), ["not_found"]);
 }
 
@@ -348,8 +348,8 @@ async fn brief_get_lists_your_own_replied_asks_until_you_resolve_them() {
     // Open asks are the user's to answer: nothing for their owners to act on yet.
     assert_eq!((you(&ws, "a")["repliedAsks"].clone(), you(&ws, "a")["openAsks"].clone()), (json!([]), json!(2)));
     let long = "x".repeat(400);
-    assert!(sections::mark_replied(&ws.store, &project, "release", &format!("Left: {long}")).unwrap());
-    assert!(sections::mark_replied(&ws.store, &project, "other", "Right").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "release", &format!("Left: {long}")).unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "other", "Right").unwrap());
     let entry = you(&ws, "a")["repliedAsks"].clone();
     assert_eq!(keys(&you(&ws, "a")), [json!("release")], "{entry}");
     let entry = &entry[0];
@@ -364,7 +364,7 @@ async fn brief_get_lists_your_own_replied_asks_until_you_resolve_them() {
     assert_eq!(keys(&you(&ws, "b")), [json!("other")]);
     assert_eq!(you(&ws, "a")["openAsks"], 2);
     // A second reply is the same entry with the latest answer.
-    assert!(sections::mark_replied(&ws.store, &project, "release", "Right").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "release", "Right").unwrap());
     assert_eq!((keys(&you(&ws, "a")), you(&ws, "a")["repliedAsks"][0]["reply"].clone()), (vec![json!("release")], json!("Right")));
     // Progress after the reply (an edit) keeps it replied and says so.
     accept(&ws, "a", input("a2", 2, vec![edit("release", json!({"note":markdown("Started; waiting for CI.")}))])).await;
@@ -794,8 +794,10 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     assert_eq!(home::follow_up_turn(&claude).unwrap(), None);
     // A reply that is not sent leaves the ask open.
     close(&ws, "c", true);
+    let workspace = ws.store.workspace_id().unwrap();
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
-        text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None };
+        text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None,
+        ask_version: Some(1), workspace_id: Some(workspace.clone()) };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -814,7 +816,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
     let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: None, version: Some(version), title: Some(title.into()) };
+        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -869,9 +871,108 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     let origin = |id: &str| ws.store.receipt("b", id).unwrap().expect("a receipt").origin;
     assert_eq!(origin("r5"), Some(json!({"kind":"home","projectId":project,"key":"news","version":2})));
     let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
-        client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None };
+        client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None,
+        ask_version: Some(1), workspace_id: Some(workspace.clone()) };
     let _ = home::reply(&ws, project.clone(), answer).await;
-    assert_eq!(origin("r7"), Some(json!({"kind":"home","projectId":project,"key":"decide","version":1})));
+    assert_eq!(origin("r7"), Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,
+        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "")})));
+}
+
+// T-9: a reply to an ask is bound to the Workspace, Project, key and version
+// the user saw. A Home that does not say which version, another Workspace,
+// or a version no longer live sends nothing; a retry of a message already
+// sent returns its receipt after the ask changed; and a reply marks only the
+// version it answered, never one asked again under the same key.
+#[tokio::test]
+async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_version() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("q1", 0, vec![put("decide", "ask"), put("news", "report"), put("gone", "report")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let reply = |version: Option<i64>, choice: Option<&str>, text: &str, id: &str| home::ReplyInput {
+        key: Some("decide".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
+        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()) };
+    let refused = |error: anyhow::Error, code: &str| {
+        assert!(error.to_string().starts_with(code), "{error}");
+        assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    };
+    let receipt = |id: &str| ws.store.receipt("b", id).unwrap();
+    let state = |ws: &Workspace| section(&brief(ws, "a"), "decide")["ask"].clone();
+
+    // A Home that does not say the version: refused, never matched to the ask as it is now.
+    let mut old = reply(None, Some("left"), "Go", "m0");
+    old.workspace_id = None;
+    refused(home::reply(&ws, project.clone(), old).await.unwrap_err(), "ask_version_required");
+    assert!(receipt("m0").is_none());
+    // Another Workspace's Home.
+    let mut elsewhere = reply(Some(1), Some("left"), "Go", "m0");
+    elsewhere.workspace_id = Some("another-workspace".into());
+    refused(home::reply(&ws, project.clone(), elsewhere).await.unwrap_err(), "workspace_changed");
+    // Not both a card's version and an ask's.
+    let mut both = reply(Some(1), None, "Go", "m0");
+    both.version = Some(1);
+    both.title = Some("About decide".into());
+    assert!(home::reply(&ws, project.clone(), both).await.is_err());
+    assert!(receipt("m0").is_none());
+
+    // The message names the version, Project and Workspace it answers.
+    let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "decide").unwrap().unwrap();
+    let message = home::compose_ask(&workspace, "Code", &project, &row, home::choice(&row, "left").as_ref(), "Go");
+    assert!(message.starts_with(&format!("Reply from the user on Home, to version 1 of the Project Brief section `decide` (\"About decide\") \
+        of Code (Workspace {workspace}, Project {project}):\n> Which way?")), "{message}");
+    assert!(message.contains("Chose: Left (left)") && message.contains("\nGo\n") && message.contains(r#"{op:"resolve", key:"decide"}"#), "{message}");
+
+    // A reply to version 1 already sent under m1: its retry returns it and marks version 1.
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
+            "reply":home::reply_digest(Some("left"), "Go")})),
+        input: crate::model::MessageInput { client_message_id: "m1".into(), text: message.clone(), text_blocks: None, images: vec![],
+            expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    let kept = sent.clone();
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(kept)).unwrap();
+    let first = home::reply(&ws, project.clone(), reply(Some(1), Some("left"), "Go", "m1")).await.unwrap();
+    assert_eq!((first.status.as_str(), first.input.text.as_str()), ("accepted", message.as_str()));
+    assert_eq!((state(&ws)["state"].clone(), state(&ws)["replyText"].clone()), (json!("replied"), json!("Left: Go")));
+
+    // Its owner asks again under the same key: version 2, open again.
+    let mut again = put("decide", "ask");
+    again["ask"]["question"] = json!("Which way now?");
+    accept(&ws, "a", input("q2", 1, vec![again])).await;
+    assert_eq!((section(&brief(&ws, "a"), "decide")["version"].clone(), state(&ws)["state"].clone()), (json!(2), json!("open")));
+    // The retry of the reply to version 1: its receipt, and version 2 stays open.
+    let retried = home::reply(&ws, project.clone(), reply(Some(1), Some("left"), "Go", "m1")).await.unwrap();
+    assert_eq!((retried.status.as_str(), retried.input.text.as_str()), ("accepted", message.as_str()));
+    assert_eq!(state(&ws)["state"], "open", "an old reply never marks the new ask");
+    // The same id for other words, or another version: not this message.
+    let other = home::reply(&ws, project.clone(), reply(Some(1), Some("right"), "Go", "m1")).await.unwrap_err();
+    assert!(other.to_string().contains("already used for another message"), "{other}");
+    let newer = home::reply(&ws, project.clone(), reply(Some(2), Some("left"), "Go", "m1")).await.unwrap_err();
+    assert!(newer.to_string().contains("already used for another message"), "{newer}");
+    // A new message to version 1, which Home no longer has: refused and kept.
+    refused(home::reply(&ws, project.clone(), reply(Some(1), None, "Go anyway", "m2")).await.unwrap_err(), "ask_changed");
+    assert!(receipt("m2").is_none());
+    // Marking binds the version too: version 1's reply leaves version 2 as it is.
+    assert!(!sections::mark_replied(&ws.store, &project, "decide", 1, "late").unwrap());
+    assert_eq!(state(&ws)["state"], "open");
+
+    // A free-text reply to version 2 (a form's answers are text too) is
+    // recorded with its version, Workspace and words.
+    let _ = home::reply(&ws, project.clone(), reply(Some(2), None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", "m3")).await;
+    assert_eq!(receipt("m3").expect("a receipt").origin, Some(json!({"kind":"home","projectId":project,"key":"decide","version":2,
+        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left")})));
+    // A choice the version doesn't offer.
+    let unknown = home::reply(&ws, project.clone(), reply(Some(2), Some("up"), "", "m4")).await.unwrap_err();
+    assert!(unknown.to_string().starts_with("choice_not_found"), "{unknown}");
+
+    // Resolved, removed, and not an ask: refused and kept.
+    accept(&ws, "a", input("q3", 2, vec![op("resolve", "decide"), op("remove", "gone")])).await;
+    refused(home::reply(&ws, project.clone(), reply(Some(2), Some("left"), "Go", "m5")).await.unwrap_err(), "ask_resolved");
+    let mut removed = reply(Some(1), Some("left"), "Go", "m6");
+    removed.key = Some("gone".into());
+    refused(home::reply(&ws, project.clone(), removed).await.unwrap_err(), "section_removed");
+    let mut report = reply(Some(1), None, "Go", "m7");
+    report.key = Some("news".into());
+    refused(home::reply(&ws, project.clone(), report).await.unwrap_err(), "ask_changed");
+    assert!(["m5", "m6", "m7"].iter().all(|id| receipt(id).is_none()), "nothing was recorded for them");
 }
 
 #[test]
@@ -1130,7 +1231,7 @@ async fn an_edit_replaces_only_the_named_blocks_and_keeps_layout_attachments_and
 async fn an_edit_never_reopens_a_replied_ask() {
     let (_dir, ws, project) = lab();
     accept(&ws, "a", input("a1", 0, vec![put("decide", "ask")])).await;
-    assert!(sections::mark_replied(&ws.store, &project, "decide", "Left: go").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "decide", "Left: go").unwrap());
     accept(&ws, "a", input("a2", 1, vec![edit("decide", json!({"note":markdown("More context.")}))])).await;
     let ask = section(&brief(&ws, "a"), "decide").clone();
     assert_eq!((ask["ask"]["state"].clone(), ask["ask"]["replyText"].clone()), (json!("replied"), json!("Left: go")));
@@ -1292,7 +1393,7 @@ async fn legacy_unused_attachments_stay_readable_and_unrelated_edits_keep_asks_a
     report["attachments"] = ask["attachments"].clone();
     // Persist exactly what pre-upgrade Core accepted, without the new validator.
     accept(&ws, "a", input("legacy", 0, vec![ask.clone(), report.clone()])).await;
-    assert!(sections::mark_replied(&ws.store, &project, "legacy", "Left: go").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "legacy", "Left: go").unwrap());
     let before = section(&brief(&ws, "a"), "legacy").clone();
     std::fs::remove_file(&file).unwrap();
     // Editing an unrelated block must not restage files or reopen an Ask.
@@ -1344,7 +1445,7 @@ async fn an_ask_only_member_edits_only_its_own_ask_by_its_stored_kind() {
     assert_eq!(version(&ws, &project), 1);
     assert_eq!(section(&brief(&ws, "b"), "question")["body"]["elements"]["note"]["props"]["text"], "Hello");
     // Its own ask it may edit, and a reply stays a reply.
-    assert!(sections::mark_replied(&ws.store, &project, "question", "Left").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "question", "Left").unwrap());
     accept(&ws, "b", input("b4", 1, vec![edit("question", json!({"note":markdown("Context.")}))])).await;
     let ask = section(&brief(&ws, "b"), "question").clone();
     assert_eq!((ask["ask"]["state"].clone(), ask["body"]["elements"]["note"]["props"]["text"].clone()), (json!("replied"), json!("Context.")));
@@ -1370,7 +1471,7 @@ async fn a_reply_arriving_while_an_edit_is_checked_is_kept() {
     accept(&ws, "a", input("a1", 0, vec![put("decide", "ask")])).await;
     let (store, at) = (ws.clone(), project.clone());
     BETWEEN.with(|between| {
-        *between.borrow_mut() = Some(Box::new(move || assert!(sections::mark_replied(&store.store, &at, "decide", "Left: go").unwrap())))
+        *between.borrow_mut() = Some(Box::new(move || assert!(sections::mark_replied_live(&store.store, &at, "decide", "Left: go").unwrap())))
     });
     let answer = update::update(&ws, &Checker::Fake(fake_then), "a", input("a2", 1, vec![edit("decide", json!({"note":markdown("More context.")}))]))
         .await
@@ -1563,7 +1664,7 @@ async fn editors_get_advice_never_a_duty_and_nothing_is_resolved_or_refreshed_fo
     let mut old = put("state", "status");
     old["status"] = json!({"asOf":"2026-01-01T00:00:00Z","validFor":60});
     accept(&ws, "a", input("a1", 0, vec![old, put("decide", "ask")])).await;
-    assert!(sections::mark_replied(&ws.store, &project, "decide", "Left: go").unwrap());
+    assert!(sections::mark_replied_live(&ws.store, &project, "decide", "Left: go").unwrap());
     let before = version(&ws, &project);
     assert_eq!(agent_must_update_brief(&ws.store, "a").unwrap(), None);
     let you = brief(&ws, "a")["you"].clone();

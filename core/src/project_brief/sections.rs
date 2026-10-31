@@ -397,13 +397,23 @@ pub(super) fn defer(store: &Store, project: &str, key: &str, until: Option<&str>
     Ok(json!({"projectId":project,"key":key,"deferredUntil":until}))
 }
 
-/// The user's reply reached the ask's owner: it shows as replied until the
-/// owner updates or resolves it. False if it is no longer an unresolved live ask.
-pub(super) fn mark_replied(store: &Store, project: &str, key: &str, text: &str) -> Result<bool> {
+/// The user's reply to `version` of an ask reached its owner: it shows as
+/// replied until the owner updates or resolves it. False if that version is
+/// no longer the live unresolved ask: a reply to it never marks a newer ask
+/// under the same key (T-9), as when its owner asked again meanwhile.
+pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64, text: &str) -> Result<bool> {
     let changed = store.db.write()?.execute(
         "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4
-         WHERE project_id=?1 AND key=?2 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
-        params![project, key, now(), text],
+         WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
+        params![project, key, now(), text, version],
     )?;
     Ok(changed == 1)
+}
+
+/// `mark_replied` of whatever version is live now: for tests that only set
+/// up a replied ask.
+#[cfg(test)]
+pub(super) fn mark_replied_live(store: &Store, project: &str, key: &str, text: &str) -> Result<bool> {
+    let version = live_key(&*store.db.read()?, project, key)?.map_or(0, |row| row.version);
+    mark_replied(store, project, key, version, text)
 }

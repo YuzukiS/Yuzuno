@@ -24,6 +24,12 @@ export type HomeReplyInput = {
    * to exactly that version or sends nothing. */
   version?: number;
   title?: string;
+  /** A reply to an ask (T-9): the version of the ask the user answered and
+   * the Workspace that page showed. Core sends it only while that version is
+   * the live, unresolved ask, and marks only that version replied. Never
+   * `version`, which is a card's. */
+  askVersion?: number;
+  workspaceId?: string;
 };
 
 export type LinkedRepositories = {
@@ -68,8 +74,18 @@ export const readLinkedRepositories = (projectId: string, signal?: AbortSignal) 
 // across a reload, as the composer's outbox does (useConversationSend.ts).
 // Core never delivers one client id twice.
 const OUTBOX = "yuzuno.home-outbox.v1";
-type Outbound = Omit<HomeReplyInput, "key">;
+type Outbound = Omit<HomeReplyInput, "key"> & {
+  /** Kept here only, never sent (T-9): what this window showed as sent, and
+   * when it was sent, so an unconfirmed reply is shown as it went. */
+  shown?: string;
+  sentAt?: string;
+};
+// What this window last wrote while this browser would not keep it (private
+// browsing, a full store): read from here until a save succeeds, so a retry
+// in this window keeps its client id. A reload cannot.
+let unsaved: Record<string, Outbound> | null = null;
 function loadOutbox(): Record<string, Outbound> {
+  if (unsaved) return { ...unsaved };
   try {
     const value = JSON.parse(localStorage.getItem(OUTBOX) || "{}");
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -81,8 +97,9 @@ function saveOutbox(value: Record<string, Outbound>) {
   try {
     if (Object.keys(value).length) localStorage.setItem(OUTBOX, JSON.stringify(value));
     else localStorage.removeItem(OUTBOX);
+    unsaved = null;
   } catch {
-    /* The in-memory attempt still keeps its id for this window. */
+    unsaved = { ...value };
   }
 }
 /** A card reply has its own slot: the same key may also hold an ask's reply. */
@@ -94,7 +111,8 @@ export function pendingReply(slot: string): Outbound | undefined {
   return loadOutbox()[slot];
 }
 
-/** Forgets a reply Core refused before reading it (it was never submitted). */
+/** Forgets an unconfirmed reply: one Core refused before reading it (never
+ * submitted), or one the user discarded here (it may have been delivered). */
 export function dropPendingReply(slot: string) {
   const outbox = loadOutbox();
   delete outbox[slot];
@@ -105,14 +123,17 @@ export const sentStatus = (receipt: MessageReceipt) =>
   receipt.status === "accepted" || receipt.status === "queued";
 
 /**
- * Sends one reply. Retrying the same text to the same Agent (and, for a card,
- * the same version) reuses the client id; anything else is a new message.
- * Throws when it was not delivered.
+ * Sends one reply. Retrying the same text to the same Agent (and, for a card
+ * or an ask, the same version) reuses the client id; anything else is a new
+ * message. Throws when it was not delivered.
  */
 export async function sendReply(
   slot: string,
   projectId: string,
-  reply: { key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string },
+  reply: {
+    key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string;
+    askVersion?: number; workspaceId?: string; shown?: string;
+  },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
   const kept = outbox[slot];
@@ -122,7 +143,9 @@ export async function sendReply(
     kept.text === reply.text &&
     (kept.choice ?? null) === (reply.choice ?? null) &&
     (kept.version ?? null) === (reply.version ?? null) &&
-    (kept.title ?? null) === (reply.title ?? null);
+    (kept.title ?? null) === (reply.title ?? null) &&
+    (kept.askVersion ?? null) === (reply.askVersion ?? null) &&
+    (kept.workspaceId ?? null) === (reply.workspaceId ?? null);
   const input: Outbound = same
     ? kept
     : {
@@ -131,8 +154,27 @@ export async function sendReply(
         clientMessageId: crypto.randomUUID(),
         ...(reply.choice ? { choice: reply.choice } : {}),
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
+        ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
+        shown: reply.shown ?? reply.text,
+        sentAt: new Date().toISOString(),
       };
-  saveOutbox({ ...outbox, [slot]: input });
+  return postOutbound(slot, projectId, reply.key, input);
+}
+
+/**
+ * Sends again exactly what an unconfirmed reply sent (T-9): the same body,
+ * version and client id, whatever the screen shows now. Core then returns
+ * its receipt if it was delivered, or refuses it and sends nothing.
+ */
+export async function resendReply(slot: string, projectId: string, key?: string): Promise<MessageReceipt> {
+  const kept = loadOutbox()[slot];
+  if (!kept) throw new Error("No unconfirmed reply here to send again.");
+  return postOutbound(slot, projectId, key, kept);
+}
+
+/** Sends one outbox record and settles it as Core answers. */
+async function postOutbound(slot: string, projectId: string, key: string | undefined, input: Outbound): Promise<MessageReceipt> {
+  saveOutbox({ ...loadOutbox(), [slot]: input });
   const settle = () => {
     const current = loadOutbox();
     if (current[slot]?.clientMessageId === input.clientMessageId) {
@@ -140,11 +182,15 @@ export async function sendReply(
       saveOutbox(current);
     }
   };
+  // What Core gets: the record without what is kept here only.
+  const body: Outbound = { ...input };
+  delete body.shown;
+  delete body.sentAt;
   let receipt: MessageReceipt;
   try {
     receipt = await postReply(projectId, {
-      ...(reply.key ? { key: reply.key } : {}),
-      ...input,
+      ...(key ? { key } : {}),
+      ...body,
     });
   } catch (error) {
     // Core says nothing was submitted: sending again is a new message.
