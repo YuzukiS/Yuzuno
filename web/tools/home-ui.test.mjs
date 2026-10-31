@@ -2031,16 +2031,19 @@ const copyReport = () => {
         right: { type: "Group", props: {}, children: ["chart"] },
         table: { type: "Table", props: { id: "runs", title: "Runs", columns: [{ key: "run", label: "Run" }, { key: "result", label: "Result | note" }], rows: runs } },
         chart: { type: "LineChart", props: { id: "loss", title: "Loss", x: { label: "Step" }, y: { label: "Loss", unit: "nats" }, series: [{ name: "train", points: [[0, 2.5], [1, 1.9], [2, 1.2]] }] } },
-        refs: { type: "LiveRefs", props: { layout: "list", items: [{ kind: "task", id: "T-9", note: "copy slice" }] } },
+        refs: { type: "LiveRefs", props: { layout: "list", items: [{ kind: "task", id: "T-9", note: "copy slice" }, { kind: "pr", id: "acme/app#12" }] } },
         files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Desktop view" }, { name: "spec", caption: "Spec" }] } },
-        sources: { type: "Sources", props: { items: [{ id: "s1", label: "Run log", href: "https://example.test/run/1" }, { id: "s2", label: "Notes file", href: "/w/app/notes.md" }] } },
+        sources: { type: "Sources", props: { items: [{ id: "s1", label: "Run log", href: "https://example.test/run/1" }, { id: "s2", label: "Notes file", href: "/w/app/notes.md" },
+          { id: "s3", label: "Raw [v2] notes", href: "https://example.test/a)b?x=(1)" }] } },
       },
     },
     attachments: [
       { name: "shot.png", kind: "image", mime: "image/png", size: 1200, snapshot: true, mayChange: false, takenAt: at(5), caption: "Desktop view" },
       { name: "spec", kind: "link", mime: "text/html", size: 0, snapshot: false, mayChange: true, takenAt: at(5), url: "https://example.test/spec" },
     ],
-    refs: { "task:T-9": { kind: "task", id: "T-9", found: true, title: "Home", state: "doing" } },
+    // Core couldn't read the pull request this time: not the same as missing.
+    refs: { "task:T-9": { kind: "task", id: "T-9", found: true, title: "Home", state: "doing" },
+      "pr:acme/app#12": { kind: "pr", id: "acme/app#12", found: false, unavailable: true } },
   });
 };
 const copiedReport = [
@@ -2056,10 +2059,11 @@ const copiedReport = [
   "## Loss",
   "Chart · x: Step · y: Loss (nats)\n- train: 3 points; x 0–2; y 1.2–2.5; last 1.2",
   "## References",
-  "- Task T-9: Home · doing — copy slice",
-  "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](https://example.test/spec)",
+  "- Task T-9: Home · doing — copy slice\n- Pull request acme/app#12: couldn't read",
+  "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](<https://example.test/spec>)",
   "## Sources",
-  "- [Run log](https://example.test/run/1)\n- Notes file: /w/app/notes.md",
+  // A link keeps its whole address, parentheses included, and its label's brackets.
+  "- [Run log](<https://example.test/run/1>)\n- Notes file: /w/app/notes.md\n- [Raw \\[v2\\] notes](<https://example.test/a)b?x=(1)>)",
 ].join("\n\n") + "\n";
 const withReport = () => {
   const home = homeFixture();

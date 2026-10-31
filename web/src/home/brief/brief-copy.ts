@@ -70,6 +70,11 @@ const range = (values: (number | string)[]) => {
   }
   return values.length > 1 ? `${values[0]} … ${values[values.length - 1]}` : values.length ? String(values[0]) : "";
 };
+/** A link's label on one line, Markdown's brackets and backslash kept literal. */
+const label = (value: unknown) => String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\[\]]/g, "\\$&");
+/** A link's destination in angle brackets, so parentheses and spaces stay part of it. */
+const destination = (url: string) => `<${url.replace(/[<>\s]/g, (c) => encodeURIComponent(c))}>`;
+const link = (text: unknown, url: string) => `[${label(text)}](${destination(url)})`;
 const axisName = (axis: ChartProps["x"]) => `${axis.label}${axis.unit ? ` (${axis.unit})` : ""}`;
 
 export function sectionMarkdown(section: Section, language: Language, time: TimeDisplay): string {
@@ -131,8 +136,10 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         return [...heading(depth, b.references), items.map((item) => {
           const state = section.refs?.[`${item.kind}:${item.id}`];
           const name = `${b.refKind[item.kind]} ${item.id}`;
-          const named = state?.url && /^https:\/\//i.test(state.url) ? `[${inline(name)}](${state.url})` : inline(name);
-          const about = [item.label ?? state?.title, state?.found === false ? b.notFound : state?.state].filter(Boolean).map(inline);
+          const named = state?.url && /^https:\/\//i.test(state.url) ? link(name, state.url) : inline(name);
+          // Unread is not missing: Core couldn't read it this time.
+          const about = [item.label ?? state?.title, state?.found === false ? (state.unavailable ? b.refUnavailable : b.notFound) : state?.state]
+            .filter(Boolean).map(inline);
           return `- ${named}${about.length ? `: ${about.join(" · ")}` : ""}${item.note ? ` — ${inline(item.note)}` : ""}`;
         }).join("\n")];
       }
@@ -144,7 +151,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
           if (!file) return `- ${inline(item.name)}${caption ? ` — ${inline(caption)}` : ""} (${w.notAttached})`;
           // An external link is its own stable address; a kept file is named
           // with its card and version, never a request address of this Core.
-          if (file.kind === "link" && file.url && sourceTarget(file.url)?.kind === "web") return `- ${w.link}: [${inline(caption || file.name)}](${file.url})`;
+          if (file.kind === "link" && file.url && sourceTarget(file.url)?.kind === "web") return `- ${w.link}: ${link(caption || file.name, file.url)}`;
           const where = file.snapshot ? w.snapshotOf(section.key, section.version) : file.path ? w.referencedAt(file.path) : "";
           return `- ${file.kind === "image" ? w.image : w.file}: ${inline(file.name)}${caption ? ` — ${inline(caption)}` : ""}${where ? ` (${where})` : ""}`;
         }).join("\n")];
@@ -154,7 +161,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         if (!items.length) return [];
         return [...heading(depth, b.sources), items.map((item) => {
           const target = sourceTarget(item.href);
-          return target?.kind === "web" ? `- [${inline(item.label)}](${target.path})` : `- ${inline(item.label)}: ${inline(item.href)}`;
+          return target?.kind === "web" ? `- ${link(item.label, target.path)}` : `- ${inline(item.label)}: ${inline(item.href)}`;
         }).join("\n")];
       }
       default: {
