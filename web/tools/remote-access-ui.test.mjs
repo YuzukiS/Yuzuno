@@ -764,3 +764,44 @@ test("a turning off that left their Serve entry can be tried again without turni
     }
   }
 });
+
+test("a failed read of the whole view after a change ends is read again, without asking the change again (R3)", async () => {
+  let views = 0;
+  let ended = null;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/remote-access") && method === "GET") {
+      views += 1;
+      if (!ended) return { body: on({ preview: previews() }) };
+      // The first read after the change ended fails; the next one has it.
+      if (views === 2) throw new TypeError("Failed to fetch");
+      return { body: on({ preview: { ...previewsOn, operation: ended } }) };
+    }
+    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
+      return { body: { operation: op("running", "validate", { id: "p-8", requestId: body.requestId }) } };
+    }
+    if (url.endsWith("/api/remote-access/preview/operations/p-8")) {
+      ended = op("succeeded", "done", { id: "p-8", requestId: p.calls.find((c) => c.method === "POST").body.requestId });
+      return { body: ended };
+    }
+    return { status: 404, body: {} };
+  });
+  try {
+    await waitFor(() => button(p, "Turn on previews"), "the button");
+    assert.equal(views, 1);
+    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
+    // No click, no remount: only reads bring the view to the change's end.
+    let failedRead = false;
+    await waitFor(() => {
+      failedRead ||= p.alerts().some((a) => /Could not read phone access/.test(a));
+      return /Previews open at https:\/\/desk\.example\.ts\.net:8445/.test(p.text()) && !!button(p, "Turn off previews");
+    }, "the address and Turn off, from a read after the failed one");
+    assert.ok(failedRead, "the failed read was shown");
+    assert.ok(views >= 3, `read again after the failure (${views} reads)`);
+    assert.match(p.text(), /Previews are on\./);
+    assert.deepEqual(p.alerts(), [], "no failure is shown any more");
+    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "no retry key is left");
+    assert.equal(p.calls.filter((c) => c.method === "POST").length, 1, "the change was asked once");
+  } finally {
+    p.close();
+  }
+});

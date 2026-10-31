@@ -193,7 +193,8 @@ export function RemoteAccessPreviews({
   workspaceId: string;
   /** A phone access change is running: Core takes one change at a time. */
   phoneBusy: boolean;
-  refresh: () => Promise<void>;
+  /** Reads the whole view again; resolves whether it did, never throws. */
+  refresh: () => Promise<boolean>;
 }) {
   const language = useLanguage();
   const t = text(language);
@@ -230,22 +231,30 @@ export function RemoteAccessPreviews({
   }, [last, started]);
 
   // While a change runs, its progress is read about once a second, and again
-  // after a read that fails; once it has ended, the whole view is read again.
+  // after a read that fails. Once it has ended, the whole view is read again,
+  // and again after a read that fails, until it has the change's end: the
+  // change stays shown meanwhile, and only reads are asked of Core.
+  const ended = !!started && !running(started);
   useEffect(() => {
-    if (!operation || !busy) return;
+    if (!operation || !(busy || ended)) return;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       try {
-        const op = await api<RemoteAccessOperation>(`/remote-access/preview/operations/${encodeURIComponent(operation.id)}`, {
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted) return;
-        setError((said) => (said?.kind === "progress" ? null : said));
-        if (running(op)) setStarted(op);
-        else {
-          await refresh();
-          if (!controller.signal.aborted) setStarted(null);
+        if (busy) {
+          const op = await api<RemoteAccessOperation>(`/remote-access/preview/operations/${encodeURIComponent(operation.id)}`, {
+            signal: controller.signal,
+          });
+          if (controller.signal.aborted) return;
+          setError((said) => (said?.kind === "progress" ? null : said));
+          if (running(op)) return setStarted(op);
+          const read = await refresh();
+          if (!controller.signal.aborted) setStarted(read ? null : op);
+          return;
         }
+        const read = await refresh();
+        if (controller.signal.aborted) return;
+        if (read) setStarted(null);
+        else setRetries((n) => n + 1);
       } catch (e) {
         if (controller.signal.aborted) return;
         setError({ kind: "progress", detail: errorText(e) });
@@ -256,7 +265,7 @@ export function RemoteAccessPreviews({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [busy, operation, refresh, retries]);
+  }, [busy, ended, operation, refresh, retries]);
 
   function edit(change: Partial<Fields>) {
     setFields((old) => ({ ...old, ...change }));
@@ -284,7 +293,8 @@ export function RemoteAccessPreviews({
       else {
         pending.current = null;
         savePending(workspaceId, null, "previewPending");
-        await refresh();
+        // Until the view has it, the ended change stays shown and the view is read again.
+        if (!(await refresh())) setStarted(op);
       }
     } catch (e) {
       if (refusal(e) === "remote_access_busy") setError({ kind: "busy" });
