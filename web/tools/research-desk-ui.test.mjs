@@ -438,45 +438,57 @@ test("with three definition versions, each comparison is captioned with the vers
 });
 
 test("a part's numbers show the part's own source and definition, never its row's", async () => {
-  // High dose's two parts cite other files and versions than their row; the low dose parts cite nothing.
+  // Rows cite results.json (available) under definition v2. High dose's arm cites the protocol under v1; low dose's arm
+  // cites the paper, whose snapshot is no longer kept; both placebos cite nothing. One statement rests on high dose's arm.
   const desk = structuredClone(doseStudy);
-  const high = desk.body.elements.desk.props.plots[0].rows.find((row) => row.id === "high-v2");
+  const props = desk.body.elements.desk.props;
+  const v2 = props.plots[0];
+  const high = v2.rows.find((row) => row.id === "high-v2");
+  const low = v2.rows.find((row) => row.id === "low-v2");
   Object.assign(high.parts[0].estimate, { cite: { source: "protocol", lines: "60-62" }, definition: { id: "recovery", version: 1 } });
-  Object.assign(high.parts[1].estimate, { cite: { source: "paper", lines: "12" }, definition: { id: "recovery", version: 2 } });
-  // The paper's snapshot is no longer kept: its part must say so, not borrow the row's source.
+  Object.assign(low.parts[0].estimate, { cite: { source: "paper", lines: "12" }, definition: { id: "recovery", version: 1 } });
+  props.claims[0].statements[0].basis = ["high-v2-arm"];
   const answer = serve(desk);
   const page = mount(async (url) => {
     const reply = answer(url);
     if (reply.body?.sources?.paper) reply.body.sources.paper = { attachment: "paper.tex", available: false, reason: "missing" };
     return reply;
   });
+  const view = async (name) => {
+    radio(page.document, "Views of this desk", name).click();
+    await until(() => checked(page.document, "Views of this desk")?.textContent.includes(name), name);
+  };
+  /** The selected row's two part containers in the evidence view, as text, once its numbers are read. */
+  const partsOf = (row, value) =>
+    until(() => {
+      const found = [...page.document.querySelectorAll(".research-main .research-part")];
+      return page.document.querySelector(".research-main h4")?.textContent === row && found.length === 2 && found[0].textContent.includes(value) && found.map((part) => part.textContent);
+    }, `${row}'s parts`);
   try {
     page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
     await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
-    radio(page.document, "Views of this desk", "Evidence & limits").click();
-    const parts = await until(() => {
-      const found = [...page.document.querySelectorAll(".research-main .research-part")];
-      return found.length === 2 && found[0].textContent.includes("7.36") && found;
-    }, "the high dose row's two parts");
-    const [arm, placebo] = parts.map((part) => part.textContent);
-    assert.ok(arm.includes("Protocol") && arm.includes("lines 60-62"), `the arm's own source: ${arm}`);
+    // Through the statement's basis: the arm's row opens on its parts; its evidence is the arm's own.
+    const basis = await until(() => [...page.document.querySelectorAll(".research-link")].find((link) => link.textContent.startsWith("High dose · High dose")), "the basis link to the arm");
+    basis.click();
+    await until(() => page.document.querySelector(".research-caption")?.textContent === "High dose", "the high dose row's parts");
+    await view("Evidence & limits");
+    const [arm, placebo] = await partsOf("High dose", "7.36");
+    assert.ok(arm.includes("Protocol") && arm.includes("lines 60-62") && arm.includes("bbbbbbbbbbbb"), `the arm's own source, lines and snapshot: ${arm}`);
     assert.ok(arm.includes("Definition: Recovery") && arm.includes("v1") && arm.includes("Symptom-free for 48 hours."), `the arm's own definition version: ${arm}`);
-    assert.ok(placebo.includes("Draft") && placebo.includes("lines 12") && placebo.includes("This snapshot is no longer kept"), `the placebo's own source, unavailable: ${placebo}`);
-    assert.ok(placebo.includes("v2") && placebo.includes("Symptom-free for 72 hours."), `the placebo's own definition version: ${placebo}`);
-    for (const part of [arm, placebo]) assert.ok(!part.includes("Analysis output"), "no part borrows its row's source");
-    assert.ok(!arm.includes("v2") && !placebo.includes("v1"), "each part names only its own version");
-    // A part citing nothing names nothing of its row's.
-    radio(page.document, "Views of this desk", "Claim & interval").click();
-    radio(page.document, "Recovery time vs placebo (v2): rows", "Low dose").click();
-    radio(page.document, "Views of this desk", "Evidence & limits").click();
-    const low = await until(() => {
-      const found = [...page.document.querySelectorAll(".research-main .research-part")];
-      return page.document.querySelector(".research-main h4")?.textContent === "Low dose" && found.length === 2 && found;
-    }, "the low dose row's two parts");
-    for (const part of low.map((item) => item.textContent)) {
-      assert.ok(part.includes("This part names no source or definition of its own."), part);
-      assert.ok(!part.includes("Analysis output") && !part.includes("Definition:"), `nothing borrowed from the row: ${part}`);
-    }
+    assert.ok(!arm.includes("Analysis output") && !arm.includes("aaaaaaaaaaaa") && !arm.includes("v2"), `nothing of the row's: ${arm}`);
+    assert.ok(placebo.includes("This part names no source or definition of its own."), placebo);
+    assert.ok(!placebo.includes("Analysis output") && !placebo.includes("Definition:") && !placebo.includes("aaaaaaaaaaaa"), `nothing inherited: ${placebo}`);
+    // Through the plot: low dose's arm declares the paper, whose snapshot is gone; it does not borrow the row's available one.
+    await view("Claim & interval");
+    const lowRadio = await until(() => radio(page.document, "Recovery time vs placebo (v2): rows", "Low dose"), "the low dose row");
+    lowRadio.click();
+    await until(() => checked(page.document, "Recovery time vs placebo (v2): rows")?.textContent.includes("Low dose"), "low dose selected");
+    await view("Evidence & limits");
+    const [lowArm, lowPlacebo] = await partsOf("Low dose", "8.78");
+    assert.ok(lowArm.includes("Draft") && lowArm.includes("lines 12") && lowArm.includes("This snapshot is no longer kept"), `the declared source, unavailable: ${lowArm}`);
+    assert.ok(!lowArm.includes("SHA-256") && !lowArm.includes("aaaaaaaaaaaa") && !lowArm.includes("Analysis output"), `no available status borrowed: ${lowArm}`);
+    assert.ok(lowArm.includes("v1") && lowArm.includes("Symptom-free for 48 hours."), `its own definition version: ${lowArm}`);
+    assert.ok(lowPlacebo.includes("This part names no source or definition of its own.") && !lowPlacebo.includes("Analysis output"), lowPlacebo);
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
