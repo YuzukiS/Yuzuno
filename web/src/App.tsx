@@ -1836,6 +1836,31 @@ export function App() {
   }
   // Search offers to open a message or an Agent link; a Home link is what a
   // notification opens, not something to paste.
+  // A name too long for the header is opened by pressing it, since the rail
+  // may have had to cut it too and a title only answers a pointer (T-15).
+  const nameRef = useRef<HTMLHeadingElement>(null);
+  const [nameOpen, setNameOpen] = useState(false);
+  const [nameCut, setNameCut] = useState(false);
+  useLayoutEffect(() => setNameOpen(false), [selected]);
+  useLayoutEffect(() => {
+    const element = nameRef.current;
+    if (!element || nameOpen) return;
+    const measure = () => setNameCut(element.scrollWidth > element.clientWidth + 1);
+    measure();
+    // The controls beside it and the fonts settle over the next frames, and
+    // the heading's own box may never change while its text does.
+    let frame = requestAnimationFrame(() => {
+      measure();
+      frame = requestAnimationFrame(measure);
+    });
+    const watch = new ResizeObserver(measure);
+    watch.observe(element);
+    if (element.parentElement) watch.observe(element.parentElement);
+    return () => {
+      cancelAnimationFrame(frame);
+      watch.disconnect();
+    };
+  }, [agent?.name, nameOpen, selected]);
   // The reading bar and what it says: a source being read, or a window of
   // earlier messages. Either one carries the single way back to the latest.
   const source = catchupSource?.agentId === selected ? catchupSource : null;
@@ -2748,7 +2773,22 @@ export function App() {
               <div className="conversation-title">
                 <Avatar agent={agent} />
                 <div className="conversation-heading">
-                  <h1 title={agent.name}>{agent.name}</h1>
+                  {/* Whole, on demand: pressing it lets the name wrap, for
+                      the reader who has no pointer to hover with. */}
+                  <h1 ref={nameRef} title={agent.name} data-open={nameOpen || undefined}>
+                    {nameCut || nameOpen ? (
+                      <button
+                        type="button"
+                        className="conversation-name"
+                        aria-expanded={nameOpen}
+                        onClick={() => setNameOpen((open) => !open)}
+                      >
+                        {agent.name}
+                      </button>
+                    ) : (
+                      agent.name
+                    )}
+                  </h1>
                   <span className={`status-label runtime-${agent.status}`}>
                     <span className={`status-dot ${agent.status}`} />
                     {closed

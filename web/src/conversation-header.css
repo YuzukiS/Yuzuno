@@ -25,6 +25,37 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A name the header cannot fit is pressed to read: it wraps to as many lines
+   as it needs and presses again to go back. A title would only answer a
+   pointer, and the rail may have had to cut the same name (T-15). */
+.conversation-heading h1[data-open] {
+  overflow: visible;
+  white-space: normal;
+}
+.conversation-heading h1 > .conversation-name {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: inherit;
+}
+.conversation-heading h1[data-open] > .conversation-name {
+  overflow: visible;
+}
+.conversation-heading h1 > .conversation-name:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .app .conversation-header .status-label {
   padding: 0;
   border: 0;
