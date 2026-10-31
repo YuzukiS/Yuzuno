@@ -463,6 +463,56 @@ export function App() {
   const readingFrame = useRef(0);
   const initialReading = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
+  // The last thing focused inside the composer, and nothing else: a layout
+  // change may drop the focus, and only a composer's is given back (T-15).
+  const composerFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const note = (event: FocusEvent) => {
+      const target = event.target as HTMLElement | null;
+      composerFocus.current = target?.closest?.(".composer") ? target : null;
+    };
+    document.addEventListener("focusin", note);
+    return () => document.removeEventListener("focusin", note);
+  }, []);
+  /**
+   * Folding a phone open or shut crosses the phone layout under the app, with
+   * no reload: the conversation reflows at a new width and the composer may be
+   * drawn again. What the reader was at is held by the anchor the conversation
+   * already keeps -- its Turn and message, not a scroll ratio, which a reflow
+   * does not preserve -- and the focus is given back to the composer it was in.
+   *
+   * Neither is forced: with no anchor, or none of it still drawn, the
+   * conversation is left where it is rather than sent to the end, and the
+   * focus is only restored when the change dropped it, never taken from
+   * whatever the reader moved to themselves (T-15).
+   */
+  useLayoutEffect(() => {
+    const pane = scroll.current;
+    const saved = reading.current?.position;
+    const hold = () => {
+      if (!pane?.isConnected || saved?.mode !== "anchor") return;
+      const of = (id: string) => `[data-turn-id="${CSS.escape(id)}"]`;
+      const read = saved.itemId
+        ? pane.querySelector<HTMLElement>(`${of(saved.turnId)} [data-item-id="${CSS.escape(saved.itemId)}"]`)
+        : pane.querySelector<HTMLElement>(of(saved.turnId));
+      if (!read) return;
+      const drift = read.getBoundingClientRect().top - pane.getBoundingClientRect().top - saved.offset;
+      if (Math.abs(drift) > 1) pane.scrollTop += drift;
+    };
+    // Rows measured after the width change move it again, as the Portal's own
+    // resize finds (portal/Portal.tsx); a few frames of correction settle it.
+    hold();
+    let frames = 0;
+    let request = requestAnimationFrame(function again() {
+      hold();
+      if (++frames < 6) request = requestAnimationFrame(again);
+    });
+    const was = composerFocus.current;
+    const active = document.activeElement;
+    if (was?.isConnected && (!active || active === document.body) && was.closest(".composer"))
+      was.focus({ preventScroll: true });
+    return () => cancelAnimationFrame(request);
+  }, [phone]);
   // The conversation's scroller, as state too: its end is put in view when
   // the scroller is first drawn, not only when the detail arrives. The detail
   // can come before the Workspace that draws it (T-170): the conversation
