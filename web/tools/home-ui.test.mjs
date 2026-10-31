@@ -1339,9 +1339,12 @@ test("until the workspace is read, the widget layout is neither shown as arrange
     assert.deepEqual(keys(), ["yuzuno.homeWidgets.ws-home"]);
     // The workspace is read: its own layout, its pin, and the controls.
     p.releaseWorkspace();
-    await waitFor(() => p.button("Organize", column), "the layout controls appear");
-    await waitFor(() => column.querySelector('.home-pinned[data-pin-state="shown"]'), "the workspace's pin shows");
-    assert.equal(column.querySelector(".home-machines"), null, "Machines stays hidden as this workspace keeps it");
+    // Home re-reads under the now-known Workspace identity instead of
+    // carrying an unscoped reading across that boundary. Query its live DOM.
+    const knownColumn = () => p.doc.querySelector(".home-widget-column");
+    await waitFor(() => knownColumn() && p.button("Organize", knownColumn()), "the layout controls appear");
+    await waitFor(() => knownColumn()?.querySelector('.home-pinned[data-pin-state="shown"]'), "the workspace's pin shows");
+    assert.equal(knownColumn().querySelector(".home-machines"), null, "Machines stays hidden as this workspace keeps it");
     assert.ok(card(p, "p-app", "notes").querySelector(".home-pin"), "sections offer a pin again");
     // A change now is kept, under this workspace only.
     card(p, "p-app", "notes").querySelector(".home-pin").click();
