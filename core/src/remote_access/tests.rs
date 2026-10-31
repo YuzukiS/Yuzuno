@@ -945,3 +945,90 @@ async fn phone_settings_from_before_previews_open_nothing_new_and_applied_previe
     assert!(unreadable.listen.is_some(), "the phone entry starts");
     assert!(unreadable.preview.1.unwrap().contains("Phone previews were not started"));
 }
+
+/// Phone access and previews as Settings left them, written as a Core finds
+/// them when it starts: the phone entry on `phone`, previews on `local`.
+fn records(dir: &Path, phone: u16, local: u16) {
+    let origin = format!("https://{DNS}:8444");
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(FILE), json!({"format": 1,
+        "desired": {"enabled": true, "login": OWNER, "servePort": 8444, "localPort": phone, "origin": origin, "savedAt": "2026-10-31T00:00:00Z"},
+        "effective": {"listen": {"port": phone, "origin": origin, "login": OWNER}, "servePort": 8444, "appliedAt": "2026-10-31T00:00:00Z"},
+        "owned": {"servePort": 8444, "host": DNS, "target": format!("http://127.0.0.1:{phone}")}, "operations": []}).to_string()).unwrap();
+    std::fs::write(dir.join("remote-preview.json"), json!({"format": 1,
+        "desired": {"enabled": true, "servePort": 8445, "localPort": local, "savedAt": "2026-10-31T00:00:00Z"},
+        "effective": {"listen": {"servePort": 8445, "localPort": local}, "appliedAt": "2026-10-31T00:00:00Z"},
+        "owned": {"servePort": 8445, "host": DNS, "target": format!("http://127.0.0.1:{local}")}, "operations": []}).to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn phone_access_never_takes_the_port_kept_for_previews_that_could_not_start() {
+    let lab = lab("wsl");
+    let (phone, local) = (free_port(), free_port());
+    records(&lab.ws.data_dir, phone, local);
+    // Previews' port is held as Core starts: they stay off, and their record keeps the port.
+    let held = std::net::TcpListener::bind(("127.0.0.1", local)).unwrap();
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let view = lab.view().await;
+    assert!(view["preview"]["startupError"].as_str().unwrap().contains(&format!("could not listen on 127.0.0.1:{local}")), "{view}");
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+    drop(held);
+    // That port, free again, is still the previews': phone access does not take it.
+    let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": local})).await.unwrap();
+    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
+    assert!(op["error"].as_str().unwrap().contains(&format!("{local} is kept for phone previews")), "{op}");
+    let op = lab.apply(json!({"requestId": "serve", "enabled": true, "localPort": phone, "servePort": 8445})).await.unwrap();
+    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
+    assert!(op["error"].as_str().unwrap().contains("8445 is kept for phone previews"), "{op}");
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry is unchanged");
+    assert_eq!(startup(&lab.ws.data_dir, None).listen.map(|(e, _)| e.port), Some(phone));
+}
+
+#[tokio::test]
+async fn previews_never_take_the_phone_entrys_port_as_core_starts() {
+    // Records that already share a port (from before phone access checked previews' ports): the phone entry starts.
+    let port = free_port();
+    let entry = Entry { port, origin: format!("https://{DNS}:8444"), login: OWNER.into() };
+    for source in ["settings", "environment"] {
+        let started = Startup { listen: Some((entry.clone(), source)), environment: None, error: None,
+            preview: (Some((preview::Ports::for_tests(8445, port), DNS.into())), None) };
+        let bound = started.bind().await.unwrap_or_else(|e| panic!("{source}: Core must start: {e:#}"));
+        assert!(bound.listener.as_ref().is_some_and(|(l, e, _)| e.port == port && l.local_addr().unwrap().port() == port), "{source}: the phone entry listens");
+        assert!(bound.error.is_none(), "{source}: {:?}", bound.error);
+        assert!(bound.preview.0.is_none(), "{source}: previews do not start");
+        assert!(bound.preview.1.as_deref().unwrap_or("").contains(&format!("127.0.0.1:{port} is the phone entry's")), "{source}: {:?}", bound.preview.1);
+    }
+}
+
+/// Bytes sent as they are, in one write, on the previews' entry.
+async fn send(port: u16, bytes: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(bytes.as_bytes()).await.unwrap();
+    let mut text = String::new();
+    let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut text)).await;
+    let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default())
+}
+
+#[tokio::test]
+async fn phone_previews_take_identity_and_name_from_the_head_alone() {
+    let lab = lab("wsl");
+    lab.with_page();
+    let (phone, local) = (free_port(), free_port());
+    lab.both_on(phone, local).await;
+    let (_, minted) = mint(phone, OWNER).await;
+    let page = after_host(&minted["url"]);
+    let host = format!("Host: {DNS}:8445\r\n");
+    let login = format!("Tailscale-User-Login: {OWNER}\r\n");
+    let after = |head: &str, rest: &str| format!("GET {page} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{rest}", rest.len());
+    // No login in the head: refused, whatever comes after it.
+    assert_eq!(send(local, &after(&host, &login)).await.0, 403);
+    // No name in the head: refused, whatever comes after it.
+    assert_eq!(send(local, &after(&login, &host)).await.0, 421);
+    // Both in the head: the page, whatever comes after it.
+    let (status, body) = send(local, &after(&format!("{host}{login}"), "Tailscale-User-Login: someone@else\r\nHost: other\r\n")).await;
+    assert_eq!((status, body.as_str()), (200, PAGE));
+    // A second request in the same write lends the first nothing.
+    assert_eq!(send(local, &format!("GET {page} HTTP/1.1\r\n{host}\r\nGET {page} HTTP/1.1\r\n{host}{login}\r\n")).await.0, 403);
+}

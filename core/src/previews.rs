@@ -224,23 +224,38 @@ enum On {
     Phone(Arc<Workspace>),
 }
 
-/// The request's head, at most HEAD_LIMIT bytes, or nothing in time.
+/// The request's head: its request line and headers, through the blank line
+/// that ends them, at most HEAD_LIMIT bytes, or nothing in time. What follows
+/// in the same reads (a body, another request) is dropped, never read as the
+/// head's.
 async fn head(stream: &mut TcpStream) -> Option<String> {
     let mut head = Vec::with_capacity(1024);
     let mut buffer = [0u8; 1024];
-    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+    loop {
+        if let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+            if end + 4 > HEAD_LIMIT {
+                return None;
+            }
+            head.truncate(end + 4);
+            return String::from_utf8(head).ok();
+        }
+        if head.len() >= HEAD_LIMIT {
+            return None;
+        }
         match timeout(READ_TIMEOUT, stream.read(&mut buffer)).await {
-            Ok(Ok(n)) if n > 0 && head.len() + n <= HEAD_LIMIT => head.extend_from_slice(&buffer[..n]),
+            Ok(Ok(n)) if n > 0 => head.extend_from_slice(&buffer[..n]),
             _ => return None,
         }
     }
-    String::from_utf8(head).ok()
 }
 
-/// Every value `name` has in the request's head, in order.
+/// Every value `name` has in the request's headers, in order: the lines
+/// after the request line, up to the first empty one. A name is matched as
+/// it stands; one with spaces around it is no header's.
 fn values<'a>(head: &'a str, name: &str) -> Vec<&'a str> {
     head.split("\r\n").skip(1)
-        .filter_map(|line| line.split_once(':').filter(|(n, _)| n.trim().eq_ignore_ascii_case(name)))
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.split_once(':').filter(|(n, _)| n.eq_ignore_ascii_case(name)))
         .map(|(_, value)| value.trim())
         .collect()
 }

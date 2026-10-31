@@ -265,3 +265,46 @@ async fn a_snapshot_taken_for_the_phone_entry_never_opens_on_this_port() {
     // This port's own snapshot still opens.
     assert_eq!(ask(port, "GET", &path_of(&view["url"]), None, None).await.0, 200);
 }
+
+/// Bytes sent as they are, in one write: status, head and body of the answer.
+async fn send(port: u16, bytes: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(bytes.as_bytes()).await.unwrap();
+    let mut text = String::new();
+    let _ = timeout(Duration::from_secs(3), stream.read_to_string(&mut text)).await;
+    let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    (status, head.to_owned(), body.to_owned())
+}
+
+#[test]
+fn headers_are_the_lines_before_the_blank_line_and_nothing_after() {
+    let head = "GET /v/x HTTP/1.1\r\nHost: 127.0.0.1:1\r\nTailscale-User-Login: a\r\n\r\nTailscale-User-Login: b\r\nHost: other\r\n";
+    assert_eq!(values(head, "tailscale-user-login"), ["a"]);
+    assert_eq!(values(head, "host"), ["127.0.0.1:1"]);
+    assert!(values("GET / HTTP/1.1\r\n\r\nOrigin: http://x\r\n", "origin").is_empty());
+    // A name with spaces around it is no header's.
+    assert!(values("GET / HTTP/1.1\r\n Host: x\r\nHost : y\r\n\r\n", "host").is_empty());
+    // Doubled real headers stay doubled.
+    assert_eq!(values("GET / HTTP/1.1\r\nHost: a\r\nhost: b\r\n\r\n", "host"), ["a", "b"]);
+}
+
+#[tokio::test]
+async fn what_follows_the_head_is_never_read_as_its_headers() {
+    let lab = lab();
+    lab.write("proto.html", PAGE.as_bytes());
+    let view = lab.open("proto.html", Some(CORE)).await.unwrap();
+    let port = view["port"].as_u64().unwrap() as u16;
+    let page = path_of(&view["url"]);
+    let host = format!("Host: 127.0.0.1:{port}\r\n");
+    // A body whose lines look like headers: the page as it is.
+    let body = "Tailscale-User-Login: owner@github\r\nX-Forwarded-For: 100.64.0.2\r\nHost: other\r\n";
+    let (status, _, got) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())).await;
+    assert_eq!((status, got.as_str()), (200, PAGE));
+    // A second request in the same write: only the first is answered, by its own headers.
+    let (status, _, got) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}\r\nGET {page} HTTP/1.1\r\nTailscale-User-Login: x\r\n\r\n")).await;
+    assert_eq!((status, got.as_str()), (200, PAGE));
+    // A head over the limit gets no answer at all.
+    let (status, head, _) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}X-Pad: {}\r\n\r\n", "a".repeat(HEAD_LIMIT))).await;
+    assert_eq!(status, 0, "{head}");
+}

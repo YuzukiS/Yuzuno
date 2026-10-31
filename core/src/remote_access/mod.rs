@@ -255,24 +255,24 @@ impl Startup {
     /// Bind the listener before the Workspace opens. A YUZUNO_REMOTE_PORT
     /// that cannot be bound stops Core, as it always did; a port Settings
     /// chose only leaves phone access off, with the reason on the page.
-    /// Phone previews' port is bound the same way, and never stops Core.
+    /// Phone previews' port is bound after it, never on its port, and never
+    /// stops Core.
     pub async fn bind(self) -> Result<Bound> {
-        let preview = preview::bind_startup(self.preview.0, self.preview.1).await;
-        let Some((entry, source)) = self.listen else {
-            return Ok(Bound { listener: None, environment: self.environment, error: self.error, preview });
+        let phone = self.listen.as_ref().map(|(entry, _)| entry.port);
+        let (listener, error) = match self.listen {
+            None => (None, self.error),
+            Some((entry, source)) => match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, entry.port)).await {
+                Ok(listener) => (Some((listener, entry, source)), None),
+                Err(error) if source == "environment" => {
+                    return Err(anyhow::Error::new(error).context("Cannot bind the remote entry's loopback port (YUZUNO_REMOTE_PORT)"));
+                }
+                Err(error) => (None, Some(format!(
+                    "Phone access could not listen on 127.0.0.1:{}: {error}. Apply it again from Settings, or choose another port.", entry.port
+                ))),
+            },
         };
-        match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, entry.port)).await {
-            Ok(listener) => Ok(Bound { listener: Some((listener, entry, source)), environment: self.environment, error: None, preview }),
-            Err(error) if source == "environment" => {
-                Err(anyhow::Error::new(error).context("Cannot bind the remote entry's loopback port (YUZUNO_REMOTE_PORT)"))
-            }
-            Err(error) => Ok(Bound {
-                listener: None,
-                environment: self.environment,
-                error: Some(format!("Phone access could not listen on 127.0.0.1:{}: {error}. Apply it again from Settings, or choose another port.", entry.port)),
-                preview,
-            }),
-        }
+        let preview = preview::bind_startup(self.preview.0, self.preview.1, phone).await;
+        Ok(Bound { listener, environment: self.environment, error, preview })
     }
 }
 
@@ -746,6 +746,11 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     let local_port = op.request.local_port.unwrap_or(DEFAULT_LOCAL_PORT);
     anyhow::ensure!(serve_port != 0 && local_port != 0, "Ports must be 1–65535");
     anyhow::ensure!(local_port != context.core_port, "The local port must differ from Core's own port {}", context.core_port);
+    // Previews' ports, even while they could not start: a phone entry there would take them at the next start.
+    for kept in preview::kept(ws) {
+        anyhow::ensure!(local_port != kept.local_port, "Port {local_port} is kept for phone previews; choose another local port, or turn phone previews off first");
+        anyhow::ensure!(serve_port != kept.serve_port, "Serve port {serve_port} is kept for phone previews; choose another Serve port, or turn phone previews off first");
+    }
     let origin = if serve_port == 443 { format!("https://{dns}") } else { format!("https://{dns}:{serve_port}") };
     RemoteEntry::new(&origin, &login)?;
     let entry = Entry { port: local_port, origin: origin.clone(), login: login.clone() };

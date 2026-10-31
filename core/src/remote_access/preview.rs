@@ -165,10 +165,16 @@ pub(super) fn startup(data: &Path) -> (Option<(Ports, String)>, Option<String>) 
     }
 }
 
-/// Bind the applied entry's port; one that cannot be bound only leaves
-/// previews off, with the reason on the page.
-pub(super) async fn bind_startup(listen: Option<(Ports, String)>, error: Option<String>) -> (Option<(tokio::net::TcpListener, Ports, String)>, Option<String>) {
+/// Bind the applied entry's port, after the phone entry has bound its own
+/// (`phone`): a port that is the phone entry's, or cannot be bound, only
+/// leaves previews off, with the reason on the page.
+pub(super) async fn bind_startup(listen: Option<(Ports, String)>, error: Option<String>, phone: Option<u16>) -> (Option<(tokio::net::TcpListener, Ports, String)>, Option<String>) {
     let Some((ports, name)) = listen else { return (None, error) };
+    if phone == Some(ports.local_port) {
+        return (None, Some(format!(
+            "Phone previews were not started: 127.0.0.1:{} is the phone entry's. Turn them on again from Settings with another port.", ports.local_port
+        )));
+    }
     match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, ports.local_port)).await {
         Ok(listener) => (Some((listener, ports, name)), None),
         Err(error) => (None, Some(format!(
@@ -240,6 +246,16 @@ async fn undo(slot: &mut Option<Running>, undo: Undo) {
             }
         }
     }
+}
+
+/// The ports previews keep, which phone access must not take: those that
+/// apply, and those last asked for while previews are on, even while they
+/// could not start.
+pub(super) fn kept(ws: &Workspace) -> Vec<Ports> {
+    let saved = read(&path(ws)).unwrap_or_default();
+    let applied = saved.effective.and_then(|e| e.listen);
+    let asked = saved.desired.filter(|d| d.enabled).map(|d| Ports { serve_port: d.serve_port, local_port: d.local_port });
+    applied.into_iter().chain(asked).collect()
 }
 
 // ---- checks ------------------------------------------------------------
