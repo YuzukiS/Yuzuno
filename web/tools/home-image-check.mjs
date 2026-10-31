@@ -191,8 +191,15 @@ try {
     assert.equal(writesNow(), 0, "looking writes nothing");
     check(`${viewport.name}: a Home image opens in the app's preview by keyboard and Escape returns to it; nothing written`);
 
-    // Open, then Mark up: the image shown, marked, into its author's draft.
-    await card("shots").locator(".brief-attachment", { hasText: "screen-after.png" }).locator("button.brief-attachment-open").click();
+    // Open, from the picture's folded details, then Mark up: the image shown, marked, into its author's draft.
+    // Home starts at low density, which shows the first attachment: show them all, as a person would.
+    const showAll = card("shots").locator("button.brief-attachments-more");
+    if ((await showAll.count()) && (await showAll.getAttribute("aria-expanded")) === "false") await showAll.click();
+    // The file name is in the folded details now; the picture's own name says which one it is.
+    const after = card("shots").locator(".brief-attachment", { has: page.locator('button.brief-image[aria-label="Open image screen-after.png"]') });
+    assert.equal(await after.locator("button.brief-attachment-open").isVisible(), false, "Open waits in the folded image info");
+    await after.locator("details.brief-image-info > summary").click();
+    await after.locator("button.brief-attachment-open").click();
     await dialog.waitFor();
     assert.equal(await dialog.locator("h2").innerText(), "screen-after.png");
     await dialog.getByRole("button", { name: "Mark up" }).click();
@@ -236,8 +243,15 @@ try {
     assert.equal(report.writes.filter((w) => w.viewport === viewport.name && w.path.includes("/brief/")).length, 0, "no reply, no Seen");
     check(`${viewport.name}: an Ask's image opens the same preview; marking it up never answers the Ask`);
 
-    // A snapshot Core no longer has: said plainly, nothing to mark.
-    await card("gone").locator("button.brief-image").click();
+    // A snapshot Core no longer has: said plainly on the card (T-9) and in the preview, nothing to mark.
+    await card("gone").scrollIntoViewIfNeeded();
+    const failed = card("gone").locator(".brief-image-failed");
+    await failed.waitFor();
+    assert.match(await failed.innerText(), /couldn't be loaded from this Core/);
+    assert.equal(await failed.getAttribute("role"), "status");
+    assert.equal(await card("gone").locator("button.brief-image").count(), 0, "no broken picture to click");
+    await card("gone").locator("details.brief-image-info > summary").click();
+    await card("gone").locator("button.brief-attachment-open").click();
     await dialog.waitFor();
     await dialog.getByRole("alert").waitFor();
     assert.match(await dialog.getByRole("alert").innerText(), /can't be read from this Core/);
@@ -245,7 +259,7 @@ try {
     await page.screenshot({ path: resolve(output, `${viewport.name}-unreadable.png`) });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    check(`${viewport.name}: an unreadable snapshot says so and offers no Mark up`);
+    check(`${viewport.name}: an unreadable snapshot says so on its card and in the preview, and offers no Mark up`);
 
     // History reads its own version; a pinned widget opens the same preview.
     await page.locator(".home-team-details > summary").click();
@@ -256,7 +270,7 @@ try {
     assert.match(await dialog.locator(".input-image-dialog img").getAttribute("src"), /\/attachments\/shots\/old\.png\?version=1$/);
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    await card("shots").getByRole("button", { name: "Pin “Screens” to Widgets" }).click();
+    await card("shots").getByRole("button", { name: "Pin “Screens” to My widgets" }).click();
     const pinned = page.locator(".home-pinned");
     await pinned.locator("button.brief-image").first().click();
     await dialog.waitFor();

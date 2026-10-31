@@ -6,6 +6,7 @@ import {
   FileText,
   Image as ImageIcon,
   Link,
+  Maximize2,
   Paperclip,
   ScrollText,
   type LucideIcon,
@@ -319,6 +320,8 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const { projectId, section } = useBrief();
   const markUp = usePointFix();
   const [shown, setShown] = useState<Shown | null>(null);
+  // The snapshot this card failed to load, so a new one under the same name tries again.
+  const [unloaded, setUnloaded] = useState<string | null>(null);
   const attachment = section.attachments.find((item) => item.name === name);
   if (!attachment)
     return (
@@ -355,6 +358,86 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
       return response.blob();
     },
   });
+  const imagePreview = image ? (
+    <ImagePreview
+      open={!!shown}
+      src={shown?.url ?? ""}
+      name={attachment.name}
+      description={t.imageSnapshot(label ?? "", formatTime(shown?.takenAt ?? attachment.takenAt, time))}
+      unavailable={t.imageUnavailable}
+      onClose={() => setShown(null)}
+      onAnnotate={markUp && shown ? () => {
+        const at = shown;
+        setShown(null);
+        markUp(source(at));
+      } : undefined}
+    />
+  ) : null;
+  // A kept image (T-9): the picture whole, then what it shows; the file's
+  // details are there when asked for. What the user must know (it may have
+  // changed, it could not be loaded) stays in view.
+  if (image) {
+    const failed = unloaded === attachment.takenAt;
+    return (
+      <div className="brief-attachment" data-kind="image" data-picture>
+        {failed ? (
+          <p className="brief-image-failed" role="status">
+            <Icon size={16} aria-hidden="true" />
+            {t.imageNotLoaded}
+          </p>
+        ) : (
+          <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={preview}>
+            {/* A new snapshot under the same name loads again. */}
+            <img
+              key={attachment.takenAt}
+              src={url}
+              alt={label || attachment.name}
+              loading="lazy"
+              decoding="async"
+              onError={() => setUnloaded(attachment.takenAt)}
+            />
+            {/* It opens larger: said on the picture, for touch as for the pointer. */}
+            <span className="brief-image-zoom" aria-hidden="true">
+              <Maximize2 size={13} />
+            </span>
+          </button>
+        )}
+        {label ? (
+          <p className="brief-attachment-caption">{label}</p>
+        ) : (
+          <p className="brief-attachment-caption brief-image-name" title={attachment.name}>{attachment.name}</p>
+        )}
+        {attachment.mayChange && (
+          <span className="brief-chip" data-state="changed" title={t.mayChangeTitle}>
+            {t.mayChange}
+          </span>
+        )}
+        <details className="brief-image-info">
+          <summary>{t.imageInfo}</summary>
+          <dl>
+            <div>
+              <dt>{t.imageFile}</dt>
+              <dd title={attachment.name}>{attachment.name}</dd>
+            </div>
+            <div>
+              <dt>{t.imageSize}</dt>
+              <dd>{bytes(attachment.size)}</dd>
+            </div>
+            <div>
+              <dt>{t.snapshot}</dt>
+              <dd>
+                <time dateTime={attachment.takenAt}>{formatTime(attachment.takenAt, time)}</time>
+              </dd>
+            </div>
+          </dl>
+          <button type="button" className="brief-attachment-open" onClick={preview}>
+            {t.openFile}
+          </button>
+        </details>
+        {imagePreview}
+      </div>
+    );
+  }
   return (
     <div className="brief-attachment" data-kind={attachment.kind}>
       <header>
@@ -368,11 +451,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         {!attachment.snapshot && attachment.path && (
           <Path path={attachment.path} />
         )}
-        {image ? (
-          <button type="button" className="brief-attachment-open" onClick={preview}>
-            {t.openFile}
-          </button>
-        ) : page ? (
+        {page ? (
           <OpenChoice
             target={() => ({
               kind: "snapshot",
@@ -408,31 +487,11 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         )
       ) : !attachment.snapshot ? (
         <p className="brief-attachment-note">{t.notKept}</p>
-      ) : attachment.kind === "image" ? (
-        <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={preview}>
-          {/* A new snapshot under the same name loads again. */}
-          <img key={attachment.takenAt} src={url} alt={label || attachment.name} loading="lazy" decoding="async" />
-        </button>
       ) : attachment.kind === "data" ? (
         <DataPreview url={url} attachment={attachment} />
       ) : attachment.kind === "text" && !page ? (
         <TextTail url={url} attachment={attachment} />
       ) : null}
-      {image && (
-        <ImagePreview
-          open={!!shown}
-          src={shown?.url ?? ""}
-          name={attachment.name}
-          description={t.imageSnapshot(label ?? "", formatTime(shown?.takenAt ?? attachment.takenAt, time))}
-          unavailable={t.imageUnavailable}
-          onClose={() => setShown(null)}
-          onAnnotate={markUp && shown ? () => {
-            const at = shown;
-            setShown(null);
-            markUp(source(at));
-          } : undefined}
-        />
-      )}
     </div>
   );
 }

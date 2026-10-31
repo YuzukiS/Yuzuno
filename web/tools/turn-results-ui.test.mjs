@@ -169,6 +169,19 @@ test("a new version replaces the shown one and starts with its own selection", a
   assert.ok(page.document.querySelector("[data-result-id=v2] tbody input[type=checkbox]:checked") === null, "the new version starts with nothing selected");
 });
 
+test("a conversation's result table shows every row with its count and selection; only Home folds a long table (T-9)", async (t) => {
+  const long = spec("Many");
+  long.elements.table.props.rows = Array.from({ length: 14 }, (_, i) => ({ id: `r${i}`, cells: { name: `Option ${i + 1}`, cost: 10 + i } }));
+  const page = mount(() => found("many", long));
+  t.after(page.close);
+  page.window.renderTurn(turn("completed", [shown("many")]), agent());
+  const result = await until(() => page.document.querySelector("[data-result-id=many]"), "the result");
+  await until(() => result.querySelectorAll("tbody tr").length === 14, "every row");
+  assert.equal(result.querySelector(".result-table-caption span").textContent, "14 of 14 rows");
+  assert.equal(result.querySelector("button.result-table-more"), null, "no Show all");
+  assert.equal(result.querySelectorAll("tbody input[type=checkbox]").length, 14, "every row can be selected");
+});
+
 test("a Turn without published results reads nothing", async (t) => {
   const page = mount(() => assert.fail("no request"));
   t.after(page.close);

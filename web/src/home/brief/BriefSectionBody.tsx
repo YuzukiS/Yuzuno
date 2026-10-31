@@ -20,6 +20,7 @@ import { BriefChecklist, BriefColumns, BriefFindings, BriefGroup, BriefMetrics, 
 import { BriefBarChart, BriefLineChart, BriefScatterChart } from "./Charts";
 import { BriefLiveRefs } from "./LiveRefs";
 import { BriefAttachments } from "./AttachmentView";
+import { useBriefDensity } from "../home-density";
 import type { BlockChanges } from "./block-changes";
 import { briefText } from "./brief-text";
 import { useStrings } from "../../i18n";
@@ -121,6 +122,16 @@ function ChangeMark({ change, rule, children }: { change: "new" | "updated"; rul
   );
 }
 
+/** Rows a Home table shows before "Show all" (T-9): the card reads as part of
+ * the page, which the wheel and touch scroll, never a box of its own. */
+export const TABLE_ROWS = { high: 8, low: 5 } as const;
+
+function BriefTable(props: BriefTableProps) {
+  const density = useBriefDensity();
+  // Selection only feeds a Continue draft, which a Brief does not have.
+  return <ResultTable {...props} selectable={false} pageSize={TABLE_ROWS[density]} />;
+}
+
 // Display only: no component here starts anything. Links open pages and
 // references open the panels the app already has; nothing an Agent wrote
 // can call an API.
@@ -134,8 +145,7 @@ const registry: ComponentRegistry = {
   Plan: part(BriefPlan),
   Findings: part(BriefFindings),
   Metrics: part(BriefMetrics),
-  // Selection only feeds a Continue draft, which a Brief does not have.
-  Table: part((props: BriefTableProps) => <ResultTable {...props} selectable={false} />),
+  Table: part(BriefTable),
   LineChart: part(BriefLineChart),
   BarChart: part(BriefBarChart),
   ScatterChart: part(BriefScatterChart),

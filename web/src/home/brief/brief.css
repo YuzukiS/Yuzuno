@@ -363,15 +363,114 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Tables come from interactive results; here they scroll within a bound. */
+/* Tables (T-9) read as part of the card: the page scrolls past them, by
+ * wheel, touch or keyboard, and a long one folds behind "Show all" instead
+ * of scrolling in a box of its own. A wide table still scrolls sideways
+ * (intelligent-ui.css), its sideways overscroll kept from the page. Light
+ * header, thin rules; the first column names the row, numbers sit right in
+ * tabular figures, sources stay quiet at the end. */
+.brief-body .result-table-tools {
+  margin-bottom: 4px;
+}
+.brief-body .result-table-tools > h4 {
+  font-size: 0.86rem;
+}
+.brief-body .result-filter {
+  width: 150px;
+  padding: 3px 8px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cream) 70%, transparent);
+  font-size: 0.76rem;
+}
+.brief-body .result-filter:focus-within {
+  width: 200px;
+  border-color: var(--line);
+}
+.brief-body .result-filter input {
+  font-size: 0.76rem;
+}
 .brief-body .result-table-scroll {
-  max-height: 22rem;
-  overscroll-behavior: contain;
+  border: 0;
+  border-radius: 0;
+}
+.brief-body .result-table-scroll table {
+  font-size: 0.82rem;
 }
 .brief-body .result-table-scroll th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  padding: 6px 12px 7px;
+  background: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  border-bottom: 1px solid var(--line);
+}
+.brief-body .result-table-scroll td {
+  padding: 9px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+}
+.brief-body .result-table-scroll :is(th, td):first-child {
+  padding-left: 2px;
+}
+.brief-body .result-table-scroll :is(th, td):last-child {
+  padding-right: 2px;
+}
+.brief-body .result-table-scroll td[data-primary] {
+  color: var(--ink);
+  font-weight: 550;
+}
+.brief-body .result-table-scroll [data-numeric] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* The arrow goes before a number column's name, so the name ends where the
+ * numbers do. */
+.brief-body .result-table-scroll th[data-numeric] button {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+}
+.brief-body .result-table-scroll .result-sources-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.brief-body .result-table-scroll tbody tr:hover {
+  background: color-mix(in srgb, var(--cream) 55%, transparent);
+}
+/* A sort arrow where it says something: on the sorted column, and on the
+ * header pointed at or focused. aria-sort says it to assistive technology. */
+.brief-body .result-table-scroll th[aria-sort="none"] button svg {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.brief-body .result-table-scroll th:hover button svg,
+.brief-body .result-table-scroll th button:focus-visible svg {
+  opacity: 1;
+}
+.brief-body .result-table-scroll th button:hover {
+  color: var(--ink);
+}
+.brief-body .result-table-caption {
+  justify-content: flex-start;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-top: 6px;
+}
+.brief-body .result-table-more {
+  padding: 0;
+  color: var(--green);
+  font-size: 0.74rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.home-view[data-density="low"] .brief-body .result-table-scroll td {
+  padding-block: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-body .result-table-scroll th[aria-sort="none"] button svg {
+    transition: none;
+  }
 }
 
 /* Charts: a fixed plot height, axis names as text above and below. */
@@ -734,6 +833,12 @@ span.brief-ref {
   padding: 0;
   list-style: none;
 }
+/* Images lead (T-9): wide enough to read a screenshot, one alone takes the
+ * card's width; files keep their narrower column. */
+.brief-attachments:has(> li > .brief-attachment[data-kind="image"]) {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 18px 20px;
+}
 /* No card around an attachment: an image comes first at its own shape,
  * then its name, caption and details. Data and text keep their preview frame. */
 .brief-attachment {
@@ -752,9 +857,95 @@ span.brief-ref {
   width: auto;
   max-width: 100%;
   height: auto;
-  max-height: 240px;
+  max-height: 420px;
+  object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 6px;
+}
+/* A picture's button wraps the picture, so its enlarge mark sits on it. */
+.brief-attachment[data-picture] button.brief-image {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
+.brief-image-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--paper, #fff) 86%, transparent);
+  color: var(--ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 18%, transparent);
+  opacity: 0.8;
+  transition: opacity 0.12s ease;
+}
+button.brief-image:hover .brief-image-zoom,
+button.brief-image:focus-visible .brief-image-zoom {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-image-zoom {
+    transition: none;
+  }
+}
+.brief-attachment[data-kind="image"] .brief-attachment-caption {
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+.brief-attachment[data-kind="image"] .brief-image-name {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.78rem;
+}
+.brief-attachment[data-picture] > .brief-chip {
+  align-self: flex-start;
+}
+/* An image that could not be loaded says so where it would have been. */
+.brief-image-failed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 96px;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.78rem;
+}
+/* The file behind the picture, when asked for: a native disclosure, so
+ * click, keyboard and touch open it alike. */
+.brief-image-info {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.brief-image-info > summary {
+  width: fit-content;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.brief-image-info > summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.brief-image-info[open] > summary {
+  margin-bottom: 6px;
+}
+.brief-image-info dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0 0 6px;
+}
+.brief-image-info dl > div {
+  display: contents;
+}
+.brief-image-info dd {
+  margin: 0;
+  color: var(--text-secondary, var(--ink));
+  overflow-wrap: anywhere;
 }
 .brief-attachment header {
   display: flex;
@@ -1076,14 +1267,33 @@ p.brief-preview-frame {
   align-content: start;
   gap: 6px 18px;
 }
+/* A kept picture (T-9): beside what it shows, its file details below that.
+ * Its column is the picture's own width, so the words sit next to it. */
+.brief-attachments-block[data-density="low"] .brief-attachment[data-picture] {
+  grid-template-areas:
+    "image caption"
+    "image chip"
+    "image info";
+  grid-template-columns: fit-content(60%) minmax(0, 1fr);
+  grid-template-rows: auto auto 1fr;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-picture] > .brief-chip {
+  grid-area: chip;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-picture] .brief-image-info {
+  grid-area: info;
+}
+.brief-attachments-block[data-density="low"] .brief-attachment[data-picture] .brief-image-failed {
+  grid-area: image;
+}
 .brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-image {
   grid-area: image;
   margin: 0;
 }
+/* Whole, never cropped: a screenshot keeps its edges at any density. */
 .brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-image img {
-  width: 100%;
   max-height: 200px;
-  object-fit: cover;
+  object-fit: contain;
 }
 .brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] header {
   grid-area: header;
@@ -1107,5 +1317,14 @@ p.brief-preview-frame {
       "caption"
       "meta";
     grid-template-columns: minmax(0, 1fr);
+  }
+  .brief-attachments-block[data-density="low"] .brief-attachment[data-picture] {
+    grid-template-areas:
+      "image"
+      "caption"
+      "chip"
+      "info";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
   }
 }
