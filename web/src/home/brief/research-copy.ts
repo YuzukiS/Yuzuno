@@ -74,16 +74,17 @@ const ENGLISH: ResearchCopyWords = {
  * A desk's own text as it was written: the desk shows every field as plain
  * text, so the copy keeps it from reading as Markdown. One line; a backslash
  * before each character Markdown would take as markup (`*`, `_`, `` ` ``,
- * `~`, brackets, `<`, `>`, `|`), and before an `&` that would read as an entity.
+ * `~`, brackets, `<`, `>`, `|`, and `#`, which closes a heading when it ends
+ * one), and before an `&` that would read as an entity.
  */
 const inline = (text: string) =>
   String(text ?? "")
     .replace(/\s*\n\s*/g, " ")
     .trim()
-    .replace(/[\\`*_~[\]<>|]/g, "\\$&")
+    .replace(/[\\`*_~[\]<>|#]/g, "\\$&")
     .replace(/&(?=#?\w+;)/g, "\\&");
-/** The same where a line begins: nothing there starts a list or a heading. */
-const block = (text: string) => inline(text).replace(/^([-+#])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
+/** The same where a line begins: nothing there starts a list. */
+const block = (text: string) => inline(text).replace(/^([-+])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
 
 function number(value: Num | undefined, at: string, resolved: ResearchResolved | undefined, digits: number | undefined, scale = 1) {
   const text = (n: number) => (digits === undefined ? String(n * scale) : (n * scale).toFixed(digits));

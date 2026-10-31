@@ -66,15 +66,18 @@ test("text the desk shows as written stays as written once the copy is read as M
   const claim = desk.claims[0];
   const plot = desk.plots[0];
   const written = {
-    title: "**required** ~~x~~ `code` <unknown> & &amp; [link](u)",
+    title: "**required** ~~x~~ `code` <unknown> & &amp; [link](u) #",
     claim: "a_b_c *d*",
     statement: "- not a list item",
     said: "1. not a numbered item",
     condition: "# not a heading",
     paper: "+ not a list",
-    plot: "Δ <b>bold?</b> | pipe",
-    unit: "m_s",
+    plot: "Δ <b>bold?</b> | pipe ##",
+    unit: "m_s #",
+    interval: "95% [CI] *x* |",
+    group: "G_1 #",
     row: "Low_dose *x*",
+    part: "arm|x `y`",
     source: "Out|put",
     location: "dir/<x>/file_name.json",
     definition: "Re_covery",
@@ -93,7 +96,10 @@ test("text the desk shows as written stays as written once the copy is read as M
   claim.paper[0].label = written.paper;
   plot.title = written.plot;
   plot.unit = written.unit;
+  plot.interval = written.interval;
+  plot.rows[0].group = written.group;
   plot.rows[0].label = written.row;
+  plot.rows[0].parts[0].label = written.part;
   desk.sources[0].label = written.source;
   desk.sources[0].location = written.location;
   desk.definitions[0].title = written.definition;
