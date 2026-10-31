@@ -200,9 +200,11 @@ test("selection follows pointer and keys across the desk, and survives a new ver
     await until(() => page.document.querySelector(".research-main")?.textContent.includes("−2.50"), "the new version's number");
     assert.ok(checked(page.document, "Views of this desk").textContent.includes("Evidence & limits"));
     assert.equal(page.document.querySelector(".research-main h4").textContent, "High dose");
-    // Kept per Workspace: another Workspace at this address starts fresh.
+    // Kept per Workspace: another Workspace at this address starts fresh and keeps its own.
     page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-2");
     await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Claim & interval"), "another Workspace's own selection");
+    radio(page.document, "Views of this desk", "Next steps").click();
+    await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Next steps"), "a choice in the other Workspace");
     page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-1");
     await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Evidence & limits"), "this Workspace's selection again");
     const stored = JSON.parse(page.window.localStorage.getItem("yuzuno.research-desk.v1"));
@@ -219,7 +221,12 @@ test("definitions keep every version, show what a change moved, and plans only p
     page.window.renderSection(section(page, doseStudy, 3, { refs: {} }), PROJECT, "ws-1");
     await until(() => page.document.querySelector('.research-origin[data-origin="missing"]'), "a pointer that finds nothing");
     assert.ok(page.document.querySelector('.research-origin[data-origin="missing"]').textContent.includes("Not in the snapshot"));
-    assert.ok(page.document.querySelector('.research-origin[data-origin="provided"]') === null, "the v2 plot reads snapshots only");
+    // The v2 plot reads its numbers from the snapshot; the superseded v1 plot shows the Agent's own.
+    const plot = (title) => [...page.document.querySelectorAll(".research-plot")].find((item) => item.querySelector("h5")?.textContent === title);
+    const origins = (title) => new Set([...plot(title).querySelectorAll(".research-origin")].map((mark) => mark.dataset.origin));
+    assert.deepEqual([...origins("Recovery time vs placebo (v2)")].sort(), ["missing", "read"]);
+    assert.deepEqual([...origins("Recovery time vs placebo (v1, superseded)")], ["provided"]);
+    assert.ok(plot("Recovery time vs placebo (v1, superseded)").textContent.includes("Provided by the Agent"));
     // Sources: what Core knows, what the Agent said, and that nothing was checked again.
     const aside = page.document.querySelector(".research-aside");
     assert.ok(aside.textContent.includes("SHA-256 aaaaaaaaaaaa"));
