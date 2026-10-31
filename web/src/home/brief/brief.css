@@ -382,7 +382,6 @@
   border-radius: 6px;
   background: color-mix(in srgb, var(--cream) 70%, transparent);
   font-size: 0.76rem;
-  transition: width 0.15s ease;
 }
 .brief-body .result-filter:focus-within {
   width: 200px;
@@ -469,7 +468,6 @@
   padding-block: 6px;
 }
 @media (prefers-reduced-motion: reduce) {
-  .brief-body .result-filter,
   .brief-body .result-table-scroll th[aria-sort="none"] button svg {
     transition: none;
   }
