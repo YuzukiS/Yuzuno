@@ -377,16 +377,16 @@ pub(super) struct Missing {
     pub message: String,
 }
 
-fn missing(status: StatusCode, code: &'static str, message: impl Into<String>) -> Missing {
+pub(super) fn missing(status: StatusCode, code: &'static str, message: impl Into<String>) -> Missing {
     Missing { status, code, message: message.into() }
 }
 
-fn find_section(store: &Store, project: &str, key: &str, version: Option<i64>) -> Result<Result<sections::Row, Missing>> {
+pub(super) fn find_section(store: &Store, project: &str, key: &str, version: Option<i64>) -> Result<Result<sections::Row, Missing>> {
     let row = sections::find(&*store.db.read()?, project, key, version)?;
     Ok(row.ok_or_else(|| missing(StatusCode::NOT_FOUND, "section_not_found", "No such section in this Brief")))
 }
 
-fn snapshot_of(cache: &Path, row: &sections::Row, name: &str) -> Result<(PathBuf, Value), Missing> {
+pub(super) fn snapshot_of(cache: &Path, row: &sections::Row, name: &str) -> Result<(PathBuf, Value), Missing> {
     let attachment = row.data["attachments"].as_array().into_iter().flatten().find(|a| a["name"] == name)
         .ok_or_else(|| missing(StatusCode::NOT_FOUND, "attachment_not_found", "The section has no attachment with this name"))?;
     let sha = attachment["sha256"].as_str().filter(|_| attachment["snapshot"] == true).ok_or_else(|| {

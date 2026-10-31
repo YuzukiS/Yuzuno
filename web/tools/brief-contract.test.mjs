@@ -6,10 +6,11 @@ import { readFile } from "node:fs/promises";
 import {
   BRIEF_COMPONENT_DESCRIPTIONS, BRIEF_EXAMPLES, BRIEF_GUIDE_PARTS, BRIEF_HARD_RULES, BRIEF_KEY_PATTERN, BRIEF_LIMITS, BRIEF_OUTCOME_HINT,
   BRIEF_PROBLEM_CODES, BRIEF_SCHEMA_VERSION, BRIEF_TOOL_DESCRIPTIONS, BriefError, DESCRIPTION_CAP, briefComponentProps,
-  briefGuide, checkBriefSection, describeBrief, fencedBlockLines,
+  briefGuide, checkBriefSection, describeBrief, fencedBlockLines, researchReads,
 } from "../src/intelligent-ui/brief-contract.ts";
 import { MAX_PROBLEMS, MAX_SPEC_BYTES, ResultError, SIGNATURE_LEGEND } from "../src/intelligent-ui/contract.ts";
 import { clarificationExample } from "../src/intelligent-ui/clarification.ts";
+import { benchmark, doseStudy } from "./research-fixtures.mjs";
 
 const problems = (value, previousBody) => {
   try {
@@ -52,11 +53,13 @@ const everyComponent = {
     { name: "loss.csv", path: "/home/me/run/loss.csv" },
     { name: "plot.png", path: "/home/me/run/plot.png", caption: "Samples" },
     { name: "design", url: "https://example.com/design" },
+    ...doseStudy.attachments,
   ],
   body: {
     root: "body",
     elements: {
-      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources"] },
+      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk"] },
+      desk: doseStudy.body.elements.desk,
       intro: { type: "Markdown", props: { text: "# Round 12\n\n```sh\nnpm test\n```" } },
       split: { type: "Columns", props: { widths: [3, 1] }, children: ["group", "side"] },
       group: { type: "Group", props: { title: "Detail" }, children: ["check", "plan", "findings", "metrics", "table", "line", "bar", "scatter"] },
@@ -486,4 +489,67 @@ test("contract.json carries the brief, generated from this file", async () => {
   assert.deepEqual(Object.keys(committed.brief.guideParts), [...BRIEF_GUIDE_PARTS]);
   assert.equal(committed.brief.guide, briefGuide());
   for (const part of BRIEF_GUIDE_PARTS) assert.equal(committed.brief.guideParts[part], briefGuide(part));
+});
+
+test("a ResearchDesk: two different desks render from one contract, and every reference is checked (T-9)", () => {
+  for (const fixture of [doseStudy, benchmark]) assert.ok(checkBriefSection(fixture), fixture.key);
+  // Only the numbers named by a snapshot are Core's to read.
+  const reads = researchReads(doseStudy.body.elements.desk.props);
+  assert.equal(reads.length, 10);
+  assert.deepEqual(reads[0], { at: "low-v2.value", from: "results.json", pointer: "/v2/low/diff" });
+  assert.ok(!reads.some((read) => read.at.startsWith("low-v1")), "literal numbers are the Agent's own");
+  assert.equal(researchReads(benchmark.body.elements.desk.props).length, 20);
+
+  const desk = (change) => {
+    const copy = structuredClone(doseStudy);
+    change(copy.body.elements.desk.props, copy);
+    return copy;
+  };
+  const rejected = (change) => {
+    const found = first(desk(change));
+    assert.equal(found.guide, found.code === "missing_attachment" ? "brief_guide attachments" : "brief_guide research", JSON.stringify(found));
+    return found;
+  };
+  const dupe = rejected((p) => { p.plots[1].rows[0].id = "low-v2"; });
+  assert.equal(dupe.code, "duplicate_id");
+  assert.equal(dupe.path, "body.elements.desk.props.plots.1.rows.0.id");
+  assert.match(dupe.reason, /row and part id "low-v2" is used twice/);
+  assert.equal(rejected((p) => { p.claims[0].primary = "nowhere"; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.claims[0].plots.push("nowhere"); }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.plots[0].rows[0].estimate.cite.source = "nowhere"; }).path, "body.elements.desk.props.plots.0.rows.0.estimate.cite.source");
+  assert.equal(rejected((p) => { p.plots[0].rows[0].estimate.definition.version = 3; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.claims[0].statements[0].basis = ["nowhere"]; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.claims[0].dependsOn = [{ id: "recovery", version: 9 }]; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.plans[0].inputs[0].source = "nowhere"; }).code, "missing_reference");
+  const unsaved = rejected((p) => { delete p.sources[1].snapshot; });
+  assert.equal(unsaved.code, "unsaved_definition");
+  assert.match(unsaved.reason, /must point to a file this section keeps/);
+  assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
+  assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
+  assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
+  // Numbers come only from this section's JSON attachments.
+  const unregistered = rejected((p) => { p.plots[0].rows[0].estimate.value.from = "other.json"; });
+  assert.equal(unregistered.code, "missing_attachment");
+  assert.equal(unregistered.path, "body.elements.desk.props.plots.0.rows.0.estimate.value.from");
+  const csv = rejected((p, copy) => {
+    copy.attachments.push({ name: "table.csv", path: "/home/me/study/table.csv" });
+    p.plots[0].rows[0].estimate.value.from = "table.csv";
+  });
+  assert.equal(csv.code, "research_attachment");
+  assert.equal(first(desk((p) => { p.plots[0].rows[0].estimate.value.pointer = "v2/low"; })).code, "invalid_field", "a pointer starts with /");
+  // A plan's links count as LiveRefs of the section.
+  const links = desk((p, copy) => {
+    p.plans[0].links = [{ kind: "task", id: "T-1" }];
+    copy.body.elements.body.children.push("refs");
+    copy.body.elements.refs = { type: "LiveRefs", props: { items: items(50, (i) => ({ kind: "task", id: `T-${i + 2}` })) } };
+  });
+  assert.equal(first(links).code, "too_many_refs");
+  // A desk's files count as used; a file nothing reads is still flagged.
+  const unused = desk((p, copy) => { copy.attachments.push({ name: "spare.json", path: "/home/me/study/spare.json" }); });
+  assert.equal(first(unused).code, "unused_attachment");
+  // The guide has a part of its own, and content points to it.
+  assert.ok(BRIEF_GUIDE_PARTS.includes("research"));
+  assert.match(briefGuide("research"), /A Job that succeeded is not a result that holds/);
+  assert.match(briefGuide("research"), /Neither is a check of the research/);
+  assert.match(briefGuide("content"), /- ResearchDesk: see research\./);
 });

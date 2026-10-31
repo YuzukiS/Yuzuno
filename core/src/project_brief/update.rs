@@ -956,6 +956,10 @@ fn commit(
     if !problems.is_empty() {
         return Ok((Err(rejection(problems, None)), None));
     }
+    let problems = research_rules(&tx, &ctx, request, normalized, staged)?;
+    if !problems.is_empty() {
+        return Ok((Err(rejection(problems, None)), None));
+    }
     sections::expire_history(&tx)?;
     let changed = apply(&tx, &ctx, request, normalized, staged)?;
     if !request.no_change && !attachments::prune(&tx, &ctx.project, SNAPSHOT_BRIEF_BYTES)? {
@@ -1002,6 +1006,37 @@ fn commit(
     tx.commit()?;
     // A "no change" changes nothing Home shows.
     Ok((Ok(answer), (!request.no_change).then_some(ctx.project)))
+}
+
+/// The research desk rule only Core can check (T-9, research.rs): with the
+/// attachments as Core took them, each ResearchDesk definition version cites
+/// a saved file and keeps the content it had in the section's live version.
+fn research_rules(
+    tx: &Connection,
+    ctx: &Caller,
+    request: &Request,
+    normalized: &[Value],
+    staged: &[Vec<attachments::Staged>],
+) -> Result<Vec<Value>> {
+    let mut problems = vec![];
+    for (index, change) in request.changes.iter().enumerate() {
+        let current = sections::live_key(tx, &ctx.project, &change.key)?;
+        let next = match change.op {
+            Op::Put => section_data(&normalized[index], &change.section, &staged[index]),
+            // An edit keeps the section's attachments.
+            Op::Edit => {
+                let Some(row) = &current else { continue };
+                let mut data = row.data.clone();
+                data["body"] = normalized[index]["body"].clone();
+                data
+            }
+            _ => continue,
+        };
+        for (path, code, reason) in super::research::kept(current.as_ref().map(|row| &row.data), &next) {
+            problems.push(problem(code, change_path(change, index, &path), reason, "research"));
+        }
+    }
+    Ok(problems)
 }
 
 /// A put's stored data: the validator's normalized section with the
