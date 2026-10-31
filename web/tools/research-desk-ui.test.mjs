@@ -436,3 +436,49 @@ test("with three definition versions, each comparison is captioned with the vers
     }
   }
 });
+
+test("a part's numbers show the part's own source and definition, never its row's", async () => {
+  // High dose's two parts cite other files and versions than their row; the low dose parts cite nothing.
+  const desk = structuredClone(doseStudy);
+  const high = desk.body.elements.desk.props.plots[0].rows.find((row) => row.id === "high-v2");
+  Object.assign(high.parts[0].estimate, { cite: { source: "protocol", lines: "60-62" }, definition: { id: "recovery", version: 1 } });
+  Object.assign(high.parts[1].estimate, { cite: { source: "paper", lines: "12" }, definition: { id: "recovery", version: 2 } });
+  // The paper's snapshot is no longer kept: its part must say so, not borrow the row's source.
+  const answer = serve(desk);
+  const page = mount(async (url) => {
+    const reply = answer(url);
+    if (reply.body?.sources?.paper) reply.body.sources.paper = { attachment: "paper.tex", available: false, reason: "missing" };
+    return reply;
+  });
+  try {
+    page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+    radio(page.document, "Views of this desk", "Evidence & limits").click();
+    const parts = await until(() => {
+      const found = [...page.document.querySelectorAll(".research-main .research-part")];
+      return found.length === 2 && found[0].textContent.includes("7.36") && found;
+    }, "the high dose row's two parts");
+    const [arm, placebo] = parts.map((part) => part.textContent);
+    assert.ok(arm.includes("Protocol") && arm.includes("lines 60-62"), `the arm's own source: ${arm}`);
+    assert.ok(arm.includes("Definition: Recovery") && arm.includes("v1") && arm.includes("Symptom-free for 48 hours."), `the arm's own definition version: ${arm}`);
+    assert.ok(placebo.includes("Draft") && placebo.includes("lines 12") && placebo.includes("This snapshot is no longer kept"), `the placebo's own source, unavailable: ${placebo}`);
+    assert.ok(placebo.includes("v2") && placebo.includes("Symptom-free for 72 hours."), `the placebo's own definition version: ${placebo}`);
+    for (const part of [arm, placebo]) assert.ok(!part.includes("Analysis output"), "no part borrows its row's source");
+    assert.ok(!arm.includes("v2") && !placebo.includes("v1"), "each part names only its own version");
+    // A part citing nothing names nothing of its row's.
+    radio(page.document, "Views of this desk", "Claim & interval").click();
+    radio(page.document, "Recovery time vs placebo (v2): rows", "Low dose").click();
+    radio(page.document, "Views of this desk", "Evidence & limits").click();
+    const low = await until(() => {
+      const found = [...page.document.querySelectorAll(".research-main .research-part")];
+      return page.document.querySelector(".research-main h4")?.textContent === "Low dose" && found.length === 2 && found;
+    }, "the low dose row's two parts");
+    for (const part of low.map((item) => item.textContent)) {
+      assert.ok(part.includes("This part names no source or definition of its own."), part);
+      assert.ok(!part.includes("Analysis output") && !part.includes("Definition:"), `nothing borrowed from the row: ${part}`);
+    }
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

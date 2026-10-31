@@ -610,12 +610,36 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
       {row.parts?.length ? (
         <section className="research-panel">
           <h5>{plot?.partsLabel ?? t.eachOwn}</h5>
-          {row.parts.map((part) => (
-            <div key={part.id} className="research-part">
-              <b>{part.label}</b>
-              {numbers(part.estimate, part.id)}
-            </div>
-          ))}
+          {row.parts.map((part) => {
+            // A part's own source and definition, never its row's: a part may cite another file or version.
+            const cite = part.estimate.cite;
+            const source = cite ? sources.get(cite.source) : undefined;
+            const own = definitionOf(part.estimate.definition);
+            return (
+              <div key={part.id} className="research-part">
+                <b>{part.label}</b>
+                {numbers(part.estimate, part.id)}
+                {source && cite && (
+                  <ul className="research-sources">
+                    <SourceLine source={source} info={sourceInfo(cite.source)} lines={cite.lines} />
+                  </ul>
+                )}
+                {own && (
+                  <p className="research-part-definition">
+                    {t.definition}: {own.definition.title} <span className="research-tag">{t.version(own.version.version)}</span>
+                    <span className="research-note">{own.version.text}</span>
+                  </p>
+                )}
+                {!source && !own ? (
+                  <p className="research-note">{t.partNamesNothing}</p>
+                ) : !source ? (
+                  <p className="research-note">{t.partNoSource}</p>
+                ) : !own ? (
+                  <p className="research-note">{t.partNoDefinition}</p>
+                ) : null}
+              </div>
+            );
+          })}
         </section>
       ) : null}
       {used && (
