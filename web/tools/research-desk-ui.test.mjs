@@ -392,3 +392,47 @@ test("rows of plots in different units are compared each in its own unit, never 
   assert.equal(units.before, "−260.00 [−380.00, −140.00] centidays", "v1 in its own unit");
   assert.equal(units.after, "−2.04 [−3.12, −0.96] days", "v2 in its own unit");
 });
+
+/**
+ * The dose study with a third definition version, its low rows compared v1 → v3 and its high rows v2 → v3;
+ * `highFirst` puts the v2 → v3 group first in the desk, so neither order can pass by being first.
+ */
+function threeVersions(highFirst) {
+  const desk = structuredClone(doseStudy);
+  const props = desk.body.elements.desk.props;
+  props.definitions[0].versions.push({ version: 3, text: "Symptom-free for 96 hours.", cite: { source: "protocol", lines: "36-40" }, change: "72 h still counted some relapses." });
+  const v3 = (id, compare, value, low, high) => ({ id, label: compare === "low" ? "Low dose" : "High dose", compare, estimate: { value, low, high, definition: { id: "recovery", version: 3 }, cite: { source: "protocol", lines: "50-54" } } });
+  const rows = [v3("low-v3", "low", -0.5, -1.6, 0.6), v3("high-v3", "high", -1.9, -3.0, -0.8)];
+  const [v2Plot, v1Plot] = props.plots;
+  const v3Plot = { id: "recovery-v3", title: "Recovery time vs placebo (v3)", unit: "days", digits: 2, reference: { value: 0, label: "0 = no difference" }, rows: highFirst ? rows.reverse() : rows };
+  // Low compares v1 with v3, high compares v2 with v3: each group keeps one earlier version.
+  delete v2Plot.rows.find((row) => row.id === "low-v2").compare;
+  delete v1Plot.rows.find((row) => row.id === "high-v1").compare;
+  // The first compared row is low-v1 (low group first) or high-v3 (high group first).
+  props.plots = highFirst ? [v3Plot, v2Plot, v1Plot] : [v1Plot, v2Plot, v3Plot];
+  return desk;
+}
+
+test("with three definition versions, each comparison is captioned with the versions it actually compares", async () => {
+  for (const highFirst of [false, true]) {
+    const desk = threeVersions(highFirst);
+    const page = mount(serve(desk));
+    try {
+      page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
+      await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+      radio(page.document, "Views of this desk", "Definitions").click();
+      await until(() => page.document.querySelectorAll(".research-compare").length === 2 && page.document.querySelector(".research-desk").textContent.includes("−2.04"), "a table per transition");
+      const tables = [...page.document.querySelectorAll(".research-compare")].map((table) => ({
+        caption: table.querySelector("caption").textContent,
+        rows: [...table.querySelectorAll("tr")].map((row) => [row.querySelector("th").textContent, ...[...row.querySelectorAll("td")].map((cell) => cell.textContent)]),
+      }));
+      assert.deepEqual(tables, [
+        { caption: "v1 → v3", rows: [["Low dose", "−0.90 [−2.10, +0.30] days", "→", "−0.50 [−1.60, +0.60] days"]] },
+        { caption: "v2 → v3", rows: [["High dose", "−2.04 [−3.12, −0.96] days", "→", "−1.90 [−3.00, −0.80] days"]] },
+      ], `highFirst=${highFirst}`);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});

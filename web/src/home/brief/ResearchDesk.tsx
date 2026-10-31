@@ -649,6 +649,17 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
           const byVersion = compared.filter((r) => r.compare === key).sort((a, b) => a.estimate.definition!.version - b.estimate.definition!.version);
           return { key, before: byVersion[0], after: byVersion[byVersion.length - 1] };
         }).filter((pair) => pair.before.id !== pair.after.id);
+        // One table per transition (v1 → v3, v2 → v3, …), its caption naming the versions of every row in it:
+        // with three or more versions, two rows may compare different versions.
+        const transitions = new Map<string, { from: number; to: number; pairs: typeof pairs }>();
+        for (const pair of pairs) {
+          const from = pair.before.estimate.definition!.version;
+          const to = pair.after.estimate.definition!.version;
+          const group = transitions.get(`${from}→${to}`) ?? { from, to, pairs: [] };
+          group.pairs.push(pair);
+          transitions.set(`${from}→${to}`, group);
+        }
+        const tables = [...transitions.values()].sort((a, b) => a.from - b.from || a.to - b.to);
         const affected = desk.claims.filter((item) => item.dependsOn?.some((ref) => ref.id === definition.id && ref.version < newest));
         const drafts = (desk.revisions ?? []).filter((revision) => revision.definition.id === definition.id);
         return (
@@ -670,11 +681,11 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
                 );
               })}
             </ol>
-            {pairs.length > 0 && (
-              <table className="research-compare">
-                <caption>{t.beforeAfter(pairs[0].before.estimate.definition!.version, pairs[0].after.estimate.definition!.version)}</caption>
+            {tables.map((table) => (
+              <table key={`${table.from}→${table.to}`} className="research-compare">
+                <caption>{t.beforeAfter(table.from, table.to)}</caption>
                 <tbody>
-                  {pairs.map(({ key, before, after }) => {
+                  {table.pairs.map(({ key, before, after }) => {
                     // Each row as its own plot shows it (scale, digits, sign) and in its own unit:
                     // nothing is converted or assumed comparable, so no change is shown that the plots don't show.
                     const text = (r: Row) => {
@@ -695,7 +706,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
                   })}
                 </tbody>
               </table>
-            )}
+            ))}
             {versions.length > 1 && !pairs.length && <p className="research-note">{t.noComparison}</p>}
             {affected.length > 0 && (
               <div className="research-affected">
