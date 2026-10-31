@@ -35,9 +35,9 @@ test("a desk copies as Markdown: claims, tables of rows saying where each number
   assert.match(text, /\*\*High dose shortens recovery\*\* \(holds under conditions\)/);
   assert.match(text, /May not say:\n- The low dose works\. \(interpretation\)/);
   assert.match(text, /\| Row \| Value \| 95% interval \| From \|\n\| --- \| --- \| --- \| --- \|/);
-  assert.match(text, /\| High dose \| -2\.04 \| \[-3\.12, -0\.96\] \| snapshot results\.json \|/);
+  assert.match(text, /\| High dose \| -2\.04 \| \\\[-3\.12, -0\.96\\\] \| snapshot results\.json \|/);
   assert.match(text, /\| High dose · Placebo \| 9\.40 \|  \| snapshot results\.json \|/);
-  assert.match(text, /\| High dose \| -2\.60 \| \[-3\.80, -1\.40\] \| the Agent \|/, "the v1 rows are the Agent's own");
+  assert.match(text, /\| High dose \| -2\.60 \| \\\[-3\.80, -1\.40\\\] \| the Agent \|/, "the v1 rows are the Agent's own");
   assert.match(text, /- Analysis output — results\.json, SHA-256 f{64}, 2026-10-31T08:00:00Z \(study\/results\.json\)/);
   assert.match(text, /- Recovery v2: Symptom-free for 72 hours\. \(48 h counted relapses as recovered\.\)\n- Recovery v1: Symptom-free for 48 hours\./);
   assert.match(text, /#### Next steps \(previews; nothing has run\)\n\nWhether a plan runs as described is not verified\./);
@@ -51,11 +51,11 @@ test("a desk copies as Markdown: claims, tables of rows saying where each number
 test("without Core's read a number from a snapshot is said to be not read, never guessed", () => {
   const desk = benchmark.body.elements.desk.props;
   const text = researchDeskMarkdown(desk);
-  assert.match(text, /\| O2 · o2 · arm \| — \| \[—, —\] \| not read \|/, "a row's group names it");
+  assert.match(text, /\| O2 · o2 · arm \| — \| \\\[—, —\\\] \| not read \|/, "a row's group names it");
   // With Core's read: fractions shown in percent, as the plot asks, and said so.
   const shown = researchDeskMarkdown(desk, resolvedOf(desk));
   assert.match(shown, /Values shown × 100 of the file's\./);
-  assert.match(shown, /\| O2 · o2 · arm \| -6\.1 \| \[-8\.0, -4\.2\] \| snapshot bench\.json \|/);
+  assert.match(shown, /\| O2 · o2 · arm \| -6\.1 \| \\\[-8\.0, -4\.2\\\] \| snapshot bench\.json \|/);
   assert.doesNotMatch(text, /-6\.1/);
   const piped = structuredClone(desk);
   piped.plots[0].rows[0].label = "a | b\nc";
@@ -133,7 +133,24 @@ test("each plot's table in the copy uses its own scale and unit", () => {
   desk.plots[1].unit = "centidays";
   const text = researchDeskMarkdown(desk, resolvedOf(desk));
   assert.match(text, /#### Recovery time vs placebo \(v2\) \(days\)\n\n\| Row/, "v2 in days, unscaled");
-  assert.match(text, /\| High dose \| -2\.04 \| \[-3\.12, -0\.96\] \| snapshot results\.json \|/);
+  assert.match(text, /\| High dose \| -2\.04 \| \\\[-3\.12, -0\.96\\\] \| snapshot results\.json \|/);
   assert.match(text, /#### Recovery time vs placebo \(v1, superseded\) \(centidays\)\n\nValues shown × 100 of the file's\./, "v1 in its own unit and scale");
-  assert.match(text, /\| High dose \| -260\.00 \| \[-380\.00, -140\.00\] \| the Agent \|/);
+  assert.match(text, /\| High dose \| -260\.00 \| \\\[-380\.00, -140\.00\\\] \| the Agent \|/);
+});
+
+test("an interval stays text beside a link definition of its own label, read or not read", () => {
+  const purify = createDOMPurify(new JSDOM("").window);
+  const read = researchDeskMarkdown(doseStudy.body.elements.desk.props, resolvedOf(doseStudy.body.elements.desk.props));
+  const unread = researchDeskMarkdown(benchmark.body.elements.desk.props);
+  for (const [markdown, interval] of [[read, "[-3.12, -0.96]"], [unread, "[—, —]"]]) {
+    // As Home's BriefMarkdown reads it, with a definition of that label after the copy.
+    const html = purify.sanitize(marked.parse(`${markdown}\n\n${interval}: https://example.test/x\n`, { async: false, gfm: true }), {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ["img", "form", "input", "button", "iframe", "style"],
+      FORBID_ATTR: ["style"],
+    });
+    const doc = new JSDOM(`<body>${html}</body>`).window.document;
+    assert.equal(doc.querySelectorAll("a").length, 0, `no interval became a link: ${interval}`);
+    assert.ok([...doc.querySelectorAll("td")].some((td) => td.textContent === interval), `the interval as text: ${interval}`);
+  }
 });

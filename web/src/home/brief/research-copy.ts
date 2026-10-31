@@ -143,7 +143,8 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
       const value = number(row.estimate.value, `${row.id}.value`, resolved, plot.digits, plot.scale);
       const low = number(row.estimate.low, `${row.id}.low`, resolved, plot.digits, plot.scale);
       const high = number(row.estimate.high, `${row.id}.high`, resolved, plot.digits, plot.scale);
-      const interval = row.estimate.low !== undefined || row.estimate.high !== undefined ? `[${low.text}, ${high.text}]` : "";
+      // Escaped, so "[-3.1, -0.9]" stays text even beside a link definition of that label.
+      const interval = row.estimate.low !== undefined || row.estimate.high !== undefined ? `\\[${low.text}, ${high.text}\\]` : "";
       const origin = value.origin === "read" ? words.read(value.from!) : value.origin === "provided" ? words.provided : words.notRead;
       out.push(`| ${inline(row.label)} | ${value.text} | ${interval} | ${inline(origin)} |`);
     }
