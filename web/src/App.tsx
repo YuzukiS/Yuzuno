@@ -481,6 +481,13 @@ export function App() {
    * already keeps -- its Turn and message, not a scroll ratio, which a reflow
    * does not preserve -- and the focus is given back to the composer it was in.
    *
+   * The conversation's own ReadingAnchor (ConversationWindow) does not reach
+   * this: it holds a reflow it is part of, by looking at the old DOM before
+   * its own commit, and folding changes the layout in CSS without an update to
+   * that subtree for it to look before. Extending it to settle width changes
+   * was tried and left the message 300px from where it had been, so the hold
+   * is driven from here instead, off the anchor the conversation already keeps.
+   *
    * Neither is forced: with no anchor, or none of it still drawn, the
    * conversation is left where it is rather than sent to the end, and the
    * focus is only restored when the change dropped it, never taken from

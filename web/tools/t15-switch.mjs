@@ -78,6 +78,32 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(400);
 
+// The message the conversation itself would anchor on (ConversationWindow's
+// ReadingAnchor picks the first one reaching the pane's top), and where it
+// sits inside the pane. Which Turn is at the viewport's centre is NOT the
+// judge: a shorter screen puts a different Turn there whatever the anchor
+// does, so it is only reported.
+const anchorRule = () => page.evaluate(() => {
+  const pane = document.querySelector(".conversation-scroll");
+  if (!pane) return null;
+  const box = pane.getBoundingClientRect();
+  const visible = [...pane.querySelectorAll("[data-item-id]")]
+    .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+    .filter(({ rect }) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom);
+  const pick = visible.find(({ rect }) => rect.top >= box.top) || visible[0];
+  return pick ? { id: pick.element.dataset.itemId, within: Math.round(pick.rect.top - box.top) } : null;
+});
+/** Where one named message sits inside the pane now, or why it cannot be read. */
+const offsetOf = (id) => page.evaluate((itemId) => {
+  const pane = document.querySelector(".conversation-scroll");
+  if (!pane) return { gone: "no pane" };
+  const element = pane.querySelector(`[data-item-id="${CSS.escape(itemId)}"]`);
+  if (!element) return { gone: "unmounted" };
+  const rect = element.getBoundingClientRect();
+  if (rect.height <= 0) return { gone: "not drawn" };
+  return { within: Math.round(rect.top - pane.getBoundingClientRect().top) };
+}, id);
+
 const state = () => page.evaluate(() => {
   const scroll = document.querySelector(".conversation-scroll");
   const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
@@ -87,33 +113,59 @@ const state = () => page.evaluate(() => {
     .map((b) => Math.round(b.getBoundingClientRect().height));
   return { draft: document.querySelector(".composer .cm-content")?.textContent ?? null,
     focus: document.activeElement?.tagName + "." + (document.activeElement?.className || "").split(" ")[0],
-    top: Math.round(scroll?.scrollTop ?? -1), ratio: scroll ? +(scroll.scrollTop / scroll.scrollHeight).toFixed(3) : -1,
+    top: Math.round(scroll?.scrollTop ?? -1),
     middleTurn: turn, numberRows: [...new Set(rows)], phone: document.querySelector(".app")?.classList.contains("phone") ?? null };
 });
 
 const before = await state();
+const anchor = await anchorRule();
+assert.ok(anchor?.id, "the conversation has a message to anchor on");
+console.log("anchor      ", JSON.stringify(anchor));
+console.log("start       ", JSON.stringify(before));
+
+// Out to the folded size and back to the one we started at. Returning to the
+// same geometry is what makes the offset comparable: the reflow has to undo
+// exactly as much as it did.
 const steps = [{ name: "folded 400x844", w: 400, h: 844 }, { name: "unfolded 951x669", w: 951, h: 669 }];
 const seen = [];
 for (const step of steps) {
   await page.setViewportSize({ width: step.w, height: step.h });
   await page.waitForTimeout(600);
-  seen.push({ step: step.name, ...(await state()) });
+  seen.push({ step: step.name, ...(await state()), anchor: await offsetOf(anchor.id) });
 }
-await browser.close();
-
 const after = seen[seen.length - 1];
-console.log("start      ", JSON.stringify(before));
 for (const s of seen) console.log(s.step.padEnd(16), JSON.stringify(s));
 
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if (!ok) failed++; };
 check(seen.every((s) => s.draft === DRAFT), "the draft is unchanged at every size");
 check(seen[0].phone === true && after.phone === false, "folding crosses the phone breakpoint and comes back");
-check(after.middleTurn !== null && after.middleTurn === before.middleTurn,
-  `the Turn being read is the same one after folding and opening (${before.middleTurn} → ${after.middleTurn})`);
+// The judge: the same message, back at the same place inside the pane.
+check(!after.anchor.gone, `the anchored message is still drawn after the round trip${after.anchor.gone ? ` (${after.anchor.gone})` : ""}`);
+check(after.anchor.within !== undefined && Math.abs(after.anchor.within - anchor.within) <= 2,
+  `it sits where it did, within 2px (${anchor.within} → ${after.anchor.within ?? "-"})`);
 check(after.numberRows.length === 1 && after.numberRows[0] === 44,
   `touch keeps 44px Turn rows once open (${after.numberRows.join("/")})`);
 check(after.focus === before.focus, `focus stays where it was (${before.focus} → ${after.focus})`);
+console.log(`note: the Turn at the viewport's centre went ${before.middleTurn} → ${after.middleTurn}; a shorter`
+  + " screen centres a different Turn whatever the anchor does, so this is reported, not judged.");
+
+// A reader who moves the focus themselves keeps it: folding must not pull it
+// back to the composer.
+const elsewhere = page.locator(".conversation-header button, .app button").first();
+await elsewhere.focus();
+const moved = await page.evaluate(() => document.activeElement?.className || document.activeElement?.tagName);
+await page.setViewportSize({ width: 400, height: 844 });
+await page.waitForTimeout(500);
+await page.setViewportSize({ width: 951, height: 669 });
+await page.waitForTimeout(600);
+const kept = await page.evaluate(() => ({
+  composer: !!document.activeElement?.closest?.(".composer"),
+  where: document.activeElement?.className || document.activeElement?.tagName,
+}));
+check(!kept.composer, `a focus the reader moved is not taken back to the composer (left at ${moved}, now ${kept.where})`);
+
+await browser.close();
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);
