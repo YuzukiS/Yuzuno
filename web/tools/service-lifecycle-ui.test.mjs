@@ -534,6 +534,7 @@ test("a waiting retry: this round hasn't started, the earliest time is no promis
   assert.match(page.lifecycle().querySelector(".service-recovery-off").textContent, /^Turn off automatic retryCancels the waiting retry; the service stays stopped$/);
   assert.match(page.lifecycle().querySelector(".service-recovery-details").textContent, /2 scheduled · 1 started · at most 3/);
   assert.equal(page.lifecycle().querySelectorAll(".service-attempts li").length, 3);
+  assert.deepEqual([...page.lifecycle().querySelectorAll(".service-attempts li span:last-child")].map((cell) => cell.textContent), ["Exit code 1", "Exit code 1", "In progress"]);
   assert.equal(page.button("Start again…", page.lifecycle()), undefined, "no start while a retry is queued");
   // Past its earliest time it is queued with Jobs' own reason, never "soon".
   page.core.service = waiting({ observedAt: "2026-10-31T00:42:20Z" });
@@ -672,7 +673,9 @@ test("each end of the window is said, with the current Job's own line after a Co
     if (expect.process) assert.match(page.fact("process"), new RegExp(`^Process${expect.process}`), name);
     if (expect.headline) assert.equal(page.headline(), expect.headline, name);
     assert.doesNotMatch(page.lifecycle().textContent, /Stopped as you requested/, `${name}: never stopped before it is`);
-    assert.match(page.lifecycle().querySelector(".service-manual").textContent, /^Automatic retry has ended · start again manually when needed$/, name);
+    // While the outcome is unconfirmed there is no manual start to point to.
+    assert.equal(page.lifecycle().querySelector(".service-manual").textContent,
+      /needs checking|The outcome needs checking/.test(lines.join(" ")) ? "Automatic retry has ended" : "Automatic retry has ended · start again manually when needed", name);
   }
   assert.deepEqual(page.requests.filter((r) => r.method === "POST"), [], "reading sends nothing");
   assert.deepEqual(page.errors, []);

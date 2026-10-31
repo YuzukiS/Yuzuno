@@ -179,7 +179,7 @@ export const serviceText = strings({
   attemptOutcome: {
     exit: (code: number) => `Exit code ${code}`, signal: (signal: string) => `Signal ${signal}`, core_dump: "Crashed (core dump)",
     lifetime: "Reached its end time", cancelled: "Stopped", rejected: "Didn't start", unknown: "Needs checking", succeeded: "Ended normally",
-    open: "In progress",
+    oom: "Out of memory", interrupted: "Interrupted (machine restarted)", failed: "Failed, not a crash", open: "In progress",
   },
   recoveryWhen: "Retries only after a non-zero exit code, a signal or a crash; never after a stop, the end time, running out of memory, an unknown outcome, or a Core or machine restart. Each retry is an ordinary queued run.",
   recoveryOption: "Retry automatically after a failure",
@@ -243,7 +243,7 @@ export const serviceText = strings({
   otherStopIntent: "已记录保持停止的请求。",
   noStopIntent: "未记录服务的停止选择。",
   keepStopped: "保持停止",
-  noDuplicate: "先核实当前运行，再启动下一次。",
+  noDuplicate: "先核对当前运行，再启动下一次。",
   closeNote: "关闭预览不会改变服务状态。",
   refresh: "刷新状态",
   logs: "日志",
@@ -361,7 +361,7 @@ export const serviceText = strings({
   attemptOutcome: {
     exit: (code) => `退出码 ${code}`, signal: (signal) => `信号 ${signal}`, core_dump: "崩溃（core dump）",
     lifetime: "到期结束", cancelled: "已停止", rejected: "未启动", unknown: "待核对", succeeded: "正常结束",
-    open: "进行中",
+    oom: "内存不足", interrupted: "已中断（机器重启）", failed: "失败（不是崩溃）", open: "进行中",
   },
   recoveryWhen: "只在进程以非零退出码、信号或崩溃结束时再试；停止、到期、内存不足、结果未知、Core 或机器重启后都不再试。每次再试都是一条普通的排队运行。",
   recoveryOption: "失败后自动再试",

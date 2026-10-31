@@ -92,14 +92,15 @@ export function currentRetry(service: ProjectService, recovery: ServiceRecovery 
 /** An attempt's recorded end, in Core's closed set. Anything else is shown
  * as written. */
 export type RecoveryOutcome = { kind: "exit"; code: number } | { kind: "signal"; signal: string }
-  | { kind: "core_dump" | "lifetime" | "cancelled" | "rejected" | "unknown" | "succeeded" } | { kind: "other"; text: string };
+  | { kind: "core_dump" | "lifetime" | "cancelled" | "rejected" | "unknown" | "succeeded" | "oom" | "interrupted" | "failed" }
+  | { kind: "other"; text: string };
 export function recoveryOutcome(outcome: string | null): RecoveryOutcome | null {
   if (outcome === null) return null;
   const exit = /^exit:(-?\d+)$/.exec(outcome);
   if (exit) return { kind: "exit", code: Number(exit[1]) };
   const signal = /^signal:([A-Z0-9+]+)$/.exec(outcome);
   if (signal) return { kind: "signal", signal: signal[1] };
-  if (["core_dump", "lifetime", "cancelled", "rejected", "unknown", "succeeded"].includes(outcome)) return { kind: outcome } as RecoveryOutcome;
+  if (["core_dump", "lifetime", "cancelled", "rejected", "unknown", "succeeded", "oom", "interrupted", "failed"].includes(outcome)) return { kind: outcome } as RecoveryOutcome;
   return { kind: "other", text: outcome };
 }
 
