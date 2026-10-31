@@ -330,6 +330,28 @@ async fn opting_out_cancels_only_a_retry_not_yet_reserved() {
     assert_eq!(record(s, &root)["status"], "running");
     crash(s, &root);
     assert_eq!(jobs(s), 2);
+
+    // A retry already reserved for launch keeps its round too: no cancel is
+    // asked of it, and its crash starts nothing.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    let revision = intent_of(s, &id)["revision"].as_i64().unwrap();
+    crash(s, &root);
+    let retry = latest(s, &id);
+    due(s, &retry);
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(reserved["id"], retry["id"]);
+    let receipt = opt_out_now(s, &id, &opt_out_request("off-1", &root, revision)).unwrap();
+    assert!(receipt["cancelledRetryJobId"].is_null());
+    let kept = record(s, &retry);
+    assert!(kept["cancelRequestedAt"].is_null() && kept["status"] == "starting", "{}", kept["status"]);
+    s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],
+        "status":"running","reason":"Running","started":{"at":now_unix()}}))
+        .unwrap();
+    crash(s, &retry);
+    assert_eq!(jobs(s), 3, "nothing follows the opt-out");
 }
 
 #[tokio::test]
