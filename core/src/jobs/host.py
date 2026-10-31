@@ -863,6 +863,12 @@ def reports(spec, folder):
                 'reportProblem': f'The attempt\'s reports could not be read: {error}'[:300]}
 
 def result(spec, folder, status, evidence, reason=None):
+    # A service retry's end-time marker (T-14) is written before the stop or
+    # refusal it explains, so it goes with whichever outcome is recorded
+    # first: the collector's or Core's reconciliation's.
+    marker = read(folder / 'deadline.json')
+    if marker and isinstance(evidence, dict) and not evidence.get('deadline'):
+        evidence = {**evidence, 'deadline': marker}
     value = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'status': status, 'reason': reason, 'finishedAtUnix': time.time(),
              'started': read(folder / 'started.json'), 'evidence': evidence,

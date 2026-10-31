@@ -236,4 +236,49 @@ class SharedEndTests(unittest.TestCase):
                 self.assertEqual(outcome['status'],'succeeded')
                 self.assertIsNone(outcome['evidence']['deadline'])
 
+    def reconcile_now(self, status, state):
+        """Core's own reading of an ended unit, before the collector records it."""
+        with patch.object(host,'show',return_value=state), patch.object(host,'classify',return_value=status), \
+                patch.object(host,'pids_evidence',return_value=None), patch.object(host,'settled',side_effect=lambda s,f,r:r):
+            return host.reconcile(self.spec, self.folder)
+
+    def test_reconciliation_recording_first_keeps_the_end_time_stop(self):
+        marker = {'kind':'stop','at':1061.0,'deadlineAtUnix':1061}
+        host.atomic(self.folder/'deadline.json', marker)
+        signalled = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':'15'}
+        first = self.reconcile_now('failed', signalled)
+        self.assertEqual(first['evidence']['deadline'], marker)
+        self.assertEqual(first['evidence']['systemd'], signalled)
+        # The collector finishes later: the first outcome, its marker included, stays.
+        late = host.result(self.spec, self.folder, 'failed', {'launch':{}, 'systemd':signalled, 'pids':None, 'deadline':marker}, 'signal')
+        self.assertEqual(late, first)
+        self.assertEqual(host.read(self.folder/'result.json')['evidence']['deadline'], marker)
+
+    def test_collector_recording_first_keeps_it_when_reconciliation_follows(self):
+        marker = {'kind':'stop','at':1061.0,'deadlineAtUnix':1061,'killedAt':1064.0}
+        host.atomic(self.folder/'deadline.json', marker)
+        state = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'signal','ExecMainStatus':'9'}
+        first = host.result(self.spec, self.folder, 'failed', {'launch':{}, 'systemd':state, 'pids':None,
+                                                                'deadline':host.read(self.folder/'deadline.json')}, 'signal')
+        self.assertEqual(self.reconcile_now('failed', state), first)
+        self.assertEqual(first['evidence']['deadline'], marker)
+
+    def test_reconciled_refusal_near_the_end_keeps_not_started(self):
+        marker = {'kind':'notStarted','at':1000.0,'deadlineAtUnix':1059.5}
+        host.atomic(self.folder/'deadline.json', marker)
+        host.atomic(self.folder/'input-changed.json', {'reason':host.NOT_STARTED_NEAR_END})
+        exited = {'InvocationID':'invocation','MainPID':'0','SubState':'failed','Result':'exit-code','ExecMainStatus':'78'}
+        outcome = self.reconcile_now('rejected', exited)
+        self.assertEqual((outcome['status'], outcome['reason']), ('rejected', host.NOT_STARTED_NEAR_END))
+        self.assertEqual(outcome['evidence']['deadline'], marker)
+
+    def test_an_ending_without_a_marker_keeps_its_evidence_as_it_was(self):
+        state = {'InvocationID':'invocation','MainPID':'0','SubState':'exited','Result':'success','ExecMainStatus':'0'}
+        outcome = self.reconcile_now('succeeded', state)
+        self.assertEqual(set(outcome['evidence']), {'systemd','pids'})
+        (self.folder/'result.json').unlink()
+        collected = host.result(self.spec, self.folder, 'succeeded', {'launch':{}, 'systemd':state, 'pids':None, 'deadline':None}, 'success')
+        self.assertEqual(set(collected['evidence']), {'launch','systemd','pids','deadline'})
+        self.assertIsNone(collected['evidence']['deadline'])
+
 if __name__=='__main__':unittest.main()

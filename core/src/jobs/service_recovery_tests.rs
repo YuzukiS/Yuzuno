@@ -385,6 +385,42 @@ async fn changed_inputs_a_refused_launch_and_other_endings_stop_recovery_with_th
 }
 
 #[tokio::test]
+async fn an_outcome_reconciled_with_its_end_time_marker_reads_as_the_end_time() {
+    // What host.py's reconciliation records too since review 453aa6d2: the
+    // signal or refusal the end time caused, with its marker.
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    let attempt = record(s, &root)["attempt"].clone();
+    s.update_job_evidence(root["id"].as_str().unwrap(), json!({"jobId":root["id"],"attempt":attempt,"status":"failed","reason":"signal",
+        "evidence":{"systemd":{"Result":"signal","ExecMainStatus":"15"},"pids":null,"deadline":{"kind":"stop","at":1.0}}}))
+        .unwrap();
+    assert_eq!(jobs(s), 2, "the end time's SIGTERM is not a crash: no retry");
+    let view = recovery(&lab, &id).await;
+    assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("ended"), Some("lifetime_reached")));
+    assert_eq!(view["attempts"][0]["outcome"], "lifetime");
+
+    // A retry the worker refused just before exec.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    due(s, &retry);
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(reserved["id"], retry["id"]);
+    s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],"status":"rejected",
+        "reason":"Not started: less than 60 s remain before the end time this service run shares with its automatic retries; no process was created",
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"78"},"pids":null,"deadline":{"kind":"notStarted","at":1.0}}}))
+        .unwrap();
+    let view = recovery(&lab, &id).await;
+    assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("ended"), Some("insufficient_time")));
+    assert_eq!(jobs(s), 3, "nothing follows");
+}
+
+#[tokio::test]
 async fn a_failed_recovery_step_still_records_the_outcome() {
     let lab = lab();
     let s = &lab.ws.store;
