@@ -147,6 +147,8 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/services/{id}/open",post(open_service))
         .route("/api/previews",post(open_preview))
         .route("/api/services/{id}/close",post(close_service))
+        .route("/api/services/{id}/stop",post(stop_managed_service))
+        .route("/api/services/{id}/start",post(start_managed_service))
         .route("/api/agents/{id}/project",post(set_agent_project))
         .route("/api/codex/sessions/preview",post(preview_session))
         .route("/api/codex/sessions/import",post(import_session))
@@ -780,6 +782,14 @@ async fn open_preview(State(ws): State<Arc<Workspace>>, headers: axum::http::Hea
 }
 async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.close_service(&id).await?))
+}
+async fn stop_managed_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
+    Json(input): Json<crate::jobs::service_control::Request>) -> ApiResult<Json<Value>> {
+    Ok(Json(tokio::spawn(crate::jobs::service_control::control(ws, None, id, "stop".into(), input)).await??))
+}
+async fn start_managed_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
+    Json(input): Json<crate::jobs::service_control::Request>) -> ApiResult<Json<Value>> {
+    Ok(Json(tokio::spawn(crate::jobs::service_control::control(ws, None, id, "start".into(), input)).await??))
 }
 async fn delete_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     // Its services' open ways end with it (services.rs).

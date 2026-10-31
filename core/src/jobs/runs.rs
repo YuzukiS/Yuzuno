@@ -255,6 +255,7 @@ impl RunSubmit {
             checkpoint_from: None,
             service: None,
             service_link: None,
+            service_control: None,
         }
     }
 }
