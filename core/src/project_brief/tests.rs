@@ -1895,8 +1895,10 @@ async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_vers
     assert_eq!(rejected["problems"][0]["code"], "unsaved_definition", "{rejected}");
     assert_eq!(rejected["problems"][0]["path"], "changes[0].body.elements.desk.props.definitions.0.versions.0.cite");
 
-    // Reads stay inside the section version, the element and the Project.
-    assert_eq!(read("desk", Some(1)).ok().unwrap()["version"], 1);
+    // Reads stay inside the section version, the element and the Project:
+    // a version since replaced is not read, and never falls back to the live one.
+    assert_eq!(read("desk", Some(2)).ok().unwrap()["version"], 2);
+    assert_eq!(read("desk", Some(1)).err().unwrap().code, "section_not_found");
     assert_eq!(read("body", None).err().unwrap().code, "element_not_found");
     let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
     assert_eq!(other.code, "section_not_found");
