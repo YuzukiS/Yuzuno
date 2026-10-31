@@ -433,6 +433,37 @@ pub(super) fn insert_job(tx: &Connection, mut value: Value) -> Result<Value> {
     Ok(value)
 }
 
+/// The existing cancel operation inside a caller-owned transaction. Service
+/// intent and cancellation commit together; signalling remains the worker's.
+pub(super) fn request_cancel_in(store: &Store, tx: &Connection, actor: Option<&str>, id: &str) -> Result<Value> {
+    let mut job = get(tx, id)?;
+    ensure!(
+        actor.is_none_or(|a| job["agentId"] == a),
+        "An Agent can cancel only its own jobs"
+    );
+    if job["status"] == "queued" || job["status"] == "waiting" {
+        job["reason"] = json!(if job["status"] == "waiting" {
+            "Cancelled while waiting for its upstream stages; no process started"
+        } else {
+            "Cancelled before capacity reservation; no process started"
+        });
+        job["status"] = json!("cancelled");
+        job["finishedAt"] = json!(now());
+        job["cancelRequestedAt"] = json!(now());
+        notify(tx, &mut job)?;
+    } else if job["reserved"] == true {
+        if job["cancelRequestedAt"].is_null() {
+            job["cancelRequestedAt"] = json!(now());
+        }
+        job["status"] = json!("cancelling");
+        job["reason"] =
+            json!("Cancellation requested; reservation held until process groups have exited");
+    }
+    save(tx, &job)?;
+    super::runs::job_changed(store, tx, &job)?;
+    Ok(job)
+}
+
 impl Store {
     pub(super) fn previous_job(
         &self,
@@ -485,6 +516,14 @@ impl Store {
     ) -> Result<Value> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
+        if let Some(guard) = &input.service_control {
+            ensure!(actor.is_none(), "service_control_forbidden: lifecycle controls are for the user");
+            if let Some(receipt) = super::service_control::previous(&tx, &guard.service_id, "start", &guard.request)? {
+                return get(&tx, receipt["jobId"].as_str().context("Missing service action Job")?);
+            }
+            super::service_control::check_start(self, &tx, guard)?;
+            super::service_control::check_prepared(guard, &input, &snapshot)?;
+        }
         if let Some(job) = previous(self, &tx, actor, &input)? {
             return Ok(job);
         }
@@ -515,7 +554,11 @@ impl Store {
         }
         let task = collaboration::task_key(&tx, &input.task_id)?.0;
         if let Some(link) = &input.service_link {
-            crate::service_jobs::check(&tx, &task, link)?;
+            if input.service_control.is_some() {
+                crate::service_jobs::check_available(&tx, &task, link)?;
+            } else {
+                crate::service_jobs::check(&tx, &task, link)?;
+            }
         }
         let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
@@ -527,6 +570,9 @@ impl Store {
             crate::service_jobs::insert(&tx, value["id"].as_str().context("Job identity missing")?, link)?;
         }
         tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'job_submit',?2,?3,?4)",params![actor_key(actor),input.request_id,payload.to_string(),json!({"jobId":value["id"]}).to_string()])?;
+        if let Some(guard) = &input.service_control {
+            super::service_control::started(&tx, guard, &value)?;
+        }
         let value = QueueState::read(&tx)?.view(value);
         tx.commit()?;
         Ok(value)
@@ -831,31 +877,7 @@ impl Store {
     pub(super) fn request_job_cancel(&self, actor: Option<&str>, id: &str) -> Result<Value> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
-        let mut job = get(&tx, id)?;
-        ensure!(
-            actor.is_none_or(|a| job["agentId"] == a),
-            "An Agent can cancel only its own jobs"
-        );
-        if job["status"] == "queued" || job["status"] == "waiting" {
-            job["reason"] = json!(if job["status"] == "waiting" {
-                "Cancelled while waiting for its upstream stages; no process started"
-            } else {
-                "Cancelled before capacity reservation; no process started"
-            });
-            job["status"] = json!("cancelled");
-            job["finishedAt"] = json!(now());
-            job["cancelRequestedAt"] = json!(now());
-            notify(&tx, &mut job)?;
-        } else if job["reserved"] == true {
-            if job["cancelRequestedAt"].is_null() {
-                job["cancelRequestedAt"] = json!(now());
-            }
-            job["status"] = json!("cancelling");
-            job["reason"] =
-                json!("Cancellation requested; reservation held until process groups have exited");
-        }
-        save(&tx, &job)?;
-        super::runs::job_changed(self, &tx, &job)?;
+        let job = request_cancel_in(self, &tx, actor, id)?;
         tx.commit()?;
         Ok(job)
     }

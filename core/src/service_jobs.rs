@@ -91,7 +91,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS project_service_jobs_service ON project_service_jobs(service_id, seq);
         DELETE FROM project_service_jobs WHERE service_id NOT IN (SELECT id FROM project_services);",
     )?;
-    Ok(())
+    crate::jobs::service_control::migrate(db)
 }
 
 /// Before the Job's insert: the service it declares, registered on this host
@@ -145,6 +145,12 @@ const ENDED: &str = "'succeeded','failed','cancelled','interrupted','rejected'";
 /// In the Job's own insert transaction: the service is this task's Project's,
 /// on this host, and no earlier Job of it may still be serving.
 pub(crate) fn check(tx: &Connection, task: &str, link: &Link) -> Result<()> {
+    crate::jobs::service_control::ensure_not_stopped(tx, &link.service_id)?;
+    check_available(tx, task, link)
+}
+
+/// Shared with the GUI's explicit start, after its intent/current-Job CAS.
+pub(crate) fn check_available(tx: &Connection, task: &str, link: &Link) -> Result<()> {
     let project = crate::projects::task_projects(tx, &[task])?
         .remove(task)
         .context("service: the task is in no Project, and a service belongs to one")?;
@@ -185,8 +191,11 @@ fn live(db: &Connection, service: &str) -> Result<Option<(String, String)>> {
     Ok(db
         .query_row(
             &format!(
-                "SELECT j.id, j.status FROM project_service_jobs l JOIN local_jobs j ON j.id=l.job_id
-                 WHERE l.service_id=?1 AND j.status NOT IN ({ENDED}) ORDER BY l.seq DESC LIMIT 1"
+                "SELECT COALESCE(j.id,l.job_id), COALESCE(j.status,'unknown')
+                 FROM project_service_jobs l LEFT JOIN local_jobs j ON j.id=l.job_id
+                 WHERE l.service_id=?1 AND (j.id IS NULL OR j.status NOT IN ({ENDED})
+                   OR j.reserved != 0 OR json_extract(j.data,'$.reserved') IS NOT 0)
+                 ORDER BY l.seq DESC LIMIT 1"
             ),
             [service],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -233,20 +242,27 @@ pub(crate) async fn with_jobs(ws: &Workspace, services: &[Service], mut views: V
     for (service, view) in services.iter().zip(views.iter_mut()) {
         let Some(link) = links.remove(&service.id) else {
             view["job"] = Value::Null;
+            view["lifecycle"] = Value::Null;
             view["health"] = json!({"declared": false});
             continue;
         };
         let (data, job, port) = (ws.data_dir.clone(), link.job.clone(), service.port);
-        let owner = tokio::task::spawn_blocking(move || owner(&data, &job, port))
-            .await
-            .unwrap_or(Owner::Unknown);
+        let (owner, owner_checked_at) = match tokio::task::spawn_blocking(move || owner(&data, &job, port)).await {
+            Ok(owner) => (owner, Some(crate::model::now())),
+            Err(_) => (Owner::Unknown, None),
+        };
         let status = link.job["status"].as_str().unwrap_or("unknown").to_owned();
         let job_id = link.job["id"].as_str().unwrap_or_default().to_owned();
         view["job"] = json!({
             "jobId": job_id,
             "status": status,
             "owner": owner,
+            "ownerCheckedAt": owner_checked_at,
             "earlierJobIds": link.earlier,
+            "reason": link.job["reason"], "resultReason": link.job["result"]["reason"],
+            "startedAt": link.job["startedAt"], "finishedAt": link.job["finishedAt"],
+            "timeoutSeconds": link.job["timeoutSeconds"], "reserved": link.job["reserved"],
+            "cancelRequestedAt": link.job["cancelRequestedAt"], "attempt": link.job["attempt"],
             // Stop is the Job's own cancel, which decides who may cancel it
             // and takes one queued or waiting, or an attempt that still holds
             // its reservation (starting, running, or of unknown outcome, which
@@ -254,6 +270,16 @@ pub(crate) async fn with_jobs(ws: &Workspace, services: &[Service], mut views: V
             "canStop": matches!(status.as_str(), "queued" | "waiting")
                 || (link.job["reserved"] == true && status != "cancelling" && link.job["cancelRequestedAt"].is_null()),
         });
+        let id = service.id.clone();
+        view["lifecycle"] = ws.stored(move |s| crate::jobs::service_control::projection(s, &*s.db.read()?, &id)).await?;
+        // Ownership checks run outside SQLite. A new run linked meanwhile
+        // makes this mixed observation unsuitable as an actionable capability.
+        // (No current Job at all is the projection's own refusal, kept as it is.)
+        if !view["lifecycle"]["sourceJobId"].is_null() && view["lifecycle"]["sourceJobId"] != view["job"]["jobId"] {
+            view["lifecycle"]["canStart"] = json!(false);
+            view["lifecycle"]["startBlockedCode"] = json!("stale_service_state");
+            view["lifecycle"]["startBlockedReason"] = json!("stale_service_state: the linked Job changed during this read; refresh the service");
+        }
         view["health"] = match &link.health_path {
             None => json!({"declared": false}),
             Some(path) if status == "running" && owner == Owner::Verified => health(&job_id, port, path).await,

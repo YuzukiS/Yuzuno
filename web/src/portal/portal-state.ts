@@ -24,6 +24,10 @@ export type PortalTarget =
       service: ProjectService;
       /** The address this browser was proven to reach (ProjectServices). */
       url: string;
+      /** This browser's completed proof, not Core's HTTP probe time. Older
+       * entries may have no timestamp and must not invent one on opening. */
+      browserCheckedAt?: string;
+      browserJobId?: string | null;
       /** Where it runs, as the services list says it. */
       where: string;
     };

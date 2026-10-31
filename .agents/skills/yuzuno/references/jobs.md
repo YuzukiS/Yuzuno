@@ -42,6 +42,16 @@ Use the parameters your session advertises: a session that loaded its tool schem
 - `job_get.resourceSummary` and existing completion mail compare actual peak memory and average CPU cores with the declared request. CPU time divided by worker monotonic start-to-exit wall time gives average cores; pauses count in that wall time. Measurements include the worker wrapper and exclude its collector. Missing or invalid counters and remote execution stay unknown (`null`), not zero. Failed attempts may have valid measurements; cancellation or interruption may lack them. Use measurements to inform the next request, with margin; they do not automatically resize it.
 - `rejected` with "Not started" means no process was created (for example the disk was full before launch) and nothing is held: submit again with a new `requestId` once the cause is gone.
 
+## Project services
+
+A local `job_submit` may declare `service` to link its command to a Project's preview entry. Opening or closing that preview does not start or stop the Job. An external service, with no linked Job, stays outside these controls.
+
+- The service view keeps three observations separate: its Job and listener ownership, its declared HTTP health check, and whether the current browser can reach it. One passing observation does not prove the others. No health check means not configured.
+- The user's **Stop service** choice records an intention to keep that service stopped and asks its current Job to cancel. A cancellation request is not proof the process has exited. That intention survives Core restart; ordinary `job_submit(serviceId)` cannot silently clear it.
+- **Start again** is an explicit user action for one new Job. Core uses the retained launch specification, checks the previous run and guarded inputs, and applies the existing resource admission rules. It preserves the previous run's history. It does not create a restart policy, extend the current run, or automatically recover after Core restart.
+- A run that is unknown, still holds a reservation, or has not finished blocks another start. Report its state and use its existing Job record; do not submit a replacement to get around it. A planned deadline passing alone is not proof of exit.
+- Older service records have no recorded user intention. A cancelled Job alone does not mean the user selected **Stop service**. The connected Core's schema and capabilities determine which controls are available.
+
 ## Paused Jobs
 
 The user can pause a running Job to free the machine, for example for a game. Every process of the Job is frozen in place. It keeps `status: running`, its memory, GPU memory and whole reservation, so nothing else is admitted into its share. Work it had already sent to a GPU still finishes.

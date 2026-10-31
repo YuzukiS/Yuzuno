@@ -2,9 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import { createRoot } from "react-dom/client";
 import { ArrowUpRight, ChevronLeft, FileCode2, Globe, LoaderCircle, RotateCw, Shield, X } from "lucide-react";
 import { api, errorText, post } from "../api";
-import { langTag, strings, useLanguage } from "../i18n";
+import { langTag, strings, useLanguage, useStrings } from "../i18n";
 import { openJobs } from "../Jobs";
-import type { ProjectService } from "../ProjectServices";
+import type { OpenedService, ProjectService } from "../ProjectServices";
 import { savedPortalWidth, savePortalWidth } from "./portal-preference";
 import {
   closePortal,
@@ -17,6 +17,10 @@ import {
   type Minted,
   type PortalTarget,
 } from "./portal-state";
+import { serviceIdle } from "./service-lifecycle";
+import { ServiceLifecycle } from "./ServiceLifecycle";
+import { currentBrowserReach, type ServiceBrowserReach } from "./service-observation";
+import { serviceText } from "./service-text";
 import "./portal.css";
 
 // The Portal's own words (T-189); names, paths and addresses as they are.
@@ -63,6 +67,7 @@ const text = strings({
   stopConfirm: "Stop the Job",
   stopCancel: "Keep it",
   stopNote: "Stopping ends this Job's process; the preview closes its page.",
+  stopChanged: "This service now refers to another Job. Choose Keep it, then look at the current Job before stopping.",
   jobStates: {
     queued: "Queued", waiting: "Waiting", starting: "Starting", running: "Running", cancelling: "Stopping",
     succeeded: "Ended", failed: "Failed", cancelled: "Stopped", interrupted: "Interrupted", rejected: "Not started",
@@ -112,6 +117,7 @@ const text = strings({
   stopConfirm: "停止这个 Job",
   stopCancel: "保留",
   stopNote: "停止会结束这个 Job 的进程；预览里的页面也会断开。",
+  stopChanged: "这个服务现在关联的是另一个 Job。请先选择保留，查看当前的 Job 后再决定是否停止。",
   jobStates: {
     queued: "排队中", waiting: "等待中", starting: "启动中", running: "运行中", cancelling: "正在停止",
     succeeded: "已结束", failed: "失败", cancelled: "已停止", interrupted: "已中断", rejected: "未启动",
@@ -356,6 +362,7 @@ const timeOf = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-
 
 function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
   const t = text(useLanguage());
+  const lt = useStrings(serviceText);
   const [reloads, setReloads] = useState(0);
   const [loads, setLoads] = useState(0);
   const [minted, setMinted] = useState<
@@ -363,6 +370,22 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
   >({ state: "preparing" });
   const [service, setService] = useState<ProjectService | null>(target.kind === "service" ? target.service : null);
   const [disconnected, setDisconnected] = useState(false);
+  const [readFailed, setReadFailed] = useState(false);
+  // The page's address and this browser's proof of reaching it, for the run
+  // it was checked with: a new run, or another port, needs a new check.
+  const [url, setUrl] = useState(target.kind === "service" ? target.url : "");
+  const [reach, setReach] = useState<ServiceBrowserReach | undefined>(() => target.kind !== "service" ? undefined
+    : { state: "proven", url: target.url, checkedAt: target.browserCheckedAt,
+      jobId: target.browserJobId !== undefined ? target.browserJobId : target.service.job?.jobId ?? null });
+  const [checkError, setCheckError] = useState("");
+  const alive = useRef(true);
+  const reads = useRef(0);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   // A snapshot: Core keeps the file as it is now, then this browser proves
   // it reaches the previews' port before the page is shown.
   useEffect(() => {
@@ -382,34 +405,83 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
       current = false;
     };
   }, [target]);
-  // A service: its Job and health as the services list has them now.
+  // A service: its Job and health as the services list has them now. Only
+  // the newest read answers; a failed one says so and keeps the last facts.
+  const readService = useCallback(async () => {
+    if (target.kind !== "service") return;
+    const sequence = ++reads.current;
+    try {
+      const page = await api<{ services?: ProjectService[] }>(`/projects/${encodeURIComponent(target.service.projectId)}/services`);
+      if (!alive.current || sequence !== reads.current) return;
+      setReadFailed(false);
+      // A list without this service means it is gone; an odd answer changes nothing.
+      if (Array.isArray(page.services)) setService(page.services.find((s) => s.id === target.service.id) ?? null);
+    } catch (error) {
+      if (alive.current && sequence === reads.current) setReadFailed(true);
+      throw error;
+    }
+  }, [target]);
   useEffect(() => {
     if (target.kind !== "service") return;
-    const path = `/projects/${encodeURIComponent(target.service.projectId)}/services`;
-    let current = true;
-    const read = () =>
-      api<{ services?: ProjectService[] }>(path).then(
-        (page) => {
-          // A list without this service means it is gone; an odd answer changes nothing.
-          if (current && Array.isArray(page.services)) setService(page.services.find((s) => s.id === target.service.id) ?? null);
-        },
-        () => {},
-      );
-    const timer = window.setInterval(() => document.visibilityState !== "hidden" && void read(), 5000);
-    return () => {
-      current = false;
-      window.clearInterval(timer);
-    };
-  }, [target]);
+    void readService().catch(() => {});
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void readService().catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [target, readService]);
+  const disconnect = async () => {
+    if (target.kind !== "service") return;
+    await post(`/services/${encodeURIComponent(target.service.id)}/close`);
+    if (alive.current) setDisconnected(true);
+  };
+  // Opens the service's way again and checks it from this browser, as the
+  // services list does; it never starts anything.
+  const checkPreview = async () => {
+    if (target.kind !== "service") return;
+    setCheckError("");
+    // The run this check is of: the one shown when it was asked for. If
+    // another runs by the next read, that read drops the proof.
+    const jobId = service?.job?.jobId ?? null;
+    const opened = await post<OpenedService>(`/services/${encodeURIComponent(target.service.id)}/open`);
+    if (!alive.current) return;
+    const { proof } = opened;
+    // Only the way is new; the service keeps its Job, lifecycle and health.
+    setService((current) => (current ? { ...current, connection: opened.connection } : current));
+    setDisconnected(false);
+    const port = opened.connection.localPort;
+    if (port === undefined || !proof) {
+      setReach({ state: "unproven", checkedAt: new Date().toISOString(), jobId });
+      return;
+    }
+    const next = `http://127.0.0.1:${port}${opened.path}`;
+    setReach({ state: "checking", url: next, jobId });
+    const proven = await reaches(`http://127.0.0.1:${port}/.well-known/yuzuno-service/${encodeURIComponent(proof.challenge)}`, proof.answer);
+    if (!alive.current) return;
+    setReach({ state: proven ? "proven" : "unproven", url: next, checkedAt: new Date().toISOString(), jobId });
+    if (proven) {
+      setUrl(next);
+      setLoads(0);
+      setReloads((n) => n + 1);
+    }
+  };
+  // A service its Job runs, on a Core that says its lifecycle: its page shows
+  // only while that run is running, no stop is recorded for it, and this
+  // browser's proof is of that run and port.
+  const managed = target.kind === "service" && service?.job && service.lifecycle ? service : null;
+  const idle = managed ? serviceIdle(managed) : null;
+  const connectionUrl = managed && managed.connection.localPort !== undefined ? `http://127.0.0.1:${managed.connection.localPort}${managed.path}` : null;
+  const proof = managed ? currentBrowserReach(reach, managed.job!.jobId, connectionUrl) : undefined;
+  const unchecked = !!managed && !idle && proof?.state !== "proven";
+  const pageUrl = target.kind === "service" ? (managed ? url : target.url) : "";
   const browserUrl =
-    target.kind === "service" ? target.url : minted.state === "ready" ? minted.at.url : null;
+    target.kind === "service" ? (idle || unchecked ? null : pageUrl) : minted.state === "ready" ? minted.at.url : null;
   const title = target.kind === "snapshot" ? target.name : target.service.name;
   const subtitle =
     target.kind === "snapshot"
       ? minted.state === "ready"
         ? t.snapshotAt(target.from, timeOf(minted.at.takenAt))
         : target.from
-      : `${t.service} · ${target.where} · ${target.url.replace(/^http:\/\//, "").replace(/\/.*$/, "")}`;
+      : `${t.service} · ${target.where} · ${pageUrl.replace(/^http:\/\//, "").replace(/\/.*$/, "")}`;
   const framing = service?.connection.framing;
   const frameKey = `${reloads}`;
   return (
@@ -441,7 +513,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
             </button>
           )
         )}
-        {!full && (minted.state === "ready" || target.kind === "service") && (
+        {!full && (minted.state === "ready" || (target.kind === "service" && !idle && !unchecked)) && (
           <button type="button" className="icon-button" aria-label={t.reload} title={t.reload} onClick={() => { setLoads(0); setReloads((n) => n + 1); }}>
             <RotateCw size={15} />
           </button>
@@ -487,13 +559,26 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           ) : (
             <p className="portal-state" role="alert">{t.failed(minted.reason)}</p>
           )
-        ) : disconnected ? (
-          <p className="portal-state" role="status">{t.disconnected}</p>
+        ) : idle ? (
+          <ServiceIdle kind={idle} />
+        ) : disconnected || unchecked ? (
+          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}>
+            {disconnected ? <p>{t.disconnected}</p> : <ServiceIdle kind="check" />}
+            {managed && (
+              <button type="button" className="primary-button" disabled={proof?.state === "checking"} onClick={() => {
+                void checkPreview().catch((error) => alive.current && setCheckError(errorText(error)));
+              }}>
+                {proof?.state === "checking" ? <LoaderCircle size={14} className="spin" /> : <Globe size={14} />} {lt.previewCheck}
+              </button>
+            )}
+            {managed && proof?.state === "unproven" && <p>{lt.unreachable}</p>}
+            {checkError && <p className="inline-error" role="alert">{checkError}</p>}
+          </div>
         ) : framing === "blocked" ? (
           <div className="portal-state portal-blocked">
             <strong>{t.blocked}</strong>
             <p>{t.blockedNote}</p>
-            <button type="button" className="primary-button" onClick={() => openOutside(target.url)}>
+            <button type="button" className="primary-button" onClick={() => openOutside(pageUrl)}>
               {t.inBrowser} <ArrowUpRight size={14} />
             </button>
           </div>
@@ -504,7 +589,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
               key={frameKey}
               className="portal-frame"
               title={target.service.name}
-              src={target.url}
+              src={pageUrl}
               // Its own origin keeps its storage and sockets; it never moves this window.
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
               referrerPolicy="no-referrer"
@@ -512,14 +597,27 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           </>
         )}
       </div>
-      {target.kind === "service" && service && (
-        <ServiceJob service={service} disconnected={disconnected} onDisconnect={async () => {
-          await post(`/services/${encodeURIComponent(service.id)}/close`);
-          setDisconnected(true);
-        }} />
+      {managed ? (
+        <ServiceLifecycle service={managed} browserReach={reach} previewUrl={connectionUrl} disconnected={disconnected}
+          readFailed={readFailed} onRefresh={readService} onDisconnect={disconnect} onCheckPreview={checkPreview} />
+      ) : target.kind === "service" && service && (
+        // An older Core, or a service no Yuzuno Job runs.
+        <ServiceJob service={service} disconnected={disconnected} onDisconnect={disconnect} />
       )}
     </>
   );
+}
+
+/** What stands in the page's place while its run isn't live. */
+function ServiceIdle({ kind }: { kind: NonNullable<ReturnType<typeof serviceIdle>> | "check" }) {
+  const t = useStrings(serviceText);
+  const [title, note] = {
+    stopped: [t.idleStopped, t.idleStoppedNote], expired: [t.idleExpired, t.idleExpiredNote], ended: [t.idleEnded, t.idleEndedNote],
+    stopping: [t.idleStopping, t.idleStoppingNote], queued: [t.idleQueued, t.idleQueuedNote], unknown: [t.idleUnknown, t.idleUnknownNote],
+    check: [t.idleCheck, t.idleCheckNote],
+  }[kind];
+  const body = <><strong>{title}</strong><p>{note}</p></>;
+  return kind === "check" ? body : <div className="portal-state portal-idle" role="status" data-idle={kind}>{body}</div>;
 }
 
 type JobLog = { text: string };
@@ -530,7 +628,9 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
   const t = text(useLanguage());
   const [drawer, setDrawer] = useState<"logs" | null>(null);
   const [log, setLog] = useState("");
-  const [confirming, setConfirming] = useState(false);
+  // The Job the confirmation was opened for: a newer one read meanwhile is
+  // never stopped by it.
+  const [confirming, setConfirming] = useState<string | null>(null);
   const [error, setError] = useState("");
   const job = service.job;
   const c = service.connection;
@@ -603,21 +703,21 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
               {t.logs}
             </button>
             <button type="button" className="quiet-button" onClick={() => openJobs({ jobId: job.jobId })}>{t.inJobs}</button>
-            {job.canStop && !confirming && (
-              <button type="button" className="danger-button portal-stop" onClick={() => setConfirming(true)}>{t.stop}</button>
+            {job.canStop && confirming === null && (
+              <button type="button" className="danger-button portal-stop" onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
             )}
           </>
         )}
         {!job && job !== undefined && <span className="portal-muted">{t.neverStops}</span>}
       </div>
-      {confirming && job && (
+      {confirming !== null && job && (
         <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm}>
-          <p>{t.stopNote}</p>
-          <button type="button" className="danger-button" onClick={act(async () => {
-            await post(`/jobs/${encodeURIComponent(job.jobId)}/cancel`);
-            setConfirming(false);
+          <p>{job.jobId === confirming ? t.stopNote : t.stopChanged}</p>
+          <button type="button" className="danger-button" disabled={job.jobId !== confirming} onClick={act(async () => {
+            await post(`/jobs/${encodeURIComponent(confirming)}/cancel`);
+            setConfirming(null);
           })}>{t.stopConfirm}</button>
-          <button type="button" className="quiet-button" onClick={() => setConfirming(false)}>{t.stopCancel}</button>
+          <button type="button" className="quiet-button" onClick={() => setConfirming(null)}>{t.stopCancel}</button>
         </div>
       )}
       {drawer === "logs" && <pre className="portal-logs">{log}</pre>}
