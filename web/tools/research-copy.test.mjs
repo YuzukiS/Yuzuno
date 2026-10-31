@@ -1,5 +1,7 @@
-// A research desk copied as Markdown (T-9): pure, no DOM. Dev 7's Home
-// report copy calls researchDeskMarkdown for a ResearchDesk block.
+// A research desk copied as Markdown (T-9). The copy itself is pure, with no
+// DOM; one test reads it back through jsdom as BriefMarkdown renders it.
+// Dev 7's Home report copy calls researchDeskMarkdown for a ResearchDesk block.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
