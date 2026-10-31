@@ -4,8 +4,9 @@
 // three facts; stopping is first "stop requested", then "stopped as you
 // requested" once the run ends; a new run starts only with a chosen limit and
 // is queued, not ready; an expired or unknown run shows why instead of a
-// page, and closing the preview stops nothing. Desktop light and dark and a
-// 390 px phone, in Chinese. Production bundle with an explicit API fixture:
+// page, and closing the preview stops nothing. Each confirmation is what the
+// user sees, above the Portal even when it covers the window. Desktop light
+// and dark, a narrow desktop window and a 390 px phone, in Chinese. Production bundle with an explicit API fixture:
 // no Core, synthetic data; only the service's own open, stop and start are
 // sent, to the fixture.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_CHECK_OUTPUT=<dir> node tools/service-lifecycle-check.mjs
@@ -165,7 +166,7 @@ async function open({ name, width, height, touch, theme }) {
 }
 
 /** From the project's services list, as the user opens it. */
-async function openService(page, touch) {
+async function openService(page, full) {
   await page.locator(".workspace-scope").first().click();
   await page.locator("button", { hasText: /^管理项目…$/ }).click();
   const dialog = page.locator('[role="dialog"]').first();
@@ -180,7 +181,7 @@ async function openService(page, touch) {
   assert.equal(await panel.locator("button", { hasText: /^运行情况$/ }).count(), 1, "the run details stay offered");
   await panel.locator(".open-choice-split > .primary-button:not(.open-choice-more)").click();
   await page.locator(".portal-panel .portal-lifecycle").waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator(".portal-panel").getAttribute("role"), touch ? "dialog" : "complementary");
+  assert.equal(await page.locator(".portal-panel").getAttribute("role"), full ? "dialog" : "complementary");
 }
 
 const lifecycle = (page) => page.locator(".portal-panel .portal-lifecycle");
@@ -199,16 +200,52 @@ const refresh = async (page, scene, state) => {
 };
 const waitHeadline = (page, text) => page.waitForFunction((text) => document.querySelector(".portal-lifecycle .service-lifecycle-heading h3")?.textContent === text, text, { timeout: 8_000 });
 const writes = (state, kind) => state.posts.filter((p) => p.path === `/api/services/s1/${kind}`);
+/**
+ * The confirmation is what the user sees: what is painted on top at its
+ * middle and at its main button is the dialog, a far corner of the window is
+ * under its overlay, focus is inside it, and the page behind does not scroll.
+ * While a dialog is open the page refuses pointer events outside it, and hit
+ * testing skips such elements, so a covered dialog would still answer clicks
+ * and elementFromPoint; for this reading only, every element takes them.
+ */
+const dialogShown = (page, primary) => page.evaluate((primary) => {
+  const probe = Object.assign(document.createElement("style"), { textContent: "*{pointer-events:auto!important}" });
+  document.head.append(probe);
+  try {
+    const dialog = document.querySelector(".modal.service-control-dialog");
+    if (!dialog) return { dialog: false };
+    const top = (rect) => document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const button = [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === primary);
+    // Where the user would scroll to reach it on a short screen.
+    button?.scrollIntoView({ block: "nearest" });
+    const middle = top(dialog.getBoundingClientRect());
+    const pressed = button ? top(button.getBoundingClientRect()) : null;
+    const corner = document.elementFromPoint(3, innerHeight - 3);
+    return {
+      dialog: true,
+      middle: !!middle && dialog.contains(middle),
+      button: !!pressed && !!button && button.contains(pressed),
+      corner: !!corner?.classList?.contains("modal-overlay"),
+      focus: dialog.contains(document.activeElement),
+      locked: document.body.hasAttribute("data-scroll-locked"),
+    };
+  } finally {
+    probe.remove();
+  }
+}, primary);
+const shown = { dialog: true, middle: true, button: true, corner: true, focus: true, locked: true };
 
 try {
   for (const view of [
     { name: "desktop", width: 1440, height: 900, touch: false, theme: "light" },
     { name: "desktop-dark", width: 1440, height: 900, touch: false, theme: "dark" },
-    { name: "phone", width: 390, height: 844, touch: true, theme: "light" },
+    // Too narrow to leave the chat its width: the Portal covers the window.
+    { name: "desktop-narrow", width: 640, height: 900, touch: false, theme: "light", full: true },
+    { name: "phone", width: 390, height: 844, touch: true, theme: "light", full: true },
   ].filter((view) => !process.env.YUZUNO_CHECK_VIEWS || process.env.YUZUNO_CHECK_VIEWS.split(",").includes(view.name))) {
     const { context, page, state } = await open(view);
     try {
-      await openService(page, view.touch);
+      await openService(page, !!view.full);
       // Running: the page, and three facts each with its own check.
       await page.locator(".portal-panel iframe").waitFor();
       await waitHeadline(page, "正在运行，预览连接已确认");
@@ -220,7 +257,7 @@ try {
       assert.deepEqual(running.process.slice(0, 2), ["运行中", "端口归属已确认"], JSON.stringify(running));
       assert.match(running.health.join(" "), /^检查通过 \/health · HTTP 200 · \S/);
       assert.match(running.browser.join(" "), /^连接已确认 检查于 \S/);
-      if (!view.touch) {
+      if (!view.full) {
         const width = await page.locator(".portal-panel").evaluate((el) => Math.round(el.getBoundingClientRect().width));
         assert.equal(width, SAVED_WIDTH, "the Portal keeps the width saved on this device");
       }
@@ -233,7 +270,18 @@ try {
       const confirm = page.locator(".service-control-dialog");
       await confirm.waitFor();
       assert.match(await confirm.textContent(), /demo-84/);
-      if (!view.touch) await shoot(page, `${view.name}-stop-confirm`);
+      assert.deepEqual(await dialogShown(page, "停止服务"), shown, "the stop confirmation is seen, above the Portal");
+      await shoot(page, `${view.name}-stop-confirm`);
+      if (view.full) {
+        // Escape closes the confirmation only; the Portal stays, and nothing is sent.
+        await page.keyboard.press("Escape");
+        await confirm.waitFor({ state: "detached" });
+        assert.equal(await page.locator(".portal-panel").count(), 1);
+        assert.equal(writes(state, "stop").length, 0);
+        await lifecycle(page).getByRole("button", { name: "停止服务…" }).click();
+        await confirm.waitFor();
+      }
+      record(`${view.name}: the stop confirmation is what is seen, above the Portal, with focus in it and the page behind still`);
       await confirm.getByRole("button", { name: "停止服务", exact: true }).click();
       await waitHeadline(page, "已请求停止，等待退出确认");
       assert.equal(await page.locator(".portal-panel iframe").count(), 0, "no page while it stops");
@@ -259,6 +307,8 @@ try {
       const options = await start.locator(".service-lifetime-options label").allTextContents();
       assert.deepEqual(options, ["1 小时", "4 小时", "24 小时"]);
       await start.getByText("1 小时", { exact: true }).click();
+      assert.deepEqual(await dialogShown(page, "启动一次"), shown, "the start confirmation is seen, above the Portal");
+      record(`${view.name}: the start confirmation is what is seen, above the Portal`);
       await shoot(page, `${view.name}-start-choice`);
       await start.getByRole("button", { name: "启动一次" }).click();
       await waitHeadline(page, "等待这次运行开始");
@@ -285,7 +335,7 @@ try {
 
       // Closing the preview stops nothing.
       const before = state.posts.length;
-      await page.getByRole("button", { name: view.touch ? "返回会话" : "关闭预览" }).first().click();
+      await page.getByRole("button", { name: view.full ? "返回会话" : "关闭预览" }).first().click();
       await page.locator(".portal-panel").waitFor({ state: "detached" });
       assert.equal(state.posts.length, before, "closing the preview sends nothing");
       assert.deepEqual([writes(state, "stop").length, writes(state, "start").length], [1, 1]);

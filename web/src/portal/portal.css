@@ -33,6 +33,15 @@
   border-left: 0;
   box-shadow: none;
 }
+/* While the Portal covers the window, a dialog (a confirmation opened from
+   it, or any other) shows above it, its overlay too. The Portal stays above
+   the conversation's own floating layers (tips, previews, menus). */
+:root[data-portal="full"] .modal-overlay {
+  z-index: 61;
+}
+:root[data-portal="full"] .modal {
+  z-index: 62;
+}
 
 .portal-grip {
   position: absolute;
