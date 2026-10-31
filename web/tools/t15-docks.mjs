@@ -63,6 +63,12 @@ const detail = {
       { id: `u${i}`, type: "userMessage", content: [{ type: "text", text: `第 ${i + 1} 轮：展开态阅读区还剩多少。` }] },
       { id: `sh${i}`, type: "commandExecution", command: "npm test", status: "completed", exitCode: 0 },
       { id: `r${i}`, type: "agentMessage", text: "这一段用来占据正文宽度，看看两侧的轴与索引各自吃掉多少空间。".repeat(3) },
+      // The third kind of work the left dock lists, beside jobs and CI runs.
+      ...(process.env.T15_SUBAGENTS && i >= 34
+        ? [{ id: `sa${i}`, type: "claudeToolUse", name: "Task", status: i === 39 ? "inProgress" : "completed",
+            subAgent: { taskId: `st${i}`, runId: `sr${i}`, type: "Explore",
+              description: `中屏布局量测 ${i}`, prompt: "量测两侧轴占用" } }]
+        : []),
     ],
   })),
 };
