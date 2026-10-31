@@ -1,0 +1,486 @@
+/* A research desk (T-9). Colours come from the app's palette, as in the
+ * rest of a Brief; the layout follows the section card's own width
+ * (container brief-body): three columns when wide, the claims above the
+ * view when medium, one column on a phone. Nothing here depends on hover. */
+.research-desk {
+  --research-gap: 16px;
+  --research-read: var(--brief-done);
+  --research-attention: var(--brief-error);
+  --research-line: var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: var(--research-gap);
+  min-width: 0;
+}
+.research-desk[data-density="high"] {
+  --research-gap: 10px;
+}
+.research-desk h4 {
+  font-size: 1.05rem;
+}
+.research-desk h5 {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.research-desk h6 {
+  margin: 0 0 4px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary, var(--muted));
+}
+.research-desk code {
+  font-family: var(--brief-mono);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.research-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Header: the desk's question and its views. */
+.research-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.research-views,
+.research-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-soft, var(--cream));
+}
+.research-views .research-radio,
+.research-toggle .research-radio {
+  padding: 5px 10px;
+  border-radius: 7px;
+  color: var(--text-secondary, var(--muted));
+  cursor: pointer;
+  font-size: 0.84rem;
+}
+.research-views .research-radio[aria-checked="true"],
+.research-toggle .research-radio[aria-checked="true"] {
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.research-radio:focus-visible,
+.research-link:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+
+.research-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--research-gap);
+  min-width: 0;
+}
+@container brief-body (min-width: 640px) {
+  .research-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  }
+  .research-claims {
+    grid-column: 1 / -1;
+  }
+  .research-claim-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+@container brief-body (min-width: 960px) {
+  .research-layout {
+    grid-template-columns: minmax(180px, 230px) minmax(0, 1fr) minmax(220px, 300px);
+  }
+  .research-claims {
+    grid-column: auto;
+  }
+  .research-claim-list {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+/* Claims. */
+.research-claim-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.research-claim-list .research-radio {
+  cursor: pointer;
+  border-radius: 10px;
+}
+.research-claim-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--research-line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.research-claim-card[data-checked] {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 8%, var(--paper));
+}
+.research-claim-title {
+  font-weight: 600;
+}
+.research-status {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: color-mix(in srgb, var(--research-read) 14%, var(--paper));
+}
+.research-status[data-status="conditional"],
+.research-status[data-status="open"] {
+  background: color-mix(in srgb, var(--brief-working) 18%, var(--paper));
+}
+.research-status[data-status="unsupported"] {
+  background: color-mix(in srgb, var(--research-attention) 14%, var(--paper));
+}
+.research-status small {
+  color: var(--text-secondary, var(--muted));
+}
+
+/* The view. */
+.research-main,
+.research-aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--research-gap);
+  min-width: 0;
+}
+.research-claim-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.research-claim-head p {
+  color: var(--text-secondary, var(--muted));
+}
+.research-plot,
+.research-panel {
+  padding: 12px;
+  border: 1px solid var(--research-line);
+  border-radius: 12px;
+  background: var(--paper);
+  min-width: 0;
+}
+.research-desk[data-density="high"] :is(.research-plot, .research-panel) {
+  padding: 9px;
+}
+.research-plot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 6px;
+}
+.research-caption,
+.research-note,
+.research-empty {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.82rem;
+}
+.research-banner {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--brief-working) 14%, var(--paper));
+}
+.research-error {
+  color: var(--research-attention);
+}
+
+/* The claim's primary result: its number first, then its interval and origin. */
+.research-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--research-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--green) 6%, var(--paper));
+}
+.research-primary-label {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.82rem;
+}
+.research-big {
+  font-variant-numeric: tabular-nums;
+}
+.research-big b {
+  font-size: 2.1rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.research-desk[data-density="high"] .research-big b {
+  font-size: 1.6rem;
+}
+
+/* Interval rows: label, track, value. */
+.research-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.76rem;
+}
+.research-rows {
+  display: flex;
+  flex-direction: column;
+}
+.research-rows .research-radio {
+  cursor: pointer;
+  border-radius: 8px;
+}
+.research-group {
+  display: block;
+  margin: 8px 0 2px;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.78rem;
+}
+.research-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.8fr) minmax(120px, 2.6fr) minmax(max-content, 1.2fr);
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px;
+  border-radius: 8px;
+}
+.research-row[data-checked] {
+  background: color-mix(in srgb, var(--green) 10%, var(--paper));
+}
+.research-track {
+  position: relative;
+  height: 18px;
+}
+.research-reference {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 0;
+  border-left: 1px solid var(--ink);
+}
+.research-interval {
+  position: absolute;
+  top: 8px;
+  height: 2px;
+  background: color-mix(in srgb, var(--ink) 55%, var(--paper));
+  border-radius: 1px;
+}
+.research-point {
+  position: absolute;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--brief-series-1);
+  border: 2px solid var(--paper);
+}
+.research-point[data-checked] {
+  background: var(--green);
+  box-shadow: 0 0 0 2px var(--green);
+}
+.research-row-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.research-row-interval {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.82rem;
+}
+@container brief-body (max-width: 520px) {
+  .research-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .research-track {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+/* Where a number came from: a filled dot from a snapshot, a ring from the Agent, a warning otherwise. */
+.research-origin {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.research-origin-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--research-read);
+}
+.research-origin[data-origin="provided"] .research-origin-dot {
+  background: transparent;
+  border: 1.5px solid var(--text-secondary, var(--muted));
+}
+.research-origin:is([data-origin="missing"], [data-origin="not_number"], [data-origin="unavailable"]) .research-origin-dot {
+  background: var(--research-attention);
+  border-radius: 1px;
+}
+.research-origin[data-origin="loading"] .research-origin-dot {
+  background: var(--research-line);
+}
+.research-origin-text {
+  display: block;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.78rem;
+}
+.research-origin-text:is([data-origin="missing"], [data-origin="not_number"], [data-origin="unavailable"]) {
+  color: var(--research-attention);
+}
+
+/* Numbers, sources and definitions. */
+.research-numbers,
+.research-params {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.research-numbers dt,
+.research-params dt {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.78rem;
+}
+.research-numbers dd,
+.research-params dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.research-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+.research-source {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.research-source-name {
+  font-weight: 600;
+}
+.research-snapshot,
+.research-described {
+  font-size: 0.8rem;
+}
+.research-snapshot .research-note {
+  display: block;
+}
+.research-snapshot[data-unavailable] {
+  color: var(--research-attention);
+}
+.research-described {
+  color: var(--text-secondary, var(--muted));
+}
+.research-tag,
+.research-chip,
+.research-lines {
+  display: inline-block;
+  margin: 0 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--surface-soft, var(--cream));
+  font-size: 0.76rem;
+  font-weight: 400;
+}
+.research-note[data-stated="different"] {
+  color: var(--research-attention);
+}
+.research-say {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--research-gap);
+}
+.research-say section,
+.research-conditions {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--research-line);
+}
+.research-say section[data-stance="cannot"] h5 {
+  color: var(--research-attention);
+}
+.research-say ul,
+.research-conditions ul,
+.research-yields ul,
+.research-affected ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 18px;
+}
+.research-basis {
+  display: block;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.78rem;
+}
+.research-link {
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink, var(--green));
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.research-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 18px;
+}
+.research-versions li[data-current] > .research-tag {
+  background: color-mix(in srgb, var(--green) 16%, var(--paper));
+}
+.research-compare {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.research-compare caption {
+  text-align: left;
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.8rem;
+}
+.research-compare :is(th, td) {
+  padding: 4px 6px;
+  border-top: 1px solid var(--research-line);
+  text-align: left;
+}
+.research-drafts blockquote {
+  margin: 6px 0;
+  padding: 3px 0 3px 14px;
+  border-left: 2px solid var(--research-line);
+}
+.research-yields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+.research-part {
+  margin-top: 6px;
+}

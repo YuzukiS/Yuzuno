@@ -22,6 +22,7 @@ mod home;
 mod http;
 mod presentation;
 mod refs;
+mod research;
 mod sections;
 mod update;
 mod writes;
@@ -66,7 +67,7 @@ pub const OUTCOMES: [&str; 6] = ["updated", "noChange", "missing", "reminded", "
 
 #[cfg(test)]
 const TOOLS: [&str; 3] = ["brief_get", "brief_update", "brief_guide"];
-const GUIDE_PARTS: [&str; 8] = ["sections", "ask", "content", "charts", "attachments", "limits", "errors", "examples"];
+const GUIDE_PARTS: [&str; 9] = ["sections", "ask", "content", "charts", "research", "attachments", "limits", "errors", "examples"];
 
 fn contract() -> &'static Value {
     static CONTRACT: OnceLock<Value> = OnceLock::new();

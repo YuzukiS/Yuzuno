@@ -1,5 +1,5 @@
 use super::{
-    attachments, home, presentation, sections,
+    attachments, home, presentation, research, sections,
     update::{self, Checker},
     *,
 };
@@ -1811,4 +1811,95 @@ async fn the_users_presentation_preference_reaches_editors_until_the_default_rem
     let count: i64 = ws.store.db.read().unwrap()
         .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key='home.presentation'", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0, "the default is no row at all");
+}
+
+/// A small synthetic ResearchDesk section (T-9) reading `results.json` and
+/// citing `defs.md`, both files in `dir`; `definition` is version 1's text.
+fn research_section(dir: &std::path::Path, definition: &str, stated: &str) -> Value {
+    json!({"op":"put","key":"study","kind":"report","title":"Study (synthetic)",
+        "attachments":[{"name":"results.json","path":dir.join("results.json")},{"name":"defs.md","path":dir.join("defs.md")}],
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"Arm beats control","statement":"The arm is ahead by about one point.",
+                    "status":"conditional","primary":"r1","plots":["p1"],"dependsOn":[{"id":"d","version":1}]}],
+                "plots":[{"id":"p1","title":"Arm − control","digits":2,"rows":[{"id":"r1","label":"Arm",
+                    "estimate":{"value":{"from":"results.json","pointer":"/m"},"low":{"from":"results.json","pointer":"/lo"},
+                        "high":{"from":"results.json","pointer":"/hi"},"definition":{"id":"d","version":1},"cite":{"source":"res"}},
+                    "parts":[{"id":"r1a","label":"Arm alone","estimate":{"value":{"from":"results.json","pointer":"/missing"}}},
+                        {"id":"r1b","label":"Label","estimate":{"value":{"from":"results.json","pointer":"/label"}}}]}]}],
+                "sources":[{"id":"res","label":"Results","kind":"data","snapshot":"results.json","sha256":stated},
+                    {"id":"defs","label":"Definitions","kind":"notes","snapshot":"defs.md","sha256":"0".repeat(64)}],
+                "definitions":[{"id":"d","title":"Outcome","versions":[{"version":1,"text":definition,"cite":{"source":"defs","lines":"1"}}]}],
+                "plans":[{"id":"pl","title":"Re-read","question":"Does it hold for the older group?","state":"candidate",
+                    "compute":"cpu","links":[{"kind":"task","id":"T-404"}]}]}}}}})
+}
+
+#[tokio::test]
+async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_version() {
+    use sha2::{Digest, Sha256};
+    let (dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let results = br#"{"m":1.25,"lo":0.5,"hi":2.0,"label":"x"}"#;
+    std::fs::write(dir.path().join("results.json"), results).unwrap();
+    std::fs::write(dir.path().join("defs.md"), "Outcome: symptom-free for 72 hours.\n").unwrap();
+    let sha = format!("{:x}", Sha256::digest(results));
+    let put = research_section(dir.path(), "Symptom-free for 72 hours.", &sha);
+    let accepted = update::update(&ws, &checker, "a", input("r1", 0, vec![put.clone()])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    // Each number as read from the snapshot, and what Core knows of each source.
+    let cache = attachments::dir(&ws.data_dir);
+    let read = |element: &str, version: Option<i64>| research::desk(&ws.store, &cache, &project, "study", element, version).unwrap();
+    let desk = read("desk", None).ok().unwrap();
+    assert_eq!(desk["values"]["r1.value"], json!({"status":"read","value":1.25,"from":"results.json"}));
+    assert_eq!(desk["values"]["r1.high"]["value"], json!(2.0));
+    assert_eq!(desk["values"]["r1a.value"]["status"], "missing");
+    assert_eq!(desk["values"]["r1b.value"]["status"], "not_number");
+    let source = &desk["sources"]["res"];
+    assert_eq!((source["sha256"].as_str(), source["available"].clone(), source["stated"].clone()), (Some(sha.as_str()), json!(true), json!("same")));
+    assert!(source["takenAt"].is_string(), "the snapshot's registration time");
+    assert!(source.get("path").is_none(), "no host path is served");
+    assert_eq!(desk["sources"]["defs"]["stated"], "different", "file identity only");
+    // A plan's links are read live, like LiveRefs.
+    assert_eq!(section(&brief(&ws, "a"), "study")["refs"]["task:T-404"]["found"], json!(false));
+
+    // The file changes on disk: the desk still shows its snapshot.
+    std::fs::write(dir.path().join("results.json"), br#"{"m":9.9}"#).unwrap();
+    assert_eq!(read("desk", None).ok().unwrap()["values"]["r1.value"]["value"], json!(1.25));
+
+    // A definition version keeps its content: a put or an edit changing it
+    // is refused by Core, whatever the validator said.
+    std::fs::write(dir.path().join("results.json"), results).unwrap();
+    let changed = research_section(dir.path(), "Symptom-free for 48 hours.", &sha);
+    let rejected = update::update(&ws, &checker, "a", input("r2", 1, vec![changed])).await.unwrap().unwrap_err();
+    assert_eq!(rejected["problems"][0]["code"], "definition_changed", "{rejected}");
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].body.elements.desk.props.definitions.0.versions.0");
+    assert_eq!(rejected["problems"][0]["guide"], "brief_guide research");
+    let mut edited_desk = put["body"]["elements"]["desk"].clone();
+    edited_desk["props"]["definitions"][0]["versions"][0]["text"] = json!("Symptom-free for 48 hours.");
+    let rejected = update::update(&ws, &checker, "a", input("r3", 1, vec![edit("study", json!({"desk":edited_desk}))])).await.unwrap().unwrap_err();
+    assert_eq!(rejected["problems"][0]["code"], "definition_changed", "{rejected}");
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].elements.desk.props.definitions.0.versions.0");
+    // A new version is the way to change it; version 1 stays as it was.
+    let mut added = put.clone();
+    added["body"]["elements"]["desk"]["props"]["definitions"][0]["versions"].as_array_mut().unwrap()
+        .push(json!({"version":2,"text":"Symptom-free for 96 hours.","cite":{"source":"defs","lines":"1"},"change":"Longer window."}));
+    let accepted = update::update(&ws, &checker, "a", input("r4", 1, vec![added])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    // A definition must cite a file Core keeps: one missing on disk is only a
+    // reference, and only Core sees that.
+    std::fs::remove_file(dir.path().join("defs.md")).unwrap();
+    let rejected = update::update(&ws, &checker, "a", input("r5", 2, vec![put.clone()])).await.unwrap().unwrap_err();
+    assert_eq!(rejected["problems"][0]["code"], "unsaved_definition", "{rejected}");
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].body.elements.desk.props.definitions.0.versions.0.cite");
+
+    // Reads stay inside the section version, the element and the Project:
+    // a version since replaced is not read, and never falls back to the live one.
+    assert_eq!(read("desk", Some(2)).ok().unwrap()["version"], 2);
+    assert_eq!(read("desk", Some(1)).err().unwrap().code, "section_not_found");
+    assert_eq!(read("body", None).err().unwrap().code, "element_not_found");
+    let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
+    assert_eq!(other.code, "section_not_found");
 }
