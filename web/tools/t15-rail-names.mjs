@@ -33,14 +33,18 @@ await page.addInitScript((lang) => {
   if (lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
 }, LANG);
 const summary = { text: "正在量测中屏工作台两侧轴占用的宽度与高度，并记录每个状态下的实际像素", kind: "progress", source: "agent" };
-const agents = [agent,
-  { ...agent, id: "b", name: "Dev 3 · public", status: "working", workSummary: summary },
-  { ...agent, id: "c", name: "Dev Lead", status: "offline", workSummary: summary }];
+// The names this Workspace actually has: several share a shape, which is the
+// case a rail has to survive -- telling them apart is the acceptance, not a
+// percentage.
+const NAMES = ["Dev 8 · Mac / iOS", "Dev 3 · public", "Dev 5 · public", "Dev 2 · public",
+  "Dev 9 CI", "Dev Lead", "Dev 7", "elasticLM"];
+const agents = NAMES.map((name, i) => ({ ...agent, id: i === 0 ? "a" : `a${i}`, name,
+  status: ["idle", "working", "offline"][i % 3], ...(i ? { workSummary: summary } : {}) }));
 await page.route("**/*", async (r) => {
   const p = new URL(r.request().url()).pathname;
   if (r.request().method() !== "GET") return r.fulfill({ json: { ok: true } });
   if (p === "/api/workspace") return r.fulfill({ json: { workspace: { id: "ws" }, projects: [], projectUsage: {}, agents, runtime: { connected: true }, defaultCwd: "/w" } });
-  if (/^\/api\/agents\/[abc]$/.test(p)) return r.fulfill({ json: { agent, pending: [], messageReceipts: [], artifacts: [], turns } });
+  if (/^\/api\/agents\/a\d*$/.test(p)) return r.fulfill({ json: { agent, pending: [], messageReceipts: [], artifacts: [], turns } });
   if (p === "/api/updates") return r.fulfill({ json: unmanagedUpdates });
   if (p === "/api/jobs") return r.fulfill({ json: noJobs });
   if (p === "/api/jobs/live") return r.fulfill({ json: noLiveJobs });
@@ -59,7 +63,12 @@ await page.waitForTimeout(700);
 
 const rows = () => page.evaluate(() => {
   const w = (el) => (el ? Math.round(el.getBoundingClientRect().width) : null);
-  return [...document.querySelectorAll(".agent-row")].map((row) => {
+  const head = document.querySelector(".conversation-heading h1");
+  const headWhole = head ? head.scrollWidth <= head.clientWidth + 1 : null;
+  const headText = head?.textContent ?? null;
+  return { head: { text: headText, whole: headWhole,
+      box: head ? Math.round(head.getBoundingClientRect().width) : null },
+    rows: [...document.querySelectorAll(".agent-row")].map((row) => {
     const name = row.querySelector(".agent-name");
     const menu = row.querySelector(".agent-row-menu");
     const status = row.querySelector(".agent-runtime");
@@ -72,15 +81,35 @@ const rows = () => page.evaluate(() => {
       statusWhole: status ? status.scrollWidth <= status.clientWidth + 1 : null,
       activityClipped: activity ? activity.scrollWidth > activity.clientWidth + 1 : null,
       height: Math.round(row.getBoundingClientRect().height),
-      menuHit: box ? Math.round(Math.min(box.width, box.height)) : null };
-  });
+      menuHit: box ? Math.round(Math.min(box.width, box.height)) : null,
+      // What a reader can actually read: the longest prefix that fits.
+      visible: (() => {
+        if (!name?.firstChild) return null;
+        const text = name.textContent ?? "";
+        const range = document.createRange();
+        const fits = (n) => { range.setStart(name.firstChild, 0); range.setEnd(name.firstChild, n);
+          return range.getBoundingClientRect().width <= name.clientWidth + 0.5; };
+        if (fits(text.length)) return text;
+        let low = 0, high = text.length;
+        while (low < high) { const mid = Math.ceil((low + high) / 2); if (fits(mid)) low = mid; else high = mid - 1; }
+        return text.slice(0, low);
+      })() };
+  }) };
 });
 
 console.log(`language: ${LANG}`);
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if (!ok) failed++; };
-const before = await rows();
+const seen = await rows();
+const before = seen.rows;
+console.log("header:", JSON.stringify(seen.head));
 for (const r of before) console.log(JSON.stringify(r));
+
+// A name the rail had to cut must be readable without a pointer: the
+// conversation it belongs to writes it across the top, whole.
+const cut = before.find((r) => r.selected && r.shows < 100);
+check(!cut || seen.head.whole === true,
+  `the selected Agent's whole name is in the conversation header${cut ? "" : " (nothing was cut in the rail)"} (${seen.head.text}, whole=${seen.head.whole})`);
 
 const unselected = before.filter((r) => !r.selected);
 check(unselected.every((r) => r.name >= 55), `an unselected name gets at least 55px (${unselected.map((r) => r.name).join(", ")})`);
@@ -110,6 +139,12 @@ check(before.filter((r) => r.activityClipped !== null).every((r) => r.activityCl
   "the activity after it is what runs out of room");
 check(before.every((r) => r.height >= 44), `a row is still at least 44px tall (${before.map((r) => r.height).join(", ")})`);
 check(before.every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px (${before[0].menuHit})`);
+// The acceptance for keeping a 220px rail: these names can be told apart by
+// what is on the screen, not by what a pointer would reveal.
+const visible = before.map((r) => r.visible);
+const clashes = visible.filter((v, i) => visible.indexOf(v) !== i);
+console.log("visible:", JSON.stringify(visible));
+check(clashes.length === 0, `every name reads differently from the others${clashes.length ? `: ${clashes.join(" / ")}` : ""}`);
 
 await b.close();
 console.log(failed ? `\n${failed} failed` : "\nall passed");
