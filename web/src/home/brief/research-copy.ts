@@ -29,6 +29,7 @@ export type ResearchCopyWords = {
   row: string;
   value: string;
   interval: string;
+  scaled: (scale: number) => string;
   origin: string;
   read: (file: string) => string;
   provided: string;
@@ -54,6 +55,7 @@ const ENGLISH: ResearchCopyWords = {
   row: "Row",
   value: "Value",
   interval: "Interval",
+  scaled: (scale) => `Values shown × ${scale} of the file's.`,
   origin: "From",
   read: (file) => `snapshot ${file}`,
   provided: "the Agent",
@@ -71,12 +73,13 @@ const ENGLISH: ResearchCopyWords = {
 /** A table cell: no pipes or line breaks. */
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
 
-function number(value: Num | undefined, at: string, resolved: ResearchResolved | undefined, digits: number | undefined) {
+function number(value: Num | undefined, at: string, resolved: ResearchResolved | undefined, digits: number | undefined, scale = 1) {
+  const text = (n: number) => (digits === undefined ? String(n * scale) : (n * scale).toFixed(digits));
   if (value === undefined) return { text: "", origin: "" };
-  if (typeof value === "number") return { text: digits === undefined ? String(value) : value.toFixed(digits), origin: "provided" as const };
+  if (typeof value === "number") return { text: text(value), origin: "provided" as const };
   const read = resolved?.values[at];
   if (read?.status === "read" && typeof read.value === "number")
-    return { text: digits === undefined ? String(read.value) : read.value.toFixed(digits), origin: "read" as const, from: value.from };
+    return { text: text(read.value), origin: "read" as const, from: value.from };
   return { text: "—", origin: "not" as const, from: value.from };
 }
 
@@ -111,15 +114,16 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
   }
   for (const plot of desk.plots) {
     out.push(`#### ${plot.title}${plot.unit ? ` (${plot.unit})` : ""}`, "");
+    if (plot.scale) out.push(words.scaled(plot.scale), "");
     out.push(`| ${words.row} | ${words.value} | ${plot.interval ?? words.interval} | ${words.origin} |`, "| --- | --- | --- | --- |");
     const rows = plot.rows.flatMap((row) => [
       { id: row.id, label: row.label, estimate: row.estimate },
       ...(row.parts ?? []).map((part) => ({ id: part.id, label: `${row.label} · ${part.label}`, estimate: part.estimate })),
     ]);
     for (const row of rows) {
-      const value = number(row.estimate.value, `${row.id}.value`, resolved, plot.digits);
-      const low = number(row.estimate.low, `${row.id}.low`, resolved, plot.digits);
-      const high = number(row.estimate.high, `${row.id}.high`, resolved, plot.digits);
+      const value = number(row.estimate.value, `${row.id}.value`, resolved, plot.digits, plot.scale);
+      const low = number(row.estimate.low, `${row.id}.low`, resolved, plot.digits, plot.scale);
+      const high = number(row.estimate.high, `${row.id}.high`, resolved, plot.digits, plot.scale);
       const interval = row.estimate.low !== undefined || row.estimate.high !== undefined ? `[${low.text}, ${high.text}]` : "";
       const origin = value.origin === "read" ? words.read(value.from!) : value.origin === "provided" ? words.provided : words.notRead;
       out.push(`| ${cell(row.label)} | ${value.text} | ${interval} | ${cell(origin)} |`);

@@ -39,6 +39,7 @@ export const researchText = strings({
   low: "Low",
   high: "High",
   interval: "Interval",
+  asFiled: (value: string) => `${value} in the file`,
   // Sources.
   sources: "Sources",
   snapshot: "Snapshot",
@@ -121,6 +122,7 @@ export const researchText = strings({
   low: "下界",
   high: "上界",
   interval: "区间",
+  asFiled: (value) => `文件中为 ${value}`,
   sources: "来源",
   snapshot: "快照",
   taken: (at) => `登记于 ${at}`,

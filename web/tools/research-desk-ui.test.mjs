@@ -155,6 +155,12 @@ test("two desks of different shapes draw through one component, each number sayi
       assert.ok(page.document.querySelector('.research-origin[data-origin="read"]'), "a snapshot number says so");
       assert.ok(page.document.querySelector(".research-origin").textContent.includes("From a fixed snapshot"));
       assert.ok(!desk.textContent.match(/verified|checked by/i), "nothing is called verified");
+      if (put === benchmark) {
+        // A plot's scale is for display: the evidence says what the file holds.
+        radio(page.document, "Views of this desk", "Evidence & limits").click();
+        await until(() => page.document.querySelector(".research-main")?.textContent.includes("-0.061 in the file"), "the value as filed");
+        assert.ok(page.document.querySelector(".research-main").textContent.includes("−6.1"));
+      }
       // Reads only: the desk's numbers, once per section version, and nothing that runs.
       assert.ok(page.requests.every((request) => request.method === "GET" && /\/brief\/research\//.test(request.url)), JSON.stringify(page.requests));
       assert.deepEqual(page.errors, []);

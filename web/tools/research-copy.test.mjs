@@ -47,6 +47,10 @@ test("without Core's read a number from a snapshot is said to be not read, never
   const desk = benchmark.body.elements.desk.props;
   const text = researchDeskMarkdown(desk);
   assert.match(text, /\| o2 · arm \| — \| \[—, —\] \| not read \|/);
+  // With Core's read: fractions shown in percent, as the plot asks, and said so.
+  const shown = researchDeskMarkdown(desk, resolvedOf(desk));
+  assert.match(shown, /Values shown × 100 of the file's\./);
+  assert.match(shown, /\| o2 · arm \| -6\.1 \| \[-8\.0, -4\.2\] \| snapshot bench\.json \|/);
   assert.doesNotMatch(text, /-6\.1/);
   const piped = structuredClone(desk);
   piped.plots[0].rows[0].label = "a | b\nc";

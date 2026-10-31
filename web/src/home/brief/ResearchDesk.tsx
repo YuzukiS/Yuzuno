@@ -44,8 +44,11 @@ type SourceInfo = {
 type Resolved = { version: number; values: Record<string, Read>; sources: Record<string, SourceInfo> };
 type Loaded = { key: string; data?: Resolved; error?: string };
 type Origin = "read" | "provided" | "missing" | "not_number" | "unavailable" | "loading";
-/** A number as shown: its value when there is one, and where it came from. */
+/** A number as shown: its value when there is one (as the file or the Agent has it), and where it came from. */
 type Shown = { value: number | null; origin: Origin; from?: string };
+/** A shown number times a plot's display scale; the value itself stays as it was. */
+const scaled = (shown: Shown | undefined, scale: number | undefined) =>
+  shown?.value === null || shown?.value === undefined || !scale ? shown?.value ?? null : shown.value * scale;
 
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 function resolvedOf(value: unknown): Resolved | null {
@@ -257,6 +260,7 @@ function Intervals({
   title,
   lines,
   digits,
+  scale,
   unit,
   reference,
   signed,
@@ -266,6 +270,7 @@ function Intervals({
   title: string;
   lines: Line[];
   digits?: number;
+  scale?: number;
   unit?: string;
   reference?: { value: number; label: string };
   signed: boolean;
@@ -273,7 +278,7 @@ function Intervals({
   onSelect?: (id: string) => void;
 }) {
   const t = useStrings(researchText);
-  const numbers = lines.flatMap((line) => [line.value?.value, line.low?.value, line.high?.value]).filter((n): n is number => typeof n === "number");
+  const numbers = lines.flatMap((line) => [scaled(line.value, scale), scaled(line.low, scale), scaled(line.high, scale)]).filter((n): n is number => typeof n === "number");
   if (reference) numbers.push(reference.value);
   let min = numbers.length ? Math.min(...numbers) : 0;
   let max = numbers.length ? Math.max(...numbers) : 1;
@@ -283,9 +288,9 @@ function Intervals({
   const at = (value: number) => `${(((value - min) / (max - min)) * 100).toFixed(2)}%`;
   if (!lines.length) return <p className="research-empty">{t.noRows}</p>;
   const draw = (line: Line, checked: boolean) => {
-    const value = line.value?.value ?? null;
-    const low = line.low?.value ?? null;
-    const high = line.high?.value ?? null;
+    const value = scaled(line.value, scale);
+    const low = scaled(line.low, scale);
+    const high = scaled(line.high, scale);
     return (
       <>
         <span className="research-row-label">{line.label}</span>
@@ -464,7 +469,8 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
             <div key={field}>
               <dt>{t[field]}</dt>
               <dd>
-                {format(value.value, plot?.digits, !!plot?.reference && plot.reference.value === 0)}
+                {format(scaled(value, plot?.scale), plot?.digits, !!plot?.reference && plot.reference.value === 0)}
+                {plot?.scale && value.value !== null && <span className="research-origin-text">{t.asFiled(String(value.value))}</span>}
                 <span className="research-origin-text" data-origin={value.origin}>
                   {t.origin[value.origin]}
                   {value.from && <> · <code>{value.from}</code></>}
@@ -484,14 +490,14 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
     const [value, low, high] = (["value", "low", "high"] as const).map((field) => shownOf(primary.estimate[field], `${primary.id}.${field}`, resolved, loading));
     return (
       <section className="research-primary">
-        <span className="research-caption">{t.primary}: {primary.label}</span>
+        <span className="research-primary-label">{t.primary}: {primary.label}</span>
         <p className="research-big">
-          <b>{format(value?.value ?? null, primaryPlot?.digits, signed)}</b>
+          <b>{format(scaled(value, primaryPlot?.scale), primaryPlot?.digits, signed)}</b>
           {primaryPlot?.unit && <span> {primaryPlot.unit}</span>}
         </p>
         {(low || high) && (
           <p>
-            {primaryPlot?.interval ?? t.interval} [{format(low?.value ?? null, primaryPlot?.digits, signed)}, {format(high?.value ?? null, primaryPlot?.digits, signed)}]
+            {primaryPlot?.interval ?? t.interval} [{format(scaled(low, primaryPlot?.scale), primaryPlot?.digits, signed)}, {format(scaled(high, primaryPlot?.scale), primaryPlot?.digits, signed)}]
           </p>
         )}
         {value && (
@@ -536,13 +542,14 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
             {showParts ? (
               <>
                 <p className="research-caption">{selectedHere.label}</p>
-                <Intervals title={item.title} lines={linesOf(selectedHere.parts!, resolved, loading)} digits={item.digits} unit={item.unit} signed={false} />
+                <Intervals title={item.title} lines={linesOf(selectedHere.parts!, resolved, loading)} digits={item.digits} scale={item.scale} unit={item.unit} signed={false} />
               </>
             ) : (
               <Intervals
                 title={item.title}
                 lines={linesOf(item.rows, resolved, loading)}
                 digits={item.digits}
+                scale={item.scale}
                 unit={item.unit}
                 reference={item.reference}
                 signed={signed}
@@ -659,7 +666,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
                     const signed = !!owner?.reference && owner.reference.value === 0;
                     const text = (r: Row) => {
                       const [value, low, high] = (["value", "low", "high"] as const).map((field) => shownOf(r.estimate[field], `${r.id}.${field}`, resolved, loading));
-                      return `${format(value?.value ?? null, owner?.digits, signed)}${low || high ? ` [${format(low?.value ?? null, owner?.digits, signed)}, ${format(high?.value ?? null, owner?.digits, signed)}]` : ""}`;
+                      return `${format(scaled(value, owner?.scale), owner?.digits, signed)}${low || high ? ` [${format(scaled(low, owner?.scale), owner?.digits, signed)}, ${format(scaled(high, owner?.scale), owner?.digits, signed)}]` : ""}`;
                     };
                     return (
                       <tr key={key}>

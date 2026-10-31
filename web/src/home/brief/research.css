@@ -217,6 +217,10 @@
   border-radius: 12px;
   background: color-mix(in srgb, var(--green) 6%, var(--paper));
 }
+.research-primary-label {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.82rem;
+}
 .research-big {
   font-variant-numeric: tabular-nums;
 }
