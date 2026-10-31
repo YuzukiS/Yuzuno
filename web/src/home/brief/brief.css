@@ -861,6 +861,36 @@ span.brief-ref {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+/* A picture's button wraps the picture, so its enlarge mark sits on it. */
+.brief-attachment[data-picture] button.brief-image {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
+.brief-image-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--paper, #fff) 86%, transparent);
+  color: var(--ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 18%, transparent);
+  opacity: 0.8;
+  transition: opacity 0.12s ease;
+}
+button.brief-image:hover .brief-image-zoom,
+button.brief-image:focus-visible .brief-image-zoom {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-image-zoom {
+    transition: none;
+  }
+}
 .brief-attachment[data-kind="image"] .brief-attachment-caption {
   color: var(--ink);
   font-size: 0.86rem;

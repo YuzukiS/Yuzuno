@@ -6,6 +6,7 @@ import {
   FileText,
   Image as ImageIcon,
   Link,
+  Maximize2,
   Paperclip,
   ScrollText,
   type LucideIcon,
@@ -395,6 +396,10 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
               decoding="async"
               onError={() => setUnloaded(attachment.takenAt)}
             />
+            {/* It opens larger: said on the picture, for touch as for the pointer. */}
+            <span className="brief-image-zoom" aria-hidden="true">
+              <Maximize2 size={13} />
+            </span>
           </button>
         )}
         {label ? (
