@@ -143,13 +143,28 @@ onPortalMount(() => {
   root.render(<PortalHost />);
 });
 
+/** The narrowest window worth splitting. Not a phone: that is the `phone`
+ * class, which the app sets from one media query (phone-layout.ts). A window
+ * this narrow with a mouse would leave both sides at their bare minimum, so
+ * the Portal takes it whole instead. */
+const MIN_SPLIT = 720;
+
+/** What the app has to lay out in: its own content box, so a system control
+ * area at the side (`--safe-*`, styles.css) is already out of it. Reading the
+ * window instead counts that area as usable, and every width below is then
+ * too large by it (T-15). */
+function appWidth(app: HTMLElement): number {
+  const style = getComputedStyle(app);
+  return app.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+}
+
 type Layout = { mode: "side"; width: number; rail: number } | { mode: "full" };
 /** Side by side when the window leaves the chat its minimum; else full screen. */
 function layout(dragged: number | null): Layout {
   const app = document.querySelector<HTMLElement>(".app");
-  const phone = !app || app.classList.contains("phone") || window.innerWidth <= 720;
+  const phone = !app || app.classList.contains("phone") || window.innerWidth <= MIN_SPLIT;
   const rail = app && !app.classList.contains("rail-hidden") ? app.querySelector<HTMLElement>(":scope > .rail")?.getBoundingClientRect().width ?? 0 : 0;
-  const content = window.innerWidth - rail;
+  const content = (app ? appWidth(app) : window.innerWidth) - rail;
   if (phone || content - MIN_CHAT < MIN_PORTAL) return { mode: "full" };
   const width = Math.round(Math.min(content - MIN_CHAT, Math.max(MIN_PORTAL, dragged ?? (content * 2) / 3)));
   return { mode: "side", width, rail: Math.round(rail) };
@@ -343,7 +358,8 @@ function PortalHost() {
             if (shape.mode !== "side" || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
             event.preventDefault();
             // Within what the window allows: the chat keeps its minimum.
-            const most = window.innerWidth - shape.rail - MIN_CHAT;
+            const panel = document.querySelector<HTMLElement>(".app");
+            const most = (panel ? appWidth(panel) : window.innerWidth) - shape.rail - MIN_CHAT;
             const width = Math.min(most, Math.max(MIN_PORTAL, Math.min(latest.current ?? shape.width, most) + (event.key === "ArrowLeft" ? 32 : -32)));
             latest.current = width;
             setDragged(width);

@@ -139,6 +139,17 @@ for (const view of VIEWS) {
       nodes: [...document.querySelectorAll(".work-dock-item, .work-dock-heading, .work-dock-more")]
         .map((el) => { const r = el.getBoundingClientRect(); return Math.round(Math.min(r.width, r.height)); })
         .filter((n) => n > 0),
+      // What Portal.tsx has to split: the app's content box, not the window.
+      app2: (() => {
+        const el = document.querySelector(".app");
+        if (!el) return null;
+        const st = getComputedStyle(el);
+        const rail = el.querySelector(":scope > .rail")?.getBoundingClientRect().width ?? 0;
+        return { window: window.innerWidth, client: el.clientWidth,
+          padL: Math.round(parseFloat(st.paddingLeft || "0")), padR: Math.round(parseFloat(st.paddingRight || "0")),
+          content: Math.round(el.clientWidth - parseFloat(st.paddingLeft || "0") - parseFloat(st.paddingRight || "0")),
+          rail: Math.round(rail) };
+      })(),
       pointer: { coarse: matchMedia("(pointer: coarse)").matches, hover: matchMedia("(hover: hover)").matches },
       // Each Turn row as drawn, and whether anything above it cuts the row
       // short: a 44px row that its container clips is not a 44px target.
@@ -174,6 +185,11 @@ for (const view of VIEWS) {
   console.log(`  turn-dock ${t ? `${t.w}x${t.h} top ${t.top} bottom ${t.bottom}` : "absent"}`);
   console.log(`  composer  ${c ? `top ${c.top} h ${c.h}` : "absent"}`);
   console.log(`  gap work→composer ${out.workGap}   turn→composer ${out.turnGap}`);
+  if (out.app2) {
+    const a = out.app2, old = a.window - a.rail, now = a.content - a.rail;
+    console.log(`  app: window ${a.window} client ${a.client} padding ${a.padL}/${a.padR} content ${a.content} rail ${a.rail}`);
+    console.log(`  portal content width: window-based ${old} vs content-based ${now} (diff ${old - now})`);
+  }
   console.log(`  app ${out.app?.w}  main-panel ${out.main?.w}`);
   console.log(`  body ${out.body?.w} → reading ${out.inner?.w}  (spend ${out.body && out.inner ? out.body.w - out.inner.w : "?"})`);
   console.log(`  --gutter '${out.gutter}'  --column '${out.column}'`);
