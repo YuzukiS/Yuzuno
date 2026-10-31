@@ -2324,8 +2324,15 @@ const markdownCases = {
   // A fence open inside a list item ends with the list; nothing is added.
   listFence: { open: mdBlock("- item\n\n  ```\n  code in a list"), after: cellTable("after list fence") },
   pre: { open: mdBlock("<pre>\nraw block"), after: cellTable("after pre") },
+  // Raw HTML cut off mid-tag, a tag name with nothing after it, and an
+  // unclosed <div>: each ends with its block on the page.
+  preAttr: { open: mdBlock('<pre title="\nraw in attribute'), after: cellTable("after pre attr") },
+  textarea: { open: mdBlock("<textarea"), plan: { type: "Plan", props: { steps: [{ id: "p", text: "plan step after textarea", state: "todo" }] } } },
+  div: { open: mdBlock("<div>\nboxed text"), after: cellTable("after div") },
   lists: { zero: mdBlock("1. zero"), one: mdBlock("1. one") },
 };
+/** What the page itself shows for each raw HTML case's Markdown block. */
+const pageShows = { preAttr: "", textarea: "<textarea", div: "boxed text" };
 const markdownCase = (name) => section(`md-${name}`, "report", `Case ${name}`, 1, owner("a", "Mori"), {
   body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: Object.keys(markdownCases[name]) }, ...markdownCases[name] } },
 });
@@ -2347,6 +2354,12 @@ const markdownChecks = {
   listFence: (el, code, pres) => code.length === 1 && code[0] === "code in a list\n" && !!pres[0].closest("li")
     && [...el.querySelectorAll("td")].some((td) => td.textContent === "after list fence"),
   pre: (el, code) => code.length === 1 && code[0].trim() === "raw block" && [...el.querySelectorAll("td")].some((td) => td.textContent === "after pre"),
+  preAttr: (el, code) => code.length === 0 && !el.textContent.includes("raw in attribute")
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after pre attr"),
+  textarea: (el) => !el.querySelector("textarea") && [...el.querySelectorAll("p")].some((p) => p.textContent === "<textarea")
+    && [...el.querySelectorAll("ol > li")].some((li) => li.textContent.includes("plan step after textarea")),
+  div: (el) => [...el.querySelectorAll("div")].some((div) => div.textContent.trim() === "boxed text")
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after div" && td.closest("div") === el),
   // Two lists, each numbered from 1 as on the page.
   lists: (el) => [...el.querySelectorAll("ol")].length === 2 && [...el.querySelectorAll("ol")].every((ol) => !ol.hasAttribute("start") && ol.children.length === 1),
 };
@@ -2359,6 +2372,8 @@ test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and
   const copies = {};
   try {
     await waitFor(() => names.every((name) => card(p, "p-app", `md-${name}`)), "the reports");
+    for (const [name, text] of Object.entries(pageShows))
+      assert.equal(card(p, "p-app", `md-${name}`).querySelector(".brief-markdown").textContent.trim(), text, `the page shows ${name} as written`);
     for (const name of names) {
       const copied = [];
       clipboard(p, async (text) => { copied.push(text); });

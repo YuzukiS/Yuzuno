@@ -5,6 +5,7 @@ import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import type { TimeDisplay } from "../../time-preferences";
 import type { Section, SectionAttachment } from "../types";
 import { briefText } from "./brief-text";
+import { briefMarkdownHtml } from "./markdown-html";
 import { researchDeskMarkdown, type ResearchCopyWords, type ResearchResolved } from "./research-copy";
 import {
   CHART_TYPES,
@@ -161,19 +162,45 @@ function openAtEnd(text: string): string | null {
   }
   return null;
 }
+/** Stands in for whatever part follows a block in the copy. */
+const NEXT_PART = "yuzuno-copy-next-part";
+const view = (html: string): DocumentFragment => {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return template.content;
+};
+const visible = (node: Node) => (node.textContent ?? "").replace(/\s+/g, " ").trim();
+/** Whether `markdown`, with a part after it, still shows what the page shows
+ * for the block on its own (`page`) and leaves that part outside it. Both
+ * are read as Home reads them (marked, then the same sanitizing). */
+function standsAlone(markdown: string, page: DocumentFragment): boolean {
+  const joined = view(briefMarkdownHtml(`${markdown}\n\n${NEXT_PART}`));
+  const last = joined.lastElementChild;
+  if (last?.tagName !== "P" || last.textContent !== NEXT_PART) return false;
+  last.remove();
+  return visible(joined) === visible(page);
+}
 /** A Markdown block exactly as written (its indentation is an indented code
  * block), with a fence or raw HTML block it leaves open closed where the
- * block ends, as it ends on the page. */
+ * block ends, as it ends on the page. A block that still takes in what
+ * follows it (raw HTML cut off mid-tag, say) is copied as the HTML the page
+ * shows for it instead, on one line, so it ends there. */
 function markdownBlock(value: unknown): string {
   const text = String(value ?? "");
   if (!text.trim()) return "";
   const open = openAtEnd(text);
+  const closed = `${text}${open ? `${/\n$/.test(text) ? "" : "\n"}${open}` : ""}`;
+  if (typeof document !== "undefined") {
+    const html = briefMarkdownHtml(text);
+    if (!standsAlone(closed, view(html)))
+      return html.trim() ? `<div>${html.trim().replace(/\r?\n/g, "&#10;")}</div>` : "";
+  }
   // A block whose first line starts indented or with a list marker would
   // continue a list just before it (Home shows it on its own): an empty
   // comment ends that list.
   const first = text.split(/\r?\n/).find((line) => line.trim()) ?? "";
   const boundary = /^(?:[ \t]|[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$))/.test(first) ? "<!-- -->\n\n" : "";
-  return `${boundary}${text}${open ? `${/\n$/.test(text) ? "" : "\n"}${open}` : ""}`;
+  return `${boundary}${closed}`;
 }
 
 /** research: Core's numbers for each research desk, by element key, read for
