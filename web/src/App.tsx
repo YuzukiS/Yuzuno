@@ -1836,6 +1836,11 @@ export function App() {
   }
   // Search offers to open a message or an Agent link; a Home link is what a
   // notification opens, not something to paste.
+  // The reading bar and what it says: a source being read, or a window of
+  // earlier messages. Either one carries the single way back to the latest.
+  const source = catchupSource?.agentId === selected ? catchupSource : null;
+  const historyWindow = !!currentDetail?.conversation?.hasAfter;
+  const readingBar = !!source || historyWindow;
   const pastedLink = searchOpen ? parseAppLink(search) : null;
   const searchLink = pastedLink?.kind === "home" ? null : pastedLink;
   function openSearchLink() {
@@ -2855,6 +2860,10 @@ export function App() {
                 onReconnected={refresh}
               />
             )}
+            {/* One reading bar, and one way back to the latest messages in it:
+                reading a source, the place left off, or a window of earlier
+                messages. The floating button stands in only when none of
+                those is showing, so two never appear at once (T-15). */}
             {/* Over this browser's own place too, not over a link or a source being read. */}
             {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
               <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
@@ -2865,24 +2874,31 @@ export function App() {
                 <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
               </div>
             )}
-            {catchupSource?.agentId === selected && (
+            {readingBar && (
               <div className="source-navigation" lang={langTag(language)}>
                 <button
                   className="quiet-button"
                   onClick={() =>
-                    sourceOrigin === "home"
+                    source && sourceOrigin === "home"
                       ? setHomeOpen(true)
                       : backToLatest()
                   }
                 >
                   <ArrowLeft size={13} />
-                  {sourceOrigin === "home" ? shell.backHome : shell.backLatest}
+                  {source && sourceOrigin === "home" ? shell.backHome : shell.backLatest}
                 </button>
                 <span role="status">
-                  {sourceNotice?.(shell) || (catchupSource.progress !== undefined ? (catchupSource.where ? shell.readingIn(catchupSource.where) : catchupSource.title)
-                    : catchupSource.restore !== undefined ? shell.leftOff
-                    : catchupSource.link ? shell.linked : shell.original)}
+                  {source
+                    ? sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
+                      : source.restore !== undefined ? shell.leftOff
+                      : source.link ? shell.linked : shell.original)
+                    : shell.earlierMessages}
                 </span>
+                {historyWindow && (
+                  <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
+                    {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
+                  </button>
+                )}
               </div>
             )}
             <div className="conversation-body" data-phone-dock={phone && phoneDock ? phoneDock : undefined}>
@@ -3053,11 +3069,13 @@ export function App() {
                       </p>
                     </div>
                   )}
-                  {currentDetail?.conversation?.hasAfter && <div className="conversation-history-window">
+                  {/* Where the loaded window ends. Back to latest is not
+                      repeated here: the reading bar above carries the one
+                      entry for it (T-15). */}
+                  {historyWindow && <div className="conversation-history-window">
                     <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
-                      {live.windowLoading ? "Loading history…" : "Continue to newer messages"}
+                      {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
                     </button>
-                    <button className="inline-link" onClick={backToLatest}>Back to latest</button>
                   </div>}
                   <OutgoingMessages
                     agentId={agent.id}
@@ -3133,7 +3151,7 @@ export function App() {
                   inputs={readingBy === "inputs"}
                 />
               )}
-              {(!atBottom || historyReading) && (
+              {(!atBottom || historyReading) && !readingBar && (
                 <button className="jump-latest" onClick={backToLatest}>
                   <ArrowDown size={13} />
                   Back to latest
