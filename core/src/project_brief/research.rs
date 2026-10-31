@@ -145,9 +145,14 @@ struct Kept {
     content: Value,
 }
 
-/// Every definition version of every desk in a section's data, by
-/// (definition id, version).
-fn definitions(data: &Value) -> Vec<((String, i64), Kept, Option<String>)> {
+/// A definition version's identity: its desk (the element), the definition's
+/// id within that desk, and the version. A desk's definitions are its own: two
+/// desks of one section may each have a definition "d" version 1.
+type DefinitionKey = (String, String, i64);
+
+/// Every definition version of every desk in a section's data, by desk,
+/// definition id and version.
+fn definitions(data: &Value) -> Vec<(DefinitionKey, Kept, Option<String>)> {
     let attachments: HashMap<&str, &Value> = data["attachments"].as_array().into_iter().flatten()
         .filter_map(|a| Some((a["name"].as_str()?, a)))
         .collect();
@@ -172,7 +177,7 @@ fn definitions(data: &Value) -> Vec<((String, i64), Kept, Option<String>)> {
                     .map(str::to_owned);
                 let content = json!({"text":version["text"],"cite":cite,"sha256":sha});
                 let path = format!("body.elements.{key}.props.definitions.{d}.versions.{v}");
-                found.push(((id.to_owned(), number), Kept { path, content }, file.map(str::to_owned)));
+                found.push(((key.clone(), id.to_owned(), number), Kept { path, content }, file.map(str::to_owned)));
             }
         }
     }
@@ -188,11 +193,11 @@ pub(super) type Problem = (String, &'static str, String);
 /// A changed definition is a new version.
 pub(super) fn kept(previous: Option<&Value>, next: &Value) -> Vec<Problem> {
     let mut problems = vec![];
-    let before: HashMap<(String, i64), Value> = previous.map(definitions).unwrap_or_default().into_iter()
+    let before: HashMap<DefinitionKey, Value> = previous.map(definitions).unwrap_or_default().into_iter()
         .map(|(key, kept, _)| (key, kept.content))
         .collect();
-    let mut now: HashMap<(String, i64), Value> = HashMap::new();
-    for ((id, version), kept, file) in definitions(next) {
+    let mut now: HashMap<DefinitionKey, Value> = HashMap::new();
+    for ((desk, id, version), kept, file) in definitions(next) {
         if kept.content["sha256"].is_null() {
             let file = file.unwrap_or_default();
             problems.push((format!("{}.cite", kept.path), "unsaved_definition", format!(
@@ -201,12 +206,13 @@ pub(super) fn kept(previous: Option<&Value>, next: &Value) -> Vec<Problem> {
             continue;
         }
         let changed = |earlier: &Value| earlier != &kept.content;
-        if before.get(&(id.clone(), version)).is_some_and(changed) || now.get(&(id.clone(), version)).is_some_and(changed) {
+        let at = (desk, id.clone(), version);
+        if before.get(&at).is_some_and(changed) || now.get(&at).is_some_and(changed) {
             problems.push((kept.path.clone(), "definition_changed", format!(
                 "Definition \"{id}\" version {version} already names other content (its text, citation or cited file); \
                  a changed definition is a new version: add version {} and keep {version} as it was.", version + 1)));
         }
-        now.insert((id, version), kept.content);
+        now.insert(at, kept.content);
     }
     problems
 }
@@ -241,6 +247,25 @@ mod tests {
         assert_eq!(file[0].1, "definition_changed", "the cited file changed under the same version");
         let unsaved = kept(None, &data("Per sub-menu.", None));
         assert_eq!((unsaved[0].1, unsaved[0].0.as_str()), ("unsaved_definition", "body.elements.desk.props.definitions.0.versions.0.cite"));
+    }
+
+    #[test]
+    fn each_desk_keeps_its_own_definitions() {
+        let a = "a".repeat(64);
+        let two = |second: &str| {
+            let mut both = data("Per sub-menu.", Some(&a));
+            let mut other = both["body"]["elements"]["desk"].clone();
+            other["props"]["definitions"][0]["versions"][0]["text"] = json!(second);
+            both["body"]["elements"]["other"] = other;
+            both["body"]["elements"]["body"]["children"] = json!(["desk", "other"]);
+            both
+        };
+        // Two desks may each have a "static" version 1 of their own, from the first write on.
+        assert!(kept(None, &two("Per menu.")).is_empty());
+        // Each still keeps its own: the second desk changing its version 1 is refused there.
+        let changed = kept(Some(&two("Per menu.")), &two("Per whole menu."));
+        assert_eq!((changed.len(), changed[0].1), (1, "definition_changed"));
+        assert_eq!(changed[0].0, "body.elements.other.props.definitions.0.versions.0");
     }
 
     #[test]
