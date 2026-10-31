@@ -249,13 +249,20 @@ async fn undo(slot: &mut Option<Running>, undo: Undo) {
 }
 
 /// The ports previews keep, which phone access must not take: those that
-/// apply, and those last asked for while previews are on, even while they
-/// could not start.
+/// apply, those last asked for while previews are on (even while they could
+/// not start), and those of a Serve entry still Core's for previews (left by
+/// a turning off that could not remove it, which a retry removes), until it
+/// is gone.
 pub(super) fn kept(ws: &Workspace) -> Vec<Ports> {
     let saved = read(&path(ws)).unwrap_or_default();
     let applied = saved.effective.and_then(|e| e.listen);
     let asked = saved.desired.filter(|d| d.enabled).map(|d| Ports { serve_port: d.serve_port, local_port: d.local_port });
-    applied.into_iter().chain(asked).collect()
+    // A target that names no loopback port keeps its Serve port only (0 is no port).
+    let owned = saved.owned.map(|o| Ports {
+        serve_port: o.serve_port,
+        local_port: o.target.strip_prefix("http://127.0.0.1:").and_then(|p| p.parse().ok()).unwrap_or(0),
+    });
+    applied.into_iter().chain(asked).chain(owned).collect()
 }
 
 // ---- checks ------------------------------------------------------------

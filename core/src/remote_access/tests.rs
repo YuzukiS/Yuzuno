@@ -1032,3 +1032,44 @@ async fn phone_previews_take_identity_and_name_from_the_head_alone() {
     // A second request in the same write lends the first nothing.
     assert_eq!(send(local, &format!("GET {page} HTTP/1.1\r\n{host}\r\nGET {page} HTTP/1.1\r\n{host}{login}\r\n")).await.0, 403);
 }
+
+#[tokio::test]
+async fn ports_of_a_previews_entry_a_failed_turning_off_left_stay_theirs_until_it_is_gone() {
+    let lab = lab("wsl");
+    lab.with_page();
+    let (phone, local) = (free_port(), free_port());
+    lab.both_on(phone, local).await;
+    // Turning previews off cannot remove their Serve entry: Core keeps it as its own, to remove on a retry.
+    lab.set_fake(|s| s["failOff"] = json!("serve config locked"));
+    let op = lab.previews(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    assert_eq!(op["state"], "failed", "{op}");
+    assert!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")].is_object(), "the entry is left");
+    lab.set_fake(|s| s["failOff"] = Value::Null);
+    // Phone access takes neither of its ports, and changes nothing trying.
+    let before = lab.calls().len();
+    for (id, request, kept) in [
+        ("both", json!({"localPort": local, "servePort": 8445}), format!("{local} is kept for phone previews")),
+        ("local", json!({"localPort": local}), format!("{local} is kept for phone previews")),
+        ("serve", json!({"localPort": phone, "servePort": 8445}), "8445 is kept for phone previews".to_owned()),
+    ] {
+        let mut request = request;
+        request["requestId"] = json!(id);
+        request["enabled"] = json!(true);
+        let op = lab.apply(request).await.unwrap();
+        assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{id}: {op}");
+        assert!(op["error"].as_str().unwrap().contains(&kept), "{id}: {op}");
+    }
+    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry is unchanged");
+    // The retry removes only the previews' entry; the phone entry stays.
+    let op = lab.previews(json!({"requestId": "off-again", "enabled": false})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    let serve = &lab.fake()["serve"];
+    assert!(serve["TCP"].get("8445").is_none(), "{serve}");
+    assert_eq!(serve["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str());
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+    // Once it is gone, its ports are free for phone access.
+    let op = lab.apply(json!({"requestId": "now", "enabled": true, "localPort": local, "servePort": 8445})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert_eq!(lab.saved().owned.map(|o| (o.serve_port, o.target)), Some((8445, format!("http://127.0.0.1:{local}"))));
+}
