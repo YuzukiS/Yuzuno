@@ -53,11 +53,17 @@ fn launch(s: &Store, job: &Value) -> Value {
         .unwrap();
     record(s, job)
 }
-/// The Job's process ended with this systemd Result and main status.
+/// The Job's process ended with this systemd Result and main status. For an
+/// exit or a signal, the host's wrapper recorded it as the command's own, as
+/// it does for a command it created (`command`).
 fn ended(s: &Store, job: &Value, status: &str, result: &str, code: &str) {
     let attempt = record(s, job)["attempt"].clone();
+    let mut evidence = json!({"systemd":{"Result":result,"ExecMainStatus":code}});
+    if let (Some(sign), Ok(n)) = (match result { "exit-code" => Some(1), "signal" | "core-dump" => Some(-1), _ => None }, code.parse::<i64>()) {
+        evidence["command"] = json!({"attempt":attempt,"exitCode":sign * n});
+    }
     s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":attempt,"status":status,
-        "reason":result,"evidence":{"systemd":{"Result":result,"ExecMainStatus":code}}}))
+        "reason":result,"evidence":evidence}))
         .unwrap();
 }
 fn crash(s: &Store, job: &Value) {
@@ -173,7 +179,8 @@ async fn one_crash_makes_at_most_one_retry_and_the_end_time_is_fixed_once() {
     // Its end recorded with a later start (the worker's own clock): the end time stays.
     let attempt = record(s, &root)["attempt"].clone();
     s.update_job_evidence(root["id"].as_str().unwrap(), json!({"jobId":root["id"],"attempt":attempt,"status":"failed",
-        "reason":"exit-code","started":{"at":now_unix() + 600.0},"evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"}}}))
+        "reason":"exit-code","started":{"at":now_unix() + 600.0},
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"},"command":{"attempt":attempt,"exitCode":1}}}))
         .unwrap();
     assert_eq!(intent_of(s, &id)["recovery"]["deadlineAt"], fixed);
     // Recorded again: nothing more (the Job is no longer reserved).
@@ -476,6 +483,77 @@ async fn without_a_marker_a_signal_is_a_crash_and_an_unknown_outcome_stays_unkno
     assert_eq!(jobs(s), 3, "nothing follows");
 }
 
+/// The wrapper's own failure, as the host records it: `extra` is what it
+/// knew about the command (nothing, its exit, or the stage it stopped at).
+fn wrapper_failed(s: &Store, job: &Value, extra: Value) {
+    let attempt = record(s, job)["attempt"].clone();
+    let mut evidence = json!({"systemd":{"Result":"exit-code","ExecMainStatus":"1"},"pids":null});
+    for (key, value) in extra.as_object().unwrap() {
+        evidence[key] = value.clone();
+        evidence[key]["attempt"] = attempt.clone();
+    }
+    s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":attempt,"status":"failed",
+        "reason":"exit-code","evidence":evidence}))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn only_the_commands_own_exit_is_a_crash_a_wrapper_failure_never_retries_or_spends_budget() {
+    let cases: [(Value, &str); 5] = [
+        (json!({"notLaunched":{"stage":"inputs","reason":"RuntimeError: Guarded inputs must be files: config.txt"}}), "inputs_changed"),
+        (json!({"notLaunched":{"stage":"process","reason":"FileNotFoundError: [Errno 2] No such file or directory"}}), "launch_refused"),
+        (json!({"notLaunched":{"stage":"prepare","reason":"OSError: [Errno 28] No space left on device"}}), "launch_refused"),
+        // The wrapper failed after creating the command, before recording its exit.
+        (json!({"command":{"pid":42,"startedAt":1.0}}), "unknown_outcome"),
+        // The command exited 0; the wrapper failed afterwards.
+        (json!({"command":{"pid":42,"startedAt":1.0,"exitCode":0}}), "unknown_outcome"),
+    ];
+    for (extra, why) in cases {
+        // On the run itself: the budget is untouched.
+        let lab = lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let root = launch(s, &root);
+        wrapper_failed(s, &root, extra.clone());
+        assert_eq!(jobs(s), 2, "{why}: nothing follows");
+        assert!(record(s, &root)["retriedBy"].is_null(), "{why}");
+        let view = recovery(&lab, &id).await;
+        assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("halted"), Some(why)), "{extra}");
+        assert_eq!(view["retry"]["scheduled"], 0, "{why}: no budget spent");
+
+        // On a retry: the budget stays what it was.
+        let lab = self::lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let root = launch(s, &root);
+        crash(s, &root);
+        let retry = launch(s, &latest(s, &id));
+        wrapper_failed(s, &retry, extra.clone());
+        assert_eq!(jobs(s), 3, "{why}: nothing follows the retry");
+        assert!(record(s, &retry)["retriedBy"].is_null());
+        let view = recovery(&lab, &id).await;
+        assert_eq!((view["haltedReason"].as_str(), &view["retry"]), (Some(why), &json!({"scheduled":1,"started":1,"max":3})), "{extra}");
+    }
+
+    // The command's own exit 1, or its own SIGSEGV: one retry each.
+    for (result, code, extra) in [("exit-code", "1", json!({"command":{"pid":42,"exitCode":1}})),
+                                  ("core-dump", "11", json!({"command":{"pid":42,"exitCode":-11}}))] {
+        let lab = lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let root = launch(s, &root);
+        let attempt = record(s, &root)["attempt"].clone();
+        let mut evidence = json!({"systemd":{"Result":result,"ExecMainStatus":code}});
+        evidence["command"] = extra["command"].clone();
+        evidence["command"]["attempt"] = attempt.clone();
+        s.update_job_evidence(root["id"].as_str().unwrap(), json!({"jobId":root["id"],"attempt":attempt,"status":"failed",
+            "reason":result,"evidence":evidence}))
+            .unwrap();
+        assert_eq!(jobs(s), 3, "{result}: one retry");
+        assert_eq!(recovery(&lab, &id).await["retry"]["scheduled"], 1);
+    }
+}
+
 #[tokio::test]
 async fn a_failed_recovery_step_still_records_the_outcome() {
     let lab = lab();
@@ -670,7 +748,7 @@ async fn a_retry_that_ends_before_it_is_seen_running_still_counts_as_started() {
     // Its start receipt and its crash arrive in one reading.
     s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],
         "status":"failed","reason":"exit-code","started":{"at":now_unix()},
-        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"}}}))
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"},"command":{"attempt":reserved["attempt"],"exitCode":1}}}))
         .unwrap();
     assert_eq!(recovery(&lab, &id).await["retry"], json!({"scheduled":2,"started":1,"max":3}));
     // One refused at launch never started its command and is not counted.

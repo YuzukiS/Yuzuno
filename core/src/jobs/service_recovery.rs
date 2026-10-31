@@ -99,22 +99,33 @@ fn end_of(job: &Value) -> End {
             _ => "launch_refused",
         }),
         Some("failed") => {
-            let systemd = &evidence["systemd"];
-            let status = systemd["ExecMainStatus"].as_str().and_then(|s| s.parse::<i64>().ok());
             let at = job["finishedAt"].clone();
-            match systemd["Result"].as_str() {
-                Some("exit-code") if status.is_some_and(|s| s != 0) => {
-                    End::Crash(json!({"kind":"exit","code":status,"jobId":job["id"],"endedAt":at}))
+            let result = evidence["systemd"]["Result"].as_str();
+            match result {
+                Some("timeout") => return End::Ended(Some("lifetime_reached")),
+                Some("oom-kill") => return End::Halted("oom"),
+                Some("exit-code" | "signal" | "core-dump") => {}
+                _ => return End::Halted("launch_refused"),
+            }
+            // The unit's main process is the host's wrapper. A crash is only
+            // the command's own exit as the wrapper recorded it for this
+            // attempt (`command`); a wrapper that failed before creating the
+            // command says at which stage (`notLaunched`). Without either,
+            // nothing shows the command crashed, so nothing is retried.
+            if let Some(stage) = evidence["notLaunched"]["stage"].as_str() {
+                return End::Halted(if stage == "inputs" { "inputs_changed" } else { "launch_refused" });
+            }
+            match (result, evidence["command"]["exitCode"].as_i64()) {
+                (Some("exit-code"), Some(code)) if code > 0 => {
+                    End::Crash(json!({"kind":"exit","code":code,"jobId":job["id"],"endedAt":at}))
                 }
-                Some("signal") => {
-                    let name = SIGNALS.iter().find(|(n, _)| Some(*n) == status).map(|(_, s)| s.to_string())
-                        .unwrap_or_else(|| status.map_or_else(|| "unknown".to_owned(), |s| format!("signal {s}")));
+                (Some("signal"), Some(code)) if code < 0 => {
+                    let name = SIGNALS.iter().find(|(n, _)| *n == -code).map(|(_, s)| s.to_string())
+                        .unwrap_or_else(|| format!("signal {}", -code));
                     End::Crash(json!({"kind":"signal","signal":name,"jobId":job["id"],"endedAt":at}))
                 }
-                Some("core-dump") => End::Crash(json!({"kind":"core_dump","jobId":job["id"],"endedAt":at})),
-                Some("timeout") => End::Ended(Some("lifetime_reached")),
-                Some("oom-kill") => End::Halted("oom"),
-                _ => End::Halted("launch_refused"),
+                (Some("core-dump"), Some(code)) if code < 0 => End::Crash(json!({"kind":"core_dump","jobId":job["id"],"endedAt":at})),
+                _ => End::Halted("unknown_outcome"),
             }
         }
         _ => End::Halted("launch_refused"),

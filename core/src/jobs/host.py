@@ -728,6 +728,21 @@ def capabilities():
             'controllers': controllers, 'python': sys.version.split()[0]}
 
 def worker(spec, folder):
+    """The unit's main process: this wrapper, not yet the command. A failure of
+    the wrapper before the command was created is recorded with its stage
+    (not-launched.json), so it is never read as the command's own exit. Once
+    Popen has returned, the command may be running: nothing then says it was
+    not started."""
+    stage = {'at': 'prepare'}
+    try:
+        return launch(spec, folder, stage)
+    except Exception as error:
+        if stage['at'] != 'started':
+            atomic(folder / 'not-launched.json', {'attempt': spec['attempt'], 'stage': stage['at'], 'at': time.time(),
+                                                   'reason': f'{type(error).__name__}: {error}'[:500]})
+        raise
+
+def launch(spec, folder, stage):
     resource = spec['resources']
     relative = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
     group = Path('/sys/fs/cgroup') / relative.lstrip('/')
@@ -750,6 +765,7 @@ def worker(spec, folder):
     atomic(folder / 'started.json', proof)
     if read(folder / 'cancel.json'):
         return 125
+    stage['at'] = 'inputs'
     current = snapshot(spec)
     if current != spec['snapshot']:
         atomic(folder / 'input-changed.json', {'reason': guard_reason(spec, current)})
@@ -763,6 +779,7 @@ def worker(spec, folder):
     if changed:
         atomic(folder / 'input-changed.json', {'reason': changed})
         return 78
+    stage['at'] = 'prepare'
     if forward:
         base = checkpoint_dir(spec)
         try:
@@ -785,8 +802,15 @@ def worker(spec, folder):
     total = 0
     log = None
     try:
-        child = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env={**spec['env'], **attempt_env(spec, folder)},
+        env = {**spec['env'], **attempt_env(spec, folder)}
+        stage['at'] = 'process'
+        child = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env=env,
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stage['at'] = 'started'
+        # This attempt's own command, apart from the wrapper (T-14): only its
+        # recorded exit is ever treated as the command's crash.
+        command_record = {'attempt': spec['attempt'], 'pid': child.pid, 'startedAt': time.time()}
+        atomic(folder / 'command.json', command_record)
         if forward:
             forward.started(child)
         while True:
@@ -810,6 +834,7 @@ def worker(spec, folder):
                 log.write(part)
                 total += len(part)
         code = forward.wait(child) if forward else child.wait()
+        atomic(folder / 'command.json', {**command_record, 'exitCode': code, 'endedAt': time.time()})
     finally:
         if log:
             os.fsync(log.fileno())
@@ -871,10 +896,13 @@ def result(spec, folder, status, evidence, reason=None):
     # recorded first: the collector's or Core's reconciliation's. Only this
     # attempt's marker, and never on an unknown or interrupted outcome: the
     # marker explains an ending, it does not make one.
-    marker = read(folder / 'deadline.json')
-    if (status in ENDED_BY_UNIT and marker and marker.get('attempt') == spec['attempt']
-            and isinstance(evidence, dict) and not evidence.get('deadline')):
-        evidence = {**evidence, 'deadline': marker}
+    # The command's own start and exit (command.json) and a wrapper failure
+    # before it (not-launched.json) go with it the same way.
+    for key, name in (('deadline', 'deadline.json'), ('command', 'command.json'), ('notLaunched', 'not-launched.json')):
+        record = read(folder / name) if status in ENDED_BY_UNIT else None
+        if (record and record.get('attempt') == spec['attempt']
+                and isinstance(evidence, dict) and not evidence.get(key)):
+            evidence = {**evidence, key: record}
     value = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'status': status, 'reason': reason, 'finishedAtUnix': time.time(),
              'started': read(folder / 'started.json'), 'evidence': evidence,

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -309,5 +310,110 @@ class SharedEndTests(unittest.TestCase):
         collected = host.result(self.spec, self.folder, 'failed', {'launch':{}, 'systemd':crashed, 'pids':None, 'deadline':None}, 'signal')
         self.assertEqual(set(collected['evidence']), {'launch','systemd','pids','deadline'})
         self.assertIsNone(collected['evidence']['deadline'])
+
+class WorkerLaunchTests(unittest.TestCase):
+    """The unit's main process is the host's wrapper, not the command (T-14):
+    what it records of the command it creates, with real snapshots and a real
+    Popen. The command is a sentinel that leaves ran.txt whenever it starts."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.folder = root / 'job'
+        self.work = root / 'work'
+        self.folder.mkdir()
+        self.work.mkdir()
+        (self.work / 'config.txt').write_text('original\n')
+        self.spec = {'id':'one','attempt':'attempt','bootId':host.boot_id(),'unit':'worker','supervisorUnit':'collector',
+                     'timeoutSeconds':600,'resources':{'cpuMillis':100,'memoryMiB':64,'swapMiB':0},
+                     'cwd':str(self.work),'env':{},'guardGit':False,'inputs':['config.txt'],
+                     'argv':['/bin/sh','-c','echo ran >> ran.txt; exit 3']}
+        self.spec['snapshot'] = host.snapshot(self.spec)
+
+    def tearDown(self): self.tmp.cleanup()
+
+    def run_worker(self):
+        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','pids.max':str(host.TASKS_MAX)}
+        class Fake(type(Path())):
+            def read_text(self, *args, **kwargs):
+                if str(self) == '/proc/self/cgroup': return '0::/fake\n'
+                if str(self.parent) == '/sys/fs/cgroup/fake' and self.name in limits: return limits[self.name] + '\n'
+                return super().read_text(*args, **kwargs)
+        with patch.object(host,'Path',Fake), patch.object(host,'pids_snapshot',return_value=None):
+            return host.worker(self.spec, self.folder)
+
+    def recorded(self):
+        """The outcome the host records afterwards for the unit's exit-code."""
+        return host.result(self.spec, self.folder, 'failed', {'systemd':{'Result':'exit-code','ExecMainStatus':'1'}}, 'exit-code')
+
+    def assert_never_launched(self, stage, words):
+        with self.assertRaises(Exception):
+            self.run_worker()
+        self.assertFalse((self.work/'ran.txt').exists(), 'the command never ran')
+        record = host.read(self.folder/'not-launched.json')
+        self.assertEqual((record['attempt'], record['stage']), (self.spec['attempt'], stage))
+        self.assertIn(words, record['reason'])
+        self.assertIsNone(host.read(self.folder/'command.json'))
+        outcome = self.recorded()
+        self.assertEqual(outcome['evidence']['notLaunched'], record)
+        self.assertNotIn('command', outcome['evidence'])
+
+    def test_an_input_that_became_a_directory_never_starts_the_command(self):
+        (self.work/'config.txt').unlink()
+        (self.work/'config.txt').mkdir()
+        self.assert_never_launched('inputs', 'Guarded inputs must be files')
+
+    def test_an_input_grown_past_the_guard_never_starts_the_command(self):
+        (self.work/'config.txt').write_bytes(b'x' * (3 * 1024 * 1024))
+        self.assert_never_launched('inputs', '2 MiB')
+
+    def test_a_git_head_that_cannot_be_read_never_starts_the_command(self):
+        def git(*args):
+            subprocess.run(['git','-C',str(self.work),*args],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        git('init','-q'); git('add','config.txt')
+        git('-c','user.name=Lab','-c','user.email=lab@example.invalid','commit','-qm','fixture')
+        self.spec['guardGit'] = True
+        self.spec['snapshot'] = host.snapshot(self.spec)
+        (self.work/'.git'/'HEAD').write_text('ref: refs/heads/no-such-branch\n')
+        self.assert_never_launched('inputs', 'RuntimeError')
+
+    def test_a_command_that_cannot_be_created_is_recorded_as_never_started(self):
+        self.spec['argv'] = [str(self.work/'no-such-command')]
+        self.assert_never_launched('process', 'FileNotFoundError')
+
+    def test_the_commands_own_exit_is_recorded_once_it_ran(self):
+        self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'ran.txt').read_text(), 'ran\n')
+        command = host.read(self.folder/'command.json')
+        self.assertEqual((command['attempt'], command['exitCode']), (self.spec['attempt'], 3))
+        self.assertIsNone(host.read(self.folder/'not-launched.json'))
+        self.assertEqual(self.recorded()['evidence']['command'], command)
+
+    def test_the_commands_own_signal_is_recorded_once_it_ran(self):
+        self.spec['argv'] = ['/bin/sh','-c','echo ran >> ran.txt; kill -SEGV $$']
+        with patch.object(host.os,'kill') as kill:
+            self.assertEqual(self.run_worker(), -signal.SIGSEGV)
+            kill.assert_called_once_with(os.getpid(), signal.SIGSEGV)
+        self.assertEqual(host.read(self.folder/'command.json')['exitCode'], -signal.SIGSEGV)
+
+    def test_once_popen_returned_a_failed_receipt_never_claims_the_command_did_not_start(self):
+        real = host.atomic
+        def failing(path, data):
+            if Path(path).name == 'command.json':
+                raise OSError(28, 'No space left on device')
+            return real(path, data)
+        with patch.object(host,'atomic',side_effect=failing), self.assertRaises(OSError):
+            self.run_worker()
+        self.assertIsNone(host.read(self.folder/'not-launched.json'), 'the command may have started')
+        evidence = self.recorded()['evidence']
+        self.assertNotIn('notLaunched', evidence)
+        self.assertNotIn('command', evidence)
+
+    def test_proof_from_another_attempt_or_on_an_unknown_outcome_is_not_this_commands_exit(self):
+        host.atomic(self.folder/'command.json', {'attempt':'an-earlier-attempt','pid':42,'exitCode':1})
+        self.assertNotIn('command', self.recorded()['evidence'])
+        (self.folder/'result.json').unlink()
+        host.atomic(self.folder/'command.json', {'attempt':self.spec['attempt'],'pid':42,'exitCode':1})
+        unknown = host.result(self.spec, self.folder, 'unknown', {'systemd':{}}, 'No conclusive terminal evidence')
+        self.assertNotIn('command', unknown['evidence'])
 
 if __name__=='__main__':unittest.main()

@@ -32,7 +32,11 @@ TERMINAL = {'succeeded', 'failed', 'cancelled', 'rejected', 'interrupted'}
 # "serve", "exit <seconds> <code>" or "segv <seconds>".
 APP = '''import http.server, os, signal, sys, threading, time
 port = int(sys.argv[1])
-mode = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mode.txt')).read().split()
+here = os.path.dirname(os.path.abspath(__file__))
+# A sentinel: one line for every time the command itself really starts.
+with open(os.path.join(here, 'ran.log'), 'a') as ran:
+    ran.write('ran\\n')
+mode = open(os.path.join(here, 'mode.txt')).read().split()
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
@@ -344,6 +348,36 @@ def main():
         refused('/services/' + short.id + '/stop', {'requestId': str(uuid.uuid4()), 'expectedJobId': taken['job']['jobId'],
                 'expectedIntentRevision': taken['lifecycle']['intent']['revision']}, 'stale_service_state')
         check('A run that takes over does not inherit recovery, and an older Stop never touches it')
+
+        # 10. A guarded input that can no longer be checked while a retry waits
+        # (now a directory, or past the 2 MiB guard): the wrapper fails before
+        # creating the command, which never runs, and nothing follows.
+        broken = {'directory': Lab('Input directory'), 'oversize': Lab('Input oversize')}
+        waiting = {}
+        for name, lab in broken.items():
+            lab.start(lab.view(), 900, bounded=True)
+            waiting[name] = lab.until(lambda v: recovery(v)['state'] == 'waiting')
+        for name, lab in broken.items():
+            config = lab.work / 'config.txt'
+            if name == 'directory':
+                config.unlink()
+                config.mkdir()
+            else:
+                config.write_bytes(b'x' * (3 * 1024 * 1024))
+        for name, lab in broken.items():
+            runs = (lab.work / 'ran.log').read_text().count('ran')
+            retry = waiting[name]['job']['jobId']
+            ended = terminal(retry, 90)
+            evidence = ended['result']['evidence']
+            assert (evidence.get('notLaunched') or {}).get('stage') == 'inputs', (name, ended['result'])
+            assert 'command' not in evidence, (name, evidence)
+            halted = lab.until(lambda v: recovery(v)['state'] == 'halted')
+            assert recovery(halted)['haltedReason'] == 'inputs_changed', (name, recovery(halted))
+            assert recovery(halted)['retry']['scheduled'] == 1, (name, recovery(halted))
+            assert (lab.work / 'ran.log').read_text().count('ran') == runs, (name, 'the retry\'s command never ran')
+            assert job(retry).get('retriedBy') is None and lab.view()['job']['jobId'] == retry, (name, 'nothing follows')
+            REPORT.setdefault('notLaunched', {})[name] = {'jobId': retry, 'status': ended['status'], 'notLaunched': evidence['notLaunched']}
+        check('A guarded input that became a directory or outgrew the guard stops a retry before its command; nothing follows')
         REPORT['passed'] = True
     finally:
         stop_core()
