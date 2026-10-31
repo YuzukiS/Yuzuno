@@ -26,6 +26,7 @@ mod resource_tests;
 mod remote_tests;
 mod runs;
 pub(crate) mod store;
+pub(crate) mod service_control;
 #[cfg(test)]
 mod pause_tests;
 #[cfg(test)]
@@ -183,6 +184,9 @@ pub(crate) struct Submit {
     /// set at submit, never part of the request (as `requested_machine`).
     #[serde(skip)]
     service_link: Option<crate::service_jobs::Link>,
+    /// GUI lifecycle CAS only; never deserialized from job_submit or a retained spec.
+    #[serde(skip)]
+    service_control: Option<service_control::StartGuard>,
 }
 
 /// A command's own stop protocol: on the user's stop its wrapper sends it
@@ -1427,7 +1431,8 @@ const SERVICE: &str = "The web service this command serves on this Core's host, 
     the Project's services list names the Job serving it, whether that Job's own listener answers and, with healthPath, its \
     health: name and port (and path, default /) for a new service of the task's Project, or serviceId to \
     serve an existing one anew, which is how a service is restarted: once its earlier Job has ended (cancel it first; one whose \
-    outcome is unknown still counts as serving). healthPath: a path whose HTTP 2xx answer means the app is healthy; without it no \
+    outcome is unknown or still holds a reservation still counts as serving). If the user chose to keep the service stopped, \
+    job_submit refuses; only an explicit user start in the service controls can clear that choice. healthPath: a path whose HTTP 2xx answer means the app is healthy; without it no \
     health is shown. An ordinary Job otherwise: the same budget, slot and timeoutSeconds, stopped by its own cancel, never \
     restarted automatically. Not with machineId, not exclusive (an exclusive Job would wait for it to end), not with checkpoint, \
     not in a run's stages.";
