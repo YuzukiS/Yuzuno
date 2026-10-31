@@ -130,6 +130,8 @@ async function serve(route) {
     "/api/workspace": () => ({ workspace: { id: "ws" }, projects, projectUsage: { p1: { agents: 1, tasks: 0 } }, agents: [agent], runtime: { connected: true }, defaultCwd: "/fixture" }),
     "/api/home": home,
     "/api/agents/sora": () => ({ agent, pending: [], messageReceipts: [], artifacts: [], turns: [] }),
+    // Where another browser left the Agent's conversation (T-170): nowhere.
+    "/api/agents/sora/reading": () => ({ handoff: null }),
     "/api/machine-load": machineLoad,
     "/api/projects/p1/repo-activity": () => ({ observedAt: iso(-MIN), repositories: [] }),
     "/api/updates": () => unmanagedUpdates,
