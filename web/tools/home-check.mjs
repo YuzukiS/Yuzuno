@@ -956,12 +956,12 @@ try {
     return { body: write.body, marks };
   });
 
-  await step("4 an option posts its id as choice and the ask then shows in short as Replied · waiting; Defer on an open ask posts {key, until}; free text posts the text", async () => {
+  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then shows in short as Replied · waiting; Defer on an open ask posts {key, until}; free text posts the text", async () => {
     const release = card("p1", "release");
     await release.getByRole("button", { name: "Ship today", exact: true }).click();
     const option = await until("the option reply", () => writesTo(/\/brief\/reply$/)[0]);
     assert.equal(option.path, "/api/projects/p1/brief/reply");
-    assert.deepEqual({ ...option.body, clientMessageId: typeof option.body.clientMessageId }, { key: "release", agentId: "kumo", text: "", choice: "ship", clientMessageId: "string" });
+    assert.deepEqual({ ...option.body, clientMessageId: typeof option.body.clientMessageId }, { key: "release", agentId: "kumo", text: "", choice: "ship", clientMessageId: "string", askVersion: 2, workspaceId: "ws" });
     await release.locator(".home-ask-replied").waitFor();
     assert.match(await release.locator(".home-ask-replied").innerText(), /Replied · waiting for Kumo\s*Ship today/);
     // T-132: answered, it is Kumo's to act on: in short, no Defer, the question folded away.
@@ -983,7 +983,7 @@ try {
     await naming.getByRole("textbox", { name: "Reply to Name for the brief tool" }).fill("Call it brief_write.");
     await naming.getByRole("button", { name: "Send", exact: true }).click();
     const text = await until("the text reply", () => writesTo(/\/brief\/reply$/)[1]);
-    assert.deepEqual({ ...text.body, clientMessageId: typeof text.body.clientMessageId }, { key: "naming", agentId: "mori", text: "Call it brief_write.", clientMessageId: "string" });
+    assert.deepEqual({ ...text.body, clientMessageId: typeof text.body.clientMessageId }, { key: "naming", agentId: "mori", text: "Call it brief_write.", clientMessageId: "string", askVersion: 1, workspaceId: "ws" });
     assert.notEqual(text.body.clientMessageId, option.body.clientMessageId);
     await naming.locator(".home-ask-replied").waitFor();
     await until("the deferral note to go once replied", async () => (await naming.getByText(/Deferred until/).count()) === 0);
