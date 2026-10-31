@@ -1,8 +1,10 @@
+import { api } from "../../api";
 import { strings, type Language } from "../../i18n";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import type { TimeDisplay } from "../../time-preferences";
 import type { Section, SectionAttachment } from "../types";
 import { briefText } from "./brief-text";
+import { researchDeskMarkdown, type ResearchCopyWords, type ResearchResolved } from "./research-copy";
 import {
   CHART_TYPES,
   formatTime,
@@ -20,6 +22,8 @@ import {
   type PlanProps,
   type SourcesProps,
   type AttachmentsProps,
+  type ResearchDeskProps,
+  researchPath,
 } from "./brief-catalog";
 
 // T-9: a Home report as Markdown to paste elsewhere, written from the
@@ -61,6 +65,34 @@ const words = strings({
 
 /** "&amp;" or "&#38;" would be read back as one character: keep the "&" literal. */
 const entities = (text: string) => text.replace(/&(?=#?[A-Za-z0-9]+;)/g, "\\&");
+/** A research desk's words in Chinese (research-copy.ts gives English), in
+ * the card's own vocabulary (research-text.ts). */
+const researchZh: ResearchCopyWords = {
+  claims: "主张",
+  status: { supported: "已支持", conditional: "有条件成立", unsupported: "未获支持", open: "待定" },
+  canSay: "可以说",
+  cannotSay: "不能说",
+  kind: { criterion: "统计判据", interpretation: "作者解释", exploratory: "探索性观察" },
+  conditions: "只在这些条件下成立",
+  paper: "论文里的位置",
+  row: "行",
+  value: "值",
+  interval: "区间",
+  scaled: (scale) => `显示的值是文件中的 × ${scale}。`,
+  origin: "取自",
+  read: (file) => `快照 ${file}`,
+  provided: "Agent 提供",
+  notRead: "未读取",
+  sources: "来源",
+  definitions: "分析定义",
+  version: (version) => `v${version}`,
+  plans: "候选下一步（只是预览，什么都没有运行）",
+  previewOnly: "计划能否按所述执行尚未核实。",
+  question: "疑问",
+  produces: "会得到",
+  notProduced: "不会得到",
+};
+
 /** A table cell or a heading on one line: a table pipe, and "<" (which would
  * start an HTML tag the renderer drops), kept literal. */
 const inline = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").replace(/[|<]/g, "\\$&").trim());
@@ -87,7 +119,10 @@ const link = (text: unknown, url: string | undefined): string | null => {
 };
 const axisName = (axis: ChartProps["x"]) => `${axis.label}${axis.unit ? ` (${axis.unit})` : ""}`;
 
-export function sectionMarkdown(section: Section, language: Language, time: TimeDisplay): string {
+/** research: Core's numbers for each research desk, by element key, read for
+ * this section version; a desk without one copies its snapshot numbers as
+ * not read. */
+export function sectionMarkdown(section: Section, language: Language, time: TimeDisplay, research?: Record<string, ResearchResolved | undefined>): string {
   const w = words(language);
   const b = briefText(language);
   const out: string[] = [`# ${inline(section.title)}`];
@@ -103,8 +138,10 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
   const heading = (depth: number, title?: string) => (title ? [`${"#".repeat(Math.min(6, depth))} ${inline(title)}`] : []);
   const seen = new Set<string>();
 
-  const leaf = (part: BriefElement, depth: number): string[] => {
+  const leaf = (part: BriefElement, depth: number, key: string): string[] => {
     switch (part.type) {
+      case "ResearchDesk":
+        return [researchDeskMarkdown(part.props as ResearchDeskProps, research?.[key], language === "zh-Hans" ? researchZh : undefined).trim()];
       case "Markdown":
         return [String((part.props as { text: string }).text).trim()];
       case "Math": {
@@ -202,7 +239,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
       return inner.length ? [...heading(depth, title), ...inner] : [];
     }
     try {
-      return leaf(part, depth).filter((block) => block.trim().length > 0);
+      return leaf(part, depth, key).filter((block) => block.trim().length > 0);
     } catch {
       // A part Core accepted but this copy can't read is left out, as the page leaves it out.
       return [];
@@ -210,4 +247,33 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
   };
   out.push(...walk(spec.root, 2));
   return out.join("\n\n") + "\n";
+}
+
+/** Core's numbers for one research desk, read for exactly the version being
+ * copied. A failed read, or an answer for another section or version, is no
+ * read: those numbers copy as not read, never another version's. */
+async function readResearch(projectId: string, section: Section, key: string): Promise<ResearchResolved | undefined> {
+  try {
+    const value = (await api<unknown>(researchPath(projectId, section.key, key, section.version))) as
+      { key?: unknown; version?: unknown; values?: unknown; sources?: unknown } | null;
+    const object = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v);
+    if (!object(value) || value!.version !== section.version || (value!.key !== undefined && value!.key !== section.key) ||
+      !object(value!.values) || !object(value!.sources)) return undefined;
+    return value as ResearchResolved;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What Copy report writes. A report with research desks reads their numbers
+ * first: the button writes that promise through ClipboardItem, so the
+ * clipboard write still starts in the click (Safari). Without a desk it is
+ * the text itself. */
+export function reportMarkdown(section: Section, projectId: string, language: Language, time: TimeDisplay): string | Promise<string> {
+  const keys = isBriefSpec(section.body)
+    ? Object.entries(section.body.elements).filter(([, part]) => part?.type === "ResearchDesk").map(([key]) => key)
+    : [];
+  if (!keys.length) return sectionMarkdown(section, language, time);
+  return Promise.all(keys.map((key) => readResearch(projectId, section, key))).then((reads) =>
+    sectionMarkdown(section, language, time, Object.fromEntries(keys.map((key, index) => [key, reads[index]]))));
 }
