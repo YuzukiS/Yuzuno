@@ -107,8 +107,8 @@ function mount() {
       if (core.gate) await core.gate;
       return core.readFails ? { status: 500, body: { error: "Core could not read services" } } : { body: { services: [structuredClone(core.service)] } };
     }
-    const action = request.url.match(/^\/api\/services\/s1\/(stop|start|open|close)$/)?.[1];
-    if (action === "stop" || action === "start") return core.control(action, request.body);
+    const action = request.url.match(/^\/api\/services\/s1\/(stop|start|recovery|open|close)$/)?.[1];
+    if (action === "stop" || action === "start" || action === "recovery") return core.control(action, request.body);
     if (action === "open") {
       // Opening again may give the service's way another port; the list says it from then on.
       core.service = { ...core.service, connection: { ...core.service.connection, state: "available", localPort: core.openPort } };
@@ -184,16 +184,15 @@ test("a stop confirmation keeps the run it opened for: a newer run read meanwhil
   page.core.service = service({ job: job({ jobId: "j2", attempt: "a2" }),
     intent: intent(1, { desiredState: "running", requestedBy: { kind: "user" }, appliesToJobId: "j2", sourceJobId: "j1", requestId: "r-other" }) });
   await page.refresh(dialog);
-  await until(() => /changed after this confirmation opened/.test(dialog.textContent), "said to have changed");
-  assert.match(dialog.querySelector(".service-control-reference").textContent, /j1/, "what it opened for stays shown");
-  const confirm = page.button("Stop service", dialog);
-  assert.ok(confirm.disabled, "its confirm is off");
-  page.click(confirm);
+  await until(() => /The service has a newer run\. Review it before stopping; this stop wasn't carried out\./.test(dialog.textContent), "said to have changed");
+  // Only the refusal: what this stop would have done no longer holds.
+  assert.equal(page.button("Stop service", dialog), undefined, "no confirm to press");
+  assert.doesNotMatch(dialog.textContent, /ends the linked run|Keep it stopped/, "no description that no longer holds");
   await tick(60);
   assert.equal(page.posts("stop").length, 0, "nothing stopped");
   // Reviewing takes the current run, and that one is what is sent.
   page.click(page.button("Review the current run", dialog));
-  await until(() => /j2/.test(dialog.querySelector(".service-control-reference").textContent), "the current run");
+  await until(() => /j2/.test(dialog.querySelector(".service-control-reference")?.textContent ?? ""), "the current run");
   page.core.control = (action, body) => ({ body: receipt(action, body, "j2", "cancelling") });
   page.click(page.button("Stop service", dialog));
   const [sent] = await until(() => page.posts("stop").length && page.posts("stop"), "the stop");
@@ -282,9 +281,9 @@ test("a definite refusal sends nothing more: the current run must be reviewed fi
   page.click(page.button("Stop service…", page.lifecycle()));
   const dialog = await until(page.dialog, "the confirmation");
   page.click(page.button("Stop service", dialog));
-  await until(() => /stale_service_state/.test(dialog.textContent), "the refusal said");
-  assert.match(dialog.textContent, /changed after this confirmation opened/);
-  assert.ok(page.button("Stop service", dialog).disabled, "no second send of a refused request");
+  await until(() => /The service has a newer run\. Review it before stopping; this stop wasn't carried out\./.test(dialog.textContent), "the refusal said");
+  assert.equal(page.button("Stop service", dialog), undefined, "no second send of a refused request");
+  assert.doesNotMatch(dialog.textContent, /ends the linked run|Keep it stopped/, "only the refusal");
   assert.equal(page.button("Retry the same request", dialog), undefined, "a refusal is no unknown outcome");
   assert.ok(page.button("Review the current run", dialog));
   assert.equal(page.posts("stop").length, 1);
@@ -457,6 +456,225 @@ test("the services list: opening a managed service keeps its run details, and it
   await page.refresh(dialog);
   assert.ok(list.querySelector(".services-open"), "the open choice outlasts the next read");
   assert.match(dialog.querySelector('[data-fact="browser"]').textContent, /^This browserConnection confirmedChecked \S/);
+  assert.deepEqual(page.errors, []);
+});
+
+// Bounded recovery as Core reports it (Dev 5's contract v1; design v3.4 §3).
+const armedIntent = intent(1, { desiredState: "running", recoveryMode: "bounded", requestedAt: "2026-10-31T00:00:00Z",
+  requestedBy: { kind: "user" }, appliesToJobId: "j1", sourceJobId: "j0", requestId: "r-armed" });
+const recovery = (extra = {}) => ({ mode: "bounded", state: "armed", launch: "running", queueReason: null,
+  retry: { scheduled: 0, started: 0, max: 3 }, schedule: [30, 120, 600], deadlineAt: "2026-10-31T04:00:00Z", retryJobId: null,
+  notBefore: null, lastFailure: null, haltedReason: null, haltedAt: null,
+  attempts: [{ retry: 0, jobId: "j1", startedAt: "2026-10-31T00:00:00Z", endedAt: null, outcome: null }],
+  observedAt: "2026-10-31T00:30:00Z", ...extra });
+const withRecovery = (s, block, extra = {}) => ({ ...s, lifecycle: { ...s.lifecycle, recovery: block, ...extra } });
+// The window after two crashes: j1 and retry 1 (j2) exited 1; retry 2 (j3)
+// waits for its earliest time, two minutes after the last failure.
+const history = [{ retry: 0, jobId: "j1", startedAt: "2026-10-31T00:00:00Z", endedAt: "2026-10-31T00:20:00Z", outcome: "exit:1" },
+  { retry: 1, jobId: "j2", startedAt: "2026-10-31T00:20:31Z", endedAt: "2026-10-31T00:40:00Z", outcome: "exit:1" }];
+const lastFailure = { kind: "exit", code: 1, jobId: "j2", endedAt: "2026-10-31T00:40:00Z" };
+const retryJob = (extra = {}) => job({ jobId: "j3", status: "queued", reserved: false, startedAt: null, attempt: null, owner: "unknown",
+  ownerCheckedAt: null, ...extra });
+const windowAt = (run, block, extra = {}) => withRecovery(service({ job: run, intent: armedIntent, ...extra }), recovery({
+  retry: { scheduled: 2, started: 1, max: 3 }, retryJobId: "j3", lastFailure,
+  attempts: [...history, { retry: 2, jobId: "j3", startedAt: run.startedAt ?? null, endedAt: null, outcome: null }], ...block }));
+const waiting = (block = {}) => windowAt(retryJob(), { state: "waiting", launch: "queued", queueReason: "Waiting for shared machine capacity",
+  notBefore: "2026-10-31T00:42:00Z", observedAt: "2026-10-31T00:40:01Z", ...block });
+const recoveryText = (page) => [...(page.lifecycle()?.querySelectorAll(".service-recovery-intent p span") ?? [])].map((line) => line.textContent);
+
+test("bounded recovery is chosen on each start, unticked; only a ticked start asks for it", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const ended = (jobId) => withRecovery(service({ job: { ...job({ jobId }), status: "failed", canStop: false, reserved: false, finishedAt: "2026-10-31T00:40:00Z" },
+    intent: intent(1, { desiredState: "running", requestedBy: { kind: "user" }, appliesToJobId: jobId, requestId: "r-x" }), canStart: true }),
+    recovery({ mode: "manual", state: "off", launch: null, retry: { scheduled: 0, started: 0, max: 0 }, attempts: [] }));
+  page.core.service = ended("j1");
+  const started = [];
+  page.core.control = (action, body) => {
+    started.push(body);
+    const answer = receipt(action, body, `j${started.length + 1}`, "queued");
+    answer.intent.recoveryMode = body.recovery ? "bounded" : "manual";
+    page.core.service = ended(`j${started.length + 1}`);
+    page.core.service.lifecycle.intent = answer.intent;
+    return { body: answer };
+  };
+  page.window.portal.open(target(page.core.service));
+  await until(page.lifecycle, "the service panel");
+  assert.deepEqual(recoveryText(page), [], "a manual run says nothing of recovery");
+  for (const tick_ of [false, true, false]) {
+    page.click(page.button("Start again…", page.lifecycle()));
+    const dialog = await until(page.dialog, "the start confirmation");
+    const option = dialog.querySelector(".service-recovery-option input");
+    assert.equal(option.checked, false, "unticked on every start");
+    assert.match(dialog.querySelector(".service-recovery-option").textContent,
+      /^Retry automatically after a failureAt most 3 times, after 30 seconds, 2 minutes and 10 minutes; shares this run's end time; never after a stop, the end time or a Core restart$/);
+    assert.match(dialog.textContent, /Manual recovery by default: unticked, nothing starts again after a failure/);
+    if (tick_) { page.click(option); await until(() => option.checked, "ticked"); }
+    page.click(page.button("Start one run", dialog));
+    await until(() => !page.dialog() && /The request was recorded\./.test(page.lifecycle().textContent), "the start recorded");
+  }
+  assert.deepEqual(started.map((body) => body.recovery ?? null), [null, { mode: "bounded" }, null]);
+  assert.deepEqual(Object.keys(started[0]).sort(), ["expectedIntentRevision", "expectedJobId", "requestId", "sourceJobId", "timeoutSeconds"]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a waiting retry: this round hasn't started, the earliest time is no promise, and both stop and opt-out say what they cancel", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.core.service = waiting();
+  page.window.portal.open(target(page.core.service));
+  await until(() => page.headline() === "Stopped; an automatic retry follows", "the waiting retry");
+  assert.match(page.lifecycle().querySelector(".service-lifecycle-heading p").textContent,
+    /^The last run exited with code 1 \([^)]+\)\. The preview is available once this retry runs\.$/);
+  assert.match(recoveryText(page)[0], /^Automatic retry 2 of 3 · waiting · tried no earlier than [^·]+ · in about 2 min$/);
+  assert.doesNotMatch(page.lifecycle().textContent, /starts at|will start|soon/i, "no promised start");
+  assert.equal(page.fact("process"), "ProcessNot started this roundWaiting to retry");
+  assert.match(page.lifecycle().querySelector(".service-lifecycle-deadline").textContent, /Shared end time; it stops then, and no new run window opens$/);
+  assert.match(page.panel().querySelector(".portal-idle").textContent, /^Waiting for an automatic retry/);
+  assert.match(page.lifecycle().querySelector(".service-recovery-off").textContent, /^Turn off automatic retryCancels the waiting retry; the service stays stopped$/);
+  assert.match(page.lifecycle().querySelector(".service-recovery-details").textContent, /2 scheduled · 1 started · at most 3/);
+  assert.equal(page.lifecycle().querySelectorAll(".service-attempts li").length, 3);
+  assert.equal(page.button("Start again…", page.lifecycle()), undefined, "no start while a retry is queued");
+  // Past its earliest time it is queued with Jobs' own reason, never "soon".
+  page.core.service = waiting({ observedAt: "2026-10-31T00:42:20Z" });
+  await page.refresh();
+  await until(() => /past [^,]+, queued: Waiting for shared machine capacity$/.test(recoveryText(page)[0] ?? ""), "overdue");
+  // Stop: no process runs, and the waiting retry is cancelled with it.
+  page.click(page.button("Stop service…", page.lifecycle()));
+  const dialog = await until(page.dialog, "the stop confirmation");
+  assert.match(dialog.textContent, /No process is running now; stopping only changes what happens next\./);
+  assert.match(dialog.textContent, /This also cancels the waiting automatic retry \(tried no earlier than [^)]+\); nothing starts automatically afterwards\./);
+  assert.doesNotMatch(dialog.textContent, /disconnects its page/);
+  page.click(page.button("Keep running", dialog));
+  await until(() => !page.dialog(), "closed");
+  // Opting out needs no confirmation; it names the retry it cancels.
+  page.core.control = (action, body) => {
+    const answer = { serviceId: "s1", requestId: body.requestId, action, jobId: "j3", status: "cancelled", cancelledRetryJobId: "j3",
+      intent: intent(2, { desiredState: "running", requestedAt: "2026-10-31T00:43:00Z", requestedBy: { kind: "user" }, appliesToJobId: "j3",
+        sourceJobId: "j0", requestId: body.requestId }) };
+    page.core.service = windowAt(retryJob({ status: "cancelled", canStop: false, finishedAt: "2026-10-31T00:43:00Z" }),
+      { mode: "manual", state: "off", launch: null, haltedReason: "opted_out", haltedAt: "2026-10-31T00:43:00Z" }, { intent: answer.intent, canStart: true });
+    return { body: answer };
+  };
+  page.click(page.button("Turn off automatic retry", page.lifecycle()));
+  const [sent] = await until(() => page.posts("recovery").length && page.posts("recovery"), "the opt-out");
+  assert.deepEqual({ ...sent.body, requestId: typeof sent.body.requestId },
+    { requestId: "string", expectedJobId: "j3", expectedIntentRevision: 1, mode: "manual" });
+  await until(() => /Automatic retry is off\. Runtime facts below still come from Core\./.test(page.lifecycle().textContent), "the opt-out recorded");
+  await until(() => recoveryText(page)[0] === "You turned off automatic retry", "said as the user's");
+  assert.equal(page.fact("process"), "ProcessDidn't start this roundPort ownership is not confirmed");
+  assert.equal(page.button("Turn off automatic retry", page.lifecycle()), undefined);
+  assert.ok(page.button("Start again…", page.lifecycle()), "manual from here");
+  assert.equal(page.posts("stop").length, 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a stop from a reading before an automatic retry still stops the window; Core answers for its current Job", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.core.service = withRecovery(service({ job: job(), intent: armedIntent }), recovery());
+  page.window.portal.open(target(page.core.service));
+  await until(() => recoveryText(page)[0] === "Automatic retry is on · 3 left", "armed");
+  assert.match(page.lifecycle().querySelector(".service-recovery-off").textContent, /This round continues; no automatic retries after it$/);
+  page.click(page.button("Stop service…", page.lifecycle()));
+  const dialog = await until(page.dialog, "the stop confirmation");
+  assert.match(dialog.textContent, /This applies to the whole automatic-retry period: this run and any later retries stop/);
+  // Meanwhile j1 crashed twice and retry 2 waits: the revision is the same.
+  page.core.service = waiting();
+  await page.refresh(dialog);
+  assert.ok(!page.button("Stop service", dialog).disabled, "still this window's stop");
+  page.core.control = (action, body) => {
+    page.core.service = windowAt(retryJob({ status: "cancelled", canStop: false, finishedAt: "2026-10-31T00:41:00Z" }),
+      { state: "halted", launch: null, haltedReason: "user_stop", haltedAt: "2026-10-31T00:41:00Z" },
+      { intent: userStopped(2, body.requestId), canStart: true });
+    page.core.service.lifecycle.intent.appliesToJobId = "j3";
+    const answer = receipt(action, body, "j3", "cancelled");
+    return { body: answer };
+  };
+  page.click(page.button("Stop service", dialog));
+  const [sent] = await until(() => page.posts("stop").length && page.posts("stop"), "the stop");
+  assert.deepEqual([sent.body.expectedJobId, sent.body.expectedIntentRevision], ["j1", 1], "as the confirmation opened");
+  await until(() => !page.dialog() && /The request was recorded\./.test(page.lifecycle().textContent), "recorded for j3");
+  await until(() => recoveryText(page)[0] === "You stopped the service; automatic retry is off", "the window's end");
+  assert.equal(page.headline(), "Stopped as you requested");
+  assert.doesNotMatch(page.lifecycle().textContent, /Your choice to keep it stopped is recorded\./, "said once");
+  assert.equal(page.button("Retry the same request"), undefined);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a retry in launch preparation: a stop may let it run briefly; opting out keeps this round", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.core.service = windowAt(retryJob({ status: "starting", reserved: true }), { state: "retry", launch: "starting", notBefore: "2026-10-31T00:42:00Z" });
+  page.window.portal.open(target(page.core.service));
+  await until(() => page.headline() === "Automatic retry 2 is preparing to start", "starting");
+  assert.deepEqual(recoveryText(page), ["Automatic retry 2 of 3 is preparing to start"]);
+  assert.match(page.panel().querySelector(".portal-idle").textContent, /^Preparing an automatic retry/);
+  assert.match(page.lifecycle().querySelector(".service-recovery-off").textContent, /This round continues; no automatic retries after it$/);
+  page.click(page.button("Stop service…", page.lifecycle()));
+  const dialog = await until(page.dialog, "the stop confirmation");
+  assert.match(dialog.textContent, /This also stops this retry; nothing starts automatically afterwards\. The retry being prepared may run briefly before it stops\./);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a refused opt-out sends nothing more and offers no resend", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.core.service = waiting();
+  page.core.control = () => ({ status: 400, body: { error: "recovery_off: automatic retry is not on for this service" } });
+  page.window.portal.open(target(page.core.service));
+  await until(() => page.lifecycle() && page.button("Turn off automatic retry", page.lifecycle()), "the opt-out");
+  page.click(page.button("Turn off automatic retry", page.lifecycle()));
+  await until(() => /recovery_off/.test(page.lifecycle().textContent), "the refusal said");
+  assert.equal(page.button("Retry the same request"), undefined, "a refusal is no unknown outcome");
+  await tick(80);
+  assert.equal(page.posts("recovery").length, 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test("each end of the window is said, with the current Job's own line after a Core restart", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const ended = (extra) => retryJob({ canStop: false, finishedAt: "2026-10-31T00:44:00Z", ...extra });
+  const unknownRun = (extra = {}) => retryJob({ status: "unknown", reserved: true, canStop: true, startedAt: "2026-10-31T00:42:05Z", ...extra });
+  const cases = [
+    ["exhausted", windowAt(ended({ status: "failed", startedAt: "2026-10-31T00:42:05Z" }), { state: "exhausted", launch: null, retry: { scheduled: 3, started: 3, max: 3 } }, { canStart: true }),
+      ["All 3 automatic retries are used · start again manually when needed"], { start: true, stop: false }],
+    ["too little time", windowAt(ended({ status: "rejected" }), { state: "ended", launch: null, haltedReason: "insufficient_time" }, { canStart: true }),
+      ["Less than 1 minute of run time left; no more automatic retries"], { start: true, stop: false, process: "Didn't start this round" }],
+    ["Core restart, never started", windowAt(ended({ status: "rejected" }), { state: "halted", launch: null, haltedReason: "core_restart" }, { canStart: true }),
+      ["Automatic retry is off (Core restarted)", "Current retry: confirmed not started"], { start: true, stop: false }],
+    ["Core restart, running", windowAt(retryJob({ status: "running", reserved: true, startedAt: "2026-10-31T00:42:05Z", owner: "verified" }), { state: "halted", launch: "running", haltedReason: "core_restart" }),
+      ["Automatic retry is off (Core restarted)", "Current run: still running"], { start: false, stop: true }],
+    ["Core restart, starting", windowAt(retryJob({ status: "starting", reserved: true }), { state: "halted", launch: "starting", haltedReason: "core_restart" }),
+      ["Automatic retry is off (Core restarted)", "Current retry: preparing to start"], { start: false, stop: true }],
+    ["Core restart, unknown", windowAt(unknownRun(), { state: "halted", launch: "unknown", haltedReason: "core_restart" }, {}),
+      ["Automatic retry is off (Core restarted)", "Current run: needs checking"], { start: false, stop: true }],
+    ["Core restart, unknown, stop asked", withRecovery(windowAt(unknownRun({ status: "cancelling", canStop: false, cancelRequestedAt: "2026-10-31T00:45:00Z" }),
+      { state: "halted", launch: "stopping", haltedReason: "core_restart" }), windowAt(unknownRun(), { state: "halted", launch: "stopping", haltedReason: "core_restart" }).lifecycle.recovery, { outcomeUnknown: true }),
+      ["Automatic retry is off (Core restarted)", "Current run: needs checking · stop requested, waiting for confirmation"], { start: false, stop: false, headline: "This run still needs checking" }],
+    ["unknown outcome, stop asked", withRecovery(windowAt(unknownRun({ canStop: false, cancelRequestedAt: "2026-10-31T00:45:00Z" }), {}),
+      recovery({ state: "halted", launch: "unknown", haltedReason: "unknown_outcome", retry: { scheduled: 2, started: 2, max: 3 }, retryJobId: "j3", lastFailure,
+        attempts: [...history, { retry: 2, jobId: "j3", startedAt: "2026-10-31T00:42:05Z", endedAt: null, outcome: null }] }), { outcomeUnknown: true }),
+      ["The outcome needs checking; nothing is resent automatically", "Still needs checking · stop requested, waiting for confirmation"], { start: false, stop: false, headline: "This run still needs checking" }],
+    ["superseded", withRecovery(service({ job: job({ jobId: "j9" }), intent: armedIntent }), recovery({ state: "ended", launch: "running", haltedReason: "superseded", retry: { scheduled: 2, started: 2, max: 3 }, attempts: history })),
+      ["Another run took over; automatic retry has ended"], { start: false, stop: true }],
+  ];
+  for (const [name, shown, lines, expect] of cases) {
+    page.window.portal.close();
+    await until(() => !page.panel(), "the Portal closed");
+    page.core.service = shown;
+    page.window.portal.open(target(shown));
+    await until(() => JSON.stringify(recoveryText(page)) === JSON.stringify(lines), `${name}: ${lines.join(" / ")}`);
+    assert.equal(!!page.button("Start again…", page.lifecycle()), expect.start, `${name}: start`);
+    assert.equal(!!page.button("Stop service…", page.lifecycle()), expect.stop, `${name}: stop`);
+    assert.equal(page.button("Turn off automatic retry", page.lifecycle()), undefined, `${name}: nothing left to turn off`);
+    if (expect.process) assert.match(page.fact("process"), new RegExp(`^Process${expect.process}`), name);
+    if (expect.headline) assert.equal(page.headline(), expect.headline, name);
+    assert.doesNotMatch(page.lifecycle().textContent, /Stopped as you requested/, `${name}: never stopped before it is`);
+    assert.match(page.lifecycle().querySelector(".service-manual").textContent, /^Automatic retry has ended · start again manually when needed$/, name);
+  }
+  assert.deepEqual(page.requests.filter((r) => r.method === "POST"), [], "reading sends nothing");
   assert.deepEqual(page.errors, []);
 });
 
