@@ -258,7 +258,10 @@ pub(crate) async fn control(ws: Arc<Workspace>, actor: Option<String>, service: 
         return Ok(answer);
     }
     let (id, planned) = (service.clone(), request.clone());
-    let (input, original) = ws.stored(move |s| prepare(s, &id, &planned)).await?;
+    let (input, original) = match ws.stored(move |s| prepare(s, &id, &planned)).await? {
+        Prepared::Receipt(receipt) => return Ok(receipt),
+        Prepared::Start(input, original) => (input, original),
+    };
     let helper = host::helper(&ws.data_dir).await?;
     let capability = host::invoke(&helper, "capabilities", None, None).await?;
     let machine = host::machine_info().await?;
@@ -270,12 +273,27 @@ pub(crate) async fn control(ws: Arc<Workspace>, actor: Option<String>, service: 
     Ok(answer)
 }
 
-/// The submission a start would make, from the current record: read-only.
-fn prepare(store: &Store, service: &str, request: &Request) -> Result<(Submit, Current)> {
+enum Prepared {
+    /// This same request has meanwhile committed: its retry is its receipt.
+    Receipt(Value),
+    Start(Submit, Current),
+}
+
+/// The submission a start would make, from the current record: read-only,
+/// in one read so that a retry racing its own original (the receipt not yet
+/// there when control() looked) never reads that original's new revision as
+/// stale.
+fn prepare(store: &Store, service: &str, request: &Request) -> Result<Prepared> {
     let db = store.db.read()?;
+    // A WAL read already holds one snapshot; the shared writer reads in
+    // autocommit, so it gets one here (as record_rows does).
+    let _snapshot = if db.is_autocommit() { Some(db.unchecked_transaction()?) } else { None };
+    if let Some(receipt) = previous(&db, service, "start", request)? {
+        return Ok(Prepared::Receipt(receipt));
+    }
     let current = compare(&db, service, request)?;
     let input = available(store, &db, &current, request)?;
-    Ok((input, current))
+    Ok(Prepared::Start(input, current))
 }
 
 /// With the inputs read on the host: one new Job, its link, intent and

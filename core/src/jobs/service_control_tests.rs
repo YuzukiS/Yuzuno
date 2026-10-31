@@ -103,8 +103,17 @@ fn start_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
     if let Some(receipt) = previous(&*s.db.read().unwrap(), service, "start", request)? {
         return Ok(receipt);
     }
-    let (input, original) = prepare(s, service, request)?;
-    commit_start(s, service, request, input, &original, snap(), machine(), capability())
+    match prepare(s, service, request)? {
+        Prepared::Receipt(receipt) => Ok(receipt),
+        Prepared::Start(input, original) => commit_start(s, service, request, input, &original, snap(), machine(), capability()),
+    }
+}
+/// A start's submission, where the test expects one to be made.
+fn prepared(s: &Store, service: &str, request: &Request) -> (Submit, Current) {
+    match prepare(s, service, request).unwrap() {
+        Prepared::Start(input, original) => (input, original),
+        Prepared::Receipt(receipt) => panic!("expected a start to prepare, got the receipt {receipt}"),
+    }
 }
 
 async fn listed(lab: &Lab, id: &str) -> Value {
@@ -306,7 +315,7 @@ async fn a_later_stop_prevents_an_earlier_prepared_start() {
     run(s, &first);
     end(s, &first, "succeeded");
     let request = start_request("start-1", &first, 0);
-    let (input, original) = prepare(s, &id, &request).unwrap();
+    let (input, original) = prepared(s, &id, &request);
     // While the start reads the host, the user stops the service.
     stop_now(s, &id, &stop_request("stop-1", &first, 0)).unwrap();
     let refused = error(commit_start(s, &id, &request, input, &original, snap(), machine(), capability()));
@@ -326,7 +335,7 @@ async fn an_agents_submit_and_the_users_start_cannot_both_win() {
     run(s, &first);
     end(s, &first, "succeeded");
     let request = start_request("start-1", &first, 0);
-    let (input, original) = prepare(s, &id, &request).unwrap();
+    let (input, original) = prepared(s, &id, &request);
     let agents = submit(s, "j2", &id).unwrap();
     let refused = error(commit_start(s, &id, &request, input, &original, snap(), machine(), capability()));
     assert!(refused.starts_with("stale_service_state"), "{refused}");
@@ -358,8 +367,8 @@ async fn two_starts_from_one_reading_make_one_run() {
     // Two different requests prepared from the same reading: the second is stale.
     let one = start_request("start-1", &first, 0);
     let two = start_request("start-2", &first, 0);
-    let (a, a_source) = prepare(s, &id, &one).unwrap();
-    let (b, b_source) = prepare(s, &id, &two).unwrap();
+    let (a, a_source) = prepared(s, &id, &one);
+    let (b, b_source) = prepared(s, &id, &two);
     let receipt = commit_start(s, &id, &one, a, &a_source, snap(), machine(), capability()).unwrap();
     assert!(error(commit_start(s, &id, &two, b, &b_source, snap(), machine(), capability())).starts_with("stale_service_state"));
     assert_eq!(start_now(s, &id, &one).unwrap(), receipt, "its retry is its receipt");
@@ -376,10 +385,30 @@ async fn one_request_prepared_twice_makes_one_run() {
     end(s, &first, "succeeded");
     // A lost reply retried while the first attempt still runs: both prepared.
     let request = start_request("start-1", &first, 0);
-    let (a, a_source) = prepare(s, &id, &request).unwrap();
-    let (b, b_source) = prepare(s, &id, &request).unwrap();
+    let (a, a_source) = prepared(s, &id, &request);
+    let (b, b_source) = prepared(s, &id, &request);
     let receipt = commit_start(s, &id, &request, a, &a_source, snap(), machine(), capability()).unwrap();
     assert_eq!(commit_start(s, &id, &request, b, &b_source, snap(), machine(), capability()).unwrap(), receipt);
+    assert_eq!(links(s, &id), 2);
+}
+
+#[tokio::test]
+async fn a_retry_that_reads_after_its_original_committed_gets_the_receipt_not_stale() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let id = service(&lab, "Vite").await;
+    let first = submit(s, "j1", &id).unwrap();
+    run(s, &first);
+    end(s, &first, "succeeded");
+    let request = start_request("start-1", &first, 0);
+    // control() looked for a receipt before the original committed, and
+    // prepares after: the revision has moved, the receipt is there.
+    let (input, original) = prepared(s, &id, &request);
+    let receipt = commit_start(s, &id, &request, input, &original, snap(), machine(), capability()).unwrap();
+    match prepare(s, &id, &request).unwrap() {
+        Prepared::Receipt(again) => assert_eq!(again, receipt),
+        Prepared::Start(..) => panic!("a retry of a committed start prepared another"),
+    }
     assert_eq!(links(s, &id), 2);
 }
 
@@ -394,7 +423,7 @@ async fn changed_or_incomplete_sources_are_refused_and_nothing_starts() {
     let request = start_request("start-1", &first, 0);
 
     // The guarded inputs changed since the source Job.
-    let (input, original) = prepare(s, &id, &request).unwrap();
+    let (input, original) = prepared(s, &id, &request);
     let changed = json!({"cwd":"/workspace","git":{"head":"other"},"files":[]});
     let refused = error(commit_start(s, &id, &request, input, &original, changed, machine(), capability()));
     assert!(refused.starts_with("guarded_inputs_changed"), "{refused}");
@@ -449,21 +478,21 @@ async fn a_guard_goes_only_with_the_submission_it_was_made_for() {
     };
 
     // Another command after the guard was made.
-    let (mut input, original) = prepare(s, &id, &request).unwrap();
+    let (mut input, original) = prepared(s, &id, &request);
     input.service_control = Some(guard(&input, &original));
     input.argv = vec!["/bin/false".into()];
     let refused = error(s.create_job(None, input, snap(), machine(), capability()));
     assert!(refused.contains("prepared launch is not the one checked"), "{refused}");
 
     // Another service's link.
-    let (mut input, original) = prepare(s, &id, &request).unwrap();
+    let (mut input, original) = prepared(s, &id, &request);
     input.service_control = Some(guard(&input, &original));
     input.service_link = Some(Link { service_id: other.clone(), health_path: Some("/health".into()) });
     let refused = error(s.create_job(None, input, snap(), machine(), capability()));
     assert!(refused.contains("prepared launch is not the one checked"), "{refused}");
 
     // An Agent cannot carry a guard into create_job.
-    let (mut input, original) = prepare(s, &id, &request).unwrap();
+    let (mut input, original) = prepared(s, &id, &request);
     input.service_control = Some(guard(&input, &original));
     let refused = error(s.create_job(Some("a"), input, snap(), machine(), capability()));
     assert!(refused.starts_with("service_control_forbidden"), "{refused}");
