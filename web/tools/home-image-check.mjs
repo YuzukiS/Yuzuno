@@ -192,7 +192,8 @@ try {
     check(`${viewport.name}: a Home image opens in the app's preview by keyboard and Escape returns to it; nothing written`);
 
     // Open, from the picture's folded details, then Mark up: the image shown, marked, into its author's draft.
-    const after = card("shots").locator(".brief-attachment", { hasText: "screen-after.png" });
+    // The file name is in the folded details now; the picture's own name says which one it is.
+    const after = card("shots").locator(".brief-attachment", { has: page.locator('button.brief-image[aria-label="Open image screen-after.png"]') });
     assert.equal(await after.locator("button.brief-attachment-open").isVisible(), false, "Open waits in the folded image info");
     await after.locator("details.brief-image-info > summary").click();
     await after.locator("button.brief-attachment-open").click();

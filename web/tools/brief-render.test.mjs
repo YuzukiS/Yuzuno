@@ -1134,7 +1134,8 @@ test("T-9 low density: attachments lead with the first deliverable; the rest are
   const names = ["one.png", "two.png", "three.png"];
   const put = dense({ files: { type: "Attachments", props: { items: names.map((name) => ({ name, caption: `Shot ${name}` })) } } }, ["files"], names);
   const section = readSection(page, put, { attachments: names.map((name) => attachment(name, "image", "image/png")) });
-  const shown = () => [...document.querySelectorAll(".brief-attachments > li strong")].map((s) => s.textContent);
+  // A kept picture names its file in its folded details (T-9); the others in their header.
+  const shown = () => [...document.querySelectorAll(".brief-attachments > li")].map((li) => (li.querySelector("strong") || li.querySelector(".brief-image-info dd")).textContent);
   window.renderSection(section, PROJECT, {}, "", "low");
   assert.deepEqual(shown(), ["one.png"]);
   assert.equal(document.querySelector(".brief-attachments-block").dataset.density, "low");
@@ -1160,7 +1161,8 @@ test("T-9 low density never folds away an attachment that warns: gone, not kept 
       attachment("ref.png", "image", "image/png", { snapshot: false, path: "/runs/ref.png" }),
     ],
   });
-  const shown = () => [...document.querySelectorAll(".brief-attachments > li strong")].map((s) => s.textContent);
+  // A kept picture names its file in its folded details (T-9); the others in their header.
+  const shown = () => [...document.querySelectorAll(".brief-attachments > li")].map((li) => (li.querySelector("strong") || li.querySelector(".brief-image-info dd")).textContent);
   window.renderSection(section, PROJECT, {}, "", "low");
   assert.deepEqual(shown(), ["one.png", "moving.log", "ref.png", "gone.png"], "only the plain one folds");
   const block = document.querySelector(".brief-attachments-block");
