@@ -93,9 +93,14 @@ const researchZh: ResearchCopyWords = {
   notProduced: "不会得到",
 };
 
-/** A table cell or a heading on one line: a table pipe, and "<" (which would
- * start an HTML tag the renderer drops), kept literal. */
-const inline = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").replace(/[|<]/g, "\\$&").trim());
+/** Text the page shows as written (a title, a table cell, a label, an item,
+ * a finding): on one line, with every character Markdown would read as
+ * emphasis, code, a link, markup or a table pipe escaped, so it reads back
+ * as the same characters. Only Markdown blocks are copied as Markdown. */
+const inline = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\`*_~[\]<>|]/g, "\\$&"));
+/** The same, where it begins a list item's text: a leading "-", "+", "#" or
+ * "1." would start a nested list or heading. */
+const itemText = (value: unknown) => inline(value).replace(/^([-+#])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
 const range = (values: (number | string)[]) => {
   const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (numbers.length === values.length && numbers.length > 0) {
@@ -106,7 +111,7 @@ const range = (values: (number | string)[]) => {
   return values.length > 1 ? `${values[0]} … ${values[values.length - 1]}` : values.length ? String(values[0]) : "";
 };
 /** A link's label on one line, Markdown's brackets and backslash kept literal. */
-const label = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\[\]<]/g, "\\$&"));
+const label = inline;
 /** A link's destination: the address the page links to (sourceTarget's
  * normalized URL), in angle brackets so parentheses stay part of it. An "&"
  * that begins an entity is written "&amp;", which marked keeps and a
@@ -117,7 +122,7 @@ const link = (text: unknown, url: string | undefined): string | null => {
   const target = url ? sourceTarget(url) : null;
   return target?.kind === "web" ? `[${label(text)}](${destination(target.path)})` : null;
 };
-const axisName = (axis: ChartProps["x"]) => `${axis.label}${axis.unit ? ` (${axis.unit})` : ""}`;
+const axisName = (axis: ChartProps["x"]) => `${inline(axis.label)}${axis.unit ? ` (${inline(axis.unit)})` : ""}`;
 
 /** research: Core's numbers for each research desk, by element key, read for
  * this section version; a desk without one copies its snapshot numbers as
@@ -150,22 +155,22 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
       }
       case "Checklist": {
         const { title, items } = part.props as ChecklistProps;
-        return [...heading(depth, title), items.map((item) => `- [${item.done ? "x" : " "}] ${inline(item.text)}`).join("\n")];
+        return [...heading(depth, title), items.map((item) => `- [${item.done ? "x" : " "}] ${itemText(item.text)}`).join("\n")];
       }
       case "Plan": {
         const { title, steps } = part.props as PlanProps;
-        return [...heading(depth, title ?? b.plan), steps.map((step, index) => `${index + 1}. ${inline(step.text)} — ${b.planState[step.state]}`).join("\n")];
+        return [...heading(depth, title ?? b.plan), steps.map((step, index) => `${index + 1}. ${itemText(step.text)} — ${b.planState[step.state]}`).join("\n")];
       }
       case "Findings": {
         const { title, items } = part.props as FindingsProps;
         return [...heading(depth, title ?? b.findings),
-          items.map((item) => `- **${b.severity[item.severity]}** · ${inline(item.source)}: ${String(item.text).trim()}`).join("\n")];
+          items.map((item) => `- **${b.severity[item.severity]}** · ${inline(item.source)}: ${inline(item.text)}`).join("\n")];
       }
       case "Metrics": {
         const { items } = part.props as MetricsProps;
         return [items.map((item) => {
-          const unit = item.unit ? ` ${item.unit}` : "";
-          const previous = item.previous !== undefined ? ` (${w.previously(`${item.previous}${unit}`)})` : "";
+          const unit = item.unit ? ` ${inline(item.unit)}` : "";
+          const previous = item.previous !== undefined ? ` (${w.previously(`${inline(item.previous)}${unit}`)})` : "";
           return `- **${inline(item.label)}**: ${inline(item.value)}${unit}${previous}${item.detail ? ` — ${inline(item.detail)}` : ""}`;
         }).join("\n")];
       }
