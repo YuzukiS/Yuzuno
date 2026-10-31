@@ -1,3 +1,4 @@
+import { marked } from "marked";
 import { strings, type Language } from "../../i18n";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import type { TimeDisplay } from "../../time-preferences";
@@ -94,6 +95,55 @@ const link = (text: unknown, url: string | undefined): string | null => {
 };
 const axisName = (axis: ChartProps["x"]) => `${inline(axis.label)}${axis.unit ? ` (${inline(axis.unit)})` : ""}`;
 
+/** Raw HTML blocks that run until their own end, not to a blank line. */
+const htmlEnds: [RegExp, (match: RegExpExecArray) => string][] = [
+  [/^ {0,3}<(script|pre|style|textarea)(?=[\s>]|$)/i, (match) => `</${match[1].toLowerCase()}>`],
+  [/^ {0,3}<!--/, () => "-->"],
+  [/^ {0,3}<\?/, () => "?>"],
+  [/^ {0,3}<!\[CDATA\[/, () => "]]>"],
+  [/^ {0,3}<![A-Za-z]/, () => ">"],
+];
+/** What a Markdown block leaves open at its end, read as Home's renderer
+ * reads it: a code fence or a raw HTML block that never closes. Home renders
+ * each block on its own, so there it ends with the block; in the copy, one
+ * document, it would take in everything after. */
+function openAtEnd(text: string): string | null {
+  const last = marked.lexer(text, { gfm: true }).filter((token) => token.type !== "space").at(-1);
+  if (!last) return null;
+  const lines = last.raw.replace(/\n+$/, "").split("\n");
+  if (last.type === "code" && last.codeBlockStyle !== "indented") {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(lines[0])?.[1];
+    // marked closes a fence with the same run, longer allowed, then spaces.
+    const closed = !!fence && lines.length > 1 && new RegExp(`^ {0,3}${fence}[~\`]* *$`).test(lines[lines.length - 1]);
+    return fence && !closed ? fence : null;
+  }
+  if (last.type === "html") {
+    for (const [start, end] of htmlEnds) {
+      const match = start.exec(lines[0]);
+      if (!match) continue;
+      const close = end(match);
+      const after = last.raw.slice(match[0].length);
+      const closed = close === "-->" ? /^-?>/.test(after) || after.includes(close) : after.toLowerCase().includes(close);
+      return closed ? null : close;
+    }
+  }
+  return null;
+}
+/** A Markdown block exactly as written (its indentation is an indented code
+ * block), with a fence or raw HTML block it leaves open closed where the
+ * block ends, as it ends on the page. */
+function markdownBlock(value: unknown): string {
+  const text = String(value ?? "");
+  if (!text.trim()) return "";
+  const open = openAtEnd(text);
+  // A block whose first line starts indented or with a list marker would
+  // continue a list just before it (Home shows it on its own): an empty
+  // comment ends that list.
+  const first = text.split(/\r?\n/).find((line) => line.trim()) ?? "";
+  const boundary = /^(?:[ \t]|[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$))/.test(first) ? "<!-- -->\n\n" : "";
+  return `${boundary}${text}${open ? `${/\n$/.test(text) ? "" : "\n"}${open}` : ""}`;
+}
+
 export function sectionMarkdown(section: Section, language: Language, time: TimeDisplay): string {
   const w = words(language);
   const b = briefText(language);
@@ -113,7 +163,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
   const leaf = (part: BriefElement, depth: number): string[] => {
     switch (part.type) {
       case "Markdown":
-        return [String((part.props as { text: string }).text).trim()];
+        return [markdownBlock((part.props as { text: string }).text)];
       case "Math": {
         const { tex, display } = part.props as MathProps;
         return [display ? `$$\n${tex}\n$$` : `$${tex}$`];

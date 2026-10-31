@@ -2189,3 +2189,86 @@ test("T-9 a report's plain fields read back as written once the copy is rendered
     p.close();
   }
 });
+
+// Markdown blocks as Home shows each one on its own: indented code keeps its
+// indentation, and a fence or raw HTML block a block leaves open ends with
+// it, not taking in the parts after. Closed fences, short and long, stay as
+// they are. Each case is its own report, copied on its own.
+const mdBlock = (text) => ({ type: "Markdown", props: { text } });
+const cellTable = (text) => ({ type: "Table", props: { id: text.replace(/\W+/g, "-"), columns: [{ key: "k", label: "Key" }], rows: [{ id: "r", cells: { k: text } }] } });
+const markdownCases = {
+  closed: { long: mdBlock("````\n```\nnot a closer\n````"), afterLong: mdBlock("after the long fence"), short: mdBlock("```\nclosed\n```"),
+    afterShort: mdBlock("after the short fence; `inline` code") },
+  indented: { checks: { type: "Checklist", props: { items: [{ id: "c", text: "ship it", done: false }] } }, code: mdBlock("    const x = 1;\n    const y = 2;"), after: cellTable("after indented") },
+  // A fence written inside indented code is code, not a fence to close.
+  indentedFence: { code: mdBlock("    ```\n    not a fence"), after: cellTable("after indented fence") },
+  backticks: { open: mdBlock("Setup:\n\n```js\nlet open = true;"), plan: { type: "Plan", props: { steps: [{ id: "p", text: "plan step after the fence", state: "todo" }] } } },
+  tildes: { open: mdBlock("~~~~\ncode with ``` inside\n~~~\nstill code"), after: cellTable("after tildes") },
+  longOpen: { open: mdBlock("````md\n```\nan example fence\n```"), after: cellTable("after long open") },
+  // A fence open inside a list item ends with the list; nothing is added.
+  listFence: { open: mdBlock("- item\n\n  ```\n  code in a list"), after: cellTable("after list fence") },
+  pre: { open: mdBlock("<pre>\nraw block"), after: cellTable("after pre") },
+  lists: { zero: mdBlock("1. zero"), one: mdBlock("1. one") },
+};
+const markdownCase = (name) => section(`md-${name}`, "report", `Case ${name}`, 1, owner("a", "Mori"), {
+  body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: Object.keys(markdownCases[name]) }, ...markdownCases[name] } },
+});
+/** What the pasted copy of each case must show, as the page shows it. */
+const markdownChecks = {
+  closed: (el, code) => code.length === 2 && code[0] === "```\nnot a closer\n" && code[1] === "closed\n"
+    && ["after the long fence", "after the short fence; inline code"].every((text) => [...el.querySelectorAll("p")].some((p) => p.textContent === text))
+    && [...el.querySelectorAll("p > code")].some((c) => c.textContent === "inline"),
+  indented: (el, code, pres) => code.includes("const x = 1;\nconst y = 2;\n") && pres.every((pre) => !pre.closest("li"))
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after indented"),
+  backticks: (el, code) => code.length === 1 && code[0] === "let open = true;\n"
+    && [...el.querySelectorAll("ol > li")].some((li) => li.textContent.includes("plan step after the fence")),
+  indentedFence: (el, code) => code.length === 1 && code[0] === "```\nnot a fence\n"
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after indented fence"),
+  tildes: (el, code) => code.length === 1 && code[0] === "code with ``` inside\n~~~\nstill code\n"
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after tildes"),
+  longOpen: (el, code) => code.length === 1 && code[0] === "```\nan example fence\n```\n"
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after long open"),
+  listFence: (el, code, pres) => code.length === 1 && code[0] === "code in a list\n" && !!pres[0].closest("li")
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after list fence"),
+  pre: (el, code) => code.length === 1 && code[0].trim() === "raw block" && [...el.querySelectorAll("td")].some((td) => td.textContent === "after pre"),
+  // Two lists, each numbered from 1 as on the page.
+  lists: (el) => [...el.querySelectorAll("ol")].length === 2 && [...el.querySelectorAll("ol")].every((ol) => !ol.hasAttribute("start") && ol.children.length === 1),
+};
+
+test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and a fence or raw HTML block left open ends with its block", async () => {
+  const names = Object.keys(markdownCases);
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(...names.map(markdownCase));
+  let p = await mount({ home });
+  const copies = {};
+  try {
+    await waitFor(() => names.every((name) => card(p, "p-app", `md-${name}`)), "the reports");
+    for (const name of names) {
+      const copied = [];
+      clipboard(p, async (text) => { copied.push(text); });
+      p.button("Copy report", card(p, "p-app", `md-${name}`)).click();
+      await waitFor(() => copied.length === 1, `copied ${name}`);
+      copies[name] = copied[0];
+    }
+  } finally {
+    p.close();
+  }
+  // Each copy pasted as its own Markdown block, rendered by Home's own Markdown.
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), {
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: names }, ...Object.fromEntries(names.map((name) => [name, mdBlock(copies[name])])) } },
+  }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelectorAll(".brief-markdown").length === names.length, "the pasted copies");
+    const rendered = [...card(p, "p-app", "pasted").querySelectorAll(".brief-markdown")];
+    const failed = names.filter((name, i) => {
+      const pres = [...rendered[i].querySelectorAll("pre")];
+      return !markdownChecks[name](rendered[i], pres.map((pre) => pre.textContent), pres);
+    });
+    assert.deepEqual(failed, [], `every case reads back as the page shows it; failed: ${failed.join(", ")}`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
