@@ -70,6 +70,7 @@ test("text the desk shows as written stays as written once the copy is read as M
     claim: "a_b_c *d*",
     statement: "- not a list item",
     said: "1. not a numbered item",
+    math: "$x$ costs $5",
     condition: "# not a heading",
     paper: "+ not a list",
     plot: "Δ <b>bold?</b> | pipe ##",
@@ -92,6 +93,7 @@ test("text the desk shows as written stays as written once the copy is read as M
   claim.title = written.claim;
   claim.statement = written.statement;
   claim.statements[0].text = written.said;
+  claim.statements[1].text = written.math;
   claim.conditions[0].text = written.condition;
   claim.paper[0].label = written.paper;
   plot.title = written.plot;
@@ -119,6 +121,8 @@ test("text the desk shows as written stays as written once the copy is read as M
   });
   const shown = new JSDOM(`<body>${html}</body>`).window.document.body.textContent.replace(/\s+/g, " ");
   for (const [field, text] of Object.entries(written)) assert.ok(shown.includes(text), `${field} as written: ${text}\n${markdown}`);
+  // Math's $ is plain text too, as in the report copy: BriefMarkdown renders no math, so the copy itself must keep it escaped.
+  assert.ok(markdown.includes("\\$x\\$ costs \\$5"), "the copy escapes $ as the report copy does");
 });
 
 test("each plot's table in the copy uses its own scale and unit", () => {
