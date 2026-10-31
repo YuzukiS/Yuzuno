@@ -137,7 +137,7 @@ export const doseStudy = {
   },
 };
 
-/** A four-condition benchmark, one definition, a plan linked to a task. */
+/** A four-condition benchmark read as fractions and shown in percent, one definition, a plan linked to a task. */
 export const benchmark = {
   key: "pass-bench",
   kind: "report",
@@ -172,6 +172,8 @@ export const benchmark = {
               title: "Runtime change with the pass",
               unit: "%",
               digits: 1,
+              // The summary stores fractions; shown in percent.
+              scale: 100,
               reference: { value: 0, label: "0 = unchanged" },
               rows: ["o2-arm", "o2-x86", "o3-arm", "o3-x86"].map((id, i) => ({
                 id,
@@ -183,10 +185,6 @@ export const benchmark = {
                   high: { from: "bench.json", pointer: `/conditions/${i}/hi` },
                   definition: { id: "timing", version: 1 },
                 },
-                parts: [
-                  { id: `${id}-base`, label: "Baseline", estimate: { value: { from: "bench.json", pointer: `/conditions/${i}/base` } } },
-                  { id: `${id}-pass`, label: "With the pass", estimate: { value: { from: "bench.json", pointer: `/conditions/${i}/pass` } } },
-                ],
               })),
             },
           ],
@@ -226,10 +224,10 @@ export const fixtureFiles = {
   "paper.tex": "\\section{Results} High dose shortens recovery (synthetic).\n",
   "bench.json": {
     conditions: [
-      { change: -6.1, lo: -8.0, hi: -4.2, base: 41.2, pass: 38.7 },
-      { change: -4.4, lo: -6.3, hi: -2.5, base: 35.9, pass: 34.3 },
-      { change: -0.8, lo: -3.9, hi: 2.3, base: 33.0, pass: 32.7 },
-      { change: 0.4, lo: -2.6, hi: 3.4, base: 29.5, pass: 29.6 },
+      { change: -0.061, lo: -0.08, hi: -0.042 },
+      { change: -0.044, lo: -0.063, hi: -0.025 },
+      { change: -0.008, lo: -0.039, hi: 0.023 },
+      { change: 0.004, lo: -0.026, hi: 0.034 },
     ],
   },
   "method.md": "# Method (synthetic)\n\nMedian of 30 runs after 5 warm-ups.\n",

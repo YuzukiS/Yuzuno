@@ -498,7 +498,8 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.equal(reads.length, 10);
   assert.deepEqual(reads[0], { at: "low-v2.value", from: "results.json", pointer: "/v2/low/diff" });
   assert.ok(!reads.some((read) => read.at.startsWith("low-v1")), "literal numbers are the Agent's own");
-  assert.equal(researchReads(benchmark.body.elements.desk.props).length, 20);
+  assert.equal(researchReads(benchmark.body.elements.desk.props).length, 12);
+  assert.equal(benchmark.body.elements.desk.props.plots[0].scale, 100, "a display scale is part of the contract");
 
   const desk = (change) => {
     const copy = structuredClone(doseStudy);
