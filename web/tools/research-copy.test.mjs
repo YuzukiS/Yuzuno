@@ -114,3 +114,14 @@ test("text the desk shows as written stays as written once the copy is read as M
   const shown = new JSDOM(`<body>${html}</body>`).window.document.body.textContent.replace(/\s+/g, " ");
   for (const [field, text] of Object.entries(written)) assert.ok(shown.includes(text), `${field} as written: ${text}\n${markdown}`);
 });
+
+test("each plot's table in the copy uses its own scale and unit", () => {
+  const desk = structuredClone(doseStudy.body.elements.desk.props);
+  desk.plots[1].scale = 100;
+  desk.plots[1].unit = "centidays";
+  const text = researchDeskMarkdown(desk, resolvedOf(desk));
+  assert.match(text, /#### Recovery time vs placebo \(v2\) \(days\)\n\n\| Row/, "v2 in days, unscaled");
+  assert.match(text, /\| High dose \| -2\.04 \| \[-3\.12, -0\.96\] \| snapshot results\.json \|/);
+  assert.match(text, /#### Recovery time vs placebo \(v1, superseded\) \(centidays\)\n\nValues shown × 100 of the file's\./, "v1 in its own unit and scale");
+  assert.match(text, /\| High dose \| -260\.00 \| \[-380\.00, -140\.00\] \| the Agent \|/);
+});

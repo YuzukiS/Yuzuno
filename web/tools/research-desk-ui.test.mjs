@@ -354,25 +354,41 @@ test("while a newer version loads, its numbers show as loading, never the older 
   }
 });
 
-test("a definition's before and after each show as their own plot shows them", async () => {
-  // The v1 plot shows its numbers × 100 in its own unit; the comparison must not read v1 at v2's scale.
-  const scaled = structuredClone(doseStudy);
-  const v1 = scaled.body.elements.desk.props.plots[1];
-  v1.scale = 100;
-  v1.unit = "centidays";
-  const page = mount(serve(scaled));
+/** The dose study's Definitions table, as text per cell, for a desk whose v1 plot is changed by `change`. */
+async function compared(change) {
+  const desk = structuredClone(doseStudy);
+  change(desk.body.elements.desk.props.plots[1]);
+  const page = mount(serve(desk));
   try {
-    page.window.renderSection(section(page, scaled, 3), PROJECT, "ws-1");
+    page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
     await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
     radio(page.document, "Views of this desk", "Definitions").click();
     const table = await until(() => page.document.querySelector(".research-compare"), "the before and after table");
     await until(() => table.textContent.includes("−2.04"), "the v2 numbers read");
     const high = [...table.querySelectorAll("tr")].find((row) => row.querySelector("th")?.textContent === "High dose");
     const [before, , after] = [...high.querySelectorAll("td")].map((cell) => cell.textContent);
-    assert.equal(before, "−260.00 [−380.00, −140.00] centidays", "v1 as its plot shows it");
-    assert.equal(after, "−2.04 [−3.12, −0.96] days", "v2 as its plot shows it");
     assert.deepEqual(page.errors, []);
+    return { before, after };
   } finally {
     page.close();
   }
+}
+
+test("a definition's before and after each show as their own plot shows them, in their own unit", async () => {
+  // The same value at two scales: v1 stores a fraction shown × 100; both plots show −2.04 days, so the table does too.
+  const same = await compared((v1) => {
+    v1.scale = 100;
+    Object.assign(v1.rows[1].estimate, { value: -0.0204, low: -0.0312, high: -0.0096 });
+  });
+  assert.equal(same.before, "−2.04 [−3.12, −0.96] days", "v1 as its plot shows it, not the fraction");
+  assert.equal(same.after, "−2.04 [−3.12, −0.96] days");
+});
+
+test("rows of plots in different units are compared each in its own unit, never converted", async () => {
+  const units = await compared((v1) => {
+    v1.scale = 100;
+    v1.unit = "centidays";
+  });
+  assert.equal(units.before, "−260.00 [−380.00, −140.00] centidays", "v1 in its own unit");
+  assert.equal(units.after, "−2.04 [−3.12, −0.96] days", "v2 in its own unit");
 });

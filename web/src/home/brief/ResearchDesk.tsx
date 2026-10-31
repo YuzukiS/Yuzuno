@@ -675,14 +675,14 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
                 <caption>{t.beforeAfter(pairs[0].before.estimate.definition!.version, pairs[0].after.estimate.definition!.version)}</caption>
                 <tbody>
                   {pairs.map(({ key, before, after }) => {
-                    // Each row as its own plot shows it (scale, digits, sign); units are named when the two differ.
-                    const units = plotOf(before.id)?.unit !== plotOf(after.id)?.unit;
+                    // Each row as its own plot shows it (scale, digits, sign) and in its own unit:
+                    // nothing is converted or assumed comparable, so no change is shown that the plots don't show.
                     const text = (r: Row) => {
                       const owner = plotOf(r.id);
                       const signed = !!owner?.reference && owner.reference.value === 0;
                       const [value, low, high] = (["value", "low", "high"] as const).map((field) => shownOf(r.estimate[field], `${r.id}.${field}`, resolved, loading));
                       const shown = `${format(scaled(value, owner?.scale), owner?.digits, signed)}${low || high ? ` [${format(scaled(low, owner?.scale), owner?.digits, signed)}, ${format(scaled(high, owner?.scale), owner?.digits, signed)}]` : ""}`;
-                      return units && owner?.unit ? `${shown} ${owner.unit}` : shown;
+                      return owner?.unit ? `${shown} ${owner.unit}` : shown;
                     };
                     return (
                       <tr key={key}>
