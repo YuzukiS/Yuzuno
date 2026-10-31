@@ -7,6 +7,8 @@
 //   (the root, and so every rem, grows with it).
 // - A tinted summary keeps its text at 4.5:1 or more; an old body without
 //   layout components draws as before.
+// - The wheel over a Home table scrolls the page: the table has no height of
+//   its own to scroll and no overscroll containment (T-9).
 // - A live update that edits one block leaves the other blocks' DOM nodes,
 //   the card's place, the reading position and a table's filter as they
 //   were; editing the table itself clears its filter.
@@ -367,6 +369,36 @@ try {
     assert.equal(await legacy.locator(".brief-group h4").innerText(), "Detail");
     assert.equal(await legacy.locator(".brief-columns, .brief-group[data-tone]").count(), 0);
     assert.equal(await page.locator(".home-view .result-part-error").count(), 0);
+  });
+
+  await step("the wheel over a Home table scrolls the page, not the table: no height cap, no overscroll containment (T-9)", async () => {
+    await open("light", 1440);
+    const region = card("overview").locator(".result-table-scroll");
+    await region.evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await sleep(100);
+    const read = () => region.evaluate((el) => {
+      let scroller = document.scrollingElement;
+      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement)
+        if (/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight + 1) { scroller = p; break; }
+      const style = getComputedStyle(el), box = el.getBoundingClientRect();
+      return { page: scroller.scrollTop, room: scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop, table: el.scrollTop,
+        maxHeight: style.maxHeight, overscrollY: style.overscrollBehaviorY, scrollsY: el.scrollHeight > el.clientHeight + 1,
+        x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    const before = await read();
+    // Down if the page can go further down, else up.
+    const dy = before.room > 120 ? 120 : -120;
+    const over = await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest(".result-table-scroll"), before);
+    assert.ok(over, "the pointer is over the table");
+    await page.mouse.move(before.x, before.y);
+    await page.mouse.wheel(0, dy);
+    await until("the page to move", async () => Math.sign((await read()).page - before.page) === Math.sign(dy));
+    const after = await read();
+    assert.equal(after.table, before.table, "the table itself did not scroll");
+    assert.equal(before.maxHeight, "none", "no height cap on the table");
+    assert.notEqual(before.overscrollY, "contain", "the page takes the wheel at the table's edge");
+    assert.equal(before.scrollsY, false, "the table does not scroll on its own");
+    return { dy, before, after };
   });
 
   await step("a live edit of one block keeps every other block's node, the card's place, the scroll and the table's filter; editing the table clears it", async () => {
