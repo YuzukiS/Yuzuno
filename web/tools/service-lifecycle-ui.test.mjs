@@ -28,9 +28,12 @@ try {
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {closePortal, openInPortal} from ${src("portal/index.ts")};
+import {ProjectServices} from ${src("ProjectServices.tsx")};
 const root=createRoot(document.getElementById('root'));
-flushSync(()=>root.render(<div className="app"><aside className="rail"/><main className="main-panel"/></div>));
-window.portal={open:openInPortal,close:closePortal};`,
+const shell=(child)=><div className="app"><aside className="rail"/><main className="main-panel">{child}</main></div>;
+flushSync(()=>root.render(shell(null)));
+window.portal={open:openInPortal,close:closePortal};
+window.renderServices=()=>flushSync(()=>root.render(shell(<ProjectServices projectId="p1" machines={[]} disabled={false}/>)));`,
   );
   const result = await build({
     root,
@@ -109,7 +112,10 @@ function mount() {
     if (action === "open") {
       // Opening again may give the service's way another port; the list says it from then on.
       core.service = { ...core.service, connection: { ...core.service.connection, state: "available", localPort: core.openPort } };
-      return { body: { ...structuredClone(core.service), proof: { challenge: "c2", answer: "a2" } } };
+      // As Core answers it (services.rs, open_service): the service and its
+      // way, never its Job, lifecycle or health, which only the list reads.
+      const { job: _job, lifecycle: _lifecycle, health: _health, ...opened } = structuredClone(core.service);
+      return { body: { ...opened, proof: { challenge: "c2", answer: "a2" } } };
     }
     if (action === "close") return { body: {} };
     if (request.url === `http://127.0.0.1:${core.openPort}/.well-known/yuzuno-service/c2`) return { text: "a2" };
@@ -330,6 +336,10 @@ test("starting again: only an ended run without a reservation, with the chosen l
   assert.ok(page.requests.some((r) => r.method === "POST" && r.url === "/api/services/s1/open"));
   assert.ok(page.requests.some((r) => r.url === "http://127.0.0.1:4382/.well-known/yuzuno-service/c2"));
   await until(() => page.headline() === "Running, with a preview connection", "ready");
+  // Opening answers only the way: the run, its panel and the proof stay through the next read.
+  await page.refresh();
+  assert.equal(page.headline(), "Running, with a preview connection");
+  assert.equal(page.frame()?.getAttribute("src"), "http://127.0.0.1:4382/");
   assert.equal(page.posts("start").length, 1, "checking starts nothing");
   assert.deepEqual(page.errors, []);
 });
@@ -396,6 +406,27 @@ test("Escape closes only the confirmation; a failed read keeps the last facts an
   await page.refresh();
   await until(() => !/Status could not be refreshed\./.test(page.lifecycle().textContent), "read again");
   assert.ok(!page.button("Stop service…", page.lifecycle()).disabled);
+  assert.deepEqual(page.errors, []);
+});
+
+test("the services list: opening a managed service keeps its run details, and its open choice outlasts the next read", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.core.service = { ...service(), connection: { state: "closed", since: "" } };
+  page.window.renderServices();
+  const list = await until(() => page.document.querySelector('[aria-label="Services"]'), "the services list");
+  page.click(await until(() => page.button("Open", list), "Open"));
+  await until(() => list.querySelector(".services-open"), "the open choice, once this browser reaches the port");
+  assert.equal(list.querySelector(".services-open small").textContent, "127.0.0.1:4382/");
+  // Core's answer to opening has no Job: the entry keeps the one the list read.
+  const details = page.button("Run details", list);
+  assert.ok(details, "the run details stay offered after opening");
+  // The next read keeps the proof: it was of this run.
+  page.click(details);
+  const dialog = await until(() => page.document.querySelector(".services-lifecycle-dialog"), "the run details");
+  await page.refresh(dialog);
+  assert.ok(list.querySelector(".services-open"), "the open choice outlasts the next read");
+  assert.match(dialog.querySelector('[data-fact="browser"]').textContent, /^This browserConnection confirmedChecked \S/);
   assert.deepEqual(page.errors, []);
 });
 

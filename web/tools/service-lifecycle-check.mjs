@@ -108,7 +108,10 @@ async function open({ name, width, height, touch, theme }) {
       if (path === "/api/services/s1/open") {
         state.posts.push({ path, body });
         state.opened = true;
-        return route.fulfill({ json: { ...state.service, proof: { challenge: "c-check", answer: "a-check" } } });
+        // As Core answers it (services.rs, open_service): the service and its
+        // way, never its Job, lifecycle or health, which only the list reads.
+        const { job: _job, lifecycle: _lifecycle, health: _health, ...opened } = state.service;
+        return route.fulfill({ json: { ...opened, proof: { challenge: "c-check", answer: "a-check" } } });
       }
       if (path === "/api/services/s1/stop") {
         state.posts.push({ path, body });
@@ -170,6 +173,11 @@ async function openService(page, touch) {
   const panel = dialog.locator('[aria-label="服务"]');
   await panel.locator("button", { hasText: /^打开$/ }).click();
   await panel.locator(".services-open").waitFor({ timeout: 10_000 });
+  // Opening answers only the way: the run details stay, and the open choice
+  // outlasts the list's next read (every 5 seconds).
+  await page.waitForTimeout(5_500);
+  assert.equal(await panel.locator(".services-open").count(), 1, "the open choice outlasts the next read");
+  assert.equal(await panel.locator("button", { hasText: /^运行情况$/ }).count(), 1, "the run details stay offered");
   await panel.locator(".open-choice-split > .primary-button:not(.open-choice-more)").click();
   await page.locator(".portal-panel .portal-lifecycle").waitFor({ timeout: 10_000 });
   assert.equal(await page.locator(".portal-panel").getAttribute("role"), touch ? "dialog" : "complementary");
@@ -204,6 +212,10 @@ try {
       // Running: the page, and three facts each with its own check.
       await page.locator(".portal-panel iframe").waitFor();
       await waitHeadline(page, "正在运行，预览连接已确认");
+      // The Portal's next read (every 5 seconds) keeps the page and the proof.
+      await page.waitForTimeout(5_500);
+      assert.equal(await page.locator(".portal-panel iframe").count(), 1, "the page outlasts the Portal's next read");
+      assert.equal(await headline(page), "正在运行，预览连接已确认");
       const running = await facts(page);
       assert.deepEqual(running.process.slice(0, 2), ["运行中", "端口归属已确认"], JSON.stringify(running));
       assert.match(running.health.join(" "), /^检查通过 \/health · HTTP 200 · \S/);

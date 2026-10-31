@@ -75,7 +75,10 @@ export type ProjectService = {
   /** Absent on older Cores; null for a service not managed by a Job. */
   lifecycle?: ServiceLifecycleInfo | null;
 };
-type Opened = ProjectService & { proof?: { challenge: string; answer: string } };
+/** Core's answer to opening a service (services.rs, open_service): the
+ * service and its way, never its Job, lifecycle or health, which only the
+ * list reads. */
+export type OpenedService = Omit<ProjectService, "job" | "health" | "lifecycle"> & { proof?: { challenge: string; answer: string } };
 /** Whether this browser reaches Core's port for the service (checked here,
  * never assumed from Core's side). */
 type Reach =
@@ -283,13 +286,15 @@ export function ProjectServices({
   };
   const open = (service: ProjectService) =>
     act(service.id, async () => {
-      const opened = await post<Opened>(`/services/${encodeURIComponent(service.id)}/open`);
+      const opened = await post<OpenedService>(`/services/${encodeURIComponent(service.id)}/open`);
       if (!mounted.current || currentProject.current !== projectId) return;
       const port = opened.connection.localPort;
-      const { proof: _proof, ...view } = opened;
-      setServices((current) => current?.map((s) => (s.id === opened.id ? view : s)) ?? null);
+      // Only the way is new; the entry keeps its Job, lifecycle and health.
+      setServices((current) => current?.map((s) => (s.id === opened.id ? { ...s, connection: opened.connection } : s)) ?? null);
       if (port === undefined || !opened.proof) return;
-      const jobId = opened.job?.jobId ?? null;
+      // The run this check is of: the one the list showed when it was opened.
+      // If another runs by the next read, that read drops the proof.
+      const jobId = service.job?.jobId ?? null;
       setReach((current) => ({ ...current, [service.id]: { kind: "checking", jobId } }));
       const proven = await proves(port, opened.proof);
       if (!mounted.current || currentProject.current !== projectId) return;

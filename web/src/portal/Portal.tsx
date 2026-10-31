@@ -4,7 +4,7 @@ import { ArrowUpRight, ChevronLeft, FileCode2, Globe, LoaderCircle, RotateCw, Sh
 import { api, errorText, post } from "../api";
 import { langTag, strings, useLanguage, useStrings } from "../i18n";
 import { openJobs } from "../Jobs";
-import type { ProjectService } from "../ProjectServices";
+import type { OpenedService, ProjectService } from "../ProjectServices";
 import { savedPortalWidth, savePortalWidth } from "./portal-preference";
 import {
   closePortal,
@@ -439,18 +439,21 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
   const checkPreview = async () => {
     if (target.kind !== "service") return;
     setCheckError("");
-    const opened = await post<ProjectService & { proof?: { challenge: string; answer: string } }>(`/services/${encodeURIComponent(target.service.id)}/open`);
+    // The run this check is of: the one shown when it was asked for. If
+    // another runs by the next read, that read drops the proof.
+    const jobId = service?.job?.jobId ?? null;
+    const opened = await post<OpenedService>(`/services/${encodeURIComponent(target.service.id)}/open`);
     if (!alive.current) return;
-    const { proof, ...view } = opened;
-    setService(view);
+    const { proof } = opened;
+    // Only the way is new; the service keeps its Job, lifecycle and health.
+    setService((current) => (current ? { ...current, connection: opened.connection } : current));
     setDisconnected(false);
-    const jobId = view.job?.jobId ?? null;
-    const port = view.connection.localPort;
+    const port = opened.connection.localPort;
     if (port === undefined || !proof) {
       setReach({ state: "unproven", checkedAt: new Date().toISOString(), jobId });
       return;
     }
-    const next = `http://127.0.0.1:${port}${view.path}`;
+    const next = `http://127.0.0.1:${port}${opened.path}`;
     setReach({ state: "checking", url: next, jobId });
     const proven = await reaches(`http://127.0.0.1:${port}/.well-known/yuzuno-service/${encodeURIComponent(proof.challenge)}`, proof.answer);
     if (!alive.current) return;
