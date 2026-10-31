@@ -2015,7 +2015,7 @@ test("T-9 a task change Core announces reads Home again, once for a burst; other
 // T-9: a report copies as Markdown written from its stored body. A synthetic
 // report with every kind of part, folded on the page.
 const copyReport = () => {
-  const runs = Array.from({ length: 30 }, (_, i) => ({ id: `r${i + 1}`, cells: { run: `r${i + 1}`, result: i === 1 ? "slow\nbut ok" : "ok" }, ...(i === 0 ? { sourceIds: ["s1"] } : {}) }));
+  const runs = Array.from({ length: 30 }, (_, i) => ({ id: `r${i + 1}`, cells: { run: `r${i + 1}`, result: i === 1 ? "slow\nbut ok" : i === 2 ? "R&amp;D ok" : "ok" }, ...(i === 0 ? { sourceIds: ["s1"] } : {}) }));
   const steps = ["Read the spec", "Write the copy", "Test it", "Review", "Fix", "Merge", "Release", "Check"].map((text, i) => ({ id: `p${i}`, text, state: i < 2 ? "done" : i === 2 ? "doing" : "todo" }));
   return section("research", "report", "Research notes", 3, owner("a", "Mori"), {
     body: {
@@ -2034,7 +2034,7 @@ const copyReport = () => {
         refs: { type: "LiveRefs", props: { layout: "list", items: [{ kind: "task", id: "T-9", note: "copy slice" }, { kind: "pr", id: "acme/app#12" }] } },
         files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Desktop view" }, { name: "spec", caption: "Spec" }] } },
         sources: { type: "Sources", props: { items: [{ id: "s1", label: "Run log", href: "https://example.test/run/1" }, { id: "s2", label: "Notes file", href: "/w/app/notes.md" },
-          { id: "s3", label: "Raw [v2] notes", href: "https://example.test/a)b?x=(1)" }] } },
+          { id: "s3", label: "Raw [v2] notes", href: "https://example.test/a)b?x=(1)" }, { id: "s4", label: "R&amp;D query", href: "https://example.test/?q=&amp;x=1" }] } },
       },
     },
     attachments: [
@@ -2055,7 +2055,8 @@ const copiedReport = [
   ["Read the spec — Done", "Write the copy — Done", "Test it — Doing", "Review — To do", "Fix — To do", "Merge — To do", "Release — To do", "Check — To do"].map((line, i) => `${i + 1}. ${line}`).join("\n"),
   "## Runs",
   ["| Run | Result \\| note | Sources |", "| --- | --- | --- |",
-    ...Array.from({ length: 30 }, (_, i) => `| r${i + 1} | ${i === 1 ? "slow but ok" : "ok"} | ${i === 0 ? "Run log" : ""} |`)].join("\n"),
+    // "&amp;" written in a cell stays those five characters once rendered.
+    ...Array.from({ length: 30 }, (_, i) => `| r${i + 1} | ${i === 1 ? "slow but ok" : i === 2 ? "R\\&amp;D ok" : "ok"} | ${i === 0 ? "Run log" : ""} |`)].join("\n"),
   "## Loss",
   "Chart · x: Step · y: Loss (nats)\n- train: 3 points; x 0–2; y 1.2–2.5; last 1.2",
   "## References",
@@ -2063,7 +2064,8 @@ const copiedReport = [
   "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](<https://example.test/spec>)",
   "## Sources",
   // A link keeps its whole address, parentheses included, and its label's brackets.
-  "- [Run log](<https://example.test/run/1>)\n- Notes file: /w/app/notes.md\n- [Raw \\[v2\\] notes](<https://example.test/a)b?x=(1)>)",
+  "- [Run log](<https://example.test/run/1>)\n- Notes file: /w/app/notes.md\n- [Raw \\[v2\\] notes](<https://example.test/a)b?x=(1)>)" +
+    "\n- [R\\&amp;D query](<https://example.test/?q=\\&amp;x=1>)",
 ].join("\n\n") + "\n";
 const withReport = () => {
   const home = homeFixture();

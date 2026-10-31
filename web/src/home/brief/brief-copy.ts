@@ -59,8 +59,10 @@ const words = strings({
   previously: (value) => `之前为 ${value}`,
 });
 
+/** "&amp;" or "&#38;" would be read back as one character: keep the "&" literal. */
+const entities = (text: string) => text.replace(/&(?=#?[A-Za-z0-9]+;)/g, "\\&");
 /** A table cell or a heading on one line, with Markdown's table pipe kept literal. */
-const inline = (value: unknown) => String(value ?? "").replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim();
+const inline = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim());
 const range = (values: (number | string)[]) => {
   const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (numbers.length === values.length && numbers.length > 0) {
@@ -71,9 +73,11 @@ const range = (values: (number | string)[]) => {
   return values.length > 1 ? `${values[0]} … ${values[values.length - 1]}` : values.length ? String(values[0]) : "";
 };
 /** A link's label on one line, Markdown's brackets and backslash kept literal. */
-const label = (value: unknown) => String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\[\]]/g, "\\$&");
-/** A link's destination in angle brackets, so parentheses and spaces stay part of it. */
-const destination = (url: string) => `<${url.replace(/[<>\s]/g, (c) => encodeURIComponent(c))}>`;
+const label = (value: unknown) => entities(String(value ?? "").replace(/\s*\n\s*/g, " ").trim().replace(/[\\[\]]/g, "\\$&"));
+/** A link's destination in angle brackets, so parentheses and spaces stay part
+ * of it; a backslash, angle bracket or entity-like "&" stays literal. Every
+ * character of the address reads back as written. */
+const destination = (url: string) => `<${entities(url.replace(/[\\<>]/g, "\\$&")).replace(/[\r\n]/g, (c) => encodeURIComponent(c))}>`;
 const link = (text: unknown, url: string) => `[${label(text)}](${destination(url)})`;
 const axisName = (axis: ChartProps["x"]) => `${axis.label}${axis.unit ? ` (${axis.unit})` : ""}`;
 
