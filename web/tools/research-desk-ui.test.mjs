@@ -353,3 +353,26 @@ test("while a newer version loads, its numbers show as loading, never the older 
     page.close();
   }
 });
+
+test("a definition's before and after each show as their own plot shows them", async () => {
+  // The v1 plot shows its numbers × 100 in its own unit; the comparison must not read v1 at v2's scale.
+  const scaled = structuredClone(doseStudy);
+  const v1 = scaled.body.elements.desk.props.plots[1];
+  v1.scale = 100;
+  v1.unit = "centidays";
+  const page = mount(serve(scaled));
+  try {
+    page.window.renderSection(section(page, scaled, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+    radio(page.document, "Views of this desk", "Definitions").click();
+    const table = await until(() => page.document.querySelector(".research-compare"), "the before and after table");
+    await until(() => table.textContent.includes("−2.04"), "the v2 numbers read");
+    const high = [...table.querySelectorAll("tr")].find((row) => row.querySelector("th")?.textContent === "High dose");
+    const [before, , after] = [...high.querySelectorAll("td")].map((cell) => cell.textContent);
+    assert.equal(before, "−260.00 [−380.00, −140.00] centidays", "v1 as its plot shows it");
+    assert.equal(after, "−2.04 [−3.12, −0.96] days", "v2 as its plot shows it");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
