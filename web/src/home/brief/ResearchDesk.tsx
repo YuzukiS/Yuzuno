@@ -675,15 +675,18 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
                 <caption>{t.beforeAfter(pairs[0].before.estimate.definition!.version, pairs[0].after.estimate.definition!.version)}</caption>
                 <tbody>
                   {pairs.map(({ key, before, after }) => {
-                    const owner = plotOf(after.id);
-                    const signed = !!owner?.reference && owner.reference.value === 0;
+                    // Each row as its own plot shows it (scale, digits, sign) and in its own unit:
+                    // nothing is converted or assumed comparable, so no change is shown that the plots don't show.
                     const text = (r: Row) => {
+                      const owner = plotOf(r.id);
+                      const signed = !!owner?.reference && owner.reference.value === 0;
                       const [value, low, high] = (["value", "low", "high"] as const).map((field) => shownOf(r.estimate[field], `${r.id}.${field}`, resolved, loading));
-                      return `${format(scaled(value, owner?.scale), owner?.digits, signed)}${low || high ? ` [${format(scaled(low, owner?.scale), owner?.digits, signed)}, ${format(scaled(high, owner?.scale), owner?.digits, signed)}]` : ""}`;
+                      const shown = `${format(scaled(value, owner?.scale), owner?.digits, signed)}${low || high ? ` [${format(scaled(low, owner?.scale), owner?.digits, signed)}, ${format(scaled(high, owner?.scale), owner?.digits, signed)}]` : ""}`;
+                      return owner?.unit ? `${shown} ${owner.unit}` : shown;
                     };
                     return (
                       <tr key={key}>
-                        <th scope="row">{after.label}</th>
+                        <th scope="row">{named(after)}</th>
                         <td>{text(before)}</td>
                         <td aria-hidden="true">→</td>
                         <td><b>{text(after)}</b></td>

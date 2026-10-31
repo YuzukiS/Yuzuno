@@ -70,8 +70,21 @@ const ENGLISH: ResearchCopyWords = {
   notProduced: "Would not produce",
 };
 
-/** A table cell: no pipes or line breaks. */
-const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
+/**
+ * A desk's own text as it was written: the desk shows every field as plain
+ * text, so the copy keeps it from reading as Markdown. One line; a backslash
+ * before each character Markdown would take as markup (`*`, `_`, `` ` ``,
+ * `~`, brackets, `<`, `>`, `|`, and `#`, which closes a heading when it ends
+ * one), and before an `&` that would read as an entity.
+ */
+const inline = (text: string) =>
+  String(text ?? "")
+    .replace(/\s*\n\s*/g, " ")
+    .trim()
+    .replace(/[\\`*_~[\]<>|#]/g, "\\$&")
+    .replace(/&(?=#?\w+;)/g, "\\&");
+/** The same where a line begins: nothing there starts a list. */
+const block = (text: string) => inline(text).replace(/^([-+])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2");
 
 function number(value: Num | undefined, at: string, resolved: ResearchResolved | undefined, digits: number | undefined, scale = 1) {
   const text = (n: number) => (digits === undefined ? String(n * scale) : (n * scale).toFixed(digits));
@@ -87,35 +100,35 @@ function number(value: Num | undefined, at: string, resolved: ResearchResolved |
 export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, words: ResearchCopyWords = ENGLISH): string {
   const out: string[] = [];
   const sources = new Map(desk.sources.map((source) => [source.id, source]));
-  if (desk.title) out.push(`### ${desk.title}`, "");
+  if (desk.title) out.push(`### ${inline(desk.title)}`, "");
   out.push(`#### ${words.claims}`, "");
   for (const claim of desk.claims) {
-    out.push(`**${claim.title}** (${words.status[claim.status]})`, "", claim.statement, "");
+    out.push(`**${inline(claim.title)}** (${words.status[claim.status]})`, "", block(claim.statement), "");
     for (const [stance, label] of [["can", words.canSay], ["cannot", words.cannotSay]] as const) {
       const said = (claim.statements ?? []).filter((statement) => statement.stance === stance);
       if (!said.length) continue;
       out.push(`${label}:`);
-      for (const statement of said) out.push(`- ${statement.text} (${words.kind[statement.kind]})`);
+      for (const statement of said) out.push(`- ${block(statement.text)} (${words.kind[statement.kind]})`);
       out.push("");
     }
     if (claim.conditions?.length) {
       out.push(`${words.conditions}:`);
-      for (const condition of claim.conditions) out.push(`- ${condition.text}`);
+      for (const condition of claim.conditions) out.push(`- ${block(condition.text)}`);
       out.push("");
     }
     if (claim.paper?.length) {
       out.push(`${words.paper}:`);
       for (const place of claim.paper) {
         const source = sources.get(place.cite.source);
-        out.push(`- ${place.label}${source ? ` (${source.label}${place.cite.lines ? `, ${place.cite.lines}` : ""})` : ""}`);
+        out.push(`- ${block(place.label)}${source ? ` (${inline(source.label)}${place.cite.lines ? `, ${place.cite.lines}` : ""})` : ""}`);
       }
       out.push("");
     }
   }
   for (const plot of desk.plots) {
-    out.push(`#### ${plot.title}${plot.unit ? ` (${plot.unit})` : ""}`, "");
+    out.push(`#### ${inline(plot.title)}${plot.unit ? ` (${inline(plot.unit)})` : ""}`, "");
     if (plot.scale) out.push(words.scaled(plot.scale), "");
-    out.push(`| ${words.row} | ${words.value} | ${plot.interval ?? words.interval} | ${words.origin} |`, "| --- | --- | --- | --- |");
+    out.push(`| ${words.row} | ${words.value} | ${plot.interval ? inline(plot.interval) : words.interval} | ${words.origin} |`, "| --- | --- | --- | --- |");
     // A row's group is part of its name: two rows may share a label in different groups.
     const rows = plot.rows.flatMap((row) => {
       const label = row.group ? `${row.group} · ${row.label}` : row.label;
@@ -130,7 +143,7 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
       const high = number(row.estimate.high, `${row.id}.high`, resolved, plot.digits, plot.scale);
       const interval = row.estimate.low !== undefined || row.estimate.high !== undefined ? `[${low.text}, ${high.text}]` : "";
       const origin = value.origin === "read" ? words.read(value.from!) : value.origin === "provided" ? words.provided : words.notRead;
-      out.push(`| ${cell(row.label)} | ${value.text} | ${interval} | ${cell(origin)} |`);
+      out.push(`| ${inline(row.label)} | ${value.text} | ${interval} | ${inline(origin)} |`);
     }
     out.push("");
   }
@@ -138,8 +151,8 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
     out.push(`#### ${words.sources}`, "");
     for (const source of desk.sources) {
       const info = resolved?.sources[source.id];
-      const snapshot = source.snapshot && info?.sha256 ? ` — ${source.snapshot}, SHA-256 ${info.sha256}${info.takenAt ? `, ${info.takenAt}` : ""}` : "";
-      out.push(`- ${source.label}${snapshot}${source.location ? ` (${source.location})` : ""}`);
+      const snapshot = source.snapshot && info?.sha256 ? ` — ${inline(source.snapshot)}, SHA-256 ${info.sha256}${info.takenAt ? `, ${info.takenAt}` : ""}` : "";
+      out.push(`- ${block(source.label)}${snapshot}${source.location ? ` (${inline(source.location)})` : ""}`);
     }
     out.push("");
   }
@@ -147,15 +160,15 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
     out.push(`#### ${words.definitions}`, "");
     for (const definition of desk.definitions)
       for (const version of [...definition.versions].sort((a, b) => b.version - a.version))
-        out.push(`- ${definition.title} ${words.version(version.version)}: ${version.text}${version.change ? ` (${version.change})` : ""}`);
+        out.push(`- ${block(definition.title)} ${words.version(version.version)}: ${inline(version.text)}${version.change ? ` (${inline(version.change)})` : ""}`);
     out.push("");
   }
   if (desk.plans?.length) {
     out.push(`#### ${words.plans}`, "", words.previewOnly, "");
     for (const plan of desk.plans) {
-      out.push(`- **${plan.title}** — ${words.question}: ${plan.question}`);
-      if (plan.outputs?.length) out.push(`  - ${words.produces}: ${plan.outputs.join("; ")}`);
-      if (plan.notProduced?.length) out.push(`  - ${words.notProduced}: ${plan.notProduced.join("; ")}`);
+      out.push(`- **${inline(plan.title)}** — ${words.question}: ${inline(plan.question)}`);
+      if (plan.outputs?.length) out.push(`  - ${words.produces}: ${plan.outputs.map(inline).join("; ")}`);
+      if (plan.notProduced?.length) out.push(`  - ${words.notProduced}: ${plan.notProduced.map(inline).join("; ")}`);
     }
     out.push("");
   }
