@@ -683,7 +683,28 @@ mod tests {
             let client = &client;
             async move { client.call_tool(request).await.unwrap() }
         };
+        let catalog = client.list_all_tools().await.unwrap();
+        let list_tool = serde_json::to_value(catalog.iter().find(|tool| tool.name == "review_list").unwrap()).unwrap();
+        assert!(list_tool["outputSchema"].is_object());
+        assert_eq!(list_tool["annotations"]["readOnlyHint"], true);
+        let listed = client.call_tool(call("review_list", json!({"taskId":"T-1"}))).await.unwrap();
+        assert_eq!(listed.is_error, Some(false));
+        let listed_json = serde_json::to_value(&listed).unwrap();
+        let listed = listed.structured_content.unwrap();
+        assert_eq!(serde_json::from_str::<Value>(listed_json["content"][0]["text"].as_str().unwrap()).unwrap(), listed);
+        assert_eq!(listed["reviews"][0]["reviewId"], "r2");
+        assert_eq!(listed["reviews"][0]["findingsCount"], 2);
+        assert_eq!(listed["reviews"][0].get("outdated"), Some(&Value::Null));
+        assert!(listed["reviews"][0].get("findings").is_none());
+        assert!(listed["reviews"][0].get("contextReads").is_none());
+        let gui = ws.collaboration_call(None, "review_list", json!({"taskId":"T-1"})).await.unwrap();
+        assert_eq!(gui["reviews"][0]["findings"], incremental["findings"]);
+        assert_eq!(gui["reviews"][0]["contextReads"], incremental["contextReads"]);
+        assert_eq!(gui["nextBefore"], listed["nextBefore"]);
         let summary = read(json!({"taskId":"T-1","reviewId":"r2"})).await.structured_content.unwrap();
+        let explicit = read(json!({"taskId":"T-1","reviewId":"r2","view":"summary"})).await.structured_content.unwrap();
+        assert_eq!(summary, explicit);
+        assert_eq!(summary.get("outdated"), Some(&Value::Null));
         assert_eq!((summary["kind"].clone(), summary["previousReviewId"].clone()), (json!("incremental"), json!("r1")));
         assert_eq!(summary["findings"], json!([carried, own]), "the open earlier finding keeps its origin and still blocks");
         assert_eq!(summary["conclusion"], "changes_requested");
@@ -704,6 +725,24 @@ mod tests {
         let wrong = read(json!({"taskId":"T-1","reviewId":"r2","view":"raw"})).await;
         assert_eq!(wrong.is_error, Some(true));
         assert!(wrong.structured_content.unwrap()["error"].as_str().unwrap().contains("view is summary or full"));
+        for arguments in [json!({"taskId":"T-99"}), json!({"taskId":"T-1","before":"bad"}),
+            json!({"taskId":"T-1","actor":"agent-b"}), json!({})] {
+            let error = client.call_tool(call("review_list", arguments)).await.unwrap();
+            assert_eq!(error.is_error, Some(true));
+            let error = error.structured_content.unwrap();
+            assert_eq!(error.as_object().unwrap().len(), 1);
+            assert!(error["error"].is_string());
+        }
+        // Reading a failed review remains a successful call; its own error
+        // describes execution, not an MCP failure.
+        ws.store.db.write().unwrap().execute(
+            "UPDATE pr_reviews SET status='failed',data=json_set(data,'$.status','failed','$.error','synthetic fetch failure') WHERE id='r1'", []).unwrap();
+        let failed = read(json!({"taskId":"T-1","reviewId":"r1"})).await;
+        assert_eq!(failed.is_error, Some(false));
+        assert_eq!(failed.structured_content.unwrap()["error"], "synthetic fetch failure");
+        let listed_failed = client.call_tool(call("review_list", json!({"taskId":"T-1"}))).await.unwrap();
+        assert_eq!(listed_failed.is_error, Some(false));
+        assert_eq!(listed_failed.structured_content.unwrap()["reviews"][1]["error"], "synthetic fetch failure");
         let _ = client.cancel().await;
         server.abort();
     }
