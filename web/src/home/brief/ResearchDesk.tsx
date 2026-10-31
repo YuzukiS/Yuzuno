@@ -56,7 +56,11 @@ function resolvedOf(value: unknown): Resolved | null {
   return value as unknown as Resolved;
 }
 
-/** The desk's numbers read by Core, once per section version; the previous ones stay up while the next load. */
+/**
+ * The desk's numbers read by Core, once per section version. Only the read of
+ * the version on screen is shown: while a newer version loads, its numbers show
+ * as loading, never the previous version's as read from a snapshot.
+ */
 function useResolved(elementKey: string | undefined, wanted: boolean) {
   const { projectId, section } = useBrief();
   const path = wanted && elementKey ? researchPath(projectId, section.key, elementKey, section.version) : null;
@@ -78,7 +82,7 @@ function useResolved(elementKey: string | undefined, wanted: boolean) {
   }, [path]);
   const current = loaded?.key === path ? loaded : null;
   return {
-    data: current?.data ?? (current ? null : loaded?.data ?? null),
+    data: current?.data ?? null,
     error: current?.error ?? null,
     loading: !!path && !current,
   };
@@ -145,7 +149,10 @@ function useSelection(desk: Desk, storageKey: string) {
   useEffect(() => setChosen(readStored(storageKey)), [storageKey]);
   const claim = desk.claims.find((item) => item.id === chosen.claim) ?? desk.claims[0];
   const rows = claimRows(desk, claim);
-  const row = rows.find((item) => item.id === chosen.row) ?? rows.find((item) => item.id === claim?.primary) ?? rows[0];
+  // A statement may rest on a row of a plot its claim does not show: that row is
+  // kept for the evidence view, which shows any row; the claim view keeps its own plots.
+  const elsewhere = chosen.view === "evidence" ? desk.plots.flatMap((plot) => plot.rows).find((item) => item.id === chosen.row) : undefined;
+  const row = rows.find((item) => item.id === chosen.row) ?? elsewhere ?? rows.find((item) => item.id === claim?.primary) ?? rows[0];
   const selection: Selection = {
     claim: claim?.id,
     row: row?.id,
@@ -445,10 +452,12 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
   const rowById = (id: string) => desk.plots.flatMap((plot) => plot.rows).find((r) => r.id === id);
   const partOwner = (id: string) => desk.plots.flatMap((plot) => plot.rows).find((r) => r.parts?.some((p) => p.id === id));
   const selectBasis = (id: string) => {
-    if (rowById(id)) return choose({ row: id, mode: "diff" });
-    const owner = partOwner(id);
-    if (owner) return choose({ row: owner.id, mode: "parts" });
-    choose({ view: "evidence" });
+    // A row outside this claim's plots opens in the evidence view rather than joining them.
+    const shown = (rowId: string) => claimRows(desk, claim).some((item) => item.id === rowId);
+    const owner = rowById(id) ?? partOwner(id);
+    if (!owner) return choose({ view: "evidence" });
+    const mode = owner.id === id ? "diff" : "parts";
+    choose(shown(owner.id) ? { row: owner.id, mode } : { row: owner.id, mode, view: "evidence" });
   };
   const sourceInfo = (id: string | undefined) => (id ? resolved?.sources[id] : undefined);
   /** A row, part or source by its label, for the reader rather than its id. */
