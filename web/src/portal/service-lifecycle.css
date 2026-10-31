@@ -51,7 +51,7 @@
 .services-lifecycle-dialog .portal-lifecycle { border: 0; padding: 0; max-height: none; }
 @media(max-width:1000px) {
   .service-lifecycle-head { flex-wrap: wrap; }
-  .service-lifecycle-deadline { flex-basis: 100%; margin-left: 44px; max-width: none; }
+  .service-lifecycle-deadline { flex-basis: 100%; box-sizing: border-box; margin-left: 0; padding-left: 44px; max-width: none; }
   .service-lifecycle-deadline>span { display: flex; align-items: center; gap: 8px; }
 }
 @media(max-width:720px) {

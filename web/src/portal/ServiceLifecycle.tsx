@@ -55,8 +55,13 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
     return () => { current = false; };
   }, [showLogs, job?.jobId]);
   useEffect(() => {
-    if (!attempt || attempt.state === "recorded" || attempt.state === "sending") return;
+    if (!attempt || attempt.state === "sending") return;
     const recorded = service.lifecycle?.intent;
+    // Once Core records another choice, the note about this one is history.
+    if (attempt.state === "recorded") {
+      if (recorded && recorded.requestId !== attempt.request.requestId) { setAttempt(null); setNotice(""); }
+      return;
+    }
     if (recorded?.requestId !== attempt.request.requestId || recorded.revision !== attempt.draft.expectedIntentRevision + 1) return;
     setAttempt({ ...attempt, state: "recorded" });
     setConfirmation(null); setActionError(""); setNotice(t.sent);
@@ -165,7 +170,9 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
     <header className="service-lifecycle-head">
       <span className={`service-lifecycle-mark state-${job.status}`}><Server size={18} /></span>
       <div className="service-lifecycle-heading"><h3>{headline}</h3><p title={reason}>{reason}</p></div>
-      <div className="service-lifecycle-deadline"><Clock3 size={14} /><span><small>{t.due}</small><strong>{deadline ? absolute(deadline, time) : currentTimeout && !job.startedAt ? t.durationFromStart(currentTimeout) : t.dueUnknown}</strong></span></div>
+      <div className="service-lifecycle-deadline"><Clock3 size={14} /><span>{ended
+        ? <><small>{t.endedAt}</small><strong>{validServiceTime(job.finishedAt) ? absolute(job.finishedAt, time) : t.timeUnknown}</strong></>
+        : <><small>{t.due}</small><strong>{deadline ? absolute(deadline, time) : currentTimeout && !job.startedAt ? t.durationFromStart(currentTimeout) : t.dueUnknown}</strong></>}</span></div>
     </header>
     {stoppingIntent && <p className="service-intent"><Hand size={13} />{stoppedByUser ? t.stoppedIntent : t.otherStopIntent}</p>}
     {readFailed && <p className="inline-error service-read-failed" role="status">{t.readFailed}</p>}
@@ -174,7 +181,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
       <div className="portal-fact" data-state={health?.declared ? health.state : "unset"} data-fact="health"><span className="service-fact-icon"><Activity size={15} /></span><div><small>{t.health}</small><b>{health?.declared ? ({ ok: t.healthy, failing: t.unhealthy, unknown: t.healthUnknown })[health.state] : t.healthNotSet}</b><em>{health?.declared && [terminalHealth && healthTime ? t.healthPast : "", health.path, health.httpStatus ? `HTTP ${health.httpStatus}` : "", healthTime || t.timeUnknown].filter(Boolean).join(" · ")}</em></div></div>
       <div className="portal-fact" data-state={browser.state} data-fact="browser"><span className="service-fact-icon"><Globe size={15} /></span><div><small>{t.browser}</small><b>{browser.label}</b>{browser.note && <em>{browser.note}</em>}</div></div>
     </div>
-    <div className="service-lifecycle-actions"><span className="service-manual"><Hand size={13} />{t.manual}</span><button className="quiet-button" type="button" disabled={reading} onClick={() => void refresh()}>{reading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}{t.refresh}</button><button className="quiet-button" type="button" onClick={() => openJobs({ jobId: job.jobId })}>{t.jobs}<ArrowRight size={13} /></button>{job.canStop && <button className="quiet-button service-stop" type="button" disabled={disabled || readFailed || locked} onClick={() => open("stop")}><Square size={12} />{t.stop}</button>}{canStartService(service) && <button className="primary-button service-start" type="button" disabled={disabled || readFailed || locked} onClick={() => open("start")}><Play size={13} />{t.start}</button>}</div>
+    <div className="service-lifecycle-actions"><span className="service-manual"><Hand size={13} />{t.manual}</span><button className="quiet-button" type="button" disabled={reading} onClick={() => void refresh()}>{reading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}{t.refresh}</button><button className="quiet-button" type="button" onClick={() => openJobs({ jobId: job.jobId })}>{t.jobs}<ArrowRight size={13} /></button>{job.canStop && job.status !== "unknown" && <button className="quiet-button service-stop" type="button" disabled={disabled || readFailed || locked} onClick={() => open("stop")}><Square size={12} />{t.stop}</button>}{canStartService(service) && <button className="primary-button service-start" type="button" disabled={disabled || readFailed || locked} onClick={() => open("start")}><Play size={13} />{t.start}</button>}</div>
     {notice && <p className="service-action-note" role="status">{notice}</p>}
     {actionError && !confirmation && <p className="inline-error" role="alert">{actionError}</p>}
     {attempt?.state === "unknown" && !confirmation && <div className="service-action-note" role="status"><p>{t.noResult}</p><button type="button" className="secondary-button" disabled={disabled} onClick={() => void submit(true)}>{t.retrySame}</button></div>}

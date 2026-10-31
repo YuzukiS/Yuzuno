@@ -318,13 +318,10 @@ function PortalHost() {
       aria-label={shown.target.kind === "snapshot" ? shown.target.name : shown.target.service.name}
       lang={langTag(language)}
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.defaultPrevented) return;
-        // A dialog opened from inside it (a confirmation) closes by itself;
-        // React passes its keys up here through the portal it renders in.
-        const dialog = (event.target as Element | null)?.closest?.('[role="dialog"]');
-        if (dialog && dialog !== event.currentTarget) return;
-        event.preventDefault();
-        closePortal();
+        if (event.key === "Escape" && !event.defaultPrevented) {
+          event.preventDefault();
+          closePortal();
+        }
       }}
       style={{ "--top": `${TOOLBAR}px`, "--bottom": `${STATUS_BAR}px` } as CSSProperties}
     >

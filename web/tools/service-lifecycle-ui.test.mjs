@@ -225,6 +225,13 @@ test("a stop is a recorded choice, not an exit: stopping until the run ends, the
   assert.match(page.panel().querySelector(".portal-idle").textContent, /^Service stopped/);
   assert.equal(page.fact("browser"), "This browserNo current preview connectionChecked again once a new run starts");
   assert.ok(page.button("Start again…", page.lifecycle()), "a manual start is offered");
+  // An ended run says when it ended, not when it was planned to.
+  assert.match(page.lifecycle().querySelector(".service-lifecycle-deadline").textContent, /^This run ended\S/);
+  assert.match(page.lifecycle().textContent, /The request was recorded\./, "its note stays while the choice is this request's");
+  // Core records a later choice: the note about this one is history.
+  page.core.service = service({ job: ended(), intent: intent(2, { desiredState: "stopped", requestedBy: { kind: "user" }, appliesToJobId: "j1", requestId: "r-later" }), canStart: true });
+  await page.refresh();
+  await until(() => !/The request was recorded\./.test(page.lifecycle().textContent), "the note cleared");
   assert.deepEqual(page.errors, []);
 });
 
@@ -357,6 +364,9 @@ test("no start while a run may still hold the service; a passed time limit alone
   await reopen(service({ job: job({ status: "unknown", owner: "unknown" }) }));
   await until(() => page.headline() === "This run still needs checking", "unknown");
   assert.match(page.fact("browser"), /Doesn't confirm the original process$/);
+  // Nor a stop from here, as the design has it; Jobs keeps the Job's own cancel.
+  assert.equal(page.button("Stop service…", page.lifecycle()), undefined);
+  assert.ok(page.button("Open in Jobs", page.lifecycle()));
   // Long past its planned end and still running: running, not expired.
   await reopen(service({ job: job({ startedAt: "2026-10-01T00:00:00Z", timeoutSeconds: 60 }) }));
   await until(() => page.headline() === "Running, with a preview connection", "still running");
@@ -405,10 +415,14 @@ test("on an older Core, the Job's stop keeps the Job its confirmation opened for
   page.core.service = legacy("j2");
   release();
   page.core.gate = null;
-  await until(() => /now refers to another Job/.test(section.textContent), "said to have changed");
-  assert.ok(confirm.disabled);
+  // The read that brought j2 is in; then the confirmation is pressed.
+  // (An older Portal read first on its 5-second poll.)
+  await until(() => page.requests.some((r) => r.url === "/api/projects/p1/services"), "the read", 7000);
+  await tick(80);
   page.click(confirm);
-  await tick(60);
-  assert.deepEqual(page.requests.filter((r) => r.url.includes("/cancel")), [], "neither Job cancelled");
+  await tick(80);
+  assert.deepEqual(page.requests.filter((r) => r.url.includes("/cancel")).map((r) => r.url), [], "neither Job cancelled");
+  assert.match(section.textContent, /now refers to another Job/);
+  assert.ok(confirm.disabled);
   assert.deepEqual(page.errors, []);
 });
