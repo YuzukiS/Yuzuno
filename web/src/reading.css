@@ -42,9 +42,40 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agent-select .agent-runtime {
-  flex-shrink: 0;
+/* Line two of a row: the status word leads it and keeps its whole self, the
+   activity follows after a separator and is the one that gives way. Both are
+   always drawn -- a colour alone would be the same as saying nothing until
+   the pointer arrives (T-15). */
+.agent-row-state {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 5px;
+}
+.agent-row-state > .agent-runtime {
+  flex: none;
   white-space: nowrap;
+}
+.agent-row-state > .agent-work-summary {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-row-state > .agent-work-summary::before {
+  content: "·";
+  flex: none;
+  opacity: 0.55;
+}
+.agent-row-state > .agent-work-summary > * {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 /* CI can coexist with a Job or a check hint. That longer, combined status
    takes its own line, so the Agent and machine names keep their usable
@@ -63,11 +94,7 @@
     white-space: normal;
   }
 }
-@media (max-width: 520px) {
-  .agent-select .agent-runtime {
-    display: none;
-  }
-}
+/* The same row everywhere, rail or drawer: the status word stays (T-15). */
 .agent-work-summary {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -104,6 +131,10 @@
   flex-direction: column;
   min-width: 0;
   gap: 1px;
+}
+/* Nothing shares line one with the name. */
+.agent-select.agent-row-top {
+  align-items: center;
 }
 .agent-identity > .agent-name {
   flex: none;

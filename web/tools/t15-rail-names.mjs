@@ -23,12 +23,19 @@ const types={".html":"text/html",".js":"text/javascript",".css":"text/css",".png
 const b = await launchBrowser();
 const c = await b.newContext({ viewport: { width: 951, height: 669 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
 const page = await c.newPage();
-await page.addInitScript(() => {
+// T15_LANG=zh-Hans reads the same rows in Chinese, where the status words
+// are a different length.
+const LANG = process.env.T15_LANG || "en";
+await page.addInitScript((lang) => {
   window.EventSource = class { close() {} };
   localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
   localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-});
-const agents = [agent, { ...agent, id: "b", name: "Dev 3 · public", status: "working" }, { ...agent, id: "c", name: "Dev Lead", status: "offline" }];
+  if (lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
+}, LANG);
+const summary = { text: "正在量测中屏工作台两侧轴占用的宽度与高度，并记录每个状态下的实际像素", kind: "progress", source: "agent" };
+const agents = [agent,
+  { ...agent, id: "b", name: "Dev 3 · public", status: "working", workSummary: summary },
+  { ...agent, id: "c", name: "Dev Lead", status: "offline", workSummary: summary }];
 await page.route("**/*", async (r) => {
   const p = new URL(r.request().url()).pathname;
   if (r.request().method() !== "GET") return r.fulfill({ json: { ok: true } });
@@ -55,12 +62,21 @@ const rows = () => page.evaluate(() => {
   return [...document.querySelectorAll(".agent-row")].map((row) => {
     const name = row.querySelector(".agent-name");
     const menu = row.querySelector(".agent-row-menu");
+    const status = row.querySelector(".agent-runtime");
+    const activity = row.querySelector(".agent-work-summary");
+    const box = menu?.getBoundingClientRect();
     return { selected: row.classList.contains("selected"), name: w(name),
       text: name?.textContent, shows: name ? Math.round((name.clientWidth / name.scrollWidth) * 100) : null,
-      menuShown: menu ? getComputedStyle(menu).opacity !== "0" : null };
+      menuShown: menu ? getComputedStyle(menu).opacity !== "0" : null,
+      status: status?.textContent?.trim() ?? null,
+      statusWhole: status ? status.scrollWidth <= status.clientWidth + 1 : null,
+      activityClipped: activity ? activity.scrollWidth > activity.clientWidth + 1 : null,
+      height: Math.round(row.getBoundingClientRect().height),
+      menuHit: box ? Math.round(Math.min(box.width, box.height)) : null };
   });
 });
 
+console.log(`language: ${LANG}`);
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if (!ok) failed++; };
 const before = await rows();
@@ -88,6 +104,12 @@ const reached = await page.evaluate(async () => {
 check(reached.ok, `the \u2026 on an unselected row still takes focus (${reached.why ?? "focused"})`);
 check(reached.opacity === "1" && reached.events === "auto",
   `and shows itself once focused (opacity ${reached.opacity}, pointer-events ${reached.events})`);
+// Line two: the status word keeps its whole self, the activity after it gives way.
+check(before.every((r) => r.statusWhole), `every status word is shown whole (${before.map((r) => r.status).join(", ")})`);
+check(before.filter((r) => r.activityClipped !== null).every((r) => r.activityClipped),
+  "the activity after it is what runs out of room");
+check(before.every((r) => r.height >= 44), `a row is still at least 44px tall (${before.map((r) => r.height).join(", ")})`);
+check(before.every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px (${before[0].menuHit})`);
 
 await b.close();
 console.log(failed ? `\n${failed} failed` : "\nall passed");
