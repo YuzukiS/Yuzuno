@@ -2011,3 +2011,105 @@ test("T-9 a task change Core announces reads Home again, once for a burst; other
     p.close();
   }
 });
+
+// T-9: a report copies as Markdown written from its stored body. A synthetic
+// report with every kind of part, folded on the page.
+const copyReport = () => {
+  const runs = Array.from({ length: 30 }, (_, i) => ({ id: `r${i + 1}`, cells: { run: `r${i + 1}`, result: i === 1 ? "slow\nbut ok" : "ok" }, ...(i === 0 ? { sourceIds: ["s1"] } : {}) }));
+  const steps = ["Read the spec", "Write the copy", "Test it", "Review", "Fix", "Merge", "Release", "Check"].map((text, i) => ({ id: `p${i}`, text, state: i < 2 ? "done" : i === 2 ? "doing" : "todo" }));
+  return section("research", "report", "Research notes", 3, owner("a", "Mori"), {
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: {}, children: ["summary", "plan", "evidence", "refs", "files", "sources"] },
+        summary: { type: "Group", props: { title: "Where it stands", tone: "accent" }, children: ["text", "metrics"] },
+        text: { type: "Markdown", props: { text: "The **retry** fix holds.\n\n- one\n- two" } },
+        metrics: { type: "Metrics", props: { items: [{ label: "Pass rate", value: 0.93, unit: "%", previous: 0.91, detail: "last 3 runs" }] } },
+        plan: { type: "Plan", props: { title: "Steps", steps } },
+        evidence: { type: "Columns", props: {}, children: ["left", "right"] },
+        left: { type: "Group", props: {}, children: ["table"] },
+        right: { type: "Group", props: {}, children: ["chart"] },
+        table: { type: "Table", props: { id: "runs", title: "Runs", columns: [{ key: "run", label: "Run" }, { key: "result", label: "Result | note" }], rows: runs } },
+        chart: { type: "LineChart", props: { id: "loss", title: "Loss", x: { label: "Step" }, y: { label: "Loss", unit: "nats" }, series: [{ name: "train", points: [[0, 2.5], [1, 1.9], [2, 1.2]] }] } },
+        refs: { type: "LiveRefs", props: { layout: "list", items: [{ kind: "task", id: "T-9", note: "copy slice" }] } },
+        files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Desktop view" }, { name: "spec", caption: "Spec" }] } },
+        sources: { type: "Sources", props: { items: [{ id: "s1", label: "Run log", href: "https://example.test/run/1" }, { id: "s2", label: "Notes file", href: "/w/app/notes.md" }] } },
+      },
+    },
+    attachments: [
+      { name: "shot.png", kind: "image", mime: "image/png", size: 1200, snapshot: true, mayChange: false, takenAt: at(5), caption: "Desktop view" },
+      { name: "spec", kind: "link", mime: "text/html", size: 0, snapshot: false, mayChange: true, takenAt: at(5), url: "https://example.test/spec" },
+    ],
+    refs: { "task:T-9": { kind: "task", id: "T-9", found: true, title: "Home", state: "doing" } },
+  });
+};
+const copiedReport = [
+  "# Research notes",
+  "## Where it stands",
+  "The **retry** fix holds.\n\n- one\n- two",
+  "- **Pass rate**: 0.93 % (previously 0.91 %) — last 3 runs",
+  "## Steps",
+  ["Read the spec — Done", "Write the copy — Done", "Test it — Doing", "Review — To do", "Fix — To do", "Merge — To do", "Release — To do", "Check — To do"].map((line, i) => `${i + 1}. ${line}`).join("\n"),
+  "## Runs",
+  ["| Run | Result \\| note | Sources |", "| --- | --- | --- |",
+    ...Array.from({ length: 30 }, (_, i) => `| r${i + 1} | ${i === 1 ? "slow but ok" : "ok"} | ${i === 0 ? "Run log" : ""} |`)].join("\n"),
+  "## Loss",
+  "Chart · x: Step · y: Loss (nats)\n- train: 3 points; x 0–2; y 1.2–2.5; last 1.2",
+  "## References",
+  "- Task T-9: Home · doing — copy slice",
+  "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](https://example.test/spec)",
+  "## Sources",
+  "- [Run log](https://example.test/run/1)\n- Notes file: /w/app/notes.md",
+].join("\n\n") + "\n";
+const withReport = () => {
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(copyReport());
+  return home;
+};
+const clipboard = (p, write) => Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: write === null ? undefined : { writeText: write } });
+
+test("T-9 a report copies in one click as Markdown from its body: folded parts, every row and step, charts, images and sources; no controls", async () => {
+  const p = await mount({ home: withReport() });
+  try {
+    await waitFor(() => card(p, "p-app", "research"), "the report");
+    const report = card(p, "p-app", "research");
+    // Folded on the page: the copy still has every part.
+    report.querySelector(".home-section-head button[aria-controls]").click();
+    await waitFor(() => report.classList.contains("is-collapsed"), "folded");
+    const copied = [];
+    clipboard(p, async (text) => { copied.push(text); });
+    p.button("Copy report", report).click();
+    // Written within the click itself, as Safari requires.
+    assert.equal(copied.length, 1, "the clipboard write starts in the click");
+    await waitFor(() => p.button("Copied", report), "said copied");
+    assert.equal(copied[0], copiedReport);
+    assert.doesNotMatch(copied[0], /Copy report|Show all|Show \d+ more|Reply|Pin|Mark seen|\/api\/|token/i, "no control words or request addresses");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a refused or missing clipboard is said as such, never as copied; only reports offer the copy", async () => {
+  const p = await mount({ home: withReport() });
+  try {
+    await waitFor(() => card(p, "p-app", "research"), "the report");
+    const report = card(p, "p-app", "research");
+    clipboard(p, async () => { throw new p.w.DOMException("Write permission denied.", "NotAllowedError"); });
+    p.button("Copy report", report).click();
+    await waitFor(() => p.button("Copy unavailable", report), "the refusal said");
+    assert.equal(p.button("Copy unavailable", report).title, "Clipboard unavailable. Select the text to copy.");
+    assert.equal(p.button("Copied", report), undefined);
+    await waitFor(() => p.button("Copy report", report), "ready again", 4);
+    clipboard(p, null);
+    p.button("Copy report", report).click();
+    await waitFor(() => p.button("Copy unavailable", report), "no clipboard said");
+    // An Ask and a status card have no copy.
+    assert.equal(p.button("Copy report", card(p, "p-app", "release")), undefined, "not on an Ask");
+    assert.equal(p.button("Copy report", card(p, "p-res", "metrics")), undefined, "not on a status");
+    assert.ok(p.button("Copy report", card(p, "p-app", "notes")), "on another report");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
