@@ -382,6 +382,26 @@ async fn a_failed_recovery_step_still_records_the_outcome() {
 }
 
 #[tokio::test]
+async fn a_step_failing_after_the_retry_is_written_leaves_no_partial_retry() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    // The retry's Job row is written, then linking it to the service fails.
+    s.db.write().unwrap().execute_batch("CREATE TEMP TRIGGER refuse_link BEFORE INSERT ON project_service_jobs
+        BEGIN SELECT RAISE(ABORT, 'synthetic link failure'); END;").unwrap();
+    crash(s, &root);
+    let ended = record(s, &root);
+    assert_eq!(ended["status"], "failed", "the outcome is recorded");
+    assert!(ended["retriedBy"].is_null());
+    assert!(ended["reason"].as_str().unwrap().contains("synthetic link failure"), "{}", ended["reason"]);
+    assert_eq!((jobs(s), links(s, &id)), (2, 2), "no retry Job is left behind");
+    let intent = intent_of(s, &id);
+    assert_eq!((intent["recovery"]["state"].as_str(), intent["recovery"]["haltedReason"].as_str()), (Some("halted"), Some("launch_refused")));
+    assert!(intent["recovery"]["retryJobId"].is_null() && intent["recovery"]["scheduled"] == 0);
+}
+
+#[tokio::test]
 async fn after_a_core_restart_nothing_queued_before_it_starts_and_recovery_is_manual() {
     let lab = lab();
     let (id, retry) = {
