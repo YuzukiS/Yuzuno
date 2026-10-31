@@ -262,12 +262,15 @@ pub(crate) async fn control(ws: Arc<Workspace>, actor: Option<String>, service: 
         Prepared::Receipt(receipt) => return Ok(receipt),
         Prepared::Start(input, original) => (input, original),
     };
-    let helper = host::helper(&ws.data_dir).await?;
-    let capability = host::invoke(&helper, "capabilities", None, None).await?;
-    let machine = host::machine_info().await?;
-    let snapshot = host::invoke(&helper, "snapshot", None, Some(serde_json::to_value(&input)?)).await
-        .context("source_unavailable: the original working directory or guarded inputs cannot be read; no Job was created")?;
-    let answer = ws.stored(move |s| commit_start(s, &service, &request, input, &original, snapshot, machine, capability)).await?;
+    let read = async {
+        let helper = host::helper(&ws.data_dir).await?;
+        let capability = host::invoke(&helper, "capabilities", None, None).await?;
+        let machine = host::machine_info().await?;
+        let snapshot = host::invoke(&helper, "snapshot", None, Some(serde_json::to_value(&input)?)).await
+            .context("source_unavailable: the original working directory or guarded inputs cannot be read; no Job was created")?;
+        Ok::<_, anyhow::Error>((snapshot, machine, capability))
+    }.await;
+    let answer = ws.stored(move |s| finish_start(s, &service, &request, input, &original, read)).await?;
     super::changed(&ws);
     ws.jobs.wake.notify_one();
     Ok(answer)
@@ -296,12 +299,28 @@ fn prepare(store: &Store, service: &str, request: &Request) -> Result<Prepared> 
     Ok(Prepared::Start(input, current))
 }
 
+/// After the host's reading. A reading that failed is still this request's
+/// receipt if its original has meanwhile committed: a retry is never told
+/// that nothing was created when its start was.
+fn finish_start(store: &Store, service: &str, request: &Request, input: Submit, original: &Current,
+    read: Result<(Value, Value, Value)>) -> Result<Value> {
+    match read {
+        Ok((snapshot, machine, capability)) => commit_start(store, service, request, input, original, snapshot, machine, capability),
+        Err(error) => match previous(&*store.db.read()?, service, "start", request)? {
+            Some(receipt) => Ok(receipt),
+            None => Err(error),
+        },
+    }
+}
+
 /// With the inputs read on the host: one new Job, its link, intent and
-/// receipt in create_job's transaction, which checks everything again.
+/// receipt in create_job's transaction, which checks everything again. The
+/// inputs are compared there, after this request's receipt is looked for,
+/// so a retry whose original has started (and may have changed them) gets
+/// that receipt rather than a refusal.
 #[allow(clippy::too_many_arguments)]
 fn commit_start(store: &Store, service: &str, request: &Request, mut input: Submit, original: &Current,
     snapshot: Value, machine: Value, capability: Value) -> Result<Value> {
-    check_snapshot(&original.job["snapshot"], &snapshot)?;
     let prepared = input.as_requested()?;
     input.service_control = Some(StartGuard {
         service_id: service.to_owned(),

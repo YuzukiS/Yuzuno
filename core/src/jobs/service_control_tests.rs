@@ -105,8 +105,15 @@ fn start_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
     }
     match prepare(s, service, request)? {
         Prepared::Receipt(receipt) => Ok(receipt),
-        Prepared::Start(input, original) => commit_start(s, service, request, input, &original, snap(), machine(), capability()),
+        Prepared::Start(input, original) => finish_start(s, service, request, input, &original, Ok(read(snap()))),
     }
+}
+/// The host's reading, as control() gives it to finish_start.
+fn read(snapshot: Value) -> (Value, Value, Value) {
+    (snapshot, machine(), capability())
+}
+fn jobs(s: &Store) -> i64 {
+    s.db.read().unwrap().query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0)).unwrap()
 }
 /// A start's submission, where the test expects one to be made.
 fn prepared(s: &Store, service: &str, request: &Request) -> (Submit, Current) {
@@ -410,6 +417,54 @@ async fn a_retry_that_reads_after_its_original_committed_gets_the_receipt_not_st
         Prepared::Start(..) => panic!("a retry of a committed start prepared another"),
     }
     assert_eq!(links(s, &id), 2);
+}
+
+#[tokio::test]
+async fn a_retry_prepared_with_its_original_gets_its_receipt_whatever_it_reads_after() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let id = service(&lab, "Vite").await;
+    let first = submit(s, "j1", &id).unwrap();
+    run(s, &first);
+    end(s, &first, "succeeded");
+    // A lost reply retried while the first attempt still runs: three
+    // attempts of one request, all prepared before any committed.
+    let request = start_request("start-1", &first, 0);
+    let (a, a_source) = prepared(s, &id, &request);
+    let (b, b_source) = prepared(s, &id, &request);
+    let (c, c_source) = prepared(s, &id, &request);
+    let receipt = finish_start(s, &id, &request, a, &a_source, Ok(read(snap()))).unwrap();
+    // The run it started has since changed a guarded input, or the host can
+    // no longer read them: either way, this request's start was made.
+    let changed = json!({"cwd":"/workspace","git":{"head":"other"},"files":[]});
+    assert_eq!(finish_start(s, &id, &request, b, &b_source, Ok(read(changed))).unwrap(), receipt);
+    let unreadable = Err(anyhow::anyhow!("source_unavailable: the original working directory or guarded inputs cannot be read; no Job was created"));
+    assert_eq!(finish_start(s, &id, &request, c, &c_source, unreadable).unwrap(), receipt);
+    assert_eq!((jobs(s), links(s, &id)), (2, 2), "one new run only");
+}
+
+#[tokio::test]
+async fn a_start_whose_inputs_changed_or_cannot_be_read_is_refused_and_makes_nothing() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let id = service(&lab, "Vite").await;
+    let first = submit(s, "j1", &id).unwrap();
+    run(s, &first);
+    end(s, &first, "succeeded");
+    let request = start_request("start-1", &first, 0);
+    let (a, a_source) = prepared(s, &id, &request);
+    let changed = json!({"cwd":"/workspace","git":{"head":"other"},"files":[]});
+    let refused = error(finish_start(s, &id, &request, a, &a_source, Ok(read(changed))));
+    assert!(refused.starts_with("guarded_inputs_changed"), "{refused}");
+    let (b, b_source) = prepared(s, &id, &request);
+    let unreadable = Err(anyhow::anyhow!("source_unavailable: the original working directory or guarded inputs cannot be read; no Job was created"));
+    assert!(error(finish_start(s, &id, &request, b, &b_source, unreadable)).starts_with("source_unavailable"));
+    // Nothing was recorded for the request: its retry may still start.
+    assert_eq!((jobs(s), links(s, &id)), (1, 1));
+    assert_eq!(listed(&lab, &id).await["lifecycle"]["intent"]["revision"], 0);
+    let (c, c_source) = prepared(s, &id, &request);
+    finish_start(s, &id, &request, c, &c_source, Ok(read(snap()))).unwrap();
+    assert_eq!((jobs(s), links(s, &id)), (2, 2));
 }
 
 #[tokio::test]
