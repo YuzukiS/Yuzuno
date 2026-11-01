@@ -2454,3 +2454,43 @@ test("T-9 a fence a Markdown block leaves open before a research desk ends with 
     p.close();
   }
 });
+
+test("T-9 a copied research desk keeps each row's and part's own source and definition, read for the version shown", async () => {
+  const home = withDesk();
+  const report = home.projects[0].brief.sections.at(-1);
+  report.body = structuredClone(doseStudy.body);
+  const high = report.body.elements.desk.props.plots[0].rows.find((row) => row.id === "high-v2");
+  high.parts[0].estimate.cite = { source: "protocol", lines: "50-52" };
+  high.parts[0].estimate.definition = { id: "recovery", version: 1 };
+  const reads = [];
+  let p = await mount({ home, research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  let copied;
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const texts = [];
+    clipboard(p, async (text) => { texts.push(text); });
+    p.button("Copy report", card(p, "p-app", "dose-study")).click();
+    await waitFor(() => texts.length === 1, "copied");
+    copied = texts[0];
+    assert.ok(reads.length >= 1 && reads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(reads));
+  } finally {
+    p.close();
+  }
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown table"), "the pasted copy");
+    // The first table is the current plot's.
+    const table = card(p, "p-app", "pasted").querySelector(".brief-markdown table");
+    const basisOf = (label) => [...table.querySelectorAll("tr")].find((tr) => tr.cells[0]?.textContent === label)?.cells[4]?.textContent;
+    assert.equal(table.rows[0].cells[4]?.textContent, "Source · definition");
+    assert.equal(basisOf("High dose"), "Analysis output · Recovery v2", "the row's own");
+    assert.equal(basisOf("High dose · High dose"), "Protocol, lines 50-52 · Recovery v1", "the part's own, not its row's");
+    assert.equal(basisOf("High dose · Placebo"), "no source of its own · no definition of its own", "a part naming none takes none from its row");
+    assert.equal(table.querySelectorAll("a").length, 0);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

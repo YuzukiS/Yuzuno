@@ -34,7 +34,7 @@ test("a desk copies as Markdown: claims, tables of rows saying where each number
   assert.match(text, /^### Does the higher dose shorten recovery\?/);
   assert.match(text, /\*\*High dose shortens recovery\*\* \(holds under conditions\)/);
   assert.match(text, /May not say:\n- The low dose works\. \(interpretation\)/);
-  assert.match(text, /\| Row \| Value \| 95% interval \| From \|\n\| --- \| --- \| --- \| --- \|/);
+  assert.match(text, /\| Row \| Value \| 95% interval \| From \| Source · definition \|\n\| --- \| --- \| --- \| --- \| --- \|/);
   assert.match(text, /\| High dose \| -2\.04 \| \\\[-3\.12, -0\.96\\\] \| snapshot results\.json \|/);
   assert.match(text, /\| High dose · Placebo \| 9\.40 \|  \| snapshot results\.json \|/);
   assert.match(text, /\| High dose \| -2\.60 \| \\\[-3\.80, -1\.40\\\] \| the Agent \|/, "the v1 rows are the Agent's own");
@@ -153,4 +153,15 @@ test("an interval stays text beside a link definition of its own label, read or 
     assert.equal(doc.querySelectorAll("a").length, 0, `no interval became a link: ${interval}`);
     assert.ok([...doc.querySelectorAll("td")].some((td) => td.textContent === interval), `the interval as text: ${interval}`);
   }
+});
+
+test("each row and each part names its own source and definition, never its row's", () => {
+  const desk = structuredClone(doseStudy.body.elements.desk.props);
+  const high = desk.plots[0].rows.find((row) => row.id === "high-v2");
+  high.parts[0].estimate.cite = { source: "protocol", lines: "50-52" };
+  high.parts[0].estimate.definition = { id: "recovery", version: 1 };
+  const text = researchDeskMarkdown(desk, resolvedOf(desk));
+  assert.match(text, /\| High dose \| -2\.04 \| [^|]* \| snapshot results\.json \| Analysis output · Recovery v2 \|/);
+  assert.match(text, /\| High dose · High dose \| [^|]* \|  \| snapshot results\.json \| Protocol, lines 50-52 · Recovery v1 \|/);
+  assert.match(text, /\| High dose · Placebo \| 9\.40 \|  \| snapshot results\.json \| no source of its own · no definition of its own \|/);
 });
