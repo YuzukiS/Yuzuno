@@ -43,15 +43,24 @@ fn due(s: &Store, job: &Value) {
     value["notBeforeUnix"] = json!(0);
     store::save(&db, &value).unwrap();
 }
-/// Reserve this queued Job and record it running now.
+/// Reserve this queued Job and record it running now, its command created
+/// (the host's `command` record), as a reading of a started command shows.
 fn launch(s: &Store, job: &Value) -> Value {
     due(s, job);
     let reserved = s.reserve_next_job(None, None, None).unwrap().expect("a Job to reserve");
     assert_eq!(reserved["id"], job["id"]);
     s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":reserved["attempt"],
-        "status":"running","reason":"Running","started":{"at":now_unix()}}))
+        "status":"running","reason":"Running","started":{"at":now_unix()},
+        "command":{"attempt":reserved["attempt"],"pid":4242,"startedAt":now_unix()}}))
         .unwrap();
     record(s, job)
+}
+/// Reserve this queued Job only: its worker may start, nothing else is known.
+fn reserve(s: &Store, job: &Value) -> Value {
+    due(s, job);
+    let reserved = s.reserve_next_job(None, None, None).unwrap().expect("a Job to reserve");
+    assert_eq!(reserved["id"], job["id"]);
+    reserved
 }
 /// The Job's process ended with this systemd Result and main status. For an
 /// exit or a signal, the host's wrapper recorded it as the command's own, as
@@ -492,8 +501,9 @@ fn wrapper_failed(s: &Store, job: &Value, extra: Value) {
         evidence[key] = value.clone();
         evidence[key]["attempt"] = attempt.clone();
     }
+    // The wrapper's own start receipt is there either way: it comes first.
     s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":attempt,"status":"failed",
-        "reason":"exit-code","evidence":evidence}))
+        "reason":"exit-code","started":{"attempt":attempt,"at":now_unix()},"evidence":evidence}))
         .unwrap();
 }
 
@@ -521,18 +531,21 @@ async fn only_the_commands_own_exit_is_a_crash_a_wrapper_failure_never_retries_o
         assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("halted"), Some(why)), "{extra}");
         assert_eq!(view["retry"]["scheduled"], 0, "{why}: no budget spent");
 
-        // On a retry: the budget stays what it was.
+        // On a retry, failing straight from its reservation: the budget stays
+        // what it was, and it counts as started only if its command was.
         let lab = self::lab();
         let s = &lab.ws.store;
         let (id, root) = armed(&lab).await;
         let root = launch(s, &root);
         crash(s, &root);
-        let retry = launch(s, &latest(s, &id));
+        let retry = latest(s, &id);
+        reserve(s, &retry);
         wrapper_failed(s, &retry, extra.clone());
         assert_eq!(jobs(s), 3, "{why}: nothing follows the retry");
         assert!(record(s, &retry)["retriedBy"].is_null());
+        let started = i64::from(extra["command"]["pid"].is_i64());
         let view = recovery(&lab, &id).await;
-        assert_eq!((view["haltedReason"].as_str(), &view["retry"]), (Some(why), &json!({"scheduled":1,"started":1,"max":3})), "{extra}");
+        assert_eq!((view["haltedReason"].as_str(), &view["retry"]), (Some(why), &json!({"scheduled":1,"started":started,"max":3})), "{extra}");
     }
 
     // The command's own exit 1, or its own SIGSEGV: one retry each.
@@ -552,6 +565,117 @@ async fn only_the_commands_own_exit_is_a_crash_a_wrapper_failure_never_retries_o
         assert_eq!(jobs(s), 3, "{result}: one retry");
         assert_eq!(recovery(&lab, &id).await["retry"]["scheduled"], 1);
     }
+}
+
+/// A running reading of this reserved attempt, with the host's command
+/// record if `command` is given (`attempt` decides whose it claims to be).
+fn running(s: &Store, reserved: &Value, command: Option<&Value>) -> bool {
+    let mut reading = json!({"jobId":reserved["id"],"attempt":reserved["attempt"],"status":"running",
+        "reason":"Running with verified cgroup limits","started":{"attempt":reserved["attempt"],"at":now_unix()},
+        "evidence":{"SubState":"running"},"command":null});
+    if let Some(attempt) = command {
+        reading["command"] = json!({"attempt":attempt,"pid":4242,"startedAt":now_unix()});
+    }
+    s.update_job_evidence(reserved["id"].as_str().unwrap(), reading).unwrap()
+}
+
+#[tokio::test]
+async fn a_retry_counts_as_started_only_once_its_command_was_created() {
+    // A wrapper failure delivered straight after reservation, never running.
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    reserve(s, &retry);
+    wrapper_failed(s, &retry, json!({"notLaunched":{"stage":"inputs","reason":"RuntimeError: Guarded inputs must be files"}}));
+    let view = recovery(&lab, &id).await;
+    assert_eq!((&view["retry"], view["haltedReason"].as_str()), (&json!({"scheduled":1,"started":0,"max":3}), Some("inputs_changed")));
+
+    // Live: the worker runs before its command; the command's record arrives
+    // in a later reading and is taken once; repeats, and another attempt's
+    // record, change nothing.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    let reserved = reserve(s, &retry);
+    assert!(running(s, &reserved, None));
+    assert_eq!(recovery(&lab, &id).await["retry"]["started"], 0, "the worker alone is not a start");
+    assert!(!running(s, &reserved, None), "a repeat without the command changes nothing");
+    assert!(!running(s, &reserved, Some(&json!("another-attempt"))), "another attempt's record is not this one's");
+    assert_eq!(recovery(&lab, &id).await["retry"]["started"], 0);
+    assert!(running(s, &reserved, Some(&reserved["attempt"])), "the command's record is taken once");
+    assert_eq!(recovery(&lab, &id).await["retry"], json!({"scheduled":1,"started":1,"max":3}));
+    assert!(!running(s, &reserved, Some(&reserved["attempt"])), "and a repeat changes nothing");
+    assert_eq!(recovery(&lab, &id).await["retry"]["started"], 1);
+    crash(s, &retry);
+    assert_eq!(recovery(&lab, &id).await["retry"], json!({"scheduled":2,"started":1,"max":3}), "its crash spends one more, starts none");
+
+    // A fast exit: the command's record arrives only with the outcome.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    let reserved = reserve(s, &retry);
+    s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],
+        "status":"failed","reason":"exit-code","started":{"attempt":reserved["attempt"],"at":now_unix()},
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"},
+            "command":{"attempt":reserved["attempt"],"pid":4242,"exitCode":1}}}))
+        .unwrap();
+    assert_eq!(recovery(&lab, &id).await["retry"], json!({"scheduled":2,"started":1,"max":3}));
+
+    // Another attempt's record, or none: no start, and its exit is no crash.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    let reserved = reserve(s, &retry);
+    s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],
+        "status":"failed","reason":"exit-code","started":{"attempt":reserved["attempt"],"at":now_unix()},
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"},
+            "command":{"attempt":"another-attempt","pid":4242,"exitCode":1}}}))
+        .unwrap();
+    let view = recovery(&lab, &id).await;
+    assert_eq!((&view["retry"], view["haltedReason"].as_str()), (&json!({"scheduled":1,"started":0,"max":3}), Some("unknown_outcome")));
+    assert_eq!(jobs(s), 3, "nothing follows");
+
+    // A cancel being confirmed is never overwritten by a later reading.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    crash(s, &root);
+    let retry = latest(s, &id);
+    let reserved = reserve(s, &retry);
+    let revision = intent_of(s, &id)["revision"].as_i64().unwrap();
+    stop_now(s, &id, &stop_request("stop-1", &retry, revision)).unwrap();
+    assert_eq!(record(s, &retry)["status"], "cancelling");
+    assert!(!running(s, &reserved, Some(&reserved["attempt"])));
+    assert_eq!(record(s, &retry)["status"], "cancelling");
+
+    // Turned off while reserved: the retry may still run and its Job records
+    // that, but recovery stays off and counts nothing.
+    let lab = self::lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    let revision = intent_of(s, &id)["revision"].as_i64().unwrap();
+    crash(s, &root);
+    let retry = latest(s, &id);
+    let reserved = reserve(s, &retry);
+    opt_out_now(s, &id, &opt_out_request("off-1", &root, revision)).unwrap();
+    assert!(running(s, &reserved, Some(&reserved["attempt"])));
+    assert_eq!(record(s, &retry)["status"], "running");
+    let view = recovery(&lab, &id).await;
+    assert_eq!((view["mode"].as_str(), view["state"].as_str(), &view["retry"]["started"]), (Some("manual"), Some("off"), &json!(0)));
 }
 
 #[tokio::test]
@@ -748,7 +872,7 @@ async fn a_retry_that_ends_before_it_is_seen_running_still_counts_as_started() {
     // Its start receipt and its crash arrive in one reading.
     s.update_job_evidence(retry["id"].as_str().unwrap(), json!({"jobId":retry["id"],"attempt":reserved["attempt"],
         "status":"failed","reason":"exit-code","started":{"at":now_unix()},
-        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"},"command":{"attempt":reserved["attempt"],"exitCode":1}}}))
+        "evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"},"command":{"attempt":reserved["attempt"],"pid":4242,"exitCode":1}}}))
         .unwrap();
     assert_eq!(recovery(&lab, &id).await["retry"], json!({"scheduled":2,"started":1,"max":3}));
     // One refused at launch never started its command and is not counted.

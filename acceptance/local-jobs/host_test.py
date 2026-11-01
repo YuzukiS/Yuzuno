@@ -408,6 +408,19 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertNotIn('notLaunched', evidence)
         self.assertNotIn('command', evidence)
 
+    def test_a_live_reading_carries_only_this_attempts_command_record(self):
+        state = {'InvocationID':'invocation','MainPID':'42','SubState':'running','ActiveState':'active','Result':'success'}
+        def live():
+            with patch.object(host,'show',return_value=state), patch.object(host,'classify',return_value=None):
+                return host.reconcile(self.spec, self.folder)
+        self.assertEqual(live()['status'], 'unresolved')
+        self.assertIsNone(live()['command'], 'the worker alone has not created the command')
+        host.atomic(self.folder/'command.json', {'attempt':'an-earlier-attempt','pid':42,'startedAt':1.0})
+        self.assertIsNone(live()['command'])
+        record = {'attempt':self.spec['attempt'],'pid':42,'startedAt':1.0}
+        host.atomic(self.folder/'command.json', record)
+        self.assertEqual(live()['command'], record)
+
     def test_proof_from_another_attempt_or_on_an_unknown_outcome_is_not_this_commands_exit(self):
         host.atomic(self.folder/'command.json', {'attempt':'an-earlier-attempt','pid':42,'exitCode':1})
         self.assertNotIn('command', self.recorded()['evidence'])

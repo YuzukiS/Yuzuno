@@ -115,7 +115,9 @@ fn end_of(job: &Value) -> End {
             if let Some(stage) = evidence["notLaunched"]["stage"].as_str() {
                 return End::Halted(if stage == "inputs" { "inputs_changed" } else { "launch_refused" });
             }
-            match (result, evidence["command"]["exitCode"].as_i64()) {
+            let command = &evidence["command"];
+            let code = command["exitCode"].as_i64().filter(|_| command["attempt"] == job["attempt"]);
+            match (result, code) {
                 (Some("exit-code"), Some(code)) if code > 0 => {
                     End::Crash(json!({"kind":"exit","code":code,"jobId":job["id"],"endedAt":at}))
                 }
@@ -142,6 +144,16 @@ fn at(seconds: f64) -> String {
 
 fn now_unix() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
+}
+
+/// Whether this attempt's command itself was created: the host's record of it
+/// (`command`, with its pid), from a running reading or from the outcome.
+/// The wrapper's own start receipt (`started`) comes before its input checks
+/// and Popen, and `startedAt` is set at reservation, so neither counts.
+fn command_started(job: &Value) -> bool {
+    [&job["result"]["command"], &job["result"]["evidence"]["command"]]
+        .iter()
+        .any(|command| command["attempt"] == job["attempt"] && command["pid"].is_i64())
 }
 
 /// The end time is fixed once: from the root's start as first recorded, plus
@@ -177,7 +189,7 @@ pub(super) fn after_outcome(store: &Store, tx: &Connection, job: &mut Value) -> 
     match job["status"].as_str() {
         Some("running") => {
             let fixed = retry.is_none() && fix_deadline(recovery, job);
-            let ran = retry.is_some_and(|k| recovery["started"].as_i64().unwrap_or(0) < k);
+            let ran = retry.is_some_and(|k| command_started(job) && recovery["started"].as_i64().unwrap_or(0) < k);
             if let Some(k) = retry.filter(|_| ran) {
                 recovery["started"] = json!(k);
             }
@@ -192,12 +204,10 @@ pub(super) fn after_outcome(store: &Store, tx: &Connection, job: &mut Value) -> 
     if retry.is_none() {
         fix_deadline(recovery, job);
     }
-    // A retry can start and end between two observations: the host's start
-    // receipt then arrives with the outcome, and it still counts as started.
-    // `startedAt` alone is no proof (reservation sets it), and a rejected
-    // attempt never started its command.
-    let receipt = job["result"]["started"].is_object() && job["status"] != "rejected";
-    if let Some(k) = retry.filter(|k| receipt && recovery["started"].as_i64().unwrap_or(0) < *k) {
+    // A retry can start and end between two observations: its command's
+    // start then arrives with the outcome, and it still counts as started.
+    let ran = command_started(job);
+    if let Some(k) = retry.filter(|k| ran && recovery["started"].as_i64().unwrap_or(0) < *k) {
         recovery["started"] = json!(k);
     }
     let end = end_of(job);

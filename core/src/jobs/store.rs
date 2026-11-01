@@ -937,7 +937,17 @@ impl Store {
             ),
             "Invalid job evidence status"
         );
-        if status == "running" && (job["status"] == "running" || job["status"] == "cancelling") {
+        if status == "running" && job["status"] == "cancelling" {
+            return Ok(false);
+        }
+        // The command's own start (T-14) can follow the worker's: a later
+        // reading that newly carries this attempt's record of it is taken
+        // once; any other repeat changes nothing.
+        let created = |command: &Value| command["attempt"] == job["attempt"] && command["pid"].is_i64();
+        if status == "running"
+            && job["status"] == "running"
+            && !(created(&evidence["command"]) && !created(&job["result"]["command"]))
+        {
             return Ok(false);
         }
         if status == "unknown" && job["status"] == "unknown" && job["reason"] == evidence["reason"]

@@ -245,8 +245,11 @@ def main():
         time.sleep(15)
         assert job(retry1)['status'] == 'queued', 'not before its delay'
         main_lab.mode('segv 2')
-        running = main_lab.until(lambda v: v['job']['jobId'] == retry1 and recovery(v)['launch'] == 'running', 45)
-        assert recovery(running)['state'] == 'retry' and recovery(running)['retry']['started'] == 1, recovery(running)
+        # Started counts the command's own creation, which the host records
+        # right after the worker's start; a reading or two later shows it.
+        running = main_lab.until(lambda v: v['job']['jobId'] == retry1 and recovery(v)['launch'] == 'running'
+                                 and recovery(v)['retry']['started'] == 1, 45)
+        assert recovery(running)['state'] == 'retry', recovery(running)
         second = main_lab.until(lambda v: recovery(v)['state'] == 'waiting' and v['job']['jobId'] != retry1, 45)
         retry2 = second['job']['jobId']
         assert recovery(second)['lastFailure']['kind'] in ('signal', 'core_dump'), recovery(second)['lastFailure']

@@ -1227,7 +1227,12 @@ def reconcile(spec, folder):
     proof = read(folder / 'started.json')
     # A frozen worker still reads active/running; its cgroup tells paused apart.
     paused = freezer(proof) if proof and proof.get('invocationId') == state.get('InvocationID') else None
-    return {'status': 'unresolved', 'systemd': state, 'supervisor': show(spec['supervisorUnit']), 'started': proof, 'freezer': paused}
+    # Whether this attempt's command itself has been created yet (T-14): the
+    # worker's own start receipt comes before its input checks and Popen.
+    command = read(folder / 'command.json')
+    command = command if command and command.get('attempt') == spec['attempt'] else None
+    return {'status': 'unresolved', 'systemd': state, 'supervisor': show(spec['supervisorUnit']), 'started': proof,
+            'freezer': paused, 'command': command}
 
 def main():
     mode = sys.argv[1]
