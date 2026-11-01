@@ -47,31 +47,39 @@ impl<'a> Refs<'a> {
         Self { store, db, known: HashMap::new() }
     }
 
-    /// `${kind}:${id}` to LiveRefState, for every LiveRefs item in `body`.
+    /// `${kind}:${id}` to LiveRefState, for every LiveRefs item in `body`
+    /// and every link of a ResearchDesk's plans (T-9).
     pub fn of(&mut self, body: &Value) -> Value {
         let mut refs = serde_json::Map::new();
         let blocks = body["elements"].as_object().into_iter().flat_map(|elements| elements.values());
-        for block in blocks.filter(|block| block["type"] == "LiveRefs") {
-            for item in block["props"]["items"].as_array().into_iter().flatten() {
-                let (Some(kind), Some(id)) = (item["kind"].as_str(), item["id"].as_str()) else { continue };
-                let key = format!("{kind}:{id}");
-                if !self.known.contains_key(&key) {
-                    // A read that failed says so: it is not an item Core
-                    // does not know, and nothing is guessed for it.
-                    let mut shown = match self.resolve(kind, id) {
-                        Ok(Some(found)) => found,
-                        Ok(None) => json!({"found":false}),
-                        Err(error) => {
-                            eprintln!("Brief reference {key} unresolved: {error:#}");
-                            json!({"found":false,"unavailable":true})
-                        }
-                    };
-                    shown["kind"] = json!(kind);
-                    shown["id"] = json!(id);
-                    self.known.insert(key.clone(), shown);
-                }
-                refs.insert(key.clone(), self.known[&key].clone());
+        let items = blocks.flat_map(|block| -> Vec<&Value> {
+            match block["type"].as_str() {
+                Some("LiveRefs") => block["props"]["items"].as_array().into_iter().flatten().collect(),
+                Some("ResearchDesk") => block["props"]["plans"].as_array().into_iter().flatten()
+                    .flat_map(|plan| plan["links"].as_array().into_iter().flatten())
+                    .collect(),
+                _ => vec![],
             }
+        });
+        for item in items {
+            let (Some(kind), Some(id)) = (item["kind"].as_str(), item["id"].as_str()) else { continue };
+            let key = format!("{kind}:{id}");
+            if !self.known.contains_key(&key) {
+                // A read that failed says so: it is not an item Core
+                // does not know, and nothing is guessed for it.
+                let mut shown = match self.resolve(kind, id) {
+                    Ok(Some(found)) => found,
+                    Ok(None) => json!({"found":false}),
+                    Err(error) => {
+                        eprintln!("Brief reference {key} unresolved: {error:#}");
+                        json!({"found":false,"unavailable":true})
+                    }
+                };
+                shown["kind"] = json!(kind);
+                shown["id"] = json!(id);
+                self.known.insert(key.clone(), shown);
+            }
+            refs.insert(key.clone(), self.known[&key].clone());
         }
         Value::Object(refs)
     }

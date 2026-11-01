@@ -1,0 +1,498 @@
+import "./jsdom-guard.mjs";
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "vite";
+import react from "@vitejs/plugin-react";
+import { JSDOM, VirtualConsole } from "jsdom";
+import { benchmark, doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+
+// T-9: a research desk as Home draws it. The real BriefSectionBody in JSDOM,
+// with two synthetic desks of different shapes first accepted by the real
+// brief contract; Core's research read is a fetch stub that resolves each
+// JSON Pointer in the fixtures' files. No Core, browser or web/dist writes.
+const root = fileURLToPath(new URL("../", import.meta.url));
+const cache = path.join(root, "node_modules/.cache");
+await mkdir(cache, { recursive: true });
+const fixture = await mkdtemp(path.join(cache, "research-desk-"));
+let bundle;
+try {
+  const entry = path.join(fixture, "entry.tsx");
+  await writeFile(
+    entry,
+    `import React from 'react';
+import {flushSync} from 'react-dom';
+import {createRoot} from 'react-dom/client';
+import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/BriefSectionBody.tsx"))};
+import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
+import {checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
+import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
+import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
+const root=createRoot(document.getElementById('root'));
+window.chooseLanguage=(language)=>saveLanguagePreferences({language});
+window.checkBriefSection=checkBriefSection;
+window.renderSection=(section,projectId,workspaceId='',density='low')=>flushSync(()=>root.render(<BriefDensity.Provider value={density}><CardFoldWorkspace.Provider value={workspaceId}><BriefSectionBody section={section} projectId={projectId}/></CardFoldWorkspace.Provider></BriefDensity.Provider>));
+window.unmountSection=()=>flushSync(()=>root.render(null));`,
+  );
+  const result = await build({
+    root,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [react()],
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    build: { write: false, lib: { entry, name: "ResearchDesk", formats: ["iife"] } },
+  });
+  bundle = (Array.isArray(result) ? result[0] : result).output.find((item) => item.type === "chunk").code;
+} finally {
+  await rm(fixture, { recursive: true, force: true });
+}
+
+const tick = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(read, description, ms = 3000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value) return value;
+    await tick();
+  }
+  assert.fail(`Timed out waiting for ${description}`);
+}
+
+const PROJECT = "proj-1";
+const SHA = { "results.json": "a".repeat(64), "protocol.md": "b".repeat(64), "paper.tex": "c".repeat(64), "bench.json": "d".repeat(64), "method.md": "e".repeat(64) };
+/** A JSON Pointer in a fixture file, as Core resolves it. */
+function pointer(document, at) {
+  let value = document;
+  for (const step of at.split("/").slice(1).map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"))) {
+    if (value === null || typeof value !== "object" || !(step in value)) return undefined;
+    value = value[step];
+  }
+  return value;
+}
+/** Core's answer for one desk: each number read, each source's snapshot. */
+function resolvedOf(put, version, overrides = {}) {
+  const desk = put.body.elements.desk.props;
+  const values = {};
+  const read = (owner, estimate) => {
+    for (const field of ["value", "low", "high"]) {
+      const number = estimate[field];
+      if (!number || typeof number === "number") continue;
+      const found = pointer(fixtureFiles[number.from], number.pointer);
+      values[`${owner}.${field}`] = typeof found === "number" ? { status: "read", value: found, from: number.from } : { status: found === undefined ? "missing" : "not_number", from: number.from };
+    }
+  };
+  for (const plot of desk.plots)
+    for (const row of plot.rows) {
+      read(row.id, row.estimate);
+      for (const part of row.parts ?? []) read(part.id, part.estimate);
+    }
+  const sources = {};
+  for (const source of desk.sources)
+    if (source.snapshot) {
+      const sha = SHA[source.snapshot];
+      sources[source.id] = { attachment: source.snapshot, takenAt: "2026-10-31T08:00:00Z", size: 100, sha256: sha, available: true, ...(source.sha256 ? { stated: source.sha256 === sha ? "same" : "different" } : {}) };
+    }
+  return { key: put.key, version, elementId: "desk", values: { ...values, ...overrides }, sources };
+}
+
+function mount(respond) {
+  const errors = [];
+  const requests = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on("jsdomError", (error) => errors.push(error.message));
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
+  });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  window.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), method: init.method || "GET" });
+    const { status = 200, body = {} } = (await respond(String(url))) ?? {};
+    return { ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  window.eval(bundle);
+  return { window, document: window.document, errors, requests, close: () => window.close() };
+}
+
+/** A put as Core returns it: checked by the contract, its live refs read. */
+function section(page, put, version, extra = {}) {
+  const normalized = page.window.checkBriefSection(put);
+  return {
+    key: normalized.key, kind: normalized.kind, title: normalized.title, version,
+    owner: { agentId: "agent-a", name: "Researcher", state: "active" },
+    updatedAt: "2026-10-31T08:00:00Z", updatedTurnId: "turn-1", body: normalized.body,
+    attachments: [], refs: {}, seen: null, history: false, ...extra,
+  };
+}
+/** A desk's research read answered per section version. */
+function serve(put, overrides = {}) {
+  return (url) => {
+    const match = url.match(/\/brief\/research\/([^/]+)\/desk\?version=(\d+)$/);
+    if (match && decodeURIComponent(match[1]) === put.key) return { body: resolvedOf(put, Number(match[2]), overrides[match[2]]) };
+    return { status: 404, body: { error: "not here" } };
+  };
+}
+const radios = (document, label) => [...document.querySelectorAll(`[role="radiogroup"][aria-label="${label}"] [role="radio"]`)];
+const checked = (document, label) => radios(document, label).find((radio) => radio.getAttribute("aria-checked") === "true");
+const radio = (document, label, text) => radios(document, label).find((item) => item.textContent.includes(text));
+
+test("two desks of different shapes draw through one component, each number saying where it came from", async () => {
+  for (const [put, expect] of [
+    [doseStudy, { claim: "High dose shortens recovery", rows: "Recovery time vs placebo (v2): rows", value: "−2.04", interval: "[−3.12, −0.96]" }],
+    [benchmark, { claim: "The pass speeds up O2 builds", rows: "Runtime change with the pass: rows", value: "−6.1", interval: "[−8.0, −4.2]" }],
+  ]) {
+    const page = mount(serve(put));
+    try {
+      page.window.renderSection(section(page, put, 3), PROJECT, "ws-1");
+      const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+      assert.ok(desk.textContent.includes(expect.claim), put.key);
+      await until(() => desk.textContent.includes(expect.value), `${put.key}: the snapshot value`);
+      assert.ok(desk.textContent.includes(expect.interval), `${put.key}: its interval`);
+      assert.ok(radios(page.document, expect.rows).length >= 2, `${put.key}: rows are radios`);
+      assert.ok(page.document.querySelector('.research-origin[data-origin="read"]'), "a snapshot number says so");
+      assert.ok(page.document.querySelector(".research-origin").textContent.includes("From a fixed snapshot"));
+      assert.ok(!desk.textContent.match(/verified|checked by/i), "nothing is called verified");
+      if (put === benchmark) {
+        // Outside its own list a row is named with its group: two groups may hold rows of one label.
+        assert.ok(desk.textContent.includes("Primary result: O2 · o2 · arm"), "the primary row with its group");
+        assert.ok(desk.textContent.includes("O3 · o3 · arm (Runtime change with the pass)"), "a statement's basis with its group");
+        // A plot's scale is for display: the evidence says what the file holds.
+        radio(page.document, "Views of this desk", "Evidence & limits").click();
+        await until(() => page.document.querySelector(".research-main")?.textContent.includes("-0.061 in the file"), "the value as filed");
+        assert.ok(page.document.querySelector(".research-main").textContent.includes("−6.1"));
+      }
+      // Reads only: the desk's numbers, once per section version, and nothing that runs.
+      assert.ok(page.requests.every((request) => request.method === "GET" && /\/brief\/research\//.test(request.url)), JSON.stringify(page.requests));
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("selection follows pointer and keys across the desk, and survives a new version and a Workspace", async () => {
+  const page = mount(serve(doseStudy, { 4: { "high-v2.value": { status: "read", value: -2.5, from: "results.json" } } }));
+  try {
+    page.window.renderSection(section(page, doseStudy, 3), PROJECT, "ws-1");
+    const label = "Recovery time vs placebo (v2): rows";
+    await until(() => checked(page.document, label), "a selected row");
+    assert.ok(checked(page.document, label).textContent.includes("High dose"), "the claim's primary row is selected first");
+    // Pointer: another row.
+    radio(page.document, label, "Low dose").click();
+    await until(() => checked(page.document, label)?.textContent.includes("Low dose"), "the low dose row selected");
+    // Keys: down moves the selection and the focus with it.
+    const low = checked(page.document, label);
+    low.focus();
+    low.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await until(() => checked(page.document, label)?.textContent.includes("High dose"), "ArrowDown selects the next row");
+    assert.equal(page.document.activeElement, checked(page.document, label), "focus follows the selection");
+    assert.equal(checked(page.document, label).tabIndex, 0);
+    assert.ok(radios(page.document, label).filter((r) => r.tabIndex === 0).length === 1, "one tab stop per group");
+    // Difference or each arm on its own.
+    radio(page.document, "Show", "Each arm's own mean").click();
+    await until(() => page.document.querySelector(".research-caption")?.textContent === "High dose", "the parts of the selected row");
+    assert.ok(page.document.querySelector(".research-main").textContent.includes("Placebo"));
+    assert.ok(page.document.querySelector(".research-main").textContent.includes("7.36"));
+    radio(page.document, "Show", "Δ = arm − placebo").click();
+    await until(() => checked(page.document, label), "the difference again");
+    // Evidence: the selected row's numbers, definition and source.
+    radio(page.document, "Views of this desk", "Evidence & limits").click();
+    const main = await until(() => page.document.querySelector(".research-main h4")?.textContent === "High dose" && page.document.querySelector(".research-main"), "the evidence view of the selected row");
+    assert.ok(main.textContent.includes("Definition: Recovery"));
+    assert.ok(main.textContent.includes("Symptom-free for 72 hours."));
+    assert.ok(main.textContent.includes("From a fixed snapshot · results.json"));
+    // A new version in the background: same ids, a new number; the view and row stay.
+    page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-main")?.textContent.includes("−2.50"), "the new version's number");
+    assert.ok(checked(page.document, "Views of this desk").textContent.includes("Evidence & limits"));
+    assert.equal(page.document.querySelector(".research-main h4").textContent, "High dose");
+    // Kept per Workspace: another Workspace at this address starts fresh and keeps its own.
+    page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-2");
+    await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Claim & interval"), "another Workspace's own selection");
+    radio(page.document, "Views of this desk", "Next steps").click();
+    await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Next steps"), "a choice in the other Workspace");
+    page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-1");
+    await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Evidence & limits"), "this Workspace's selection again");
+    const stored = JSON.parse(page.window.localStorage.getItem("yuzuno.research-desk.v1"));
+    assert.deepEqual(Object.keys(stored).sort(), ["ws-1:proj-1:dose-study#desk", "ws-2:proj-1:dose-study#desk"]);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("definitions keep every version, show what a change moved, and plans only preview", async () => {
+  const page = mount(serve(doseStudy, { 3: { "low-v2.value": { status: "missing", from: "results.json" } } }));
+  try {
+    page.window.renderSection(section(page, doseStudy, 3, { refs: {} }), PROJECT, "ws-1");
+    await until(() => page.document.querySelector('.research-origin[data-origin="missing"]'), "a pointer that finds nothing");
+    assert.ok(page.document.querySelector('.research-origin[data-origin="missing"]').textContent.includes("Not in the snapshot"));
+    // The v2 plot reads its numbers from the snapshot; the superseded v1 plot shows the Agent's own.
+    const plot = (title) => [...page.document.querySelectorAll(".research-plot")].find((item) => item.querySelector("h5")?.textContent === title);
+    const origins = (title) => new Set([...plot(title).querySelectorAll(".research-origin")].map((mark) => mark.dataset.origin));
+    assert.deepEqual([...origins("Recovery time vs placebo (v2)")].sort(), ["missing", "read"]);
+    assert.deepEqual([...origins("Recovery time vs placebo (v1, superseded)")], ["provided"]);
+    assert.ok(plot("Recovery time vs placebo (v1, superseded)").textContent.includes("Provided by the Agent"));
+    // Sources: what Core knows, what the Agent said, and that nothing was checked again.
+    const aside = page.document.querySelector(".research-aside");
+    assert.ok(aside.textContent.includes("SHA-256 aaaaaaaaaaaa"));
+    assert.ok(aside.textContent.includes("The source file has not been checked again since."));
+    assert.ok(aside.textContent.includes("Differs from the SHA-256 the Agent gave"), "the paper's stated hash differs");
+    assert.ok(aside.textContent.includes("As described by the Agent"));
+    // History: both versions, before and after, the affected claim and an unapplied draft.
+    radio(page.document, "Views of this desk", "Definitions").click();
+    const history = await until(() => page.document.querySelector(".research-versions") && page.document.querySelector(".research-main"), "the definitions view");
+    assert.ok(history.textContent.includes("v2 · Current") && history.textContent.includes("v1 · Earlier"));
+    assert.ok(history.textContent.includes("Every version is kept"));
+    const compare = history.querySelector(".research-compare");
+    assert.ok(compare.textContent.includes("v1 → v2"));
+    assert.ok(compare.textContent.includes("−2.60 [−3.80, −1.40]") && compare.textContent.includes("−2.04 [−3.12, −0.96]"), compare.textContent);
+    assert.ok(history.textContent.includes("Not applied"));
+    // Next steps: a preview, nothing to run.
+    radio(page.document, "Views of this desk", "Next steps").click();
+    const next = await until(() => page.document.querySelector(".research-banner")?.parentElement, "the plans");
+    assert.ok(next.textContent.includes("nothing runs from this card"));
+    assert.ok(next.textContent.includes("Would not produce") && next.textContent.includes("Any new trial data"));
+    assert.equal(next.querySelectorAll("button:not(.research-link)").length, 0, "no button starts anything");
+    assert.ok(page.requests.every((request) => request.method === "GET"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a plan's links show their live state, and the desk speaks Chinese when asked", async () => {
+  const page = mount(serve(benchmark));
+  try {
+    page.window.chooseLanguage("zh-Hans");
+    const refs = { "task:T-12": { kind: "task", id: "T-12", found: true, title: "Quiet machine run", state: "doing", status: "doing" } };
+    page.window.renderSection(section(page, benchmark, 3, { refs }), PROJECT, "ws-1", "high");
+    const desk = await until(() => page.document.querySelector('.research-desk[data-density="high"]'), "a high-density desk");
+    await until(() => desk.textContent.includes("取自固定快照"), "the snapshot label in Chinese");
+    radio(page.document, "这个研究桌面的视图", "下一步").click();
+    const next = await until(() => page.document.querySelector(".research-links"), "the plan's links");
+    assert.ok(next.textContent.includes("Quiet machine run"), next.textContent);
+    assert.ok(page.document.querySelector(".research-main").textContent.includes("Job 成功不等于结论成立。"));
+    assert.ok(page.document.querySelector(".research-banner").textContent.includes("这张卡片不会运行任何东西"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("the parts toggle belongs to the selected row: a row without parts offers none", async () => {
+  // One row without parts beside one with them, as a real desk's primary average can be.
+  const mixed = structuredClone(doseStudy);
+  delete mixed.body.elements.desk.props.plots[0].rows[0].parts;
+  const page = mount(serve(mixed));
+  try {
+    page.window.renderSection(section(page, mixed, 3), PROJECT, "ws-1");
+    const label = "Recovery time vs placebo (v2): rows";
+    await until(() => checked(page.document, label)?.textContent.includes("High dose"), "the primary row, which has parts");
+    assert.equal(radios(page.document, "Show").length, 2, "a row with parts offers both");
+    radio(page.document, label, "Low dose").click();
+    await until(() => checked(page.document, label)?.textContent.includes("Low dose"), "the row without parts selected");
+    assert.equal(radios(page.document, "Show").length, 0, "no toggle that could show nothing");
+    radio(page.document, label, "High dose").click();
+    await until(() => radios(page.document, "Show").length === 2, "the toggle with a row that has parts");
+    radio(page.document, "Show", "Each arm's own mean").click();
+    await until(() => page.document.querySelector(".research-caption")?.textContent === "High dose", "its parts");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a statement resting on a row its claim does not show opens that row's evidence", async () => {
+  // The claim shows only the v2 plot; one statement rests on a v1 row.
+  const apart = structuredClone(doseStudy);
+  const claim = apart.body.elements.desk.props.claims[0];
+  claim.plots = ["recovery-v2"];
+  claim.statements[2].basis = ["high-v1"];
+  const page = mount(serve(apart));
+  try {
+    page.window.renderSection(section(page, apart, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+    assert.ok(!page.document.querySelector(".research-main").textContent.includes("−2.60"), "the v1 plot is not in this claim's view");
+    const link = [...page.document.querySelectorAll(".research-link")].find((item) => item.textContent.startsWith("High dose (Recovery time vs placebo (v1, superseded))"));
+    assert.ok(link, "the basis names the v1 row");
+    link.click();
+    const main = await until(() => checked(page.document, "Views of this desk")?.textContent.includes("Evidence & limits") && page.document.querySelector(".research-main"), "the evidence view");
+    await until(() => main.textContent.includes("−2.60"), "the v1 row's own number");
+    assert.equal(main.querySelector("h4").textContent, "High dose");
+    assert.ok(main.textContent.includes("Provided by the Agent"), "the v1 row's numbers are the Agent's");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("while a newer version loads, its numbers show as loading, never the older version's as read", async () => {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const answer = serve(doseStudy, { 4: { "high-v2.value": { status: "read", value: -2.5, from: "results.json" } } });
+  const page = mount(async (url) => {
+    if (url.endsWith("version=4")) await held;
+    return answer(url);
+  });
+  try {
+    page.window.renderSection(section(page, doseStudy, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "version 3's number");
+    page.window.renderSection(section(page, doseStudy, 4), PROJECT, "ws-1");
+    await until(() => page.document.querySelector('.research-origin[data-origin="loading"]'), "version 4 loading");
+    assert.equal(page.document.querySelectorAll('.research-origin[data-origin="read"]').length, 0, "nothing of version 3 is shown as read");
+    assert.ok(!page.document.querySelector(".research-desk").textContent.includes("−2.04"), "version 3's number is gone");
+    release();
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.50"), "version 4's number");
+    assert.ok(page.document.querySelector('.research-origin[data-origin="read"]'), "read from version 4's snapshot");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+/** The dose study's Definitions table, as text per cell, for a desk whose v1 plot is changed by `change`. */
+async function compared(change) {
+  const desk = structuredClone(doseStudy);
+  change(desk.body.elements.desk.props.plots[1]);
+  const page = mount(serve(desk));
+  try {
+    page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+    radio(page.document, "Views of this desk", "Definitions").click();
+    const table = await until(() => page.document.querySelector(".research-compare"), "the before and after table");
+    await until(() => table.textContent.includes("−2.04"), "the v2 numbers read");
+    const high = [...table.querySelectorAll("tr")].find((row) => row.querySelector("th")?.textContent === "High dose");
+    const [before, , after] = [...high.querySelectorAll("td")].map((cell) => cell.textContent);
+    assert.deepEqual(page.errors, []);
+    return { before, after };
+  } finally {
+    page.close();
+  }
+}
+
+test("a definition's before and after each show as their own plot shows them, in their own unit", async () => {
+  // The same value at two scales: v1 stores a fraction shown × 100; both plots show −2.04 days, so the table does too.
+  const same = await compared((v1) => {
+    v1.scale = 100;
+    Object.assign(v1.rows[1].estimate, { value: -0.0204, low: -0.0312, high: -0.0096 });
+  });
+  assert.equal(same.before, "−2.04 [−3.12, −0.96] days", "v1 as its plot shows it, not the fraction");
+  assert.equal(same.after, "−2.04 [−3.12, −0.96] days");
+});
+
+test("rows of plots in different units are compared each in its own unit, never converted", async () => {
+  const units = await compared((v1) => {
+    v1.scale = 100;
+    v1.unit = "centidays";
+  });
+  assert.equal(units.before, "−260.00 [−380.00, −140.00] centidays", "v1 in its own unit");
+  assert.equal(units.after, "−2.04 [−3.12, −0.96] days", "v2 in its own unit");
+});
+
+/**
+ * The dose study with a third definition version, its low rows compared v1 → v3 and its high rows v2 → v3;
+ * `highFirst` puts the v2 → v3 group first in the desk, so neither order can pass by being first.
+ */
+function threeVersions(highFirst) {
+  const desk = structuredClone(doseStudy);
+  const props = desk.body.elements.desk.props;
+  props.definitions[0].versions.push({ version: 3, text: "Symptom-free for 96 hours.", cite: { source: "protocol", lines: "36-40" }, change: "72 h still counted some relapses." });
+  const v3 = (id, compare, value, low, high) => ({ id, label: compare === "low" ? "Low dose" : "High dose", compare, estimate: { value, low, high, definition: { id: "recovery", version: 3 }, cite: { source: "protocol", lines: "50-54" } } });
+  const rows = [v3("low-v3", "low", -0.5, -1.6, 0.6), v3("high-v3", "high", -1.9, -3.0, -0.8)];
+  const [v2Plot, v1Plot] = props.plots;
+  const v3Plot = { id: "recovery-v3", title: "Recovery time vs placebo (v3)", unit: "days", digits: 2, reference: { value: 0, label: "0 = no difference" }, rows: highFirst ? rows.reverse() : rows };
+  // Low compares v1 with v3, high compares v2 with v3: each group keeps one earlier version.
+  delete v2Plot.rows.find((row) => row.id === "low-v2").compare;
+  delete v1Plot.rows.find((row) => row.id === "high-v1").compare;
+  // The first compared row is low-v1 (low group first) or high-v3 (high group first).
+  props.plots = highFirst ? [v3Plot, v2Plot, v1Plot] : [v1Plot, v2Plot, v3Plot];
+  return desk;
+}
+
+test("with three definition versions, each comparison is captioned with the versions it actually compares", async () => {
+  for (const highFirst of [false, true]) {
+    const desk = threeVersions(highFirst);
+    const page = mount(serve(desk));
+    try {
+      page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
+      await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+      radio(page.document, "Views of this desk", "Definitions").click();
+      await until(() => page.document.querySelectorAll(".research-compare").length === 2 && page.document.querySelector(".research-desk").textContent.includes("−2.04"), "a table per transition");
+      const tables = [...page.document.querySelectorAll(".research-compare")].map((table) => ({
+        caption: table.querySelector("caption").textContent,
+        rows: [...table.querySelectorAll("tr")].map((row) => [row.querySelector("th").textContent, ...[...row.querySelectorAll("td")].map((cell) => cell.textContent)]),
+      }));
+      assert.deepEqual(tables, [
+        { caption: "v1 → v3", rows: [["Low dose", "−0.90 [−2.10, +0.30] days", "→", "−0.50 [−1.60, +0.60] days"]] },
+        { caption: "v2 → v3", rows: [["High dose", "−2.04 [−3.12, −0.96] days", "→", "−1.90 [−3.00, −0.80] days"]] },
+      ], `highFirst=${highFirst}`);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("a part's numbers show the part's own source and definition, never its row's", async () => {
+  // Rows cite results.json (available) under definition v2. High dose's arm cites the protocol under v1; low dose's arm
+  // cites the paper, whose snapshot is no longer kept; both placebos cite nothing. One statement rests on high dose's arm.
+  const desk = structuredClone(doseStudy);
+  const props = desk.body.elements.desk.props;
+  const v2 = props.plots[0];
+  const high = v2.rows.find((row) => row.id === "high-v2");
+  const low = v2.rows.find((row) => row.id === "low-v2");
+  Object.assign(high.parts[0].estimate, { cite: { source: "protocol", lines: "60-62" }, definition: { id: "recovery", version: 1 } });
+  Object.assign(low.parts[0].estimate, { cite: { source: "paper", lines: "12" }, definition: { id: "recovery", version: 1 } });
+  props.claims[0].statements[0].basis = ["high-v2-arm"];
+  const answer = serve(desk);
+  const page = mount(async (url) => {
+    const reply = answer(url);
+    if (reply.body?.sources?.paper) reply.body.sources.paper = { attachment: "paper.tex", available: false, reason: "missing" };
+    return reply;
+  });
+  const view = async (name) => {
+    radio(page.document, "Views of this desk", name).click();
+    await until(() => checked(page.document, "Views of this desk")?.textContent.includes(name), name);
+  };
+  /** The selected row's two part containers in the evidence view, as text, once its numbers are read. */
+  const partsOf = (row, value) =>
+    until(() => {
+      const found = [...page.document.querySelectorAll(".research-main .research-part")];
+      return page.document.querySelector(".research-main h4")?.textContent === row && found.length === 2 && found[0].textContent.includes(value) && found.map((part) => part.textContent);
+    }, `${row}'s parts`);
+  try {
+    page.window.renderSection(section(page, desk, 3), PROJECT, "ws-1");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("−2.04"), "the desk");
+    // Through the statement's basis: the arm's row opens on its parts; its evidence is the arm's own.
+    const basis = await until(() => [...page.document.querySelectorAll(".research-link")].find((link) => link.textContent.startsWith("High dose · High dose")), "the basis link to the arm");
+    basis.click();
+    await until(() => page.document.querySelector(".research-caption")?.textContent === "High dose", "the high dose row's parts");
+    await view("Evidence & limits");
+    const [arm, placebo] = await partsOf("High dose", "7.36");
+    assert.ok(arm.includes("Protocol") && arm.includes("lines 60-62") && arm.includes("bbbbbbbbbbbb"), `the arm's own source, lines and snapshot: ${arm}`);
+    assert.ok(arm.includes("Definition: Recovery") && arm.includes("v1") && arm.includes("Symptom-free for 48 hours."), `the arm's own definition version: ${arm}`);
+    assert.ok(!arm.includes("Analysis output") && !arm.includes("aaaaaaaaaaaa") && !arm.includes("v2"), `nothing of the row's: ${arm}`);
+    assert.ok(placebo.includes("This part names no source or definition of its own."), placebo);
+    assert.ok(!placebo.includes("Analysis output") && !placebo.includes("Definition:") && !placebo.includes("aaaaaaaaaaaa"), `nothing inherited: ${placebo}`);
+    // Through the plot: low dose's arm declares the paper, whose snapshot is gone; it does not borrow the row's available one.
+    await view("Claim & interval");
+    // The basis opened the plot on the arm's parts: back to the differences to choose another row.
+    radio(page.document, "Show", "Δ = arm − placebo").click();
+    const lowRadio = await until(() => radio(page.document, "Recovery time vs placebo (v2): rows", "Low dose"), "the low dose row");
+    lowRadio.click();
+    await until(() => checked(page.document, "Recovery time vs placebo (v2): rows")?.textContent.includes("Low dose"), "low dose selected");
+    await view("Evidence & limits");
+    const [lowArm, lowPlacebo] = await partsOf("Low dose", "8.78");
+    assert.ok(lowArm.includes("Draft") && lowArm.includes("lines 12") && lowArm.includes("This snapshot is no longer kept"), `the declared source, unavailable: ${lowArm}`);
+    assert.ok(!lowArm.includes("SHA-256") && !lowArm.includes("aaaaaaaaaaaa") && !lowArm.includes("Analysis output"), `no available status borrowed: ${lowArm}`);
+    assert.ok(lowArm.includes("v1") && lowArm.includes("Symptom-free for 48 hours."), `its own definition version: ${lowArm}`);
+    assert.ok(lowPlacebo.includes("This part names no source or definition of its own.") && !lowPlacebo.includes("Analysis output"), lowPlacebo);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
