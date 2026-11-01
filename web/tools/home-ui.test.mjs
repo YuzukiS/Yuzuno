@@ -2311,6 +2311,11 @@ test("T-9 a report's plain fields read back as written once the copy is rendered
 // it, not taking in the parts after. Closed fences, short and long, stay as
 // they are. Each case is its own report, copied on its own.
 const mdBlock = (text) => ({ type: "Markdown", props: { text } });
+/** A block whose full, collapsed and shortcut links use its own [s], titled. */
+const refBlock = (text, href) => mdBlock(`Full [${text}][s], collapsed [s][], shortcut [s].\n\n[s]: ${href} "Title ${text}"`);
+const anchorsOf = (el) => [...el.querySelectorAll("a")].map((a) => `${a.textContent} ${a.getAttribute("href")} ${a.getAttribute("title")}`);
+const linksOf = (text, href) => [`${text} ${href} Title ${text}`, `s ${href} Title ${text}`, `s ${href} Title ${text}`];
+const plainRef = (el) => [...el.querySelectorAll("p")].some((p) => p.textContent === "Undefined [s] stays text." && !p.querySelector("a"));
 const cellTable = (text) => ({ type: "Table", props: { id: text.replace(/\W+/g, "-"), columns: [{ key: "k", label: "Key" }], rows: [{ id: "r", cells: { k: text } }] } });
 const markdownCases = {
   closed: { long: mdBlock("````\n```\nnot a closer\n````"), afterLong: mdBlock("after the long fence"), short: mdBlock("```\nclosed\n```"),
@@ -2330,6 +2335,10 @@ const markdownCases = {
   textarea: { open: mdBlock("<textarea"), plan: { type: "Plan", props: { steps: [{ id: "p", text: "plan step after textarea", state: "todo" }] } } },
   div: { open: mdBlock("<div>\nboxed text"), after: cellTable("after div") },
   lists: { zero: mdBlock("1. zero"), one: mdBlock("1. one") },
+  // Each block's link references are its own, as on the page: the same label
+  // defined in two blocks, in either order, and one block using it undefined.
+  refs: { a: refBlock("one", "https://a.test/"), b: refBlock("two", "https://b.test/"), plain: mdBlock("Undefined [s] stays text.") },
+  refsSwapped: { plain: mdBlock("Undefined [s] stays text."), b: refBlock("two", "https://b.test/"), a: refBlock("one", "https://a.test/") },
 };
 /** What the page itself shows for each raw HTML case's Markdown block. */
 const pageShows = { preAttr: "", textarea: "<textarea", div: "boxed text" };
@@ -2360,6 +2369,8 @@ const markdownChecks = {
     && [...el.querySelectorAll("ol > li")].some((li) => li.textContent.includes("plan step after textarea")),
   div: (el) => [...el.querySelectorAll("div")].some((div) => div.textContent.trim() === "boxed text")
     && [...el.querySelectorAll("td")].some((td) => td.textContent === "after div" && td.closest("div") === el),
+  refs: (el) => plainRef(el) && JSON.stringify(anchorsOf(el)) === JSON.stringify([...linksOf("one", "https://a.test/"), ...linksOf("two", "https://b.test/")]),
+  refsSwapped: (el) => plainRef(el) && JSON.stringify(anchorsOf(el)) === JSON.stringify([...linksOf("two", "https://b.test/"), ...linksOf("one", "https://a.test/")]),
   // Two lists, each numbered from 1 as on the page.
   lists: (el) => [...el.querySelectorAll("ol")].length === 2 && [...el.querySelectorAll("ol")].every((ol) => !ol.hasAttribute("start") && ol.children.length === 1),
 };

@@ -484,3 +484,10 @@
 .research-part {
   margin-top: 6px;
 }
+.research-part-definition {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+}
+.research-part-definition .research-note {
+  display: block;
+}
