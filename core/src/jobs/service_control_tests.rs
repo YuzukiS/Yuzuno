@@ -5,14 +5,14 @@
 use super::*;
 use crate::services::NewService;
 
-struct Lab {
-    _dir: tempfile::TempDir,
-    ws: Arc<Workspace>,
-    project: String,
+pub(super) struct Lab {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) ws: Arc<Workspace>,
+    pub(super) project: String,
 }
 
 /// A Project with a task in it (T-1) and an Agent.
-fn lab() -> Lab {
+pub(super) fn lab() -> Lab {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     let agent: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"a","cwd":"/workspace",
@@ -27,7 +27,7 @@ fn lab() -> Lab {
     Lab { _dir: dir, ws, project }
 }
 
-async fn service(lab: &Lab, name: &str) -> String {
+pub(super) async fn service(lab: &Lab, name: &str) -> String {
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let new = NewService { name: name.into(), machine_id: "local".into(), port, path: "/".into() };
     lab.ws.register_service(&lab.project, new, json!({"kind":"user"}), None).await.unwrap()["id"]
@@ -37,17 +37,17 @@ async fn service(lab: &Lab, name: &str) -> String {
 }
 
 /// The inputs as the host read them, unchanged since the source Job.
-fn snap() -> Value {
+pub(super) fn snap() -> Value {
     json!({"cwd":"/workspace","git":null,"files":[]})
 }
-fn machine() -> Value {
+pub(super) fn machine() -> Value {
     json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":4000,"memoryMiB":4096,"swapMiB":0}})
 }
-fn capability() -> Value {
+pub(super) fn capability() -> Value {
     json!({"bootId":"boot"})
 }
 
-fn served(id: &str, service: &str) -> Submit {
+pub(super) fn served(id: &str, service: &str) -> Submit {
     let mut submit: Submit = serde_json::from_value(json!({"requestId":id,"taskId":"T-1","agentId":"a","name":"Dev server",
         "cwd":"/workspace","argv":["/usr/bin/python3","-m","http.server"],"env":{"PATH":"/usr/bin:/bin","LAB_ONLY":"1"},
         "resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0},"timeoutSeconds":3600,"guardGit":false,
@@ -58,47 +58,47 @@ fn served(id: &str, service: &str) -> Submit {
 }
 
 /// An Agent's ordinary job_submit(serviceId).
-fn submit(s: &Store, id: &str, service: &str) -> Result<Value> {
+pub(super) fn submit(s: &Store, id: &str, service: &str) -> Result<Value> {
     s.create_job(None, served(id, service), snap(), machine(), capability())
 }
 
-fn run(s: &Store, job: &Value) {
+pub(super) fn run(s: &Store, job: &Value) {
     s.reserve_next_job(None, None, None).unwrap().unwrap();
     s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":job["attempt"],"status":"running",
         "reason":"Running with verified cgroup limits","started":{"at":1792000000.0}}))
         .unwrap();
 }
-fn end(s: &Store, job: &Value, status: &str) {
+pub(super) fn end(s: &Store, job: &Value, status: &str) {
     s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":job["attempt"],"status":status,
         "reason":"ended","exitCode":0}))
         .unwrap();
 }
 /// A Job record put in a state the worker would report.
-fn force(s: &Store, job: &Value, status: &str, reserved: bool) {
+pub(super) fn force(s: &Store, job: &Value, status: &str, reserved: bool) {
     let db = s.db.write().unwrap();
     let mut value = store::get(&db, job["id"].as_str().unwrap()).unwrap();
     value["status"] = json!(status);
     value["reserved"] = json!(reserved);
     store::save(&db, &value).unwrap();
 }
-fn record(s: &Store, job: &Value) -> Value {
+pub(super) fn record(s: &Store, job: &Value) -> Value {
     store::get(&*s.db.read().unwrap(), job["id"].as_str().unwrap()).unwrap()
 }
 
-fn stop_request(id: &str, job: &Value, revision: i64) -> Request {
+pub(super) fn stop_request(id: &str, job: &Value, revision: i64) -> Request {
     serde_json::from_value(json!({"requestId":id,"expectedJobId":job["id"],"expectedIntentRevision":revision})).unwrap()
 }
-fn start_request(id: &str, job: &Value, revision: i64) -> Request {
+pub(super) fn start_request(id: &str, job: &Value, revision: i64) -> Request {
     serde_json::from_value(json!({"requestId":id,"expectedJobId":job["id"],"expectedIntentRevision":revision,
         "sourceJobId":job["id"],"timeoutSeconds":7200}))
     .unwrap()
 }
-fn stop_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
+pub(super) fn stop_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
     request.validate("stop")?;
     stop(s, service, request)
 }
 /// control()'s start with the host's reading given: a receipt first, as there.
-fn start_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
+pub(super) fn start_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
     request.validate("start")?;
     if let Some(receipt) = previous(&*s.db.read().unwrap(), service, "start", request)? {
         return Ok(receipt);
@@ -109,21 +109,21 @@ fn start_now(s: &Store, service: &str, request: &Request) -> Result<Value> {
     }
 }
 /// The host's reading, as control() gives it to finish_start.
-fn read(snapshot: Value) -> (Value, Value, Value) {
+pub(super) fn read(snapshot: Value) -> (Value, Value, Value) {
     (snapshot, machine(), capability())
 }
-fn jobs(s: &Store) -> i64 {
+pub(super) fn jobs(s: &Store) -> i64 {
     s.db.read().unwrap().query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0)).unwrap()
 }
 /// A start's submission, where the test expects one to be made.
-fn prepared(s: &Store, service: &str, request: &Request) -> (Submit, Current) {
+pub(super) fn prepared(s: &Store, service: &str, request: &Request) -> (Submit, Current) {
     match prepare(s, service, request).unwrap() {
         Prepared::Start(input, original) => (input, original),
         Prepared::Receipt(receipt) => panic!("expected a start to prepare, got the receipt {receipt}"),
     }
 }
 
-async fn listed(lab: &Lab, id: &str) -> Value {
+pub(super) async fn listed(lab: &Lab, id: &str) -> Value {
     lab.ws.project_services(&lab.project).await.unwrap()["services"]
         .as_array()
         .unwrap()
@@ -132,12 +132,12 @@ async fn listed(lab: &Lab, id: &str) -> Value {
         .unwrap()
         .clone()
 }
-fn links(s: &Store, service: &str) -> i64 {
+pub(super) fn links(s: &Store, service: &str) -> i64 {
     s.db.read().unwrap()
         .query_row("SELECT COUNT(*) FROM project_service_jobs WHERE service_id=?1", [service], |r| r.get(0))
         .unwrap()
 }
-fn error(result: Result<Value>) -> String {
+pub(super) fn error(result: Result<Value>) -> String {
     format!("{:#}", result.unwrap_err())
 }
 

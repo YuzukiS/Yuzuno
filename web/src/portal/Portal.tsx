@@ -630,6 +630,7 @@ function ServiceIdle({ kind }: { kind: NonNullable<ReturnType<typeof serviceIdle
   const [title, note] = {
     stopped: [t.idleStopped, t.idleStoppedNote], expired: [t.idleExpired, t.idleExpiredNote], ended: [t.idleEnded, t.idleEndedNote],
     stopping: [t.idleStopping, t.idleStoppingNote], queued: [t.idleQueued, t.idleQueuedNote], unknown: [t.idleUnknown, t.idleUnknownNote],
+    retryWaiting: [t.idleRetryWaiting, t.idleRetryWaitingNote], retryStarting: [t.idleRetryStarting, t.idleRetryStartingNote],
     check: [t.idleCheck, t.idleCheckNote],
   }[kind];
   const body = <><strong>{title}</strong><p>{note}</p></>;

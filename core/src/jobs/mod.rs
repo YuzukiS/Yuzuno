@@ -27,6 +27,7 @@ mod remote_tests;
 mod runs;
 pub(crate) mod store;
 pub(crate) mod service_control;
+mod service_recovery;
 #[cfg(test)]
 mod pause_tests;
 #[cfg(test)]

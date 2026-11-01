@@ -218,6 +218,19 @@ fn previous(
         response["jobId"].as_str().context("Invalid job receipt")?,
     )?)))
 }
+/// A service's automatic retry refused before launch (T-14): never started,
+/// its refusal recorded and told, then recovery settles it in the same
+/// transaction.
+fn refuse_retry(store: &Store, tx: &Connection, job: &mut Value, code: &str, reason: &str) -> Result<()> {
+    job["status"] = json!("rejected");
+    job["reason"] = json!(reason);
+    job["finishedAt"] = json!(now());
+    job["result"] = json!({"status":"rejected","reason":reason,
+        "evidence":{"coreObservation":true,"notStarted":true,"recoveryRefusal":code}});
+    notify(tx, job)?;
+    save(tx, job)?;
+    super::service_recovery::after_outcome(store, tx, job)
+}
 fn notify(db: &Connection, job: &mut Value) -> Result<()> {
     let status = job["status"]
         .as_str()
@@ -461,6 +474,12 @@ pub(super) fn request_cancel_in(store: &Store, tx: &Connection, actor: Option<&s
     }
     save(tx, &job)?;
     super::runs::job_changed(store, tx, &job)?;
+    // A service's automatic retry cancelled before reservation is never
+    // reconciled again, so its recovery period is settled here (T-14). Stop
+    // and opt-out have already closed it; this changes nothing for them.
+    if job["status"] == "cancelled" && job["service"].is_object() {
+        super::service_recovery::after_outcome(store, tx, &mut job)?;
+    }
     Ok(job)
 }
 
@@ -568,10 +587,14 @@ impl Store {
         let value = insert_job(&tx, value)?;
         if let Some(link) = &input.service_link {
             crate::service_jobs::insert(&tx, value["id"].as_str().context("Job identity missing")?, link)?;
+            // Another run taking over never inherits automatic retry (T-14).
+            if input.service_control.is_none() {
+                super::service_recovery::superseded(&tx, &link.service_id, &value)?;
+            }
         }
         tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'job_submit',?2,?3,?4)",params![actor_key(actor),input.request_id,payload.to_string(),json!({"jobId":value["id"]}).to_string()])?;
         if let Some(guard) = &input.service_control {
-            super::service_control::started(&tx, guard, &value)?;
+            super::service_control::started(&tx, guard, &value, &self.instance)?;
         }
         let value = QueueState::read(&tx)?.view(value);
         tx.commit()?;
@@ -705,6 +728,29 @@ impl Store {
     ) -> Result<Option<Value>> {
         Ok(self.reserve_next(host_memory_available, host, disk)?.0)
     }
+    /// At Core start, once the Jobs table exists and before the queue runs
+    /// (T-14): a service's automatic retry still queued without a reservation
+    /// was queued by an earlier Core and never starts. It is rejected now, as
+    /// reservation would reject it, not once its delay has passed: until then
+    /// it would keep the service from a manual Start. A retry already
+    /// reserved, and every other Job, is left as it is.
+    pub(crate) fn reject_earlier_core_retries(&self) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut q = tx.prepare("SELECT id FROM local_jobs WHERE status='queued' AND reserved=0
+            AND json_extract(data,'$.executor') IS NULL AND json_type(data,'$.recoveryOf')='object' ORDER BY seq")?;
+        let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        for id in ids {
+            let mut job = get(&tx, &id)?;
+            if job["recoveryOf"]["coreInstance"] != json!(self.instance) {
+                let (code, reason) = super::service_recovery::EARLIER_CORE;
+                refuse_retry(self, &tx, &mut job, code, reason)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
     /// Try the queued jobs in admission order and reserve the first that fits:
     /// its own free-space verdict, the shared CPU/RAM/swap budget, a slot,
     /// host memory and the GPUs it declares, all checked and reserved for the
@@ -773,6 +819,7 @@ impl Store {
                     notify(&tx, &mut job)?;
                     save(&tx, &job)?;
                     super::runs::job_changed(self, &tx, &job)?;
+                    super::service_recovery::after_outcome(self, &tx, &mut job)?;
                     changed = true;
                     continue;
                 }
@@ -785,6 +832,15 @@ impl Store {
                 notify(&tx, &mut job)?;
                 save(&tx, &job)?;
                 super::runs::job_changed(self, &tx, &job)?;
+                super::service_recovery::after_outcome(self, &tx, &mut job)?;
+                changed = true;
+                continue;
+            }
+            // A service's automatic retry (T-14): one queued by an earlier Core
+            // never starts, nor one with too little of its run's time left;
+            // otherwise its timeout is cut to what remains.
+            if let Some((code, reason)) = super::service_recovery::reservation(self, &mut job) {
+                refuse_retry(self, &tx, &mut job, code, reason)?;
                 changed = true;
                 continue;
             }
@@ -811,6 +867,7 @@ impl Store {
                         notify(&tx, &mut job)?;
                         save(&tx, &job)?;
                         super::runs::job_changed(self, &tx, &job)?;
+                        super::service_recovery::after_outcome(self, &tx, &mut job)?;
                         changed = true;
                         continue;
                     }
@@ -909,7 +966,17 @@ impl Store {
             ),
             "Invalid job evidence status"
         );
-        if status == "running" && (job["status"] == "running" || job["status"] == "cancelling") {
+        if status == "running" && job["status"] == "cancelling" {
+            return Ok(false);
+        }
+        // The command's own start (T-14) can follow the worker's: a later
+        // reading that newly carries this attempt's record of it is taken
+        // once; any other repeat changes nothing.
+        let created = |command: &Value| command["attempt"] == job["attempt"] && command["pid"].is_i64();
+        if status == "running"
+            && job["status"] == "running"
+            && !(created(&evidence["command"]) && !created(&job["result"]["command"]))
+        {
             return Ok(false);
         }
         if status == "unknown" && job["status"] == "unknown" && job["reason"] == evidence["reason"]
@@ -945,6 +1012,13 @@ impl Store {
             }
             save(&tx, &job)?;
             super::runs::job_changed(self, &tx, &job)?;
+        }
+        // A service run's automatic retry (T-14) reads this Job as ended and
+        // unreserved: it is saved so first, then the retry, if any, is added
+        // in this same transaction.
+        if job["service"].is_object() {
+            save(&tx, &job)?;
+            super::service_recovery::after_outcome(self, &tx, &mut job)?;
         }
         notify(&tx, &mut job)?;
         save(&tx, &job)?;

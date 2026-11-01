@@ -6,9 +6,13 @@
 // is queued, not ready; an expired or unknown run shows why instead of a
 // page, and closing the preview stops nothing. Each confirmation is what the
 // user sees, above the Portal even when it covers the window. Desktop light
-// and dark, a narrow desktop window and a 390 px phone, in Chinese. Production bundle with an explicit API fixture:
-// no Core, synthetic data; only the service's own open, stop and start are
-// sent, to the fixture.
+// and dark, a narrow desktop window and a 390 px phone, in Chinese. Bounded
+// recovery (T-14 v3.4): a waiting retry with its earliest time, its stop and
+// opt-out, a retry in launch preparation, a Core restart with the current run
+// to be checked, and the Start option unticked after the retries are used.
+// Production bundle with an explicit API fixture: no Core, synthetic data;
+// only the service's own open, stop, start and opt-out are sent, to the
+// fixture.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_CHECK_OUTPUT=<dir> node tools/service-lifecycle-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -57,15 +61,29 @@ const run = (extra = {}) => ({ jobId: "demo-84", status: "running", owner: "veri
   cancelRequestedAt: null, attempt: "a1", ownerCheckedAt: iso(-MIN), ...extra });
 // An ended run no longer listens on the port.
 const ended = (extra = {}) => run({ owner: "notListening", canStop: false, reserved: false, finishedAt: iso(-10 * MIN), ...extra });
-const service = ({ job = run(), chosen = intent(), canStart = false, health } = {}) => ({
+const service = ({ job = run(), chosen = intent(), canStart = false, health, recovery, outcomeUnknown } = {}) => ({
   id: "s1", projectId: "p1", machineId: "local", port: 5173, path: "/", name: "Northstar · 开发预览", author: { kind: "agent", id: "iris", name: "Iris" },
   createdAt: iso(-3 * HOUR),
   connection: { state: "available", localPort: PORT, httpStatus: 200, framing: "allowed", since: iso(-MIN) },
   job,
   health: health ?? { declared: true, path: "/health", state: "ok", httpStatus: 200, checkedAt: iso(-MIN) },
   lifecycle: { intent: chosen, canStart, startBlockedCode: canStart ? null : "service_busy",
-    startBlockedReason: canStart ? null : "service_busy: this Job has not conclusively ended without a reservation", sourceJobId: job.jobId },
+    startBlockedReason: canStart ? null : "service_busy: this Job has not conclusively ended without a reservation", sourceJobId: job.jobId,
+    ...(recovery ? { recovery } : {}), ...(outcomeUnknown !== undefined ? { outcomeUnknown } : {}) },
 });
+// Bounded recovery as Core reports it (Dev 5's contract v1): the window of
+// demo-84 after two crashes; retry 2 (demo-86) is the current Job.
+const armed = intent(2, { desiredState: "running", recoveryMode: "bounded", requestedAt: iso(-2 * HOUR), requestedBy: { kind: "user" },
+  appliesToJobId: "demo-84", sourceJobId: "demo-71", requestId: "r-armed" });
+const window2 = (extra = {}) => ({ mode: "bounded", state: "waiting", launch: "queued", queueReason: "Waiting for shared machine capacity",
+  retry: { scheduled: 2, started: 1, max: 3 }, schedule: [30, 120, 600], deadlineAt: iso(2 * HOUR), retryJobId: "demo-86",
+  notBefore: iso(2 * MIN), lastFailure: { kind: "exit", code: 1, jobId: "demo-85", endedAt: iso(-10_000) }, haltedReason: null, haltedAt: null,
+  attempts: [{ retry: 0, jobId: "demo-84", startedAt: iso(-2 * HOUR), endedAt: iso(-20 * MIN), outcome: "exit:1" },
+    { retry: 1, jobId: "demo-85", startedAt: iso(-19 * MIN), endedAt: iso(-10_000), outcome: "exit:1" },
+    { retry: 2, jobId: "demo-86", startedAt: null, endedAt: null, outcome: null }], observedAt: iso(0), ...extra });
+const retryRun = (extra = {}) => run({ jobId: "demo-86", earlierJobIds: ["demo-84", "demo-85"], status: "queued", owner: "unknown", reserved: false,
+  startedAt: null, attempt: null, ownerCheckedAt: null, ...extra });
+const notChecked = { declared: true, path: "/health", state: "unknown" };
 const stoppedBy = (request) => intent(request.expectedIntentRevision + 1, { desiredState: "stopped", requestedAt: iso(0),
   requestedBy: { kind: "user" }, appliesToJobId: request.expectedJobId, requestId: request.requestId });
 const scenes = {
@@ -74,6 +92,14 @@ const scenes = {
     finishedAt: iso(-10 * MIN) }), canStart: true, health: { declared: true, path: "/health", state: "ok", httpStatus: 200, checkedAt: iso(-11 * MIN) } }),
   unknown: () => service({ job: run({ status: "unknown", owner: "unknown", ownerCheckedAt: iso(-6 * MIN) }),
     health: { declared: true, path: "/health", state: "ok", httpStatus: 200, checkedAt: iso(-6 * MIN) } }),
+  retryWaiting: () => service({ job: retryRun(), chosen: armed, health: notChecked, recovery: window2() }),
+  retryStarting: () => service({ job: retryRun({ status: "starting", reserved: true }), chosen: armed, health: notChecked,
+    recovery: window2({ state: "retry", launch: "starting", queueReason: null }) }),
+  restartUnknown: () => service({ job: retryRun({ status: "unknown", reserved: true, startedAt: iso(-MIN) }), chosen: armed, health: notChecked, outcomeUnknown: true,
+    recovery: window2({ state: "halted", launch: "unknown", queueReason: null, haltedReason: "core_restart", haltedAt: iso(-30_000) }) }),
+  exhausted: () => service({ job: ended({ jobId: "demo-87", status: "failed", reason: "exit code 1", startedAt: iso(-8 * MIN), finishedAt: iso(-MIN) }), chosen: armed, canStart: true,
+    health: notChecked, recovery: window2({ state: "exhausted", launch: null, queueReason: null, retry: { scheduled: 3, started: 3, max: 3 }, retryJobId: "demo-87",
+      notBefore: null, lastFailure: { kind: "exit", code: 1, jobId: "demo-87", endedAt: iso(-MIN) } }) }),
 };
 // The service's Job, as the Jobs dialog lists it.
 const jobRecord = { id: "demo-84", name: "Northstar 开发预览", requestId: "r-84", taskRef: "T-14", agentId: "iris", agent: { name: "Iris" },
@@ -132,6 +158,15 @@ async function open({ name, width, height, touch, theme }) {
         state.service = service({ job: run({ jobId: "demo-85", earlierJobIds: ["demo-71", "demo-84"], status: "queued", reserved: false, startedAt: null,
           timeoutSeconds: body.timeoutSeconds, attempt: null, ownerCheckedAt: null }), chosen, health: { declared: true, path: "/health", state: "unknown" } });
         return route.fulfill({ json: { serviceId: "s1", requestId: body.requestId, action: "start", intent: chosen, jobId: "demo-85", status: "queued" } });
+      }
+      if (path === "/api/services/s1/recovery") {
+        // Opting out while retry 2 waits: Core cancels it; it never starts.
+        state.posts.push({ path, body });
+        const chosen = intent(body.expectedIntentRevision + 1, { desiredState: "running", requestedAt: iso(0), requestedBy: { kind: "user" },
+          appliesToJobId: "demo-86", sourceJobId: "demo-71", requestId: body.requestId });
+        state.service = service({ job: retryRun({ status: "cancelled", canStop: false, finishedAt: iso(0) }), chosen, canStart: true, health: notChecked,
+          recovery: window2({ mode: "manual", state: "off", launch: null, queueReason: null, haltedReason: "opted_out", haltedAt: iso(0) }) });
+        return route.fulfill({ json: { serviceId: "s1", requestId: body.requestId, action: "recovery", intent: chosen, jobId: "demo-86", status: "cancelled", cancelledRetryJobId: "demo-86" } });
       }
       report.writes.push(`${name}: ${request.method()} ${path}`);
       return route.fulfill({ status: 405, json: { error: "no writes here" } });
@@ -413,12 +448,94 @@ try {
       assert.match(await page.locator(".portal-panel .portal-idle").textContent(), /^运行期限到了/);
       await shoot(page, `${view.name}-expired`);
       await refresh(page, scenes.unknown(), state);
-      await waitHeadline(page, "运行情况还待核实");
+      await waitHeadline(page, "运行情况还在核对");
       assert.match(await page.locator(".portal-panel .portal-idle").textContent(), /^先确认原来的运行/);
       assert.equal(await lifecycle(page).getByRole("button", { name: "再启动一次…" }).count(), 0, "no start while the run is unknown");
+      assert.equal(await lifecycle(page).getByRole("button", { name: "停止服务…" }).count(), 1, "a stop may be asked of an unknown run");
       assert.deepEqual(await sideways(page), { page: 0, panel: 0, lifecycle: [] });
-      record(`${view.name}: expired and unknown each say why there is no page; unknown offers no start`);
+      record(`${view.name}: expired and unknown each say why there is no page; unknown offers a stop request, no start`);
       await shoot(page, `${view.name}-unknown`);
+
+      // Bounded recovery: retry 2 waits for its earliest time.
+      const recoveryLines = () => lifecycle(page).locator(".service-recovery-intent p span").allTextContents();
+      await refresh(page, scenes.retryWaiting(), state);
+      await waitHeadline(page, "服务已停止，稍后自动再试");
+      const waitingLines = await recoveryLines();
+      assert.match(waitingLines[0] ?? "", /^第 2 次自动再试（共 3 次）· 等待中 · 最早 .+ 后尝试 · 约 2 分钟后$/, JSON.stringify(waitingLines));
+      assert.doesNotMatch(await lifecycle(page).textContent(), /即将开始|将在/);
+      assert.deepEqual((await facts(page)).process, ["本轮尚未启动", "等待重试"]);
+      assert.match(await page.locator(".portal-panel .portal-idle").textContent(), /^等待自动再试/);
+      assert.match(await lifecycle(page).locator(".service-recovery-off").textContent(), /^关闭自动再试会取消等待中的那次再试，服务保持停止$/);
+      assert.match(await lifecycle(page).locator(".service-lifecycle-deadline").textContent(), /共用本次截止时间；到期停止，不另开新的运行窗口$/);
+      assert.equal(await lifecycle(page).getByRole("button", { name: "再启动一次…" }).count(), 0, "no start while a retry waits");
+      assert.deepEqual(await sideways(page), { page: 0, panel: 0, lifecycle: [] });
+      record(`${view.name}: a waiting retry says this round hasn't started, its earliest time and what opt-out cancels`, { lines: waitingLines });
+      await shoot(page, `${view.name}-recovery-waiting`);
+      if (view.name === "desktop") {
+        await lifecycle(page).locator(".service-recovery-details summary").click();
+        assert.match(await lifecycle(page).locator(".service-recovery-details").textContent(), /已安排 2 次 · 已启动 1 次 · 上限 3 次/);
+        await shoot(page, `${view.name}-recovery-details`);
+        await lifecycle(page).locator(".service-recovery-details summary").click();
+      }
+      // Its stop: no process runs; the waiting retry is cancelled with it.
+      await lifecycle(page).getByRole("button", { name: "停止服务…" }).click();
+      const retryStop = page.locator(".modal.service-control-dialog");
+      await retryStop.waitFor();
+      assert.match(await retryStop.textContent(), /现在没有进程在运行；停止只改变接下来会发生的事。/);
+      assert.match(await retryStop.textContent(), /也会取消那次等待中的自动再试（最早 .+ 后尝试），之后不会再自动启动。/);
+      assert.deepEqual(await dialogShown(page, "停止服务"), shown, "the stop confirmation is seen, above the Portal");
+      record(`${view.name}: a waiting retry's stop says no process runs and the retry is cancelled with it`);
+      await shoot(page, `${view.name}-recovery-stop`);
+      await retryStop.getByRole("button", { name: "继续运行" }).click();
+      await retryStop.waitFor({ state: "detached" });
+
+      // In launch preparation: it may run briefly; opting out keeps this round.
+      await refresh(page, scenes.retryStarting(), state);
+      await waitHeadline(page, "第 2 次自动再试正在准备启动");
+      assert.deepEqual(await recoveryLines(), ["第 2 次自动再试（共 3 次）正在准备启动"]);
+      assert.match(await lifecycle(page).locator(".service-recovery-off").textContent(), /当前这一轮不受影响，之后不再自动再试$/);
+      record(`${view.name}: a retry in launch preparation; opting out keeps this round`);
+      if (!view.full || view.touch) await shoot(page, `${view.name}-recovery-starting`);
+
+      // After a Core restart the current run is to be checked: a stop may be asked, no start.
+      await refresh(page, scenes.restartUnknown(), state);
+      await waitHeadline(page, "运行情况还在核对");
+      assert.deepEqual(await recoveryLines(), ["自动再试已关闭（Core 已重启）", "当前这次运行：待核对"]);
+      assert.equal(await lifecycle(page).getByRole("button", { name: "停止服务…" }).count(), 1);
+      assert.equal(await lifecycle(page).getByRole("button", { name: "再启动一次…" }).count(), 0);
+      assert.equal(await lifecycle(page).getByRole("button", { name: "关闭自动再试" }).count(), 0);
+      record(`${view.name}: after a Core restart, recovery is off and the current run is to be checked; stop offered, no start`);
+      if (!view.full || view.touch) await shoot(page, `${view.name}-recovery-restart-unknown`);
+
+      // All retries used: Start offers the option again, unticked.
+      await refresh(page, scenes.exhausted(), state);
+      await page.waitForFunction(() => document.querySelector(".service-recovery-intent")?.textContent?.includes("3 次自动再试都已用完"), null, { timeout: 8_000 });
+      await lifecycle(page).getByRole("button", { name: "再启动一次…" }).click();
+      const restart = page.locator(".modal.service-control-dialog");
+      await restart.waitFor();
+      const option = restart.locator(".service-recovery-option");
+      assert.equal(await option.locator("input").isChecked(), false, "unticked on every start");
+      assert.equal(await option.textContent(), "失败后自动再试最多 3 次，分别在 30 秒、2 分钟、10 分钟后；共用本次截止时间；停止、到期或 Core 重启后不会再试");
+      assert.deepEqual(await dialogShown(page, "启动一次"), shown, "the start confirmation is seen, above the Portal");
+      record(`${view.name}: after the retries are used, Start offers the option unticked, with Core's delays`);
+      await shoot(page, `${view.name}-recovery-start`);
+      await restart.getByRole("button", { name: "取消" }).click();
+      await restart.waitFor({ state: "detached" });
+
+      // Opting out while a retry waits: sent at once, the retry cancelled.
+      if (view.name === "desktop" || view.name === "phone") {
+        await refresh(page, scenes.retryWaiting(), state);
+        await waitHeadline(page, "服务已停止，稍后自动再试");
+        await lifecycle(page).getByRole("button", { name: "关闭自动再试" }).click();
+        await page.waitForFunction(() => document.querySelector(".service-recovery-intent")?.textContent === "你已关闭自动再试", null, { timeout: 8_000 });
+        const [optedOut] = writes(state, "recovery");
+        assert.deepEqual({ ...optedOut.body, requestId: typeof optedOut.body.requestId },
+          { requestId: "string", expectedJobId: "demo-86", expectedIntentRevision: 2, mode: "manual" });
+        assert.deepEqual((await facts(page)).process.slice(0, 1), ["本轮没有启动"]);
+        assert.equal(await lifecycle(page).getByRole("button", { name: "再启动一次…" }).count(), 1, "manual from here");
+        record(`${view.name}: opting out while a retry waits cancels it; manual from here`);
+        await shoot(page, `${view.name}-recovery-opted-out`);
+      }
 
       // Closing the preview stops nothing.
       const before = state.posts.length;

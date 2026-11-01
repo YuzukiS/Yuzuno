@@ -549,6 +549,9 @@ pub struct Store {
     // the first Core's running agents offline merely because it uses another port.
     // It also keeps older Cores out while they would mishandle this Workspace.
     pub(crate) workspace_lock: crate::older_cores::Guard,
+    /// This opening of the Workspace, new each time Core starts. A service's
+    /// automatic retry made under another one never starts (T-14).
+    pub(crate) instance: String,
 }
 
 impl Drop for Store {
@@ -1219,7 +1222,13 @@ impl Store {
             }),
             records: Mutex::new(HashMap::new()),
             workspace_lock: crate::older_cores::Guard::new(workspace_lock, path.with_extension("lock")),
+            instance: uuid::Uuid::new_v4().to_string(),
         };
+        // Before any queue runs: a service retry an earlier Core queued never
+        // starts (reservation refuses it too, should this fail).
+        if let Err(error) = store.reject_earlier_core_retries() {
+            eprintln!("Workspace could not reject automatic retries queued before this start: {error:#}");
+        }
         // Disk is historical evidence, never proof a process is still running.
         for a in store.agents()? {
             if a.closed_at.is_some() { continue; }
