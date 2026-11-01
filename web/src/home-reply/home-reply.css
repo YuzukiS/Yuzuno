@@ -1,0 +1,335 @@
+/* A reply from Home in the conversation (T-9, Dev 7's hr5): the answer at
+   the message's own size, where it came from on one smaller line. */
+.user-home-reply {
+  white-space: normal;
+}
+.home-reply {
+  box-sizing: border-box;
+  max-width: 44rem;
+  min-width: 0;
+  padding: 0.7rem 0.95rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.55;
+}
+.home-reply-source {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 0.4em;
+  margin-bottom: 0.5rem;
+  color: var(--muted);
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.home-reply-source svg {
+  align-self: center;
+  flex: none;
+  color: var(--green);
+}
+.home-reply-title {
+  color: color-mix(in srgb, var(--ink) 80%, var(--muted));
+  overflow-wrap: anywhere;
+}
+.home-reply-version {
+  padding: 0 0.45em;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.92em;
+}
+.home-reply-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.home-reply-choice {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.3em 0.8em 0.3em 0.6em;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 9%, var(--paper));
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.home-reply-choice svg {
+  flex: none;
+  color: var(--green);
+}
+.home-reply-words {
+  margin: 0;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Folded, never cut: the whole text is there behind "Show all". */
+.home-reply-words.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.home-reply-form-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82em;
+}
+.home-reply dl {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 0;
+}
+.home-reply dt {
+  color: var(--muted);
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+}
+.home-reply dd {
+  min-width: 0;
+  margin: 0.1rem 0 0;
+  overflow-wrap: anywhere;
+}
+.home-reply dd[data-empty] {
+  color: var(--muted);
+}
+.home-reply dd p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.home-reply dd ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-reply dd li {
+  padding: 0 0.6em;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 7%, var(--paper));
+}
+.home-reply footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin-top: 0.6rem;
+  padding-top: 0.35rem;
+  border-top: 1px dashed var(--line);
+}
+.home-reply-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  min-height: 32px;
+  padding: 0 0.5rem;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: color-mix(in srgb, var(--ink) 75%, var(--muted));
+  font: inherit;
+  font-size: 0.85em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.home-reply footer > .home-reply-action:first-child {
+  margin-left: -0.5rem;
+}
+.home-reply-action:hover {
+  background: color-mix(in srgb, var(--line) 45%, var(--paper));
+}
+.home-reply-action:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--line) 45%, var(--paper));
+}
+.home-reply-action.home {
+  margin-left: auto;
+  color: var(--green);
+  font-weight: 600;
+}
+.home-reply-action.done {
+  color: var(--green);
+}
+.home-reply-action.more {
+  align-self: flex-start;
+  min-height: 28px;
+  padding-left: 0;
+  color: var(--green);
+  font-weight: 600;
+}
+.home-reply-action .chev {
+  transition: transform 0.12s;
+}
+.home-reply-action[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+.home-reply-question {
+  margin: 0.5rem 0 0.15rem;
+  padding: 0.35rem 0 0.25rem 0.75rem;
+  border-left: 3px solid var(--line);
+  color: color-mix(in srgb, var(--ink) 85%, var(--muted));
+  font-size: 0.875em;
+  line-height: 1.7;
+}
+.home-reply-meta {
+  margin-bottom: 0.2rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+.home-reply-question p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.home-reply-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.home-reply-options li {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.home-reply-options li.chosen {
+  color: var(--ink);
+  font-weight: 600;
+}
+.home-reply-options li.chosen svg {
+  flex: none;
+  color: var(--green);
+}
+.home-reply-options .dot {
+  width: 14px;
+  flex: none;
+  text-align: center;
+}
+.home-reply-original {
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.5rem 0.6rem 0.35rem;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--line) 30%, var(--paper));
+  color: var(--muted);
+  font-size: 0.78em;
+}
+.home-reply-original p {
+  margin: 0 0 0.35rem;
+}
+.home-reply-original pre {
+  margin: 0 0 0.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 1em/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.home-reply-original .home-reply-action {
+  min-height: 30px;
+  margin-left: -0.5rem;
+  font-size: 1em;
+}
+/* An earlier reply: one small line and its actions. */
+.home-reply.earlier {
+  padding: 0.55rem 0.8rem 0.35rem;
+}
+.home-reply.earlier .home-reply-source {
+  margin-bottom: 0;
+}
+.home-reply.earlier footer {
+  margin-top: 0.25rem;
+  padding-top: 0.1rem;
+  border-top: 0;
+}
+
+/* Phone: the card takes the width, its actions two rows of 44 px targets. */
+.home-reply[data-layout="phone"] {
+  max-width: none;
+  padding: 0.7rem 0.8rem 0.25rem;
+}
+.home-reply[data-layout="phone"] footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 8px;
+  padding-top: 2px;
+}
+.home-reply[data-layout="phone"] .home-reply-action {
+  min-height: 44px;
+  padding: 0 4px;
+  justify-content: flex-start;
+}
+.home-reply[data-layout="phone"] footer > .home-reply-action:first-child {
+  margin-left: 0;
+}
+.home-reply[data-layout="phone"] .home-reply-action.home {
+  margin-left: 0;
+  justify-content: flex-end;
+}
+.home-reply[data-layout="phone"] .home-reply-action.second {
+  font-size: 0.8em;
+}
+/* An odd one out, as an earlier reply's single row, takes the whole row. */
+.home-reply[data-layout="phone"] footer > .home-reply-action.second:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+.home-reply[data-layout="phone"] .home-reply-original .home-reply-action {
+  min-height: 44px;
+  margin-left: 0;
+}
+
+/* On Home, where "Open on Home" landed (hr5 frame E). */
+.home-reply-arrival {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--yellow, #efd180) 55%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--yellow, #efd180) 22%, var(--paper));
+  color: var(--ink);
+  font-size: 0.9em;
+  line-height: 1.55;
+}
+.home-reply-arrival svg {
+  flex: none;
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--yellow, #efd180) 40%, var(--ink));
+}
+.home-reply-arrival-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 3px;
+}
+.home-reply-arrival-actions button {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--green);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.home-reply-arrival-actions button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.app.phone .home-reply-arrival-actions button {
+  min-height: 44px;
+}

@@ -3,7 +3,10 @@ import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
 import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
 import { shellText } from "../shell-text";
-import type { Agent, Project } from "../types";
+import type { Agent, HomeReplyOrigin, Project } from "../types";
+import type { MessageLink } from "../deep-link";
+import { arrivalOf } from "../home-reply/home-reply-model";
+import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
@@ -59,6 +62,8 @@ export function Home({
   onNavigate,
   onChanged,
   onNeedsYou,
+  arrival = null,
+  onBackToReply,
 }: {
   /** Bumped (debounced) on Agent changes and anything else Home shows. */
   revision: number;
@@ -72,6 +77,10 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
+  /** "Open on Home" on a reply from Home (T-9): the section and version it
+   * answered, and the message to go back to; another opening is another `n`. */
+  arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
+  onBackToReply?: (link: MessageLink) => void;
 }) {
   const language = useLanguage();
   const t = homeText(language);
@@ -211,6 +220,28 @@ export function Home({
     pendingJump.current = { target: () => target() || document.getElementById(projectDomId(projectId)), n };
     setReveal({ n, projects: { ...reveal.projects, [projectId]: n } });
   }
+  // A reply's "Open on Home" (T-9): once Home has read, to the section it
+  // answered (or its project), once per opening. What has become of that
+  // version is said from what Home reads now, never decided before.
+  const arrived = useRef(0);
+  useEffect(() => {
+    if (!arrival || !data || arrived.current === arrival.n) return;
+    arrived.current = arrival.n;
+    const { projectId, key } = arrival.origin;
+    revealIn(projectId, () => (key === null ? null : document.getElementById(sectionDomId(projectId, key))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrival, data]);
+  const replyPanel = arrival && data ? data.projects.find((p) => p.project.id === arrival.origin.projectId) : undefined;
+  const landed = arrival && data ? arrivalOf(arrival.origin, replyPanel) : null;
+  const landedNote = (ask: boolean) =>
+    arrival && landed && (
+      <ReplyArrival
+        arrival={landed}
+        version={arrival.origin.version}
+        ask={ask}
+        onBack={onBackToReply ? () => onBackToReply(arrival.back) : undefined}
+      />
+    );
   function jump(item: NeedsYouItem) {
     const panel = item.projectId ? panels.find((p) => p.project.id === item.projectId) : undefined;
     if (!panel) {
@@ -422,6 +453,7 @@ export function Home({
             onChange={layout ? widgetLayout.change : undefined}
           />
           <div className="home-main">
+            {landed?.kind === "gone" && landedNote(false)}
             {reordering && (
               <p className="home-note home-reorder-note">{t.reorderNote}</p>
             )}
@@ -439,6 +471,18 @@ export function Home({
                     needsYou={needsFor(panel)}
                     readOnly={readOnly}
                     reveal={reveal.projects[panel.project.id] || 0}
+                    arrival={
+                      arrival && landed && panel.project.id === arrival.origin.projectId && arrival.origin.key !== null
+                        ? {
+                            key: arrival.origin.key,
+                            inCard: landed.kind === "changed",
+                            note: landedNote(
+                              (arrival.origin.snapshot?.sectionKind ??
+                                panel.brief.sections.find((s) => s.key === arrival.origin.key)?.kind) === "ask",
+                            ),
+                          }
+                        : null
+                    }
                     reorder={
                       reordering
                         ? {

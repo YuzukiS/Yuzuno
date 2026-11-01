@@ -199,7 +199,8 @@ import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
 import { followVisualViewport } from "./keyboard-viewport";
-import type { QuestionSource } from "./types";
+import type { HomeReplyOrigin, QuestionSource } from "./types";
+import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
@@ -390,6 +391,9 @@ export function App() {
   // Without a system frame (Windows desktop), the toolbar is the title bar.
   const frame = useCustomFrame();
   const [homeOpen, setHomeOpen] = useState(false);
+  /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
+   * and the message to go back to; another opening is another `n`. */
+  const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
@@ -1747,6 +1751,25 @@ export function App() {
   }
   const openLink = useRef(openMessageLink);
   openLink.current = openMessageLink;
+  /** "Open on Home" on a reply from Home (T-9): Home, at the section and
+   * version it answered, where Home says what has become of it. A reply
+   * from another Workspace's Home opens nothing here. */
+  const openHomeReply = useRef<HomeReplyLinksApi["open"]>(() => {});
+  openHomeReply.current = (origin, from) => {
+    if (origin.workspaceId && origin.workspaceId !== workspaceId) {
+      setNotice(homeReplyText(language).otherWorkspace);
+      return;
+    }
+    const owner = workspace?.agents.find((a) => a.id === from.agentId);
+    setHomeArrival((last) => ({ origin, back: { workspaceId, ...from, threadId: owner?.threadId }, n: (last?.n ?? 0) + 1 }));
+    setHomeOpen(true);
+    setPhoneList(false);
+  };
+  const homeReplyLinks = useMemo<HomeReplyLinksApi>(() => ({ open: (origin, from) => openHomeReply.current(origin, from) }), []);
+  // Leaving Home ends the arrival: opening it again some other way is not one.
+  useEffect(() => {
+    if (!homeOpen) setHomeArrival(null);
+  }, [homeOpen]);
   const messageLinks = useMemo<MessageLinkApi>(() => ({
     href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
       ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
@@ -2357,6 +2380,7 @@ export function App() {
     <HandoffContext.Provider value={handoffApi}>
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
+    <HomeReplyLinks.Provider value={previewMode || !workspaceId ? null : homeReplyLinks}>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen || phone ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
       style={panelWidths.style}
@@ -2676,6 +2700,8 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
+            arrival={homeArrival}
+            onBackToReply={(link) => openMessageLink(link)}
           />
         ) : agent ? (
           <>
@@ -3856,6 +3882,7 @@ export function App() {
       )}
       <HandoffDropStrip />
     </div>
+    </HomeReplyLinks.Provider>
     </MessageLinks.Provider>
     </PointFixOpen.Provider>
     </HandoffContext.Provider>

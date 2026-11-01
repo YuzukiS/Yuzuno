@@ -64,6 +64,8 @@ import { TurnFiles } from "./portal/TurnFiles";
 import { OpenChoice } from "./portal/OpenChoice";
 import { htmlFile } from "./portal/html-file";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
+import { copyText } from "./clipboard";
+import { HomeReply, homeReplyOf } from "./home-reply/HomeReply";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
 import { callFacts, callWords, toolOverview } from "./tool-call";
@@ -206,18 +208,6 @@ export function Modal({
       </Dialog.Portal>
     </Dialog.Root>
   );
-}
-/** Writes text that may still be loading. The clipboard write starts during
- * the click, so browsers that require a user gesture still accept it. */
-async function copyText(text: string | Promise<string>) {
-  if (typeof text === "string") return navigator.clipboard.writeText(text);
-  if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write)
-    return navigator.clipboard.write([
-      new ClipboardItem({
-        "text/plain": text.then((value) => new Blob([value], { type: "text/plain" })),
-      }),
-    ]);
-  return navigator.clipboard.writeText(await text);
 }
 export function CopyButton({
   text,
@@ -893,6 +883,10 @@ export function Turn({
   };
   const userBody = (item: NativeItem) => {
     const text = userText(item);
+    // A reply from Home, as Core's receipt names it (T-9); never from its text.
+    const home = homeReplyOf(item);
+    if (home)
+      return <div className="user-text user-home-reply"><HomeReply origin={home} item={item} agentId={agent.id} turnId={turn.id} /></div>;
     const answer = formAnswer(text, receiptOf(item));
     return answer ? (
       <div className="user-text user-form-answer"><SentFormAnswer agentId={agent.id} answer={answer} text={text} /></div>

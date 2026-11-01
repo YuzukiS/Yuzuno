@@ -241,6 +241,7 @@ export function HomePanel({
   onNavigate,
   onChanged,
   onSeen,
+  arrival = null,
 }: {
   panel: ProjectPanel;
   /** Position in Project Priority, from 0. */
@@ -256,6 +257,9 @@ export function HomePanel({
   onNavigate: (target: HomeTarget) => void;
   onChanged: () => void;
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
+  /** Where a reply's "Open on Home" landed in this project (T-9): the note
+   * in the card it answered, or above the cards when that card is gone. */
+  arrival?: { key: string; inCard: boolean; note: ReactNode } | null;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -332,6 +336,7 @@ export function HomePanel({
       readOnly={readOnly}
       onSeen={seen}
       onChanged={onChanged}
+      notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
     />
   );
   const viewChanges = (request: PendingRequest) => () =>
@@ -393,6 +398,7 @@ export function HomePanel({
       </header>
       {!collapsed && (
         <div className="home-panel-content" id={`${projectDomId(id)}-content`}>
+          {arrival && !arrival.inCard && arrival.note}
           <div className="home-widgets">
             {panel.pending.length > 0 && (
               <Approvals projectId={id} count={panel.pending.length}>
