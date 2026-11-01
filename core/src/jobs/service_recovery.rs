@@ -67,8 +67,8 @@ enum End {
     Halted(&'static str),
 }
 
-const SIGNALS: [(i64, &str); 9] = [(1, "SIGHUP"), (2, "SIGINT"), (4, "SIGILL"), (6, "SIGABRT"), (7, "SIGBUS"),
-    (8, "SIGFPE"), (9, "SIGKILL"), (11, "SIGSEGV"), (15, "SIGTERM")];
+const SIGNALS: [(i64, &str); 11] = [(1, "SIGHUP"), (2, "SIGINT"), (4, "SIGILL"), (6, "SIGABRT"), (7, "SIGBUS"),
+    (8, "SIGFPE"), (9, "SIGKILL"), (11, "SIGSEGV"), (13, "SIGPIPE"), (15, "SIGTERM"), (25, "SIGXFSZ")];
 
 /// Read only from the Job's recorded evidence, as run-stage retries are
 /// (`runs::auto_retry`): systemd's `Result` and the host's own markers.
@@ -100,11 +100,27 @@ fn end_of(job: &Value) -> End {
         }),
         Some("failed") => {
             let at = job["finishedAt"].clone();
-            let result = evidence["systemd"]["Result"].as_str();
+            let systemd = &evidence["systemd"];
+            let result = systemd["Result"].as_str();
+            let command = &evidence["command"];
+            let code = command["exitCode"].as_i64().filter(|_| command["attempt"] == job["attempt"]);
+            // The wrapper ends as its command did, raising the command's
+            // signal itself. systemd counts a wrapper ended by SIGHUP, SIGINT,
+            // SIGTERM or SIGPIPE as a clean end (`success`), and a signal the
+            // wrapper ignores (Python ignores SIGPIPE and SIGXFSZ) leaves it
+            // exiting with that code (256 less the signal) instead. Either is
+            // the command's signal only if the wrapper's own end names it.
+            let main = (systemd["ExecMainCode"].as_str(), systemd["ExecMainStatus"].as_str().and_then(|s| s.parse::<i64>().ok()));
+            let raised = code.filter(|c| *c < 0).is_some_and(|c| match result {
+                Some("success") => main == (Some("2"), Some(-c)),
+                Some("exit-code") => main == (Some("1"), Some(256 + c)),
+                _ => false,
+            });
             match result {
                 Some("timeout") => return End::Ended(Some("lifetime_reached")),
                 Some("oom-kill") => return End::Halted("oom"),
                 Some("exit-code" | "signal" | "core-dump") => {}
+                Some("success") if raised => {}
                 _ => return End::Halted("launch_refused"),
             }
             // The unit's main process is the host's wrapper. A crash is only
@@ -115,13 +131,11 @@ fn end_of(job: &Value) -> End {
             if let Some(stage) = evidence["notLaunched"]["stage"].as_str() {
                 return End::Halted(if stage == "inputs" { "inputs_changed" } else { "launch_refused" });
             }
-            let command = &evidence["command"];
-            let code = command["exitCode"].as_i64().filter(|_| command["attempt"] == job["attempt"]);
             match (result, code) {
                 (Some("exit-code"), Some(code)) if code > 0 => {
                     End::Crash(json!({"kind":"exit","code":code,"jobId":job["id"],"endedAt":at}))
                 }
-                (Some("signal"), Some(code)) if code < 0 => {
+                (Some(result), Some(code)) if (result == "signal" && code < 0) || raised => {
                     let name = SIGNALS.iter().find(|(n, _)| *n == -code).map(|(_, s)| s.to_string())
                         .unwrap_or_else(|| format!("signal {}", -code));
                     End::Crash(json!({"kind":"signal","signal":name,"jobId":job["id"],"endedAt":at}))

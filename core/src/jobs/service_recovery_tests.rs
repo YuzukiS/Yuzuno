@@ -567,6 +567,100 @@ async fn only_the_commands_own_exit_is_a_crash_a_wrapper_failure_never_retries_o
     }
 }
 
+/// The run's end as the host records it: the wrapper's own end (`systemd`),
+/// the command's record (this attempt's unless it names another) and any
+/// other evidence.
+fn ended_by(s: &Store, job: &Value, status: &str, systemd: &Value, command: Option<Value>, extra: &Value) {
+    let attempt = record(s, job)["attempt"].clone();
+    let mut evidence = json!({"systemd":systemd,"pids":null});
+    if let Some(mut command) = command {
+        if command["attempt"].is_null() {
+            command["attempt"] = attempt.clone();
+        }
+        evidence["command"] = command;
+    }
+    for (key, value) in extra.as_object().unwrap() {
+        evidence[key] = value.clone();
+    }
+    s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":attempt,"status":status,
+        "reason":systemd["Result"],"evidence":evidence}))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_signal_the_wrapper_cannot_raise_again_or_that_systemd_calls_clean_is_still_the_commands_crash() {
+    // The command's own signal, and the wrapper's end that names it: exiting
+    // with 256 less a signal Python ignores, ended by one systemd counts as
+    // clean, or, as before, ended by it.
+    let crashes = [
+        (13, json!({"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"243"}), "SIGPIPE"),
+        (25, json!({"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"231"}), "SIGXFSZ"),
+        (15, json!({"Result":"success","ExecMainCode":"2","ExecMainStatus":"15"}), "SIGTERM"),
+        (1, json!({"Result":"success","ExecMainCode":"2","ExecMainStatus":"1"}), "SIGHUP"),
+        (9, json!({"Result":"signal","ExecMainCode":"2","ExecMainStatus":"9"}), "SIGKILL"),
+    ];
+    for (signal, systemd, name) in crashes {
+        let lab = lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let root = launch(s, &root);
+        let deadline = intent_of(s, &id)["recovery"]["deadlineAtUnix"].clone();
+        ended_by(s, &root, "failed", &systemd, Some(json!({"pid":42,"exitCode":-signal})), &json!({}));
+        let retry = latest(s, &id);
+        assert_eq!((jobs(s), &retry["retryOf"], &retry["recoveryOf"]["retry"]), (3, &root["id"], &json!(1)), "{name}: one retry");
+        assert_eq!((&retry["status"], &retry["deadlineAtUnix"]), (&json!("queued"), &deadline), "{name}: the run's own end time");
+        let view = recovery(&lab, &id).await;
+        assert_eq!((view["state"].as_str(), &view["retry"]), (Some("waiting"), &json!({"scheduled":1,"started":0,"max":3})), "{name}");
+        assert_eq!((&view["lastFailure"]["signal"], &view["attempts"][0]["outcome"]), (&json!(name), &json!(format!("signal:{name}"))));
+    }
+
+    // Nothing else is: each ends recovery with its reason, nothing follows
+    // and no budget is spent.
+    let pipe = json!({"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"243"});
+    let term = json!({"Result":"success","ExecMainCode":"2","ExecMainStatus":"15"});
+    let own = |code: i64| Some(json!({"pid":42,"exitCode":code}));
+    let none = json!({});
+    let cases: [(&str, Value, Option<Value>, Value, &str); 14] = [
+        // No record of the command's end, or another attempt's.
+        ("failed", pipe.clone(), None, none.clone(), "unknown_outcome"),
+        ("failed", pipe.clone(), Some(json!({"pid":42,"startedAt":1.0})), none.clone(), "unknown_outcome"),
+        ("failed", pipe.clone(), Some(json!({"pid":42,"exitCode":-13,"attempt":"an-earlier-attempt"})), none.clone(), "unknown_outcome"),
+        ("failed", term.clone(), None, none.clone(), "launch_refused"),
+        ("failed", term.clone(), Some(json!({"pid":42,"exitCode":-15,"attempt":"an-earlier-attempt"})), none.clone(), "launch_refused"),
+        // The wrapper's own end does not name the command's signal.
+        ("failed", json!({"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"1"}), own(-13), none.clone(), "unknown_outcome"),
+        ("failed", pipe.clone(), own(-15), none.clone(), "unknown_outcome"),
+        ("failed", json!({"Result":"success","ExecMainCode":"2","ExecMainStatus":"9"}), own(-15), none.clone(), "launch_refused"),
+        ("failed", json!({"Result":"success","ExecMainCode":"1","ExecMainStatus":"0"}), own(-15), none.clone(), "launch_refused"),
+        // The wrapper failed before creating the command.
+        ("failed", pipe.clone(), None, json!({"notLaunched":{"stage":"prepare","reason":"OSError"}}), "launch_refused"),
+        // Every earlier ending still decides first.
+        ("unknown", pipe.clone(), own(-13), none.clone(), "unknown_outcome"),
+        ("failed", pipe.clone(), own(-13), json!({"deadline":{"kind":"stop","at":1.0}}), "lifetime_reached"),
+        ("failed", json!({"Result":"timeout","ExecMainCode":"2","ExecMainStatus":"15"}), own(-15), none.clone(), "lifetime_reached"),
+        ("failed", json!({"Result":"oom-kill","ExecMainCode":"2","ExecMainStatus":"9"}), own(-9), none.clone(), "oom"),
+    ];
+    for (status, systemd, command, extra, why) in cases {
+        let lab = lab();
+        let s = &lab.ws.store;
+        let (id, root) = armed(&lab).await;
+        let root = launch(s, &root);
+        ended_by(s, &root, status, &systemd, command.clone(), &extra);
+        assert_eq!(jobs(s), 2, "{systemd} {command:?} {extra}: nothing follows");
+        let view = recovery(&lab, &id).await;
+        assert_eq!((view["haltedReason"].as_str(), &view["retry"]["scheduled"]), (Some(why), &json!(0)), "{systemd} {command:?} {extra}");
+    }
+    // A cancel asked for through Jobs decides before the command's signal.
+    let lab = lab();
+    let s = &lab.ws.store;
+    let (id, root) = armed(&lab).await;
+    let root = launch(s, &root);
+    assert_eq!(s.request_job_cancel(root["agentId"].as_str(), root["id"].as_str().unwrap()).unwrap()["status"], "cancelling");
+    ended_by(s, &root, "failed", &pipe, own(-13), &none);
+    assert_eq!(jobs(s), 2, "a cancel: nothing follows");
+    assert_eq!(recovery(&lab, &id).await["haltedReason"], "cancelled");
+}
+
 /// A running reading of this reserved attempt, with the host's command
 /// record if `command` is given (`attempt` decides whose it claims to be).
 fn running(s: &Store, reserved: &Value, command: Option<&Value>) -> bool {

@@ -395,6 +395,29 @@ class WorkerLaunchTests(unittest.TestCase):
             kill.assert_called_once_with(os.getpid(), signal.SIGSEGV)
         self.assertEqual(host.read(self.folder/'command.json')['exitCode'], -signal.SIGSEGV)
 
+    def test_a_signal_the_wrapper_ignores_is_recorded_and_returned_as_the_commands(self):
+        # The kernel ends the command: SIGPIPE on a write to a closed pipe,
+        # SIGXFSZ past its file size limit. Python ignores both, so the
+        # wrapper cannot raise them again (os.kill is real here); it records
+        # the signal and returns it, and main exits with it (status 256 less
+        # the signal), which Core reads as the command's signal (T-14, R7).
+        commands = {
+            signal.SIGPIPE: 'import os, signal\nsignal.signal(signal.SIGPIPE, signal.SIG_DFL)\n'
+                            'r, w = os.pipe()\nos.close(r)\nos.write(w, b"x")\n',
+            signal.SIGXFSZ: 'import resource, signal\nsignal.signal(signal.SIGXFSZ, signal.SIG_DFL)\n'
+                            'resource.setrlimit(resource.RLIMIT_FSIZE, (4096, resource.getrlimit(resource.RLIMIT_FSIZE)[1]))\n'
+                            'f = open("big.bin", "wb", buffering=0)\nwhile True:\n    f.write(b"x" * 65536)\n',
+        }
+        for sig, command in commands.items():
+            with self.subTest(signal=sig.name):
+                self.assertEqual(signal.getsignal(sig), signal.SIG_IGN, 'this process ignores it, as the wrapper does')
+                self.folder = Path(self.tmp.name) / ('job-' + sig.name)
+                self.folder.mkdir()
+                self.spec['argv'] = ['/usr/bin/python3', '-c', command]
+                self.assertEqual(self.run_worker(), -sig)
+                record = host.read(self.folder/'command.json')
+                self.assertEqual((record['attempt'], record['exitCode']), (self.spec['attempt'], -sig))
+
     def test_once_popen_returned_a_failed_receipt_never_claims_the_command_did_not_start(self):
         real = host.atomic
         def failing(path, data):
