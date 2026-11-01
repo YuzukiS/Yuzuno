@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { post } from "../api";
+import { HttpError, post } from "../api";
 import type { ProjectService } from "../ProjectServices";
 
 /**
@@ -80,6 +80,10 @@ export function closePortal() {
 }
 
 export const mintPreview = (source: PreviewSource) => post<Minted>("/previews", source);
+
+/** Core's refusal of a preview asked for through the phone entry while
+ * previews on the phone are off (Settings → Phone access, T-5). */
+export const phonePreviewsOff = (error: unknown) => error instanceof HttpError && error.message.startsWith("preview_unavailable_remote:");
 
 /** Whether this browser reaches the address Core gave, proven by the answer
  * only that address knows (as ProjectServices proves a service's port). */

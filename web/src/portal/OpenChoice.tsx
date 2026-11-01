@@ -3,7 +3,7 @@ import { ArrowUpRight, ChevronDown, LoaderCircle, PanelRight } from "lucide-reac
 import { errorText } from "../api";
 import { strings, useStrings } from "../i18n";
 import { useOpenWith, type OpenWith } from "./portal-preference";
-import { mintPreview, openInPortal, openOutside, reaches, type PortalTarget } from "./index";
+import { mintPreview, openInPortal, openOutside, phonePreviewsOff, reaches, type PortalTarget } from "./index";
 import "./portal.css";
 
 // The entry's own words (T-189).
@@ -97,7 +97,11 @@ export function OpenChoice({
         setFallback(at.url);
       }
     } catch (e) {
-      setError(errorText(e));
+      // Off on the phone: the Portal says so, and where to turn them on.
+      if (phonePreviewsOff(e)) {
+        openInPortal(chosen, from);
+        onOpened?.();
+      } else setError(errorText(e));
     } finally {
       setBusy(false);
     }

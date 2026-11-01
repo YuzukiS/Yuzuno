@@ -383,7 +383,7 @@ impl BrowserBoundary {
 /// on; no local client sends them. A request with one came through a proxy
 /// pointed at the local port, which is the remote entry's job (T-170), so it
 /// is refused even if that proxy kept a loopback Host.
-const PROXY_HEADERS: [&str; 4] = ["tailscale-user-login", "tailscale-headers-info", "tailscale-funnel-request", "x-forwarded-for"];
+pub(crate) const PROXY_HEADERS: [&str; 4] = ["tailscale-user-login", "tailscale-headers-info", "tailscale-funnel-request", "x-forwarded-for"];
 
 async fn local_browser_boundary(
     State(boundary): State<BrowserBoundary>,
@@ -537,8 +537,10 @@ async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req:
     if let Err(reason) = entry.admit(req.method(), req.headers()) {
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
-    // Pages that change phone access read this to stay read-only here.
+    // Pages that change phone access read this to stay read-only here, and
+    // a preview asked for here is served by the phone previews' entry.
     req.extensions_mut().insert(crate::remote_access::RemoteRequest);
+    req.extensions_mut().insert(entry.clone());
     harden(next.run(req).await)
 }
 
@@ -774,11 +776,16 @@ async fn open_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
 }
 /// A single HTML file, kept as it is now and served working from the
 /// previews' own origin (previews.rs). The page's origin frames it.
-async fn open_preview(State(ws): State<Arc<Workspace>>, headers: axum::http::HeaderMap,
-    Json(source): Json<crate::previews::Source>) -> ApiResult<Json<Value>> {
-    // The browser boundary has already accepted this page's Origin, if any.
-    let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
-    Ok(Json(ws.open_preview(source, origin).await?))
+async fn open_preview(State(ws): State<Arc<Workspace>>, phone: Option<Extension<Arc<RemoteEntry>>>,
+    headers: axum::http::HeaderMap, Json(source): Json<crate::previews::Source>) -> ApiResult<Json<Value>> {
+    // Which entry asks is the route the request was admitted on: the phone
+    // entry's boundary adds itself; nothing the request says chooses it.
+    let asker = match &phone {
+        Some(Extension(entry)) => crate::previews::Asker::Phone(entry),
+        // The browser boundary has already accepted this page's Origin, if any.
+        None => crate::previews::Asker::Local(headers.get(header::ORIGIN).and_then(|o| o.to_str().ok())),
+    };
+    Ok(Json(ws.open_preview(source, asker).await?))
 }
 async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.close_service(&id).await?))
