@@ -13,7 +13,7 @@ import {
   type ClarificationValues,
 } from "../intelligent-ui/clarification";
 import { relative } from "./format";
-import { dropPendingReply, outboxKey, pendingReply, resendReply, sendReply } from "./home-api";
+import { dropPendingReply, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import type { Section } from "./types";
@@ -45,7 +45,7 @@ function askRefusal(error: unknown): "changed" | "resolved" | "removed" | "reloa
   if (/^ask_resolved:/.test(text)) return "resolved";
   if (/^section_removed:/.test(text)) return "removed";
   if (/^(workspace_changed|ask_version_required):/.test(text)) return "reload";
-  if (error instanceof HttpError && /unknown field `(askVersion|workspaceId)`/.test(text)) return "reload";
+  if (error instanceof HttpError && /unknown field `(askVersion|workspaceId|form)`/.test(text)) return "reload";
   return null;
 }
 
@@ -59,10 +59,11 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
   const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
   /** `askVersion`: the version of the ask this answers, for a reply to one;
    * `shown`: what this window shows as sent, kept with it here only. */
-  const send = (agentId: string, text: string, choice?: string, askVersion?: number, shown?: string) =>
+  const send = (agentId: string, text: string, choice?: string, askVersion?: number, shown?: string, form?: HomeReplyInput["form"]) =>
     run(askVersion, () => sendReply(slot, projectId, {
       key, agentId, text, choice, shown,
       ...(askVersion !== undefined ? { askVersion, workspaceId } : {}),
+      ...(form ? { form } : {}),
     }));
   /** The unconfirmed reply again, exactly as it was sent. */
   const resend = () => run(pendingReply(slot)?.askVersion, () => resendReply(slot, projectId, key));
@@ -185,8 +186,9 @@ function TextReply({
   );
 }
 
-/** A form reply: readable lines for the Agent, then the stable ids. */
-function formText(form: ClarificationProps, values: ClarificationValues) {
+/** A form reply: readable lines for the Agent, then the stable ids, which
+ * also go beside it (T-9) for Core to keep the answers by label. */
+function formReply(form: ClarificationProps, values: ClarificationValues) {
   const answers = clarificationAnswers(form).parse(values) as ClarificationValues;
   const lines = form.fields.map((field) => {
     const value = answers[field.id];
@@ -198,7 +200,8 @@ function formText(form: ClarificationProps, values: ClarificationValues) {
             .join(", ");
     return `- ${field.label}: ${shown || "(no answer)"}`;
   });
-  return `Answers to “${form.title}”:\n${lines.join("\n")}\n\n${JSON.stringify({ formId: form.id, answers })}`;
+  const text = `Answers to “${form.title}”:\n${lines.join("\n")}\n\n${JSON.stringify({ formId: form.id, answers })}`;
+  return { text, form: { formId: form.id, answers } };
 }
 
 /**
@@ -391,10 +394,10 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : t.writeReply;
   // `shown` is what this window shows as sent until Core's next read;
   // `version` is the version of the ask it answers, as the user saw it.
-  const deliver = async (text: string, choice: string | undefined, shown: string, version: number) => {
+  const deliver = async (text: string, choice: string | undefined, shown: string, version: number, form?: HomeReplyInput["form"]) => {
     setSentBefore(null);
     setDiscarded(false);
-    const value = await send(target, text, choice, version, shown);
+    const value = await send(target, text, choice, version, shown, form);
     setSentVersion(version);
     setSentText(shown);
     setAgain(false);
@@ -586,7 +589,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
             // Its delivery is that of the version it answered.
             delivery={receipt && sentVersion === section.version ? { status: receipt.status, error: receipt.error } : undefined}
             onSubmit={context.readOnly ? undefined : async (values) => {
-              const text = formText(form, values);
+              const { text, form: answers } = formReply(form, values);
               // Sent, the answers are this version's, defaults included: kept
               // as written ones are, for a retry and against a newer question.
               formTouched.current = true;
@@ -596,7 +599,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
                 /* Kept on screen in this window all the same. */
               }
               if (formBegun === null) setFormBegun(section.version);
-              await deliver(text, undefined, text, section.version);
+              await deliver(text, undefined, text, section.version, answers);
             }}
           />
           {formOtherVersion && !pending && (

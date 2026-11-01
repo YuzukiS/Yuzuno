@@ -100,6 +100,9 @@ export interface NativeItem {
    * automatic continue or Claude's own ("peer", "reminder", "resume",
    * "native"); or no record says ("unconfirmed"). */
   _yuzunoInput?: InputOrigin;
+  /** A reply from Home (T-9), from its receipt: the section and version it
+   * answered and, when Core kept one, the reply as the user saw it then. */
+  _yuzunoHome?: HomeReplyOrigin;
   _yuzunoMailbox?: import("./MailboxNotice").MailboxSnapshot;
   /**
    * A follow-up sent while Claude worked: "queued" until Claude names it as
@@ -256,6 +259,38 @@ export interface RunningCall {
 }
 export type RunningSubAgent = RunningCall;
 export type InputOrigin = "you" | "home" | "form" | "answer" | "unconfirmed" | "peer" | "reminder" | "resume" | "native";
+/** Where a Home reply came from, as its receipt names it (T-9). `key` and
+ * `version` are null for a reply to the whole Project; `workspaceId` is null
+ * on receipts written before Core kept it. `snapshot` is absent on older
+ * receipts, and on any Core does not read as its own: show the message text. */
+export interface HomeReplyOrigin {
+  projectId: string;
+  key: string | null;
+  version: number | null;
+  workspaceId: string | null;
+  snapshot?: HomeReplySnapshot;
+}
+/** A Home reply as the user saw it when sending it (T-9, format 1). */
+export interface HomeReplySnapshot {
+  format: 1;
+  projectName: string;
+  sectionKind: "ask" | "report" | "status" | null;
+  title: string | null;
+  /** An ask's question, whole. */
+  question: string | null;
+  /** The options an ask offered, its approaches included. */
+  options: { id: string; label: string }[] | null;
+  choice: { id: string; label: string } | null;
+  /** The user's own words, whole; null when they only chose, or answered
+   * a form (its answers are in `form`, and the message text says them). */
+  text: string | null;
+  /** A form's answers, an option's by its label. */
+  form: {
+    id: string;
+    title: string;
+    fields: { id: string; label: string; type: "text" | "single" | "multi"; answer: string | string[] }[];
+  } | null;
+}
 /** One input a person wrote, or may have ("unconfirmed"), in the
  * conversation's inputs (GET /api/agents/{id}/conversation/inputs, T-6). */
 export interface ConversationInput {

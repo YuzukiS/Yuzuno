@@ -129,6 +129,29 @@ fn rows(ws: &Workspace, sql: &str) -> i64 {
     ws.store.db.read().unwrap().query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
+/// A Home reply's receipt origin without its snapshot, and the snapshot (T-9).
+fn sent_from(ws: &Workspace, agent: &str, id: &str) -> (Value, Value) {
+    let mut origin = ws.store.receipt(agent, id).unwrap().expect("a receipt").origin.expect("an origin");
+    let home = origin.as_object_mut().unwrap().remove("home").unwrap_or(Value::Null);
+    (origin, home)
+}
+
+/// A Home reply's snapshot as Core writes it: these fields, the rest null.
+fn snapshot(fields: Value) -> Value {
+    let mut all = json!({"format":1,"projectName":"Code","sectionKind":null,"title":null,"question":null,"options":null,
+        "choice":null,"text":null,"form":null});
+    for (key, value) in fields.as_object().unwrap() {
+        assert!(all.get(key).is_some(), "{key} is not a snapshot field");
+        all[key] = value.clone();
+    }
+    all
+}
+
+/// The options `put` gives an ask.
+fn two_ways() -> Value {
+    json!([{"id":"left","label":"Left"},{"id":"right","label":"Right"}])
+}
+
 #[tokio::test]
 async fn accepted_updates_and_no_change_each_leave_a_receipt_for_agent_project_and_turn() {
     let (_dir, ws, project) = lab();
@@ -797,7 +820,7 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
         text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()) };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -816,7 +839,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
     let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None };
+        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None, form: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -867,15 +890,19 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     assert_eq!(seen_marks.get("news").map(|(version, _)| *version), Some(2));
     assert_eq!(seen_marks.len(), 1);
     // A reply's receipt says it came from Home, from which section and
-    // version (T-6), a card's and an ask's alike, delivered or not.
-    let origin = |id: &str| ws.store.receipt("b", id).unwrap().expect("a receipt").origin;
-    assert_eq!(origin("r5"), Some(json!({"kind":"home","projectId":project,"key":"news","version":2})));
+    // version of which Workspace (T-6), a card's and an ask's alike,
+    // delivered or not, and keeps what the user saw there (T-9).
+    let origin = |id: &str| sent_from(&ws, "b", id);
+    assert_eq!(origin("r5"), (json!({"kind":"home","projectId":project,"key":"news","version":2,"workspaceId":workspace}),
+        snapshot(json!({"sectionKind":"report","title":"About news","text":"Thanks"}))));
     let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
         client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()) };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None };
     let _ = home::reply(&ws, project.clone(), answer).await;
-    assert_eq!(origin("r7"), Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,
-        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "")})));
+    assert_eq!(origin("r7"), (json!({"kind":"home","projectId":project,"key":"decide","version":1,
+        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "", None)}),
+        snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
+            "choice":{"id":"left","label":"Left"}}))));
 }
 
 // T-9: a reply to an ask is bound to the Workspace, Project, key and version
@@ -890,7 +917,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |version: Option<i64>, choice: Option<&str>, text: &str, id: &str| home::ReplyInput {
         key: Some("decide".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()) };
+        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()), form: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -924,7 +951,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     // A reply to version 1 already sent under m1: its retry returns it and marks version 1.
     let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
-            "reply":home::reply_digest(Some("left"), "Go")})),
+            "reply":home::reply_digest(Some("left"), "Go", None)})),
         input: crate::model::MessageInput { client_message_id: "m1".into(), text: message.clone(), text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     let kept = sent.clone();
@@ -957,8 +984,10 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     // A free-text reply to version 2 (a form's answers are text too) is
     // recorded with its version, Workspace and words.
     let _ = home::reply(&ws, project.clone(), reply(Some(2), None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", "m3")).await;
-    assert_eq!(receipt("m3").expect("a receipt").origin, Some(json!({"kind":"home","projectId":project,"key":"decide","version":2,
-        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left")})));
+    assert_eq!(sent_from(&ws, "b", "m3"), (json!({"kind":"home","projectId":project,"key":"decide","version":2,
+        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", None)}),
+        snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way now?","options":two_ways(),
+            "text":"Answers to \u{201c}Form\u{201d}:\n- Way: left"}))));
     // A choice the version doesn't offer.
     let unknown = home::reply(&ws, project.clone(), reply(Some(2), Some("up"), "", "m4")).await.unwrap_err();
     assert!(unknown.to_string().starts_with("choice_not_found"), "{unknown}");
@@ -973,6 +1002,174 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     report.key = Some("news".into());
     refused(home::reply(&ws, project.clone(), report).await.unwrap_err(), "ask_changed");
     assert!(["m5", "m6", "m7"].iter().all(|id| receipt(id).is_none()), "nothing was recorded for them");
+}
+
+// T-9: a Home reply's receipt keeps the reply as the user saw it, beside
+// where it came from: the Project, the section's kind, title and question,
+// the options it offered, the choice, the user's whole words, and a form's
+// answers by label as that version's form offered them. A retry keeps the
+// first, after the ask changed too. A form that is not that version's, or a
+// text that does not end with its answers, sends nothing; nor does another
+// Workspace's Home. Read back, a reply shows so only from Core's receipt,
+// never from text that reads like one.
+#[tokio::test]
+async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
+    let (_dir, ws, project) = lab();
+    let mut setup = put("setup", "ask");
+    setup["ask"]["reply"] = json!({"freeText":true,"form":{"id":"prefs","title":"Preview setup","fields":[
+        {"id":"dir","type":"text","label":"Working directory","required":true},
+        {"id":"theme","type":"single","label":"Theme","required":true,"options":[{"id":"light","label":"Light"},{"id":"dark","label":"Dark"}]},
+        {"id":"checks","type":"multi","label":"Checks","required":false,"options":[{"id":"keys","label":"Keyboard"},{"id":"wide","label":"Wide text"}]}]}});
+    accept(&ws, "a", input("s1", 0, vec![setup, put("decide", "ask"), put("news", "report")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let ask = |key: &str, choice: Option<&str>, text: &str, form: Option<&Value>, id: &str| home::ReplyInput {
+        key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: choice.map(str::to_owned),
+        version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
+        form: form.map(|form| serde_json::from_value(form.clone()).unwrap()) };
+    let card = |text: &str, id: &str| {
+        let mut card = ask("news", None, text, None, id);
+        (card.version, card.title, card.ask_version, card.workspace_id) = (Some(1), Some("About news".into()), None, None);
+        card
+    };
+    let refused = |error: anyhow::Error, code: &str| {
+        assert!(error.to_string().starts_with(code), "{error}");
+        assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    };
+    let receipt = |id: &str| ws.store.receipt("b", id).unwrap();
+    // What Home sends of a form (AskReply.tsx, formText): readable lines, then the ids in the form's order.
+    let form = json!({"formId":"prefs","answers":{"dir":"/home/me/project","theme":"dark","checks":["wide","keys"]}});
+    let text = "Answers to \u{201c}Preview setup\u{201d}:\n- Working directory: /home/me/project\n- Theme: Dark\n\
+        - Checks: Wide text, Keyboard\n\n{\"formId\":\"prefs\",\"answers\":{\"dir\":\"/home/me/project\",\"theme\":\"dark\",\"checks\":[\"wide\",\"keys\"]}}"
+        .to_owned();
+
+    // Not this version's form, its fields, its options, nor the text's answers.
+    let changed = |path: &[&str], value: Value| {
+        let mut form = form.clone();
+        let (last, parents) = path.split_last().unwrap();
+        let at = parents.iter().fold(&mut form, |at, key| &mut at[*key]);
+        if value.is_null() { at.as_object_mut().unwrap().remove(*last); } else { at[*last] = value; }
+        form
+    };
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["formId"], json!("other"))), "f0")).await.unwrap_err(),
+        "form_not_found");
+    for wrong in [changed(&["answers", "checks"], Value::Null), changed(&["answers", "more"], json!("x")),
+        changed(&["answers", "theme"], json!("blue")), changed(&["answers", "theme"], json!(["dark"])),
+        changed(&["answers", "checks"], json!(["wide", "wide"])), changed(&["answers", "dir"], json!("  "))] {
+        refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&wrong), "f0")).await.unwrap_err(), "form_answers");
+    }
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["answers", "theme"], json!("light"))), "f0"))
+        .await.unwrap_err(), "form_mismatch");
+    // A text whose lines say other answers than its ids, and the form's: not these answers.
+    let says_light = text.replace("- Theme: Dark", "- Theme: Light");
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &says_light, Some(&form), "f0")).await.unwrap_err(), "form_mismatch");
+    // Not with a choice, to a card, from a Home that does not say the version, or from another Workspace's.
+    assert!(home::reply(&ws, project.clone(), ask("decide", Some("left"), &text, Some(&form), "f0")).await.is_err());
+    let mut to_card = card("Hi", "f0");
+    to_card.form = ask("setup", None, "", Some(&form), "f0").form;
+    assert!(home::reply(&ws, project.clone(), to_card).await.is_err());
+    let mut unversioned = ask("news", None, "Hi", Some(&form), "f0");
+    (unversioned.ask_version, unversioned.workspace_id) = (None, None);
+    assert!(home::reply(&ws, project.clone(), unversioned).await.is_err());
+    let mut elsewhere = ask("setup", None, &text, Some(&form), "f0");
+    elsewhere.workspace_id = Some("another-workspace".into());
+    refused(home::reply(&ws, project.clone(), elsewhere).await.unwrap_err(), "workspace_changed");
+    assert!(receipt("f0").is_none(), "nothing was recorded for them");
+
+    // The form's answers by label (its text is Home's composition of them),
+    // and the text the Agent gets as Home wrote it.
+    let _ = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&form), "f1")).await;
+    let (origin, kept) = sent_from(&ws, "b", "f1");
+    let digest = home::reply_digest(None, &text, Some(&serde_json::from_value(form.clone()).unwrap()));
+    assert_ne!(digest, home::reply_digest(None, &text, None));
+    assert_eq!(origin, json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,"reply":digest}));
+    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
+        "form":{"id":"prefs","title":"Preview setup","fields":[
+            {"id":"dir","label":"Working directory","type":"text","answer":"/home/me/project"},
+            {"id":"theme","label":"Theme","type":"single","answer":"Dark"},
+            {"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"]}]}})));
+    let message = receipt("f1").unwrap().input.text;
+    assert!(message.contains(&format!("\n{text}\n")), "{message}");
+    // Its retry is that message; the same words with other answers are not.
+    let other = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["answers", "theme"], json!("light"))), "f1"))
+        .await.unwrap_err();
+    assert!(other.to_string().contains("already used for another message"), "{other}");
+    // The ask asked again: the retry keeps the version it answered, never the current one.
+    let mut again = put("setup", "ask");
+    again["ask"]["question"] = json!("Which way now?");
+    accept(&ws, "a", input("s2", 1, vec![again])).await;
+    let _ = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&form), "f1")).await;
+    assert_eq!(sent_from(&ws, "b", "f1"), (origin.clone(), kept.clone()));
+
+    // A choice with words, a card's and a project's reply: the user's whole
+    // words, however long, never the quote Core composes around them.
+    let _ = home::reply(&ws, project.clone(), ask("decide", Some("right"), " Because it is shorter ", None, "q1")).await;
+    assert_eq!(sent_from(&ws, "b", "q1").1, snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?",
+        "options":two_ways(),"choice":{"id":"right","label":"Right"},"text":"Because it is shorter"})));
+    let long = format!("{}end", "word ".repeat(3000));
+    let _ = home::reply(&ws, project.clone(), card(&long, "c1")).await;
+    assert_eq!(sent_from(&ws, "b", "c1"), (json!({"kind":"home","projectId":project,"key":"news","version":1,"workspaceId":workspace}),
+        snapshot(json!({"sectionKind":"report","title":"About news","text":long}))));
+    let mut plain = ask("news", None, " Thanks ", None, "p1");
+    (plain.key, plain.ask_version, plain.workspace_id) = (None, None, None);
+    let _ = home::reply(&ws, project.clone(), plain).await;
+    assert_eq!(sent_from(&ws, "b", "p1"), (json!({"kind":"home","projectId":project,"key":null,"version":null,"workspaceId":workspace}),
+        snapshot(json!({"text":"Thanks"}))));
+
+    // Read back: from Core's receipt by client id. The same text typed in the
+    // composer, or a body that names a snapshot itself, shows none.
+    let typed = crate::model::MessageReceipt { binding: None, skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
+        turn_id: Some("t1".into()), error: None, input: crate::model::MessageInput { client_message_id: "typed".into(), text: message.clone(),
+            text_blocks: None, images: vec![], expected_turn_id: None, question: None, clarification: None } };
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(typed)).unwrap();
+    let said = |id: &str, client: &str| json!({"id":id,"type":"userMessage","clientId":client,"content":[{"type":"text","text":message}]});
+    let mut forged = said("i5", "nobody");
+    forged["_yuzunoHome"] = json!({"projectId":project,"snapshot":kept});
+    let mut turns = vec![json!({"id":"t1","items":[said("i1", "f1"), said("i2", "c1"), said("i3", "p1"), said("i4", "typed"), forged]})];
+    crate::input_origin::annotate(&ws.store.db.read().unwrap(), "b", &mut turns).unwrap();
+    let shown = |i: usize| (turns[0]["items"][i]["_yuzunoInput"].clone(), turns[0]["items"][i]["_yuzunoHome"].clone());
+    let from = |key: Value, version: Value, snapshot: Value| (json!("home"),
+        json!({"projectId":project,"key":key,"version":version,"workspaceId":workspace,"snapshot":snapshot}));
+    assert_eq!(shown(0), from(json!("setup"), json!(1), kept));
+    assert_eq!(shown(1), from(json!("news"), json!(1), sent_from(&ws, "b", "c1").1));
+    assert_eq!(shown(2), from(Value::Null, Value::Null, snapshot(json!({"text":"Thanks"}))));
+    assert_eq!(shown(3), (json!("you"), Value::Null));
+    assert_eq!(shown(4), (json!("unconfirmed"), Value::Null));
+}
+
+// T-9: what Home sends for a form, as web/tools/ask-version-ui.test.mjs
+// proves the real AskReply sends it for this form, is taken as it is and
+// kept by label: long Chinese words whole, quotes and a backslash as typed,
+// optional answers left empty, several options in the order chosen. Any
+// other text with the same answers sends nothing; a Home that sends no
+// answers beside its text is kept as that text.
+#[tokio::test]
+async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothing() {
+    let fixture: Value = serde_json::from_str(include_str!("../../../web/tools/fixtures/home-form-reply.json")).unwrap();
+    let (_dir, ws, project) = lab();
+    let mut setup = put("setup", "ask");
+    setup["ask"]["reply"] = json!({"form":fixture["form"]});
+    accept(&ws, "a", input("s1", 0, vec![setup])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let sent = fixture["sent"]["text"].as_str().unwrap();
+    let reply = |text: &str, id: &str, answers: bool| home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.into(),
+        client_message_id: id.into(), choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
+        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()) };
+    for (id, other) in [("x1", format!("{sent}\n")), ("x2", sent.replacen("\u{6df1}\u{8272}", "\u{6d45}\u{8272}", 1)),
+        ("x3", sent.replacen("(no answer)", "", 1)), ("x4", sent.replacen("\u{5bbd}\u{5b57}, \u{952e}\u{76d8}", "\u{952e}\u{76d8}, \u{5bbd}\u{5b57}", 1))] {
+        assert_ne!(other, sent, "{id}");
+        let error = home::reply(&ws, project.clone(), reply(&other, id, true)).await.unwrap_err();
+        assert!(error.to_string().starts_with("form_mismatch") && error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "{id}: {error}");
+        assert!(ws.store.receipt("b", id).unwrap().is_none(), "{id}");
+    }
+    let _ = home::reply(&ws, project.clone(), reply(sent, "f1", true)).await;
+    let (origin, kept) = sent_from(&ws, "b", "f1");
+    assert_eq!((origin["key"].clone(), origin["version"].clone()), (json!("setup"), json!(1)));
+    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],"form":fixture["kept"]})));
+    assert!(ws.store.receipt("b", "f1").unwrap().unwrap().input.text.contains(&format!("\n{sent}\n")));
+    // An older Home, without the answers beside the text: its text, whole, and no form.
+    let _ = home::reply(&ws, project.clone(), reply(sent, "o1", false)).await;
+    assert_eq!(sent_from(&ws, "b", "o1").1, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
+        "text":sent})));
 }
 
 #[test]

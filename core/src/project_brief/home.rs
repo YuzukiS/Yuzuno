@@ -264,6 +264,104 @@ pub(super) struct ReplyInput {
     pub ask_version: Option<i64>,
     #[serde(default)]
     pub workspace_id: Option<String>,
+    /// A form's answers (T-9), beside the text Home writes of them: by
+    /// field id, option ids for a choice. Checked against the form of the
+    /// ask's version the user saw, and the text must say exactly these
+    /// answers (form_answers); the text is still what the Agent gets.
+    #[serde(default)]
+    pub form: Option<FormReply>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct FormReply {
+    pub form_id: String,
+    pub answers: serde_json::Map<String, Value>,
+}
+
+/// What a reply's receipt keeps of it as the user saw it (T-9): `origin.home`,
+/// read back only to show the reply (input_origin::annotate), never sent to
+/// the Agent. Nothing in it is read from the section as it is later.
+fn snapshot(project: &str, row: Option<&sections::Row>, title: Option<&str>, choice: Option<&(String, String)>, text: Option<&str>, form: Option<Value>) -> Value {
+    let ask = row.filter(|row| row.kind == "ask").map(|row| &row.data["ask"]);
+    let options = ask.map(|ask| {
+        let reply = &ask["reply"];
+        let mut options: Vec<&Value> = reply["options"].as_array().into_iter().flatten().collect();
+        options.extend([&reply["choice"]["a"], &reply["choice"]["b"]].into_iter().filter(|option| option.is_object()));
+        options.into_iter().filter_map(|option| {
+            let id = option["id"].as_str()?;
+            Some(json!({"id":id,"label":option["label"].as_str().unwrap_or(id)}))
+        }).collect::<Vec<_>>()
+    });
+    json!({
+        "format":crate::input_origin::HOME_FORMAT,
+        "projectName":project,
+        "sectionKind":row.map(|row| &row.kind),
+        "title":title.or(row.and_then(|row| row.data["title"].as_str())),
+        "question":ask.and_then(|ask| ask["question"].as_str()),
+        "options":options,
+        "choice":choice.map(|(id, label)| json!({"id":id,"label":label})),
+        "text":text,
+        "form":form,
+    })
+}
+
+/// A form reply's answers (T-9) as the ask's version offered them: each
+/// field's label and answer, an option id read as its label. They are the
+/// answers the form takes (clarification.ts, clarificationAnswers), and the
+/// reply's text must be exactly what Home writes of them (AskReply.tsx,
+/// formText): readable lines, then the same ids. So what is kept and what
+/// the Agent reads are the same answers; anything else sends nothing.
+fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Value> {
+    let refused = |why: String| not_submitted(format!("{why}. Nothing was sent, and your answers are kept."));
+    let form = &row.data["ask"]["reply"]["form"];
+    if form["id"].as_str() != Some(reply.form_id.as_str()) {
+        return Err(refused("form_not_found: this version of the ask has no such form".into()));
+    }
+    let fields = form["fields"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if reply.answers.len() != fields.len() || !fields.iter().all(|field| field["id"].as_str().is_some_and(|id| reply.answers.contains_key(id))) {
+        return Err(refused("form_answers: answer each of the form's fields, and only them".into()));
+    }
+    let (mut kept, mut lines, mut ids) = (Vec::new(), Vec::new(), Vec::new());
+    for field in fields {
+        let (id, required) = (field["id"].as_str().unwrap_or_default(), field["required"] == true);
+        let label = |option: &str| field["options"].as_array().into_iter().flatten()
+            .find(|o| o["id"] == option).map(|o| o["label"].as_str().unwrap_or(option).to_owned());
+        let value = &reply.answers[id];
+        let wrong = || refused(format!("form_answers: the answer to `{id}` is not one this field takes"));
+        // The answer by label, and as its line says it.
+        let (answer, said) = match (field["type"].as_str(), value) {
+            (Some("text"), Value::String(words)) if words.encode_utf16().count() <= 2000 && (!required || !words.trim().is_empty()) =>
+                (json!(words), words.clone()),
+            (Some("single"), Value::String(option)) if option.is_empty() && !required => (json!(""), String::new()),
+            (Some("single"), Value::String(option)) => {
+                let chosen = label(option).ok_or_else(wrong)?;
+                (json!(chosen), chosen)
+            }
+            (Some("multi"), Value::Array(options)) if !(required && options.is_empty()) => {
+                let chosen: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
+                let distinct: std::collections::HashSet<&str> = chosen.iter().copied().collect();
+                if chosen.len() != options.len() || distinct.len() != chosen.len() {
+                    return Err(wrong());
+                }
+                let labels = chosen.iter().map(|option| label(option).ok_or_else(wrong)).collect::<Result<Vec<_>>>()?;
+                (json!(labels), labels.join(", "))
+            }
+            _ => return Err(wrong()),
+        };
+        let shown_label = field["label"].as_str().unwrap_or(id);
+        lines.push(format!("- {shown_label}: {}", if said.is_empty() { "(no answer)" } else { said.as_str() }));
+        // JSON.stringify's order: the form's fields.
+        ids.push(format!("{}:{value}", Value::from(id)));
+        kept.push(json!({"id":id,"label":shown_label,"type":field["type"],"answer":answer}));
+    }
+    let title = form["title"].as_str().unwrap_or_default();
+    let canonical = format!("Answers to \u{201c}{title}\u{201d}:\n{}\n\n{{\"formId\":{},\"answers\":{{{}}}}}",
+        lines.join("\n"), Value::from(reply.form_id.as_str()), ids.join(","));
+    if text != canonical {
+        return Err(refused("form_mismatch: the reply's text does not say these answers".into()));
+    }
+    Ok(json!({"id":reply.form_id,"title":title,"fields":kept}))
 }
 
 /// The option of an ask's reply with this id: (id, label).
@@ -387,8 +485,10 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
         return ask_reply(ws, project, input, version).await;
     }
     ensure!(input.workspace_id.is_none(), "A Workspace goes with the version of the ask it was shown in");
+    ensure!(input.form.is_none(), "A form's answers go with the version of the ask it was shown in");
     let (id, key) = (project.clone(), input.key.clone());
-    let (name, section) = ws.stored(move |store| {
+    let (workspace, name, section) = ws.stored(move |store| {
+        let workspace = store.workspace_id()?;
         let db = store.db.read()?;
         let labels = crate::projects::project_labels(&db)?;
         let (name, _) = labels.get(&id).context("project_not_found: no Project has this ID")?;
@@ -396,7 +496,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
             Some(key) => Some(sections::find(&db, &id, key, None)?.context("section_not_found: no such section in this Brief")?),
             None => None,
         };
-        Ok((name.clone(), section))
+        Ok((workspace, name.clone(), section))
     }).await?;
     // An ask is answered only as the version the user saw (ask_reply): one
     // from a Home that does not say which is refused, never matched to the
@@ -410,7 +510,8 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     ensure!(input.choice.is_none(), "A choice answers an ask; name its section");
     ensure!(!input.text.trim().is_empty(), "Write a reply");
     let text = compose(&name, section.as_ref(), None, &input.text);
-    let origin = json!({"kind":"home","projectId":project,"key":section.as_ref().map(|row| &row.key),"version":section.as_ref().map(|row| row.version)});
+    let origin = json!({"kind":"home","projectId":project,"key":section.as_ref().map(|row| &row.key),"version":section.as_ref().map(|row| row.version),
+        "workspaceId":workspace,"home":snapshot(&name, section.as_ref(), None, None, extra_text(None, &input.text), None)});
     let detail = ws.send_view(&input.agent_id).await?;
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
@@ -438,10 +539,15 @@ fn not_submitted(message: String) -> anyhow::Error {
 }
 
 /// What a reply to an ask says, whatever the ask is now: the option chosen
-/// and the user's words, as a digest its receipt keeps (T-9).
-pub(super) fn reply_digest(choice: Option<&str>, text: &str) -> String {
+/// and the user's words, and a form's answers when it sent them, as a digest
+/// its receipt keeps (T-9). One without a form digests as it always has.
+pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormReply>) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(json!([choice, text]).to_string().as_bytes()))
+    let said = match form {
+        Some(form) => json!([choice, text, {"formId":form.form_id,"answers":form.answers}]),
+        None => json!([choice, text]),
+    };
+    format!("{:x}", Sha256::digest(said.to_string().as_bytes()))
 }
 
 /// A reply to an ask (T-9): bound to exactly the version the user saw, in
@@ -466,8 +572,8 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             "workspace_changed: this reply was begun on another Workspace's Home. Nothing was sent, and your reply is kept.".into(),
         ));
     }
-    let digest = reply_digest(input.choice.as_deref(), &input.text);
-    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,"reply":digest});
+    ensure!(input.choice.is_none() || input.form.is_none(), "A reply chooses an option or answers a form, not both");
+    let digest = reply_digest(input.choice.as_deref(), &input.text, input.form.as_ref());
     // The ask as it is now, if it is still the version the user saw.
     let shown = current.as_ref().filter(|row| row.live && row.unresolved_ask() && row.version == version).cloned();
     let chosen = match (&input.choice, &shown) {
@@ -496,6 +602,9 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             )));
         };
         ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
+        let form = input.form.as_ref().map(|form| form_answers(row, form, &input.text)).transpose()?;
+        let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,"reply":digest,
+            "home":snapshot(&name, Some(row), None, chosen.as_ref(), extra_text(chosen.as_ref(), &input.text).filter(|_| form.is_none()), form)});
         let detail = ws.send_view(&input.agent_id).await?;
         let message = MessageInput {
             client_message_id: input.client_message_id.clone(),
@@ -532,7 +641,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
 async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, version: i64) -> Result<MessageReceipt> {
     let key = input.key.clone().context("A reply to a card names its section")?;
     let title = input.title.clone().context("A reply to a card says the title it showed")?;
-    ensure!(input.choice.is_none(), "A choice answers an ask, not a card");
+    ensure!(input.choice.is_none() && input.form.is_none(), "A choice or a form answers an ask, not a card");
     ensure!(!input.text.trim().is_empty(), "Write a reply");
     let (id, wanted) = (project.clone(), key.clone());
     let (workspace, name, shown) = ws.stored(move |store| {
@@ -562,6 +671,8 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
     if row.kind == "ask" || row.data["title"].as_str() != Some(title.as_str()) {
         return Err(refused(format!("section_changed: version {version} of `{key}` is not the card “{title}”. Nothing was sent.")));
     }
+    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,
+        "home":snapshot(&name, Some(&row), Some(&title), None, extra_text(None, &input.text), None)});
     let message = MessageInput {
         client_message_id: input.client_message_id,
         text,
@@ -571,6 +682,5 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         question: None,
         clarification: None,
     };
-    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version});
     ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
 }
