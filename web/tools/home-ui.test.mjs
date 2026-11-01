@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { composerText } from "./composer-driver.mjs";
+import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
 // Home (T-85) against an in-memory Core: the built app, a fetch fixture, no
 // real Core, Agents or GitHub.
@@ -117,7 +118,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], workspaceAgents = agents } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], workspaceAgents = agents, research = null } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -167,6 +168,11 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
       return respond({ order: request.body.projectIds });
     }
     if (/\/api\/projects\/[^/]+\/brief\/seen$/.test(url)) return respond({ ok: true });
+    // A research desk's numbers (T-9), as the test answers them; none by default.
+    if (/\/api\/projects\/[^/]+\/brief\/research\//.test(url)) {
+      const answer = research ? await research(url) : { status: 404, body: { error: "section_not_found" } };
+      return respond(answer.body, answer.status ?? 200);
+    }
     if (/\/api\/projects\/[^/]+\/brief\/reply$/.test(url)) {
       if (state.failReplies > 0) {
         state.failReplies--;
@@ -2120,6 +2126,116 @@ test("T-9 a refused or missing clipboard is said as such, never as copied; only 
   }
 });
 
+// T-9: a report with a research desk (Dev 2's synthetic dose study) copies
+// Core's numbers read for the version on screen, written within the click.
+const pointerIn = (document, at) => at.split("/").slice(1).reduce((value, step) => (value && typeof value === "object" ? value[step] : undefined), document);
+/** Core's research read for the dose study's desk at `version`, as Core answers it. */
+const deskRead = (version) => {
+  const desk = doseStudy.body.elements.desk.props;
+  const values = {};
+  for (const plot of desk.plots)
+    for (const row of plot.rows)
+      for (const owner of [row, ...(row.parts ?? [])])
+        for (const field of ["value", "low", "high"]) {
+          const number = owner.estimate[field];
+          if (!number || typeof number === "number") continue;
+          values[`${owner.id}.${field}`] = { status: "read", value: pointerIn(fixtureFiles[number.from], number.pointer), from: number.from };
+        }
+  const sources = Object.fromEntries(desk.sources.filter((source) => source.snapshot)
+    .map((source) => [source.id, { attachment: source.snapshot, takenAt: "2026-10-31T08:00:00Z", size: 100, sha256: "a".repeat(64), available: true }]));
+  return { key: "dose-study", version, elementId: "desk", values, sources };
+};
+const withDesk = () => {
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(section("dose-study", "report", doseStudy.title, 4, owner("a", "Mori"), {
+    body: doseStudy.body,
+    attachments: ["results.json", "protocol.md", "paper.tex"].map((name) => ({ name, kind: name.endsWith(".json") ? "data" : "text", mime: "text/plain", size: 100, snapshot: true, mayChange: false, takenAt: at(5) })),
+  }));
+  return home;
+};
+const foldCard = async (p, report) => {
+  report.querySelector(".home-section-head button[aria-controls]").click();
+  await waitFor(() => report.classList.contains("is-collapsed"), "folded");
+};
+
+test("T-9 a report's research desk copies Core's numbers for the version shown, through a write that starts in the click", async () => {
+  const reads = [];
+  const p = await mount({ home: withDesk(), research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const report = card(p, "p-app", "dose-study");
+    await foldCard(p, report);
+    // As Safari needs it: a ClipboardItem whose text is still loading, written in the click.
+    const items = [];
+    p.w.ClipboardItem = class { constructor(parts) { this.parts = parts; } };
+    Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: {
+      write: async (list) => { items.push(...list); }, writeText: async () => { throw new Error("writeText would wait for the read"); } } });
+    const before = reads.length;
+    p.button("Copy report", report).click();
+    assert.equal(items.length, 1, "the clipboard write starts in the click");
+    const text = await (await items[0].parts["text/plain"]).text();
+    await waitFor(() => p.button("Copied", report), "said copied");
+    const copyReads = reads.slice(before);
+    assert.ok(copyReads.length >= 1 && copyReads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(copyReads));
+    assert.match(text, /^# Dose study \(synthetic\)\n/);
+    assert.match(text, /Does the higher dose shorten recovery\?|High dose shortens recovery/);
+    // The high dose's difference is read from the snapshot (-2.04), and says so; v1's -2.6 is the Agent's own.
+    assert.match(text, /-2\.04/);
+    assert.match(text, /snapshot results\.json/);
+    assert.match(text, /-2\.60?\b/);
+    assert.doesNotMatch(text, /not read/, "every snapshot number was read");
+    // The whole desk, folded on the page: claims, both plots, sources, definitions and next steps.
+    for (const part of ["Claims", "May say", "May not say", "Recovery time vs placebo (v2)", "Analysis output", "Definitions", "Next steps"])
+      assert.ok(text.includes(part), `the copy has ${part}`);
+    assert.doesNotMatch(text, /\/api\/|token|Copy report|Loading/i);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a research desk whose numbers Core can't give for that version copies them as not read, in the UI language", async () => {
+  let answer = { status: 500, body: { error: "snapshot unreadable" } };
+  const p = await mount({ home: withDesk(), storage: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) }, research: () => answer });
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const report = card(p, "p-app", "dose-study");
+    await foldCard(p, report);
+    const copied = [];
+    Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { copied.push(value); } } });
+    const copy = async () => {
+      const count = copied.length;
+      p.button("复制报告", report).click();
+      await waitFor(() => copied.length > count && p.button("已复制", report), "copied");
+      await waitFor(() => p.button("复制报告", report), "ready again", 4);
+      return copied.at(-1);
+    };
+    // Core failed to read: the copy still goes out, its snapshot numbers not read.
+    const failed = await copy();
+    assert.match(failed, /^# Dose study \(synthetic\)\n/);
+    assert.match(failed, /主张/);
+    assert.match(failed, /未读取/);
+    assert.doesNotMatch(failed, /-2\.04/, "no number Core didn't read");
+    assert.match(failed, /-2\.60?\b/, "the Agent's own numbers stay");
+    // An answer for another version (the section has moved on) is not this report's.
+    answer = { body: deskRead(5) };
+    const other = await copy();
+    assert.match(other, /未读取/);
+    assert.doesNotMatch(other, /-2\.04/, "a newer version's number is never copied into this one");
+    // The version shown, read: the numbers come with their snapshot.
+    answer = { body: deskRead(4) };
+    const read = await copy();
+    assert.match(read, /-2\.04/);
+    assert.match(read, /快照 results\.json/);
+    for (const part of ["主张", "可以说", "不能说", "Recovery time vs placebo (v2)", "Analysis output", "分析定义", "候选下一步"])
+      assert.ok(read.includes(part), `the copy has ${part}`);
+    assert.doesNotMatch(read, /未读取/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 // Every field the page shows as written, each with characters Markdown would
 // read as emphasis, code, a link, markup, a list, a table pipe or a
 // heading's closing "#".
@@ -2293,6 +2409,86 @@ test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and
       return !markdownChecks[name](rendered[i], pres.map((pre) => pre.textContent), pres);
     });
     assert.deepEqual(failed, [], `every case reads back as the page shows it; failed: ${failed.join(", ")}`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a fence a Markdown block leaves open before a research desk ends with its block: the desk's claims, numbers and sources copy outside code", async () => {
+  const home = withDesk();
+  const report = home.projects[0].brief.sections.at(-1);
+  report.body = { root: "body", elements: { ...doseStudy.body.elements,
+    body: { type: "BriefBody", props: {}, children: ["intro", "desk"] }, intro: mdBlock("Raw notes:\n\n```text\nraw log line") } };
+  const reads = [];
+  let p = await mount({ home, research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  let copied;
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const texts = [];
+    clipboard(p, async (text) => { texts.push(text); });
+    const before = reads.length;
+    p.button("Copy report", card(p, "p-app", "dose-study")).click();
+    await waitFor(() => texts.length === 1, "copied");
+    copied = texts[0];
+    const copyReads = reads.slice(before);
+    assert.ok(copyReads.length >= 1 && copyReads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(copyReads));
+  } finally {
+    p.close();
+  }
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown"), "the pasted copy");
+    const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
+    const code = [...rendered.querySelectorAll("pre")].map((pre) => pre.textContent);
+    assert.deepEqual(code, ["raw log line\n"], "only the notes' own line is code");
+    const headings = [...rendered.querySelectorAll("h4")].map((h) => h.textContent);
+    for (const part of ["Claims", "Sources"]) assert.ok(headings.includes(part), `the desk's ${part} outside code; got ${JSON.stringify(headings)}`);
+    const cells = [...rendered.querySelectorAll("td")].map((td) => td.textContent);
+    assert.ok(cells.includes("-2.04") && cells.includes("snapshot results.json"), `the read number in the desk's table; got ${JSON.stringify(cells)}`);
+    assert.ok([...rendered.querySelectorAll("li")].some((li) => li.textContent.startsWith("Analysis output")), "the desk's source as a list item");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a copied research desk keeps each row's and part's own source and definition, read for the version shown", async () => {
+  const home = withDesk();
+  const report = home.projects[0].brief.sections.at(-1);
+  report.body = structuredClone(doseStudy.body);
+  const high = report.body.elements.desk.props.plots[0].rows.find((row) => row.id === "high-v2");
+  high.parts[0].estimate.cite = { source: "protocol", lines: "50-52" };
+  high.parts[0].estimate.definition = { id: "recovery", version: 1 };
+  const reads = [];
+  let p = await mount({ home, research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  let copied;
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const texts = [];
+    clipboard(p, async (text) => { texts.push(text); });
+    p.button("Copy report", card(p, "p-app", "dose-study")).click();
+    await waitFor(() => texts.length === 1, "copied");
+    copied = texts[0];
+    assert.ok(reads.length >= 1 && reads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(reads));
+  } finally {
+    p.close();
+  }
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown table"), "the pasted copy");
+    // The first table is the current plot's.
+    const table = card(p, "p-app", "pasted").querySelector(".brief-markdown table");
+    const basisOf = (label) => [...table.querySelectorAll("tr")].find((tr) => tr.cells[0]?.textContent === label)?.cells[4]?.textContent;
+    assert.equal(table.rows[0].cells[4]?.textContent, "Source · definition");
+    assert.equal(basisOf("High dose"), "Analysis output · Recovery v2", "the row's own");
+    assert.equal(basisOf("High dose · High dose"), "Protocol, lines 50-52 · Recovery v1", "the part's own, not its row's");
+    assert.equal(basisOf("High dose · Placebo"), "no source of its own · no definition of its own", "a part naming none takes none from its row");
+    assert.equal(table.querySelectorAll("a").length, 0);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

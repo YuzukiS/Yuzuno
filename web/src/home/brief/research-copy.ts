@@ -31,6 +31,11 @@ export type ResearchCopyWords = {
   interval: string;
   scaled: (scale: number) => string;
   origin: string;
+  /** The column naming each row's and part's own source and definition. */
+  basis: string;
+  lines: (lines: string) => string;
+  noOwnSource: string;
+  noOwnDefinition: string;
   read: (file: string) => string;
   provided: string;
   notRead: string;
@@ -57,6 +62,10 @@ const ENGLISH: ResearchCopyWords = {
   interval: "Interval",
   scaled: (scale) => `Values shown × ${scale} of the file's.`,
   origin: "From",
+  basis: "Source · definition",
+  lines: (lines) => `lines ${lines}`,
+  noOwnSource: "no source of its own",
+  noOwnDefinition: "no definition of its own",
   read: (file) => `snapshot ${file}`,
   provided: "the Agent",
   notRead: "not read",
@@ -130,22 +139,39 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
   for (const plot of desk.plots) {
     out.push(`#### ${inline(plot.title)}${plot.unit ? ` (${inline(plot.unit)})` : ""}`, "");
     if (plot.scale) out.push(words.scaled(plot.scale), "");
-    out.push(`| ${words.row} | ${words.value} | ${plot.interval ? inline(plot.interval) : words.interval} | ${words.origin} |`, "| --- | --- | --- | --- |");
     // A row's group is part of its name: two rows may share a label in different groups.
     const rows = plot.rows.flatMap((row) => {
       const label = row.group ? `${row.group} · ${row.label}` : row.label;
       return [
-        { id: row.id, label, estimate: row.estimate },
-        ...(row.parts ?? []).map((part) => ({ id: part.id, label: `${label} · ${part.label}`, estimate: part.estimate })),
+        { id: row.id, label, estimate: row.estimate, part: false },
+        ...(row.parts ?? []).map((part) => ({ id: part.id, label: `${label} · ${part.label}`, estimate: part.estimate, part: true })),
       ];
     });
+    // Each row's and part's own source and definition, as the desk shows them: a part never takes its row's.
+    const based = rows.some((row) => row.part || row.estimate.cite || row.estimate.definition);
+    const basis = (row: (typeof rows)[number]) => {
+      const cite = row.estimate.cite;
+      const source = cite ? sources.get(cite.source) : undefined;
+      const ref = row.estimate.definition;
+      const definition = ref ? desk.definitions?.find((item) => item.id === ref.id) : undefined;
+      const version = ref ? definition?.versions.find((item) => item.version === ref.version) : undefined;
+      return [
+        source ? `${inline(source.label)}${cite?.lines ? `, ${words.lines(cite.lines)}` : ""}` : row.part ? words.noOwnSource : "",
+        definition && version ? `${inline(definition.title)} ${words.version(version.version)}` : row.part ? words.noOwnDefinition : "",
+      ].filter(Boolean).join(" · ");
+    };
+    out.push(
+      `| ${words.row} | ${words.value} | ${plot.interval ? inline(plot.interval) : words.interval} | ${words.origin} |${based ? ` ${words.basis} |` : ""}`,
+      `| --- | --- | --- | --- |${based ? " --- |" : ""}`,
+    );
     for (const row of rows) {
       const value = number(row.estimate.value, `${row.id}.value`, resolved, plot.digits, plot.scale);
       const low = number(row.estimate.low, `${row.id}.low`, resolved, plot.digits, plot.scale);
       const high = number(row.estimate.high, `${row.id}.high`, resolved, plot.digits, plot.scale);
-      const interval = row.estimate.low !== undefined || row.estimate.high !== undefined ? `[${low.text}, ${high.text}]` : "";
+      // Escaped, so "[-3.1, -0.9]" stays text even beside a link definition of that label.
+      const interval = row.estimate.low !== undefined || row.estimate.high !== undefined ? `\\[${low.text}, ${high.text}\\]` : "";
       const origin = value.origin === "read" ? words.read(value.from!) : value.origin === "provided" ? words.provided : words.notRead;
-      out.push(`| ${inline(row.label)} | ${value.text} | ${interval} | ${inline(origin)} |`);
+      out.push(`| ${inline(row.label)} | ${value.text} | ${interval} | ${inline(origin)} |${based ? ` ${basis(row)} |` : ""}`);
     }
     out.push("");
   }
