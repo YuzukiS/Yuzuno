@@ -1073,3 +1073,46 @@ async fn ports_of_a_previews_entry_a_failed_turning_off_left_stay_theirs_until_i
     assert_eq!(op["state"], "succeeded", "{op}");
     assert_eq!(lab.saved().owned.map(|o| (o.serve_port, o.target)), Some((8445, format!("http://127.0.0.1:{local}"))));
 }
+
+#[tokio::test]
+async fn previews_move_to_another_serve_port_only_by_turning_off_and_on_again() {
+    let lab = lab("wsl");
+    lab.with_page();
+    let (phone, local, other) = (free_port(), free_port(), free_port());
+    lab.both_on(phone, local).await;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // Removing a Serve entry fails from here on.
+    lab.set_fake(|s| s["failOff"] = json!("serve config locked"));
+    let before = lab.calls().len();
+    let refused = |op: &Value| {
+        assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
+        assert!(op["error"].as_str().unwrap().contains("turn previews off first, then turn them on with Serve port 8446"), "{op}");
+    };
+    // Another Serve port while Core owns their entry: refused before anything changes.
+    refused(&lab.previews(json!({"requestId": "move", "enabled": true, "servePort": 8446, "localPort": other})).await.unwrap());
+    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
+    assert!(client.get(format!("http://127.0.0.1:{other}/")).send().await.is_err(), "nothing listens on the new port");
+    let serve = &lab.fake()["serve"];
+    assert_eq!(serve["Web"][format!("{DNS}:8445")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{local}").as_str());
+    assert!(serve["TCP"].get("8446").is_none(), "{serve}");
+    let view = lab.view().await["preview"].clone();
+    assert_eq!((view["listening"]["servePort"].as_u64(), view["saved"]["servePort"].as_u64()), (Some(8445), Some(8445)), "{view}");
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+    // A turning off that cannot remove the entry keeps it Core's: the move is still refused.
+    let off = lab.previews(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    assert_eq!(off["state"], "failed", "{off}");
+    refused(&lab.previews(json!({"requestId": "move-again", "enabled": true, "servePort": 8446, "localPort": other})).await.unwrap());
+    assert!(lab.fake()["serve"]["TCP"].get("8446").is_none());
+    // Once a turning off removes it, the new port is theirs.
+    lab.set_fake(|s| s["failOff"] = Value::Null);
+    let off = lab.previews(json!({"requestId": "off-again", "enabled": false})).await.unwrap();
+    assert_eq!(off["state"], "succeeded", "{off}");
+    let on = lab.previews(json!({"requestId": "move-now", "enabled": true, "servePort": 8446, "localPort": other})).await.unwrap();
+    assert_eq!(on["state"], "succeeded", "{on}");
+    let serve = &lab.fake()["serve"];
+    assert_eq!(serve["Web"][format!("{DNS}:8446")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{other}").as_str());
+    assert!(serve["TCP"].get("8445").is_none(), "{serve}");
+    assert_eq!(serve["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str(), "the phone entry is untouched");
+    assert_eq!(serve["Web"][format!("{DNS}:443")]["Handlers"]["/"]["Proxy"], "http://127.0.0.1:8790", "someone else's entry is untouched");
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+}

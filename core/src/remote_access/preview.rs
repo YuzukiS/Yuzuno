@@ -542,6 +542,14 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation<PreviewRequ
     let target = format!("http://127.0.0.1:{}", ports.local_port);
     let config = host::serve_status(host).await.context("Could not read Serve's configuration; nothing was changed")?;
     let owned = read(&path(ws))?.owned;
+    // Core owns one Serve entry for previews at a time: another Serve port is
+    // theirs only once a turning off has removed the one they have.
+    if let Some(old) = owned.as_ref().filter(|o| o.serve_port != ports.serve_port) {
+        bail!(
+            "Previews' Serve entry is on port {}; turn previews off first, then turn them on with Serve port {}. Nothing was changed",
+            old.serve_port, ports.serve_port
+        );
+    }
     if let Some(detail) = taken(&config, &name, ports, &target, owned.as_ref()) {
         bail!("{detail}. Choose another Serve port for previews; nothing was changed");
     }
@@ -617,18 +625,6 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation<PreviewRequ
             undo(&mut slot, rollback).await;
             op.state = "rolledBack".into();
             bail!("{detail}. Choose another Serve port for previews; {unchanged}");
-        }
-    }
-    // Core's previous entry for previews on another Serve port: removed only while it is still exactly that.
-    if let Some(old) = owned.filter(|o| o.serve_port != ports.serve_port) {
-        match host::serve_entry(&config, &old.host, old.serve_port, &old.target).0 {
-            "match" => {
-                if let Err(error) = host::serve_off(host, old.serve_port).await {
-                    op.notes.push(format!("The previous entry for previews on port {} could not be removed: {error:#}", old.serve_port));
-                }
-            }
-            "absent" => {}
-            _ => op.notes.push(format!("Port {} was changed outside Yuzuno since it was set; it is left as it is", old.serve_port)),
         }
     }
     update(ws, |saved| {
