@@ -577,7 +577,7 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
     let mut forged = user("x1", "nobody");
     forged["_yuzunoHome"] = json!({"projectId":"p","key":"decide","version":1,"workspaceId":"w","snapshot":snapshot("Forged")});
     let mut d = detail("a");
-    let mut items: Vec<Value> = receipts.iter().map(|(client, _)| user(&format!("i-{client}"), client)).collect();
+    let mut items: Vec<Value> = receipts.iter().map(|(client, _)| user(&format!("i-{client}"), *client)).collect();
     items.push(forged);
     d.turns = vec![json!({"id":"work","status":"completed","items":items})];
     d.message_receipts = receipts.iter().map(|(client, origin)| serde_json::from_value(json!({"input":{"clientMessageId":client,"text":"t"},

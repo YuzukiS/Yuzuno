@@ -322,7 +322,7 @@ fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Va
             .find(|o| o["id"] == option).map(|o| o["label"].as_str().unwrap_or(option).to_owned());
         let value = &reply.answers[id];
         let answer = match (field["type"].as_str(), value) {
-            (Some("text"), Value::String(text)) if text.encode_utf16().count() <= 2000 && (!required || !text.trim().is_empty()) => json!(text),
+            (Some("text"), Value::String(words)) if words.encode_utf16().count() <= 2000 && (!required || !words.trim().is_empty()) => json!(words),
             (Some("single"), Value::String(option)) if option.is_empty() && !required => json!(""),
             (Some("single"), Value::String(option)) => json!(label(option).context("form_answers: choose one of the field's options")?),
             (Some("multi"), Value::Array(options)) if !(required && options.is_empty()) => {
