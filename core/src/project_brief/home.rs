@@ -266,7 +266,8 @@ pub(super) struct ReplyInput {
     pub workspace_id: Option<String>,
     /// A form's answers (T-9), beside the text Home writes of them: by
     /// field id, option ids for a choice. Checked against the form of the
-    /// ask's version the user saw; the text is still what the Agent gets.
+    /// ask's version the user saw, and the text must say exactly these
+    /// answers (form_answers); the text is still what the Agent gets.
     #[serde(default)]
     pub form: Option<FormReply>,
 }
@@ -308,37 +309,59 @@ fn snapshot(project: &str, row: Option<&sections::Row>, title: Option<&str>, cho
 /// A form reply's answers (T-9) as the ask's version offered them: each
 /// field's label and answer, an option id read as its label. They are the
 /// answers the form takes (clarification.ts, clarificationAnswers), and the
-/// ones the text ends with, which is what the Agent reads.
+/// reply's text must be exactly what Home writes of them (AskReply.tsx,
+/// formText): readable lines, then the same ids. So what is kept and what
+/// the Agent reads are the same answers; anything else sends nothing.
 fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Value> {
+    let refused = |why: String| not_submitted(format!("{why}. Nothing was sent, and your answers are kept."));
     let form = &row.data["ask"]["reply"]["form"];
-    ensure!(form["id"].as_str() == Some(reply.form_id.as_str()), "form_not_found: this version of the ask has no such form");
+    if form["id"].as_str() != Some(reply.form_id.as_str()) {
+        return Err(refused("form_not_found: this version of the ask has no such form".into()));
+    }
     let fields = form["fields"].as_array().map(Vec::as_slice).unwrap_or_default();
-    ensure!(reply.answers.len() == fields.len() && fields.iter().all(|field| field["id"].as_str().is_some_and(|id| reply.answers.contains_key(id))),
-        "form_answers: answer each of the form's fields, and only them");
-    let mut shown = Vec::new();
+    if reply.answers.len() != fields.len() || !fields.iter().all(|field| field["id"].as_str().is_some_and(|id| reply.answers.contains_key(id))) {
+        return Err(refused("form_answers: answer each of the form's fields, and only them".into()));
+    }
+    let (mut kept, mut lines, mut ids) = (Vec::new(), Vec::new(), Vec::new());
     for field in fields {
         let (id, required) = (field["id"].as_str().unwrap_or_default(), field["required"] == true);
         let label = |option: &str| field["options"].as_array().into_iter().flatten()
             .find(|o| o["id"] == option).map(|o| o["label"].as_str().unwrap_or(option).to_owned());
         let value = &reply.answers[id];
-        let answer = match (field["type"].as_str(), value) {
-            (Some("text"), Value::String(words)) if words.encode_utf16().count() <= 2000 && (!required || !words.trim().is_empty()) => json!(words),
-            (Some("single"), Value::String(option)) if option.is_empty() && !required => json!(""),
-            (Some("single"), Value::String(option)) => json!(label(option).context("form_answers: choose one of the field's options")?),
-            (Some("multi"), Value::Array(options)) if !(required && options.is_empty()) => {
-                let ids: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
-                let distinct: std::collections::HashSet<&str> = ids.iter().copied().collect();
-                ensure!(ids.len() == options.len() && distinct.len() == ids.len(), "form_answers: choose each option once");
-                json!(ids.iter().map(|option| label(option).context("form_answers: choose only the field's options")).collect::<Result<Vec<_>>>()?)
+        let wrong = || refused(format!("form_answers: the answer to `{id}` is not one this field takes"));
+        // The answer by label, and as its line says it.
+        let (answer, said) = match (field["type"].as_str(), value) {
+            (Some("text"), Value::String(words)) if words.encode_utf16().count() <= 2000 && (!required || !words.trim().is_empty()) =>
+                (json!(words), words.clone()),
+            (Some("single"), Value::String(option)) if option.is_empty() && !required => (json!(""), String::new()),
+            (Some("single"), Value::String(option)) => {
+                let chosen = label(option).ok_or_else(wrong)?;
+                (json!(chosen), chosen)
             }
-            _ => bail!("form_answers: the answer to `{id}` is not one this field takes"),
+            (Some("multi"), Value::Array(options)) if !(required && options.is_empty()) => {
+                let chosen: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
+                let distinct: std::collections::HashSet<&str> = chosen.iter().copied().collect();
+                if chosen.len() != options.len() || distinct.len() != chosen.len() {
+                    return Err(wrong());
+                }
+                let labels = chosen.iter().map(|option| label(option).ok_or_else(wrong)).collect::<Result<Vec<_>>>()?;
+                (json!(labels), labels.join(", "))
+            }
+            _ => return Err(wrong()),
         };
-        shown.push(json!({"id":id,"label":field["label"].as_str().unwrap_or(id),"type":field["type"],"answer":answer}));
+        let shown_label = field["label"].as_str().unwrap_or(id);
+        lines.push(format!("- {shown_label}: {}", if said.is_empty() { "(no answer)" } else { said.as_str() }));
+        // JSON.stringify's order: the form's fields.
+        ids.push(format!("{}:{value}", Value::from(id)));
+        kept.push(json!({"id":id,"label":shown_label,"type":field["type"],"answer":answer}));
     }
-    // Home's text ends with the same ids (AskReply.tsx, formText).
-    let tail = text.trim_end().rsplit_once("\n\n").and_then(|(_, tail)| serde_json::from_str::<Value>(tail).ok());
-    ensure!(tail == Some(json!({"formId":reply.form_id,"answers":reply.answers})), "form_mismatch: the reply's text does not end with these answers");
-    Ok(json!({"id":reply.form_id,"title":form["title"].as_str().unwrap_or_default(),"fields":shown}))
+    let title = form["title"].as_str().unwrap_or_default();
+    let canonical = format!("Answers to \u{201c}{title}\u{201d}:\n{}\n\n{{\"formId\":{},\"answers\":{{{}}}}}",
+        lines.join("\n"), Value::from(reply.form_id.as_str()), ids.join(","));
+    if text != canonical {
+        return Err(refused("form_mismatch: the reply's text does not say these answers".into()));
+    }
+    Ok(json!({"id":reply.form_id,"title":title,"fields":kept}))
 }
 
 /// The option of an ask's reply with this id: (id, label).
@@ -581,7 +604,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
         let form = input.form.as_ref().map(|form| form_answers(row, form, &input.text)).transpose()?;
         let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,"reply":digest,
-            "home":snapshot(&name, Some(row), None, chosen.as_ref(), extra_text(chosen.as_ref(), &input.text), form)});
+            "home":snapshot(&name, Some(row), None, chosen.as_ref(), extra_text(chosen.as_ref(), &input.text).filter(|_| form.is_none()), form)});
         let detail = ws.send_view(&input.agent_id).await?;
         let message = MessageInput {
             client_message_id: input.client_message_id.clone(),

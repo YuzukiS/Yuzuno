@@ -1,7 +1,7 @@
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -189,6 +189,26 @@ test("every way of answering an ask names the version answered and the Workspace
   assert.deepEqual(sent[2].form, { formId: "plan", answers: { part: "" } });
   assert.ok(sent[2].text.endsWith(`\n\n${JSON.stringify(sent[2].form)}`), sent[2].text);
   for (const body of [sent[0], sent[1], sent[3]]) assert.equal(body.form, undefined);
+  assert.deepEqual(page.errors, []);
+});
+
+// One form reply both sides read (T-9): Core takes `sent` for this form and
+// keeps `kept` of it (core/src/project_brief/tests.rs). Here, the real
+// AskReply sends exactly `sent` for the form's defaults: long Chinese words,
+// quotes and a backslash, optional answers left empty, several options in
+// the order chosen.
+const homeFormReply = JSON.parse(await readFile(new URL("./fixtures/home-form-reply.json", import.meta.url), "utf8"));
+
+test("a form's answers go as the text Home writes of them with the same ids beside it, as Core takes them", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.render(section("setup", 1, { form: homeFormReply.form }));
+  page.document.querySelector(".clarification footer .primary-button").click();
+  await tick();
+  const sent = page.replies();
+  assert.equal(sent.length, 1, JSON.stringify(page.posts));
+  assert.equal(sent[0].text, homeFormReply.sent.text);
+  assert.deepEqual(sent[0].form, homeFormReply.sent.form);
   assert.deepEqual(page.errors, []);
 });
 

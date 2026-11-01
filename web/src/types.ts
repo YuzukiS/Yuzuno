@@ -281,7 +281,8 @@ export interface HomeReplySnapshot {
   /** The options an ask offered, its approaches included. */
   options: { id: string; label: string }[] | null;
   choice: { id: string; label: string } | null;
-  /** The user's own words, whole; null when they only chose. */
+  /** The user's own words, whole; null when they only chose, or answered
+   * a form (its answers are in `form`, and the message text says them). */
   text: string | null;
   /** A form's answers, an option's by its label. */
   form: {

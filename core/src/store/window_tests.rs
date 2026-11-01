@@ -586,7 +586,7 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
     let identity = json!({"projectId":"p","key":"decide","version":1,"workspaceId":"w"});
     let whole = |text: &str| { let mut home = identity.clone(); home["snapshot"] = snapshot(text); home };
     let check = |store: &Store| {
-        for query in [Query::default(), Query { turn_id: Some("work".into()), item_id: Some("i-h2".into()), ..Default::default() }] {
+        for query in [Query::default(), Query { turn_id: Some("work".into()), item_id: Some("i-h1".into()), ..Default::default() }] {
             let window = assert_equivalent(store, &query);
             let item = |id: &str| window.detail.turns[0]["items"].as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
             let shown = |id: &str| (item(id)["_yuzunoInput"].clone(), item(id)["_yuzunoHome"].clone());

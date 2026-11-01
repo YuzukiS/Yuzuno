@@ -30,8 +30,9 @@ export type HomeReplyInput = {
    * `version`, which is a card's. */
   askVersion?: number;
   workspaceId?: string;
-  /** A form's answers (T-9), beside `text`, which still says them: Core
-   * checks them against that version's form and keeps them by label. */
+  /** A form's answers (T-9), beside `text`, which must say exactly them
+   * (AskReply's formText): Core checks both against that version's form and
+   * keeps the answers by label, or sends nothing. */
   form?: { formId: string; answers: Record<string, string | string[]> };
 };
 

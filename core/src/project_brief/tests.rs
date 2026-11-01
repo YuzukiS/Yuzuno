@@ -1031,12 +1031,16 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
         (card.version, card.title, card.ask_version, card.workspace_id) = (Some(1), Some("About news".into()), None, None);
         card
     };
-    let refused = |error: anyhow::Error, code: &str| assert!(error.to_string().starts_with(code), "{error}");
+    let refused = |error: anyhow::Error, code: &str| {
+        assert!(error.to_string().starts_with(code), "{error}");
+        assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    };
     let receipt = |id: &str| ws.store.receipt("b", id).unwrap();
-    // What Home sends of a form (AskReply.tsx, formText): readable lines, then the ids.
+    // What Home sends of a form (AskReply.tsx, formText): readable lines, then the ids in the form's order.
     let form = json!({"formId":"prefs","answers":{"dir":"/home/me/project","theme":"dark","checks":["wide","keys"]}});
-    let text = format!("Answers to \u{201c}Preview setup\u{201d}:\n- Working directory: /home/me/project\n- Theme: Dark\n\
-        - Checks: Wide text, Keyboard\n\n{form}");
+    let text = "Answers to \u{201c}Preview setup\u{201d}:\n- Working directory: /home/me/project\n- Theme: Dark\n\
+        - Checks: Wide text, Keyboard\n\n{\"formId\":\"prefs\",\"answers\":{\"dir\":\"/home/me/project\",\"theme\":\"dark\",\"checks\":[\"wide\",\"keys\"]}}"
+        .to_owned();
 
     // Not this version's form, its fields, its options, nor the text's answers.
     let changed = |path: &[&str], value: Value| {
@@ -1055,6 +1059,9 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     }
     refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["answers", "theme"], json!("light"))), "f0"))
         .await.unwrap_err(), "form_mismatch");
+    // A text whose lines say other answers than its ids, and the form's: not these answers.
+    let says_light = text.replace("- Theme: Dark", "- Theme: Light");
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &says_light, Some(&form), "f0")).await.unwrap_err(), "form_mismatch");
     // Not with a choice, to a card, from a Home that does not say the version, or from another Workspace's.
     assert!(home::reply(&ws, project.clone(), ask("decide", Some("left"), &text, Some(&form), "f0")).await.is_err());
     let mut to_card = card("Hi", "f0");
@@ -1068,13 +1075,14 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     refused(home::reply(&ws, project.clone(), elsewhere).await.unwrap_err(), "workspace_changed");
     assert!(receipt("f0").is_none(), "nothing was recorded for them");
 
-    // The form's answers by label, the text the Agent gets as Home wrote it.
+    // The form's answers by label (its text is Home's composition of them),
+    // and the text the Agent gets as Home wrote it.
     let _ = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&form), "f1")).await;
     let (origin, kept) = sent_from(&ws, "b", "f1");
     let digest = home::reply_digest(None, &text, Some(&serde_json::from_value(form.clone()).unwrap()));
     assert_ne!(digest, home::reply_digest(None, &text, None));
     assert_eq!(origin, json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,"reply":digest}));
-    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],"text":text,
+    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
         "form":{"id":"prefs","title":"Preview setup","fields":[
             {"id":"dir","label":"Working directory","type":"text","answer":"/home/me/project"},
             {"id":"theme","label":"Theme","type":"single","answer":"Dark"},
@@ -1126,6 +1134,42 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     assert_eq!(shown(2), from(Value::Null, Value::Null, snapshot(json!({"text":"Thanks"}))));
     assert_eq!(shown(3), (json!("you"), Value::Null));
     assert_eq!(shown(4), (json!("unconfirmed"), Value::Null));
+}
+
+// T-9: what Home sends for a form, as web/tools/ask-version-ui.test.mjs
+// proves the real AskReply sends it for this form, is taken as it is and
+// kept by label: long Chinese words whole, quotes and a backslash as typed,
+// optional answers left empty, several options in the order chosen. Any
+// other text with the same answers sends nothing; a Home that sends no
+// answers beside its text is kept as that text.
+#[tokio::test]
+async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothing() {
+    let fixture: Value = serde_json::from_str(include_str!("../../../web/tools/fixtures/home-form-reply.json")).unwrap();
+    let (_dir, ws, project) = lab();
+    let mut setup = put("setup", "ask");
+    setup["ask"]["reply"] = json!({"form":fixture["form"]});
+    accept(&ws, "a", input("s1", 0, vec![setup])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let sent = fixture["sent"]["text"].as_str().unwrap();
+    let reply = |text: &str, id: &str, answers: bool| home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.into(),
+        client_message_id: id.into(), choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
+        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()) };
+    for (id, other) in [("x1", format!("{sent}\n")), ("x2", sent.replacen("\u{6df1}\u{8272}", "\u{6d45}\u{8272}", 1)),
+        ("x3", sent.replacen("(no answer)", "", 1)), ("x4", sent.replacen("\u{5bbd}\u{5b57}, \u{952e}\u{76d8}", "\u{952e}\u{76d8}, \u{5bbd}\u{5b57}", 1))] {
+        assert_ne!(other, sent, "{id}");
+        let error = home::reply(&ws, project.clone(), reply(&other, id, true)).await.unwrap_err();
+        assert!(error.to_string().starts_with("form_mismatch") && error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "{id}: {error}");
+        assert!(ws.store.receipt("b", id).unwrap().is_none(), "{id}");
+    }
+    let _ = home::reply(&ws, project.clone(), reply(sent, "f1", true)).await;
+    let (origin, kept) = sent_from(&ws, "b", "f1");
+    assert_eq!((origin["key"].clone(), origin["version"].clone()), (json!("setup"), json!(1)));
+    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],"form":fixture["kept"]})));
+    assert!(ws.store.receipt("b", "f1").unwrap().unwrap().input.text.contains(&format!("\n{sent}\n")));
+    // An older Home, without the answers beside the text: its text, whole, and no form.
+    let _ = home::reply(&ws, project.clone(), reply(sent, "o1", false)).await;
+    assert_eq!(sent_from(&ws, "b", "o1").1, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
+        "text":sent})));
 }
 
 #[test]
