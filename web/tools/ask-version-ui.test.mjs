@@ -185,6 +185,10 @@ test("every way of answering an ask names the version answered and the Workspace
   assert.equal(sent[1].choice, "plan-b");
   assert.match(sent[2].text, /Answers to “Which parts ship first\?”/);
   assert.equal(sent[3].text, "Plan B, after the docs land.");
+  // A form's answers also go beside the text that says them (T-9), the same ids.
+  assert.deepEqual(sent[2].form, { formId: "plan", answers: { part: "" } });
+  assert.ok(sent[2].text.endsWith(`\n\n${JSON.stringify(sent[2].form)}`), sent[2].text);
+  for (const body of [sent[0], sent[1], sent[3]]) assert.equal(body.form, undefined);
   assert.deepEqual(page.errors, []);
 });
 

@@ -1078,7 +1078,8 @@ fn project_window(
         // Apply the same item provenance to its original body before sizing it.
         if let Some(object) = item.as_object_mut() {
             object.remove("_yuzunoMailbox");
-            for key in ["_yuzunoSource", "_yuzunoMailbox", "_yuzunoInput"] {
+            object.remove("_yuzunoHome");
+            for key in ["_yuzunoSource", "_yuzunoMailbox", "_yuzunoInput", "_yuzunoHome"] {
                 if let Some(value) = index.turns[t]["items"][i].get(key) { object.insert(key.into(), value.clone()); }
             }
         }
@@ -1106,8 +1107,9 @@ fn project_window_marked(
         // the body too, before sizing it.
         if let Some(object) = item.as_object_mut() {
             object.remove("_yuzunoMailbox");
+            object.remove("_yuzunoHome");
             let listed = ords[t].iter().position(|ord| *ord == i).map(|k| &index.turns[t]["items"][k]);
-            for key in ["_yuzunoSource", "_yuzunoMailbox", "_yuzunoInput"] {
+            for key in ["_yuzunoSource", "_yuzunoMailbox", "_yuzunoInput", "_yuzunoHome"] {
                 if let Some(value) = listed.and_then(|entry| entry.get(key)) { object.insert(key.into(), value.clone()); }
             }
         }

@@ -168,9 +168,10 @@ pub(crate) fn trim(item: &Value, key: &str, value: &Value) -> Option<(Value, Val
 /// stored Item whose field replaced the preview it was read with
 /// (`record_rows`). A sub-agent's or background task's record is never
 /// trimmed: it is bounded (`claude::SUBAGENT_RESULT_CHARS`), and the session
-/// store indexes its task from the Item row (T-140).
+/// store indexes its task from the Item row (T-140). Nor is a Home reply's
+/// `_yuzunoHome`: bounded too (input_origin), and shown whole (T-9).
 pub(crate) fn trim_field(item: &Value, key: &str, value: &Value) -> Option<(Value, Value)> {
-    if key == TRUNCATED || crate::claude::TASK_RECORDS.contains(&key) {
+    if key == TRUNCATED || key == "_yuzunoHome" || crate::claude::TASK_RECORDS.contains(&key) {
         return None;
     }
     let large = match value {

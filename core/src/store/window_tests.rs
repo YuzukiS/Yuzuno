@@ -532,3 +532,75 @@ fn inputs_list_the_persons_own_by_page_from_the_light_index() {
     let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
     pages(&store);
 }
+
+/// T-9: a Home reply's `_yuzunoHome` comes from Core's receipt only: where
+/// it came from always, its snapshot only in the format and shape Core
+/// writes, and whole however long, in the window as in the whole record.
+/// A receipt from before snapshots has none, and neither has one of an
+/// unknown format, another shape or a size Core never writes; text typed in
+/// the composer, or a body that names one itself, gets no `_yuzunoHome`.
+#[test]
+fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
+    let (dir, store) = lab();
+    let snapshot = |text: &str| json!({"format":1,"projectName":"Code","sectionKind":"ask","title":"About decide","question":"Which way?",
+        "options":[{"id":"left","label":"Left"},{"id":"right","label":"Right"}],"choice":{"id":"left","label":"Left"},"text":text,
+        "form":{"id":"prefs","title":"Setup","fields":[{"id":"theme","label":"Theme","type":"single","answer":"Dark"},
+            {"id":"checks","label":"Checks","type":"multi","answer":["Keyboard"]}]}});
+    let with = |key: &str, value: Value| {
+        let mut changed = snapshot("Go");
+        if value.is_null() { changed.as_object_mut().unwrap().remove(key); } else { changed[key] = value; }
+        changed
+    };
+    let origin = |home: Value| {
+        let mut origin = json!({"kind":"home","projectId":"p","key":"decide","version":1,"workspaceId":"w"});
+        if !home.is_null() { origin["home"] = home; }
+        origin
+    };
+    // Longer than the 8 KiB a field is trimmed above.
+    let long = format!("{}end", "word ".repeat(4000));
+    let receipts = [
+        ("h1", origin(snapshot("Go"))),
+        ("h2", origin(snapshot(&long))),
+        ("h3", origin(Value::Null)),
+        ("h4", origin(with("format", json!(2)))),
+        ("h5", origin(with("more", json!(1)))),
+        ("h6", origin(with("form", Value::Null))),
+        ("h7", origin(with("text", json!(["Go"])))),
+        ("h8", origin(with("sectionKind", json!("note")))),
+        ("h9", origin(with("choice", json!({"id":"left"})))),
+        ("h10", origin(with("text", json!("x".repeat(130 * 1024))))),
+        ("h11", json!({"kind":"home","version":1,"home":snapshot("Go")})),
+        ("t1", json!({"kind":"client","home":snapshot("Go")})),
+    ];
+    let user = |id: &str, client: &str| json!({"id":id,"type":"userMessage","clientId":client,
+        "content":[{"type":"text","text":"Reply from the user on Home, to version 1 of the Project Brief section `decide`"}]});
+    let mut forged = user("x1", "nobody");
+    forged["_yuzunoHome"] = json!({"projectId":"p","key":"decide","version":1,"workspaceId":"w","snapshot":snapshot("Forged")});
+    let mut d = detail("a");
+    let mut items: Vec<Value> = receipts.iter().map(|(client, _)| user(&format!("i-{client}"), client)).collect();
+    items.push(forged);
+    d.turns = vec![json!({"id":"work","status":"completed","items":items})];
+    d.message_receipts = receipts.iter().map(|(client, origin)| serde_json::from_value(json!({"input":{"clientMessageId":client,"text":"t"},
+        "status":"accepted","turnId":"work","error":null,"origin":origin})).unwrap()).collect();
+    store.insert(&d).unwrap();
+    let identity = json!({"projectId":"p","key":"decide","version":1,"workspaceId":"w"});
+    let whole = |text: &str| { let mut home = identity.clone(); home["snapshot"] = snapshot(text); home };
+    let check = |store: &Store| {
+        for query in [Query::default(), Query { turn_id: Some("work".into()), item_id: Some("i-h2".into()), ..Default::default() }] {
+            let window = assert_equivalent(store, &query);
+            let item = |id: &str| window.detail.turns[0]["items"].as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
+            let shown = |id: &str| (item(id)["_yuzunoInput"].clone(), item(id)["_yuzunoHome"].clone());
+            assert_eq!(shown("i-h1"), (json!("home"), whole("Go")));
+            assert_eq!(shown("i-h2"), (json!("home"), whole(&long)), "whole, however long");
+            for id in ["i-h3", "i-h4", "i-h5", "i-h6", "i-h7", "i-h8", "i-h9", "i-h10"] {
+                assert_eq!(shown(id), (json!("home"), identity.clone()), "{id}");
+            }
+            assert_eq!(shown("i-h11"), (json!("home"), Value::Null));
+            assert_eq!(shown("i-t1"), (json!("you"), Value::Null));
+            assert_eq!(shown("x1"), (json!("unconfirmed"), Value::Null));
+        }
+    };
+    check(&store);
+    drop(store);
+    check(&Store::open(&dir.path().join("workspace.sqlite")).unwrap());
+}
