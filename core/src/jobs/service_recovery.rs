@@ -360,6 +360,10 @@ fn recovery_service(tx: &Connection, job: &Value) -> Result<String> {
     Ok(link_of(tx, job["id"].as_str().unwrap_or_default())?.context("The service link is missing")?.service_id)
 }
 
+/// Why a retry queued by an earlier Core never starts.
+pub(super) const EARLIER_CORE: (&str, &str) = ("core_restart",
+    "Not started: Core restarted after this automatic retry was queued; after a restart recovery is manual");
+
 /// At reservation, before anything is held: a retry queued by an earlier
 /// Core never starts, and none starts with too little time left. Otherwise
 /// its timeout is cut to what remains (the host cuts again just before
@@ -369,8 +373,7 @@ pub(super) fn reservation(store: &Store, job: &mut Value) -> Option<(&'static st
         return None;
     }
     if job["recoveryOf"]["coreInstance"] != json!(store.instance) {
-        return Some(("core_restart",
-            "Not started: Core restarted after this automatic retry was queued; after a restart recovery is manual"));
+        return Some(EARLIER_CORE);
     }
     let end = job["deadlineAtUnix"].as_f64()?;
     let remaining = end - now_unix();

@@ -743,31 +743,103 @@ async fn a_step_failing_after_the_retry_is_written_leaves_no_partial_retry() {
     assert!(intent["recovery"]["retryJobId"].is_null() && intent["recovery"]["scheduled"] == 0);
 }
 
-#[tokio::test]
-async fn after_a_core_restart_nothing_queued_before_it_starts_and_recovery_is_manual() {
-    let lab = lab();
-    let (id, retry) = {
-        let s = &lab.ws.store;
-        let (id, root) = armed(&lab).await;
-        let root = launch(s, &root);
-        crash(s, &root);
-        let retry = latest(s, &id);
-        (id, retry)
-    };
+/// As `armed`, for another service of the same Project.
+async fn armed_as(lab: &Lab, name: &str) -> (String, Value) {
+    let s = &lab.ws.store;
+    let id = service(lab, name).await;
+    let first = submit(s, &format!("{name}-1"), &id).unwrap();
+    run(s, &first);
+    end(s, &first, "succeeded");
+    let receipt = start_now(s, &id, &start_bounded(&format!("{name}-start"), &first, 0)).unwrap();
+    (id, record(s, &json!({"id":receipt["jobId"]})))
+}
+/// Core starts again on the same Workspace.
+fn core_restarted(lab: Lab) -> Lab {
     let data = lab._dir.path().join("data");
     drop(lab.ws);
     let ws = Workspace::new(data, "/tmp".into(), "unused".into()).unwrap();
-    let lab = Lab { _dir: lab._dir, ws, project: lab.project };
+    Lab { _dir: lab._dir, ws, project: lab.project }
+}
+
+#[tokio::test]
+async fn after_a_core_restart_a_retry_queued_before_it_is_rejected_at_once_and_recovery_is_manual() {
+    let lab = lab();
     let s = &lab.ws.store;
+    // Vite: its third retry is queued, 600 s out.
+    let (id, root) = armed(&lab).await;
+    let mut previous = launch(s, &root);
+    for _ in 0..2 {
+        crash(s, &previous);
+        previous = launch(s, &latest(s, &id));
+    }
+    crash(s, &previous);
+    let third = record(s, &latest(s, &id));
+    assert_eq!((third["recoveryOf"]["retry"].as_i64(), third["status"].as_str()), (Some(3), Some("queued")));
+    let revision = intent_of(s, &id)["revision"].as_i64().unwrap();
+    // Docs: a retry already reserved. Api: a retry whose outcome is unknown.
+    // Plain: an ordinary queued Job. And a remote Job shaped like a retry.
+    let (docs, root) = armed_as(&lab, "Docs").await;
+    crash(s, &launch(s, &root));
+    let reserved = reserve(s, &latest(s, &docs));
+    let (api, root) = armed_as(&lab, "Api").await;
+    crash(s, &launch(s, &root));
+    let unknown = reserve(s, &latest(s, &api));
+    s.job_unknown(unknown["id"].as_str().unwrap(), "Launch acknowledgement unavailable").unwrap();
+    let plain = service(&lab, "Plain").await;
+    let ordinary = submit(s, "plain-1", &plain).unwrap();
+    {
+        let db = s.db.write().unwrap();
+        let mut value = third.clone();
+        value["id"] = json!("remote-retry");
+        value["requestId"] = json!("remote-retry");
+        value["executor"] = json!({"machineId":"lab-remote","machineName":"lab"});
+        store::insert_job(&db, value).unwrap();
+    }
+    let others = |s: &Store| [&reserved, &unknown, &ordinary, &json!({"id":"remote-retry"})].map(|job| record(s, job));
+    let before = others(s);
+    assert_eq!(before.each_ref().map(|job| job["status"].as_str()), [Some("starting"), Some("unknown"), Some("queued"), Some("queued")]);
+    let count = jobs(s);
+
+    // No delay passes and no clock moves before these readings.
+    let lab = core_restarted(lab);
+    let s = &lab.ws.store;
+    let refused = record(s, &third);
+    assert!(refused["notBeforeUnix"].as_f64().unwrap() > now_unix() + 500.0, "its delay has not passed");
+    assert_eq!((refused["status"].as_str(), refused["result"]["evidence"]["recoveryRefusal"].as_str()),
+        (Some("rejected"), Some("core_restart")), "rejected at Core start, before its delay");
+    assert_eq!((refused["reserved"] == true, &refused["attempt"]), (false, &third["attempt"]), "no new attempt");
+    assert!(refused["finishedAt"].is_string() && refused["notifications"]["rejected"].is_string());
+    let mut kept = refused.clone();
+    for field in ["status", "reason", "finishedAt", "result", "notifications"] {
+        match third.get(field) {
+            Some(value) => kept[field] = value.clone(),
+            None => drop(kept.as_object_mut().unwrap().remove(field)),
+        }
+    }
+    assert_eq!(kept, third, "only its outcome is recorded: its lineage, launch and history stay");
+    assert_eq!(jobs(s), count, "nothing follows");
+    assert_eq!(others(s), before, "a reserved retry, an unknown one, an ordinary queued Job and a remote Job are left as they were");
     let intent = intent_of(s, &id);
     assert_eq!((intent["recoveryMode"].as_str(), intent["recovery"]["haltedReason"].as_str()), (Some("manual"), Some("core_restart")));
-    due(s, &retry);
-    assert!(s.reserve_next_job(None, None, None).unwrap().is_none());
-    let refused = record(s, &retry);
-    assert_eq!((refused["status"].as_str(), refused["result"]["evidence"]["recoveryRefusal"].as_str()), (Some("rejected"), Some("core_restart")));
-    assert_eq!(jobs(s), 3, "nothing follows");
+    assert_eq!((intent["revision"].as_i64(), &intent["appliesToJobId"]), (Some(revision), &third["id"]));
     let view = recovery(&lab, &id).await;
     assert_eq!((view["state"].as_str(), view["haltedReason"].as_str()), (Some("halted"), Some("core_restart")));
+    assert_eq!(view["retry"], json!({"scheduled":3,"started":2,"max":3}));
+
+    // Starting again changes nothing more.
+    let lab = core_restarted(lab);
+    let s = &lab.ws.store;
+    assert_eq!((record(s, &third), jobs(s)), (refused.clone(), count));
+    assert_eq!(others(s), before);
+
+    // The user's Start again from what the panel reads: a new period that
+    // holds nothing of the old retry.
+    let receipt = start_now(s, &id, &start_bounded("start-after", &refused, revision)).unwrap();
+    let intent = intent_of(s, &id);
+    assert_eq!((intent["recoveryMode"].as_str(), &intent["recovery"]["rootJobId"]), (Some("bounded"), &receipt["jobId"]));
+    assert_eq!((intent["recovery"]["scheduled"].as_i64(), intent["recovery"]["started"].as_i64()), (Some(0), Some(0)));
+    assert!(intent["recovery"]["retryJobId"].is_null());
+    assert_eq!((record(s, &third)["status"].as_str(), jobs(s)), (Some("rejected"), count + 1));
 }
 
 #[tokio::test]

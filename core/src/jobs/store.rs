@@ -218,6 +218,19 @@ fn previous(
         response["jobId"].as_str().context("Invalid job receipt")?,
     )?)))
 }
+/// A service's automatic retry refused before launch (T-14): never started,
+/// its refusal recorded and told, then recovery settles it in the same
+/// transaction.
+fn refuse_retry(store: &Store, tx: &Connection, job: &mut Value, code: &str, reason: &str) -> Result<()> {
+    job["status"] = json!("rejected");
+    job["reason"] = json!(reason);
+    job["finishedAt"] = json!(now());
+    job["result"] = json!({"status":"rejected","reason":reason,
+        "evidence":{"coreObservation":true,"notStarted":true,"recoveryRefusal":code}});
+    notify(tx, job)?;
+    save(tx, job)?;
+    super::service_recovery::after_outcome(store, tx, job)
+}
 fn notify(db: &Connection, job: &mut Value) -> Result<()> {
     let status = job["status"]
         .as_str()
@@ -715,6 +728,29 @@ impl Store {
     ) -> Result<Option<Value>> {
         Ok(self.reserve_next(host_memory_available, host, disk)?.0)
     }
+    /// At Core start, once the Jobs table exists and before the queue runs
+    /// (T-14): a service's automatic retry still queued without a reservation
+    /// was queued by an earlier Core and never starts. It is rejected now, as
+    /// reservation would reject it, not once its delay has passed: until then
+    /// it would keep the service from a manual Start. A retry already
+    /// reserved, and every other Job, is left as it is.
+    pub(crate) fn reject_earlier_core_retries(&self) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut q = tx.prepare("SELECT id FROM local_jobs WHERE status='queued' AND reserved=0
+            AND json_extract(data,'$.executor') IS NULL AND json_type(data,'$.recoveryOf')='object' ORDER BY seq")?;
+        let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        for id in ids {
+            let mut job = get(&tx, &id)?;
+            if job["recoveryOf"]["coreInstance"] != json!(self.instance) {
+                let (code, reason) = super::service_recovery::EARLIER_CORE;
+                refuse_retry(self, &tx, &mut job, code, reason)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
     /// Try the queued jobs in admission order and reserve the first that fits:
     /// its own free-space verdict, the shared CPU/RAM/swap budget, a slot,
     /// host memory and the GPUs it declares, all checked and reserved for the
@@ -804,14 +840,7 @@ impl Store {
             // never starts, nor one with too little of its run's time left;
             // otherwise its timeout is cut to what remains.
             if let Some((code, reason)) = super::service_recovery::reservation(self, &mut job) {
-                job["status"] = json!("rejected");
-                job["reason"] = json!(reason);
-                job["finishedAt"] = json!(now());
-                job["result"] = json!({"status":"rejected","reason":reason,
-                    "evidence":{"coreObservation":true,"notStarted":true,"recoveryRefusal":code}});
-                notify(&tx, &mut job)?;
-                save(&tx, &job)?;
-                super::service_recovery::after_outcome(self, &tx, &mut job)?;
+                refuse_retry(self, &tx, &mut job, code, reason)?;
                 changed = true;
                 continue;
             }

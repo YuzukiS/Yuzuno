@@ -78,7 +78,8 @@ pub(super) struct StartGuard {
 /// Runs each time Core opens the Workspace. Automatic retry is armed only by
 /// a user start in a running Core, so any still on belongs to the Core before
 /// this one: it is closed (`core_restart`) before the queue runs. Nothing it
-/// had queued may start (each retry also carries that Core's instance).
+/// had queued may start (each retry also carries that Core's instance): once
+/// the Jobs table exists, `Store::open` rejects a retry still queued.
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS project_service_intents(
         service_id TEXT PRIMARY KEY REFERENCES project_services(id) ON DELETE CASCADE,
