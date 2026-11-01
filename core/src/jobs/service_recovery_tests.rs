@@ -661,8 +661,9 @@ async fn a_retry_counts_as_started_only_once_its_command_was_created() {
     assert!(!running(s, &reserved, Some(&reserved["attempt"])));
     assert_eq!(record(s, &retry)["status"], "cancelling");
 
-    // Turned off while reserved: the retry may still run and its Job records
-    // that, but recovery stays off and counts nothing.
+    // Turned off while reserved: the retry may still run. Its command's start
+    // is recorded in the closed period, once; recovery stays off, keeps its
+    // reason, revision, end time and budget, and its crash starts nothing.
     let lab = self::lab();
     let s = &lab.ws.store;
     let (id, root) = armed(&lab).await;
@@ -672,10 +673,35 @@ async fn a_retry_counts_as_started_only_once_its_command_was_created() {
     let retry = latest(s, &id);
     let reserved = reserve(s, &retry);
     opt_out_now(s, &id, &opt_out_request("off-1", &root, revision)).unwrap();
+    let closed = intent_of(s, &id);
+    assert!(running(s, &reserved, None));
+    assert_eq!(intent_of(s, &id)["recovery"]["started"], 0, "the worker alone is not a start");
     assert!(running(s, &reserved, Some(&reserved["attempt"])));
     assert_eq!(record(s, &retry)["status"], "running");
+    assert!(!running(s, &reserved, Some(&reserved["attempt"])), "a repeat changes nothing");
+    let after = intent_of(s, &id);
+    assert_eq!(after["recovery"]["started"], 1);
+    for key in ["revision", "recoveryMode", "desiredState", "appliesToJobId"] {
+        assert_eq!(after[key], closed[key], "{key} unchanged");
+    }
+    for key in ["state", "haltedReason", "haltedAt", "deadlineAtUnix", "scheduled", "retryJobId"] {
+        assert_eq!(after["recovery"][key], closed["recovery"][key], "recovery.{key} unchanged");
+    }
+    crash(s, &retry);
+    assert_eq!(jobs(s), 3, "its crash starts nothing");
     let view = recovery(&lab, &id).await;
-    assert_eq!((view["mode"].as_str(), view["state"].as_str(), &view["retry"]["started"]), (Some("manual"), Some("off"), &json!(0)));
+    assert_eq!((view["mode"].as_str(), view["state"].as_str(), view["haltedReason"].as_str()), (Some("manual"), Some("off"), Some("opted_out")));
+    assert_eq!(view["retry"], json!({"scheduled":1,"started":1,"max":3}));
+    assert_eq!(intent_of(s, &id)["revision"], closed["revision"]);
+
+    // A new manual run after that: the closed period's record is not touched
+    // by anything the new run does.
+    let receipt = start_now(s, &id, &start_request("start-2", &retry, revision + 1)).unwrap();
+    let manual = record(s, &json!({"id":receipt["jobId"]}));
+    let manual = launch(s, &manual);
+    crash(s, &manual);
+    assert_eq!(jobs(s), 4, "the manual run's crash starts nothing");
+    assert!(intent_of(s, &id)["recovery"].is_null(), "a manual run has no period");
 }
 
 #[tokio::test]

@@ -181,7 +181,20 @@ pub(super) fn after_outcome(store: &Store, tx: &Connection, job: &mut Value) -> 
         return Ok(());
     };
     let mut intent = super::service_control::intent(tx, &link.service_id)?;
-    if intent["recoveryMode"] != "bounded" || intent["appliesToJobId"] != job["id"] || !in_lineage(&intent["recovery"], job) {
+    if intent["appliesToJobId"] != job["id"] || !in_lineage(&intent["recovery"], job) {
+        return Ok(());
+    }
+    if intent["recoveryMode"] != "bounded" {
+        // A closed period still records what happened to its own retry: one
+        // reserved before an opt-out may run, and its command's start counts
+        // once. Nothing else about the period changes, and nothing follows.
+        let recovery = &mut intent["recovery"];
+        if let Some(k) = job["recoveryOf"]["retry"].as_i64()
+            .filter(|k| command_started(job) && recovery["started"].as_i64().unwrap_or(0) < *k)
+        {
+            recovery["started"] = json!(k);
+            super::service_control::write_intent(tx, &link.service_id, &intent)?;
+        }
         return Ok(());
     }
     let recovery = &mut intent["recovery"];
