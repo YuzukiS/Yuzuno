@@ -926,6 +926,27 @@ ul.home-widget {
 .home-card-summary .brief-markdown > * {
   margin: 0;
 }
+/* A named conclusion's conditions, with it on the folded card (T-18). */
+.home-card-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--home-attention);
+  border-radius: 0 8px 8px 0;
+  background: var(--home-soft);
+}
+.home-card-conditions-label {
+  flex: none;
+  font-weight: 600;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-card-conditions > .brief-body {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
 .home-card-glance .home-section-time {
   margin-top: 2px;
 }

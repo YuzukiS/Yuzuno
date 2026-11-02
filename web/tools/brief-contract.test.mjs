@@ -392,7 +392,7 @@ test("a body may name its summary and the details that start folded, among the r
   assert.equal(refused({ details: [] })[0].code, "invalid_field");
   const content = briefGuide("content");
   assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?\}: ids of the root's own blocks/);
-  assert.match(content, /details lists titled Groups of supporting detail .* nothing else folds\. Without summary, the page shows the body in your order\./);
+  assert.match(content, /details lists titled Groups of supporting detail .* nothing else folds\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
   assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
 });
 

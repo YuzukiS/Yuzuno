@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { checkBriefSection } from "../src/intelligent-ui/brief-contract.ts";
 
 // T-18: a section's report, a page over Home. The real Home, with Core
 // answered here and the app's links stood in for. Synthetic data only; no
@@ -191,6 +192,22 @@ test("a card opens its report as a page over Home: the summary its author named 
   await tick();
   assert.equal(page.window.history.length, length);
   assert.equal(page.window.location.hash, address(3));
+  assert.deepEqual(page.errors, []);
+});
+
+test("the fixture is a section the contract accepts, and a folded card shows its named conclusion with its conditions", async (t) => {
+  // The body this page reads is one Core takes (brief-contract.ts), summary and details included.
+  const checked = checkBriefSection({ key: "eval", kind: "report", title: "Synthetic eval: model B vs A", body: reportBody() });
+  assert.deepEqual(checked.body.elements.body.props, { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] });
+  const page = await openHome(() => homeData([section("eval", 7, 3)]));
+  t.after(page.close);
+  page.card("eval").querySelector(".home-section-head button[aria-controls]").click();
+  await until(() => page.card("eval").querySelector(".home-card-glance"), "the folded card");
+  const glance = page.card("eval").querySelector(".home-card-glance");
+  assert.equal(glance.querySelector(".home-card-summary").textContent.trim(), "Model B lowers validation loss by 4% on the synthetic set.");
+  const conditions = glance.querySelector(".home-card-conditions");
+  assert.equal(conditions.getAttribute("aria-label"), "Conditions");
+  assert.match(conditions.textContent, /Conditions.*Scoring definition v2.*Synthetic data, 100 items per arm/);
   assert.deepEqual(page.errors, []);
 });
 

@@ -12,7 +12,7 @@ import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
-import { sectionSummary, unmaintained } from "./card-summary";
+import { sectionConditions, sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
 import { deferSection, type SeenMark } from "./home-api";
 import { homeText } from "./home-text";
@@ -149,6 +149,8 @@ export const SectionCard = memo(function SectionCard({
   // A folded card still says what it is about, when it is from and whether
   // anyone still keeps it up to date (T-173); unfolded, the body says so.
   const summary = useMemo(() => (section.kind === "ask" ? null : sectionSummary(section)), [section]);
+  // What the author's conclusion holds under goes with it (T-18).
+  const conditions = useMemo(() => (summary ? sectionConditions(section) : null), [summary, section]);
   const orphaned = unmaintained(section);
   const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
@@ -273,6 +275,12 @@ export const SectionCard = memo(function SectionCard({
           {summary && (
             <div className="home-card-summary">
               <BriefMarkdown text={summary} />
+            </div>
+          )}
+          {conditions && (
+            <div className="home-card-conditions" role="group" aria-label={reportWords.conditions}>
+              <span className="home-card-conditions-label">{reportWords.conditions}</span>
+              <SectionBody section={section} projectId={projectId} only={[conditions]} />
             </div>
           )}
           {section.status && (

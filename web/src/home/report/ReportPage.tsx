@@ -120,12 +120,12 @@ export function ReportPage({
   const title = shown?.title ?? (place?.kind === "unavailable" ? place.versions[0].title : undefined);
   const href = shown && links?.reportHref(linkTo(link.projectId, shown));
   const toProject = (
-    <button type="button" className="secondary-button" onClick={() => onShowProject(link.projectId)}>
+    <button type="button" className="report-notice-main" onClick={() => onShowProject(link.projectId)}>
       {t.showProject}
     </button>
   );
   const openNewer = newer && (
-    <button type="button" className="secondary-button" onClick={() => open(newer)}>
+    <button type="button" className="report-notice-main" onClick={() => open(newer)}>
       {t.openVersion(newer.version)}
     </button>
   );
@@ -140,8 +140,8 @@ export function ReportPage({
     <Notice actions={openNewer ?? toProject}>{newer ? t.arrived(shown.version, newer.version) : t.notKept(shown.version)}</Notice>
   ) : place?.kind === "unavailable" ? (
     <Notice
-      actions={place.versions.map((section) => (
-        <button key={`${section.history}:${section.version}`} type="button" className="secondary-button" onClick={() => open(section)}>
+      actions={place.versions.map((section, index) => (
+        <button key={`${section.history}:${section.version}`} type="button" className={index === 0 ? "report-notice-main" : "secondary-button"} onClick={() => open(section)}>
           {section.history ? t.openKept(section.version) : t.openCurrent(section.version)}
         </button>
       ))}

@@ -279,6 +279,51 @@ const layout = () => page.evaluate(() => {
   };
 });
 
+/**
+ * Text contrast on the report, from computed styles (WCAG, 4.5:1 for text):
+ * each element's colour over its opaque background, composited from the
+ * root down, in every palette and theme. The lowest per selector.
+ */
+const contrast = (selectors) => page.evaluate((selectors) => {
+  const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  const paint = (colors) => {
+    probe.clearRect(0, 0, 1, 1);
+    probe.fillStyle = "#fff";
+    probe.fillRect(0, 0, 1, 1);
+    for (const color of colors) {
+      probe.fillStyle = "#000";
+      probe.fillStyle = color;
+      probe.fillRect(0, 0, 1, 1);
+    }
+    return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  };
+  const lum = (rgb) => { const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
+  const html = document.documentElement;
+  const kept = [html.dataset.palette, html.dataset.theme];
+  const out = {};
+  for (const palette of ["garden", "yuzu", "graphite", "pine", "sunroom"])
+    for (const theme of ["light", "dark"]) {
+      html.dataset.palette = palette;
+      html.dataset.theme = theme;
+      for (const selector of selectors)
+        for (const el of document.querySelectorAll(selector)) {
+          if (!el.checkVisibility() || !el.textContent.trim()) continue;
+          const chain = [];
+          for (let n = el; n; n = n.parentElement) chain.unshift(getComputedStyle(n).backgroundColor);
+          const background = paint(chain);
+          const text = paint([`rgb(${background.join(",")})`, getComputedStyle(el).color]);
+          const value = ratio(text, background);
+          if (!out[selector] || value < out[selector].ratio) out[selector] = { ratio: value, palette, theme, text: el.textContent.trim().slice(0, 30) };
+        }
+    }
+  [html.dataset.palette, html.dataset.theme] = kept;
+  return out;
+}, selectors);
+const TEXT = [".report-back", ".report-crumb > span", ".report-actions button", ".report-kicker > span", ".report-meta > span", ".report-conditions-label",
+  ".report-rail h2", ".report-outline button", ".report-files span", ".report-files strong", ".report-notice p", ".report-notice button"];
+const lowContrast = (found) => Object.entries(found).filter(([, value]) => value.ratio < 4.5);
+
 try {
   await step("desktop 1440: Open report over Home; the author's summary first, once; sources and an image in the rail, unfolded; only the named detail folds; Back keeps Home's place and focus", async () => {
     await open(1440, 900);
@@ -304,6 +349,9 @@ try {
     assert.equal(await page.evaluate(() => document.activeElement?.matches(".report-head h1")), true, "the title has focus");
     const under = await page.evaluate(() => { const v = document.querySelector(".home-view"); return { inert: v.inert, hidden: getComputedStyle(v).visibility }; });
     assert.deepEqual(under, { inert: true, hidden: "hidden" });
+    // The page's own text, its actions included, at 4.5:1 or more in every palette and theme.
+    const readable = await contrast(TEXT);
+    assert.deepEqual(lowContrast(readable), [], JSON.stringify(readable));
     // Each summary block once in the page's body (the rail names figures to go to).
     const once = await page.evaluate(() => ["Model B lowers validation loss", "Scoring definition v2", "Validation loss by step"]
       .map((text) => document.querySelector(".report-main").innerText.split(text).length - 1));
@@ -343,7 +391,7 @@ try {
       hash: location.hash,
     }));
     assert.ok(Math.abs(after.top - before) <= 1 && after.focus && after.ring && after.hash === "", JSON.stringify({ before, ...after }));
-    return { before, after, layout: shown, closed, opened, placed };
+    return { before, after, layout: shown, closed, opened, placed, contrast: readable };
   });
 
   await step("desktop: a research desk on the report is the interactive one, reading its numbers at the version shown", async () => {
@@ -402,6 +450,10 @@ try {
     const notice = await until("the notice", async () => (await reportPage().locator(".report-notice").count()) && reportPage().locator(".report-notice p").innerText());
     assert.equal(notice, "Version 3 of this report is not on Home: Home keeps a report's newest version and the versions in its History.");
     assert.equal(await reportPage().locator(".report-article").count(), 0);
+    // Its one action is the filled one, and reads at 4.5:1 or more everywhere.
+    assert.equal(await reportPage().locator(".report-notice .report-notice-main").innerText(), "Open version 4 (current)");
+    const readable = await contrast([".report-notice p", ".report-notice button", ".report-actions button", ".report-back"]);
+    assert.deepEqual(lowContrast(readable), [], JSON.stringify(readable));
     await shot("desktop-unavailable.png");
     await reportPage().getByRole("button", { name: "Open version 4 (current)" }).click();
     await until("version 4", async () => /version 4/.test(await reportPage().locator(".report-meta").innerText().catch(() => "")));
@@ -444,7 +496,16 @@ try {
     assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
     assert.ok(shown.hero.width >= shown.root.width - 1, `the figure edge to edge (${shown.hero.width} of ${shown.root.width})`);
     await shot("phone-report.png");
-    await shot("phone-report-full.png", ".report-page");
+    // The whole page: the report scrolls in its own container, so the window
+    // is made as tall as that content for one capture, then put back.
+    const extra = await page.evaluate(() => { const r = document.querySelector(".home-report"); return r.scrollHeight - r.clientHeight; });
+    await page.setViewportSize({ width: 390, height: 844 + extra });
+    await sleep(200);
+    assert.equal(await page.evaluate(() => { const r = document.querySelector(".home-report"); return r.scrollHeight <= r.clientHeight + 1; }), true, "the whole report in one capture");
+    await page.screenshot({ path: resolve(output, "phone-report-full.png"), fullPage: true });
+    report.shots.push("phone-report-full.png");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await sleep(200);
     await reportPage().locator(".report-contents summary").click();
     await reportPage().locator(".report-contents button", { hasText: "Sources & attachments" }).click();
     await sleep(150);

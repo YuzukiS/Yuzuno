@@ -98,6 +98,11 @@
   align-items: center;
   gap: 4px;
 }
+/* The page's actions read as text, not as hints (Dev 7): the secondary text
+   colour, which every palette sets at 4.5:1 or more on its paper. */
+.report-actions :is(.quiet-button, .copy-button) {
+  color: var(--text-secondary);
+}
 
 .report-page {
   box-sizing: border-box;
@@ -127,6 +132,26 @@
   flex: 1 1 18rem;
   margin: 0;
   overflow-wrap: anywhere;
+}
+/* What the notice asks of the reader: one filled action, the rest plain. */
+.report-notice-main {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 6px 14px;
+  border: 1px solid var(--accent-ink);
+  border-radius: 6px;
+  background: var(--accent-ink);
+  color: var(--paper);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.report-notice-main:hover {
+  filter: brightness(1.08);
+}
+.report-notice .secondary-button {
+  color: var(--text-secondary);
 }
 .report-read-note {
   margin: 0 0 12px;
@@ -205,19 +230,20 @@
   min-width: 0;
 }
 /* A checklist of conditions reads as a row of them: each item and its own
-   mark, without a count of how many are ticked. */
-.report-conditions .brief-list > header > span {
+   mark, without a count of how many are ticked; on the page and on a
+   folded card alike. */
+:is(.report-conditions, .home-card-conditions) .brief-list > header > span {
   display: none;
 }
-.report-conditions .brief-list > header:not(:has(h4)) {
+:is(.report-conditions, .home-card-conditions) .brief-list > header:not(:has(h4)) {
   display: none;
 }
-.report-conditions .brief-list ul {
+:is(.report-conditions, .home-card-conditions) .brief-list ul {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 6px;
 }
-.report-conditions .brief-list li {
+:is(.report-conditions, .home-card-conditions) .brief-list li {
   padding: 2px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;

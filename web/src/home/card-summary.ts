@@ -1,10 +1,14 @@
+import { summaryOf } from "./report/report-model";
 import type { Section } from "./types";
 
 type Node = { type?: string; props?: Record<string, unknown>; children?: string[] };
 
 /**
  * What a folded card says about itself (T-173): the first paragraph of the
- * section's summary, or null when it names none. The summary is, in order:
+ * section's summary, or null when it names none. A body that names its
+ * summary (T-18) is taken at its word: its lead, which is shown with its
+ * conditions wherever it shows (sectionConditions). Otherwise the summary
+ * is, in order:
  * - the first block, if it is an accent Group (the guide's "a summary
  *   first"): that Group's first Markdown;
  * - a top-level block with the id `summary`: a Markdown, or a Group whose
@@ -17,6 +21,11 @@ export function sectionSummary(section: Section): string | null {
   const body = section.body as { root?: unknown; elements?: Record<string, Node> } | null | undefined;
   const elements = body?.elements;
   if (!elements || typeof body?.root !== "string") return null;
+  const named = summaryOf(section);
+  if (named) {
+    const text = elements[named.lead]?.props?.text;
+    return typeof text === "string" ? firstParagraph(text) : null;
+  }
   const top = elements[body.root]?.children ?? [];
   const markdown = (id: string | undefined) => {
     const node = id === undefined ? undefined : elements[id];
@@ -30,6 +39,11 @@ export function sectionSummary(section: Section): string | null {
     text = markdown("summary") ?? (elements.summary?.type === "Group" ? markdown(elements.summary.children?.[0]) : null);
   if (text === null) text = markdown(top[0]);
   return text === null ? null : firstParagraph(text);
+}
+
+/** The block a body names as what its conclusion holds under (T-18), or null. */
+export function sectionConditions(section: Section): string | null {
+  return summaryOf(section)?.conditions ?? null;
 }
 
 /** The first paragraph of Markdown text, whole: the card clamps it to a few
