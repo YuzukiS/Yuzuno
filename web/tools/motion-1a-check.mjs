@@ -119,8 +119,11 @@ function measureContrast() {
     .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
   const shadow = getComputedStyle(document.documentElement).getPropertyValue("--press-shadow").trim();
-  const lengths = (shadow.match(/-?\d*\.?\d+px/g) || []).map(parseFloat);
-  if (!/inset/.test(shadow) || lengths.length < 3) return { shadow: null, rows: [] };
+  // The first shadow's lengths (the build may write 0 without a unit and the colour as hex).
+  const first = shadow.split(/,(?![^(]*\))/)[0];
+  const lengths = first.replace(/rgba?\([^)]*\)|color\([^)]*\)|#[0-9a-f]{3,8}\b|inset/gi, " ").trim().split(/\s+/)
+    .map(parseFloat).filter((n) => !Number.isNaN(n));
+  if (!/inset/.test(first) || lengths.length < 3) return { shadow: null, rows: [] };
   const reach = Math.abs(lengths[1]) + lengths[2] + (lengths[3] || 0);
   const selector = ".primary-button, .secondary-button, .quiet-button, .icon-button, .catchup-nav, .conversation-action, .send-button, .choice-chips .choice-chip, .phone-dock-button, .interrupt-button";
   const rows = [...document.querySelectorAll(selector)].filter((el) => {
@@ -269,10 +272,69 @@ for (const run of runs) {
         return toast.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
       });
       ok(`${tag}: a toast shown under an open dialog stays on top and visible`, onTop);
+      const live = await page.evaluate(() => {
+        const stack = document.querySelector(".toast-stack");
+        return { live: stack?.getAttribute("aria-live"), hidden: !!stack?.closest('[aria-hidden="true"]') };
+      });
+      ok(`${tag}: with a dialog open, the toasts stay a live region that is not aria-hidden`, live.live === "polite" && !live.hidden, live);
       if (shot("x")) await page.screenshot({ path: join(output, "toast-over-dialog.png") });
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
     } else report.notShown.push(`${tag}: Send to Agent → Hana was not available in the preview`);
+
+    // The pressed-in shadow is visible in both themes: rest and pressed pictures of a filled
+    // control and a quiet one, and the mean pixel difference along the top edge. Taken with
+    // reduced motion so the press scale does not move the edge.
+    if (reduced && !baseline) {
+      await page.locator(".agent-row", { hasText: "Hana" }).first().click();
+      await page.locator(".pending-card").first().waitFor();
+      const pairs = [];
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((t) => { document.documentElement.dataset.palette = "garden"; document.documentElement.dataset.theme = t; }, theme);
+        await page.waitForTimeout(100);
+        for (const [kind, selector] of [["filled", ".pending-card .primary-button"], ["quiet", ".reply-actions .quiet-button, .turn .quiet-button"]]) {
+          const el = page.locator(selector).filter({ visible: true }).first();
+          if (!(await el.count())) continue;
+          await el.evaluate((node) => { for (let n = node; n; n = n.parentElement) if (n.disabled) n.disabled = false; });
+          await el.scrollIntoViewIfNeeded();
+          const rest = await el.screenshot();
+          const box = await el.boundingBox();
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await page.mouse.down();
+          await page.waitForTimeout(150);
+          const pressed = await el.screenshot();
+          await page.mouse.move(2, 2);
+          await page.mouse.up();
+          await page.waitForTimeout(150);
+          const diff = await page.evaluate(async ([a, b]) => {
+            const load = (src) => new Promise((done) => { const i = new Image(); i.onload = () => done(i); i.src = src; });
+            const [x, y] = await Promise.all([load(a), load(b)]);
+            const read = (img) => { const c = document.createElement("canvas"); c.width = img.width; c.height = img.height; const g = c.getContext("2d"); g.drawImage(img, 0, 0); return g.getImageData(0, 0, img.width, img.height); };
+            const [p, q] = [read(x), read(y)];
+            const rows = (from, to) => {
+              let sum = 0, n = 0;
+              for (let r = from; r < to; r++) for (let c = 2; c < p.width - 2; c++) {
+                const i = (r * p.width + c) * 4;
+                sum += (Math.abs(p.data[i] - q.data[i]) + Math.abs(p.data[i + 1] - q.data[i + 1]) + Math.abs(p.data[i + 2] - q.data[i + 2])) / 3;
+                n++;
+              }
+              return +(sum / n).toFixed(2);
+            };
+            const mid = Math.floor(p.height / 2);
+            return { topEdge: rows(0, 3), middle: rows(mid - 1, mid + 1) };
+          }, [`data:image/png;base64,${rest.toString("base64")}`, `data:image/png;base64,${pressed.toString("base64")}`]);
+          pairs.push({ theme, kind, diff, rest: rest.toString("base64"), pressed: pressed.toString("base64") });
+          ok(`${tag}: ${theme}: a pressed ${kind} control shows the pressed-in edge (top-edge pixel difference ${diff.topEdge})`, diff.topEdge >= 3, diff);
+        }
+      }
+      report.pressPairs = pairs.map(({ theme, kind, diff }) => ({ theme, kind, diff }));
+      const cells = pairs.map((p) => `<figure><figcaption>${p.theme} · ${p.kind} · edge Δ ${p.diff.topEdge}</figcaption><img src="data:image/png;base64,${p.rest}"> <img src="data:image/png;base64,${p.pressed}"></figure>`).join("");
+      const sheet = await page.context().newPage();
+      await sheet.setContent(`<body style="margin:12px;font:12px system-ui;display:grid;grid-template-columns:1fr 1fr;gap:14px"><p style="grid-column:1/-1">Rest | pressed, garden palette, reduced motion (no scale)</p>${cells}</body>`);
+      await sheet.screenshot({ path: join(output, "press-theme-pairs.png"), fullPage: true });
+      await sheet.close();
+      await page.evaluate(() => { document.documentElement.dataset.palette = "garden"; document.documentElement.dataset.theme = "light"; });
+    }
 
     // The pressed tint's text contrast in every palette and theme (desktop, normal motion only).
     if (!reduced && !baseline) {

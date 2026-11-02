@@ -1908,6 +1908,54 @@ p {
   transform: none;
   box-shadow: var(--press-shadow);
 }
+/* Pressable controls: colours ease over micro, the press scale springs, and
+   the pressed-in shadow comes on at once and leaves over micro. */
+:is(
+    .primary-button,
+    .secondary-button,
+    .quiet-button,
+    .icon-button,
+    .catchup-nav,
+    .conversation-action,
+    .phone-dock-button,
+    .send-button,
+    .choice-chips .choice-chip,
+    .danger-button,
+    .quiet-button.danger,
+    .danger-action,
+    .service-stop,
+    .interrupt-button
+  ) {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
+}
+:is(
+    .primary-button,
+    .secondary-button,
+    .quiet-button,
+    .icon-button,
+    .catchup-nav,
+    .conversation-action,
+    .phone-dock-button,
+    .send-button,
+    .choice-chips .choice-chip,
+    .danger-button,
+    .quiet-button.danger,
+    .danger-action,
+    .service-stop,
+    .interrupt-button
+  ):active:not(:disabled) {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow 0s,
+    transform var(--motion-micro) var(--ease-spring);
+}
 .welcome-create {
   margin-top: 27px;
   font-size: calc(11px + var(--font-adjust, 3px));

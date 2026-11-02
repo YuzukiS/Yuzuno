@@ -3872,9 +3872,10 @@ export function App() {
         onClose={() => setPointFix(null)}
       />
       {/* In <body>, beside Radix's dialogs: #root isolates its stacking, so a
-          toast inside it could never show above an open dialog. */}
+          toast inside it could never show above an open dialog. aria-live also
+          keeps it out of the aria-hidden Radix puts on the rest of the page. */}
       {createPortal(
-        <div className="toast-stack">
+        <div className="toast-stack" aria-live="polite">
           {notice && (
             <div className="toast" role="status">
               <Check size={15} />

@@ -395,7 +395,8 @@
   --accent-ink: #e2ce8e;
   --input: #202920;
   --focus: #92ac75;
-  --press-shadow: inset 0 1px 3px rgb(0 0 0 / 45%);
+  /* On a dark fill the shadow alone barely shows: a hairline on the edge too. */
+  --press-shadow: inset 0 1px 3px rgb(0 0 0 / 45%), inset 0 0 0 1px rgb(255 255 255 / 12%);
 }
 :root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
   :is(

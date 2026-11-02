@@ -62,6 +62,14 @@
   transition:
     background-color var(--motion-micro) var(--ease-standard),
     color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
+}
+.app.phone .phone-dock-button:active {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow 0s,
     transform var(--motion-micro) var(--ease-spring);
 }
 .app.phone .phone-dock-work {
