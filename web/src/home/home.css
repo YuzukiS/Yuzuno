@@ -362,11 +362,28 @@
 /* Narrow (a phone, a narrow widget column): two by two, each cell its
    label, value and bar; the shares and the GPU's name and memory are on
    the Machines page (Dev 7, T-18). */
+/* Wide, a cell's title says its value and total in words; narrow, the
+   title is the label alone and the value line under it keeps the total,
+   never split from its unit, cut with an ellipsis if it must be. */
+.home-load-short {
+  display: none;
+}
 @container machines (max-width: 540px) {
   .home-load > .home-facts,
   .home-gpu-name,
-  .home-gpu-bar + .home-gpu-bar {
+  .home-gpu-bar + .home-gpu-bar,
+  .home-load-title > strong,
+  .home-load-of {
     display: none;
+  }
+  .home-load-short {
+    display: block;
+    overflow: hidden;
+    font-size: calc(10px + var(--font-adjust, 3px));
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 .home-load {

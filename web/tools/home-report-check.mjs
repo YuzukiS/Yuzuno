@@ -661,6 +661,10 @@ try {
         height: Math.round(widget.getBoundingClientRect().height),
         rows: new Set(cells.map((r) => Math.round(r.top))).size,
         shares: [...widget.querySelectorAll(".home-load > .home-facts")].some((el) => el.checkVisibility()),
+        // What is shown, flex items' line breaks read as spaces.
+        titles: [...widget.querySelectorAll(".home-load-title")].slice(0, 2).map((el) => el.innerText.replace(/\s+/g, " ").trim()),
+        values: [...widget.querySelectorAll(".home-load-short")].filter((el) => el.checkVisibility())
+          .map((el) => ({ text: el.textContent, height: Math.round(el.getBoundingClientRect().height), lineHeight: Math.round(parseFloat(getComputedStyle(el).fontSize) * 1.6) })),
         line: line && { text: line.textContent, height: Math.round(line.getBoundingClientRect().height), cut: first.scrollWidth > first.clientWidth },
         sideways: widget.scrollWidth > widget.clientWidth + 1 || document.scrollingElement.scrollWidth > document.scrollingElement.clientWidth,
       };
@@ -692,6 +696,17 @@ try {
     assert.equal(shapes[539].content, 539, JSON.stringify(shapes));
     assert.deepEqual([shapes[721].rows, shapes[719].rows, shapes[541].rows, shapes[539].rows, shapes.phone.rows], [1, 2, 2, 2, 2], JSON.stringify(shapes));
     assert.deepEqual([shapes[721].shares, shapes[541].shares, shapes[539].shares, shapes.phone.shares], [true, true, false, false], JSON.stringify(shapes));
+    // Wide, the title says the value and its total; narrow, the label alone and a value line that keeps the
+    // total, each on one line, a number never split from its unit (Dev 7, 2338).
+    for (const at of [721, 719, 541]) {
+      assert.deepEqual(shapes[at].values, [], `${at}: no value line`);
+      assert.deepEqual(shapes[at].titles, ["CPU 20% of 32 cores", "Memory 11.7 GiB of 39.2 GiB"], `${at}: ${JSON.stringify(shapes[at].titles)}`);
+    }
+    for (const at of ["539", "phone"]) {
+      assert.deepEqual(shapes[at].titles, ["CPU", "Memory"], `${at}: ${JSON.stringify(shapes[at].titles)}`);
+      assert.deepEqual(shapes[at].values.map((v) => v.text), ["20% · 32 cores", "11.7 / 39.2 GiB"], `${at}: ${JSON.stringify(shapes[at].values)}`);
+      for (const v of shapes[at].values) assert.ok(v.height <= v.lineHeight + 2, `${at}: one line ${JSON.stringify(v)}`);
+    }
     for (const [at, s] of Object.entries(shapes)) {
       assert.match(s.line?.text ?? "", /^1 running/, `${at}: the Jobs here ${JSON.stringify(s)}`);
       assert.ok(s.line.height <= 30 && s.line.cut, `${at}: one line, cut ${JSON.stringify(s.line)}`);

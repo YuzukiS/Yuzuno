@@ -46,6 +46,12 @@ function Meter({
   );
 }
 
+/** A used amount over its total, the unit once when both share it: "11.7 / 39.2 GiB". */
+function overTotal(used: string, total: string) {
+  const unit = (value: string) => value.match(/ (\S+)$/)?.[1];
+  return unit(used) && unit(used) === unit(total) ? `${used.slice(0, -unit(used)!.length - 1)} / ${total}` : `${used} / ${total}`;
+}
+
 /** Shown until the first reading arrives; not a value and not unknown. */
 const READING = "…";
 
@@ -154,10 +160,14 @@ export function MachineWidget({
         <div className="home-load">
           <span className="home-load-title">
             <Cpu size={13} /> CPU <strong>{cpu ? shown(percent(cpu.totalPct)) : READING}</strong>
-            {cpu && t.ofCores(cpu.cores)}
+            {cpu && <span className="home-load-of">{t.ofCores(cpu.cores)}</span>}
+          </span>
+          {/* A narrow widget's value line: the total kept, never split from its unit (Dev 7, T-18). */}
+          <span className="home-load-short" title={cpu ? `CPU ${shown(percent(cpu.totalPct))}${t.ofCores(cpu.cores)}` : undefined}>
+            {cpu ? t.cpuShort(shown(percent(cpu.totalPct)), cpu.cores) : READING}
           </span>
           <Meter
-            label={cpu ? `CPU ${shown(percent(cpu.totalPct))}` : t.cpuReading}
+            label={cpu ? `CPU ${shown(percent(cpu.totalPct))}${t.ofCores(cpu.cores)}` : t.cpuReading}
             segments={
               cpu
                 ? [
@@ -177,10 +187,13 @@ export function MachineWidget({
         <div className="home-load">
           <span className="home-load-title">
             <MemoryStick size={13} /> {t.memory} <strong>{memory ? shown(mebibytes(memory.usedMiB)) : READING}</strong>
-            {memory && t.ofTotal(shown(mebibytes(memory.totalMiB)))}
+            {memory && <span className="home-load-of">{t.ofTotal(shown(mebibytes(memory.totalMiB)))}</span>}
+          </span>
+          <span className="home-load-short" title={memory ? t.memoryUsedOf(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : undefined}>
+            {memory ? overTotal(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : READING}
           </span>
           <Meter
-            label={memory ? t.memoryUsed(shown(mebibytes(memory.usedMiB))) : t.memoryReading}
+            label={memory ? t.memoryUsedOf(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : t.memoryReading}
             segments={
               memory
                 ? [
