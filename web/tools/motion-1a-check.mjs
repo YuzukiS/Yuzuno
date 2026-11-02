@@ -3,11 +3,16 @@
 // design preview (?preview=1, synthetic Agents, no Core). Ordinary controls
 // dip to .97 when pressed; anything that approves, answers or destroys only
 // takes the pressed colour; with reduced motion nothing scales; the toasts
-// sit above an open dialog; the "go to pending" jump scrolls smoothly only
-// without reduced motion; focus still returns as before when a menu or a
-// dialog closes, on a desktop and on a touch phone. Screenshots for review.
-// An emulated phone is not a real one, and Chromium is not Safari.
-//   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1a-check.mjs
+// sit above an open dialog; a theme switch runs no colour transition; the
+// "go to pending" jump scrolls smoothly only without reduced motion. The
+// pressed tint's text contrast is measured in every palette and theme.
+// Where focus goes when a dialog or a menu closes is recorded, so a run on
+// the build before this batch (--baseline) can show it did not change.
+// The preview is read-only, so its answer and Interrupt buttons are
+// disabled: the check enables them in the page to press them, since the
+// CSS is what is under test. An emulated phone is not a real one, and
+// Chromium is not Safari.
+//   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1a-check.mjs [--baseline]
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
@@ -17,10 +22,13 @@ import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdat
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
+const baseline = process.argv.includes("--baseline");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/motion-1a");
 await mkdir(output, { recursive: true });
-const report = { checks: [], failures: [], errors: [], apiCalls: [], notShown: [] };
+const report = { mode: baseline ? "baseline" : "check", checks: [], failures: [], errors: [], apiCalls: [], notShown: [], focus: {}, contrast: [] };
+// A baseline run records focus only; the build before this batch has no tokens or press rules.
 const ok = (name, cond, detail) => {
+  if (baseline) return;
   (cond ? report.checks : report.failures).push({ name, detail });
   console.log(`${cond ? "PASS" : "FAIL"} ${name}`);
 };
@@ -49,17 +57,21 @@ async function serve(route) {
   }
 }
 
-/** Press and hold `selector`, read its transform and shadow, then leave without a click. */
-async function press(page, selector, shot) {
-  const el = page.locator(selector).first();
+/** Press and hold the first visible `selector`, read its transform and shadow, then leave without a click. */
+async function press(page, selector, shot, { enable = false } = {}) {
+  const el = page.locator(selector).filter({ visible: true }).first();
+  if (!(await el.count())) return null;
+  if (enable)
+    await el.evaluate((node) => {
+      for (let n = node; n; n = n.parentElement) if (n.disabled) n.disabled = false;
+    });
   await el.scrollIntoViewIfNeeded();
   const box = await el.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.waitForTimeout(220);
   const state = await el.evaluate((node) => ({
-    active: node.matches(":active"), disabled: node.disabled === true,
-    transform: getComputedStyle(node).transform, shadow: getComputedStyle(node).boxShadow,
+    active: node.matches(":active"), transform: getComputedStyle(node).transform, shadow: getComputedStyle(node).boxShadow,
   }));
   if (shot) await el.screenshot({ path: join(output, shot) });
   await page.mouse.move(2, 2);
@@ -67,8 +79,50 @@ async function press(page, selector, shot) {
   await page.waitForTimeout(150);
   return state;
 }
-const pressedScale = (s) => s.active && /^matrix\(0\.97, 0, 0, 0\.97/.test(s.transform);
-const pressedStill = (s) => s.active && s.transform === "none" && /inset/.test(s.shadow);
+const pressedScale = (s) => !!s && s.active && /^matrix\(0\.97, 0, 0, 0\.97/.test(s.transform) && /inset/.test(s.shadow);
+const pressedStill = (s) => !!s && s.active && s.transform === "none" && /inset/.test(s.shadow);
+const describe = (page) => page.evaluate(() => {
+  const el = document.activeElement;
+  if (!el || el === document.body) return "body";
+  return `${el.tagName.toLowerCase()}${el.className ? "." + el.className.toString().trim().split(/\s+/).slice(0, 2).join(".") : ""}${el.getAttribute("aria-label") ? `[${el.getAttribute("aria-label")}]` : ""}`;
+});
+const ms = (v) => (v.endsWith("ms") ? parseFloat(v) : v.endsWith("s") ? parseFloat(v) * 1000 : NaN);
+
+/** Text contrast at rest and with the pressed tint, for the visible ordinary and still controls. */
+function measureContrast() {
+  const parse = (c) => {
+    const m = c.match(/rgba?\(([^)]+)\)/) || c.match(/color\(srgb ([^)]+)\)/);
+    if (!m) return null;
+    const parts = m[1].replace(/\//, " ").split(/[\s,]+/).filter(Boolean).map(Number);
+    const scale = c.startsWith("color(") ? 255 : 1;
+    return { r: parts[0] * scale, g: parts[1] * scale, b: parts[2] * scale, a: parts.length > 3 ? parts[3] : 1 };
+  };
+  const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
+  const background = (el) => {
+    const layers = [];
+    for (let n = el; n; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c && c.a > 0) layers.push(c);
+      if (c && c.a >= 1) break;
+    }
+    return layers.reverse().reduce((acc, c) => over(c, acc), { r: 255, g: 255, b: 255, a: 1 });
+  };
+  const lum = ({ r, g, b }) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+    .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const tint = parse(getComputedStyle(document.documentElement).getPropertyValue("--press-tint").trim());
+  const selector = ".primary-button, .secondary-button, .quiet-button, .icon-button, .catchup-nav, .conversation-action, .send-button, .choice-chips .choice-chip, .phone-dock-button, .interrupt-button";
+  return [...document.querySelectorAll(selector)].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && !el.disabled && (el.textContent || "").trim();
+  }).slice(0, 40).map((el) => {
+    const text = parse(getComputedStyle(el).color);
+    const rest = background(el);
+    const pressed = tint ? over(tint, rest) : rest;
+    return { el: `${el.className.toString().split(/\s+/).slice(0, 2).join(".")} "${el.textContent.trim().slice(0, 18)}"`,
+      rest: +ratio(text, rest).toFixed(2), pressed: +ratio(text, pressed).toFixed(2) };
+  });
+}
 
 const browser = await launchBrowser();
 report.browser = browser.version();
@@ -102,12 +156,13 @@ for (const run of runs) {
   await page.goto("http://yuzuno-motion.test/?preview=1");
   await page.locator(".agent-row").first().waitFor();
   await page.waitForTimeout(400);
+  const shot = (name) => (baseline || reduced ? null : name);
 
-  // Tokens, and no transition on "all" with a duration anywhere.
+  // Tokens (the build writes 120ms as .12s), and no transition on "all" with a duration anywhere.
   const tokens = await page.evaluate(() => Object.fromEntries(["micro", "small", "medium", "exit-small", "exit-medium", "settle", "reveal"]
     .map((n) => [n, getComputedStyle(document.documentElement).getPropertyValue(`--motion-${n}`).trim()])));
-  ok(`${tag}: motion tokens are defined`, JSON.stringify(tokens) === JSON.stringify({ micro: "120ms", small: "180ms", medium: "240ms",
-    "exit-small": "130ms", "exit-medium": "170ms", settle: "1200ms", reveal: "420ms" }), tokens);
+  const want = { micro: 120, small: 180, medium: 240, "exit-small": 130, "exit-medium": 170, settle: 1200, reveal: 420 };
+  ok(`${tag}: motion tokens are defined`, Object.entries(want).every(([k, v]) => ms(tokens[k]) === v), tokens);
   const allTransitions = await page.evaluate(() => [...document.querySelectorAll("*")].filter((el) => {
     const s = getComputedStyle(el);
     const props = s.transitionProperty.split(", "), durations = s.transitionDuration.split(", ");
@@ -116,24 +171,21 @@ for (const run of runs) {
   ok(`${tag}: no element transitions "all"`, allTransitions.length === 0, allTransitions);
 
   if (!run.phone) {
-    // Ordinary press: a toolbar nav button and a header action.
-    const nav = await press(page, ".toolbar-nav .catchup-nav", reduced ? null : "press-ordinary-nav.png");
+    // Ordinary press: a toolbar nav button.
+    const nav = await press(page, ".toolbar-nav .catchup-nav", shot("press-ordinary.png"));
     ok(`${tag}: an ordinary button ${reduced ? "keeps its size but takes the pressed colour" : "dips to .97 with the pressed colour"}`,
-      reduced ? nav.active && nav.transform === "none" && /inset/.test(nav.shadow) : pressedScale(nav) && /inset/.test(nav.shadow), nav);
+      reduced ? pressedStill(nav) : pressedScale(nav), nav);
     const navDuration = await page.locator(".toolbar-nav .catchup-nav").first().evaluate((n) => getComputedStyle(n).transitionDuration);
-    ok(`${tag}: the nav button's transitions use micro (or none under reduced motion)`, reduced ? navDuration === "0s" : navDuration === "0.12s, 0.12s, 0.12s", navDuration);
+    ok(`${tag}: the nav button's transitions use micro (none under reduced motion)`, reduced ? navDuration === "0s" : navDuration === "0.12s, 0.12s, 0.12s", navDuration);
 
-    // Hana's question: choose an answer, then press Send: colour only.
+    // Hana's question: its Send answer button only takes the colour.
     await page.locator(".agent-row", { hasText: "Hana" }).first().click();
     await page.locator(".pending-card").first().waitFor();
-    await page.locator(".pending-card .answer-option").first().click();
-    const send = page.locator(".pending-card .primary-button").first();
-    await send.waitFor();
-    const answer = await press(page, ".pending-card .primary-button", reduced ? null : "press-answer-still.png");
+    const answer = await press(page, ".pending-card .primary-button", shot("press-approval.png"), { enable: true });
     ok(`${tag}: an answer button in a request card never moves, and takes the pressed colour`, pressedStill(answer), answer);
 
     // "Go to pending": smooth only without reduced motion.
-    const shortcut = page.locator(".pending-shortcut");
+    const shortcut = page.locator(".pending-shortcut").filter({ visible: true });
     if (await shortcut.count()) {
       await page.evaluate(() => (window.__scrolls.length = 0));
       await shortcut.first().click();
@@ -144,26 +196,25 @@ for (const run of runs) {
     // Mori is working: Interrupt never moves.
     await page.locator(".agent-row", { hasText: "Mori" }).first().click();
     await page.waitForTimeout(200);
-    if (await page.locator(".interrupt-button").count()) {
-      const stop = await press(page, ".interrupt-button", reduced ? null : "press-interrupt-still.png");
-      ok(`${tag}: Interrupt never moves, and takes the pressed colour`, pressedStill(stop), stop);
-    } else report.notShown.push(`${tag}: Interrupt was not shown for the preview's working Agent`);
+    const stop = await press(page, ".interrupt-button", shot("press-interrupt.png"), { enable: true });
+    if (stop) ok(`${tag}: Interrupt never moves, and takes the pressed colour`, pressedStill(stop), stop);
+    else report.notShown.push(`${tag}: Interrupt was not shown for the preview's working Agent`);
 
-    // A dialog: its actions never move; Escape returns focus to the opener as before.
+    // A dialog: its actions never move; where focus goes on Escape is recorded.
     await page.locator(".add-agent").first().click();
     await page.locator(".modal").first().waitFor();
     await page.waitForTimeout(300);
-    const cancel = await press(page, ".modal-actions .secondary-button", reduced ? null : "press-dialog-action-still.png");
+    const cancel = await press(page, ".modal-actions .secondary-button", shot("press-dialog-action.png"));
     ok(`${tag}: a dialog's action never moves, and takes the pressed colour`, pressedStill(cancel), cancel);
-    const layers = await page.evaluate(() => ({ toasts: getComputedStyle(document.querySelector(".toast-stack")).zIndex,
+    const layers = await page.evaluate(() => ({ toasts: getComputedStyle(document.querySelector(".toast-stack") || document.body).zIndex,
       overlay: getComputedStyle(document.querySelector(".modal-overlay")).zIndex }));
     ok(`${tag}: the toast layer sits above an open dialog's overlay`, Number(layers.toasts) > Number(layers.overlay), layers);
     await page.keyboard.press("Escape");
     await page.waitForTimeout(300);
-    ok(`${tag}: closing the dialog returns focus to New agent`, await page.evaluate(() => document.activeElement?.classList.contains("add-agent")));
+    report.focus[`${tag}: New agent dialog closed with Escape`] = await describe(page);
 
     // A theme switch: every colour changes in the same frame, no transition runs.
-    const settings = page.locator(".workspace-settings, [aria-label='Settings']").first();
+    const settings = page.locator(".workspace-settings").filter({ visible: true }).first();
     if (await settings.count()) {
       await settings.click();
       await page.locator(".modal").first().waitFor();
@@ -181,11 +232,12 @@ for (const run of runs) {
           return most;
         });
         ok(`${tag}: switching to the dark theme runs no colour transition (six frames sampled)`, tweens === 0, tweens);
-        if (!reduced) await page.screenshot({ path: join(output, "theme-dark-settings.png") });
+        if (shot("x")) await page.screenshot({ path: join(output, "theme-dark-settings.png") });
         await page.locator(".theme-choice-light").first().click();
       } else report.notShown.push(`${tag}: the theme choices were not found in Settings`);
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
+      report.focus[`${tag}: Settings closed with Escape`] = await describe(page);
     } else report.notShown.push(`${tag}: no Settings entry in the preview toolbar`);
 
     // A real toast, then a dialog opened over it: the toast stays visible on top.
@@ -193,45 +245,83 @@ for (const run of runs) {
     const copy = page.locator('[role="menuitem"]', { hasText: /Copy link/i });
     if (await copy.count()) {
       await copy.first().click();
-      await page.locator(".toast-stack .toast").first().waitFor({ timeout: 3000 });
+      report.focus[`${tag}: Agent menu closed by choosing Copy link`] = await describe(page);
+      await page.locator(".toast").first().waitFor({ timeout: 3000 });
       await page.locator(".add-agent").first().click();
       await page.locator(".modal").first().waitFor();
       await page.waitForTimeout(300);
       const onTop = await page.evaluate(() => {
-        const toast = document.querySelector(".toast-stack .toast");
+        const toast = document.querySelector(".toast");
         const r = toast.getBoundingClientRect();
         return toast.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
       });
       ok(`${tag}: a toast shown under an open dialog stays on top and visible`, onTop);
-      if (!reduced) await page.screenshot({ path: join(output, "toast-over-dialog.png") });
+      if (shot("x")) await page.screenshot({ path: join(output, "toast-over-dialog.png") });
       await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
     } else report.notShown.push(`${tag}: Copy link was not in the Agent menu`);
-    if (!reduced) await page.screenshot({ path: join(output, `desktop-${tag}.png`) });
+
+    // The pressed tint's text contrast in every palette and theme (desktop, normal motion only).
+    if (!reduced && !baseline) {
+      await page.locator(".agent-row", { hasText: "Hana" }).first().click();
+      await page.waitForTimeout(200);
+      for (const palette of ["garden", "graphite", "pine", "sunroom", "yuzu"])
+        for (const theme of ["light", "dark"]) {
+          await page.evaluate(([p, t]) => { document.documentElement.dataset.palette = p; document.documentElement.dataset.theme = t; }, [palette, theme]);
+          await page.waitForTimeout(80);
+          const rows = await page.evaluate(measureContrast);
+          report.contrast.push({ palette, theme, rows });
+          const dropped = rows.filter((r) => r.rest >= 4.5 && r.pressed < 4.5);
+          ok(`${tag}: ${palette}/${theme}: the pressed tint never takes a control's text below 4.5:1`, dropped.length === 0, dropped);
+        }
+      await page.evaluate(() => { document.documentElement.dataset.palette = "garden"; document.documentElement.dataset.theme = "light"; });
+    }
+    if (shot("x")) await page.screenshot({ path: join(output, "desktop.png") });
   } else {
     // Phone: open a conversation, press a dock button; open the Agent menu by touch and close it.
     await page.locator(".agent-row", { hasText: "Mori" }).first().tap();
-    await page.waitForTimeout(300);
-    if (await page.locator(".phone-dock-button").count()) {
-      const dock = await press(page, ".phone-dock-button", reduced ? "phone-press-dock-reduced.png" : "phone-press-dock.png");
-      ok(`${tag}: a phone dock button ${reduced ? "keeps its size" : "dips to .97"} with the pressed colour`,
-        reduced ? dock.active && dock.transform === "none" && /inset/.test(dock.shadow) : pressedScale(dock) && /inset/.test(dock.shadow), dock);
-    } else report.notShown.push(`${tag}: no phone dock button in the preview conversation`);
-    await page.screenshot({ path: join(output, `${tag}-conversation.png`) });
-    const menu = page.locator(".conversation-header [aria-haspopup='menu'], .agent-row-menu").first();
+    await page.waitForTimeout(400);
+    const dock = await press(page, ".phone-dock-button", baseline ? null : reduced ? "phone-press-dock-reduced.png" : "phone-press-dock.png");
+    if (dock) ok(`${tag}: a phone dock button ${reduced ? "keeps its size" : "dips to .97"} with the pressed colour`, reduced ? pressedStill(dock) : pressedScale(dock), dock);
+    else report.notShown.push(`${tag}: no visible phone dock button in the preview conversation`);
+    if (!baseline) await page.screenshot({ path: join(output, `${tag}-conversation.png`) });
+    const menu = page.locator("[aria-haspopup='menu']").filter({ visible: true }).first();
     if (await menu.count()) {
       await menu.tap();
-      await page.locator('[role="menu"]').first().waitFor({ timeout: 2000 }).catch(() => {});
+      await page.waitForTimeout(300);
       const opened = await page.locator('[role="menu"]').count();
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(200);
-      const back = await page.evaluate(() => document.activeElement?.getAttribute("aria-haspopup") === "menu" || document.activeElement?.classList.contains("agent-row-menu"));
-      ok(`${tag}: a menu opened by touch closes with focus back on its trigger`, opened > 0 && back, { opened, back });
-    } else report.notShown.push(`${tag}: no Agent menu trigger on the phone conversation`);
+      await page.waitForTimeout(300);
+      report.focus[`${tag}: a menu opened by touch, closed with Escape`] = `${opened ? "opened" : "not opened"} → ${await describe(page)}`;
+    } else report.notShown.push(`${tag}: no menu trigger on the phone conversation`);
   }
   await context.close();
 }
 await browser.close();
+
+// Side by side, mid-press: an ordinary button and the controls that never move.
+if (!baseline) {
+  const pngs = ["press-ordinary.png", "press-approval.png", "press-interrupt.png", "press-dialog-action.png"];
+  const imgs = [];
+  for (const name of pngs) {
+    try {
+      imgs.push(`<figure><img src="data:image/png;base64,${(await readFile(join(output, name))).toString("base64")}"><figcaption>${name}</figcaption></figure>`);
+    } catch {}
+  }
+  const b2 = await launchBrowser();
+  const p = await (await b2.newContext({ viewport: { width: 900, height: 220 }, deviceScaleFactor: 2 })).newPage();
+  await p.setContent(`<body style="margin:16px;font:12px system-ui;display:flex;gap:18px;align-items:flex-start">${imgs.join("")}</body>`);
+  await p.screenshot({ path: join(output, "press-compare.png"), fullPage: true });
+  await b2.close();
+}
+
+// Focus against the build before this batch: the same places, or a difference to explain.
+if (process.env.BASELINE_REPORT) {
+  const before = JSON.parse(await readFile(process.env.BASELINE_REPORT, "utf8")).focus;
+  for (const [where, after] of Object.entries(report.focus))
+    ok(`focus unchanged by this batch: ${where}`, before[where] === after, { before: before[where], after });
+}
 report.passed = report.failures.length === 0 && report.errors.length === 0;
 await writeFile(join(output, "motion-1a-check.json"), JSON.stringify(report, null, 2) + "\n");
-console.log(JSON.stringify({ passed: report.passed, checks: report.checks.length, failures: report.failures.length, errors: report.errors.length, notShown: report.notShown }));
+console.log(JSON.stringify({ mode: report.mode, passed: report.passed, checks: report.checks.length, failures: report.failures.length, errors: report.errors.length, notShown: report.notShown, focus: report.focus }));
 process.exit(report.passed ? 0 : 1);

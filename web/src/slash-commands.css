@@ -90,8 +90,3 @@
 .slash-menu-note.is-failed {
   color: var(--ink);
 }
-@media (prefers-reduced-motion: no-preference) {
-  .slash-menu-item {
-    transition: background-color var(--motion-micro) var(--ease-standard);
-  }
-}

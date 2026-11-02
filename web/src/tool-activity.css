@@ -119,9 +119,9 @@ details[data-source-jump][open]::details-content {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  /* The chevron springs open and eases shut. */
+  /* The chevron turns open and eases shut; a rotation never overshoots. */
   :is(.execution, .tool-item)[open] > summary > svg:first-child {
-    transition: transform var(--motion-micro) var(--ease-spring);
+    transition: transform var(--motion-micro) var(--ease-standard);
   }
   :is(.execution, .tool-item):not([open]) > summary > svg:first-child {
     transition: transform var(--motion-exit-small) var(--ease-exit);
