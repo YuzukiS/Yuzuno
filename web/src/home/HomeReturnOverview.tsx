@@ -13,7 +13,7 @@ import { Modal } from "../components";
 import { langTag, useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { BriefMarkdown } from "./brief/Markdown";
-import { sectionSummary } from "./card-summary";
+import { sectionConditions, sectionSummary } from "./card-summary";
 import { absolute } from "./format";
 import { useBriefDensity } from "./home-density";
 import type { HomeTarget } from "./home-navigation";
@@ -247,7 +247,9 @@ export function HomeReturnOverview({
             )}
             {reading.changes.slice(0, limit).map((entry) => {
               const current = currentOverviewSection(entry, data);
-              const summary = sectionSummary(entry.section);
+              // A conclusion its author bounded by conditions is not shown
+              // without them; this list names the card instead (T-18).
+              const summary = sectionConditions(entry.section) ? null : sectionSummary(entry.section);
               return (
                 <article className="home-return-change" key={entry.identity}>
                   <div className="home-return-row-meta">

@@ -194,6 +194,9 @@ type BodyProps = {
   changes?: BlockChanges | null;
   onOpenAgent?: (agentId: string) => void;
   onOpenMachine?: (machineId: string) => void;
+  /** Only these top-level blocks, in this order (T-18: a report's summary
+   * and its parts): the same elements and renderers as the whole body. */
+  only?: readonly string[];
 };
 
 /**
@@ -209,10 +212,11 @@ export function BriefSectionBody(props: BodyProps) {
   );
 }
 
-function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMachine }: BodyProps) {
+function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMachine, only }: BodyProps) {
   // Home's own Workspace, from the context its cards already read, so no
   // call site has to pass it (T-195).
   const workspaceId = useContext(CardFoldWorkspace);
+  const shownOnly = only?.join("\n");
   const spec = useMemo(() => {
     if (!isBriefSpec(section.body)) return null;
     // A chart's data is asked for by its element id, which json-render does
@@ -236,8 +240,14 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
         return [key, { ...node, props: { title: "Chart", ...node.props, elementKey: key } }];
       }),
     );
+    if (shownOnly !== undefined) {
+      const root = elements[section.body.root];
+      const top = new Set(root?.children ?? []);
+      const children = shownOnly ? shownOnly.split("\n").filter((id) => top.has(id)) : [];
+      elements[section.body.root] = { ...root, children };
+    }
     return { ...section.body, elements };
-  }, [section.body, changes]);
+  }, [section.body, changes, shownOnly]);
   // A table's filter and sort are kept against that table alone: an Agent
   // editing another block of the section, or the user marking it seen,
   // leaves them as the user set them.

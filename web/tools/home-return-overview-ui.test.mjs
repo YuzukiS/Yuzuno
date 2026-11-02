@@ -203,6 +203,35 @@ test("reply states are honest, show original text, and read-only views send noth
   }
 });
 
+test("a conclusion its author bounded by conditions is not listed without them (T-18)", async () => {
+  const p = mount();
+  try {
+    const bounded = {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "answer", conditions: "holds" } }, children: ["answer", "holds"] },
+        answer: { type: "Markdown", props: { text: "B is better." } },
+        holds: { type: "Markdown", props: { text: "Only on synthetic data." } },
+      },
+    };
+    const value = data();
+    value.projects[0].brief.sections = [section(1, "Bounded result", { body: bounded }), section(4, "Plain result")];
+    p.w.renderOverview(value);
+    await until(() => p.doc.querySelector(".home-return-overview"));
+    click(p, ".home-return-tiles > .home-return-tile");
+    await until(() => p.doc.querySelectorAll(".home-return-change").length === 2, "both changes listed");
+    const entries = [...p.doc.querySelectorAll(".home-return-change")].map((entry) => [
+      entry.querySelector("h3").textContent,
+      entry.querySelector(".home-return-summary")?.textContent.trim() ?? null,
+    ]).sort();
+    assert.deepEqual(entries, [["Bounded result", null], ["Plain result", "A compact, useful result."]]);
+    assert.doesNotMatch(p.doc.body.textContent, /B is better\./);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("a background reading preserves focus and the held overview while requests and errors stay live", async () => {
   const p = mount();
   try {

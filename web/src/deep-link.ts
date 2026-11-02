@@ -115,13 +115,63 @@ export function parseHomeLink(text: string): HomeLink | null {
   return link?.workspaceId ? (link as HomeLink) : null;
 }
 
-/** What an address or pasted text links to: a message, an Agent, or a Workspace's Home. */
-export type AppLink = ({ kind: "message" } & MessageLink) | ({ kind: "agent" } & AgentLink) | ({ kind: "home" } & HomeLink);
+/**
+ * A link to one Home report (T-18): a section of a Project's Brief, at the
+ * version it was linked at, named by the identities Core keeps (Workspace,
+ * Project, section key and version, and the section's identity on Home, which
+ * tells it from another later written under the same key). It holds no token,
+ * path or text, and opening it only shows the report: it never answers, marks
+ * seen or changes anything.
+ */
+export interface ReportLink {
+  workspaceId: string;
+  projectId: string;
+  key: string;
+  version: number;
+  /** The section's identity on Home (its `id`) when the link was made. */
+  sectionId?: number;
+}
+
+const REPORT_PATH = "#/report?";
+const REPORT_FIELDS = { w: "workspaceId", p: "projectId", k: "key", v: "version", s: "sectionId" } as const;
+// A Brief section key (brief-contract.ts, BRIEF_KEY_PATTERN): a topic, or topic/sub.
+const SECTION_KEY = /^[a-z0-9][a-z0-9-]{0,47}(\/[a-z0-9][a-z0-9-]{0,47})?$/;
+const COUNT = /^[1-9][0-9]{0,14}$/;
+
+/** The link to a Home report, on `base` (this client's page, without query or fragment). */
+export function reportLinkHref(base: string, link: ReportLink): string {
+  const params = new URLSearchParams({ w: link.workspaceId, p: link.projectId, k: link.key, v: String(link.version) });
+  if (link.sectionId !== undefined) params.set("s", String(link.sectionId));
+  return `${base}${REPORT_PATH}${params}`;
+}
+
+/** The report a pasted or clicked link names, or null when it is not one. */
+export function parseReportLink(text: string): ReportLink | null {
+  const link = linkFields(text, REPORT_PATH, REPORT_FIELDS);
+  if (!link?.workspaceId || !link.projectId || !link.key || !link.version) return null;
+  if (!SECTION_KEY.test(link.key) || !COUNT.test(link.version) || (link.sectionId !== undefined && !COUNT.test(link.sectionId))) return null;
+  return {
+    workspaceId: link.workspaceId,
+    projectId: link.projectId,
+    key: link.key,
+    version: Number(link.version),
+    ...(link.sectionId !== undefined ? { sectionId: Number(link.sectionId) } : {}),
+  };
+}
+
+/** What an address or pasted text links to: a message, an Agent, a Workspace's Home or a Home report. */
+export type AppLink =
+  | ({ kind: "message" } & MessageLink)
+  | ({ kind: "agent" } & AgentLink)
+  | ({ kind: "home" } & HomeLink)
+  | ({ kind: "report" } & ReportLink);
 export function parseAppLink(text: string): AppLink | null {
   const message = parseMessageLink(text);
   if (message) return { kind: "message", ...message };
   const agent = parseAgentLink(text);
   if (agent) return { kind: "agent", ...agent };
+  const report = parseReportLink(text);
+  if (report) return { kind: "report", ...report };
   const home = parseHomeLink(text);
   return home ? { kind: "home", ...home } : null;
 }
@@ -131,6 +181,10 @@ export interface MessageLinkApi {
   /** The link to a message of `agent`, or null where links are not offered. */
   href(agent: Agent, turnId: string, itemId?: string): string | null;
   open(link: MessageLink): void;
+  /** The link to a section's report on Home (T-18), or null where links are not offered. */
+  reportHref(link: Omit<ReportLink, "workspaceId">): string | null;
+  /** Opens a report link; `from`, the message it was clicked in, is where Back returns. */
+  openReport(link: ReportLink, from?: { turnId: string; itemId?: string }): void;
 }
 export const MessageLinks = createContext<MessageLinkApi | null>(null);
 export const useMessageLinks = () => useContext(MessageLinks);

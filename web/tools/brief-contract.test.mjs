@@ -331,6 +331,71 @@ test("references, ids and attachments are checked mechanically", () => {
   assert.equal(problems(several).length, MAX_PROBLEMS);
 });
 
+test("a body may name its summary and the details that start folded, among the root's own blocks (T-18)", () => {
+  const body = (props, extra = {}) => ({
+    key: "eval", kind: "report", title: "Eval",
+    attachments: [{ name: "a.png", path: "/home/me/run/a.png" }, { name: "b.png", path: "/home/me/run/b.png" },
+      { name: "runs.csv", path: "/home/me/run/runs.csv" }, { name: "design", url: "https://example.com/design.png" }],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props, children: ["answer", "holds", "loss", "runs", "shot", "shots", "data", "link", "method", "untitled", "plan"] },
+      answer: { type: "Markdown", props: { text: "B lowers loss by 4%." } },
+      holds: { type: "Checklist", props: { items: [{ id: "d", text: "Definition v2", done: true }] } },
+      loss: { type: "Metrics", props: { items: [{ label: "Loss", value: 0.41 }] } },
+      runs: { type: "Table", props: { id: "runs", title: "Runs", columns: [{ key: "m", label: "Model" }], rows: [] } },
+      shot: { type: "Attachments", props: { items: [{ name: "a.png" }] } },
+      shots: { type: "Attachments", props: { items: [{ name: "a.png" }, { name: "b.png" }] } },
+      data: { type: "Attachments", props: { items: [{ name: "runs.csv" }] } },
+      link: { type: "Attachments", props: { items: [{ name: "design" }] } },
+      method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
+      "method-text": { type: "Markdown", props: { text: "Three seeds." } },
+      untitled: { type: "Group", props: {}, children: ["note"] },
+      note: { type: "Markdown", props: { text: "A note." } },
+      plan: { type: "Plan", props: { steps: [{ id: "s", text: "Run 13", state: "todo" }] } },
+      ...extra,
+    } },
+  });
+  // Valid: none at all (every body before T-18), a lead alone, conditions without a visual, each figure kind.
+  for (const props of [{}, { summary: { lead: "answer" } }, { summary: { lead: "answer", conditions: "holds" } },
+    { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] }, { summary: { lead: "answer", visual: "runs" } },
+    { summary: { lead: "answer", visual: "shot" } }, { details: ["method"] }])
+    assert.deepEqual(checkBriefSection(body(props)).body.elements.body.props, props, JSON.stringify(props));
+  const refused = (props) => problems(body(props));
+  assert.deepEqual(refused({ summary: { lead: "method-text" } })[0], { code: "summary", path: "body.elements.body.props.summary.lead",
+    reason: 'summary.lead "method-text" is not one of the root\'s own children; name a block directly under the root. (brief_guide content)', guide: "brief_guide content" });
+  const code = (props) => refused(props).map((p) => `${p.code} ${p.path.replace("body.elements.body.props.", "")}`);
+  assert.deepEqual(code({ summary: { lead: "method" } }), ["summary summary.lead"], "a Group is no lead");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "plan" } }), ["summary summary.visual"]);
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "shots" } }), ["summary summary.visual"], "several files are not one figure");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "data" } }), ["summary summary.visual"], "a data file is not a figure");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "link" } }), ["summary summary.visual"], "a link is never shown as an image");
+  // An image as Core classifies it (attachments.rs): by the path's extension when Core knows it, else by the name's.
+  const figure = (file) => body({ summary: { lead: "answer", visual: "one" } }, { one: { type: "Attachments", props: { items: [{ name: file.name }] } } });
+  const withFile = (file) => { const value = figure(file); value.attachments = [...value.attachments, file]; value.body.elements.body.children.push("one"); return value; };
+  for (const file of [{ name: "shot.png", path: "/home/me/capture" }, { name: "shot.png", path: "/home/me/capture.bin" }, { name: "capture", path: "/home/me/SHOT.PNG" },
+    { name: "plot.JPEG", path: "/home/me/plot" }, { name: "s", path: "/home/me/run.d/s.webp" },
+    // A file named ".png" has no extension to Rust: the name decides.
+    { name: "shot.png", path: "/home/me/.png" }])
+    assert.equal(checkBriefSection(withFile(file)).body.elements.body.props.summary.visual, "one", JSON.stringify(file));
+  for (const file of [{ name: "shot.png", path: "/home/me/data.csv" }, { name: "shot.png", path: "/home/me/page.HTML" }, { name: "notes", path: "/home/me/capture" },
+    { name: "shot.png", path: "/home/me/run.d/notes.txt" }, { name: "shot.png", url: "https://example.com/shot.png" }])
+    assert.deepEqual(problems(withFile(file)).map((p) => p.path), ["body.elements.body.props.summary.visual"], JSON.stringify(file));
+  assert.deepEqual(code({ summary: { lead: "answer", conditions: "loss" } }), ["summary summary.conditions"]);
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "answer" } }), ["summary summary.visual"], "each block once");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "loss", conditions: "missing" } }), ["summary summary.conditions"]);
+  assert.deepEqual(code({ details: ["untitled", "plan", "note", "method", "method"] }),
+    ["details details.0", "details details.1", "details details.2", "details details.4"]);
+  assert.deepEqual(code({ summary: { lead: "answer" }, details: ["answer"] }), ["details details.0"]);
+  // The shape is the schema's: a lead is required, nothing else is taken.
+  assert.equal(refused({ summary: { visual: "loss" } })[0].code, "missing_field");
+  assert.equal(refused({ summary: { lead: "answer", figure: "loss" } })[0].code, "unknown_field");
+  assert.equal(refused({ summary: ["answer"] })[0].code, "invalid_field");
+  assert.equal(refused({ details: [] })[0].code, "invalid_field");
+  const content = briefGuide("content");
+  assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?\}: ids of the root's own blocks/);
+  assert.match(content, /details lists titled Groups of supporting detail .* nothing else folds\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
+  assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
+});
+
 test("registered screenshots need reachable exact-name uses, not prose or source links", () => {
   for (const key of ["tasks-board", "development"]) {
     const change = section("Markdown", { text: "See preview.png" }, {
