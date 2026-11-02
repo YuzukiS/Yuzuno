@@ -508,12 +508,12 @@ try {
       const first = await line.evaluate((el) => {
         const name = el.querySelector(".home-machine-job-first");
         return { count: el.querySelector(".home-machine-job-count").textContent, clipped: name.scrollWidth > name.clientWidth,
-          tip: el.getAttribute("title"), height: Math.round(el.getBoundingClientRect().height), lineHeight: parseFloat(getComputedStyle(el).lineHeight) };
+          tip: el.getAttribute("title"), height: Math.round(el.getBoundingClientRect().height) };
       });
       assert.equal(first.count, "3 running");
       assert.ok(first.clipped, "a long first name is cut with an ellipsis");
       assert.match(first.tip, /^.+ · yuzuno-next · Dev 3\n.+\n.+$/);
-      assert.ok(first.height <= first.lineHeight + 8, `one line: ${JSON.stringify(first)}`);
+      assert.ok(first.height <= 30, `one line: ${JSON.stringify(first)}`);
       assert.ok(await noSideways(".home-widget-column .home-machines"), "no sideways scroll in the widget");
       await shot(machines, `machines-widget-${theme}.png`);
       return { first };

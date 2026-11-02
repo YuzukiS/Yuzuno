@@ -181,7 +181,9 @@ const repoActivity = () => ({ ...linkedRepo, defaultBranch: "main", observedAt: 
   pulls: [{ number: 12, title: "Dose study notes", author: "mori", draft: false, url: "https://github.com/example/atlas-notes/pull/12" }],
   runs: [{ id: 7, name: "CI", branch: "main", status: "completed", conclusion: "success", at: iso(-15 * 60 * MIN), url: "https://github.com/example/atlas-notes/actions/runs/7" }] });
 const machineLoad = () => ({ at: new Date().toISOString(), cpu: { cores: 32, totalPct: 20, jobsPct: 0, agentsPct: null, otherPct: null },
-  memory: { totalMiB: 40107, usedMiB: 12000, availableMiB: 28107, jobsMiB: 0, agentsMiB: null }, gpus: [], jobs: [] });
+  memory: { totalMiB: 40107, usedMiB: 12000, availableMiB: 28107, jobsMiB: 0, agentsMiB: null }, gpus: [],
+  // One running Job with a long synthetic name: the Jobs here stay one line, cut with an ellipsis.
+  jobs: [{ id: "job-1", name: "synthetic dose study: bootstrap intervals for every arm and seed", agentId: "a", agentName: "Mori", projectId: "p1", cpuPct: 12, memMiB: 512 }] });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".woff2": "font/woff2", ".woff": "font/woff",
   ".ttf": "font/ttf", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json" };
 
@@ -648,6 +650,58 @@ try {
       await shot(`${name}-top.png`);
       return { deck: deckShape, readable };
     });
+
+  await step("Machines either side of 720 and 540 px and on a 320 px phone: one row of four, then two by two with the shares, then two by two without; the Jobs one line; nothing sideways", async () => {
+    const shape = () => page.evaluate(() => {
+      const widget = document.querySelector(".home-widget-column .home-machines"), style = getComputedStyle(widget);
+      const cells = [...widget.querySelectorAll(".home-machine > *")].map((el) => el.getBoundingClientRect());
+      const line = widget.querySelector(".home-machine-job-line"), first = line?.querySelector(".home-machine-job-first");
+      return {
+        content: Math.round(widget.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+        height: Math.round(widget.getBoundingClientRect().height),
+        rows: new Set(cells.map((r) => Math.round(r.top))).size,
+        shares: [...widget.querySelectorAll(".home-load > .home-facts")].some((el) => el.checkVisibility()),
+        line: line && { text: line.textContent, height: Math.round(line.getBoundingClientRect().height), cut: first.scrollWidth > first.clientWidth },
+        sideways: widget.scrollWidth > widget.clientWidth + 1 || document.scrollingElement.scrollWidth > document.scrollingElement.clientWidth,
+      };
+    });
+    const shapes = {};
+    await open(1440, 900);
+    await toHome();
+    const widget = () => page.locator(".home-widget-column .home-machines");
+    await widget().locator(".home-machine:not([aria-busy])").waitFor();
+    // The widget lays itself out by its own width: set it just either side of each step.
+    for (const content of [721, 719, 541, 539]) {
+      await widget().evaluate((el, content) => {
+        const style = getComputedStyle(el);
+        const frame = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+        el.style.width = `${style.boxSizing === "border-box" ? content + frame : content}px`;
+      }, content);
+      await sleep(100);
+      shapes[content] = await shape();
+    }
+    await shot("machines-539.png", ".home-widget-column .home-machines");
+    await page.context().close();
+    await open(320, 640);
+    await toHome();
+    await widget().locator(".home-machine:not([aria-busy])").waitFor();
+    await widget().scrollIntoViewIfNeeded();
+    shapes.phone = await shape();
+    await shot("machines-phone-320.png", ".home-widget-column .home-machines");
+    assert.equal(shapes[721].content, 721, JSON.stringify(shapes));
+    assert.equal(shapes[539].content, 539, JSON.stringify(shapes));
+    assert.deepEqual([shapes[721].rows, shapes[719].rows, shapes[541].rows, shapes[539].rows, shapes.phone.rows], [1, 2, 2, 2, 2], JSON.stringify(shapes));
+    assert.deepEqual([shapes[721].shares, shapes[541].shares, shapes[539].shares, shapes.phone.shares], [true, true, false, false], JSON.stringify(shapes));
+    for (const [at, s] of Object.entries(shapes)) {
+      assert.match(s.line?.text ?? "", /^1 running/, `${at}: the Jobs here ${JSON.stringify(s)}`);
+      assert.ok(s.line.height <= 30 && s.line.cut, `${at}: one line, cut ${JSON.stringify(s.line)}`);
+      assert.equal(s.sideways, false, `${at}: nothing sideways`);
+    }
+    // About 170 px on a phone (Dev 7, 2326). At the deck's widths the one row stays under 140 px (the deck step);
+    // just above 720 px the four cells are narrow and their shares wrap, so that row is taller.
+    assert.ok(shapes.phone.height <= 210, JSON.stringify(shapes));
+    return { shapes };
+  });
 
   await step("motion: the report rises in over 220 ms, and under reduced motion nothing moves", async () => {
     const animation = async (motion) => {

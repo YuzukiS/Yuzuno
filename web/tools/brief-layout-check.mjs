@@ -29,7 +29,7 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/brief
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-layout.test";
 const MIN_COLUMN_REM = 14;
-const report = { checks: [], failures: [], errors: [], unexpected: [], writes: [], views: {} };
+const report = { checks: [], failures: [], errors: [], readingHandoff: [], unexpected: [], writes: [], views: {} };
 let page;
 async function step(name, run) {
   try {
@@ -143,6 +143,12 @@ async function serve(route) {
     return route.abort();
   }
   const path = url.pathname;
+  // The app's reading handoff for the conversation it shows (T-170, reading-handoff-api.ts): a read
+  // apart from Home, answered and counted by its exact path; a PUT would still count as a write.
+  if (request.method() === "GET" && path === "/api/agents/sora/reading") {
+    report.readingHandoff.push(path);
+    return route.fulfill({ json: { handoff: null } });
+  }
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     report.writes.push(`${request.method()} ${path}`);

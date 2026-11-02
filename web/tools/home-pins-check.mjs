@@ -23,7 +23,7 @@ assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/home-pins");
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-pins.test";
-const report = { checks: [], failures: [], errors: [], unexpected: [], writes: [] };
+const report = { checks: [], failures: [], errors: [], readingHandoff: [], unexpected: [], writes: [] };
 let page;
 async function step(name, run) {
   try {
@@ -109,6 +109,12 @@ const serve = (workspaceId) => async (route) => {
     return route.abort();
   }
   const path = url.pathname;
+  // The app's reading handoff for the conversation it shows (T-170, reading-handoff-api.ts): a read
+  // apart from Home, answered and counted by its exact path; a PUT would still count as a write.
+  if (request.method() === "GET" && path === "/api/agents/sora/reading") {
+    report.readingHandoff.push(path);
+    return route.fulfill({ json: { handoff: null } });
+  }
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     report.writes.push(`${request.method()} ${path}`);
@@ -216,14 +222,18 @@ try {
     assert.equal(JSON.stringify(await layout("ws-a")), saved);
   });
   await step("hidden, a pin stays pinned and shows again; Unpin is separate; Open leads to the source", async () => {
-    await column().getByRole("button", { name: "Arrange" }).click();
-    await column().getByRole("button", { name: "Hide Curve study overview" }).click();
+    // Arranging is the Organize dialog: hide, show and unpin a widget there.
+    await column().getByRole("button", { name: "Organize" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Hide Curve study overview" }).click();
     await pinned().waitFor({ state: "detached" });
-    assert.equal((await layout("ws-a")).pins.length, 1);
-    await column().locator(".home-widget-column-add").getByRole("button", { name: "Curve study overview" }).click();
+    assert.equal((await layout("ws-a")).pins.length, 1, "hidden, still pinned");
+    await dialog.getByRole("button", { name: "Show Curve study overview" }).click();
     await pinned().waitFor();
-    assert.equal(await column().getByRole("button", { name: "Unpin Curve study overview" }).count(), 1);
-    await column().getByRole("button", { name: "Done" }).click();
+    assert.equal(await dialog.getByRole("button", { name: "Unpin Curve study overview" }).count(), 1, "Unpin is its own button");
+    assert.equal((await layout("ws-a")).pins.length, 1);
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await dialog.waitFor({ state: "detached" });
     await pinned().getByRole("button", { name: "Open in Curve study" }).click();
     await until("the source highlighted", () => page.locator('.home-main [data-section-key="overview"][data-home-highlight]').count());
   });

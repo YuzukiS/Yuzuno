@@ -241,8 +241,9 @@ export function MachineWidget({
             and the list is in Jobs, which the line opens at the first one. */}
         <div className="home-machine-jobs">
           <span className="home-load-title">{t.jobsHere}</span>
+          {/* Not read yet, or not readable: never "no Jobs". */}
           {!jobs ? (
-            <span className="home-note">{t.readingShort}</span>
+            <span className="home-note">{error ? t.unknown : t.readingShort}</span>
           ) : jobs.length === 0 ? (
             <span className="home-note">{t.noJobs}</span>
           ) : readOnly ? (

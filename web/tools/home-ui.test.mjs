@@ -815,6 +815,26 @@ test("a reply Core cannot confirm never shows as replied", async () => {
   }
 });
 
+test("the Jobs here never read as none while the load is unknown: unknown when it can't be read, then the line (T-18)", async () => {
+  let fail = true;
+  const p = await mount({ load: () => {
+    if (fail) throw new TypeError("Failed to fetch");
+    return machineLoad();
+  } });
+  try {
+    const cell = () => p.doc.querySelector(".home-machines .home-machine-jobs");
+    await waitFor(() => p.doc.querySelector(".home-machines .home-machines-at.is-error"), "the load can't be read");
+    assert.equal(cell().querySelector(".home-note").textContent, "unknown");
+    assert.doesNotMatch(cell().textContent, /No Jobs running|\b0 running/);
+    fail = false;
+    await waitFor(() => cell().querySelector(".home-machine-job-line"), "read again two seconds later", 6);
+    assert.equal(cell().querySelector(".home-machine-job-count").textContent, "1 running");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("an unknown machine metric reads unknown, never 0, and sampling stops while hidden", async () => {
   const p = await mount();
   try {
