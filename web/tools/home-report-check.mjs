@@ -831,6 +831,37 @@ try {
     return { toolbar, pushed, linked, fromAddress };
   });
 
+  await step("a report link opens again after an explicit way to Home: A, Home, A and A, Home, B, from a cold address, after the toolbar and after a push (T-18 R3)", async () => {
+    const A = `#/report?w=${WS}&p=p1&k=eval&v=3&s=7`, B = `#/report?w=${WS}&p=p1&k=dose-study&v=3&s=8`;
+    const showing = async (what, title) => {
+      await until(what, async () => (await reportPage().count()) > 0 && (await reportPage().locator(".report-head h1").textContent()) === title);
+      return page.evaluate(() => location.hash);
+    };
+    const home = async (how) => {
+      if (how === "toolbar") await page.locator(".toolbar-nav .catchup-nav").first().click();
+      else await page.evaluate((href) => navigator.serviceWorker.dispatchEvent(new MessageEvent("message", { data: { type: "yuzuno:open", href } })), `https://${HOST}/#/home?w=${WS}`);
+      await until(`Home by the ${how}`, async () => !(await reportPage().count()));
+    };
+    const to = (hash) => page.evaluate((hash) => { location.hash = hash; }, hash);
+    await open(1440, 900, { at: `/${A}` });
+    await showing("A from a cold address", "Synthetic eval: model B vs A");
+    const seen = [];
+    await home("toolbar");
+    await to(A);
+    seen.push(await showing("A again after the toolbar", "Synthetic eval: model B vs A"));
+    await home("push");
+    await to(B);
+    seen.push(await showing("B after a push", doseStudy.title));
+    await home("toolbar");
+    await to(A);
+    seen.push(await showing("A after B and the toolbar", "Synthetic eval: model B vs A"));
+    await home("push");
+    await to(A);
+    seen.push(await showing("A again after a push", "Synthetic eval: model B vs A"));
+    assert.deepEqual(seen, [A, B, A, A], "each link's report, in the address that names it");
+    return { seen };
+  });
+
   await step("motion: the report rises in over 220 ms, and under reduced motion nothing moves", async () => {
     const animation = async (motion) => {
       await open(1440, 900, { motion });

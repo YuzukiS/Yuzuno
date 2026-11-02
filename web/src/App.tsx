@@ -401,6 +401,10 @@ export function App() {
   const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null>(null);
   /** Each explicit way to Home (T-18 R3): Home closes a report open over it. */
   const [homeVisit, setHomeVisit] = useState(0);
+  /** Each report opening, numbered once and only upward: Home, mounted all
+   * along, tells a new opening from one it has handled by this number, even
+   * after a way to Home has dropped the last report (T-18 R3). */
+  const reportOpenings = useRef(0);
   /** Home, by the user's own way there: the toolbar, a notification, a Home
    * link, a reply's Open on Home, the way back from a jump. A report open over
    * Home closes, and none opened before comes back. */
@@ -1781,7 +1785,7 @@ export function App() {
     }
     const reading = from && !homeOpen ? currentDetail?.agent : undefined;
     const back = reading && from ? { workspaceId, agentId: reading.id, turnId: from.turnId, itemId: from.itemId, threadId: reading.threadId } : null;
-    setHomeReport((last) => ({ link, back, fromAddress, n: (last?.n ?? 0) + 1 }));
+    setHomeReport({ link, back, fromAddress, n: ++reportOpenings.current });
     setHomeOpen(true);
     setPhoneList(false);
   }
