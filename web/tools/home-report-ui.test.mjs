@@ -78,7 +78,8 @@ const ask = section("paging", 10, 2, { kind: "ask", title: "Rows per page?", bod
 const homeData = (sections, history = []) => ({
   generatedAt: "2026-11-02T10:30:00Z", order: ["p1"], needsYou: [],
   projects: [{ project: { id: "p1", name: "atlas-notes" }, agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 },
-    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 3, sections, history } }],
+    // Something unseen, so the panel is open (a quiet one starts folded).
+    errors: [], pending: [], jobs: [], unseen: 1, missing: [], brief: { version: 3, sections, history } }],
 });
 const machine = { at: "2026-11-02T10:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
   memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };

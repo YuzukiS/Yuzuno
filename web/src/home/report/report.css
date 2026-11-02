@@ -244,12 +244,11 @@
 }
 
 /* The summary: the conclusion, large, then the key figure, framed. */
-.report-lead {
-  font-size: calc(15px + var(--font-adjust, 3px));
-  line-height: 1.65;
-}
 .report-lead .brief-markdown {
   max-width: 40em;
+  color: var(--ink);
+  font-size: calc(15px + var(--font-adjust, 3px));
+  line-height: 1.65;
 }
 .report-hero {
   margin: 0;
@@ -313,7 +312,7 @@
   .report-head h1 {
     font-size: calc(20px + var(--font-adjust, 3px));
   }
-  .report-lead {
+  .report-lead .brief-markdown {
     font-size: calc(13px + var(--font-adjust, 3px));
   }
   .report-hero {
