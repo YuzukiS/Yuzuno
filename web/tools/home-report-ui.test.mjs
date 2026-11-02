@@ -30,10 +30,11 @@ const root=createRoot(document.getElementById('root'));
 const links={href:()=>null,open:(link)=>window.actions.push(['open',link]),
   reportHref:(link)=>reportLinkHref('https://report.test/',{workspaceId:'ws-1',...link}),
   openReport:(link,from)=>window.actions.push(['report',link,from])};
-const home=(report,revision,workspaceId)=><MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} report={report}/></MessageLinks.Provider>;
-window.renderHome=(report=null,revision=0,workspaceId='ws-1')=>root.render(home(report,revision,workspaceId));
+const home=(report,revision,workspaceId,visit,arrival)=><MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} report={report} visit={visit} arrival={arrival}/></MessageLinks.Provider>;
+// visit: bumped on each explicit way to Home (App's goHome); arrival: a reply's Open on Home.
+window.renderHome=(report=null,revision=0,workspaceId='ws-1',visit=0,arrival=null)=>root.render(home(report,revision,workspaceId,visit,arrival));
 // Drawn before returning: what the first frame shows.
-window.renderHomeNow=(report=null,revision=0,workspaceId='ws-1')=>flushSync(()=>root.render(home(report,revision,workspaceId)));`,
+window.renderHomeNow=(report=null,revision=0,workspaceId='ws-1')=>flushSync(()=>root.render(home(report,revision,workspaceId,0,null)));`,
   );
   const result = await build({
     root,
@@ -460,5 +461,76 @@ test("a report link whose first read of Home fails says so with Try again, never
   refuse = false;
   await page.press(page.report().querySelector(".report-notice"), "Try again");
   await until(() => notice(page) === null, "read again");
+  assert.deepEqual(page.errors, []);
+});
+
+// T-18 R3: an explicit way to Home (the toolbar, a notification, a Home link, a
+// reply's Open on Home) bumps App's visit; a report open over Home closes as its
+// Back closes it, and then goes nowhere else.
+const homeIsInReach = (page) => {
+  const view = page.document.querySelector(".home-view");
+  return !view.hasAttribute("inert") && !view.classList.contains("is-under-report");
+};
+
+test("an explicit way to Home closes a report a card opened: its entry left, the address Home's, Home in reach; not back to the card, and it does not come back (T-18 R3)", async (t) => {
+  const page = await openHome(() => homeData([section("eval", 7, 3), ask]));
+  t.after(page.close);
+  const before = page.window.history.length;
+  page.card("eval").querySelector(".home-report-open").click();
+  await until(page.report, "the report");
+  assert.equal(page.window.history.length, before + 1);
+  page.window.renderHome(null, 0, "ws-1", 1);
+  await until(() => !page.report(), "the report closed");
+  assert.equal(page.window.location.hash, "", "no report in the address");
+  assert.equal(page.window.history.state?.yuzunoReport, undefined, "no report entry under Home");
+  assert.equal(page.window.history.length, before + 1, "its entry left, as its Back leaves it; none added");
+  assert.ok(homeIsInReach(page), "Home in reach, no layer over it");
+  assert.equal(page.card("eval").hasAttribute("data-report-return"), false, "not taken back to the card");
+  assert.deepEqual(page.window.actions.filter(([kind]) => kind === "back"), []);
+  // Drawn again, the same visit: nothing opens or closes.
+  page.window.renderHome(null, 0, "ws-1", 1);
+  await tick(60);
+  assert.equal(page.report(), null);
+  // A later visit with no report open changes nothing.
+  page.window.renderHome(null, 0, "ws-1", 2);
+  await tick(60);
+  assert.equal(page.window.history.length, before + 1);
+  assert.equal(page.window.location.href, "https://report.test/");
+  assert.deepEqual(page.errors, []);
+});
+
+test("an explicit way to Home closes a report from the address or a message: its entry becomes Home's, not back to the message, and that link does not open it again (T-18 R3)", async (t) => {
+  const page = mount(() => homeData([section("eval", 7, 3)]));
+  t.after(page.close);
+  page.window.history.replaceState(null, "", `/${address(3)}`);
+  const length = page.window.history.length;
+  const incoming = { link: linkTo(3), back, fromAddress: true, n: 1 };
+  page.window.renderHome(incoming);
+  await until(() => page.report()?.querySelector(".report-head h1"), "the report");
+  page.window.renderHome(incoming, 0, "ws-1", 1);
+  await until(() => !page.report(), "the report closed");
+  assert.equal(page.window.location.hash, "");
+  assert.equal(page.window.location.href, "https://report.test/", "still this page");
+  assert.equal(page.window.history.length, length, "the same entry, Home's again");
+  assert.equal(page.window.history.state?.yuzunoReport, undefined);
+  assert.ok(homeIsInReach(page));
+  assert.deepEqual(page.window.actions.filter(([kind]) => kind === "back"), [], "the report's way back to its message is not taken");
+  await tick(60);
+  assert.equal(page.report(), null, "the link it came from does not open it again");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a reply's Open on Home while a report is open lands on its card once the report has gone (T-18 R3)", async (t) => {
+  const page = await openHome(() => homeData([section("eval", 7, 3), ask]));
+  t.after(page.close);
+  page.card("eval").querySelector(".home-report-open").click();
+  await until(page.report, "the report");
+  const origin = { workspaceId: "ws-1", projectId: "p1", key: "eval", version: 3, sectionId: 7 };
+  page.window.renderHome(null, 0, "ws-1", 1, { origin, back, n: 1 });
+  await until(() => !page.report(), "the report closed");
+  await until(() => page.card("eval").hasAttribute("data-home-highlight"), "the arrival lands on its card");
+  assert.equal(page.document.activeElement, page.card("eval"), "the card has focus, Home being in reach");
+  assert.equal(page.card("eval").hasAttribute("data-report-return"), false);
+  assert.deepEqual(page.window.actions.filter(([kind]) => kind === "back"), []);
   assert.deepEqual(page.errors, []);
 });

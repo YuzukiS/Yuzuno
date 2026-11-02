@@ -399,6 +399,17 @@ export function App() {
    * clicked in, for Back, and whether it came from the address; another
    * opening is another `n`. */
   const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null>(null);
+  /** Each explicit way to Home (T-18 R3): Home closes a report open over it. */
+  const [homeVisit, setHomeVisit] = useState(0);
+  /** Home, by the user's own way there: the toolbar, a notification, a Home
+   * link, a reply's Open on Home, the way back from a jump. A report open over
+   * Home closes, and none opened before comes back. */
+  function goHome() {
+    setHomeReport(null);
+    setHomeVisit((n) => n + 1);
+    setHomeOpen(true);
+    setPhoneList(false);
+  }
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
@@ -1022,10 +1033,8 @@ export function App() {
       if (notice.backup.workspaceId !== workspaceId) return;
       setSettingsAt({ editor: "backup", nonce: Date.now() });
       setUpdatesOpen(true);
-    } else if (notice.home) {
-      setHomeOpen(true);
-      setPhoneList(false);
-    } else if (notice.agentId) selectAgent(notice.agentId);
+    } else if (notice.home) goHome();
+    else if (notice.agentId) selectAgent(notice.agentId);
   }, backupRun);
   // Settings closed, however (its own close, or a card that opens another
   // dialog): a notification's request is used up, not repeated next time.
@@ -1758,8 +1767,7 @@ export function App() {
       setNotice(shell.linkOtherHome);
       return;
     }
-    setHomeOpen(true);
-    setPhoneList(false);
+    goHome();
   }
   /** Opens the report a link names (T-18) over Home; from a message, Back
    * returns to it. Another Workspace's report is said, and nothing opens. */
@@ -1798,8 +1806,7 @@ export function App() {
     }
     const owner = workspace?.agents.find((a) => a.id === from.agentId);
     setHomeArrival((last) => ({ origin, back: { workspaceId, ...from, threadId: owner?.threadId }, n: (last?.n ?? 0) + 1 }));
-    setHomeOpen(true);
-    setPhoneList(false);
+    goHome();
   };
   const homeReplyLinks = useMemo<HomeReplyLinksApi>(() => ({ open: (origin, from) => openHomeReply.current(origin, from) }), []);
   // Leaving Home ends the arrival: opening it again some other way is not one.
@@ -2488,10 +2495,7 @@ export function App() {
               className={`catchup-nav ${homeOpen ? "selected" : ""}`}
               aria-current={homeOpen ? "page" : undefined}
               title={needsYou > 0 ? shell.homeWaiting(needsYou) : shell.home}
-              onClick={() => {
-                setHomeOpen(true);
-                setPhoneList(false);
-              }}
+              onClick={goHome}
             >
               <House size={15} />
               <span className="toolbar-nav-label">{shell.home}</span>
@@ -2661,10 +2665,7 @@ export function App() {
         {outsidePending > 0 && (
           <button
             className="elsewhere-notice"
-            onClick={() => {
-              setHomeOpen(true);
-              setPhoneList(false);
-            }}
+            onClick={goHome}
             title={shell.elsewhereTitle}
           >
             <Bell size={14} />
@@ -2744,6 +2745,7 @@ export function App() {
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
             report={homeReport}
+            visit={homeVisit}
           />
         ) : agent ? (
           <>
@@ -2879,7 +2881,7 @@ export function App() {
                   className="quiet-button"
                   onClick={() =>
                     sourceOrigin === "home"
-                      ? setHomeOpen(true)
+                      ? goHome()
                       : backToLatest()
                   }
                 >
