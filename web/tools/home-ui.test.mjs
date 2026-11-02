@@ -1867,7 +1867,10 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
   try {
     assert.equal(askField(late).value, "", "nothing is shown before the Workspace is known");
     late.releaseWorkspace();
-    await waitFor(() => askField(late).value === "Kept for this Workspace.", "its own draft shows once it is read");
+    // Home reads itself again for the Workspace now known, and its panels are
+    // not drawn until that read lands: not there yet is "not yet", not an error.
+    await waitFor(() => card(late, "p-app", "release")?.querySelector(".home-ask-reply textarea")?.value === "Kept for this Workspace.",
+      "its own draft shows once it is read");
     assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to version 3/);
     assert.equal(card(late, "p-app", "release").querySelector(".home-reply-target select").value, "b", "with the recipient the user chose, not the owner");
   } finally {
