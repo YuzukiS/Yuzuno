@@ -32,6 +32,7 @@ import { readPanelChoice, savePanelChoice } from "./panel-memory";
 import { RepoActivity } from "./RepoActivity";
 import { SectionBody } from "./SectionBody";
 import { SectionCard } from "./SectionCard";
+import { SummaryCard } from "./SummaryCard";
 import type { BriefOutcome, NeedsYouItem, ProjectPanel, Section } from "./types";
 import "./home-editors.css";
 
@@ -87,13 +88,19 @@ function useOverflow(active: boolean) {
   return [ref, overflowing] as const;
 }
 
-/** Linked repositories and their recent activity; a project without any shows nothing. */
+/**
+ * Linked repositories, one line each (T-18): name, branch, the default
+ * branch's latest run, the last commit and the open PRs. Repository details
+ * add the activity lists, the GitHub summary and the links; once opened, the
+ * links stay mounted while closed, with anything typed in them. A project
+ * without any repository shows nothing.
+ */
 function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boolean }) {
   const t = useStrings(homeText);
   const language = useLanguage();
   const [page, setPage] = useState<LinkedRepositories | null>(null);
-  const [manage, setManage] = useState(false);
-  const [collapsed, toggleFold] = useCardFold(`repos:${projectId}`);
+  const [details, setDetails] = useState(false);
+  const [opened, setOpened] = useState(false);
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
@@ -106,26 +113,27 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
     return () => controller.abort();
   }, [projectId, readOnly]);
   if (!page?.repositories.length) return null;
-  // Its own fold, apart from the project's (T-115). Collapsed, it reads no
-  // activity (read again on expanding); GitHub, Jobs and CI go on as they
-  // are. Repository details stay mounted, with anything typed in them.
   const body = `${projectDomId(projectId)}-repos`;
   return (
-    <div className={`home-widget home-repos${collapsed ? " is-collapsed" : ""}`}>
-      <div className="home-card-head">
-        <FoldButton collapsed={collapsed} onToggle={toggleFold} label={t.repositories} controls={body} />
-        <h4>
-          <Github size={13} /> {t.repositories}
-        </h4>
-        {collapsed && <span className="home-card-count">{page.repositories.length}</span>}
-      </div>
-      <div className="home-card-body" id={body} hidden={collapsed}>
-        {!collapsed && <RepoActivity projectId={projectId} linked={page.repositories} />}
+    <div className={`home-widget home-repos${details ? " is-open" : ""}`} role="group" aria-label={t.repositories}>
+      <Github size={13} className="home-repos-icon" aria-hidden />
+      <RepoActivity projectId={projectId} linked={page.repositories} line lists={details} />
+      <button
+        type="button"
+        className="quiet-button home-repos-details"
+        aria-expanded={details}
+        aria-controls={body}
+        onClick={() => {
+          setDetails((value) => !value);
+          setOpened(true);
+        }}
+      >
+        {details ? t.hideRepositoryDetails : t.repositoryDetails}
+        {details ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+      </button>
+      <div className="home-repos-more" id={body} hidden={!details}>
         <GitHubSummary links={page.links} />
-        <button type="button" className="quiet-button" aria-expanded={manage} onClick={() => setManage((v) => !v)}>
-          {manage ? t.hideRepositoryDetails : t.repositoryDetails}
-        </button>
-        {manage && <GitHubLinks projectId={projectId} disabled={readOnly} language={language} />}
+        {opened && <GitHubLinks projectId={projectId} disabled={readOnly} language={language} />}
       </div>
     </div>
   );
@@ -325,7 +333,21 @@ export function HomePanel({
     }
   }
   const seen = useCallback((marks: SeenMark[]) => onSeen(id, marks), [onSeen, id]);
-  const card = (section: Section, sub = false) => (
+  // A report or status shows its summary; the whole body is read on its
+  // page (T-18, Lead 2270). An Ask keeps its full card, answered in place.
+  const card = (section: Section, sub = false) => section.kind !== "ask" ? (
+    <SummaryCard
+      key={section.key}
+      section={section}
+      projectId={id}
+      workspaceId={workspaceId}
+      agents={agents}
+      sub={sub}
+      readOnly={readOnly}
+      onSeen={seen}
+      notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
+    />
+  ) : (
     <SectionCard
       key={section.key}
       section={section}

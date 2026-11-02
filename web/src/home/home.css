@@ -55,7 +55,7 @@
 }
 
 /* My widgets: widgets chosen and ordered on this device (HomeWidgets.tsx),
-   two columns where the pane is wide and one where it is narrow, in the same
+   as many to a row as fit and one where the pane is narrow, in the same
    order. Its own class names: .home-widget(s) are the project panels' inner
    widgets. */
 .home-widget-column {
@@ -66,16 +66,13 @@
   gap: 12px;
   min-width: 0;
 }
+/* As many widgets to a row as fit at 340 px or more; a lone widget fills
+   its row rather than leaving half of it empty (T-18). */
 .home-widget-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
   gap: 14px;
   align-items: start;
-}
-@container home-widgets (min-width: 720px) {
-  .home-widget-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 .home-widget-column-head {
   display: flex;
@@ -350,14 +347,14 @@
 .home-machines-at.is-error {
   color: var(--home-error-ink);
 }
+/* CPU, Memory, GPU and the Jobs here: one row of four when the widget is
+   wide (T-18), then two, then one in a narrow widget column. */
 .home-machine {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px 18px;
 }
-/* The widget follows its own width: three columns when wide, then two,
-   then one in the widget column. */
-@container machines (max-width: 640px) {
+@container machines (max-width: 720px) {
   .home-machine {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -471,7 +468,6 @@
   background: var(--state-working, var(--green));
 }
 .home-machine-jobs {
-  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -538,9 +534,10 @@ button.home-machine-job:focus-visible {
 .home-machine-job-text .home-fact {
   flex: none;
 }
-/* About three Jobs; more scroll inside, so the panels below keep their place. */
+/* About one and a half Jobs, as tall as a GPU's two bars: the rest scroll
+   inside, so the row stays short and the panels below keep their place. */
 .home-machine-jobs-list {
-  height: calc(3 * (2.7 * (9.5px + var(--font-adjust, 3px)) + 12px));
+  height: calc(1.5 * (2.7 * (9.5px + var(--font-adjust, 3px)) + 12px));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -752,6 +749,35 @@ ul.home-widget {
 .home-job-status.status-unknown {
   color: var(--home-error-ink);
 }
+/* The project's repositories as one bar under its head (T-18): each
+   repository a line, Repository details at the end; the details open below,
+   across the whole bar. */
+.home-repos {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-surface);
+}
+.home-repos-icon {
+  margin-top: 0.3em;
+  color: var(--home-ink-2);
+}
+.home-repos-details {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-secondary);
+}
+.home-repos-more {
+  grid-column: 1 / -1;
+}
+.home-repos-more[hidden] {
+  display: none;
+}
 .home-repos li {
   display: flex;
   flex-wrap: wrap;
@@ -776,12 +802,46 @@ ul.home-widget {
 }
 
 /* The Brief */
+/* Home's cards as a deck (T-18, Dev 7's v7): as many columns as the pane
+   holds, in the author's order, each row as tall as its tallest card. A
+   topic's cards join the deck; its name, when it has no card of its own,
+   heads a row. */
 .home-brief {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
   padding-top: 14px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 16px;
 }
+@container home (min-width: 540px) {
+  .home-brief {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container home (min-width: 1100px) {
+  .home-brief {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container home (min-width: 1500px) {
+  .home-brief {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.home-brief .home-topic,
+.home-brief .home-subs {
+  display: contents;
+}
+.home-brief .home-topic-name {
+  grid-column: 1 / -1;
+  margin: 4px 0 -8px;
+}
+/* An answer being written takes the whole row, and gives it back when sent
+   or put away; the deck does not animate. */
+.home-brief .home-section:has(.home-card-reply, .home-ask textarea) {
+  grid-column: 1 / -1;
+}
+
 /* Below the top ranks, about 600 px of body; "Show more" lifts it. */
 .home-brief.is-capped {
   max-height: 600px;
@@ -800,6 +860,7 @@ ul.home-widget {
   flex-direction: column;
   gap: 8px;
 }
+/* In the deck, a topic's cards are the deck's own (above); elsewhere a column. */
 .home-topic-name {
   font-size: calc(10px + var(--font-adjust, 3px));
   color: var(--home-ink-2);

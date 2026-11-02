@@ -23,7 +23,7 @@ import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
 
 /** When a status's data is from, and whether it is past its validity. */
-function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
+export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
   const time = useTimeDisplay();
   const language = useLanguage();
   const t = homeText(language);
@@ -36,7 +36,8 @@ function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; s
   );
 }
 
-function Time({ label, iso }: { label: string; iso?: string }) {
+/** A section's due, expected or next-update time, as its card and its report page say it. */
+export function SectionTime({ label, iso }: { label: string; iso?: string }) {
   const time = useTimeDisplay();
   const language = useLanguage();
   if (!iso) return null;
@@ -77,7 +78,7 @@ function useReservedHeight(version: number, collapsed: boolean) {
 
 /** Pins a status or report section to the widget column, or takes it off.
  * Only this button follows the pins, so pinning redraws no card body. */
-function PinButton({ section, projectId }: { section: Section; projectId: string }) {
+export function PinButton({ section, projectId }: { section: Section; projectId: string }) {
   const pins = useContext(PinsContext);
   const t = useStrings(homeText);
   if (!pins || !pinnable(section)) return null;
@@ -299,9 +300,9 @@ export const SectionCard = memo(function SectionCard({
       {(section.status || section.time) && (
         <div className="home-section-time">
           {section.status && <DataAsOf status={section.status} stale={stale} />}
-          <Time label={t.due} iso={section.time?.due} />
-          <Time label={t.expected} iso={section.time?.eta} />
-          <Time label={t.nextUpdate} iso={section.time?.nextUpdate} />
+          <SectionTime label={t.due} iso={section.time?.due} />
+          <SectionTime label={t.expected} iso={section.time?.eta} />
+          <SectionTime label={t.nextUpdate} iso={section.time?.nextUpdate} />
         </div>
       )}
       {!replied && section.ask && <p className="home-question">{section.ask.question}</p>}

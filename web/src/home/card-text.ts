@@ -1,0 +1,35 @@
+import { strings } from "../i18n";
+
+/** A summary card's own words on Home (T-18); the section's title and blocks are shown as written. */
+export const cardText = strings({
+  openReport: "Open report",
+  openStatus: "Open status",
+  openLabel: (title: string) => `Open the report “${title}”`,
+  noSummary: "No summary named",
+  conditions: "Conditions",
+  moreConditions: (n: number) => `+${n} more conditions`,
+  fewerConditions: "Show fewer conditions",
+  allConditions: "Show all conditions",
+  more: "More actions",
+  moreLabel: (title: string) => `More actions for “${title}”`,
+  tableCounts: (rows: number, totalRows: number, columns: number, totalColumns: number) =>
+    `${rows} of ${totalRows} rows · ${columns} of ${totalColumns} columns`,
+  deskCounts: (claims: number, plots: number) =>
+    `${claims === 1 ? "1 claim" : `${claims} claims`} · ${plots === 1 ? "1 plot" : `${plots} plots`}`,
+  deskInteractive: "interactive on the report page",
+}, {
+  openReport: "打开报告",
+  openStatus: "打开状态",
+  openLabel: (title: string) => `打开报告“${title}”`,
+  noSummary: "未指定摘要",
+  conditions: "成立条件",
+  moreConditions: (n: number) => `还有 ${n} 项条件`,
+  fewerConditions: "收起条件",
+  allConditions: "显示全部条件",
+  more: "更多操作",
+  moreLabel: (title: string) => `“${title}”的更多操作`,
+  tableCounts: (rows: number, totalRows: number, columns: number, totalColumns: number) =>
+    `${totalRows} 行中的 ${rows} 行 · ${totalColumns} 列中的 ${columns} 列`,
+  deskCounts: (claims: number, plots: number) => `${claims} 个主张 · ${plots} 张图`,
+  deskInteractive: "在报告页中可交互",
+});

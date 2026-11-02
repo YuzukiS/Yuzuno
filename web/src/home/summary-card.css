@@ -1,0 +1,264 @@
+/* The card: its head, title, what it says, one figure, who and when. */
+.home-section.home-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+  transition: box-shadow 160ms ease-out;
+}
+.home-section.home-summary-card:hover {
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--ink) 8%, transparent);
+}
+/* Large text on a narrow card: the actions take a line of their own rather
+   than run past the card. */
+.home-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 28px;
+}
+.home-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.home-summary-actions .icon-button {
+  color: var(--text-secondary);
+}
+.home-summary-title {
+  margin: 0;
+  font-size: calc(13.5px + var(--font-adjust, 3px));
+  line-height: 1.35;
+  font-weight: 600;
+}
+.home-summary-title-link {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.home-summary-title-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.home-summary-title-link:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.home-summary-lead .brief-markdown {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+/* With two or more columns, three lines kept for the lead line up the
+   conditions and figures across a row; one column has no row to line up. */
+@container home (min-width: 540px) {
+  .home-summary-lead .brief-markdown {
+    min-height: calc(3 * 1.6em);
+  }
+}
+/* A card whose author named no summary says so, lightly, and no more. It
+   keeps its own height at the top of its row: stretched beside a tall
+   summary, its empty middle would look broken (Dev 7). */
+.home-section.home-summary-card.is-unnamed {
+  align-self: start;
+}
+.home-summary-unnamed {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+
+/* The conditions on a card: chips in two lines, or two lines of text. */
+.home-card-condition-chips {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-card-condition-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--home-surface);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+.home-card-condition-chips li > svg {
+  flex: none;
+  color: var(--text-secondary);
+}
+.home-card-condition-chips li[hidden] {
+  display: none;
+}
+.home-card-condition-text {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.home-card-condition-text.is-clamped {
+  max-height: calc(2 * 1.6em);
+  overflow: hidden;
+}
+.home-card-conditions-toggle {
+  padding: 2px 0;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+@media (pointer: coarse) {
+  .home-card-conditions-toggle,
+  .home-report-open,
+  .home-summary-actions .icon-button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* One figure, bounded in a fixed frame; never the whole block. */
+.home-card-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+.home-card-frame-body {
+  box-sizing: border-box;
+  height: 138px;
+  padding: 8px 10px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--home-soft);
+}
+@container home (max-width: 539px) {
+  .home-card-frame-body {
+    height: 118px;
+  }
+}
+.home-card-frame-body img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.home-card-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-card-table :is(th, td) {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 10em;
+}
+.home-card-table th {
+  color: var(--home-ink-2);
+  font-weight: 500;
+}
+.home-card-desk {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+.home-card-desk span,
+.home-card-frame figcaption {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+
+.home-summary-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: auto;
+  padding-top: 4px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-summary-byline > * + *::before {
+  content: "·";
+  margin: 0 6px;
+}
+.home-report-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.home-report-open:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* More actions: Pin and Copy report, in a small list under the button. */
+.home-summary-more {
+  position: relative;
+}
+.home-summary-more-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 170px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--home-surface);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.home-summary-more-list[hidden] {
+  display: none;
+}
+.home-summary-more-list :is(.quiet-button, .copy-button) {
+  justify-content: flex-start;
+  color: var(--text-secondary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-summary-card {
+    transition: none;
+  }
+}

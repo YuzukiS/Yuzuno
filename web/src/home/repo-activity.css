@@ -43,6 +43,39 @@
   color: var(--repo-muted);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+/* A repository on one line (Home, T-18): the commit takes the room left
+   and is cut first; on a narrow panel the parts wrap. */
+.repo-activity .repo-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  min-width: 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.7;
+}
+.repo-activity .repo-line > * {
+  flex: none;
+}
+.repo-activity .repo-line .repo-row {
+  height: auto;
+}
+.repo-activity :is(.repo-line-run, .repo-line-commit) {
+  display: flex;
+  min-width: 0;
+}
+.repo-activity .repo-line-run {
+  max-width: 16em;
+}
+.repo-activity .repo-line-commit {
+  flex: 1 1 140px;
+}
+.repo-activity .repo-line-pulls {
+  color: var(--repo-muted);
+}
+.repo-activity .repo-line .repo-asof {
+  margin-left: 0;
+}
 .repo-activity .repo-activity-problem {
   display: flex;
   align-items: center;

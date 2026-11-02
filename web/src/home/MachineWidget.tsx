@@ -244,7 +244,7 @@ export function MachineWidget({
             {jobs?.length ? <span className="home-machine-jobs-count">· {jobs.length}</span> : null}
           </span>
           {/* A fixed height that scrolls: Jobs starting and ending move nothing below. */}
-          <div className="home-machine-jobs-list" tabIndex={jobs && jobs.length > 3 ? 0 : undefined}>
+          <div className="home-machine-jobs-list" tabIndex={jobs && jobs.length > 1 ? 0 : undefined}>
             {!jobs ? (
               <span className="home-note">{t.readingShort}</span>
             ) : jobs.length ? (
