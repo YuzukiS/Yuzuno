@@ -86,10 +86,12 @@ function mount({ phone = false, respond } = {}) {
   const message = (id) => document.querySelector(`.user-message[data-item-id="${id}"]`);
   const card = (id) => message(id)?.querySelector(".home-reply") ?? null;
   const actions = (id) => [...card(id).querySelectorAll(":scope > footer > button")].map((b) => b.textContent.trim());
-  const press = (id, label) => {
+  // React applies a click's update after the event: read the page after it.
+  const press = async (id, label) => {
     const button = [...card(id).querySelectorAll("button")].find((b) => b.textContent.trim() === label);
     assert.ok(button, `${id}: no button ${label} in ${actions(id)}`);
     button.click();
+    await tick();
     return button;
   };
   return { window, document, errors, requests, copied, message, card, actions, press, close: () => window.close() };
@@ -184,7 +186,7 @@ test("only Core's own marking makes a card: typed words, a message with no ident
   assert.equal(earlier.querySelector(".home-reply-source").textContent, "From Home·an earlier reply, shown as sent");
   assert.deepEqual(page.actions("i-earlier"), ["Original message", "Open on Home"]);
   assert.ok(!earlier.textContent.includes("先做导出页"), "nothing is read from an earlier reply's text");
-  page.press("i-earlier", "Original message");
+  await page.press("i-earlier", "Original message");
   assert.equal(earlier.querySelector(".home-reply-original pre").textContent, raw.earlier);
   assert.deepEqual(page.errors, []);
 });
@@ -193,9 +195,9 @@ test("Copy answer copies the answer as shown; Copy original and Send to Agent th
   const page = mount();
   t.after(page.close);
   page.window.renderTurn(turn, agent);
-  page.press("i-both", "Copy answer");
-  page.press("i-form", "Copy answer");
-  page.press("i-card", "Copy answer");
+  await page.press("i-both", "Copy answer");
+  await page.press("i-form", "Copy answer");
+  await page.press("i-card", "Copy answer");
   await until(() => page.copied.length === 3, "three answers copied");
   assert.deepEqual(page.copied, [
     `每页 50 行（推荐）\n\n${bothOrigin.snapshot.text}`,
@@ -204,12 +206,12 @@ test("Copy answer copies the answer as shown; Copy original and Send to Agent th
   ]);
   await until(() => page.actions("i-both")[0] === "Copied", "Copied shown");
   // The original message: exactly as sent, with its own copy.
-  const toggle = page.press("i-both", "Original message");
+  const toggle = await page.press("i-both", "Original message");
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
   const region = page.document.getElementById(toggle.getAttribute("aria-controls"));
   assert.equal(region.getAttribute("role"), "region");
   assert.equal(region.querySelector("pre").textContent, raw.both);
-  page.press("i-both", "Copy original");
+  await page.press("i-both", "Copy original");
   await until(() => page.copied.length === 4, "original copied");
   assert.equal(page.copied[3], raw.both);
   // Send to Agent hands on the message as sent, never the card's summary.
@@ -226,14 +228,14 @@ test("the question as the user saw it opens on demand, its options with the chos
   const page = mount();
   t.after(page.close);
   page.window.renderTurn(turn, agent);
-  const toggle = page.press("i-both", "Question");
+  const toggle = await page.press("i-both", "Question");
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
   const region = page.document.getElementById(toggle.getAttribute("aria-controls"));
   assert.equal(region.querySelector(".home-reply-meta").textContent, "The question as you saw it · version 3");
   assert.equal(region.querySelector("p").textContent, bothOrigin.snapshot.question);
   assert.deepEqual([...region.querySelectorAll("li")].map((li) => [li.textContent, li.classList.contains("chosen")]),
     [["每页 50 行（推荐） (your choice)", true], ["每页 100 行", false], ["不分页，保持滚动", false]]);
-  page.press("i-both", "Question");
+  await page.press("i-both", "Question");
   assert.equal(page.document.getElementById(toggle.getAttribute("aria-controls")), null);
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.deepEqual(page.errors, []);
@@ -243,8 +245,8 @@ test("Open on Home names the version answered and the message to come back to", 
   const page = mount();
   t.after(page.close);
   page.window.renderTurn(turn, agent);
-  page.press("i-both", "Open on Home");
-  page.press("i-earlier", "Open on Home");
+  await page.press("i-both", "Open on Home");
+  await page.press("i-earlier", "Open on Home");
   const opened = page.window.actions.filter(([kind]) => kind === "open");
   assert.deepEqual(JSON.parse(JSON.stringify(opened)), [
     ["open", bothOrigin, { agentId: "a", turnId: "t1", itemId: "i-both" }],
@@ -267,10 +269,10 @@ test("a long reply is read whole: its original message is read in full before it
   const long = home("i-long", full.slice(0, 2000), { ...identity(null, null), snapshot: snapshot({ text: "也请看附件。" }) });
   long._yuzunoTruncated = { content: { bytes: new TextEncoder().encode(full).length, lines: 1, keep: "head" } };
   page.window.renderTurn({ id: "t2", status: "completed", items: [long] }, agent);
-  page.press("i-long", "Original message");
-  await until(() => page.card("i-long").querySelector(".home-reply-original pre").textContent === full, "the whole message");
+  await page.press("i-long", "Original message");
+  await until(() => page.card("i-long").querySelector(".home-reply-original pre")?.textContent === full, "the whole message");
   assert.ok(page.requests.some((r) => r.url.includes("/items/i-long/payload?") && r.url.includes("turnId=t2")));
-  page.press("i-long", "Copy original");
+  await page.press("i-long", "Copy original");
   await until(() => page.copied.length === 1, "original copied");
   assert.equal(page.copied[0], full);
   assert.deepEqual(page.errors, []);
