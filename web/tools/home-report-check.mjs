@@ -283,7 +283,8 @@ try {
   await step("desktop 1440: Open report over Home; the author's summary first, once; sources and an image in the rail, unfolded; only the named detail folds; Back keeps Home's place and focus", async () => {
     await open(1440, 900);
     await toHome();
-    await card("eval").scrollIntoViewIfNeeded();
+    // Where Home is when the button is clicked: the click scrolls the button into view first.
+    await opener("eval").scrollIntoViewIfNeeded();
     const before = await page.evaluate(() => document.querySelector(".home-view").scrollTop);
     assert.ok(before > 0, `Home scrolled (${before})`);
     await openReport("eval");

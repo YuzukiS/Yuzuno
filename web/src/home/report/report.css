@@ -213,7 +213,7 @@
   display: none;
 }
 .report-conditions .brief-list ul {
-  display: flex;
+  flex-direction: row;
   flex-wrap: wrap;
   gap: 6px;
 }
