@@ -276,7 +276,12 @@ const researchDeskProps = z.strictObject({
 });
 
 export const briefComponentProps = {
-  BriefBody: z.strictObject({}),
+  // T-18: what a report opens with on Home and which of its parts start
+  // folded, by the ids of the root's own children (checked with the tree).
+  BriefBody: z.strictObject({
+    summary: z.strictObject({ lead: id, visual: id.optional(), conditions: id.optional() }).optional(),
+    details: z.array(id).min(1).max(L.bodyChildren).optional(),
+  }),
   Group: z.strictObject({ title: short.optional(), tone: z.enum(["plain", "accent", "muted"]).optional() }),
   Columns: z.strictObject({ widths: z.array(z.number().int().min(1).max(4)).min(2).max(L.columns).optional() }),
   Markdown: z.strictObject({ text: z.string().min(1).max(L.bodyBytes) }),
@@ -357,11 +362,13 @@ export const briefComponentProps = {
 export type BriefComponent = keyof typeof briefComponentProps;
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
 const CHARTS = ["LineChart", "BarChart", "ScatterChart"] as const;
+/** What a summary's figure may be (T-18); Attachments with exactly one item. */
+const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Table", "ResearchDesk", "Attachments"]);
 const isChart = (type: string): type is (typeof CHARTS)[number] => (CHARTS as readonly string[]).includes(type);
 
 /** What each component is for; brief_guide and the renderer's catalog use these. */
 export const BRIEF_COMPONENT_DESCRIPTIONS = {
-  BriefBody: "The root of every section body; no props, children only.",
+  BriefBody: "The root of every section body. summary and details name some of its own children by id; see Layout below.",
   Group: "A group of components with an optional title. tone accent or muted tints its background, e.g. for a summary across the top.",
   Columns: "Lays out its children side by side, each child one column (usually a Group). widths gives their relative widths, e.g. [2, 1]; equal without it. A narrow window stacks the columns in the order given.",
   Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. Raw HTML is not supported.",
@@ -474,6 +481,8 @@ export const BRIEF_PROBLEM_CODES = {
   missing_component: "A child names a missing element.",
   extra_root: "More than one BriefBody.",
   unused_component: "An element not reachable from the root.",
+  summary: "A BriefBody summary whose lead, visual or conditions is not one of the root's own children of the right type, or names a block twice.",
+  details: "A BriefBody details entry that is not a titled Group among the root's own children, is named twice or is part of the summary.",
   columns_widths: "Columns widths that do not match its children.",
   duplicate_id: "Two items, rows, columns, series or components share an id.",
   row_mismatch: "A Table row's cells do not match its columns.",
@@ -978,6 +987,42 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
     add(problem("unused_component", "body.elements", `${unused.length === 1 ? `Element ${names} is` : `Elements ${names} are`} not reachable from the root; add ${unused.length === 1 ? "it" : "them"} as a child or remove ${unused.length === 1 ? "it" : "them"}.`, "content"));
     throw fail();
   }
+  // What a report opens with on Home and which parts start folded (T-18):
+  // blocks of the root itself, each shown once.
+  const rootProps = (spec.elements[spec.root].props ?? {}) as Props<"BriefBody">;
+  const top = spec.elements[spec.root].children ?? [];
+  const typeOf = (key: string) => spec.elements[key]?.type;
+  const at = `body.elements.${spec.root}.props`;
+  const named = rootProps.summary;
+  const slots = named ? (["lead", "visual", "conditions"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
+  const SLOT_RULE = {
+    lead: ["a Markdown", (key: string) => typeOf(key) === "Markdown"],
+    visual: ["a chart, Metrics, Table, ResearchDesk, or Attachments with one item", (key: string) =>
+      SUMMARY_FIGURES.has(typeOf(key) ?? "") && (typeOf(key) !== "Attachments" || (spec.elements[key].props as Props<"Attachments">).items.length === 1)],
+    conditions: ["a Markdown or Checklist", (key: string) => typeOf(key) === "Markdown" || typeOf(key) === "Checklist"],
+  } as const;
+  slots.forEach(([slot, key], index) => {
+    const path = `${at}.summary.${slot}`;
+    const [what, fits] = SLOT_RULE[slot];
+    if (!top.includes(key))
+      add(problem("summary", path, `summary.${slot} "${key}" is not one of the root's own children; name a block directly under the root.`, "content"));
+    else if (slots.findIndex(([, other]) => other === key) < index)
+      add(problem("summary", path, `summary.${slot} "${key}" is already named in summary; each block is shown once.`, "content"));
+    else if (!fits(key))
+      add(problem("summary", path, `summary.${slot} is ${what}; "${key}" is ${typeOf(key) === "Attachments" ? "Attachments with several items" : `a ${typeOf(key)}`}.`, "content"));
+  });
+  (rootProps.details ?? []).forEach((key, index) => {
+    const path = `${at}.details.${index}`;
+    const node = spec.elements[key];
+    if (!top.includes(key))
+      add(problem("details", path, `details names "${key}", not one of the root's own children; name a titled Group directly under the root.`, "content"));
+    else if (node.type !== "Group" || !(node.props as Props<"Group">).title)
+      add(problem("details", path, `details names "${key}", ${node.type === "Group" ? "a Group without a title" : `a ${node.type}`}; only a titled Group folds, under its title.`, "content"));
+    else if (rootProps.details!.indexOf(key) < index)
+      add(problem("details", path, `details names "${key}" twice.`, "content"));
+    else if (slots.some(([, other]) => other === key))
+      add(problem("details", path, `details names "${key}", which summary shows; a summary block never folds.`, "content"));
+  });
 
   // Each block: limits, unique ids and references.
   const groups = new Set<string>();
@@ -1467,6 +1512,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?}: ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one item); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
