@@ -1904,6 +1904,7 @@ p {
     .interrupt-button
   ):active:not(:disabled) {
   transform: none;
+  box-shadow: inset 0 0 0 99px var(--press-tint);
 }
 .welcome-create {
   margin-top: 27px;

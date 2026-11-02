@@ -90,11 +90,17 @@ const ms = (v) => (v.endsWith("ms") ? parseFloat(v) : v.endsWith("s") ? parseFlo
 
 /** Text contrast at rest and with the pressed tint, for the visible ordinary and still controls. */
 function measureContrast() {
+  // Any CSS colour (the build writes rgb(0 0 0 / 6%) as #0000000f) resolved by the browser itself.
+  const probe = document.body.appendChild(document.createElement("i"));
   const parse = (c) => {
-    const m = c.match(/rgba?\(([^)]+)\)/) || c.match(/color\(srgb ([^)]+)\)/);
+    probe.style.color = "";
+    probe.style.color = c;
+    const v = getComputedStyle(probe).color;
+    const m = v.match(/rgba?\(([^)]+)\)/) || v.match(/color\(srgb ([^)]+)\)/);
     if (!m) return null;
-    const parts = m[1].replace(/\//, " ").split(/[\s,]+/).filter(Boolean).map(Number);
-    const scale = c.startsWith("color(") ? 255 : 1;
+    const parts = m[1].replace("/", " ").split(/[\s,]+/).filter(Boolean)
+      .map((p) => (p.endsWith("%") ? parseFloat(p) / 100 : Number(p)));
+    const scale = v.startsWith("color(") ? 255 : 1;
     return { r: parts[0] * scale, g: parts[1] * scale, b: parts[2] * scale, a: parts.length > 3 ? parts[3] : 1 };
   };
   const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
@@ -111,8 +117,9 @@ function measureContrast() {
     .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
   const tint = parse(getComputedStyle(document.documentElement).getPropertyValue("--press-tint").trim());
+  if (!tint || !(tint.a > 0)) return { tint: null, rows: [] };
   const selector = ".primary-button, .secondary-button, .quiet-button, .icon-button, .catchup-nav, .conversation-action, .send-button, .choice-chips .choice-chip, .phone-dock-button, .interrupt-button";
-  return [...document.querySelectorAll(selector)].filter((el) => {
+  const rows = [...document.querySelectorAll(selector)].filter((el) => {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && !el.disabled && (el.textContent || "").trim();
   }).slice(0, 40).map((el) => {
@@ -122,6 +129,8 @@ function measureContrast() {
     return { el: `${el.className.toString().split(/\s+/).slice(0, 2).join(".")} "${el.textContent.trim().slice(0, 18)}"`,
       rest: +ratio(text, rest).toFixed(2), pressed: +ratio(text, pressed).toFixed(2) };
   });
+  probe.remove();
+  return { tint, rows };
 }
 
 const browser = await launchBrowser();
@@ -240,12 +249,13 @@ for (const run of runs) {
       report.focus[`${tag}: Settings closed with Escape`] = await describe(page);
     } else report.notShown.push(`${tag}: no Settings entry in the preview toolbar`);
 
-    // A real toast, then a dialog opened over it: the toast stays visible on top.
-    await page.locator(".agent-row", { hasText: "Mikan" }).first().click({ button: "right" });
-    const copy = page.locator('[role="menuitem"]', { hasText: /Copy link/i });
-    if (await copy.count()) {
-      await copy.first().click();
-      report.focus[`${tag}: Agent menu closed by choosing Copy link`] = await describe(page);
+    // A real toast (a reply sent to Hana's draft), then a dialog opened over it: the toast stays visible on top.
+    await page.locator(".agent-row", { hasText: "Mikan" }).first().click();
+    const sendTo = page.locator(".reply-actions .send-to-agent-button").filter({ visible: true }).first();
+    const toHana = page.locator('.send-to-agent-menu [role="menuitem"]', { hasText: "Hana" });
+    if (await sendTo.count() && (await sendTo.click(), await toHana.count()) && await toHana.first().isEnabled()) {
+      await toHana.first().click();
+      report.focus[`${tag}: Send to Agent menu closed by choosing Hana`] = await describe(page);
       await page.locator(".toast").first().waitFor({ timeout: 3000 });
       await page.locator(".add-agent").first().click();
       await page.locator(".modal").first().waitFor();
@@ -259,7 +269,7 @@ for (const run of runs) {
       if (shot("x")) await page.screenshot({ path: join(output, "toast-over-dialog.png") });
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
-    } else report.notShown.push(`${tag}: Copy link was not in the Agent menu`);
+    } else report.notShown.push(`${tag}: Send to Agent → Hana was not available in the preview`);
 
     // The pressed tint's text contrast in every palette and theme (desktop, normal motion only).
     if (!reduced && !baseline) {
@@ -269,8 +279,9 @@ for (const run of runs) {
         for (const theme of ["light", "dark"]) {
           await page.evaluate(([p, t]) => { document.documentElement.dataset.palette = p; document.documentElement.dataset.theme = t; }, [palette, theme]);
           await page.waitForTimeout(80);
-          const rows = await page.evaluate(measureContrast);
-          report.contrast.push({ palette, theme, rows });
+          const { tint, rows } = await page.evaluate(measureContrast);
+          report.contrast.push({ palette, theme, tint, rows });
+          ok(`${tag}: ${palette}/${theme}: the pressed tint is read (${rows.length} controls measured)`, !!tint && rows.length > 0, { tint, rows: rows.length });
           const dropped = rows.filter((r) => r.rest >= 4.5 && r.pressed < 4.5);
           ok(`${tag}: ${palette}/${theme}: the pressed tint never takes a control's text below 4.5:1`, dropped.length === 0, dropped);
         }
