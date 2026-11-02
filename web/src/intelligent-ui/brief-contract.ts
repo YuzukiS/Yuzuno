@@ -698,8 +698,24 @@ export function fencedBlockLines(markdown: string): number[] {
 }
 
 const DATA_FILE = /\.(csv|json|jsonl)$/i;
-/** The files Core keeps and shows as images (attachments.rs, classify). */
-const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
+/** The extensions Core knows (attachments.rs, classify), and those it shows as images. */
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"]);
+const KNOWN_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, "csv", "tsv", "json", "jsonl", "ndjson", "pdf", "md", "markdown",
+  "txt", "log", "out", "err", "yaml", "yml", "toml", "ini", "cfg", "conf", "xml", "html", "htm", "py", "rs", "ts", "tsx", "js",
+  "mjs", "sh", "c", "h", "cpp", "go", "java", "rb", "sql", "diff", "patch"]);
+/** A file name's extension as Rust's Path::extension reads it on Core's host: after the last dot of the last component, none for ".name". */
+function extension(at: string): string | null {
+  const trimmed = at.replace(/\/+$/, "");
+  const name = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : null;
+}
+/** Whether Core keeps an attachment as an image: by its path's extension when Core knows it, else by its name's; a link never. */
+function isImage(file: { name: string; path?: string }) {
+  if (file.path === undefined) return false;
+  const known = [extension(file.path), extension(file.name)].find((ext): ext is string => ext !== null && KNOWN_EXTENSIONS.has(ext));
+  return known !== undefined && IMAGE_EXTENSIONS.has(known);
+}
 const ABSOLUTE = /^(\/|[A-Za-z]:[\\/])/;
 
 /** The section with display defaults filled in, and without its op. */
@@ -1005,7 +1021,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       // One figure: a single image file, never a link, a table of data or a page.
       const items = (spec.elements[key].props as Props<"Attachments">).items;
       const file = items.length === 1 ? files.get(items[0].name) : undefined;
-      return file?.path !== undefined && IMAGE_FILE.test(file.path);
+      return file !== undefined && isImage(file);
     }],
     conditions: ["a Markdown or Checklist", (key: string) => typeOf(key) === "Markdown" || typeOf(key) === "Checklist"],
   } as const;

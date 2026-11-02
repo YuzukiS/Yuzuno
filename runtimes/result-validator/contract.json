@@ -207,6 +207,6 @@
   },
   "validator": {
     "file": "validator.mjs",
-    "sha256": "3c075d377026f282984bb32ad737da93e687767c449fc635a6df72127cb06184"
+    "sha256": "0a9a31eb43a82abf9028d48f3f86bff1114d3e3abff2ba1013336180a2f2f87a"
   }
 }

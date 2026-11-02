@@ -368,6 +368,17 @@ test("a body may name its summary and the details that start folded, among the r
   assert.deepEqual(code({ summary: { lead: "answer", visual: "shots" } }), ["summary summary.visual"], "several files are not one figure");
   assert.deepEqual(code({ summary: { lead: "answer", visual: "data" } }), ["summary summary.visual"], "a data file is not a figure");
   assert.deepEqual(code({ summary: { lead: "answer", visual: "link" } }), ["summary summary.visual"], "a link is never shown as an image");
+  // An image as Core classifies it (attachments.rs): by the path's extension when Core knows it, else by the name's.
+  const figure = (file) => body({ summary: { lead: "answer", visual: "one" } }, { one: { type: "Attachments", props: { items: [{ name: file.name }] } } });
+  const withFile = (file) => { const value = figure(file); value.attachments = [...value.attachments, file]; value.body.elements.body.children.push("one"); return value; };
+  for (const file of [{ name: "shot.png", path: "/home/me/capture" }, { name: "shot.png", path: "/home/me/capture.bin" }, { name: "capture", path: "/home/me/SHOT.PNG" },
+    { name: "plot.JPEG", path: "/home/me/plot" }, { name: "s", path: "/home/me/run.d/s.webp" },
+    // A file named ".png" has no extension to Rust: the name decides.
+    { name: "shot.png", path: "/home/me/.png" }])
+    assert.equal(checkBriefSection(withFile(file)).body.elements.body.props.summary.visual, "one", JSON.stringify(file));
+  for (const file of [{ name: "shot.png", path: "/home/me/data.csv" }, { name: "shot.png", path: "/home/me/page.HTML" }, { name: "notes", path: "/home/me/capture" },
+    { name: "shot.png", path: "/home/me/run.d/notes.txt" }, { name: "shot.png", url: "https://example.com/shot.png" }])
+    assert.deepEqual(problems(withFile(file)).map((p) => p.path), ["body.elements.body.props.summary.visual"], JSON.stringify(file));
   assert.deepEqual(code({ summary: { lead: "answer", conditions: "loss" } }), ["summary summary.conditions"]);
   assert.deepEqual(code({ summary: { lead: "answer", visual: "answer" } }), ["summary summary.visual"], "each block once");
   assert.deepEqual(code({ summary: { lead: "answer", visual: "loss", conditions: "missing" } }), ["summary summary.conditions"]);
