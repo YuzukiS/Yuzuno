@@ -199,7 +199,7 @@ const shown = () => page.evaluate(() => {
     teamOpen: panel.querySelector(".home-team-details").open,
     // Arranging is the Organize dialog now (T-115 follow-up), still open across the language change.
     widgets: { heading: one(".home-widget-column-head h2"), arrange: one(".home-widget-column-head button"), tools: labels(".home-organize-tools button") },
-    machines: { heading: one(".home-machines h2"), manage: one(".home-machines-manage"), titles: all(".home-machines .home-load-title"), gpu: all(".home-gpus .home-fact"), empty: one(".home-machine-jobs-list .home-note") },
+    machines: { heading: one(".home-machines h2"), manage: one(".home-machines-manage"), titles: all(".home-machines .home-load-title"), gpu: all(".home-gpus .home-fact"), empty: one(".home-machine-jobs .home-note") },
     pinned: { label: document.querySelector(".home-pinned").getAttribute("aria-label"), title: one(".home-pinned-head h2 span"), from: one(".home-pinned-from"), foot: all(".home-pinned-foot button") },
     // The repository's line, and its lists with Repository details open (T-18).
     repo: { heads: all(".repo-activity-lists h5"), runs: all(".repo-activity-lists .repo-row .repo-state").filter(Boolean), checks: labels(".repo-activity-lists .repo-row .repo-state[aria-label]"), asOf: one(".repo-line .repo-asof"), titles: all(".repo-activity-lists .repo-row-title"), name: one(".repo-line .repo-name") },

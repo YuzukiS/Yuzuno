@@ -359,9 +359,14 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@container machines (max-width: 420px) {
-  .home-machine {
-    grid-template-columns: minmax(0, 1fr);
+/* Narrow (a phone, a narrow widget column): two by two, each cell its
+   label, value and bar; the shares and the GPU's name and memory are on
+   the Machines page (Dev 7, T-18). */
+@container machines (max-width: 540px) {
+  .home-load > .home-facts,
+  .home-gpu-name,
+  .home-gpu-bar + .home-gpu-bar {
+    display: none;
   }
 }
 .home-load {
@@ -436,8 +441,7 @@
   height: 8px;
   border-radius: 2px;
 }
-.home-gpus ul,
-.home-machine-jobs ul {
+.home-gpus ul {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -471,78 +475,50 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+  min-width: 0;
 }
-.home-machine-jobs-count {
-  color: var(--home-ink-2);
-  font-variant-numeric: tabular-nums;
+.home-machine-jobs > .home-note {
+  margin: 0;
 }
-/* Each Job as the conversation's dock shows one: a mark, its name on one
-   line and a quiet line under it. The whole row opens it in Jobs. */
-.home-machine-job {
+/* The Jobs here in one line: how many run and the first one's name, cut
+   with an ellipsis. It opens Jobs at that Job; every name is in its tip. */
+.home-machine-job-line {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  width: 100%;
-  padding: 4px 6px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 6px;
+  margin: 0 -6px;
   border: 0;
   border-radius: 6px;
   background: none;
   color: inherit;
   font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
   text-align: left;
+  white-space: nowrap;
 }
-button.home-machine-job:hover,
-button.home-machine-job:focus-visible {
+button.home-machine-job-line:hover,
+button.home-machine-job-line:focus-visible {
   background: var(--home-soft);
 }
 .home-machine-job-dot {
   flex: none;
   width: 7px;
   height: 7px;
-  margin-top: calc((1.35em - 7px) / 2);
   border-radius: 50%;
   background: var(--state-working, var(--green));
 }
-.home-machine-job-text {
-  display: grid;
-  flex: 1;
-  gap: 1px;
-  min-width: 0;
-  line-height: 1.35;
-}
-.home-machine-job-text strong,
-.home-machine-job-text small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.home-machine-job-text strong {
-  font-size: calc(9.5px + var(--font-adjust, 3px));
-  font-weight: 550;
-}
-.home-machine-job-text small {
-  display: flex;
-  gap: 8px;
-  color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
-}
-.home-machine-job-who {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.home-machine-job-text .home-fact {
+.home-machine-job-count {
   flex: none;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
 }
-/* About one and a half Jobs, as tall as a GPU's two bars: the rest scroll
-   inside, so the row stays short and the panels below keep their place. */
-.home-machine-jobs-list {
-  height: calc(1.5 * (2.7 * (9.5px + var(--font-adjust, 3px)) + 12px));
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.home-machine-jobs-list > .home-note {
-  margin: 0;
+.home-machine-job-first {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--home-ink-2);
+  text-overflow: ellipsis;
 }
 
 /* Project panels */

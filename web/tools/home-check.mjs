@@ -850,7 +850,7 @@ try {
     assert.deepEqual(report.errors, [], "no console errors while drawing");
   });
 
-  await step("8 Machines: a null metric shows unknown (no meter segment), the GPU reads as use and memory bars with attribution unknown in its tip, a Job names its project and Agent", async () => {
+  await step("8 Machines: a null metric shows unknown (no meter segment), the GPU reads as use and memory bars with attribution unknown in its tip, a Job names its project and Agent in the Jobs line's tip", async () => {
     const cpu = page.locator(".home-machines .home-load").first();
     assert.deepEqual(
       await cpu.locator(".home-fact").evaluateAll((els) => els.map((e) => [e.dataset.fact, e.querySelector("strong").textContent, e.classList.contains("is-unknown")])),
@@ -862,10 +862,10 @@ try {
     assert.match(await gpu.textContent(), /NVIDIA GeForce RTX 5090.*Use 63%.*Memory/is);
     assert.equal(await gpu.locator(".home-meter").count(), 2, "a bar for use and one for memory");
     assert.match(await gpu.getAttribute("title"), /other programs included; not split by Agent or Job/);
-    const job = page.locator(".home-machine-jobs li");
-    assert.match(await job.textContent(), /cargo test -j2.*Yuzuno app · Mori/);
-    assert.equal(await job.locator('[data-fact="CPU"] strong').textContent(), "unknown");
-    assert.equal(await job.locator('[data-fact="Memory"] strong').textContent(), "2.0 GiB");
+    // The Jobs here are one line (T-18): how many and the first; each Job's project and Agent in its tip.
+    const job = page.locator(".home-machine-jobs .home-machine-job-line");
+    assert.match(await job.textContent(), /1 running\s*cargo test -j2/);
+    assert.match(await job.getAttribute("title"), /cargo test -j2 · Yuzuno app · Mori/);
   });
 
   const looks = {};

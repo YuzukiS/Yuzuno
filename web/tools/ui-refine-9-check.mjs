@@ -495,25 +495,25 @@ try {
       }
     });
 
-    await step(`${theme}: the Machines widget has a use and a memory bar for each GPU, and its Jobs as a compact list`, async () => {
+    await step(`${theme}: the Machines widget has a use and a memory bar for each GPU, and its Jobs as one line`, async () => {
       await machines.locator(".home-gpus .home-gpu-name").filter({ hasText: "RTX 5090" }).waitFor();
       const bars = await machines.locator(".home-gpus li .home-meter").evaluateAll((els) =>
         els.map((el) => ({ label: el.getAttribute("aria-label"), width: el.querySelector(".home-meter-gpu")?.style.width })));
       assert.deepEqual(bars.map((b) => b.label), ["GPU use 37%", "GPU memory 5.2 GiB / 31.8 GiB"]);
       assert.equal(bars[0].width, "37%");
-      // Each Job: a button, its name on one line, a quiet line under it.
-      const rows = machines.locator(".home-machine-jobs button.home-machine-job");
-      assert.equal(await rows.count(), 3);
-      const first = await rows.first().evaluate((el) => {
-        const name = el.querySelector("strong"), small = el.querySelector("small");
-        const line = parseFloat(getComputedStyle(name).lineHeight);
-        return { nameLines: Math.round(name.getBoundingClientRect().height / line), clipped: name.scrollWidth > name.clientWidth,
-          small: small.textContent, height: Math.round(el.getBoundingClientRect().height) };
+      // The Jobs here: one button, one line, however many run (Dev 7, T-18); every Job in its tip.
+      const line = machines.locator(".home-machine-jobs button.home-machine-job-line");
+      assert.equal(await line.count(), 1);
+      assert.equal(await machines.locator(".home-machine-jobs li").count(), 0, "no list of Jobs on Home");
+      const first = await line.evaluate((el) => {
+        const name = el.querySelector(".home-machine-job-first");
+        return { count: el.querySelector(".home-machine-job-count").textContent, clipped: name.scrollWidth > name.clientWidth,
+          tip: el.getAttribute("title"), height: Math.round(el.getBoundingClientRect().height), lineHeight: parseFloat(getComputedStyle(el).lineHeight) };
       });
-      assert.equal(first.nameLines, 1, "a long name stays on one line");
-      assert.ok(first.clipped, "and is cut with an ellipsis");
-      assert.match(first.small, /^yuzuno-next · Dev 3CPU 10%Memory 10\.0 GiB$/);
-      assert.ok(first.height <= 48, `a row is about two lines: ${first.height}px`);
+      assert.equal(first.count, "3 running");
+      assert.ok(first.clipped, "a long first name is cut with an ellipsis");
+      assert.match(first.tip, /^.+ · yuzuno-next · Dev 3\n.+\n.+$/);
+      assert.ok(first.height <= first.lineHeight + 8, `one line: ${JSON.stringify(first)}`);
       assert.ok(await noSideways(".home-widget-column .home-machines"), "no sideways scroll in the widget");
       await shot(machines, `machines-widget-${theme}.png`);
       return { first };
@@ -541,8 +541,8 @@ try {
       assert.equal(await page.locator(".scope-menu").count(), 0, "gone at once, not sinking");
     });
 
-    await step(`${theme}: a Job in the widget opens in the Jobs panel`, async () => {
-      await machines.locator("button.home-machine-job").first().click();
+    await step(`${theme}: the widget's Jobs line opens the Jobs panel at the first Job`, async () => {
+      await machines.locator("button.home-machine-job-line").click();
       const row = page.locator(".job-row[aria-current='true']");
       await row.waitFor();
       assert.match(await row.textContent(), /T-120 decision/);

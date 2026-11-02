@@ -242,7 +242,9 @@ export const homeText = strings({
   wholeCard: "The whole card, other programs included; not split by Agent or Job",
   jobsHere: "Jobs on this machine",
   noJobs: "No Jobs running",
-  openJob: (job: string, who: string, cpu: string, memory: string) => `${job}, ${who}, CPU ${cpu}, memory ${memory}: open in Jobs`,
+  jobsRunning: (count: number) => `${count} running`,
+  jobsLineLabel: (count: number, first: string) =>
+    count === 1 ? `1 Job running on this machine, ${first}: open in Jobs` : `${count} Jobs running on this machine, first ${first}: open in Jobs`,
   // Repository activity.
   checks: { success: "Checks passed", failure: "Checks failed", pending: "Checks running" } as Record<"success" | "failure" | "pending", string>,
   run: {
@@ -498,7 +500,8 @@ export const homeText = strings({
   wholeCard: "整张显卡，包括其他程序；不按 Agent 或 Job 拆分",
   jobsHere: "此机器上的 Job",
   noJobs: "没有正在运行的 Job",
-  openJob: (job, who, cpu, memory) => `${job}，${who}，CPU ${cpu}，内存 ${memory}：在 Job 中打开`,
+  jobsRunning: (count) => `${count} 个运行中`,
+  jobsLineLabel: (count, first) => `此机器上有 ${count} 个 Job 在运行，第一个是 ${first}：在 Job 中打开`,
   checks: { success: "检查通过", failure: "检查失败", pending: "检查运行中" },
   run: {
     running: "运行中",

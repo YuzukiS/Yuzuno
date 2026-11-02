@@ -610,7 +610,10 @@ try {
       // Machines fills its row, as one row of four cells where it is wide.
       assert.equal(deckShape.machines.width, deckShape.machines.column, JSON.stringify(deckShape.machines));
       assert.equal(deckShape.machines.cells, 4);
-      assert.equal(deckShape.machines.rows, deckShape.machines.width > 760 ? 1 : deckShape.machines.width > 460 ? 2 : 4, JSON.stringify(deckShape.machines));
+      // One row of four where it is wide, two by two where it is narrow; Jobs is one line either way (Dev 7, 2326).
+      const wide = deckShape.machines.width > 760;
+      assert.equal(deckShape.machines.rows, wide ? 1 : 2, JSON.stringify(deckShape.machines));
+      assert.ok(deckShape.machines.height <= (wide ? 140 : 210), `Machines stays short: ${JSON.stringify(deckShape.machines)}`);
       // Repositories: one line under the project head where there is room.
       assert.match(deckShape.repos.text, /example\/atlas-notes.*main.*passed\s*CI.*b2eaeea\s*Merge the synthetic loader fix.*2 open PRs/);
       assert.equal(deckShape.repos.details, "Repository details");

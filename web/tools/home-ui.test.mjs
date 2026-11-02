@@ -825,8 +825,8 @@ test("an unknown machine metric reads unknown, never 0, and sampling stops while
     assert.deepEqual(facts("Other"), ["unknown"]);
     assert.deepEqual(facts("GPU"), ["unknown"]);
     assert.deepEqual(facts("Jobs"), ["10%", "2.0 GiB"]);
-    assert.deepEqual(facts("CPU"), ["unknown"], "a job's unknown CPU");
-    assert.match(machines.textContent, /App · Mori/, "a job names its project and Agent");
+    // The Jobs here are one line; each Job's project and Agent are in its tip, its own CPU and memory in Jobs (T-18).
+    assert.match(machines.querySelector(".home-machine-job-line").getAttribute("title"), /cargo test · App · Mori/, "a job names its project and Agent");
     assert.doesNotMatch(facts("Agents").join(" "), /\b0\b/);
     const reads = () => p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length;
     await waitFor(() => reads() >= 2, "sampled again after two seconds", 5);
@@ -842,10 +842,11 @@ test("an unknown machine metric reads unknown, never 0, and sampling stops while
   }
 });
 
-test("each GPU reads as two bars, use and memory, and a Job on the machine opens in Jobs", async () => {
+test("each GPU reads as two bars, use and memory; the Jobs here are one line that opens Jobs at the first (T-18)", async () => {
   const load = () => ({
     ...machineLoad(),
     gpus: [{ name: "RTX 5090", utilPct: 42, memUsedMiB: 8192, memTotalMiB: 32768, attribution: "unknown" }],
+    jobs: [...machineLoad().jobs, { id: "job-2", name: "vite build", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: 12, memMiB: 256 }],
   });
   const p = await mount({ load });
   try {
@@ -853,12 +854,16 @@ test("each GPU reads as two bars, use and memory, and a Job on the machine opens
     const bars = [...p.doc.querySelectorAll(".home-gpus li .home-meter")];
     assert.deepEqual(bars.map((b) => b.getAttribute("aria-label")), ["GPU use 42%", "GPU memory 8.0 GiB / 32.0 GiB"]);
     assert.deepEqual(bars.map((b) => b.querySelector(".home-meter-gpu").style.width), ["42%", "25%"]);
-    // As the conversation's dock: a name, a quiet line, and the row opens the Job.
+    // One line however many run, so nothing below moves: how many, the first one's
+    // name, every name in its tip; the list is in Jobs, which it opens at the first (Dev 7, T-18).
     const opened = [];
     p.w.addEventListener("yuzuno:open-job", (event) => opened.push(JSON.stringify(event.detail)));
-    const row = p.doc.querySelector(".home-machine-jobs button.home-machine-job");
-    assert.equal(row.querySelector("strong").textContent, "cargo test");
-    assert.match(row.querySelector("small").textContent, /^App · MoriCPU unknownMemory 512 MiB$/);
+    const row = p.doc.querySelector(".home-machine-jobs button.home-machine-job-line");
+    assert.equal(row.querySelector(".home-machine-job-count").textContent, "2 running");
+    assert.equal(row.querySelector(".home-machine-job-first").textContent, "cargo test");
+    assert.equal(row.getAttribute("title"), "cargo test · App · Mori\nvite build · App · Mori");
+    assert.equal(row.getAttribute("aria-label"), "2 Jobs running on this machine, first cargo test: open in Jobs");
+    assert.equal(p.doc.querySelectorAll(".home-machine-jobs li").length, 0, "no list of Jobs on Home");
     row.click();
     assert.deepEqual(opened, [JSON.stringify({ source: "local", jobId: "job-1" })]);
     await waitFor(() => p.doc.querySelector(".jobs-nav.selected"), "the Jobs panel opens");

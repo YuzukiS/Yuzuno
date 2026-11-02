@@ -237,59 +237,33 @@ export function MachineWidget({
             </ul>
           )}
         </div>
+        {/* One line, whatever runs (Dev 7, T-18): a Job starting or ending moves nothing,
+            and the list is in Jobs, which the line opens at the first one. */}
         <div className="home-machine-jobs">
-          <span className="home-load-title">
-            {t.jobsHere}
-            {/* Plain text: a badge would make this line taller when Jobs appear. */}
-            {jobs?.length ? <span className="home-machine-jobs-count">· {jobs.length}</span> : null}
-          </span>
-          {/* A fixed height that scrolls: Jobs starting and ending move nothing below. */}
-          <div className="home-machine-jobs-list" tabIndex={jobs && jobs.length > 1 ? 0 : undefined}>
-            {!jobs ? (
-              <span className="home-note">{t.readingShort}</span>
-            ) : jobs.length ? (
-              <ul>
-                {jobs.map((job) => {
-                  const who = `${projectName(job.projectId)} · ${job.agentName || t.noAgent}`;
-                  const body = (
-                    <>
-                      <span className="home-machine-job-dot" aria-hidden />
-                      <span className="home-machine-job-text">
-                        <strong>{job.name}</strong>
-                        <small>
-                          <span className="home-machine-job-who">{who}</span>
-                          <Fact name="CPU" value={percent(job.cpuPct)} />
-                          <Fact name="Memory" value={mebibytes(job.memMiB)} />
-                        </small>
-                      </span>
-                    </>
-                  );
-                  return (
-                    <li key={job.id}>
-                      {/* As the conversation's dock: a Job opens in the Jobs panel. */}
-                      {readOnly ? (
-                        <span className="home-machine-job" title={`${job.name}\n${who}`}>
-                          {body}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="home-machine-job"
-                          title={`${job.name}\n${who}`}
-                          aria-label={t.openJob(job.name, who, shown(percent(job.cpuPct)), shown(mebibytes(job.memMiB)))}
-                          onClick={() => openJobs({ source: "local", jobId: job.id })}
-                        >
-                          {body}
-                        </button>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <span className="home-note">{t.noJobs}</span>
-            )}
-          </div>
+          <span className="home-load-title">{t.jobsHere}</span>
+          {!jobs ? (
+            <span className="home-note">{t.readingShort}</span>
+          ) : jobs.length === 0 ? (
+            <span className="home-note">{t.noJobs}</span>
+          ) : readOnly ? (
+            <span className="home-machine-job-line" title={jobs.map((job) => job.name).join("\n")}>
+              <span className="home-machine-job-dot" aria-hidden />
+              <span className="home-machine-job-count">{t.jobsRunning(jobs.length)}</span>
+              <span className="home-machine-job-first">{jobs[0].name}</span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="home-machine-job-line"
+              title={jobs.map((job) => `${job.name} · ${projectName(job.projectId)} · ${job.agentName || t.noAgent}`).join("\n")}
+              aria-label={t.jobsLineLabel(jobs.length, jobs[0].name)}
+              onClick={() => openJobs({ source: "local", jobId: jobs[0].id })}
+            >
+              <span className="home-machine-job-dot" aria-hidden />
+              <span className="home-machine-job-count">{t.jobsRunning(jobs.length)}</span>
+              <span className="home-machine-job-first">{jobs[0].name}</span>
+            </button>
+          )}
         </div>
       </div>
       </div>
