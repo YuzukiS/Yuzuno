@@ -365,7 +365,12 @@ export function Home({
   const finishReportNow = useRef(finishReport);
   finishReportNow.current = finishReport;
   function closeReport(then?: () => void) {
-    if (closing.current) return;
+    if (closing.current) {
+      // The browser's Back is under way: a later explicit way out (Home)
+      // decides where it ends, without asking the browser to go back again.
+      if (then) afterReport.current = then;
+      return;
+    }
     const open = shownReport.current;
     afterReport.current = then ?? null;
     if (open?.mode === "push" && reportEntryOnTop(open)) {
