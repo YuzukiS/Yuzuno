@@ -204,6 +204,25 @@
   flex: 1 1 18rem;
   min-width: 0;
 }
+/* A checklist of conditions reads as a row of them: each item and its own
+   mark, without a count of how many are ticked. */
+.report-conditions .brief-list > header > span {
+  display: none;
+}
+.report-conditions .brief-list > header:not(:has(h4)) {
+  display: none;
+}
+.report-conditions .brief-list ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.report-conditions .brief-list li {
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--home-surface);
+}
 
 /* The main column, with the rail beside it where the page is wide and after
    it where the page is narrow. */
@@ -343,7 +362,7 @@
   padding: 0 8px 10px;
 }
 
-/* The summary's one figure, framed, with the file it reads. */
+/* The summary's one figure, framed. */
 .report-hero {
   margin: 0;
   padding: 16px;
@@ -354,17 +373,6 @@
 }
 .report-hero:focus {
   outline: none;
-}
-.report-figure-source {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--home-soft);
-  color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
 }
 
 /* The rest, in the author's order. */

@@ -38,7 +38,11 @@ export function summaryOf(section: Section): Summary | null {
   const holds = conditions === undefined || type(conditions) === "Markdown" || type(conditions) === "Checklist";
   const ids = [lead, visual, conditions].filter((id) => id !== undefined);
   if (!figure || !holds || new Set(ids).size !== ids.length) return null;
-  return { lead: lead as string, visual: (visual as string | undefined) ?? null, conditions: (conditions as string | undefined) ?? null };
+  // One file is a figure only when Core keeps and shows it as an image; any
+  // other stays a file among the attachments, never passed off as the figure.
+  const items = type(visual) === "Attachments" ? (elements[visual as string].props?.items as { name?: unknown }[]) : null;
+  const image = !items || section.attachments?.some((file) => file.name === items[0]?.name && file.kind === "image");
+  return { lead: lead as string, visual: image ? ((visual as string | undefined) ?? null) : null, conditions: (conditions as string | undefined) ?? null };
 }
 
 /**

@@ -13,6 +13,7 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
+import zlib from "node:zlib";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
@@ -88,7 +89,7 @@ const evalBody = { root: "body", elements: {
   results: { type: "Table", props: { id: "results", title: "Results", columns: [{ key: "model", label: "Model" }, { key: "loss", label: "Validation loss" }],
     rows: [{ id: "a", cells: { model: "A", loss: 0.429 }, sourceIds: ["run-a"] }, { id: "b", cells: { model: "B", loss: 0.412 }, sourceIds: ["run-b"] }] } },
   method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
-  "method-text": { type: "Markdown", props: { text: "Three seeds per arm. Same data order, same evaluation split. Scoring v2 reads the whole answer." } },
+  "method-text": { type: "Markdown", props: { text: "Three seeds per arm. Same data order, same evaluation split.\n\nScoring v1 matched keywords; v2 reads the whole answer, blind to the arm. The conclusion uses v2; v1 is kept only for comparison.\n\nThe interval is illustrative, built by hand to show the layout; it is not a statistical interval." } },
   long: { type: "Markdown", props: { text: longText } },
   next: { type: "Plan", props: { title: "Next steps", steps: [{ id: "s1", text: "Record the scoring definition", state: "done" }, { id: "s2", text: "Grow the long sample to 1,000", state: "todo" }] } },
   sources: { type: "Sources", props: { items: [{ id: "run-a", label: "Run A log", href: "https://example.test/run-a" }, { id: "run-b", label: "Run B log", href: "https://example.test/run-b" }] } },
@@ -96,10 +97,27 @@ const evalBody = { root: "body", elements: {
 } };
 const evalFiles = [
   { name: "loss.csv", kind: "data", mime: "text/csv", size: 1180, snapshot: true, mayChange: false, takenAt: iso(-60 * MIN) },
-  { name: "shot.png", kind: "image", mime: "image/png", size: 68, snapshot: true, mayChange: false, takenAt: iso(-60 * MIN), caption: "Loss by subset" },
+  { name: "shot.png", kind: "image", mime: "image/png", size: 1600, snapshot: true, mayChange: false, takenAt: iso(-60 * MIN), caption: "Loss by subset" },
 ];
-// A 1×1 PNG and the chart's points, as Core reads them from the snapshots.
-const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+// A small synthetic image (six bars) and the chart's points, as Core reads them from the snapshots.
+const PNG = (() => {
+  const [width, height] = [240, 140];
+  const crc = (bytes) => { let c = ~0; for (const b of bytes) { c ^= b; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+  const chunk = (type, data) => { const head = Buffer.alloc(8); head.writeUInt32BE(data.length); head.write(type, 4, "ascii");
+    const tail = Buffer.alloc(4); tail.writeUInt32BE(crc(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, tail]); };
+  const rows = [];
+  for (let y = 0; y < height; y++) {
+    const row = Buffer.alloc(1 + width * 3, 0xf7);
+    for (let x = 0; x < width; x++) {
+      const bar = Math.floor(x / 40), level = [50, 80, 110, 70, 95, 40][bar];
+      if (x % 40 > 8 && x % 40 < 32 && height - y < level) row.set(bar === 2 ? [0xe0, 0x9a, 0x2b] : [0xc9, 0xbf, 0xae], 1 + x * 3);
+    }
+    row[0] = 0;
+    rows.push(row);
+  }
+  const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", zlib.deflateSync(Buffer.concat(rows))), chunk("IEND", Buffer.alloc(0))]);
+})();
 const chartData = { series: [{ name: "A", points: [[0, 0.61], [100, 0.5], [200, 0.43]] }, { name: "B", points: [[0, 0.6], [100, 0.47], [200, 0.41]] }],
   downsampled: false, sourcePoints: 6 };
 const section = (key, id, version, extra = {}) => ({ id, key, kind: "report", title: `Notes ${key}`, version, owner, body: evalBody, attachments: [], refs: {},
@@ -213,7 +231,9 @@ async function open(width, height, { motion = "reduce", at = "/" } = {}) {
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
   });
   page.on("pageerror", (error) => report.errors.push(`${width}: pageerror: ${error.message}`));
-  page.on("console", (message) => message.type() === "error" && report.errors.push(`${width}: console: ${message.text()}`));
+  // The fixture answers this Agent's Codex account, tools and queued inputs with 404 on purpose.
+  const answered404 = (message) => /\/api\/agents\/a\/(codex\/usage|codex\/mcp|conversation\/inputs)\b/.test(message.location()?.url ?? "");
+  page.on("console", (message) => message.type() === "error" && !answered404(message) && report.errors.push(`${width}: console: ${message.text()}`));
   await page.route("**/*", serve);
   await page.goto(`https://${HOST}${at}`);
 }
@@ -240,7 +260,7 @@ const layout = () => page.evaluate(() => {
     const r = el.getBoundingClientRect();
     return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
   };
-  const px = (selector) => parseFloat(getComputedStyle(root.querySelector(selector)).fontSize);
+  const px = (selector) => { const el = root.querySelector(selector); return el ? parseFloat(getComputedStyle(el).fontSize) : null; };
   const sideways = [root, ...root.querySelectorAll("*")].filter((el) => el.scrollWidth > el.clientWidth + 1 && !["visible", "hidden", "clip"].includes(getComputedStyle(el).overflowX)
     && !el.closest(".result-table-scroll, pre, .research-desk")).map((el) => el.className || el.tagName).slice(0, 5);
   const scroller = document.scrollingElement;
@@ -253,7 +273,7 @@ const layout = () => page.evaluate(() => {
     sources: root.querySelector(".report-rail a[href='https://example.test/run-a']")?.checkVisibility() ?? null,
     image: (() => { const img = root.querySelector(".report-rail img"); return img ? { visible: img.checkVisibility(), loaded: img.complete && img.naturalWidth > 0 } : null; })(),
     conditions: root.querySelector(".report-conditions")?.checkVisibility() ?? null,
-    figureSource: root.querySelector(".report-figure-source")?.textContent ?? null,
+    dataLine: root.querySelector(".report-hero")?.innerText.match(/loss\.csv/g)?.length ?? 0,
     h1: px(".report-head h1"), leadSize: px(".report-lead .brief-markdown"),
     page: scroller.scrollWidth > scroller.clientWidth, sideways,
   };
@@ -274,7 +294,7 @@ try {
     assert.ok(shown.sources === true && shown.image?.visible === true, `sources and the image show without a click: ${JSON.stringify(shown)}`);
     assert.ok(shown.railBox.left >= shown.main.left + shown.main.width, "the rail beside the body");
     assert.equal(shown.conditions, true);
-    assert.equal(shown.figureSource, "loss.csv · snapshot · 1.2 KB");
+    assert.equal(shown.dataLine, 1, "the figure names its data file once, itself");
     assert.equal(shown.h1, 30);
     assert.equal(shown.leadSize, 18);
     assert.ok(shown.lead.top < shown.hero.top && shown.hero.top < shown.firstBlock.top, "the conclusion, then the figure, then the rest");
@@ -411,7 +431,9 @@ try {
     await open(390, 844);
     await toHome();
     await openReport("eval");
+    await reportPage().locator(".report-rail").scrollIntoViewIfNeeded();
     await until("the image", async () => (await layout()).image?.loaded);
+    await reportPage().locator(".report-head").scrollIntoViewIfNeeded();
     const shown = await layout();
     assert.ok(shown.rail === false && shown.contents === true && shown.contentsHeight >= 44 && shown.railHeading === true, JSON.stringify(shown));
     assert.ok(shown.railBox.top >= shown.main.top + shown.main.height - 1, "Sources & attachments after the body");

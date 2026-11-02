@@ -184,7 +184,7 @@ test("a card opens its report as a page over Home: the summary its author named 
   const outline = (selector) => [...report.querySelectorAll(`${selector} .report-outline button`)].map((b) => b.textContent);
   assert.deepEqual(outline("nav.report-rail-part"), ["Method", "Evidence"]);
   assert.deepEqual(outline(".report-contents"), ["Method", "Evidence", "Sources & attachments"]);
-  assert.deepEqual(outline(".report-figures").map((text) => text.replace(/\s+/g, " ")), ["Results2 rows"]);
+  assert.deepEqual([...report.querySelectorAll(".report-figures button")].map((b) => b.textContent), ["Results2 rows"]);
   // Jumping in the outline adds no history entry.
   const length = page.window.history.length;
   report.querySelector(".report-contents .report-outline button").click();

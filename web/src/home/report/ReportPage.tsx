@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight, Eye, FileText, Info, LoaderCircle, MessageSquareReply } from "lucide-react";
+import { ArrowLeft, ChevronRight, Eye, Info, LoaderCircle, MessageSquareReply } from "lucide-react";
 import { errorText } from "../../api";
 import { CopyButton } from "../../components";
 import { useMessageLinks, type ReportLink } from "../../deep-link";
@@ -263,9 +263,9 @@ export function ReportPage({
                     </details>
                   )}
                   {summary?.visual && (
+                    // The figure says its own source (a chart its data file, an image its caption).
                     <figure className="report-hero" id={reportBlockDomId(summary.visual)} tabIndex={-1}>
                       {block(summary.visual)}
-                      <FigureSource section={shown} id={summary.visual} />
                     </figure>
                   )}
                   {parts.flow.map((id) =>
@@ -402,21 +402,6 @@ function DataFiles({ files }: { files: SectionAttachment[] }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-/** A chart's own source under the summary figure: the data file it reads, as Core kept it. */
-function FigureSource({ section, id }: { section: Section; id: string }) {
-  const t = useStrings(reportText);
-  const language = langTag(useLanguage());
-  const data = nodeOf(section, id)?.props?.data as { attachment?: unknown } | undefined;
-  const file = typeof data?.attachment === "string" ? section.attachments?.find((a) => a.name === data.attachment) : undefined;
-  if (!file) return null;
-  return (
-    <figcaption className="report-figure-source">
-      <FileText size={12} />
-      {file.name} · {file.snapshot ? `${t.snapshot} · ${size(file.size, language)}` : t.reference}
-    </figcaption>
   );
 }
 

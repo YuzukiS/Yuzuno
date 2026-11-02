@@ -59,7 +59,12 @@ test("a summary or details that do not hold are taken as none, never half-applie
   for (const summary of [{ lead: "method" }, { lead: "method-text" }, { lead: "answer", visual: "plain" }, { lead: "answer", visual: "shots" },
     { lead: "answer", visual: "answer" }, { lead: "answer", conditions: "loss" }, { visual: "loss" }, ["answer", "loss"], "answer"])
     assert.equal(named({ summary }).summary, null, JSON.stringify(summary));
-  assert.deepEqual(named({ summary: { lead: "answer", visual: "shot" } }).summary, { lead: "answer", visual: "shot", conditions: null });
+  // One file is the figure only when Core keeps it as an image; otherwise it stays among the attachments.
+  const withFile = (kind) => partsOf(section("d", 4, 1, all, { summary: { lead: "answer", visual: "shot" } },
+    { attachments: [{ name: "a.png", kind, mime: "", size: 1, snapshot: true, mayChange: false, takenAt: "" }] }));
+  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null });
+  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null });
+  assert.deepEqual(withFile("text").attachments, ["shot"]);
   // details: only titled Groups directly under the root, never a summary block.
   assert.deepEqual([...named({ details: ["plain", "note", "answer", "method", "missing"] }).details], ["method"]);
   assert.deepEqual([...named({ summary: { lead: "answer" }, details: ["answer"] }).details], []);
