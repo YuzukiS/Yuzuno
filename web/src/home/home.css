@@ -802,22 +802,38 @@ ul.home-widget {
 /* Home's cards as a deck (T-18, Dev 7's v7): as many columns as the pane
    holds, in the author's order, each row as tall as its tallest card. A
    topic's cards join the deck; its name, when it has no card of its own,
-   heads a row. */
+   heads a row.
+   Cards come in three sizes, as iOS widgets do (Lead 2377): small (one
+   column), wide (two columns) and large (two columns, two rows). A row's
+   height is a minimum, never a cap: a card that needs more grows it.
+   Placement is the grid's own row flow, never dense: a card that does not
+   fit where a row ends starts the next, and the keyboard's order, the
+   author's, is the order on screen. */
 .home-brief {
+  --deck-row: 0px;
   display: grid;
   padding-top: 14px;
   grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: minmax(var(--deck-row), auto);
   align-items: stretch;
   gap: 16px;
 }
 @container home (min-width: 540px) {
   .home-brief {
+    --deck-row: 12rem;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .home-brief .home-summary-card:is(.size-wide, .size-large) {
+    grid-column: span 2;
   }
 }
 @container home (min-width: 1100px) {
   .home-brief {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  /* Two rows only where a column beside it is left for the cards after it. */
+  .home-brief .home-summary-card.size-large {
+    grid-row: span 2;
   }
 }
 @container home (min-width: 1500px) {

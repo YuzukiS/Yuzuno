@@ -10,7 +10,7 @@ import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
-import { cardContent, type CardFigure } from "./card-preview";
+import { cardContent, cardSize, type CardFigure } from "./card-preview";
 import { cardText } from "./card-text";
 import { unmaintained } from "./card-summary";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -57,6 +57,7 @@ export const SummaryCard = memo(function SummaryCard({
   const t = useStrings(cardText);
   const openReport = useReportOpen();
   const content = useMemo(() => cardContent(section), [section]);
+  const size = useMemo(() => cardSize(section, content), [section, content]);
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
@@ -84,8 +85,9 @@ export const SummaryCard = memo(function SummaryCard({
       id={domId}
       data-section-key={section.key}
       data-section-version={section.version}
+      data-card-size={size}
       tabIndex={-1}
-      className={`home-section home-summary-card kind-${section.kind}${content.kind === "unnamed" ? " is-unnamed" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
+      className={`home-section home-summary-card kind-${section.kind} size-${size}${content.kind === "unnamed" ? " is-unnamed" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
       aria-labelledby={`${domId}-title`}
     >
       {notice}

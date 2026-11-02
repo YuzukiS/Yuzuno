@@ -134,7 +134,9 @@ const summaryBody = (lead, extra, summary) => ({ root: "body", elements: {
   lead: { type: "Markdown", props: { text: lead } },
   ...extra,
 } });
-const deck = [
+// A newer version of one card, its size the same, for the refresh step.
+let batchesVersion = 1;
+const deck = () => [
   section("audit", 30, 2, { title: "Fewer LLM round trips: three-stage static audit", body: summaryBody(
     "Found fixed hand-offs worth trying; not yet shown that most development calls can go to programs.",
     { holds: { type: "Checklist", props: { items: ["Read-only stored records", "Three-stage flow", "304 model replies", "Rule pre-screen", "Item-by-item audit", "One reviewer", "No live traffic", "Synthetic prompts"].map((text, i) => ({ id: `c${i}`, text, done: true })) } },
@@ -144,15 +146,15 @@ const deck = [
     "The deck adds a column as the pane widens and stacks on a phone.",
     { shot: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Loss by subset" }] } } },
     { lead: "lead", visual: "shot" }) }),
-  section("batches", 32, 1, { title: "Why batches were dropped", body: summaryBody(
-    "All three batches stay under the 5% stop line; duplicates are the largest cause.",
+  section("batches", 32, batchesVersion, { title: "Why batches were dropped", body: summaryBody(
+    `All three batches stay under the ${batchesVersion === 1 ? 5 : 6}% stop line; duplicates are the largest cause.`,
     { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ. Dates and amounts were checked against the synthetic ledger alone, regions were not checked at all, and every other cause is counted together under other, so its share says nothing about any one of them." } },
       table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
         rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } },
     { lead: "lead", visual: "table", conditions: "why" }) }),
 ];
 const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A", attachments: evalFiles }),
-  { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }, ...deck];
+  { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }, ...deck()];
 const pointer = (document, at) => at.split("/").slice(1).reduce((value, part) => (value && typeof value === "object" ? value[part] : undefined), document);
 /** Core's research read of the desk, from the fixture files, as research.rs answers it. */
 function research(version) {
@@ -554,7 +556,7 @@ try {
   });
 
   for (const [width, height, name] of [[1720, 1100, "home-1720"], [1200, 900, "home-1200"], [647, 900, "home-647"], [390, 844, "home-phone-390"]])
-    await step(`Home deck at ${width}: columns by the pane, summary cards bounded, conditions in two lines, legacy cards plain; nothing sideways`, async () => {
+    await step(`Home deck at ${width}: columns by the pane; small, wide and large cards in the author's order, none cut; conditions in two lines, legacy cards plain; nothing sideways`, async () => {
       await open(width, height);
       await toHome();
       // The repositories' line reads its activity only once on screen, as the lists did.
@@ -568,15 +570,23 @@ try {
         const style = getComputedStyle(view);
         const container = view.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
         const cards = [...brief.querySelectorAll(".home-section")];
-        const lefts = [...new Set(cards.map((el) => Math.round(el.getBoundingClientRect().left)))];
+        const grid = getComputedStyle(brief);
+        const columns = grid.gridTemplateColumns.split(" ").length, gap = parseFloat(grid.columnGap);
+        const column = (brief.clientWidth - gap * (columns - 1)) / columns;
+        const places = cards.map((el) => {
+          const r = el.getBoundingClientRect(), style = getComputedStyle(el);
+          return { key: el.dataset.sectionKey, size: el.dataset.cardSize ?? null, top: Math.round(r.top), left: Math.round(r.left),
+            width: Math.round(r.width), height: Math.round(r.height), span: Math.round((r.width + gap) / (column + gap)), rows: style.gridRowStart,
+            cut: el.scrollHeight > el.clientHeight + 1 };
+        });
         const one = (key) => document.querySelector(`.home-view [data-section-key="${key}"]`);
         const frame = (key) => one(key)?.querySelector(".home-card-frame-body")?.getBoundingClientRect().height ?? null;
         const chips = [...one("audit").querySelectorAll(".home-card-condition-chips li")];
         const shown = chips.filter((li) => !li.hidden);
         const scroller = document.scrollingElement;
         return {
-          container, columns: lefts.length,
-          frames: { audit: frame("audit"), screens: frame("screens"), batches: frame("batches") },
+          container, columns, places,
+          frames: { audit: frame("audit"), screens: frame("screens"), batches: frame("batches"), eval: frame("eval") },
           chipLines: new Set(shown.map((li) => li.offsetTop)).size, hidden: chips.length - shown.length,
           more: one("audit").querySelector(".home-card-conditions-toggle")?.textContent ?? null,
           table: one("batches").querySelector("figcaption")?.textContent ?? null,
@@ -602,8 +612,24 @@ try {
       });
       const expected = deckShape.container >= 1500 ? 4 : deckShape.container >= 1100 ? 3 : deckShape.container >= 540 ? 2 : 1;
       assert.equal(deckShape.columns, expected, JSON.stringify(deckShape));
+      // Each card's size from the figure its author named (Lead 2377): none, a lead alone or two Metrics small; a chart,
+      // a table or three Metrics wide; an image large.
+      const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, p.size]));
+      assert.deepEqual(sizes, { setup: "small", data: "small", baseline: "small", eval: "wide", "dose-study": "small", audit: "wide", screens: "large", batches: "wide" });
+      for (const place of deckShape.places.filter((p) => p.size)) {
+        const span = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
+        assert.equal(place.span, span, `${place.key} spans ${span}: ${JSON.stringify(place)}`);
+        assert.equal(place.rows, place.size === "large" && deckShape.columns >= 3 ? "span 2" : "auto", `${place.key}'s rows: ${JSON.stringify(place)}`);
+        assert.equal(place.cut, false, `${place.key} shows all it holds: ${JSON.stringify(place)}`);
+      }
+      // The order on screen, row by row, is the author's: nothing packed into an earlier gap.
+      const onScreen = [...deckShape.places].sort((a, b) => a.top - b.top || a.left - b.left).map((p) => p.key);
+      assert.deepEqual(onScreen, deckShape.places.map((p) => p.key), JSON.stringify(deckShape.places));
       const frameHeight = deckShape.container >= 540 ? 138 : 118;
-      for (const [key, value] of Object.entries(deckShape.frames)) assert.equal(Math.round(value), frameHeight, `${key} frame: ${JSON.stringify(deckShape)}`);
+      for (const [key, value] of Object.entries(deckShape.frames)) {
+        if (key === "screens") assert.ok(Math.round(value) >= (deckShape.container >= 540 ? 260 : 180), `a large card's figure: ${value}`);
+        else assert.equal(Math.round(value), frameHeight, `${key} frame: ${JSON.stringify(deckShape)}`);
+      }
       assert.ok(deckShape.chipLines <= 3 && deckShape.hidden !== 1, JSON.stringify(deckShape));
       if (deckShape.hidden > 0) assert.equal(deckShape.more, `+${deckShape.hidden} more conditions`);
       assert.equal(deckShape.table, "3 of 9 rows · 3 of 6 columns");
@@ -715,6 +741,29 @@ try {
       await shot(`${name}-top.png`);
       return { deck: deckShape, readable };
     });
+
+  await step("a newer version of one card, its size the same, moves no card: no packing, no jump (T-18, Lead 2377)", async () => {
+    await open(1720, 1100);
+    await toHome();
+    const places = () => page.evaluate(() => [...document.querySelectorAll('[data-home-project="p1"] .home-brief .home-section')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { key: el.dataset.sectionKey, version: el.dataset.sectionVersion, size: el.dataset.cardSize ?? null, top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width), height: Math.round(r.height) };
+    }));
+    await card("batches").scrollIntoViewIfNeeded();
+    const before = await places();
+    batchesVersion = 2;
+    try {
+      // Home's own safety-net read, every 30 s while it is on screen; no event is faked.
+      await until("the newer version", async () => (await card("batches").getAttribute("data-section-version")) === "2", 40_000);
+      const after = await places();
+      assert.equal(after.find((p) => p.key === "batches").size, "wide");
+      const without = (list) => list.map(({ version, ...place }) => place);
+      assert.deepEqual(without(after), without(before), JSON.stringify({ before, after }));
+      return { before, after };
+    } finally {
+      batchesVersion = 1;
+    }
+  });
 
   await step("Machines either side of 720 and 540 px and on a 320 px phone: one row of four, then two by two with the shares, then two by two without; the Jobs one line; nothing sideways", async () => {
     const shape = () => page.evaluate(() => {

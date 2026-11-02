@@ -174,6 +174,29 @@
     height: 118px;
   }
 }
+/* A large card's figure takes the room its two rows give it, and never less
+   than its own minimum; on one column the card keeps its natural height. */
+.home-summary-card.size-large .home-card-frame {
+  flex: 1 1 auto;
+}
+.home-summary-card.size-large .home-card-frame-body {
+  position: relative;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 260px;
+}
+/* The frame's height is the card's, not the image's: fitted whole inside it. */
+.home-summary-card.size-large .home-card-frame-body img {
+  position: absolute;
+  inset: 8px 10px;
+  width: calc(100% - 20px);
+  height: calc(100% - 16px);
+}
+@container home (max-width: 539px) {
+  .home-summary-card.size-large .home-card-frame-body {
+    min-height: 180px;
+  }
+}
 .home-card-frame-body img {
   display: block;
   width: 100%;
