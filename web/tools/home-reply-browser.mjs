@@ -63,18 +63,23 @@ try {
 import {createRoot} from 'react-dom/client';
 import {HomeReply, HomeReplyLinks} from ${JSON.stringify(path.join(root, "src/home-reply/HomeReply.tsx"))};
 import {ReplyArrival} from ${JSON.stringify(path.join(root, "src/home-reply/ReplyArrival.tsx"))};
+import {Home} from ${JSON.stringify(path.join(root, "src/home/Home.tsx"))};
 const links={open:(origin,from)=>window.opened.push([origin.key,from.itemId])};
 window.opened=[];
 const root=createRoot(document.getElementById('root'));
-window.renderCases=(cases,raw)=>root.render(<HomeReplyLinks.Provider value={links}><main className="conversation-body"><button id="before">Before</button>{cases.map(c=><div key={c.name} className="user-message" data-case={c.name}><div className="message-label"><span className="you-avatar">Y</span>You</div><div className="user-text user-home-reply"><HomeReply origin={c.origin} agentId="a" turnId="t1" item={{id:'i-'+c.name,type:'userMessage',content:[{type:'text',text:raw}]}}/></div></div>)}<section className="home-section" data-case="arrival"><ReplyArrival arrival={{kind:'changed',current:4}} version={3} ask onBack={()=>window.opened.push(['back'])}/><h3>导出页分页方案</h3></section><section className="home-panel-content" data-case="removed"><ReplyArrival arrival={{kind:'removed'}} version={3} ask={false}/></section></main></HomeReplyLinks.Provider>);`);
+window.renderCases=(cases,raw)=>root.render(<HomeReplyLinks.Provider value={links}><main className="conversation-body"><button id="before">Before</button>{cases.map(c=><div key={c.name} className="user-message" data-case={c.name}><div className="message-label"><span className="you-avatar">Y</span>You</div><div className="user-text user-home-reply"><HomeReply origin={c.origin} agentId="a" turnId="t1" item={{id:'i-'+c.name,type:'userMessage',content:[{type:'text',text:raw}]}}/></div></div>)}<section className="home-section" data-case="arrival"><ReplyArrival arrival={{kind:'changed',current:4}} version={3} ask onBack={()=>window.opened.push(['back'])}/><h3>导出页分页方案</h3></section><section className="home-panel-content" data-case="removed"><ReplyArrival arrival={{kind:'removed'}} version={3} ask={false}/></section></main></HomeReplyLinks.Provider>);
+window.renderHome=(arrival)=>root.render(<Home workspaceId="ws-1" revision={0} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} arrival={arrival} onBackToReply={(link)=>window.opened.push(['back',link.itemId])}/>);`);
   const built = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": '"production"' },
     build: { write: false, lib: { entry, name: "HomeReplyBrowser", formats: ["iife"] } },
   });
-  const bundle = (Array.isArray(built) ? built[0] : built).output.find((item) => item.type === "chunk").code;
-  const css = (await Promise.all(["styles.css", "appearance.css", "palettes.css", "home-reply/home-reply.css"]
-    .map((file) => readFile(path.join(root, "src", file), "utf8")))).join("\n");
+  const output_ = (Array.isArray(built) ? built[0] : built).output;
+  const bundle = output_.find((item) => item.type === "chunk").code;
+  // The app's own styles, then those its components import (Home's among them).
+  const css = [...(await Promise.all(["styles.css", "appearance.css", "palettes.css", "home-reply/home-reply.css"]
+    .map((file) => readFile(path.join(root, "src", file), "utf8")))),
+    ...output_.filter((item) => item.type === "asset" && item.fileName.endsWith(".css")).map((item) => String(item.source))].join("\n");
   const html = `<!doctype html><html data-theme="light" data-palette="yuzu"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" href="data:,"><style>${css}
 body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-width:860px;margin:auto}main>.user-message{margin-bottom:24px}@media(max-width:600px){body{padding:14px}}</style><div id="root"></div><script>${bundle.replaceAll("</script", "<\\/script")}</script></html>`;
   await writeFile(path.join(output, "home-reply.html"), html);
@@ -244,6 +249,91 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     await shot(page, "phone");
     await shot(page, "phone-question", card("both"));
     await context.close();
+  }
+
+  // Home (R1 839f91d1): Open on Home to a section kept out of view, in its
+  // project's closed team details. The real Home; its reads answered in the
+  // page, every request kept to show nothing is written (no seen, no reply).
+  {
+    const owner = { agentId: "a", name: "Mori", state: "active" };
+    const body = { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] }, note: { type: "Markdown", props: { text: "手机上翻页按钮会挡住最后一行。" } } } };
+    const section = (key, id, version, extra = {}) => ({ id, key, kind: "report", title: `About ${key}`, version, owner,
+      updatedAt: "2026-11-01T14:05:00Z", updatedTurnId: null, body, attachments: [], refs: {}, seen: null, history: false, ...extra });
+    const ask = (key, id, version) => section(key, id, version, { kind: "ask", title: "导出页分页方案",
+      ask: { question: "改成每页 40 行？", reply: { options: [{ id: "forty", label: "每页 40 行" }, { id: "keep", label: "保持 50 行" }] }, state: "open" } });
+    const panel = (id, name, sections, teamSections, history, unseen) => ({ project: { id, name },
+      agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 }, errors: [], pending: [], jobs: [], unseen, missing: [],
+      brief: { version: 3, sections, teamSections, history } });
+    // p2 has changes to see, so it is open with its own team details, closed.
+    const data = (team) => ({ generatedAt: "2026-11-01T14:30:00Z", order: ["p1", "p2"], needsYou: [], projects: [
+      panel("p1", "atlas-notes", [section("other", 40, 1)], team, [section("old", 60, 2, { history: true, historyReason: "seen" })], 0),
+      panel("p2", "beta-notes", [section("notes", 50, 1)], [section("kept", 51, 1)], [], 1)] });
+    const machine = { at: "2026-11-01T14:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
+      memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };
+    const reply = (key, version, sectionId) => ({ origin: { projectId: "p1", key, version, workspaceId: "ws-1", sectionId,
+      snapshot: { format: 1, projectName: "atlas-notes", sectionKind: "ask", title: "导出页分页方案", question: "每页多少行？", options: [],
+        choice: null, text: "先用 50 行。", form: null } }, back: { workspaceId: "ws-1", agentId: "a", turnId: "t1", itemId: "i-both" }, n: 1 });
+    const arrive = async (team, arrival) => {
+      const context = await browser.newContext({ viewport: { width: 1100, height: 1300 }, reducedMotion: "reduce" });
+      const page = await context.newPage();
+      page.on("pageerror", (error) => report.errors.push(`home: ${error.message}`));
+      page.on("console", (message) => message.type() === "error" && report.errors.push(`home: ${message.text()}`));
+      await page.goto(url);
+      await page.evaluate(([data, machine, arrival]) => {
+        window.requests = [];
+        window.fetch = async (input, init = {}) => {
+          const at = String(input);
+          window.requests.push(`${init.method || "GET"} ${at}`);
+          const body = at.endsWith("/api/home") ? data : at.endsWith("/api/machine-load") ? machine : { repositories: [], links: [] };
+          return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+        };
+        window.renderHome(arrival);
+      }, [data(team), machine, arrival]);
+      await page.waitForSelector('[data-home-project="p1"] .home-reply-arrival', { state: "attached" });
+      await page.waitForTimeout(400);
+      return { context, page };
+    };
+    const state = (page, key) => page.evaluate((key) => {
+      const p1 = document.querySelector('[data-home-project="p1"]');
+      const card = p1.querySelector(`[data-section-key="${key}"]`);
+      const rect = card.getBoundingClientRect();
+      const note = document.querySelector(".home-reply-arrival");
+      return {
+        teamOpen: p1.querySelector(".home-team-details").open,
+        historyOpen: p1.querySelector(".home-history").open,
+        otherTeamOpen: document.querySelector('[data-home-project="p2"] .home-team-details').open,
+        cardVisible: card.checkVisibility(), cardSize: [Math.round(rect.width), Math.round(rect.height)],
+        inView: rect.top < innerHeight && rect.bottom > 0,
+        noteVisible: note.checkVisibility(), noteInCard: card.contains(note),
+        focused: document.activeElement === card,
+        writes: window.requests.filter((r) => !r.startsWith("GET ")),
+        requests: window.requests,
+      };
+    }, key);
+    // The same section, changed, kept out of view: its details open, its card shown and focused, the note in it.
+    {
+      const { context, page } = await arrive([ask("export-paging", 10, 4)], reply("export-paging", 3, 10));
+      const shown = await state(page, "export-paging");
+      assert.deepEqual({ teamOpen: shown.teamOpen, historyOpen: shown.historyOpen, otherTeamOpen: shown.otherTeamOpen }, { teamOpen: true, historyOpen: false, otherTeamOpen: false });
+      assert.ok(shown.cardVisible && shown.cardSize[0] > 0 && shown.cardSize[1] > 0 && shown.inView, JSON.stringify(shown));
+      assert.ok(shown.noteVisible && shown.noteInCard, JSON.stringify(shown));
+      assert.equal(shown.focused, true);
+      assert.deepEqual(shown.writes, []);
+      assert.ok(!shown.requests.some((r) => /\/brief\/(seen|reply)|\/seen\b/.test(r)), JSON.stringify(shown.requests));
+      check("Home: a section answered in the closed team details opens them, shows and focuses its card with the note; nothing else opens, nothing is written", shown);
+      await shot(page, "home-team-arrival");
+      await context.close();
+    }
+    // Another section under the key, kept out of view: the details stay closed and its card is not focused.
+    {
+      const { context, page } = await arrive([ask("plan", 31, 2)], reply("plan", 1, 30));
+      const other = await state(page, "plan");
+      assert.deepEqual({ teamOpen: other.teamOpen, focused: other.focused, cardVisible: other.cardVisible, noteVisible: other.noteVisible, noteInCard: other.noteInCard },
+        { teamOpen: false, focused: false, cardVisible: false, noteVisible: true, noteInCard: false });
+      assert.deepEqual(other.writes, []);
+      check("Home: another section under the key in the team details stays closed and unfocused; the neutral note shows", other);
+      await context.close();
+    }
   }
 
   // Chinese.
