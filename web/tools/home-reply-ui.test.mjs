@@ -304,10 +304,10 @@ const ask = (key, id, version, extra = {}) => section(key, id, version, { kind: 
   ask: { question: "改成每页 40 行？", reply: { options: [{ id: "forty", label: "每页 40 行" }, { id: "keep", label: "保持 50 行" }] }, state: "open" }, ...extra });
 const ended = (make, key, id, version, reason) => make(key, id, version, { history: true, historyReason: reason,
   ...(make === ask ? { ask: { question: "?", reply: { freeText: true }, state: reason === "resolved" ? "resolved" : "open" } } : {}) });
-const homeData = (sections, history = []) => ({
+const homeData = (sections, history = [], teamSections = undefined) => ({
   generatedAt: "2026-11-01T14:30:00Z", order: ["p1"], needsYou: [],
   projects: [{ project: { id: "p1", name: "atlas-notes" }, agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 },
-    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 3, sections, history } }],
+    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 3, sections, history, ...(teamSections ? { teamSections } : {}) } }],
 });
 const machine = { at: "2026-11-01T14:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
   memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };
@@ -424,6 +424,49 @@ test("on Home, a reply that names no section is told only by its very version", 
     // Resolving adds a version: without the section's identity, nothing proves it was the one answered.
     ["resolved after", homeData([], [ended(ask, "export-paging", 10, 4, "resolved")]), legacy, (page) =>
       above(page, "You replied to version 3. Home has no record of what became of it.Back to your reply")],
+  ]);
+});
+
+// R1 839f91d1: a section kept out of view (its author no longer a content
+// editor) is in the project's closed team details.
+test("on Home, the section answered in the team area is shown: its details open, its card unfolded and focused, again on each opening", async (t) => {
+  const team = (version) => homeData([section("other", 40, 1)], [], [ask("export-paging", 10, version)]);
+  const details = (page) => page.document.querySelector(".home-team-details");
+  await arrivals([
+    ["same version", team(3), askReply, (page) => {
+      assert.equal(details(page).open, true, "the team details hold it: open");
+      assert.ok(!page.document.querySelector(".home-panel").classList.contains("is-collapsed"), "its project opened");
+      assert.equal(note(page), null);
+      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+    }],
+    ["changed", team(4), askReply, (page) => {
+      assert.equal(details(page).open, true);
+      assert.equal(note(page).closest('[data-section-key="export-paging"]'), cardOf(page, "export-paging"), "the note in the card it answered");
+      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+    }],
+  ]);
+  // Opened again after the user closed the details and folded the card: shown again.
+  const page = await arrive(team(4), askReply);
+  t.after(page.close);
+  details(page).open = false;
+  cardOf(page, "export-paging").querySelector(".home-fold").click();
+  await tick(40);
+  assert.ok(cardOf(page, "export-paging").querySelector(".home-card-body").hidden, "folded by the user");
+  page.window.renderHome({ origin: askReply, back, n: 2 });
+  await until(() => details(page).open && !cardOf(page, "export-paging").querySelector(".home-card-body").hidden, "shown again");
+  await tick(40);
+  assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+  assert.ok(note(page).closest('[data-section-key="export-paging"]'));
+  assert.deepEqual(page.errors, []);
+});
+
+test("on Home, another section under the key in the team area is not opened as the one answered", async () => {
+  await arrivals([
+    ["key written anew, kept out of view", homeData([section("other", 40, 1)], [], [ask("plan", 31, 2)]), reportReply, (page) => {
+      above(page, "You replied to version 1. Home can't tell whether this card is the one you answered; under this name it is version 2 now.Back to your reply");
+      assert.equal(page.document.querySelector(".home-team-details").open, false, "the team details stay closed");
+      assert.notEqual(page.document.activeElement, cardOf(page, "plan"));
+    }],
   ]);
 });
 
