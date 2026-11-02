@@ -570,6 +570,8 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
         ("h9", origin(with("choice", json!({"id":"left"})))),
         ("h10", origin(with("text", json!("x".repeat(130 * 1024))))),
         ("h11", json!({"kind":"home","version":1,"home":snapshot("Go")})),
+        ("h12", { let mut named = origin(snapshot("Go")); named["sectionId"] = json!(7); named }),
+        ("h13", { let mut named = origin(snapshot("Go")); named["sectionId"] = json!("7"); named }),
         ("t1", json!({"kind":"client","home":snapshot("Go")})),
     ];
     let user = |id: &str, client: &str| json!({"id":id,"type":"userMessage","clientId":client,
@@ -596,6 +598,11 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
                 assert_eq!(shown(id), (json!("home"), identity.clone()), "{id}");
             }
             assert_eq!(shown("i-h11"), (json!("home"), Value::Null));
+            // The section answered, by its identity on Home; named otherwise, no identity at all.
+            let mut named = whole("Go");
+            named["sectionId"] = json!(7);
+            assert_eq!(shown("i-h12"), (json!("home"), named));
+            assert_eq!(shown("i-h13"), (json!("home"), Value::Null));
             assert_eq!(shown("i-t1"), (json!("you"), Value::Null));
             assert_eq!(shown("x1"), (json!("unconfirmed"), Value::Null));
         }

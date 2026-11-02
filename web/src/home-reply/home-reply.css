@@ -330,6 +330,6 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
-.app.phone .home-reply-arrival-actions button {
+.home-reply-arrival[data-layout="phone"] .home-reply-arrival-actions button {
   min-height: 44px;
 }

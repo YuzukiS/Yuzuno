@@ -1,5 +1,5 @@
 import type { HomeReplyOrigin, HomeReplySnapshot, NativeItem } from "../types";
-import type { ProjectPanel } from "../home/types";
+import type { ProjectPanel, Section } from "../home/types";
 
 /**
  * A reply from Home (T-9), as Core's receipt names it: a user message Core
@@ -32,21 +32,25 @@ export function answerText(snapshot: HomeReplySnapshot, notAnswered: string): st
 
 /**
  * What Home finds, on arrival, of the section a reply answered (T-9): Home
- * decides it then, from what it shows now, and never shows the current card
- * as the version answered.
+ * decides it then, from what it shows now. It says what became of that
+ * section only from a record that is provably that section's, and never
+ * shows the current card as the version answered.
  */
 export type Arrival =
   /** A reply to the whole Project Brief: the project. */
   | { kind: "project" }
   /** Still the version answered. */
   | { kind: "unchanged" }
-  /** A later version is live now. */
+  /** The same section, at a later version now. */
   | { kind: "changed"; current: number }
   | { kind: "resolved" }
-  /** Its author removed it, or Home no longer has it at all. */
   | { kind: "removed" }
   /** A card the user marked seen, now in History. */
   | { kind: "history" }
+  /** Home has no record that is provably that section's (its History may
+   * have expired, or the reply predates Core naming its section). `current`:
+   * the version under its key now, which may be another section. */
+  | { kind: "unknown"; current: number | null }
   /** Its project is not on Home. */
   | { kind: "gone" };
 
@@ -54,9 +58,23 @@ export function arrivalOf(origin: HomeReplyOrigin, panel: ProjectPanel | undefin
   if (!panel) return { kind: "gone" };
   if (origin.key === null) return { kind: "project" };
   const live = [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].find((s) => s.key === origin.key);
-  if (live) return live.version === origin.version ? { kind: "unchanged" } : { kind: "changed", current: live.version };
-  const past = panel.brief.history.filter((s) => s.key === origin.key).sort((a, b) => b.version - a.version)[0];
-  if (past?.historyReason === "resolved") return { kind: "resolved" };
-  if (past?.historyReason === "seen") return { kind: "history" };
-  return { kind: "removed" };
+  const past = panel.brief.history.filter((s) => s.key === origin.key);
+  const ended = (section: Section): Arrival =>
+    section.historyReason === "resolved" ? { kind: "resolved" } : section.historyReason === "seen" ? { kind: "history" } : { kind: "removed" };
+  const unknown: Arrival = { kind: "unknown", current: live?.version ?? null };
+  if (typeof origin.sectionId === "number") {
+    // The section answered, by its identity: the same through every edit,
+    // a resolve and a seen card written again; another for a key written anew.
+    if (live?.id === origin.sectionId) return live.version === origin.version ? { kind: "unchanged" } : { kind: "changed", current: live.version };
+    const own = past.filter((s) => s.id === origin.sectionId).sort((a, b) => b.version - a.version)[0];
+    return own ? ended(own) : unknown;
+  }
+  // No identity recorded: only the very version is provably the one answered
+  // (versions never repeat under a key; removing or marking seen keeps it).
+  if (live?.version === origin.version) return { kind: "unchanged" };
+  const same = past.find((s) => s.version === origin.version);
+  return same ? ended(same) : unknown;
 }
+
+/** Whether Home shows the very section answered, live: only then is its card the one to open. */
+export const sameSectionLive = (arrival: Arrival) => arrival.kind === "unchanged" || arrival.kind === "changed";

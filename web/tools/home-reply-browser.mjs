@@ -200,6 +200,7 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     });
     assert.ok(phone.layouts.every((layout) => layout === "phone"), JSON.stringify(phone.layouts));
     assert.ok(phone.minTarget >= 44, `smallest target ${phone.minTarget}px`);
+    assert.ok(phone.arrivalButton >= 44, `Back to your reply ${phone.arrivalButton}px`);
     assert.ok(phone.overflow <= 0, `${phone.overflow}px sideways`);
     assert.deepEqual(phone.both.map((b) => b.text), ["Copy answer", "Open on Home", "Question", "Original message"]);
     assert.equal(phone.both[0].top, phone.both[1].top);
@@ -207,7 +208,7 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     assert.ok(phone.both[2].top > phone.both[0].top);
     assert.equal(phone.earlier.length, 2);
     assert.equal(phone.earlier[0].top, phone.earlier[1].top, "an earlier reply takes one row");
-    check("phone 390px: two rows of 44px targets, Copy answer and Open on Home first; no sideways scroll", phone);
+    check("phone 390px: two rows of 44px targets, Copy answer and Open on Home first, Back to your reply 44px; no sideways scroll", phone);
     await page.locator(card("both")).getByRole("button", { name: "Question" }).click();
     const below = await page.evaluate(() => {
       const card = document.querySelector('[data-case="both"] .home-reply');

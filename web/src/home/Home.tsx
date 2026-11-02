@@ -5,7 +5,7 @@ import { langTag, useLanguage } from "../i18n";
 import { shellText } from "../shell-text";
 import type { Agent, HomeReplyOrigin, Project } from "../types";
 import type { MessageLink } from "../deep-link";
-import { arrivalOf } from "../home-reply/home-reply-model";
+import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
@@ -221,18 +221,19 @@ export function Home({
     setReveal({ n, projects: { ...reveal.projects, [projectId]: n } });
   }
   // A reply's "Open on Home" (T-9): once Home has read, to the section it
-  // answered (or its project), once per opening. What has become of that
-  // version is said from what Home reads now, never decided before.
+  // answered while Home shows that very section, else to its project; once
+  // per opening. What has become of that version is said from what Home
+  // reads now, never decided before, and never of another section.
   const arrived = useRef(0);
-  useEffect(() => {
-    if (!arrival || !data || arrived.current === arrival.n) return;
-    arrived.current = arrival.n;
-    const { projectId, key } = arrival.origin;
-    revealIn(projectId, () => (key === null ? null : document.getElementById(sectionDomId(projectId, key))));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [arrival, data]);
   const replyPanel = arrival && data ? data.projects.find((p) => p.project.id === arrival.origin.projectId) : undefined;
   const landed = arrival && data ? arrivalOf(arrival.origin, replyPanel) : null;
+  useEffect(() => {
+    if (!arrival || !landed || arrived.current === arrival.n) return;
+    arrived.current = arrival.n;
+    const { projectId, key } = arrival.origin;
+    revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrival, data]);
   const landedNote = (ask: boolean) =>
     arrival && landed && (
       <ReplyArrival

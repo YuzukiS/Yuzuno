@@ -268,6 +268,10 @@ export interface HomeReplyOrigin {
   key: string | null;
   version: number | null;
   workspaceId: string | null;
+  /** The section's identity on Home (its `id`) when the user replied: what
+   * tells it from another written later under the same key. Absent on
+   * receipts written before Core kept it, and for a whole-Brief reply. */
+  sectionId?: number;
   snapshot?: HomeReplySnapshot;
 }
 /** A Home reply as the user saw it when sending it (T-9, format 1). */

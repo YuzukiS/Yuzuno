@@ -292,13 +292,18 @@ test("on a phone the actions go in the rows they show: Copy answer and Open on H
   assert.deepEqual(page.errors, []);
 });
 
-// Home, as Core reads it, for arrivals.
+// Home, as Core reads it, for arrivals. Section `id` is Core's identity on
+// Home: kept through edits, a resolve and a seen card written again; new for
+// a key written anew. Versions only rise under a key; resolving adds one,
+// removing and marking seen keep the version (project_brief, update.rs).
 const owner = { agentId: "a", name: "Mori", state: "active" };
 const body = { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] }, note: { type: "Markdown", props: { text: "手机上翻页按钮会挡住最后一行。" } } } };
-const section = (key, version, extra = {}) => ({ id: `s-${key}`, key, kind: "report", title: `About ${key}`, version, owner,
+const section = (key, id, version, extra = {}) => ({ id, key, kind: "report", title: `About ${key}`, version, owner,
   updatedAt: "2026-11-01T14:05:00Z", updatedTurnId: null, body, attachments: [], refs: {}, seen: null, history: false, ...extra });
-const ask = (key, version, extra = {}) => section(key, version, { kind: "ask", title: "导出页分页方案",
+const ask = (key, id, version, extra = {}) => section(key, id, version, { kind: "ask", title: "导出页分页方案",
   ask: { question: "改成每页 40 行？", reply: { options: [{ id: "forty", label: "每页 40 行" }, { id: "keep", label: "保持 50 行" }] }, state: "open" }, ...extra });
+const ended = (make, key, id, version, reason) => make(key, id, version, { history: true, historyReason: reason,
+  ...(make === ask ? { ask: { question: "?", reply: { freeText: true }, state: reason === "resolved" ? "resolved" : "open" } } : {}) });
 const homeData = (sections, history = []) => ({
   generatedAt: "2026-11-01T14:30:00Z", order: ["p1"], needsYou: [],
   projects: [{ project: { id: "p1", name: "atlas-notes" }, agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 },
@@ -307,6 +312,9 @@ const homeData = (sections, history = []) => ({
 const machine = { at: "2026-11-01T14:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
   memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };
 const back = { workspaceId: "ws-1", agentId: "a", turnId: "t1", itemId: "i-both" };
+// The ask answered at version 3, section 10; a report answered at version 1, section 30.
+const askReply = { ...bothOrigin, sectionId: 10 };
+const reportReply = { ...identity("plan", 1), sectionId: 30, snapshot: snapshot({ sectionKind: "report", title: "About plan", text: "Looks right." }) };
 async function arrive(data, origin, n = 1) {
   const page = mount({ respond: (url) => ({ body: url === "/api/home" ? data : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
   page.window.renderHome({ origin, back, n });
@@ -315,51 +323,126 @@ async function arrive(data, origin, n = 1) {
   return page;
 }
 const note = (page) => page.document.querySelector(".home-reply-arrival");
-
-test("on Home, a changed ask says which version was answered, in its card, with the way back", async (t) => {
-  const page = await arrive(homeData([ask("export-paging", 4)]), bothOrigin);
-  t.after(page.close);
-  const card = page.document.querySelector('[data-section-key="export-paging"]');
-  assert.equal(note(page).closest('[data-section-key="export-paging"]'), card);
-  assert.equal(note(page).textContent, "You replied to version 3 of this ask. It has changed since; this is version 4, not the one you answered.Back to your reply");
-  assert.equal(page.document.activeElement, card, "the card it answered is focused");
-  [...note(page).querySelectorAll("button")].find((b) => b.textContent === "Back to your reply").click();
-  assert.deepEqual(JSON.parse(JSON.stringify(page.window.actions)), [["back", back]]);
-  assert.deepEqual(page.errors, []);
-});
-
-test("on Home, the same version is only shown; a resolved, removed or missing card is said above the cards", async (t) => {
-  const same = await arrive(homeData([ask("export-paging", 3)]), bothOrigin);
-  t.after(same.close);
-  assert.equal(note(same), null);
-  assert.equal(same.document.activeElement, same.document.querySelector('[data-section-key="export-paging"]'));
-  const cases = [
-    [[], [ask("export-paging", 3, { history: true, historyReason: "resolved", ask: { question: "?", reply: { freeText: true }, state: "resolved" } })],
-      "You replied to version 3. Its author has resolved this ask; it is under History on this project."],
-    [[], [ask("export-paging", 3, { history: true, historyReason: "removed" })], "You replied to version 3. Its author removed this card from Home."],
-    [[section("other", 1)], [], "You replied to version 3. Its author removed this card from Home."],
-    [[], [section("export-paging", 3, { history: true, historyReason: "seen" })], "You replied to version 3. This card is now under History on this project."],
-  ];
-  for (const [sections, history, said] of cases) {
-    const page = await arrive(homeData(sections, history), bothOrigin);
+const cardOf = (page, key) => page.document.querySelector(`[data-section-key="${key}"]`);
+const pressBack = (page) => [...note(page).querySelectorAll("button")].find((b) => b.textContent === "Back to your reply").click();
+async function arrivals(cases) {
+  for (const [label, data, origin, check] of cases) {
+    const page = await arrive(data, origin);
     try {
-      assert.equal(note(page)?.textContent, said);
-      assert.ok(note(page).parentElement.classList.contains("home-panel-content"), "above the project's cards");
-      assert.equal(note(page).querySelector("button"), null);
-      assert.deepEqual(page.errors, []);
+      await check(page);
+      assert.deepEqual(page.errors, [], label);
+    } catch (error) {
+      error.message = `${label}: ${error.message}`;
+      throw error;
     } finally {
       page.close();
     }
   }
+}
+const above = (page, said) => {
+  assert.equal(note(page)?.textContent, said);
+  assert.ok(note(page).parentElement.classList.contains("home-panel-content"), "above the project's cards");
+};
+
+test("on Home, the same section later says which version was answered, in its card, with the way back", async (t) => {
+  const page = await arrive(homeData([ask("export-paging", 10, 4)]), askReply);
+  t.after(page.close);
+  assert.equal(note(page).closest('[data-section-key="export-paging"]'), cardOf(page, "export-paging"));
+  assert.equal(note(page).textContent, "You replied to version 3 of this ask. It has changed since; this is version 4, not the one you answered.Back to your reply");
+  assert.equal(page.document.activeElement, cardOf(page, "export-paging"), "the card it answered is focused");
+  pressBack(page);
+  assert.deepEqual(JSON.parse(JSON.stringify(page.window.actions)), [["back", back]]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("on Home, a resolved, removed or seen section is said from its own record, the same version only shown", async () => {
+  await arrivals([
+    ["same version", homeData([ask("export-paging", 10, 3)]), askReply, (page) => {
+      assert.equal(note(page), null);
+      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+    }],
+    // Resolving adds a version: the record is the section's by its identity, not by version.
+    ["resolved", homeData([], [ended(ask, "export-paging", 10, 4, "resolved")]), askReply, (page) =>
+      above(page, "You replied to version 3. Its author has resolved this ask; it is under History on this project.")],
+    ["removed", homeData([], [ended(ask, "export-paging", 10, 3, "removed")]), askReply, (page) =>
+      above(page, "You replied to version 3. Its author removed this card from Home.")],
+    ["seen", homeData([], [ended(section, "plan", 30, 1, "seen")]), reportReply, (page) =>
+      above(page, "You replied to version 1. This card is now under History on this project.")],
+    // A seen card its owner writes again is the same section on Home.
+    ["seen, written again", homeData([section("plan", 30, 2)]), reportReply, (page) => {
+      assert.equal(note(page).textContent, "You replied to version 1 of this card. It has changed since; this is version 2, not the one you answered.Back to your reply");
+      assert.ok(note(page).closest('[data-section-key="plan"]'));
+    }],
+  ]);
+});
+
+test("on Home, a key written anew is another section: its fate is never told as the one answered", async () => {
+  const never = (page) => {
+    assert.equal(note(page).querySelector("button")?.textContent, "Back to your reply");
+    assert.ok(!cardOf(page, "plan") || page.document.activeElement !== cardOf(page, "plan"), "another card is not opened as the one answered");
+    assert.ok(!cardOf(page, "plan")?.hasAttribute("data-home-highlight"));
+    assert.ok(!note(page).closest("[data-section-key]"), "not in another card");
+  };
+  await arrivals([
+    // The report answered was removed; its key was then written as an ask and resolved.
+    ["removed, key asked anew and resolved", homeData([], [ended(section, "plan", 30, 1, "removed"), ended(ask, "plan", 31, 3, "resolved")]), reportReply,
+      (page) => above(page, "You replied to version 1. Its author removed this card from Home.")],
+    // The same, with the report's own History expired: nothing is said of it but that Home can't tell.
+    ["history expired, key asked anew and resolved", homeData([], [ended(ask, "plan", 31, 3, "resolved")]), reportReply, (page) => {
+      above(page, "You replied to version 1. Home has no record of what became of it.Back to your reply");
+      never(page);
+      pressBack(page);
+      assert.deepEqual(JSON.parse(JSON.stringify(page.window.actions)), [["back", back]]);
+    }],
+    // Another live card under the key now.
+    ["history expired, key live again", homeData([ask("plan", 31, 2)]), reportReply, (page) => {
+      above(page, "You replied to version 1. Home can't tell whether this card is the one you answered; under this name it is version 2 now.Back to your reply");
+      never(page);
+    }],
+    ["no record at all", homeData([section("other", 40, 1)]), reportReply, (page) => {
+      above(page, "You replied to version 1. Home has no record of what became of it.Back to your reply");
+    }],
+  ]);
+});
+
+test("on Home, a reply that names no section is told only by its very version", async () => {
+  const legacy = { ...bothOrigin };
+  assert.equal(legacy.sectionId, undefined);
+  await arrivals([
+    ["same version", homeData([ask("export-paging", 10, 3)]), legacy, (page) => {
+      assert.equal(note(page), null);
+      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+    }],
+    // A later version may be another section: Home can't tell, and opens no card as the one answered.
+    ["later version", homeData([ask("export-paging", 11, 4)]), legacy, (page) => {
+      above(page, "You replied to version 3. Home can't tell whether this card is the one you answered; under this name it is version 4 now.Back to your reply");
+      assert.notEqual(page.document.activeElement, cardOf(page, "export-paging"));
+    }],
+    // Removing and marking seen keep the version: that very record is the one answered.
+    ["removed at that version", homeData([], [ended(ask, "export-paging", 10, 3, "removed")]), legacy, (page) =>
+      above(page, "You replied to version 3. Its author removed this card from Home.")],
+    // Resolving adds a version: without the section's identity, nothing proves it was the one answered.
+    ["resolved after", homeData([], [ended(ask, "export-paging", 10, 4, "resolved")]), legacy, (page) =>
+      above(page, "You replied to version 3. Home has no record of what became of it.Back to your reply")],
+  ]);
 });
 
 test("on Home, a reply to the whole Brief opens its project; a project Home no longer has is said", async (t) => {
-  const whole = await arrive(homeData([section("other", 1)]), projectOrigin);
+  const whole = await arrive(homeData([section("other", 40, 1)]), projectOrigin);
   t.after(whole.close);
   assert.equal(note(whole), null);
   assert.ok(whole.document.querySelector(".home-panel").hasAttribute("data-home-highlight"), "its project is shown");
-  const gone = await arrive(homeData([]), { ...bothOrigin, projectId: "p-gone" });
+  const gone = await arrive(homeData([]), { ...askReply, projectId: "p-gone" });
   t.after(gone.close);
   assert.equal(note(gone).textContent, "The project this reply was about is not on Home now.");
   assert.deepEqual([...whole.errors, ...gone.errors], []);
+});
+
+test("on a phone, Back to your reply is a 44px target too", async (t) => {
+  const page = mount({ phone: true, respond: (url) => ({ body: url === "/api/home" ? homeData([ask("export-paging", 10, 4)]) : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
+  t.after(page.close);
+  page.window.renderHome({ origin: askReply, back, n: 1 });
+  await until(() => note(page), "the arrival note");
+  assert.equal(note(page).dataset.layout, "phone");
+  assert.deepEqual(page.errors, []);
 });

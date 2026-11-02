@@ -109,7 +109,8 @@ struct Receipt {
 }
 
 /// A Home reply's `_yuzunoHome`, from its receipt's origin: none when the
-/// origin does not name a Project. Its snapshot only when it is one Core
+/// origin does not name a Project, or names its section otherwise than Core
+/// does. Its snapshot only when it is one Core
 /// writes: this format, every field and no other, each of its type, within
 /// the size Core writes. Anything else leaves it out, and the message is
 /// shown as its text, never as part of a snapshot.
@@ -120,7 +121,16 @@ fn home_reply(origin: &str) -> Option<Value> {
     if !named("key") || !named("workspaceId") || !(origin["version"].is_null() || origin["version"].is_i64()) {
         return None;
     }
+    // The section's identity on Home when the user replied (Home's `id`):
+    // what tells the section answered from another later under its key.
+    let section = match origin.get("sectionId") {
+        None | Some(Value::Null) => None,
+        Some(id) => Some(id.as_i64()?),
+    };
     let mut home = json!({"projectId":project,"key":origin["key"],"version":origin["version"],"workspaceId":origin["workspaceId"]});
+    if let Some(section) = section {
+        home["sectionId"] = section.into();
+    }
     if let Some(snapshot) = origin.get("home").filter(|snapshot| snapshot_shape(snapshot) && snapshot.to_string().len() <= HOME_MAX_BYTES) {
         home["snapshot"] = snapshot.clone();
     }
