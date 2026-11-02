@@ -10,6 +10,9 @@
 //    arranged), a repository's activity and a card of lists, metrics, a live
 //    reference and an attachment: their own words follow too, what GitHub
 //    and the Agent wrote stays as written, and the arranging stays on;
+//  - since T-18 a report's or status's body, its times and its blocks are read
+//    on its report page, opened from its card: in both languages, the page's
+//    own words follow and what the Agent wrote stays as written;
 //  - back to English in another window: Home is as it was, the replies kept;
 //  - an order Core refused to save: its banner follows the language changed
 //    in another window, Core's reason as it came.
@@ -26,7 +29,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-189", checks: [], reads: [], writes: [], unexpected: [], errors: [] };
+const report = { task: "T-189", checks: [], reads: [], writes: [], refreshes: [], unexpected: [], errors: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -106,6 +109,11 @@ await context.route("**/*", async (route) => {
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}`);
   // Linked repositories are read with a POST.
   if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: linked });
+  // The links, once Repository details show them, ask Core to refresh them (as before T-18): counted apart.
+  if (method === "POST" && path === "/api/collaboration/github_refresh") {
+    report.refreshes.push(path);
+    return route.fulfill({ json: linked });
+  }
   if (path === "/api/home" && holdHome) return new Promise(() => {});
   if (method !== "GET") {
     report.writes.push({ method, path });
@@ -150,8 +158,10 @@ const shown = () => page.evaluate(() => {
       kind: text(el.querySelector(".home-kind")),
       title: text(el.querySelector("h3")),
       changed: text(el.querySelector(".home-changed")),
-      meta: all(".home-section-meta > span", el),
-      buttons: all(".home-section-head button", el).filter(Boolean),
+      meta: all(".home-section-meta > span, .home-summary-byline > span", el),
+      // A summary card's head buttons are icons: their names are what they say (T-18).
+      buttons: [...el.querySelectorAll(".home-section-head button, .home-summary-head button")].filter((b) => !b.closest("[hidden]"))
+        .map((b) => text(b) || b.getAttribute("aria-label")).filter(Boolean),
       times: all(":scope > .home-card-body > .home-section-time > span", el),
       body: text(el.querySelector(".home-section-body")),
     };
@@ -159,7 +169,6 @@ const shown = () => page.evaluate(() => {
   const ship = document.querySelector('[data-section-key="ship"]');
   const reply = document.querySelector('[data-section-key="progress"] .home-card-reply');
   const panel = document.querySelector('[data-home-project="p1"]');
-  const card2 = document.querySelector('[data-section-key="blocks"]');
   const labels = (selector, root = document) => [...root.querySelectorAll(selector)].map((el) => el.getAttribute("aria-label"));
   return {
     lang: document.querySelector(".home-view").getAttribute("lang"),
@@ -188,28 +197,56 @@ const shown = () => page.evaluate(() => {
     missing: text(panel.querySelector(".home-missing li")),
     counts: all(".home-agent-counts .home-count", panel),
     teamOpen: panel.querySelector(".home-team-details").open,
-    widgets: { heading: one(".home-widget-column-head h2"), arrange: one(".home-widget-column-head button"), tools: labels(".home-widget-tools button") },
+    // Arranging is the Organize dialog now (T-115 follow-up), still open across the language change.
+    widgets: { heading: one(".home-widget-column-head h2"), arrange: one(".home-widget-column-head button"), tools: labels(".home-organize-tools button") },
     machines: { heading: one(".home-machines h2"), manage: one(".home-machines-manage"), titles: all(".home-machines .home-load-title"), gpu: all(".home-gpus .home-fact"), empty: one(".home-machine-jobs-list .home-note") },
     pinned: { label: document.querySelector(".home-pinned").getAttribute("aria-label"), title: one(".home-pinned-head h2 span"), from: one(".home-pinned-from"), foot: all(".home-pinned-foot button") },
-    repo: { heads: all(".repo-activity-lists h5"), runs: all(".repo-row .repo-state").filter(Boolean), checks: labels(".repo-row .repo-state[aria-label]"), asOf: one(".repo-asof"), titles: all(".repo-row-title"), name: one(".repo-name") },
-    blocks: {
-      title: text(card2.querySelector("h3")),
-      checklist: [text(card2.querySelector(".brief-list header h4")), text(card2.querySelector(".brief-list header span"))],
-      items: all(".brief-list li > span:last-child, .brief-findings p", card2),
-      chips: all(".brief-chip", card2),
-      metric: [text(card2.querySelector(".brief-metrics dt")), text(card2.querySelector(".brief-delta")), card2.querySelector(".brief-delta").getAttribute("title")],
-      ref: [card2.querySelector(".brief-ref").getAttribute("title"), text(card2.querySelector(".brief-ref > span")), text(card2.querySelector(".brief-ref-state"))],
-      file: [text(card2.querySelector(".brief-attachment-caption")), text(card2.querySelector(".brief-attachment-meta")), text(card2.querySelector(".brief-attachment-link"))],
-      lists: labels(".brief-list, .brief-refs, .brief-attachments", card2),
-    },
+    // The repository's line, and its lists with Repository details open (T-18).
+    repo: { heads: all(".repo-activity-lists h5"), runs: all(".repo-activity-lists .repo-row .repo-state").filter(Boolean), checks: labels(".repo-activity-lists .repo-row .repo-state[aria-label]"), asOf: one(".repo-line .repo-asof"), titles: all(".repo-activity-lists .repo-row-title"), name: one(".repo-line .repo-name") },
   };
 });
+/** What each report page shows (T-18): its body and meta for the report and
+ *  the status, the blocks' own words for the checklist report. */
+async function pages() {
+  const read = {};
+  for (const key of ["progress", "load", "blocks"]) {
+    await page.locator(`.home-view [data-section-key="${key}"] .home-report-open`).click();
+    await page.locator(".home-report .report-head h1").waitFor({ timeout: 10_000 });
+    read[key] = await page.evaluate(() => {
+      const text = (el) => el?.textContent.replace(/\s+/g, " ").trim() ?? null;
+      const all = (selector, root = document) => [...root.querySelectorAll(selector)].map(text);
+      const labels = (selector, root = document) => [...root.querySelectorAll(selector)].map((el) => el.getAttribute("aria-label"));
+      const card2 = document.querySelector(".home-report .report-article");
+      const has = (selector) => card2.querySelector(selector);
+      return {
+        title: text(card2.querySelector(".report-head h1")),
+        meta: all(".report-meta > span", card2),
+        body: all(".report-main .report-block", card2).join(" "),
+        blocks: has(".brief-metrics") && {
+          checklist: [text(card2.querySelector(".brief-list header h4")), text(card2.querySelector(".brief-list header span"))],
+          // A checklist item's text; a plan step's name (its state chip after it, at the page's density); a finding.
+          items: all(".brief-list li > span:last-child:not(.brief-chip), .brief-plan-text > strong, .brief-findings p", card2),
+          chips: all(".brief-chip", card2),
+          metric: [text(card2.querySelector(".brief-metrics dt")), text(card2.querySelector(".brief-delta")), card2.querySelector(".brief-delta").getAttribute("title")],
+          ref: [card2.querySelector(".brief-ref").getAttribute("title"), text(card2.querySelector(".brief-ref > span")), text(card2.querySelector(".brief-ref-state"))],
+          file: [text(card2.querySelector(".brief-attachment-caption")), text(card2.querySelector(".brief-attachment-meta")), text(card2.querySelector(".brief-attachment-link"))],
+          lists: labels(".brief-list, .brief-refs, .brief-attachments", card2),
+        },
+      };
+    });
+    await page.locator(".home-report .report-back").click();
+    await page.locator(".home-report").waitFor({ state: "hidden", timeout: 10_000 });
+  }
+  return read;
+}
 
 try {
   await other.goto(`https://${HOST}/other.html`);
   await page.goto(`https://${HOST}/`);
   await page.locator(".toolbar-nav .catchup-nav").first().click();
   await page.locator('[data-section-key="load"]').waitFor({ timeout: 10_000 });
+  // The report pages first, while nothing is open on Home that a click elsewhere would close.
+  const enPages = await pages();
   // Begun, not sent: a reply to the report and an answer to the Ask; Defer open.
   await page.locator('[data-section-key="progress"] .home-reply-open').click();
   const DRAFT = "Please keep the fold — 先别改";
@@ -219,12 +256,20 @@ try {
   await page.locator('[data-section-key="ship"] .home-defer > button').click();
   await page.locator('[data-section-key="ship"] .home-defer [role="group"]').waitFor();
   await page.locator('[data-home-project="p1"] .home-team-details summary').click();
-  // A status pinned to the widgets, which are being arranged; the repository read.
+  // The repository's line read, and its details open (T-18).
+  await page.locator(".home-repos .repo-line .repo-asof").waitFor({ timeout: 10_000 });
+  assert.deepEqual(report.refreshes, [], "no refresh before details open");
+  await page.locator(".home-repos-details").click();
+  await page.locator(".home-repos .repo-activity-lists").waitFor({ timeout: 10_000 });
+  // The refresh follows the links' first read: wait for it, at most 5 s.
+  for (let end = Date.now() + 5000; !report.refreshes.length && Date.now() < end; ) await page.waitForTimeout(50);
+  assert.deepEqual(report.refreshes, ["/api/collaboration/github_refresh"], "showing the links asked for one refresh");
+  // A status pinned to the widgets, from its card's More actions (T-18), which are being arranged.
+  await page.locator('[data-section-key="load"] .home-summary-more > button').click();
   await page.locator('[data-section-key="load"] .home-pin').click();
   await page.locator(".home-pinned").waitFor({ timeout: 10_000 });
-  await page.locator(".home-widget-column-head button").click();
-  await page.locator(".home-widget-tools").first().waitFor();
-  await page.locator(".home-repos .repo-activity-repo").waitFor({ timeout: 10_000 });
+  await page.locator(".home-widget-column-head .home-widget-organize").click();
+  await page.locator(".home-organize-tools").first().waitFor();
 
   // ---- In English.
   const en = await shown();
@@ -237,10 +282,11 @@ try {
   assert.deepEqual([en.cards.ship.kind, en.cards.progress.kind, en.cards.load.kind], ["Ask", "Report", "Status"]);
   assert.equal(en.cards.progress.changed, "New");
   assert.deepEqual(en.cards.progress.meta, ["Mori", "5 min ago"]);
-  assert.deepEqual(en.cards.progress.buttons, ["Reply", "Seen"]);
-  assert.equal(en.cards.load.times.length, 2);
-  assert.match(en.cards.load.times[0], /^Data as of .+ · older than its 1 h validity$/);
-  assert.equal(en.cards.load.times[1], "Next update in 2 h");
+  assert.deepEqual(en.cards.progress.buttons, ["Reply to “Progress”", "Mark “Progress” seen", "More actions for “Progress”"]);
+  // The status card says when its data is from; its page also says what is next (T-18).
+  assert.match(en.cards.load.meta[1], /^Data as of .+ · older than its 1 h validity$/);
+  assert.ok(enPages.load.meta.some((m) => /^Data as of .+ · older than its 1 h validity$/.test(m)), JSON.stringify(enPages.load.meta));
+  assert.ok(enPages.load.meta.includes("Next update in 2 h"), JSON.stringify(enPages.load.meta));
   assert.deepEqual(en.ask.options, ["Ship", "Wait"]);
   assert.deepEqual(en.ask.target, ["Send to", "Mori"]);
   assert.deepEqual([en.ask.placeholder, en.ask.send], ["Write a reply…", "Send"]);
@@ -250,22 +296,23 @@ try {
   assert.equal(en.missing, "Mori ended a turn without updating the Brief · 1 h ago");
   assert.deepEqual(en.counts, ["0 working", "1 idle", "0 waiting", "0 errors"]);
   assert.equal(en.teamOpen, true);
-  assert.deepEqual(en.widgets, { heading: "Widgets", arrange: "Done", tools: ["Move Machines up", "Move Machines down", "Hide Machines", "Move Build load up", "Move Build load down", "Hide Build load", "Unpin Build load"] });
+  assert.deepEqual(en.widgets, { heading: "My widgets", arrange: "Organize", tools: ["Move Machines up", "Move Machines down", "Hide Machines", "Move Build load up", "Move Build load down", "Hide Build load", "Unpin Build load"] });
   assert.deepEqual(en.machines, { heading: "Machines", manage: "Manage", titles: ["CPU 20% of 8 cores", "Memory 8.8 GiB of 32.0 GiB", "GPU", "Jobs on this machine"], gpu: ["GPU unknown"], empty: "No Jobs running" });
   assert.deepEqual(en.pinned, { label: "Build load, pinned from Yuzuno", title: "Build load", from: "Yuzuno · Mori · Updated 5 min ago", foot: ["Open in Yuzuno", "Reply"] });
   assert.deepEqual(en.repo, { heads: ["Commits", "Pull requests1 open", "Actions"], runs: ["passed"], checks: ["Checks passed"], asOf: "as of 1 min ago", titles: ["Fold every Home card", "Cards fold", "CI"], name: "acme/app" });
-  assert.deepEqual(en.blocks.checklist, ["Before release", "1 of 2 done"]);
-  assert.deepEqual(en.blocks.items, ["Docs updated", "Smoke test", "Build installer", "Sign build", "Installer path is long"]);
-  assert.deepEqual(en.blocks.chips, ["Done", "Blocked", "High"]);
-  assert.deepEqual(en.blocks.metric, ["Open bugs", "−2 since the previous version", "Previously 5"]);
-  assert.match(en.blocks.ref[0], /^(Open )?Task T-7: Ship release · as of /);
-  assert.deepEqual(en.blocks.ref.slice(1), ["Ship", "doing"]);
-  assert.equal(en.blocks.file[0], "Release notes link");
-  assert.match(en.blocks.file[1], /^Referenced /);
-  assert.equal(en.blocks.file[2], "https://github.com/acme/app/releases");
-  assert.deepEqual(en.blocks.lists, ["Before release", "Plan", "Findings", "References", "Attachments"]);
+  assert.deepEqual(enPages.blocks.blocks.checklist, ["Before release", "1 of 2 done"]);
+  assert.deepEqual(enPages.blocks.blocks.items, ["Docs updated", "Smoke test", "Build installer", "Sign build", "Installer path is long"]);
+  assert.deepEqual(enPages.blocks.blocks.chips, ["Done", "Blocked", "High"]);
+  assert.deepEqual(enPages.blocks.blocks.metric, ["Open bugs", "−2 since the previous version", "Previously 5"]);
+  assert.match(enPages.blocks.blocks.ref[0], /^(Open )?Task T-7: Ship release · as of /);
+  assert.deepEqual(enPages.blocks.blocks.ref.slice(1), ["Ship", "doing"]);
+  assert.equal(enPages.blocks.blocks.file[0], "Release notes link");
+  assert.match(enPages.blocks.blocks.file[1], /^Referenced /);
+  assert.equal(enPages.blocks.blocks.file[2], "https://github.com/acme/app/releases");
+  assert.deepEqual(enPages.blocks.blocks.lists, ["Before release", "Plan", "Findings", "References", "Attachments"]);
   check("English: Needs you, the project's frame, each card's kind, state, times and controls, Defer and both replies");
-  check("English: the widgets being arranged, Machines, a pinned status, a repository's activity and a card's lists, metrics, reference and attachment");
+  assert.equal(enPages.blocks.title, "Release checklist");
+  check("English: the widgets being arranged, Machines, a pinned status, a repository's activity, and a report page's lists, metrics, reference and attachment");
 
   // ---- Changed to Chinese in another window.
   const before = report.writes.length;
@@ -280,9 +327,8 @@ try {
   assert.deepEqual([zh.cards.ship.kind, zh.cards.progress.kind, zh.cards.load.kind], ["Ask", "报告", "状态"]);
   assert.equal(zh.cards.progress.changed, "新");
   assert.deepEqual(zh.cards.progress.meta, ["Mori", "5 分钟前"]);
-  assert.deepEqual(zh.cards.progress.buttons, ["回复", "已看"]);
-  assert.match(zh.cards.load.times[0], /^数据截至 .+ · 已超过 1 小时的有效期$/);
-  assert.equal(zh.cards.load.times[1], "下次更新 2 小时后");
+  assert.deepEqual(zh.cards.progress.buttons, ["回复“Progress”", "将“Progress”标为已看", "“Progress”的更多操作"]);
+  assert.match(zh.cards.load.meta[1], /^数据截至 .+ · 已超过 1 小时的有效期$/);
   assert.deepEqual(zh.ask.target, ["发送给", "Mori"]);
   assert.deepEqual([zh.ask.placeholder, zh.ask.send], ["写一条回复…", "发送"]);
   assert.deepEqual(zh.ask.defer, ["推迟", "1 小时", "明天", "下周"]);
@@ -291,28 +337,16 @@ try {
   assert.equal(zh.missing, "Mori 结束了一个 Turn，但没有更新 Brief · 1 小时前");
   assert.deepEqual(zh.counts, ["工作中 0", "就绪 1", "等待中 0", "出错 0"]);
   assert.equal(zh.teamOpen, true, "the team details stay open");
-  assert.deepEqual(zh.widgets, { heading: "小组件", arrange: "完成", tools: ["上移 机器", "下移 机器", "隐藏 机器", "上移 Build load", "下移 Build load", "隐藏 Build load", "取消固定 Build load"] });
+  assert.deepEqual(zh.widgets, { heading: "我的组件", arrange: "整理组件", tools: ["上移 机器", "下移 机器", "隐藏 机器", "上移 Build load", "下移 Build load", "隐藏 Build load", "取消固定 Build load"] });
   assert.deepEqual(zh.machines, { heading: "机器", manage: "管理", titles: ["CPU 20% / 8 核", "内存 8.8 GiB / 32.0 GiB", "GPU", "此机器上的 Job"], gpu: ["GPU 未知"], empty: "没有正在运行的 Job" });
   assert.deepEqual(zh.pinned, { label: "Build load，固定自 Yuzuno", title: "Build load", from: "Yuzuno · Mori · 更新于 5 分钟前", foot: ["在 Yuzuno 中打开", "回复"] });
   assert.deepEqual(zh.repo, { heads: ["提交", "拉取请求1 个开放", "Actions"], runs: ["通过"], checks: ["检查通过"], asOf: "截至 1 分钟前", titles: en.repo.titles, name: "acme/app" });
-  assert.deepEqual(zh.blocks.checklist, ["Before release", "已完成 1/2"]);
-  assert.deepEqual(zh.blocks.items, en.blocks.items);
-  assert.deepEqual(zh.blocks.chips, ["已完成", "受阻", "高"]);
-  assert.deepEqual(zh.blocks.metric, ["Open bugs", "−2（相对上一版本）", "之前为 5"]);
-  assert.match(zh.blocks.ref[0], /^(打开 )?任务 T-7: Ship release · 截至 /);
-  assert.deepEqual(zh.blocks.ref.slice(1), ["Ship", "doing"]);
-  assert.equal(zh.blocks.file[0], "Release notes link");
-  assert.match(zh.blocks.file[1], /^引用 /);
-  assert.equal(zh.blocks.file[2], en.blocks.file[2]);
-  assert.deepEqual(zh.blocks.lists, ["Before release", "计划", "发现", "引用", "附件"]);
   check("Chinese: Home's own words follow the language changed in another window");
-  check("Chinese: widgets, Machines, the pinned status, repository activity and the card's blocks follow it; GitHub's titles, the Agent's items, labels, caption and reference state as written; arranging still on");
-  // What Agents and the user wrote, as it was.
-  for (const key of ["ship", "progress", "load"]) {
-    assert.equal(zh.cards[key].title, en.cards[key].title);
-    assert.equal(zh.cards[key].body, en.cards[key].body);
-    assert.ok(zh.cards[key].body.includes(BODY[key]), `${key}: ${zh.cards[key].body}`);
-  }
+  check("Chinese: widgets, Machines, the pinned status and repository activity follow it; GitHub's titles as written; arranging still on");
+  // What Agents and the user wrote, as it was: the Ask on Home (the reports' bodies are read on their pages below).
+  for (const key of ["ship", "progress", "load"]) assert.equal(zh.cards[key].title, en.cards[key].title);
+  assert.equal(zh.cards.ship.body, en.cards.ship.body);
+  assert.ok(zh.cards.ship.body.includes(BODY.ship), `ship: ${zh.cards.ship.body}`);
   assert.deepEqual([zh.ask.question, zh.ask.options], ["Ship the release today?", ["Ship", "Wait"]]);
   assert.deepEqual([zh.reply.typed, zh.ask.typed], [DRAFT, ANSWER]);
   assert.deepEqual(report.writes.slice(before), [], "changing the language sends nothing");
@@ -324,6 +358,33 @@ try {
   assert.deepEqual(back, en);
   assert.deepEqual(report.writes, []);
   check("English again: Home is as it was, the unsent replies still there");
+
+  // ---- The report pages in Chinese (T-18): the page's words follow, the Agent's as written.
+  await page.keyboard.press("Escape");
+  await page.locator(".home-organize-tools").first().waitFor({ state: "hidden" });
+  await elsewhere("zh-Hans", "需要你处理");
+  const zhPages = await pages();
+  await elsewhere("en", "Needs you");
+  for (const key of ["progress", "load"]) {
+    assert.equal(zhPages[key].title, enPages[key].title);
+    assert.equal(zhPages[key].body, enPages[key].body);
+    assert.ok(zhPages[key].body.includes(BODY[key]), `${key}: ${zhPages[key].body}`);
+  }
+  assert.ok(zhPages.load.meta.some((m) => /^数据截至 .+ · 已超过 1 小时的有效期$/.test(m)), JSON.stringify(zhPages.load.meta));
+  assert.ok(zhPages.load.meta.includes("下次更新 2 小时后"), JSON.stringify(zhPages.load.meta));
+  assert.equal(zhPages.blocks.title, enPages.blocks.title);
+  assert.deepEqual(zhPages.blocks.blocks.checklist, ["Before release", "已完成 1/2"]);
+  assert.deepEqual(zhPages.blocks.blocks.items, enPages.blocks.blocks.items);
+  assert.deepEqual(zhPages.blocks.blocks.chips, ["已完成", "受阻", "高"]);
+  assert.deepEqual(zhPages.blocks.blocks.metric, ["Open bugs", "−2（相对上一版本）", "之前为 5"]);
+  assert.match(zhPages.blocks.blocks.ref[0], /^(打开 )?任务 T-7: Ship release · 截至 /);
+  assert.deepEqual(zhPages.blocks.blocks.ref.slice(1), ["Ship", "doing"]);
+  assert.equal(zhPages.blocks.blocks.file[0], "Release notes link");
+  assert.match(zhPages.blocks.blocks.file[1], /^引用 /);
+  assert.equal(zhPages.blocks.blocks.file[2], enPages.blocks.blocks.file[2]);
+  assert.deepEqual(zhPages.blocks.blocks.lists, ["Before release", "计划", "发现", "引用", "附件"]);
+  assert.deepEqual(report.writes, [], "reading the pages in either language sends nothing");
+  check("Chinese report pages: the times and the blocks' own words follow; the Agent's text, items, labels, caption and reference state as written; nothing sent");
 
   // ---- An order Core refused to save: the banner follows the language.
   const banner = page.locator(".home-error-banner");

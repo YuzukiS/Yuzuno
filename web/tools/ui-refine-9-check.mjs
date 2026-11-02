@@ -349,25 +349,37 @@ try {
     page = await open({ theme });
     const machines = page.locator(".home-widget-column .home-machines");
 
-    await step(`${theme}: Home has one frame per card: no box around a project, a plain group or an image`, async () => {
+    await step(`${theme}: Home has one frame per card, and its report page no box around a plain group or an image`, async () => {
       const panel = page.locator('.home-view [data-home-project="p1"]');
       if ((await panel.locator(".home-panel-toggle").getAttribute("aria-expanded")) === "false")
         await panel.locator(".home-panel-toggle").click();
       const card = panel.locator('[data-section-key="home-layout"]');
-      await card.locator(".brief-attachment img").first().waitFor();
-      await page.waitForFunction(() => [...document.querySelectorAll(".brief-attachment img")].every((img) => img.complete && img.naturalWidth > 0));
+      await card.waitFor();
+      // The card's frame is read on Home; its groups and images where its body is read, its report page (T-18).
+      const opened = page.locator(".home-report");
+      await card.locator(".home-report-open").click();
+      // Home again afterwards, whatever happens here: the next steps read Home.
+      const closeReport = async () => {
+        if (!(await opened.isVisible())) return;
+        await opened.locator(".report-back").click();
+        await opened.waitFor({ state: "hidden" });
+      };
+      try {
+      await opened.locator(".brief-attachment img").first().waitFor();
+      await page.waitForFunction(() => [...document.querySelectorAll(".home-report .brief-attachment img")].every((img) => img.complete && img.naturalWidth > 0));
       const frames = await page.evaluate(() => {
         const framed = (el) => el && parseFloat(getComputedStyle(el).borderTopWidth) > 0 && parseFloat(getComputedStyle(el).borderLeftWidth) > 0;
         const tinted = (el) => !/rgba?\(0, 0, 0, 0\)|transparent/.test(getComputedStyle(el).backgroundColor);
         const card = document.querySelector('.home-view [data-section-key="home-layout"]');
         const panel = card.closest(".home-panel");
-        const groups = [...card.querySelectorAll(".brief-group")];
+        const body = document.querySelector(".home-report .report-article");
+        const groups = [...body.querySelectorAll(".brief-group")];
         return {
           panel: framed(panel), panelTinted: tinted(panel), section: framed(card),
           groups: groups.map((g) => ({ tone: g.dataset.tone || "", framed: framed(g), tinted: tinted(g) })),
-          attachments: [...card.querySelectorAll(".brief-attachment")].map((a) => framed(a)),
+          attachments: [...body.querySelectorAll(".brief-attachment")].map((a) => framed(a)),
           // An image comes first and keeps its own shape (no letterboxed well).
-          images: [...card.querySelectorAll(".brief-attachment")].map((a) => {
+          images: [...body.querySelectorAll(".brief-attachment")].map((a) => {
             // The shape inside its 1 px outline.
             // A kept picture leads with itself, then its caption (T-9); others with a header.
             const img = a.querySelector("img"), box = img.getBoundingClientRect(), head = a.querySelector("header, .brief-attachment-caption").getBoundingClientRect();
@@ -384,12 +396,17 @@ try {
         assert.ok(image.first, "the image comes before its caption");
         assert.ok(Math.abs(image.ratio - image.natural) < 0.05, `its own shape: ${JSON.stringify(image)}`);
       }
+      await shot(opened.locator(".report-article"), `report-card-${theme}.png`);
+      await closeReport();
       await card.scrollIntoViewIfNeeded();
       await shot(page.locator(".home-main"), `home-card-${theme}.png`);
       return { frames };
+      } finally {
+        await closeReport();
+      }
     });
 
-    await step(`${theme}: the Home tab counts what Needs you lists; a newer version marks only the blocks it changed and leaves the card untinted`, async () => {
+    await step(`${theme}: the Home tab counts what Needs you lists; a newer version marks only the blocks it changed, on its report page, and leaves the card untinted`, async () => {
       const key = 'yuzuno.home-seen-blocks.v1:["ws-9","p1","home-layout",null]';
       assert.equal(await page.evaluate((k) => JSON.parse(localStorage.getItem(k) || "null")?.version, key), 2, "the seen version's blocks are kept");
       const tab = page.locator(".catchup-nav").first();
@@ -405,7 +422,7 @@ try {
         assert.equal(await tab.locator(".nav-count").innerText(), "1");
         assert.equal(await tab.getAttribute("title"), "Home · 1 waiting for your response");
         const card = page.locator('.home-view [data-section-key="home-layout"]');
-        const look = await card.evaluate((el) => {
+        const inspect = (el) => {
           const canvas = document.createElement("canvas");
           canvas.width = canvas.height = 1;
           const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -446,7 +463,13 @@ try {
               };
             }),
           };
-        });
+        };
+        const look = await card.evaluate(inspect);
+        // The changed blocks are marked where the body is read: its report page (T-18).
+        const opened = page.locator(".home-report");
+        await card.locator(".home-report-open").click();
+        await opened.locator(".report-head h1").waitFor();
+        look.marks = (await opened.locator(".report-main").evaluate(inspect)).marks;
         assert.ok(look.sameAsOther, "a changed card looks like any other card");
         assert.equal(look.chip, "Updated", "its header still says it changed");
         assert.deepEqual(look.marks.map((m) => [m.change, m.label]), [["updated", "Updated"], ["new", "New"]]);
@@ -457,10 +480,15 @@ try {
           assert.ok(mark.above && mark.height <= 20, `a small mark above its block ${JSON.stringify(mark)}`);
         }
         await shot(page.locator(".toolbar-nav"), `home-tab-count-${theme}.png`);
-        await card.scrollIntoViewIfNeeded();
-        await shot(card, `home-changed-blocks-${theme}.png`);
+        await shot(opened.locator(".report-main"), `home-changed-blocks-${theme}.png`);
+        await opened.locator(".report-back").click();
+        await opened.waitFor({ state: "hidden" });
         return { look };
       } finally {
+        if (await page.locator(".home-report").isVisible()) {
+          await page.locator(".home-report .report-back").click();
+          await page.locator(".home-report").waitFor({ state: "hidden" });
+        }
         setDesign(2);
         home.needsYou = [];
         home.projects[1].brief.sections = [];

@@ -1,5 +1,7 @@
 // T-173: how Home cards read in Chromium, on a production build with every
-// API answered here (no Core, no GitHub). Bodies are shaped like the Home
+// API answered here (no Core, no GitHub). Since T-18 a report's body is read
+// on its page, opened from its card; the card names no summary its author
+// didn't write (2292), so the folded previews T-173 checked are gone. Bodies are shaped like the Home
 // audit's examples, with synthetic text: a summary-first overview with short
 // references, a card that opens with evidence and a chart, a closed author's
 // status with a dozen screenshots, and sub-topics without their topic's
@@ -20,7 +22,7 @@ assert.notEqual(dist, resolve("dist"));
 const before = process.env.YUZUNO_READING_BEFORE === "1";
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/home-reading");
 await mkdir(output, { recursive: true });
-const report = { before, checks: [], errors: [], writes: [], unexpected: [] };
+const report = { before, checks: [], errors: [], writes: [], agentReads: [], unexpected: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -136,6 +138,11 @@ try {
         report.writes.push({ viewport: viewport.name, method, path });
         return route.fulfill({ json: {} });
       }
+      // The Agent panel reads this Codex Agent's tools, apart from Home: none here, counted apart.
+      if (path === "/api/agents/a/codex/mcp") {
+        report.agentReads.push(path);
+        return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
+      }
       const image = path.match(/^\/api\/projects\/p1\/brief\/attachments\/home-layout\/(screen-\d+\.png)$/);
       if (image && images.has(image[1])) return route.fulfill({ body: images.get(image[1]), contentType: "image/png" });
       const json = {
@@ -157,59 +164,72 @@ try {
     });
     await page.goto("http://yuzuno-home-reading.test/");
     await page.locator(".toolbar-nav .catchup-nav").first().click();
-    const card = (key) => page.locator(`[data-section-key="${key}"]`);
+    const card = (key) => page.locator(`.home-view [data-section-key="${key}"]`);
+    // A report's body is read on its page, opened from its card (T-18).
+    const opened = page.locator(".home-report");
+    const openReport = async (key) => {
+      await card(key).locator(".home-report-open").scrollIntoViewIfNeeded();
+      await card(key).locator(".home-report-open").click();
+      await opened.locator(".report-head h1").waitFor();
+    };
+    const closeReport = async () => {
+      await opened.locator(".report-back").click();
+      await opened.waitFor({ state: "hidden" });
+    };
     await card("home-layout").waitFor();
-    await card("reconnect").locator(".recharts-bar-rectangle").first().waitFor();
     await page.screenshot({ path: resolve(output, `${viewport.name}-open.png`), fullPage: true });
-    for (const key of keys) await card(key).locator(".home-fold").click();
-    await page.waitForTimeout(200);
-    await page.screenshot({ path: resolve(output, `${viewport.name}-folded.png`), fullPage: true });
-    // The closed author's card on its own, folded, for a close look.
-    await card("home-layout").screenshot({ path: resolve(output, `${viewport.name}-closed-author-folded.png`) });
-    for (const key of keys) await card(key).locator(".home-fold").click();
-    await page.waitForTimeout(200);
-    await card("development").screenshot({ path: resolve(output, `${viewport.name}-refs.png`) });
-    await card("reconnect").screenshot({ path: resolve(output, `${viewport.name}-chart.png`) });
+    await card("home-layout").screenshot({ path: resolve(output, `${viewport.name}-closed-author.png`) });
+    await openReport("development");
+    await opened.locator(".report-article").screenshot({ path: resolve(output, `${viewport.name}-refs.png`) });
+    await closeReport();
+    await openReport("reconnect");
+    await opened.locator(".recharts-bar-rectangle").first().waitFor();
+    await opened.locator(".report-article").screenshot({ path: resolve(output, `${viewport.name}-chart.png`) });
+    await closeReport();
     if (before) {
       check(`${viewport.name}: screenshots only (a build without T-173)`);
       await context.close();
       continue;
     }
 
-    // Folded, a card says what it is about, when its data is from and who keeps it.
+    // On Home a card says what it is about without guessing from its body
+    // (2292): no fold, no excerpt; the closed author's card says nobody keeps it.
     const development = card("development"), reconnect = card("reconnect"), layout = card("home-layout");
-    await development.locator(".home-fold").focus();
-    await page.keyboard.press("Enter");
-    assert.equal(await development.locator(".home-fold").getAttribute("aria-expanded"), "false");
-    assert.ok(await development.locator(".home-fold").evaluate((el) => el === document.activeElement), "the fold keeps focus");
-    assert.equal(await development.locator(".home-card-summary").innerText(), "Release core.15 is installed. Two fixes are accepted and wait for main; nothing is blocked.");
-    const clamp = await development.locator(".home-card-summary .brief-markdown").evaluate((el) => getComputedStyle(el).webkitLineClamp);
-    assert.equal(clamp, "3");
-    await reconnect.locator(".home-fold").click();
-    assert.equal(await reconnect.locator(".home-card-glance").count(), 0, "evidence first: no summary rather than the evidence");
-    await layout.locator(".home-fold").click();
-    assert.ok(await layout.locator(".home-section-head .home-unmaintained").isVisible());
-    assert.match(await layout.locator(".home-card-glance").innerText(), /Daily runs core\.12.*\n?.*Data as of/s);
-    check(`${viewport.name}: folded cards show their summary, data time and maintenance; evidence is not taken for a summary; the fold keeps focus`);
-    for (const root of [development, reconnect, layout]) await root.locator(".home-fold").click();
-    assert.match(await layout.locator(".home-unmaintained-note").innerText(), /Kumo has closed.*can claim it.*nothing is removed by itself/s);
+    for (const key of keys) {
+      assert.equal(await card(key).locator(".home-fold").count(), 0, `${key}: a summary card has no fold`);
+      assert.equal(await card(key).locator(".home-summary-unnamed").innerText(), "No summary named", `${key}: no excerpt taken for a summary`);
+    }
+    assert.equal(await development.locator(".brief-markdown").count(), 0, "no first paragraph on the card");
+    assert.ok(await layout.locator(".home-summary-head .home-unmaintained").isVisible());
+    assert.match(await layout.locator(".home-summary-foot").innerText(), /Data as of/);
+    check(`${viewport.name}: summary cards name no summary their author didn't write, show data time and maintenance, and have no fold`);
+    await openReport("home-layout");
+    assert.match(await opened.locator(".home-unmaintained-note").innerText(), /Kumo has closed.*can claim it.*nothing is removed by itself/s);
+    await closeReport();
+    check(`${viewport.name}: the closed author's page says who left it and that it can be claimed`);
 
     // Short labels lead; the current title is in the tooltip and the accessible name.
-    const chip = development.locator('.brief-ref[data-kind="task"]').first();
+    await openReport("development");
+    const chip = opened.locator('.brief-ref[data-kind="task"]').first();
     assert.equal(await chip.locator("span").first().innerText(), "UI refine 9");
     assert.match(await chip.getAttribute("title"), /^(Open )?Task T-9: UI refine 9: Home cards/);
     assert.match(await chip.evaluate((el) => el.textContent), /^UI refine 9: UI refine 9: Home cards/);
     const chipBox = await chip.boundingBox();
     assert.ok(chipBox.height < 40, `a chip stays one line (${chipBox.height})`);
+    await closeReport();
     check(`${viewport.name}: a short label leads and the current title stays reachable`);
 
     // A few bars carry their values.
-    const values = await reconnect.locator(".recharts-label-list text").allTextContents();
+    await openReport("reconnect");
+    await opened.locator(".recharts-label-list text").first().waitFor();
+    const values = await opened.locator(".recharts-label-list text").allTextContents();
     assert.deepEqual(values.map((v) => v.replace(/[,\s]/g, "")).sort(), ["1013", "1286", "1742", "2210", "3945", "5143"]);
-    assert.ok(await reconnect.getByText("Cumulative allocation, not resident memory").isVisible(), "the limit stays beside the chart");
-    const disk = card("ops/disk");
-    await disk.locator(".recharts-bar-rectangle").first().waitFor();
-    assert.equal(await disk.locator(".recharts-label-list").count(), 0, "values too long to fit stay in the tooltip and table");
+    assert.ok(await opened.getByText("Cumulative allocation, not resident memory").isVisible(), "the limit stays beside the chart");
+    await closeReport();
+    await openReport("ops/disk");
+    await opened.locator(".recharts-bar-rectangle").first().waitFor();
+    assert.equal(await opened.locator(".recharts-label-list").count(), 0, "values too long to fit stay in the tooltip and table");
+    await closeReport();
     check(`${viewport.name}: a six-bar chart labels its values in full; values too long to fit are not labelled`);
 
     // Sub-topics: one stands alone, several get a heading in words.
@@ -218,18 +238,24 @@ try {
     assert.equal(await page.locator('[data-topic="ops"] .home-topic-name').innerText(), "Ops");
     check(`${viewport.name}: no bare topic key on Home`);
 
-    // A dozen screenshots: the first four, the rest by keyboard.
-    const shots = layout.locator(".brief-attachments > li");
-    assert.equal(await shots.count(), 4);
-    const more = layout.locator(".brief-attachments-more");
-    await more.focus();
-    await page.keyboard.press("Enter");
-    assert.equal(await shots.count(), 12);
-    assert.ok(await more.evaluate((el) => el === document.activeElement), "the toggle keeps focus");
-    await page.screenshot({ path: resolve(output, `${viewport.name}-attachments-all.png`), fullPage: true });
-    await page.keyboard.press("Enter");
-    assert.equal(await shots.count(), 4);
-    check(`${viewport.name}: twelve screenshots show four, then all by keyboard`);
+    // A dozen screenshots, on the status's page: every one reachable, by keyboard where some wait behind a toggle.
+    await openReport("home-layout");
+    const shots = opened.locator(".brief-attachments > li");
+    await shots.first().waitFor();
+    const more = opened.locator(".brief-attachments-more");
+    const shown = await shots.count();
+    if (shown < 12) {
+      await more.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await shots.count(), 12);
+      assert.ok(await more.evaluate((el) => el === document.activeElement), "the toggle keeps focus");
+      await page.screenshot({ path: resolve(output, `${viewport.name}-attachments-all.png`), fullPage: true });
+      await page.keyboard.press("Enter");
+      assert.equal(await shots.count(), shown);
+    } else assert.equal(shown, 12);
+    await page.screenshot({ path: resolve(output, `${viewport.name}-attachments.png`), fullPage: true });
+    await closeReport();
+    check(`${viewport.name}: twelve screenshots on the status's page, ${shown < 12 ? `${shown} first, then all by keyboard` : "all shown"}`);
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     assert.ok(overflow <= 0, `${viewport.name}: no sideways scroll (${overflow})`);

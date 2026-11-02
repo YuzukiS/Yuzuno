@@ -186,7 +186,9 @@ try {
     const card = (key) => page.locator(`.home-view .home-main [data-section-key="${key}"]`);
     assert.equal(await card("decide").locator(".home-pin").count(), 0, "an ask offers no pin");
     assert.equal(await page.locator('.home-view [data-section-key="old"] .home-pin').count(), 0, "team content offers no pin");
-    await card("overview").getByRole("button", { name: "Pin “Curve study overview” to Widgets" }).click();
+    // Pin is in the summary card's More actions (T-18).
+    await card("overview").getByRole("button", { name: "More actions for “Curve study overview”" }).click();
+    await card("overview").getByRole("button", { name: "Pin “Curve study overview” to My widgets" }).click();
     await pinned().waitFor();
     assert.equal(await card("overview").locator(".home-pin").getAttribute("aria-pressed"), "true");
     assert.match(await pinned().locator(".home-pinned-from").innerText(), /^Curve study · Sora · Updated /);

@@ -1,5 +1,7 @@
-// In-card layout on Home (T-115): Group tones and Columns, as Home draws
-// them, and a live block edit.
+// A report's layout (T-115): Group tones and Columns, as a report page draws
+// them (T-18: a report's body is read on its page, opened from its Home
+// card), and a live block edit in a pinned widget, the one place Home still
+// draws a report's body as it changes.
 // - Every Columns, nested ones and those of 3 and 4 columns included, sits
 //   side by side at its widths while its narrowest column has at least
 //   14rem, and stacks in the order given below that; nothing scrolls
@@ -7,11 +9,11 @@
 //   (the root, and so every rem, grows with it).
 // - A tinted summary keeps its text at 4.5:1 or more; an old body without
 //   layout components draws as before.
-// - The wheel over a Home table scrolls the page: the table has no height of
-//   its own to scroll and no overscroll containment (T-9).
-// - A live update that edits one block leaves the other blocks' DOM nodes,
-//   the card's place, the reading position and a table's filter as they
-//   were; editing the table itself clears its filter.
+// - The wheel over a report's table scrolls the page: the table has no
+//   height of its own to scroll and no overscroll containment (T-9).
+// - A live update that edits one block of a pinned section leaves the other
+//   blocks' DOM nodes, the widget's place, the reading position and a
+//   table's filter as they were; editing the table itself clears its filter.
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or real Agent.
 import assert from "node:assert/strict";
@@ -64,8 +66,10 @@ const node = (type, props, children) => (children ? { type, props, children } : 
 const md = (text) => node("Markdown", { text });
 const group = (title, children, tone) => node("Group", { ...(title ? { title } : {}), ...(tone ? { tone } : {}) }, children);
 const body = (children, elements) => ({ root: "body", elements: { body: node("BriefBody", {}, children), ...elements } });
+// Pins name a section by its numeric id, as Core gives each one.
+let nextId = 11;
 const section = (key, title, version, content, extra = {}) => ({
-  key, kind: "status", title, version, owner, body: content, attachments: [], refs: {}, seen: { version, at: iso(-MIN) }, history: false,
+  id: nextId++, key, kind: "status", title, version, owner, body: content, attachments: [], refs: {}, seen: { version, at: iso(-MIN) }, history: false,
   updatedTurnId: null, updatedAt: iso(-5 * MIN), status: { asOf: iso(-5 * MIN), validFor: 86400, stale: false }, ...extra,
 });
 const runsTable = (rows) => node("Table", { id: "runs", title: "Runs", columns: [{ key: "run", label: "Run" }, { key: "loss", label: "Loss" }],
@@ -186,11 +190,12 @@ const DECLARED = {
 /** Whether the declared columns should stack in a Columns this wide: when the narrowest would fall below 14rem. */
 const shouldStack = ({ widths, count }, width, rem) =>
   ((width - 16 * (count - 1)) * Math.min(...widths)) / widths.reduce((a, b) => a + b, 0) < MIN_COLUMN_REM * rem;
-/** Checks every Columns against DECLARED; returns what is wrong. */
-function judge(shown) {
+/** Checks every Columns against DECLARED, of these sections or of all; returns what is wrong. */
+function judge(shown, keys = null) {
   const wrong = [];
   const seen = shown.map((c) => `${c.key}/${c.depth}`).sort();
-  if (JSON.stringify(seen) !== JSON.stringify(Object.keys(DECLARED).sort())) wrong.push({ problem: "not the declared Columns", seen });
+  const declared = Object.keys(DECLARED).filter((id) => !keys || keys.includes(id.split("/")[0])).sort();
+  if (JSON.stringify(seen) !== JSON.stringify(declared)) wrong.push({ problem: "not the declared Columns", seen, declared });
   for (const c of shown) {
     const declared = DECLARED[`${c.key}/${c.depth}`];
     if (!declared) continue;
@@ -210,25 +215,24 @@ function judge(shown) {
   return wrong;
 }
 
-/** Every Columns on Home: its own width, whether it stacked, and its columns' boxes. */
-const columnsShown = () =>
-  page.evaluate(() => {
+/** Every Columns on the open report page: its own width, whether it stacked, and its columns' boxes. */
+const columnsShown = (key) =>
+  page.evaluate((key) => {
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
-    return [...document.querySelectorAll(".home-view .brief-columns")].map((el) => {
-      const key = el.closest("[data-section-key]").dataset.sectionKey;
+    return [...document.querySelectorAll(".home-report .brief-columns")].map((el) => {
       const cells = [...el.children].map((child) => {
         const r = child.getBoundingClientRect();
         return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), width: Math.round(r.width) };
       });
       const widths = (el.style.getPropertyValue("--brief-columns").match(/[\d.]+fr/g) || []).map((w) => parseFloat(w));
-      return { key, depth: [...document.querySelectorAll(".home-view .brief-columns")].filter((o) => o !== el && o.contains(el)).length,
+      return { key, depth: [...document.querySelectorAll(".home-report .brief-columns")].filter((o) => o !== el && o.contains(el)).length,
         width: el.clientWidth, rem, stacked: el.hasAttribute("data-stacked"), widths, cells };
     });
-  });
+  }, key);
 const overflow = () =>
   page.evaluate(() => {
-    const view = document.querySelector(".home-view");
-    const cards = [...document.querySelectorAll(".home-view [data-section-key]")].filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.dataset.sectionKey);
+    const view = document.querySelector(".home-report");
+    const cards = [...document.querySelectorAll(".home-report :is(.report-main, .report-rail, .report-block)")].filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.className);
     return { page: document.documentElement.scrollWidth > innerWidth, view: view.scrollWidth > view.clientWidth + 1, cards };
   });
 // Computed colours come as rgb(0-255 …) or, from color-mix(in srgb, …), as
@@ -248,7 +252,7 @@ const contrast = (a, b) => {
 /** Each tinted group: its background, and the colour of its body text and its title, measured apart. */
 const tones = () =>
   page.evaluate(() =>
-    [...document.querySelectorAll(".home-view .brief-group[data-tone]")].map((g) => {
+    [...document.querySelectorAll(".home-report .brief-group[data-tone]")].map((g) => {
       const text = g.querySelector(".brief-markdown p, .brief-markdown");
       const title = g.querySelector(":scope > h4");
       return { tone: g.dataset.tone, background: getComputedStyle(g).backgroundColor, card: getComputedStyle(g.closest(".brief-body")).backgroundColor,
@@ -256,6 +260,42 @@ const tones = () =>
     }),
   );
 const card = (key) => page.locator(`.home-view [data-section-key="${key}"]`);
+const opened = () => page.locator(".home-report");
+/** A section's report page, opened from its card on Home (T-18). */
+async function openReport(key) {
+  await card(key).locator(".home-report-open").scrollIntoViewIfNeeded();
+  await card(key).locator(".home-report-open").click();
+  await opened().locator(".report-head h1").waitFor();
+  await sleep(150);
+}
+async function closeReport() {
+  await opened().locator(".report-back").click();
+  await opened().waitFor({ state: "hidden" });
+}
+/** Every Columns of these sections' pages, each opened in turn. */
+async function columnsOf(keys, shoot) {
+  const shown = [];
+  for (const key of keys) {
+    await openReport(key);
+    shown.push(...(await columnsShown(key)));
+    const fit = await overflow();
+    assert.deepEqual(fit, { page: false, view: false, cards: [] }, `${key}: ${JSON.stringify(fit)}`);
+    if (shoot) await shoot(key);
+    await closeReport();
+  }
+  return shown;
+}
+/** The tinted groups of the overview's and the nested section's pages. */
+async function tonesOf() {
+  const found = [];
+  for (const key of ["overview", "nested"]) {
+    await openReport(key);
+    found.push(...(await tones()));
+    await closeReport();
+  }
+  return found;
+}
+const KEYS = ["overview", "quad", "trio", "nested", "legacy"];
 const briefChanged = () =>
   page.evaluate(() => window.__homeEvents?.onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "brief" }), lastEventId: "" }));
 
@@ -294,30 +334,28 @@ try {
       await open(theme, width, rootPx);
       // The setting took: the root and the Brief text are at its size.
       const size = rootPx ?? 16;
+      await openReport("overview");
       const root = await page.evaluate(() => ({
         fontSize: document.documentElement.dataset.fontSize,
         reading: document.documentElement.style.getPropertyValue("--reading-size"),
         adjust: document.documentElement.style.getPropertyValue("--font-adjust"),
         rem: parseFloat(getComputedStyle(document.documentElement).fontSize),
-        brief: parseFloat(getComputedStyle(document.querySelector(".home-view .brief-body")).fontSize),
+        brief: parseFloat(getComputedStyle(document.querySelector(".home-report .brief-body")).fontSize),
       }));
       assert.deepEqual({ ...root, brief: Math.round(root.brief * 100) / 100 },
         { fontSize: String(size), reading: `${size}px`, adjust: `${size - 13}px`, rem: size, brief: Math.round(0.88 * size * 100) / 100 });
-      const shown = await columnsShown();
-      assert.deepEqual(judge(shown), []);
-      const fit = await overflow();
-      assert.deepEqual(fit, { page: false, view: false, cards: [] });
       await page.screenshot({ path: resolve(output, `${name}.png`) });
-      for (const key of ["overview", "nested"]) {
-        await card(key).evaluate((el) => el.scrollIntoView({ block: "center" }));
-        await sleep(100);
-        await card(key).screenshot({ path: resolve(output, `${name}-${key}.png`) });
-      }
+      await closeReport();
+      const shown = await columnsOf(KEYS, async (key) => {
+        if (key !== "overview" && key !== "nested") return;
+        await opened().locator(".report-article").screenshot({ path: resolve(output, `${name}-${key}.png`) });
+      });
+      assert.deepEqual(judge(shown), []);
       report.views[name] = shown.map((c) => ({ key: c.key, depth: c.depth, width: c.width, stacked: c.stacked }));
       return { columns: report.views[name] };
     });
     await step(`${name}: tinted groups keep their text at 4.5:1 or more`, async () => {
-      const found = await tones();
+      const found = await tonesOf();
       assert.deepEqual(found.map((t) => t.tone).sort(), ["accent", "muted"]);
       for (const t of found) {
         assert.notEqual(t.background, t.card, `${t.tone} is tinted`);
@@ -335,7 +373,7 @@ try {
     for (const palette of ["garden", "yuzu", "graphite", "pine", "sunroom"])
       for (const theme of ["light", "dark"]) {
         await open(theme, 1440, undefined, palette);
-        const found = await tones();
+        const found = await tonesOf();
         const low = found.filter((t) => !t.text || contrast(t.text, t.background) < 4.5 || (t.title && contrast(t.title, t.background) < 4.5));
         measured[`${palette}-${theme}`] = found.map((t) => [t.tone, +contrast(t.text, t.background).toFixed(2), t.title && +contrast(t.title, t.background).toFixed(2)]);
         assert.deepEqual(low.map((t) => t.tone), [], `${palette}-${theme}: ${JSON.stringify(measured[`${palette}-${theme}`])}`);
@@ -347,15 +385,23 @@ try {
   await step("on one page, narrow to wide and back: each Columns follows its own width, the nested pair in different states on the way", async () => {
     await open("light", 390);
     const states = [];
-    for (const width of [390, 1440, 2400, 1100, 390]) {
-      await page.setViewportSize({ width, height: 900 });
-      await sleep(400);
-      const shown = await columnsShown();
-      assert.deepEqual(judge(shown), [], `at ${width}px`);
-      const nested = Object.fromEntries(shown.filter((c) => c.key === "nested").map((c) => [c.depth ? "inner" : "outer", c.stacked]));
-      states.push({ width, outer: nested.outer, inner: nested.inner, overview: shown.find((c) => c.key === "overview").stacked });
-      assert.deepEqual(await overflow(), { page: false, view: false, cards: [] }, `at ${width}px`);
-      await page.screenshot({ path: resolve(output, `resize-${width}-${states.length}.png`) });
+    const widths = [390, 1440, 2400, 1100, 390];
+    for (const key of ["nested", "overview"]) {
+      await page.setViewportSize({ width: widths[0], height: 900 });
+      await openReport(key);
+      for (const [i, width] of widths.entries()) {
+        await page.setViewportSize({ width, height: 900 });
+        await sleep(400);
+        const shown = await columnsShown(key);
+        assert.deepEqual(judge(shown, [key]), [], `${key} at ${width}px`);
+        if (key === "nested") {
+          const nested = Object.fromEntries(shown.map((c) => [c.depth ? "inner" : "outer", c.stacked]));
+          states.push({ width, outer: nested.outer, inner: nested.inner });
+        } else states[i].overview = shown[0].stacked;
+        assert.deepEqual(await overflow(), { page: false, view: false, cards: [] }, `${key} at ${width}px`);
+        await page.screenshot({ path: resolve(output, `resize-${key}-${width}-${i + 1}.png`) });
+      }
+      await closeReport();
     }
     assert.ok(states.some((s) => s.outer === false && s.inner === true), `the outer pair side by side while the inner pair stacks: ${JSON.stringify(states)}`);
     assert.ok(states[0].overview && !states[1].overview && states.at(-1).overview, `the overview stacks, unstacks and stacks again: ${JSON.stringify(states)}`);
@@ -365,15 +411,20 @@ try {
 
   await step("an older body without layout components draws as before: its titled group, no failed part", async () => {
     await open("light", 1440);
-    const legacy = card("legacy");
-    assert.equal(await legacy.locator(".brief-group h4").innerText(), "Detail");
+    await openReport("legacy");
+    const legacy = opened();
+    assert.equal(await legacy.locator(".report-main .brief-group h4").innerText(), "Detail");
     assert.equal(await legacy.locator(".brief-columns, .brief-group[data-tone]").count(), 0);
-    assert.equal(await page.locator(".home-view .result-part-error").count(), 0);
+    assert.equal(await legacy.locator(".result-part-error").count(), 0);
+    await closeReport();
   });
 
-  await step("the wheel over a Home table scrolls the page, not the table: no height cap, no overscroll containment (T-9)", async () => {
+  await step("the wheel over a report's table scrolls the page, not the table: no height cap, no overscroll containment (T-9)", async () => {
     await open("light", 1440);
-    const region = card("overview").locator(".result-table-scroll");
+    // A window short enough that the report's page has somewhere to scroll.
+    await page.setViewportSize({ width: 1440, height: 480 });
+    await openReport("overview");
+    const region = opened().locator(".result-table-scroll");
     await region.evaluate((el) => el.scrollIntoView({ block: "center" }));
     await sleep(100);
     const read = () => region.evaluate((el) => {
@@ -401,8 +452,16 @@ try {
     return { dy, before, after };
   });
 
-  await step("a live edit of one block keeps every other block's node, the card's place, the scroll and the table's filter; editing the table clears it", async () => {
-    const overviewCard = card("overview");
+  await step("a live edit of one block of a pinned section keeps every other block's node, the widget's place, the scroll and the table's filter; editing the table clears it", async () => {
+    // A report page holds the version it opened (T-18); a pinned widget
+    // draws the section as it changes, so the live edit is read there.
+    await page.close();
+    await open("light", 1440);
+    await card("overview").getByRole("button", { name: "More actions for “Curve study overview”" }).click();
+    await card("overview").locator(".home-summary-more-list").waitFor();
+    await card("overview").getByRole("button", { name: "Pin “Curve study overview” to My widgets" }).click();
+    const overviewCard = page.locator(".home-widget-column .home-pinned").first();
+    await overviewCard.locator(".result-table-scroll").waitFor();
     await overviewCard.locator('input[aria-label="Filter Runs"]').fill("2");
     // "2" matches runs 12 and 21.
     await until("the filter", async () => (await overviewCard.locator(".result-table-scroll tbody tr").count()) === 2);
@@ -412,7 +471,7 @@ try {
     const before = await page.evaluate(() => {
       const scroller = [...document.querySelectorAll(".home-view, .home-view *")].find((el) => el.scrollHeight > el.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) || document.scrollingElement;
       window.__scroller = scroller;
-      const cardEl = document.querySelector('.home-view [data-section-key="overview"]');
+      const cardEl = document.querySelector(".home-widget-column .home-pinned");
       // Every block but the Plan, which the edit replaces.
       cardEl.querySelectorAll('.brief-markdown, .brief-list:not([aria-label="Plan"]), .brief-metrics, .result-table-section').forEach((el, i) => (el.dataset.mark = `m${i}`));
       return { scroll: scroller.scrollTop, top: Math.round(cardEl.getBoundingClientRect().top), marked: cardEl.querySelectorAll("[data-mark]").length };
@@ -423,7 +482,7 @@ try {
     await until("the edited plan", async () => /Ablations/.test(await overviewCard.locator('[aria-label="Plan"] li[data-state="doing"]').innerText().catch(() => "")));
     await sleep(300);
     const after = await page.evaluate(() => {
-      const cardEl = document.querySelector('.home-view [data-section-key="overview"]');
+      const cardEl = document.querySelector(".home-widget-column .home-pinned");
       return { scroll: window.__scroller.scrollTop, top: Math.round(cardEl.getBoundingClientRect().top), marked: cardEl.querySelectorAll("[data-mark]").length };
     });
     assert.equal(after.marked, before.marked, "the unchanged blocks are the same nodes");

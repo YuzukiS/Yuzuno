@@ -127,8 +127,32 @@ const markdown = (text) => ({ root: "b", elements: { b: { type: "BriefBody", pro
 const fillers = ["setup", "data", "baseline"].map((key, i) => section(key, 20 + i, 1, { title: `Notes on ${key}`,
   body: markdown(Array.from({ length: 6 }, (_, n) => `Paragraph ${n + 1} about the ${key}.`).join("\n\n")) }));
 let evalVersion = 3;
+// Summary cards of every shape the deck draws (T-18 PR-B): many conditions,
+// an image figure, a table figure.
+const summaryBody = (lead, extra, summary) => ({ root: "body", elements: {
+  body: { type: "BriefBody", props: { summary }, children: Object.keys(extra).concat("lead").sort((a, b) => (a === "lead" ? -1 : b === "lead" ? 1 : 0)) },
+  lead: { type: "Markdown", props: { text: lead } },
+  ...extra,
+} });
+const deck = [
+  section("audit", 30, 2, { title: "Fewer LLM round trips: three-stage static audit", body: summaryBody(
+    "Found fixed hand-offs worth trying; not yet shown that most development calls can go to programs.",
+    { holds: { type: "Checklist", props: { items: ["Read-only stored records", "Three-stage flow", "304 model replies", "Rule pre-screen", "Item-by-item audit", "One reviewer", "No live traffic", "Synthetic prompts"].map((text, i) => ({ id: `c${i}`, text, done: true })) } },
+      funnel: { type: "Metrics", props: { items: [{ label: "Model replies", value: 304 }, { label: "Pre-screened", value: 52 }, { label: "Kept", value: 29 }] } } },
+    { lead: "lead", visual: "funnel", conditions: "holds" }) }),
+  section("screens", 31, 1, { title: "Home layout screenshots", attachments: [evalFiles[1]], body: summaryBody(
+    "The deck adds a column as the pane widens and stacks on a phone.",
+    { shot: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Loss by subset" }] } } },
+    { lead: "lead", visual: "shot" }) }),
+  section("batches", 32, 1, { title: "Why batches were dropped", body: summaryBody(
+    "All three batches stay under the 5% stop line; duplicates are the largest cause.",
+    { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ." } },
+      table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
+        rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } },
+    { lead: "lead", visual: "table", conditions: "why" }) }),
+];
 const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A", attachments: evalFiles }),
-  { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }];
+  { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }, ...deck];
 const pointer = (document, at) => at.split("/").slice(1).reduce((value, part) => (value && typeof value === "object" ? value[part] : undefined), document);
 /** Core's research read of the desk, from the fixture files, as research.rs answers it. */
 function research(version) {
@@ -150,6 +174,12 @@ function research(version) {
 const home = () => ({ generatedAt: new Date().toISOString(), order: ["p1"], needsYou: [], projects: [{
   project: { id: "p1", name: "atlas-notes" }, agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
   errors: [], pending: [], jobs: [], brief: { version: 5, sections: sections(), history: [] }, unseen: 1, missing: [] }] });
+// The project's one repository (synthetic), for its line on Home (T-18).
+const linkedRepo = { id: 1, fullName: "example/atlas-notes", url: "https://github.com/example/atlas-notes", syncedAt: iso(-MIN), error: null };
+const repoActivity = () => ({ ...linkedRepo, defaultBranch: "main", observedAt: iso(-MIN), stale: false, pullsTotal: 2,
+  commits: [{ sha: "b2eaeea5b9270debca8421ebfc94b2fc0bb13f5c", title: "Merge the synthetic loader fix", author: "mori", at: iso(-16 * 60 * MIN), url: "https://github.com/example/atlas-notes/commit/b2eaeea" }],
+  pulls: [{ number: 12, title: "Dose study notes", author: "mori", draft: false, url: "https://github.com/example/atlas-notes/pull/12" }],
+  runs: [{ id: 7, name: "CI", branch: "main", status: "completed", conclusion: "success", at: iso(-15 * 60 * MIN), url: "https://github.com/example/atlas-notes/actions/runs/7" }] });
 const machineLoad = () => ({ at: new Date().toISOString(), cpu: { cores: 32, totalPct: 20, jobsPct: 0, agentsPct: null, otherPct: null },
   memory: { totalMiB: 40107, usedMiB: 12000, availableMiB: 28107, jobsMiB: 0, agentsMiB: null }, gpus: [], jobs: [] });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".woff2": "font/woff2", ".woff": "font/woff",
@@ -166,7 +196,7 @@ async function serve(route) {
   if (path === "/api/agents/a/reading") return route.fulfill({ json: request.method() === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     // A list read (home-api.ts): it starts no GitHub sync.
-    if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+    if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [linkedRepo], links: [] } });
     report.writes.push(`${request.method()} ${path}`);
     return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
   }
@@ -174,7 +204,7 @@ async function serve(route) {
     report.reads.push(`${path}?${url.searchParams}`);
     return route.fulfill({ json: chartData });
   }
-  if (path === "/api/projects/p1/brief/attachments/eval/shot.png") {
+  if (/^\/api\/projects\/p1\/brief\/attachments\/(eval|screens)\/shot\.png$/.test(path)) {
     report.reads.push(`${path}?${url.searchParams}`);
     return route.fulfill({ body: PNG, contentType: "image/png" });
   }
@@ -190,7 +220,7 @@ async function serve(route) {
     "/api/home": home,
     "/api/agents/a": () => ({ agent, pending: [], messageReceipts: [], artifacts: [], turns }),
     "/api/machine-load": machineLoad,
-    "/api/projects/p1/repo-activity": () => ({ observedAt: iso(-MIN), repositories: [] }),
+    "/api/projects/p1/repo-activity": () => ({ observedAt: iso(-MIN), repositories: [repoActivity()] }),
     "/api/updates": () => unmanagedUpdates,
     "/api/jobs/budget": () => idleJobsBudget,
     "/api/jobs": () => noJobs,
@@ -515,6 +545,106 @@ try {
     assert.equal(await page.evaluate(() => document.activeElement?.matches('[data-section-key="eval"] .home-report-open') ?? false), true);
     return { layout: shown };
   });
+
+  for (const [width, height, name] of [[1720, 1100, "home-1720"], [1200, 900, "home-1200"], [647, 900, "home-647"], [390, 844, "home-phone-390"]])
+    await step(`Home deck at ${width}: columns by the pane, summary cards bounded, conditions in two lines, legacy cards plain; nothing sideways`, async () => {
+      await open(width, height);
+      await toHome();
+      // The repositories' line reads its activity only once on screen, as the lists did.
+      await page.locator('[data-home-project="p1"] .home-repos').scrollIntoViewIfNeeded();
+      await until("the repository's line", () => page.locator('[data-home-project="p1"] .home-repos .repo-line-commit .repo-row').count());
+      await card("audit").scrollIntoViewIfNeeded();
+      await until("the image figure", () => page.evaluate(() => { const img = document.querySelector('[data-section-key="screens"] .home-card-frame img'); return img?.complete && img.naturalWidth > 0; }));
+      const deckShape = await page.evaluate(() => {
+        const brief = document.querySelector('[data-home-project="p1"] .home-brief');
+        const view = document.querySelector(".home-view");
+        const style = getComputedStyle(view);
+        const container = view.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        const cards = [...brief.querySelectorAll(".home-section")];
+        const lefts = [...new Set(cards.map((el) => Math.round(el.getBoundingClientRect().left)))];
+        const one = (key) => document.querySelector(`.home-view [data-section-key="${key}"]`);
+        const frame = (key) => one(key)?.querySelector(".home-card-frame-body")?.getBoundingClientRect().height ?? null;
+        const chips = [...one("audit").querySelectorAll(".home-card-condition-chips li")];
+        const shown = chips.filter((li) => !li.hidden);
+        const scroller = document.scrollingElement;
+        return {
+          container, columns: lefts.length,
+          frames: { audit: frame("audit"), screens: frame("screens"), batches: frame("batches") },
+          chipLines: new Set(shown.map((li) => li.offsetTop)).size, hidden: chips.length - shown.length,
+          more: one("audit").querySelector(".home-card-conditions-toggle")?.textContent ?? null,
+          table: one("batches").querySelector("figcaption")?.textContent ?? null,
+          tableCells: one("batches").querySelectorAll(".home-card-table tbody td").length,
+          legacy: one("setup").querySelector(".home-summary-unnamed")?.textContent ?? null,
+          legacyBody: !!one("setup").querySelector(".brief-body"),
+          // A card with no summary keeps its own height beside taller cards.
+          legacyHeights: ["setup", "dose-study"].map((key) => Math.round(one(key).getBoundingClientRect().height)),
+          leadMin: getComputedStyle(one("audit").querySelector(".home-summary-lead .brief-markdown")).minHeight,
+          machines: (() => {
+            const widget = document.querySelector(".home-machines"), column = document.querySelector(".home-widget-column");
+            const cells = [...widget.querySelectorAll(".home-machine > *")].map((el) => el.getBoundingClientRect());
+            return { width: Math.round(widget.getBoundingClientRect().width), column: Math.round(column.getBoundingClientRect().width),
+              height: Math.round(widget.getBoundingClientRect().height), rows: new Set(cells.map((r) => Math.round(r.top))).size, cells: cells.length };
+          })(),
+          repos: (() => {
+            const bar = document.querySelector('[data-home-project="p1"] .home-repos'), line = bar?.querySelector(".repo-line");
+            return bar && { height: Math.round(bar.getBoundingClientRect().height), lineHeight: Math.round(line.getBoundingClientRect().height),
+              text: line.innerText.replace(/\s+/g, " "), details: bar.querySelector(".home-repos-details")?.textContent ?? null };
+          })(),
+          sideways: scroller.scrollWidth > scroller.clientWidth || [...document.querySelectorAll(".home-view *")].some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === "auto" && !el.closest(".result-table-scroll, pre")),
+        };
+      });
+      const expected = deckShape.container >= 1500 ? 4 : deckShape.container >= 1100 ? 3 : deckShape.container >= 540 ? 2 : 1;
+      assert.equal(deckShape.columns, expected, JSON.stringify(deckShape));
+      const frameHeight = deckShape.container >= 540 ? 138 : 118;
+      for (const [key, value] of Object.entries(deckShape.frames)) assert.equal(Math.round(value), frameHeight, `${key} frame: ${JSON.stringify(deckShape)}`);
+      assert.ok(deckShape.chipLines <= 3 && deckShape.hidden !== 1, JSON.stringify(deckShape));
+      if (deckShape.hidden > 0) assert.equal(deckShape.more, `+${deckShape.hidden} more conditions`);
+      assert.equal(deckShape.table, "3 of 9 rows · 3 of 6 columns");
+      assert.equal(deckShape.tableCells, 9);
+      assert.equal(deckShape.legacy, "No summary named");
+      assert.equal(deckShape.legacyBody, false);
+      assert.equal(deckShape.sideways, false, JSON.stringify(deckShape));
+      // Dev 7 (2308): the lead keeps three lines only where a row lines up.
+      assert.equal(deckShape.leadMin === "0px", deckShape.container < 540, `the lead's minimum height: ${deckShape.leadMin}`);
+      if (deckShape.container >= 540) assert.ok(deckShape.legacyHeights.every((h) => h <= 170), `legacy cards at their own height: ${deckShape.legacyHeights}`);
+      // Machines fills its row, as one row of four cells where it is wide.
+      assert.equal(deckShape.machines.width, deckShape.machines.column, JSON.stringify(deckShape.machines));
+      assert.equal(deckShape.machines.cells, 4);
+      assert.equal(deckShape.machines.rows, deckShape.machines.width > 760 ? 1 : deckShape.machines.width > 460 ? 2 : 4, JSON.stringify(deckShape.machines));
+      // Repositories: one line under the project head where there is room.
+      assert.match(deckShape.repos.text, /example\/atlas-notes.*main.*passed\s*CI.*b2eaeea\s*Merge the synthetic loader fix.*2 open PRs/);
+      assert.equal(deckShape.repos.details, "Repository details");
+      if (deckShape.container >= 800) assert.ok(deckShape.repos.lineHeight <= 30, `one line: ${JSON.stringify(deckShape.repos)}`);
+      await shot(`${name}.png`);
+      if (deckShape.hidden > 0) {
+        await card("audit").locator(".home-card-conditions-toggle").click();
+        const opened = await card("audit").evaluate((el) => ({ hidden: el.querySelectorAll(".home-card-condition-chips li[hidden]").length, label: el.querySelector(".home-card-conditions-toggle").textContent }));
+        assert.deepEqual(opened, { hidden: 0, label: "Show fewer conditions" });
+        await shot(`${name}-conditions-open.png`);
+      }
+      const readable = await page.evaluate(() => {
+        const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+        const paint = (colors) => { probe.clearRect(0, 0, 1, 1); probe.fillStyle = "#fff"; probe.fillRect(0, 0, 1, 1); for (const c of colors) { probe.fillStyle = "#000"; probe.fillStyle = c; probe.fillRect(0, 0, 1, 1); } return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+        const lum = (rgb) => { const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+        const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
+        let lowest = { ratio: 99 };
+        for (const el of document.querySelectorAll(".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label)")) {
+          if (!el.checkVisibility() || !el.textContent.trim()) continue;
+          const chain = [];
+          for (let n = el; n; n = n.parentElement) chain.unshift(getComputedStyle(n).backgroundColor);
+          const bg = paint(chain);
+          const value = ratio(paint([`rgb(${bg.join(",")})`, getComputedStyle(el).color]), bg);
+          if (value < lowest.ratio) lowest = { ratio: value, text: el.textContent.trim().slice(0, 30), cls: el.className };
+        }
+        return lowest;
+      });
+      assert.ok(readable.ratio >= 4.5, JSON.stringify(readable));
+      // The top: Machines and the project's Repositories line, for review.
+      await page.evaluate(() => document.querySelector(".home-machines").scrollIntoView({ block: "start" }));
+      await sleep(150);
+      await shot(`${name}-top.png`);
+      return { deck: deckShape, readable };
+    });
 
   await step("motion: the report rises in over 220 ms, and under reduced motion nothing moves", async () => {
     const animation = async (motion) => {

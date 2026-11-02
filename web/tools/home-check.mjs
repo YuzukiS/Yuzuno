@@ -522,7 +522,7 @@ const layout = () =>
               cards: Object.fromEntries(
                 [...p.querySelectorAll("[data-section-key]")].map((c) => {
                   const r = c.getBoundingClientRect();
-                  return [c.dataset.sectionKey, { top: round(r.top - origin), inPanel: round(r.top - box.top), height: round(r.height), version: Number(c.dataset.sectionVersion) }];
+                  return [c.dataset.sectionKey, { top: round(r.top - origin), left: round(r.left), inPanel: round(r.top - box.top), height: round(r.height), version: Number(c.dataset.sectionVersion) }];
                 }),
               ),
             },
@@ -941,7 +941,11 @@ try {
     await until("version 4", async () => (await build.getAttribute("data-section-version")) === "4");
     assert.equal(await build.locator(".home-changed").innerText(), "Updated");
     assert.match(await build.getAttribute("class"), /\bis-changed\b/);
-    const marks = await build.locator(".brief-change").evaluateAll((els) => els.map((el) => ({
+    // The changed blocks are marked where the body is read: its report page (T-18).
+    const opened = page.locator(".home-report");
+    await build.locator(".home-report-open").click();
+    await opened.locator(".report-head h1").waitFor();
+    const marks = await opened.locator(".report-main .brief-change").evaluateAll((els) => els.map((el) => ({
       change: el.dataset.change,
       mark: el.querySelector(":scope > .brief-change-mark")?.textContent,
       block: [...(el.querySelector(":scope > :not(.brief-change-mark)")?.classList ?? [])].find((name) => name.startsWith("brief-")),
@@ -952,7 +956,9 @@ try {
       ["updated", "Updated", "brief-metrics"],
     ]);
     assert.match(marks[0].text, /lockfile/);
-    assert.equal(writesTo(/\/brief\/seen$/).length, 1, "nothing marked by itself");
+    await opened.locator(".report-back").click();
+    await opened.waitFor({ state: "hidden" });
+    assert.equal(writesTo(/\/brief\/seen$/).length, 1, "nothing marked by itself, reading the page included");
     return { body: write.body, marks };
   });
 
@@ -1019,7 +1025,9 @@ try {
     const after = await settled();
     const keys = Object.keys(before.panels.p1.cards);
     assert.deepEqual(moved(before.panels.p1.cards, after.panels.p1.cards, keys), [], "an appended section moved the cards before it");
-    assert.ok(after.panels.p1.cards.deploy.top > Math.max(...keys.map((k) => after.panels.p1.cards[k].top)), "appended at the end");
+    // The deck reads row by row (T-18): the new card comes after every other one.
+    const deploy = after.panels.p1.cards.deploy;
+    assert.ok(keys.every((k) => { const c = after.panels.p1.cards[k]; return deploy.top > c.top + 1 || (Math.abs(deploy.top - c.top) <= 1 && deploy.left > c.left); }), "appended at the end");
     // A shorter new version keeps its card's height: the cards below stay.
     const build = sectionByKey("p1", "build");
     const buildVersion = build.version + 1;
