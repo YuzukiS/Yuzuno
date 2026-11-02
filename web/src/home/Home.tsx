@@ -4,7 +4,7 @@ import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
 import { shellText } from "../shell-text";
 import type { Agent, HomeReplyOrigin, Project } from "../types";
-import type { MessageLink } from "../deep-link";
+import type { MessageLink, ReportLink } from "../deep-link";
 import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
@@ -25,6 +25,9 @@ import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
 import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDensityRefusal } from "./home-density";
+import { ReportPage } from "./report/ReportPage";
+import { linkTo } from "./report/report-model";
+import { ReportOpen, type ReportOpener } from "./report/report-open";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -41,6 +44,13 @@ function displayOrder(data: HomeData, local: string[] | null) {
   const placed = new Set(order);
   return [...order, ...data.projects.map((p) => p.project.id).filter((id) => !placed.has(id))];
 }
+
+/** A report open over Home (T-18): where Back goes, and its own history entry. */
+type OpenReport = { link: ReportLink; back: MessageLink | null; from: HTMLElement | null; entry: number };
+const REPORT_STATE = "yuzunoReport";
+const historyState = (): Record<string, unknown> =>
+  history.state && typeof history.state === "object" ? { ...history.state } : {};
+const reportEntryOnTop = (open: OpenReport | null) => !!open && historyState()[REPORT_STATE] === open.entry;
 
 const reducedMotion = () =>
   typeof window.matchMedia === "function" &&
@@ -64,6 +74,7 @@ export function Home({
   onNeedsYou,
   arrival = null,
   onBackToReply,
+  report: incomingReport = null,
 }: {
   /** Bumped (debounced) on Agent changes and anything else Home shows. */
   revision: number;
@@ -81,6 +92,9 @@ export function Home({
    * answered, and the message to go back to; another opening is another `n`. */
   arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
   onBackToReply?: (link: MessageLink) => void;
+  /** A report link opened elsewhere (T-18): the report, the message it was
+   * opened from if any, for Back; another opening is another `n`. */
+  report?: { link: ReportLink; back: MessageLink | null; n: number } | null;
 }) {
   const language = useLanguage();
   const t = homeText(language);
@@ -284,6 +298,101 @@ export function Home({
       clear();
     };
   }, [reveal]);
+  // A section's report, over Home (T-18). Home stays mounted and laid out
+  // below it, so its scroll place, folds and drafts are as they were. The
+  // report has a history entry of its own: the browser's Back closes it as
+  // the page's Back and Escape do, and focus returns to what opened it.
+  const [report, setReport] = useState<OpenReport | null>(null);
+  const shownReport = useRef(report);
+  shownReport.current = report;
+  const reportEntry = useRef(0);
+  const returnTo = useRef<HTMLElement | null>(null);
+  const afterReport = useRef<(() => void) | null>(null);
+  // Between the browser's Back and its popstate: another Back is not another step.
+  const closing = useRef(false);
+  function openReport(link: ReportLink, back: MessageLink | null, from: HTMLElement | null) {
+    const open = shownReport.current;
+    closing.current = false;
+    const entry = ++reportEntry.current;
+    const state = { ...historyState(), [REPORT_STATE]: entry };
+    if (reportEntryOnTop(open)) history.replaceState(state, "");
+    else history.pushState(state, "");
+    // A report opened from a report (another version, a link in it) keeps
+    // where Back returns to.
+    setReport({ link, back: open ? open.back : back, from: open ? open.from : from, entry });
+  }
+  const openReportNow = useRef(openReport);
+  openReportNow.current = openReport;
+  function finishReport() {
+    const open = shownReport.current;
+    if (!open) return;
+    closing.current = false;
+    setReport(null);
+    const then = afterReport.current;
+    afterReport.current = null;
+    if (then) then();
+    else if (open.back && onBackToReply) onBackToReply(open.back);
+    else returnTo.current = open.from;
+  }
+  const finishReportNow = useRef(finishReport);
+  finishReportNow.current = finishReport;
+  function closeReport(then?: () => void) {
+    if (closing.current) return;
+    afterReport.current = then ?? null;
+    if (reportEntryOnTop(shownReport.current)) {
+      closing.current = true;
+      history.back();
+    }
+    else finishReport();
+  }
+  useEffect(() => {
+    if (!report) return;
+    const popped = (event: PopStateEvent) => {
+      const state = event.state && typeof event.state === "object" ? (event.state as Record<string, unknown>) : {};
+      if (state[REPORT_STATE] !== report.entry) finishReportNow.current();
+    };
+    window.addEventListener("popstate", popped);
+    return () => window.removeEventListener("popstate", popped);
+  }, [report]);
+  // Leaving Home with a report open leaves its entry as an ordinary one.
+  useEffect(
+    () => () => {
+      if (!reportEntryOnTop(shownReport.current)) return;
+      const { [REPORT_STATE]: _entry, ...rest } = historyState();
+      history.replaceState(Object.keys(rest).length ? rest : null, "");
+    },
+    [],
+  );
+  const incoming = useRef(0);
+  useEffect(() => {
+    if (!incomingReport || incoming.current === incomingReport.n) return;
+    incoming.current = incomingReport.n;
+    const active = document.activeElement;
+    openReportNow.current(
+      incomingReport.link,
+      incomingReport.back,
+      active instanceof HTMLElement && active.closest(".home-view") ? active : null,
+    );
+  }, [incomingReport]);
+  // Back on Home: focus where the report was opened from, with a short ring.
+  useEffect(() => {
+    if (report) return;
+    const target = returnTo.current;
+    returnTo.current = null;
+    if (!target?.isConnected) return;
+    target.focus({ preventScroll: true });
+    const card = target.closest<HTMLElement>(".home-section") ?? target;
+    card.setAttribute("data-report-return", "");
+    const timer = setTimeout(() => card.removeAttribute("data-report-return"), 1200);
+    return () => {
+      clearTimeout(timer);
+      card.removeAttribute("data-report-return");
+    };
+  }, [report]);
+  const cardReport = useCallback<ReportOpener>(
+    (projectId, section, from) => openReportNow.current({ workspaceId, ...linkTo(projectId, section) }, null, from),
+    [workspaceId],
+  );
   // The open Agents of each project, the same arrays while they do not change,
   // so section cards are not drawn again for unrelated workspace reads.
   const agentsKey = agents
@@ -371,7 +480,14 @@ export function Home({
     <PinsContext.Provider value={pins}>
     <BriefDensity.Provider value={density}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
-    <div className="home-view" lang={langTag(language)} data-density={density}>
+    <ReportOpen.Provider value={cardReport}>
+    <div className="home-stage">
+    <div
+      className={`home-view${report ? " is-under-report" : ""}`}
+      lang={langTag(language)}
+      data-density={density}
+      inert={report ? true : undefined}
+    >
       <header className="home-header">
         <h1>
           <House size={18} />
@@ -504,6 +620,24 @@ export function Home({
         </div>
       )}
     </div>
+    {report && (
+      <ReportPage
+        key={report.entry}
+        link={report.link}
+        back={!!report.back}
+        data={data}
+        readFailed={readFailed}
+        workspaceId={workspaceId}
+        agents={projectAgents(report.link.projectId)}
+        readOnly={readOnly}
+        onBack={() => closeReport()}
+        onOpenVersion={(link) => openReport(link, null, null)}
+        onShowProject={(projectId) => closeReport(() => revealIn(projectId, () => null))}
+        onSeen={seen}
+      />
+    )}
+    </div>
+    </ReportOpen.Provider>
     </HomeReadContext.Provider>
     </BriefDensity.Provider>
     </PinsContext.Provider>

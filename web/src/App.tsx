@@ -95,7 +95,7 @@ import { useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi } from "./deep-link";
+import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { ageText, markOfferHandled, offerable, restoredOffset, type Handoff } from "./reading-handoff";
 import { publishReading, readHandoff } from "./reading-handoff-api";
@@ -201,6 +201,7 @@ import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
+import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
@@ -394,6 +395,9 @@ export function App() {
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
+  /** A report link opened from outside Home (T-18), and the message it was
+   * clicked in, for Back; another opening is another `n`. */
+  const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; n: number } | null>(null);
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
@@ -1744,13 +1748,30 @@ export function App() {
     setHomeOpen(true);
     setPhoneList(false);
   }
+  /** Opens the report a link names (T-18) over Home; from a message, Back
+   * returns to it. Another Workspace's report is said, and nothing opens. */
+  function openReportLink(link: ReportLink, from?: { turnId: string; itemId?: string }) {
+    if (!workspace) { setIncomingLink({ kind: "report", ...link }); return; }
+    if (link.workspaceId !== workspaceId) {
+      setNotice(reportText(language).otherWorkspace);
+      return;
+    }
+    const reading = from && !homeOpen ? currentDetail?.agent : undefined;
+    const back = reading && from ? { workspaceId, agentId: reading.id, turnId: from.turnId, itemId: from.itemId, threadId: reading.threadId } : null;
+    setHomeReport((last) => ({ link, back, n: (last?.n ?? 0) + 1 }));
+    setHomeOpen(true);
+    setPhoneList(false);
+  }
   function openAppLink(link: AppLink) {
     if (link.kind === "agent") openAgentLink(link);
     else if (link.kind === "home") openHomeLink(link);
+    else if (link.kind === "report") openReportLink(link);
     else openMessageLink(link);
   }
   const openLink = useRef(openMessageLink);
   openLink.current = openMessageLink;
+  const openReport = useRef(openReportLink);
+  openReport.current = openReportLink;
   /** "Open on Home" on a reply from Home (T-9): Home, at the section and
    * version it answered, where Home says what has become of it. A reply
    * from another Workspace's Home opens nothing here. */
@@ -1768,13 +1789,18 @@ export function App() {
   const homeReplyLinks = useMemo<HomeReplyLinksApi>(() => ({ open: (origin, from) => openHomeReply.current(origin, from) }), []);
   // Leaving Home ends the arrival: opening it again some other way is not one.
   useEffect(() => {
-    if (!homeOpen) setHomeArrival(null);
+    if (!homeOpen) {
+      setHomeArrival(null);
+      setHomeReport(null);
+    }
   }, [homeOpen]);
   const messageLinks = useMemo<MessageLinkApi>(() => ({
     href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
       ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
       : null,
     open: (link) => openLink.current(link),
+    reportHref: (link) => linkBase && workspaceId && !previewMode ? reportLinkHref(linkBase, { workspaceId, ...link }) : null,
+    openReport: (link, from) => openReport.current(link, from),
   }), [linkBase, workspaceId]);
   /** Notes where the shown conversation is being read (T-166). */
   function noteReading(latest: boolean) {
@@ -1797,8 +1823,8 @@ export function App() {
       if (position) reading.current = { agentId: shown, position };
     });
   }
-  // Search offers to open a message or an Agent link; a Home link is what a
-  // notification opens, not something to paste.
+  // Search offers to open a message, Agent or report link; a Home link is
+  // what a notification opens, not something to paste.
   const pastedLink = searchOpen ? parseAppLink(search) : null;
   const searchLink = pastedLink?.kind === "home" ? null : pastedLink;
   function openSearchLink() {
@@ -2552,7 +2578,7 @@ export function App() {
           {searchLink && (
             <button className="quiet-button open-message-link" onClick={openSearchLink}>
               <Link2 size={13} />
-              {searchLink.kind === "agent" ? shell.openLinkedAgent : shell.openLinkedMessage}
+              {searchLink.kind === "agent" ? shell.openLinkedAgent : searchLink.kind === "report" ? shell.openLinkedReport : shell.openLinkedMessage}
             </button>
           )}
         </div>
@@ -2702,6 +2728,7 @@ export function App() {
             onNeedsYou={reportNeedsYou}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
+            report={homeReport}
           />
         ) : agent ? (
           <>

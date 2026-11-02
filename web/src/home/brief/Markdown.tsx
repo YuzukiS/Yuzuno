@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
-import { parseMessageLink, useMessageLinks } from "../../deep-link";
+import { parseMessageLink, parseReportLink, useMessageLinks } from "../../deep-link";
 import { briefMarkdownHtml } from "./markdown-html";
 
 /**
@@ -23,6 +23,13 @@ export function BriefMarkdown({ text }: { text: string }) {
         if (message) {
           event.preventDefault();
           links.open(message);
+          return;
+        }
+        // A link to a report opens it over Home (T-18).
+        const report = links && parseReportLink(link.getAttribute("href") || "");
+        if (report) {
+          event.preventDefault();
+          links.openReport(report);
           return;
         }
         // Web links open outside Home; anything else (a relative or file

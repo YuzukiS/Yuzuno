@@ -1,0 +1,335 @@
+/* A section's report over Home (T-18, Dev 7's layout): Home stays below it,
+   as it was, and the page scrolls on its own. */
+.home-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.home-stage > * {
+  grid-area: 1 / 1;
+  min-height: 0;
+}
+/* Kept laid out, so its scroll place is kept too, but neither seen nor reached. */
+.home-view.is-under-report {
+  visibility: hidden;
+}
+
+.home-report {
+  overflow: auto;
+  overflow-anchor: auto;
+  color: var(--ink);
+  background: var(--paper);
+  container: report / inline-size;
+}
+.home-report:focus {
+  outline: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .home-report {
+    animation: report-open 220ms ease-out;
+  }
+}
+@keyframes report-open {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* The bar: back, where this is, and what can be done with it. */
+.report-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 52px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+.report-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--home-surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.report-back:hover {
+  background: var(--home-soft);
+}
+.report-crumb {
+  display: flex;
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.report-crumb > span {
+  flex: none;
+}
+.report-crumb > span + span::before {
+  content: "/";
+  margin: 0 6px;
+  color: var(--line-strong, var(--line));
+}
+.report-crumb-title {
+  flex: 0 1 auto !important;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.report-page {
+  box-sizing: border-box;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px 32px 56px;
+}
+.report-page > .loading-state {
+  min-height: 160px;
+}
+.report-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-soft);
+}
+.report-notice > svg {
+  flex: none;
+  color: var(--home-ink-2);
+}
+.report-notice > p {
+  flex: 1 1 18rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.report-read-note {
+  margin: 0 0 12px;
+}
+.report-page > .home-card-reply {
+  margin: 0 0 20px;
+}
+
+/* The head: what this is, by whom and as of when, said once. */
+.report-head {
+  margin-bottom: 20px;
+}
+.report-head h1 {
+  margin: 8px 0 6px;
+  font-size: calc(27px + var(--font-adjust, 3px));
+  line-height: 1.3;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.report-head h1:focus {
+  outline: none;
+}
+.report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.report-meta > span + span::before {
+  content: "·";
+  margin: 0 6px;
+}
+.report-changes {
+  margin: 6px 0 0;
+  color: var(--home-new);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+
+/* The main column, with the outline beside it where the page is wide. */
+.report-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+}
+.report-main {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+.report-rail {
+  display: none;
+}
+@container report (min-width: 1100px) {
+  .report-layout {
+    grid-template-columns: minmax(0, 1fr) 248px;
+  }
+  .report-rail {
+    display: block;
+    position: sticky;
+    top: 76px;
+    align-self: start;
+    max-height: calc(100vh - 120px);
+    overflow: auto;
+  }
+  .report-contents {
+    display: none;
+  }
+}
+.report-rail-title {
+  margin: 0 0 6px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.report-outline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.report-outline button {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-left: 2px solid var(--line);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  text-align: start;
+  cursor: pointer;
+}
+.report-outline button:hover {
+  border-left-color: var(--home-focus);
+  background: var(--home-soft);
+}
+.report-contents {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.report-contents > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  cursor: pointer;
+}
+.report-contents > .report-outline {
+  padding: 0 8px 10px;
+}
+
+/* The summary: the conclusion, large, then the key figure, framed. */
+.report-lead {
+  font-size: calc(15px + var(--font-adjust, 3px));
+  line-height: 1.65;
+}
+.report-lead .brief-markdown {
+  max-width: 40em;
+}
+.report-hero {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+}
+
+/* The rest, in the author's order. */
+.report-block {
+  min-width: 0;
+  scroll-margin-top: 72px;
+}
+.report-block:focus {
+  outline: none;
+}
+.report-block .brief-markdown {
+  max-width: 46em;
+}
+.report-block > .brief-body > .brief-root > .brief-group > h4,
+.report-block > .brief-body > .brief-root > .brief-change > .brief-group > h4 {
+  font-size: calc(16px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.report-more {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.report-more > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  color: var(--home-ink-2);
+  cursor: pointer;
+}
+.report-more > .brief-body {
+  padding: 0 14px 14px;
+}
+.report-fold.is-folded .report-fold-body {
+  max-height: 19.8em;
+  max-height: 12lh;
+  overflow: hidden;
+}
+.report-fold.is-folded.is-long .report-fold-body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+.report-fold-toggle {
+  margin-top: 6px;
+}
+
+@container report (max-width: 720px) {
+  .report-bar {
+    padding: 8px 12px;
+  }
+  .report-page {
+    padding: 16px 14px 40px;
+  }
+  .report-head h1 {
+    font-size: calc(20px + var(--font-adjust, 3px));
+  }
+  .report-lead {
+    font-size: calc(13px + var(--font-adjust, 3px));
+  }
+  .report-hero {
+    margin: 0 -14px;
+    border-radius: 0;
+    border-inline: 0;
+  }
+}
+
+/* Back on Home: a short ring on the card the report was opened from. */
+[data-report-return] {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-report-return] {
+    animation: home-highlight 1.2s ease-out;
+  }
+}
