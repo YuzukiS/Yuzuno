@@ -841,30 +841,44 @@ try {
     const row = (key) => dialog.locator(`.home-organize-sizes [data-size-for="${key}"]`);
     const listed = await dialog.locator(".home-organize-sizes [data-size-for]").evaluateAll((rows) => rows.map((li) => li.dataset.sizeFor));
     assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "audit/notes", "screens", "batches", "uptime"], "every report and status card, in the deck's order");
-    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "Auto · from content: Wide");
+    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "Auto · from content: Wide 1×2");
+    assert.equal(await dialog.locator(".home-size-foot .home-note").innerText(),
+      "Saved on this device for this Workspace and project. Your choice wins over the default and survives new versions of the card.");
     const setup = await row("setup").evaluate((li) => ({
       disabled: [...li.querySelectorAll("input")].filter((i) => i.disabled).map((i) => i.value), checked: li.querySelector("input:checked").value,
       reason: li.querySelector(".home-size-reason")?.textContent ?? null, described: !!document.getElementById(li.querySelector("fieldset").getAttribute("aria-describedby")) }));
-    assert.deepEqual(setup, { disabled: ["wide", "large"], checked: "auto", reason: "No summary named: nothing more to show", described: true });
-    const organizeInk = await contrast([".home-organize-sizes :is(h3, h4, .home-note, .home-size-card > span, .home-size-card small, .home-size-reason, .home-size-options label:not(.is-disabled))"]);
+    assert.deepEqual(setup, { disabled: ["wide", "large"], checked: "auto", reason: "No summary named: there is nothing more to show at a larger size", described: true });
+    const organizeInk = await contrast([".home-organize-sizes :is(h3, h4, .home-note, .home-size-card > span, .home-size-card small, .home-size-reason, .home-size-options label:not(.is-disabled), .home-size-reset)"]);
     const lowInk = Object.entries(organizeInk).filter(([, v]) => v.ratio < 4.5);
     assert.deepEqual(lowInk, [], JSON.stringify(organizeInk));
     // Large for the audit, by the keyboard: from Auto, three steps on is Large.
     await row("audit").locator('input[value="auto"]').focus();
     for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
     assert.equal(await row("audit").locator("input:checked").getAttribute("value"), "large");
-    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "You set Large");
+    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "You set Large 2×2");
     const ring = await row("audit").locator("input:checked").evaluate((input) => ({ visible: input.matches(":focus-visible"), outline: getComputedStyle(input.parentElement).outlineWidth }));
     assert.ok(ring.visible && parseFloat(ring.outline) >= 2, `the chosen size has a focus ring: ${JSON.stringify(ring)}`);
     await shot("organize-sizes.png");
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
     assert.deepEqual(await sizeOf("audit"), { size: "large", source: "user", rows: "span 2", frame: true });
-    // Small for the batches, from its own More actions: a small card has no frame; the table stays on the page.
+    // Small for the batches, from its own More actions, where the size comes first: Auto names the card's own
+    // size, and the size the user set says so. A small card draws no table: one line says where it is.
     await card("batches").locator(".home-summary-more > button").click();
-    await card("batches").locator('.home-summary-more-list input[value="small"]').check();
+    const menu = card("batches").locator(".home-summary-more-list");
+    const menuRows = () => menu.locator(".home-size-options label").evaluateAll((labels) => labels.map((l) => l.innerText.replace(/\s+/g, " ").trim()));
+    assert.equal(await menu.locator(":scope > :first-child legend").innerText(), "SIZE");
+    assert.deepEqual(await menuRows(), ["Auto Wide 1×2", "Small 1×1", "Wide 1×2", "Large 2×2"]);
+    await menu.locator('input[value="small"]').check();
+    assert.deepEqual(await menuRows(), ["Auto Wide 1×2", "Small 1×1 You set", "Wide 1×2", "Large 2×2"]);
+    const menuInk = await contrast([".home-summary-more-list :is(legend, .home-size-options label:not(.is-disabled), .home-size-options small)"]);
+    assert.deepEqual(Object.entries(menuInk).filter(([, v]) => v.ratio < 4.5), [], JSON.stringify(menuInk));
+    await shot("size-menu.png");
     assert.deepEqual(await sizeOf("batches"), { size: "small", source: "user", rows: "auto", frame: false });
+    assert.equal(await card("batches").locator(".home-card-figure-note").innerText(), "Table · on the report");
     await page.keyboard.press("Escape");
+    const noteInk = await contrast(['.home-view [data-section-key="batches"] .home-card-figure-note']);
+    assert.deepEqual(Object.entries(noteInk).filter(([, v]) => v.ratio < 4.5), [], JSON.stringify(noteInk));
     // Still the author's order on screen, and nothing cut.
     const places = await page.evaluate(() => [...document.querySelectorAll('[data-home-project="p1"] .home-brief .home-section')].map((el) => {
       const r = el.getBoundingClientRect();

@@ -107,9 +107,11 @@ export const allowedSizes = (content: CardContent): readonly CardSize[] =>
  * suggestion, should the contract gain one, would come between the two.
  */
 export function shownSize(section: Section, content: CardContent, chosen: CardSize | null | undefined, hold?: (size: CardSize) => CardSize) {
-  if (chosen && allowedSizes(content).includes(chosen)) return { size: chosen, source: "user" as const };
-  const own = cardSize(section, content);
-  return { size: hold ? hold(own) : own, source: "auto" as const };
+  const computed = cardSize(section, content);
+  // What Auto shows: the card's own size, as held for this visit.
+  const own = hold ? hold(computed) : computed;
+  if (chosen && allowedSizes(content).includes(chosen)) return { size: chosen, source: "user" as const, own };
+  return { size: own, source: "auto" as const, own };
 }
 
 export function cardSize(section: Section, content: CardContent = cardContent(section)): CardSize {

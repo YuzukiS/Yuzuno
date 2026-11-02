@@ -39,17 +39,19 @@ export function CardSizeList({ projects }: { projects: { id: string; name: strin
                 const content = cardContent(section);
                 const chosen = sizes.chosen(project.id, id);
                 // As the card shows it in this visit to Home.
-                const { size, source } = shownSize(section, content, chosen, (own) => sizes.held(project.id, id, own));
+                const { size, source, own } = shownSize(section, content, chosen, (computed) => sizes.held(project.id, id, computed));
                 return (
                   <li key={section.key} data-size-for={section.key}>
                     <span className="home-size-card">
                       <span>{section.title}</span>
-                      <small>{source === "user" ? t.sizeFrom.user(t.sizeName[size]) : t.sizeFrom.auto(t.sizeName[size])}</small>
+                      <small>{source === "user" ? t.sizeFrom.user(t.sizeLabel(size)) : t.sizeFrom.auto(t.sizeLabel(size))}</small>
                     </span>
                     <SizeChoice
                       name={`size-${project.id}-${section.key}`}
                       legend={t.sizeOf(section.title)}
                       value={chosen}
+                      own={own}
+                      variant="row"
                       allowed={allowedSizes(content)}
                       onChange={(next) => sizes.choose(project.id, id, next)}
                     />
@@ -62,9 +64,12 @@ export function CardSizeList({ projects }: { projects: { id: string; name: strin
       ) : (
         <p className="home-note">{t.noCards}</p>
       )}
-      <button type="button" className="quiet-button home-size-reset" disabled={!sizes.count} onClick={sizes.resetAll}>
-        {t.resetSizes}
-      </button>
+      <div className="home-size-foot">
+        <button type="button" className="quiet-button home-size-reset" disabled={!sizes.count} onClick={sizes.resetAll}>
+          {t.resetSizes}
+        </button>
+        <p className="home-note">{t.sizesSaved}</p>
+      </div>
     </section>
   );
 }

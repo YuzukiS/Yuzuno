@@ -10,7 +10,7 @@ import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
-import { allowedSizes, cardContent, shownSize, type CardContent, type CardFigure } from "./card-preview";
+import { allowedSizes, cardContent, shownSize, type CardContent, type CardFigure, type CardSize } from "./card-preview";
 import { CardSizes, sizable, type CardSizeControl } from "./card-sizes";
 import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
@@ -67,9 +67,9 @@ export const SummaryCard = memo(function SummaryCard({
   // Only a card on the deck has a size; the user may choose it where Core names the section.
   const sizes = useContext(CardSizes);
   const sizing = deck && sizes && sizable(section) ? { control: sizes, id: section.id } : null;
-  const { size, source } = deck
-    ? shownSize(section, content, sizing?.control.chosen(projectId, sizing.id), sizing ? (own) => sizing.control.held(projectId, sizing.id, own) : undefined)
-    : { size: null, source: null };
+  const { size, source, own } = deck
+    ? shownSize(section, content, sizing?.control.chosen(projectId, sizing.id), sizing ? (computed) => sizing.control.held(projectId, sizing.id, computed) : undefined)
+    : { size: null, source: null, own: null };
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
@@ -92,14 +92,16 @@ export const SummaryCard = memo(function SummaryCard({
   }
   const open = (from: HTMLElement) => openReport?.(projectId, section, from);
   const status = section.kind === "status";
-  // A small card has no frame (Dev 7's v12): Metrics as big numbers, any other figure left to the page.
+  // A small card draws no figure (Dev 7's v12, v15): Metrics as big numbers;
+  // any other, one line naming it and where it is read, "Open report" below.
   const shown = content.kind === "named" ? content.figure : null;
   const figure = !shown ? null : size !== "small" ? (
     <FigureFrame section={section} projectId={projectId} figure={shown} />
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
-  ) : null;
-  // A small card's figure, where it shows none, is on the page: "Open report" says where.
+  ) : (
+    <p className="home-card-figure-note">{t.figureOnPage(figureKindOf(section, shown, t.figureKind), status)}</p>
+  );
   return (
     <article
       id={domId}
@@ -153,7 +155,7 @@ export const SummaryCard = memo(function SummaryCard({
               {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
             </button>
           )}
-          <MoreActions section={section} projectId={projectId} readOnly={readOnly} content={content} sizing={sizing} />
+          <MoreActions section={section} projectId={projectId} readOnly={readOnly} content={content} sizing={sizing && own ? { ...sizing, own } : null} />
         </span>
       </header>
       {/* The text, and beside it on a wide card or under it otherwise, the one figure. */}
@@ -230,7 +232,7 @@ function MoreActions({
   projectId: string;
   readOnly: boolean;
   content: CardContent;
-  sizing: { control: CardSizeControl; id: number } | null;
+  sizing: { control: CardSizeControl; id: number; own: CardSize } | null;
 }) {
   const t = useStrings(cardText);
   const language = useLanguage();
@@ -276,17 +278,20 @@ function MoreActions({
         <MoreHorizontal size={14} />
       </button>
       <span id={listId} className="home-summary-more-list" role="group" aria-label={t.more} hidden={!open}>
-        {pin && <PinButton section={section} projectId={projectId} />}
-        {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
+        {/* The card's size first, then its other actions (Dev 7's v14). */}
         {sizing && (
           <SizeChoice
             name={`${listId}-size`}
             legend={t.size}
             value={sizing.control.chosen(projectId, sizing.id)}
+            own={sizing.own}
+            variant="menu"
             allowed={allowedSizes(content)}
             onChange={(size) => sizing.control.choose(projectId, sizing.id, size)}
           />
         )}
+        {pin && <PinButton section={section} projectId={projectId} />}
+        {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
       </span>
     </span>
   );
@@ -362,6 +367,13 @@ function CardConditions({ section, projectId, id, lines: most }: { section: Sect
 }
 
 type Metric = { label: string; value: string | number; unit?: string };
+
+/** A figure's kind in words, for the line a small card shows in its place. */
+function figureKindOf(section: Section, figure: CardFigure, names: Record<string, string>) {
+  if (figure.kind !== "block") return names[figure.kind];
+  const type = (section.body as { elements?: Record<string, { type?: string }> }).elements?.[figure.id]?.type ?? "";
+  return names[type] ?? type;
+}
 
 /** A Metrics figure's values, for a small card; null for any other figure. */
 function metricsOf(section: Section, figure: CardFigure): Metric[] | null {

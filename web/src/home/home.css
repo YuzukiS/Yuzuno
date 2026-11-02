@@ -230,8 +230,16 @@
 .home-size-list .home-size-choice {
   padding: 0;
 }
-.home-size-reset {
+.home-size-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
   margin-top: 10px;
+}
+.home-size-foot .home-note {
+  flex: 1 1 16rem;
+  margin: 0;
 }
 /* The title and its tools share a row while they fit; on a narrow phone
    the tools wrap below it, right-aligned, never past the edge. */

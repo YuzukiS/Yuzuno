@@ -326,6 +326,10 @@
   background: var(--home-surface);
   box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 14%, transparent);
 }
+/* With the card's size in it, wide enough for "Auto … Wide 1×2" on one line. */
+.home-summary-more-list:has(.home-size-choice) {
+  min-width: 220px;
+}
 .home-summary-more-list[hidden] {
   display: none;
 }
@@ -361,21 +365,29 @@
   font-weight: 600;
   line-height: 1.1;
 }
+/* Where a small card leaves its figure: its kind, and that the page has it. */
+.home-card-figure-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
 .home-card-numbers-count {
   margin: 4px 0 0;
   color: var(--text-secondary);
   font-size: calc(8.5px + var(--font-adjust, 3px));
 }
 
-/* A card's size: Auto, Small, Wide or Large, in More actions and in
-   Organize; the radios are the controls, drawn as one segmented row. */
+/* A card's size: Auto, Small, Wide or Large (Dev 7's v14, v15). In More
+   actions, a list under "Size": Auto names the card's own size, the size the
+   user set says so. In Organize, one segmented row. The radios are the
+   controls either way. */
 .home-size-choice {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
   margin: 0;
-  padding: 4px 0 0;
+  padding: 0;
   border: 0;
 }
 .home-size-choice legend {
@@ -383,24 +395,50 @@
   color: var(--home-ink-2);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+.home-size-choice.is-menu legend {
+  padding: 4px 8px;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .home-size-options {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 2px;
+}
+.home-size-choice.is-row .home-size-options {
   padding: 2px;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+.home-size-choice.is-menu .home-size-options {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
 }
 .home-size-options label {
   position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 12px;
   min-height: 28px;
   padding: 0 9px;
   border-radius: 6px;
   color: var(--home-ink-2);
   font-size: calc(9.5px + var(--font-adjust, 3px));
   cursor: pointer;
+}
+.home-size-choice.is-menu label {
+  justify-content: space-between;
+  min-height: 32px;
+  padding: 0 8px;
+  color: var(--ink);
+}
+.home-size-options label small {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
 }
 .home-size-options input {
   position: absolute;
