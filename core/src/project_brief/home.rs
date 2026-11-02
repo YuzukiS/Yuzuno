@@ -511,7 +511,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     ensure!(!input.text.trim().is_empty(), "Write a reply");
     let text = compose(&name, section.as_ref(), None, &input.text);
     let origin = json!({"kind":"home","projectId":project,"key":section.as_ref().map(|row| &row.key),"version":section.as_ref().map(|row| row.version),
-        "workspaceId":workspace,"home":snapshot(&name, section.as_ref(), None, None, extra_text(None, &input.text), None)});
+        "sectionId":section.as_ref().map(|row| row.identity),"workspaceId":workspace,"home":snapshot(&name, section.as_ref(), None, None, extra_text(None, &input.text), None)});
     let detail = ws.send_view(&input.agent_id).await?;
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
@@ -603,7 +603,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         };
         ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
         let form = input.form.as_ref().map(|form| form_answers(row, form, &input.text)).transpose()?;
-        let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,"reply":digest,
+        let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"sectionId":row.identity,"workspaceId":workspace,"reply":digest,
             "home":snapshot(&name, Some(row), None, chosen.as_ref(), extra_text(chosen.as_ref(), &input.text).filter(|_| form.is_none()), form)});
         let detail = ws.send_view(&input.agent_id).await?;
         let message = MessageInput {
@@ -671,7 +671,7 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
     if row.kind == "ask" || row.data["title"].as_str() != Some(title.as_str()) {
         return Err(refused(format!("section_changed: version {version} of `{key}` is not the card “{title}”. Nothing was sent.")));
     }
-    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"workspaceId":workspace,
+    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"sectionId":row.identity,"workspaceId":workspace,
         "home":snapshot(&name, Some(&row), Some(&title), None, extra_text(None, &input.text), None)});
     let message = MessageInput {
         client_message_id: input.client_message_id,

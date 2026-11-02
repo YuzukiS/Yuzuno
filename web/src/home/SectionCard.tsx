@@ -1,4 +1,4 @@
-import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
@@ -107,6 +107,7 @@ export const SectionCard = memo(function SectionCard({
   readOnly,
   onSeen,
   onChanged,
+  notice,
 }: {
   section: Section;
   projectId: string;
@@ -117,6 +118,8 @@ export const SectionCard = memo(function SectionCard({
   readOnly: boolean;
   onSeen: (marks: SeenMark[]) => Promise<void>;
   onChanged: () => void;
+  /** A note above the card's head: where a reply's "Open on Home" landed (T-9). */
+  notice?: ReactNode;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -189,6 +192,7 @@ export const SectionCard = memo(function SectionCard({
       onPointerDown={release}
       aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
     >
+      {notice}
       <header className="home-section-head">
         <FoldButton
           collapsed={collapsed}

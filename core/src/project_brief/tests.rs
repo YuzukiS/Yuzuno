@@ -129,11 +129,23 @@ fn rows(ws: &Workspace, sql: &str) -> i64 {
     ws.store.db.read().unwrap().query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
-/// A Home reply's receipt origin without its snapshot, and the snapshot (T-9).
+/// A Home reply's receipt origin without its snapshot and section identity,
+/// and the snapshot (T-9).
 fn sent_from(ws: &Workspace, agent: &str, id: &str) -> (Value, Value) {
     let mut origin = ws.store.receipt(agent, id).unwrap().expect("a receipt").origin.expect("an origin");
+    origin.as_object_mut().unwrap().remove("sectionId");
     let home = origin.as_object_mut().unwrap().remove("home").unwrap_or(Value::Null);
     (origin, home)
+}
+
+/// The section a Home reply's receipt names by its identity on Home (T-9).
+fn section_id(ws: &Workspace, agent: &str, id: &str) -> Value {
+    ws.store.receipt(agent, id).unwrap().expect("a receipt").origin.expect("an origin")["sectionId"].clone()
+}
+
+/// The live section under `key`, by its identity on Home.
+fn identity(ws: &Workspace, project: &str, key: &str) -> i64 {
+    sections::live_key(&ws.store.db.read().unwrap(), project, key).unwrap().expect("a live section").identity
 }
 
 /// A Home reply's snapshot as Core writes it: these fields, the rest null.
@@ -1079,6 +1091,8 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     // and the text the Agent gets as Home wrote it.
     let _ = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&form), "f1")).await;
     let (origin, kept) = sent_from(&ws, "b", "f1");
+    let setup_id = identity(&ws, &project, "setup");
+    assert_eq!(section_id(&ws, "b", "f1"), json!(setup_id), "the receipt names the section answered");
     let digest = home::reply_digest(None, &text, Some(&serde_json::from_value(form.clone()).unwrap()));
     assert_ne!(digest, home::reply_digest(None, &text, None));
     assert_eq!(origin, json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,"reply":digest}));
@@ -1127,11 +1141,15 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     let mut turns = vec![json!({"id":"t1","items":[said("i1", "f1"), said("i2", "c1"), said("i3", "p1"), said("i4", "typed"), forged]})];
     crate::input_origin::annotate(&ws.store.db.read().unwrap(), "b", &mut turns).unwrap();
     let shown = |i: usize| (turns[0]["items"][i]["_yuzunoInput"].clone(), turns[0]["items"][i]["_yuzunoHome"].clone());
-    let from = |key: Value, version: Value, snapshot: Value| (json!("home"),
-        json!({"projectId":project,"key":key,"version":version,"workspaceId":workspace,"snapshot":snapshot}));
-    assert_eq!(shown(0), from(json!("setup"), json!(1), kept));
-    assert_eq!(shown(1), from(json!("news"), json!(1), sent_from(&ws, "b", "c1").1));
-    assert_eq!(shown(2), from(Value::Null, Value::Null, snapshot(json!({"text":"Thanks"}))));
+    let from = |key: Value, version: Value, section: Option<i64>, snapshot: Value| {
+        let mut home = json!({"projectId":project,"key":key,"version":version,"workspaceId":workspace,"snapshot":snapshot});
+        if let Some(section) = section { home["sectionId"] = section.into(); }
+        (json!("home"), home)
+    };
+    assert_eq!(shown(0), from(json!("setup"), json!(1), Some(setup_id), kept));
+    assert_eq!(shown(1), from(json!("news"), json!(1), Some(identity(&ws, &project, "news")), sent_from(&ws, "b", "c1").1));
+    assert_eq!(shown(2), from(Value::Null, Value::Null, None, snapshot(json!({"text":"Thanks"}))));
+    assert_eq!(section_id(&ws, "b", "p1"), Value::Null, "a reply to the whole Brief names no section");
     assert_eq!(shown(3), (json!("you"), Value::Null));
     assert_eq!(shown(4), (json!("unconfirmed"), Value::Null));
 }
@@ -1170,6 +1188,52 @@ async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothi
     let _ = home::reply(&ws, project.clone(), reply(sent, "o1", false)).await;
     assert_eq!(sent_from(&ws, "b", "o1").1, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
         "text":sent})));
+}
+
+// T-9: a reply's receipt names the section it answered by its identity on
+// Home, which is what tells that section's fate from another's later under
+// the same key. Asked again and resolved, an ask keeps its identity; a card
+// removed and its key written anew is another section, with later versions.
+// Home shows each history entry with its identity and why it ended.
+#[tokio::test]
+async fn a_reply_names_its_section_so_home_tells_it_from_a_later_one_under_its_key() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("k1", 0, vec![put("plan", "report"), put("decide", "ask")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let (plan, decide) = (identity(&ws, &project, "plan"), identity(&ws, &project, "decide"));
+    assert_ne!(plan, decide);
+    let card = home::ReplyInput { key: Some("plan".into()), agent_id: "b".into(), text: "Looks right".into(), client_message_id: "r1".into(),
+        choice: None, version: Some(1), title: Some("About plan".into()), ask_version: None, workspace_id: None, form: None };
+    let _ = home::reply(&ws, project.clone(), card).await;
+    let ask = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(), client_message_id: "r2".into(),
+        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None };
+    let _ = home::reply(&ws, project.clone(), ask).await;
+    assert_eq!((section_id(&ws, "b", "r1"), section_id(&ws, "b", "r2")), (json!(plan), json!(decide)));
+    // The ask asked again, then resolved; the card removed, its key written as an ask, which is resolved.
+    let mut again = put("decide", "ask");
+    again["ask"]["question"] = json!("Which way now?");
+    accept(&ws, "a", input("k2", 1, vec![again, op("remove", "plan")])).await;
+    assert_eq!(identity(&ws, &project, "decide"), decide, "asked again, the same section");
+    accept(&ws, "a", input("k3", 2, vec![op("resolve", "decide"), put("plan", "ask")])).await;
+    let later = identity(&ws, &project, "plan");
+    assert_ne!(later, plan, "a key written anew is another section");
+    accept(&ws, "a", input("k4", 3, vec![op("resolve", "plan")])).await;
+    let read = home::build(&ws.store).unwrap();
+    let history: Vec<(String, i64, i64, String)> = read["projects"][0]["brief"]["history"].as_array().unwrap().iter()
+        .map(|s| (s["key"].as_str().unwrap().into(), s["id"].as_i64().unwrap(), s["version"].as_i64().unwrap(), s["historyReason"].as_str().unwrap().into()))
+        .collect();
+    let entry = |key: &str, id: i64| history.iter().find(|(k, i, _, _)| k == key && *i == id).cloned();
+    let (_, _, decided, why) = entry("decide", decide).expect("the ask answered, in History");
+    assert_eq!(why, "resolved");
+    assert!(decided > 1, "resolving moved it past the version answered: {history:?}");
+    let (_, _, removed, why) = entry("plan", plan).expect("the card answered, in History");
+    assert_eq!(why, "removed");
+    let (_, _, resolved, why) = entry("plan", later).expect("the later ask under its key, in History");
+    assert_eq!(why, "resolved");
+    // Removing keeps the version answered; the key's later section continues past it.
+    assert_eq!(removed, 1, "{history:?}");
+    assert!(resolved > removed, "versions keep rising under a key: {history:?}");
+    assert!(read["projects"][0]["brief"]["sections"].as_array().unwrap().iter().all(|s| s["key"] != "plan" && s["key"] != "decide"));
 }
 
 #[test]
