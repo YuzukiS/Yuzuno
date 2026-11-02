@@ -520,6 +520,32 @@ test("an explicit way to Home closes a report from the address or a message: its
   assert.deepEqual(page.errors, []);
 });
 
+test("an explicit way to Home while the report's own Back is under way keeps Home: that Back does not go on to the message, and the browser goes back once (T-18 R3)", async (t) => {
+  const page = mount(() => homeData([section("eval", 7, 3)]));
+  t.after(page.close);
+  const history = page.window.history;
+  const goBack = history.back.bind(history);
+  // The browser's Back, held: its popstate comes when the test lets it.
+  let backs = 0;
+  history.back = () => { backs += 1; };
+  const incoming = { link: linkTo(3), back, fromAddress: false, n: 1 };
+  page.window.renderHome(incoming);
+  await until(() => page.report()?.querySelector(".report-head h1"), "the report, opened from a message");
+  page.report().querySelector(".report-back").click();
+  await tick();
+  assert.equal(backs, 1, "the report's Back asked the browser to go back");
+  // Before its popstate, an explicit way to Home (the toolbar, a push).
+  page.window.renderHome(incoming, 0, "ws-1", 1);
+  await tick(40);
+  assert.equal(backs, 1, "not a second Back");
+  history.back = goBack;
+  goBack();
+  await until(() => !page.report(), "the report closed");
+  assert.deepEqual(page.window.actions.filter(([kind]) => kind === "back"), [], "the latest way out, Home, holds: not on to the message");
+  assert.equal(page.window.location.hash, "");
+  assert.deepEqual(page.errors, []);
+});
+
 test("a reply's Open on Home while a report is open lands on its card once the report has gone (T-18 R3)", async (t) => {
   const page = await openHome(() => homeData([section("eval", 7, 3), ask]));
   t.after(page.close);
