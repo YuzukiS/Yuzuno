@@ -1,4 +1,4 @@
-import { summaryOf } from "./report/report-model";
+import { summaryOf } from "./report/report-model.ts";
 import type { Section } from "./types";
 
 type Node = { type?: string; props?: Record<string, unknown>; children?: string[] };
