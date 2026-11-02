@@ -284,12 +284,14 @@
   content: "·";
   margin: 0 6px;
 }
+/* The foot wraps between its parts, never inside its action (Dev 7, 2396). */
 .home-report-open {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   min-height: 32px;
   margin-left: auto;
+  white-space: nowrap;
   padding: 0;
   border: 0;
   background: none;
@@ -358,6 +360,11 @@
   font-size: calc(29px + var(--font-adjust, 3px));
   font-weight: 600;
   line-height: 1.1;
+}
+.home-card-numbers-count {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
 }
 
 /* A card's size: Auto, Small, Wide or Large, in More actions and in

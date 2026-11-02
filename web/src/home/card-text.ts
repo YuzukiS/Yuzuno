@@ -26,6 +26,7 @@ export const cardText = strings({
   noCards: "No reports or statuses on Home.",
   sizeOf: (title: string) => `Size of “${title}”`,
   resetSizes: "Reset all to Auto",
+  valuesShown: (shown: number, total: number) => `${shown} of ${total} values`,
 }, {
   openReport: "打开报告",
   openStatus: "打开状态",
@@ -50,4 +51,5 @@ export const cardText = strings({
   noCards: "Home 上没有报告或状态。",
   sizeOf: (title: string) => `“${title}”的尺寸`,
   resetSizes: "全部恢复自动",
+  valuesShown: (shown: number, total: number) => `${total} 个值中的 ${shown} 个`,
 });

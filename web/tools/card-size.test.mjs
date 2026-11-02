@@ -57,14 +57,18 @@ test("the user's size comes first where the card may take it; a card with no sum
   assert.deepEqual(shownSize(unnamed, cardContent(unnamed), "large"), { size: "small", source: "auto" });
 });
 
-test("the choices are kept per Workspace, by project and key; anything else in storage is ignored", async () => {
+test("the choices are kept per Workspace, by project and Home's id of the section, never its key; anything else in storage is ignored", async () => {
   const store = new Map();
   globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
-  const { readSizeChoices, sizeKey } = await import("../src/home/card-sizes.ts");
-  assert.equal(sizeKey("p1", "eval/sub"), "p1:eval/sub");
+  const { readSizeChoices, sizable, sizeKey } = await import("../src/home/card-sizes.ts");
+  // A section written again under the same key has another id, so it is another card (Lead 2414).
+  assert.equal(sizeKey("p1", 7), "p1:7");
+  assert.notEqual(sizeKey("p1", 7), sizeKey("p1", 40));
+  assert.equal(sizable({ id: 7 }), true);
+  assert.equal(sizable({}), false, "an older Core names no id: nothing to keep a choice by");
   assert.deepEqual(readSizeChoices("ws-1"), {});
-  store.set("yuzuno.homeCardSizes.ws-1", JSON.stringify({ "p1:eval": "large", "p1:old": "huge", "p2:x": 3 }));
-  assert.deepEqual(readSizeChoices("ws-1"), { "p1:eval": "large" });
+  store.set("yuzuno.homeCardSizes.ws-1", JSON.stringify({ "p1:7": "large", "p1:8": "huge", "p2:9": 3 }));
+  assert.deepEqual(readSizeChoices("ws-1"), { "p1:7": "large" });
   assert.deepEqual(readSizeChoices("ws-2"), {}, "another Workspace has its own");
   store.set("yuzuno.homeCardSizes.ws-3", "not json");
   assert.deepEqual(readSizeChoices("ws-3"), {});

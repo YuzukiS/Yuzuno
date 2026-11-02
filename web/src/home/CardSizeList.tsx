@@ -1,22 +1,29 @@
 import { useContext } from "react";
 import { useStrings } from "../i18n";
+import { groupSections } from "./brief-layout";
 import { allowedSizes, cardContent, shownSize } from "./card-preview";
-import { CardSizes } from "./card-sizes";
+import { CardSizes, sizable } from "./card-sizes";
 import { cardText } from "./card-text";
 import { SizeChoice } from "./SizeChoice";
 import type { Section } from "./types";
 
 /**
  * Organize's card sizes (T-18, Lead 2378; Dev 7's v12): every report and
- * status card on Home, by project, with the size it has and why, and the
- * user's choice. An Ask is not listed: it always takes its row.
+ * status card on Home, by project and in the deck's order, with the size it
+ * has and why, and the user's choice. An Ask is not listed: it always takes
+ * its row.
  */
 export function CardSizeList({ projects }: { projects: { id: string; name: string; sections: Section[] }[] }) {
   const sizes = useContext(CardSizes);
   const t = useStrings(cardText);
   if (!sizes) return null;
   const listed = projects
-    .map((project) => ({ ...project, cards: project.sections.filter((section) => section.kind !== "ask") }))
+    .map((project) => ({
+      ...project,
+      cards: groupSections(project.sections)
+        .flatMap((group) => [...(group.parent ? [group.parent] : []), ...group.subs])
+        .filter((section) => section.kind !== "ask" && sizable(section)),
+    }))
     .filter((project) => project.cards.length > 0);
   return (
     <section className="home-organize-sizes" aria-label={t.cardSizes}>
@@ -28,9 +35,11 @@ export function CardSizeList({ projects }: { projects: { id: string; name: strin
             <h4>{project.name}</h4>
             <ul className="home-size-list">
               {project.cards.map((section) => {
+                const id = section.id!;
                 const content = cardContent(section);
-                const chosen = sizes.chosen(project.id, section.key);
-                const { size, source } = shownSize(section, content, chosen);
+                const chosen = sizes.chosen(project.id, id);
+                // As the card shows it in this visit to Home.
+                const { size, source } = shownSize(section, content, chosen, (own) => sizes.held(project.id, id, own));
                 return (
                   <li key={section.key} data-size-for={section.key}>
                     <span className="home-size-card">
@@ -42,7 +51,7 @@ export function CardSizeList({ projects }: { projects: { id: string; name: strin
                       legend={t.sizeOf(section.title)}
                       value={chosen}
                       allowed={allowedSizes(content)}
-                      onChange={(next) => sizes.choose(project.id, section.key, next)}
+                      onChange={(next) => sizes.choose(project.id, id, next)}
                     />
                   </li>
                 );

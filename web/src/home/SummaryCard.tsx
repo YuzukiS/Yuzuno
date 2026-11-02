@@ -11,7 +11,7 @@ import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { allowedSizes, cardContent, shownSize, type CardContent, type CardFigure } from "./card-preview";
-import { CardSizes } from "./card-sizes";
+import { CardSizes, sizable, type CardSizeControl } from "./card-sizes";
 import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
 import { unmaintained } from "./card-summary";
@@ -39,7 +39,8 @@ export const SummaryCard = memo(function SummaryCard({
   projectId,
   workspaceId,
   agents,
-  sub = false,
+  topic,
+  deck = false,
   readOnly,
   onSeen,
   notice,
@@ -48,7 +49,10 @@ export const SummaryCard = memo(function SummaryCard({
   projectId: string;
   workspaceId: string;
   agents: Agent[];
-  sub?: boolean;
+  /** A sub-topic's topic, read as words: the card says it belongs there. */
+  topic?: string;
+  /** On the project's deck, where cards have sizes; elsewhere (the team's details) a card keeps its frame. */
+  deck?: boolean;
   readOnly: boolean;
   onSeen: (marks: SeenMark[]) => Promise<void>;
   notice?: React.ReactNode;
@@ -59,9 +63,13 @@ export const SummaryCard = memo(function SummaryCard({
   const t = useStrings(cardText);
   const openReport = useReportOpen();
   const content = useMemo(() => cardContent(section), [section]);
+  const sub = topic !== undefined;
+  // Only a card on the deck has a size; the user may choose it where Core names the section.
   const sizes = useContext(CardSizes);
-  const chosen = sizes?.chosen(projectId, section.key) ?? null;
-  const { size, source } = useMemo(() => shownSize(section, content, chosen), [section, content, chosen]);
+  const sizing = deck && sizes && sizable(section) ? { control: sizes, id: section.id } : null;
+  const { size, source } = deck
+    ? shownSize(section, content, sizing?.control.chosen(projectId, sizing.id), sizing ? (own) => sizing.control.held(projectId, sizing.id, own) : undefined)
+    : { size: null, source: null };
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
@@ -91,19 +99,21 @@ export const SummaryCard = memo(function SummaryCard({
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
   ) : null;
+  // A small card's figure, where it shows none, is on the page: "Open report" says where.
   return (
     <article
       id={domId}
       data-section-key={section.key}
       data-section-version={section.version}
-      data-card-size={size}
-      data-size-source={source}
+      data-card-size={size ?? undefined}
+      data-size-source={source ?? undefined}
       tabIndex={-1}
-      className={`home-section home-summary-card kind-${section.kind} size-${size}${content.kind === "unnamed" ? " is-unnamed" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
+      className={`home-section home-summary-card kind-${section.kind}${size ? ` size-${size}` : ""}${content.kind === "unnamed" ? " is-unnamed" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
       aria-labelledby={`${domId}-title`}
     >
       {notice}
       <header className="home-summary-head">
+        {sub && <span className="home-sub-of">{home.inTopic(topic)}</span>}
         <span className={`home-kind kind-${section.kind}`}>{home.kind[section.kind]}</span>
         {changed && (
           <span className="home-changed" title={home.changedTitle}>
@@ -143,7 +153,7 @@ export const SummaryCard = memo(function SummaryCard({
               {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
             </button>
           )}
-          <MoreActions section={section} projectId={projectId} readOnly={readOnly} content={content} />
+          <MoreActions section={section} projectId={projectId} readOnly={readOnly} content={content} sizing={sizing} />
         </span>
       </header>
       {/* The text, and beside it on a wide card or under it otherwise, the one figure. */}
@@ -209,7 +219,19 @@ export const SummaryCard = memo(function SummaryCard({
 });
 
 /** Pin, Copy report and the card's size, behind "More actions". */
-function MoreActions({ section, projectId, readOnly, content }: { section: Section; projectId: string; readOnly: boolean; content: CardContent }) {
+function MoreActions({
+  section,
+  projectId,
+  readOnly,
+  content,
+  sizing,
+}: {
+  section: Section;
+  projectId: string;
+  readOnly: boolean;
+  content: CardContent;
+  sizing: { control: CardSizeControl; id: number } | null;
+}) {
   const t = useStrings(cardText);
   const language = useLanguage();
   const time = useTimeDisplay();
@@ -227,8 +249,7 @@ function MoreActions({ section, projectId, readOnly, content }: { section: Secti
   }, [open]);
   const pin = !readOnly;
   const copy = section.kind === "report";
-  const sizes = useContext(CardSizes);
-  if (!pin && !copy && !sizes) return null;
+  if (!pin && !copy && !sizing) return null;
   return (
     <span
       className="home-summary-more"
@@ -257,13 +278,13 @@ function MoreActions({ section, projectId, readOnly, content }: { section: Secti
       <span id={listId} className="home-summary-more-list" role="group" aria-label={t.more} hidden={!open}>
         {pin && <PinButton section={section} projectId={projectId} />}
         {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
-        {sizes && (
+        {sizing && (
           <SizeChoice
             name={`${listId}-size`}
             legend={t.size}
-            value={sizes.chosen(projectId, section.key)}
+            value={sizing.control.chosen(projectId, sizing.id)}
             allowed={allowedSizes(content)}
-            onChange={(size) => sizes.choose(projectId, section.key, size)}
+            onChange={(size) => sizing.control.choose(projectId, sizing.id, size)}
           />
         )}
       </span>
@@ -355,18 +376,23 @@ function metricsOf(section: Section, figure: CardFigure): Metric[] | null {
  * A small card shows two at most; the page shows them all.
  */
 function BigNumbers({ items }: { items: Metric[] }) {
+  const t = useStrings(cardText);
   return (
-    <dl className="home-card-numbers">
-      {items.slice(0, 2).map((item, index) => (
-        <div key={index} className={index === 0 ? "is-first" : undefined}>
-          <dt>{item.label}</dt>
-          <dd>
-            {String(item.value)}
-            {item.unit ? `\u00a0${item.unit}` : ""}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <div className="home-card-numbers-frame">
+      <dl className="home-card-numbers">
+        {items.slice(0, 2).map((item, index) => (
+          <div key={index} className={index === 0 ? "is-first" : undefined}>
+            <dt>{item.label}</dt>
+            <dd>
+              {String(item.value)}
+              {item.unit ? `\u00a0${item.unit}` : ""}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {/* Nothing dropped unsaid (Dev 7, 2403): how many the page has. */}
+      {items.length > 2 && <p className="home-card-numbers-count">{t.valuesShown(2, items.length)}</p>}
+    </div>
   );
 }
 

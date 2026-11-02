@@ -100,10 +100,16 @@ export const SMALL_METRICS = 2;
 export const allowedSizes = (content: CardContent): readonly CardSize[] =>
   content.kind === "unnamed" ? ["small"] : CARD_SIZES;
 
-/** The size a card is shown at, and why: the user's choice where it is one the card may take, else its own. */
-export function shownSize(section: Section, content: CardContent, chosen: CardSize | null | undefined) {
+/**
+ * The size a card is shown at, and why: the user's choice where it is one the
+ * card may take, else its own (`hold`, where given, keeps the one already
+ * shown in this visit). The user's choice comes first; an author's
+ * suggestion, should the contract gain one, would come between the two.
+ */
+export function shownSize(section: Section, content: CardContent, chosen: CardSize | null | undefined, hold?: (size: CardSize) => CardSize) {
   if (chosen && allowedSizes(content).includes(chosen)) return { size: chosen, source: "user" as const };
-  return { size: cardSize(section, content), source: "auto" as const };
+  const own = cardSize(section, content);
+  return { size: hold ? hold(own) : own, source: "auto" as const };
 }
 
 export function cardSize(section: Section, content: CardContent = cardContent(section)): CardSize {

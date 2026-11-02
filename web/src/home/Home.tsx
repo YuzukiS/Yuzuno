@@ -474,7 +474,7 @@ export function Home({
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
   // The cards' sizes the user chose on this device; the design preview has none (T-18).
-  const cardSizes = useCardSizes(readOnly ? "" : workspaceId);
+  const cardSizes = useCardSizes(readOnly ? "" : workspaceId, visit);
   const { layout, pin, unpin } = widgetLayout;
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(

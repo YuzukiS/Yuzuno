@@ -106,7 +106,7 @@ export const SectionCard = memo(function SectionCard({
   projectId,
   workspaceId,
   agents,
-  sub = false,
+  topic,
   readOnly,
   onSeen,
   onChanged,
@@ -116,8 +116,8 @@ export const SectionCard = memo(function SectionCard({
   projectId: string;
   workspaceId: string;
   agents: Agent[];
-  /** A sub-topic shown under its parent, labelled with its own author. */
-  sub?: boolean;
+  /** A sub-topic's topic, read as words: the card says it belongs there, labelled with its own author. */
+  topic?: string;
   readOnly: boolean;
   onSeen: (marks: SeenMark[]) => Promise<void>;
   onChanged: () => void;
@@ -152,6 +152,7 @@ export const SectionCard = memo(function SectionCard({
   const summary = useMemo(() => (section.kind === "ask" ? null : sectionSummary(section)), [section]);
   // What the author's conclusion holds under goes with it (T-18).
   const conditions = useMemo(() => (summary ? sectionConditions(section) : null), [summary, section]);
+  const sub = topic !== undefined;
   const orphaned = unmaintained(section);
   const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
@@ -208,6 +209,7 @@ export const SectionCard = memo(function SectionCard({
           label={section.title}
           controls={`${sectionDomId(projectId, section.key)}-body`}
         />
+        {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
           {replied ? t.replied : t.kind[section.kind]}
         </span>

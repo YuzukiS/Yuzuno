@@ -216,8 +216,9 @@
   gap: 6px 10px;
   max-width: 46em;
   padding: 10px 14px;
-  border-left: 3px solid var(--home-attention);
-  border-radius: 0 10px 10px 0;
+  /* As on the card: one border all round, in the attention tone (Dev 7, 2399). */
+  border: 1px solid color-mix(in srgb, var(--home-attention) 40%, var(--line));
+  border-radius: 10px;
   background: var(--home-soft);
 }
 .report-conditions-label {

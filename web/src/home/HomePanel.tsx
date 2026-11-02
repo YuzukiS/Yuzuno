@@ -335,14 +335,18 @@ export function HomePanel({
   const seen = useCallback((marks: SeenMark[]) => onSeen(id, marks), [onSeen, id]);
   // A report or status shows its summary; the whole body is read on its
   // page (T-18, Lead 2270). An Ask keeps its full card, answered in place.
-  const card = (section: Section, sub = false) => section.kind !== "ask" ? (
+  // A sub-topic's card says its topic in words (Dev 7, T-18): in a deck of
+  // sizes it may stand anywhere, so no stripe could show what it belongs to.
+  // Only the deck's cards take a size; the team's, in their details, do not.
+  const card = (section: Section, topic?: string, deck = true) => section.kind !== "ask" ? (
     <SummaryCard
       key={section.key}
       section={section}
       projectId={id}
       workspaceId={workspaceId}
       agents={agents}
-      sub={sub}
+      topic={topic}
+      deck={deck}
       readOnly={readOnly}
       onSeen={seen}
       notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
@@ -354,7 +358,7 @@ export function HomePanel({
       projectId={id}
       workspaceId={workspaceId}
       agents={agents}
-      sub={sub}
+      topic={topic}
       readOnly={readOnly}
       onSeen={seen}
       onChanged={onChanged}
@@ -461,7 +465,7 @@ export function HomePanel({
                       </h3>
                     )}
                     {group.subs.length > 0 && (
-                      <div className="home-subs">{group.subs.map((sub) => card(sub, true))}</div>
+                      <div className="home-subs">{group.subs.map((sub) => card(sub, topicName(group.topic)))}</div>
                     )}
                   </div>
                 ),
@@ -567,7 +571,7 @@ export function HomePanel({
             </div>
             {(panel.brief.teamSections?.length ?? 0) > 0 && <div className="home-team-content">
               <p className="home-note">{t.teamNote}</p>
-              {panel.brief.teamSections?.map(section => card(section))}
+              {panel.brief.teamSections?.map(section => card(section, undefined, false))}
             </div>}
             <History30
               sections={panel.brief.history}

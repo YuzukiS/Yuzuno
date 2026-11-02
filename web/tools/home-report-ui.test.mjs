@@ -216,7 +216,10 @@ test("the fixture is a section the contract accepts, and its card shows the name
   const conditions = card.querySelector(".home-card-conditions");
   assert.equal(conditions.getAttribute("aria-label"), "Conditions");
   assert.deepEqual([...conditions.querySelectorAll(".home-card-condition-chips li")].map((li) => li.textContent), ["Scoring definition v2", "Synthetic data, 100 items per arm"]);
-  assert.match(card.querySelector(".home-card-frame").textContent, /Validation loss.*0\.412/);
+  // Two Metrics values make a small card: its figure as big numbers, no frame (T-18, Dev 7's v12).
+  assert.equal(card.dataset.cardSize, "small");
+  assert.ok(!card.querySelector(".home-card-frame"), "a small card has no frame");
+  assert.match(card.querySelector(".home-card-numbers").textContent, /Validation loss.*0\.412/);
   // Nothing else of the body is on Home: the method, the notes and the table are read on the page.
   assert.doesNotMatch(card.textContent, /Three seeds per arm|Line 1 of the notes|Results/);
   assert.equal(card.querySelector(".home-fold"), null, "no fold: the body is read on its page");

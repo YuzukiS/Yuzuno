@@ -134,10 +134,16 @@ const summaryBody = (lead, extra, summary) => ({ root: "body", elements: {
   lead: { type: "Markdown", props: { text: lead } },
   ...extra,
 } });
-// A newer version of one card, its size the same, for the refresh step.
+// A newer version of one card, its size the same (2), then its figure another kind (3), for the refresh step;
+// the audit written again under its key, another section (Home's id 40), for the user's sizes.
 let batchesVersion = 1;
+let auditId = 30;
+const batchesFigure = () => batchesVersion < 3
+  ? { table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
+      rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } }
+  : { table: { type: "Metrics", props: { items: [{ label: "Dropped", value: 2.4, unit: "%" }, { label: "Batches", value: 9 }] } } };
 const deck = () => [
-  section("audit", 30, 2, { title: "Fewer LLM round trips: three-stage static audit", body: summaryBody(
+  section("audit", auditId, 2, { title: "Fewer LLM round trips: three-stage static audit", body: summaryBody(
     "Found fixed hand-offs worth trying; not yet shown that most development calls can go to programs.",
     { holds: { type: "Checklist", props: { items: ["Read-only stored records", "Three-stage flow", "304 model replies", "Rule pre-screen", "Item-by-item audit", "One reviewer", "No live traffic", "Synthetic prompts"].map((text, i) => ({ id: `c${i}`, text, done: true })) } },
       funnel: { type: "Metrics", props: { items: [{ label: "Model replies", value: 304 }, { label: "Pre-screened", value: 52 }, { label: "Kept", value: 29 }] } } },
@@ -149,14 +155,15 @@ const deck = () => [
   section("batches", 32, batchesVersion, { title: "Why batches were dropped", body: summaryBody(
     `All three batches stay under the ${batchesVersion === 1 ? 5 : 6}% stop line; duplicates are the largest cause.`,
     { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ. Dates and amounts were checked against the synthetic ledger alone, regions were not checked at all, and every other cause is counted together under other, so its share says nothing about any one of them." } },
-      table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
-        rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } },
+      ...batchesFigure() },
     { lead: "lead", visual: "table", conditions: "why" }) }),
   // Two Metrics values: a small card, its first value large (Dev 7's v12).
   section("uptime", 33, 1, { title: "Synthetic service uptime", body: summaryBody(
     "Both synthetic services held their target this week.",
     { nums: { type: "Metrics", props: { items: [{ label: "Uptime", value: 99.2, unit: "%" }, { label: "Incidents", value: 1 }] } } },
     { lead: "lead", visual: "nums" }) }),
+  // A sub-topic of the audit: it says so in its head (Dev 7, 2399).
+  section("audit/notes", 34, 1, { title: "Audit notes", body: summaryBody("The sample is the stored records of one week.", {}, { lead: "lead" }) }),
 ];
 const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A", attachments: evalFiles }),
   { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }, ...deck()];
@@ -586,7 +593,14 @@ try {
             beside: (() => { const text = el.querySelector(".home-summary-text"), fig = el.querySelector(".home-card-frame");
               return text && fig ? fig.getBoundingClientRect().left >= text.getBoundingClientRect().right - 1 : null; })(),
             frame: !!el.querySelector(".home-card-frame"),
-            numbers: [...el.querySelectorAll(".home-card-numbers > div")].map((d) => ({ text: d.innerText.replace(/\s+/g, " "), size: getComputedStyle(d.querySelector("dd")).fontSize, wrap: getComputedStyle(d.querySelector("dd")).whiteSpace })) };
+            minHeight: style.minHeight,
+            // "Open report" on one line, however the foot wraps (Dev 7, 2396).
+            open: (() => { const b = el.querySelector(".home-report-open"); return b ? { wrap: getComputedStyle(b).whiteSpace, height: Math.round(b.getBoundingClientRect().height) } : null; })(),
+            subOf: el.querySelector(".home-summary-head > .home-sub-of:first-child, .home-section-head > .home-sub-of")?.textContent ?? null,
+            borderLeft: style.borderLeftWidth,
+            conditions: (() => { const c = el.querySelector(".home-card-conditions"); if (!c) return null; const cs = getComputedStyle(c);
+              return { widths: [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth], colors: new Set([cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor, cs.borderLeftColor]).size, radius: cs.borderTopLeftRadius }; })(),
+            numbers: [...el.querySelectorAll(".home-card-numbers > div")].map((d) => ({ label: d.querySelector("dt").textContent, value: d.querySelector("dd").textContent, size: getComputedStyle(d.querySelector("dd")).fontSize, wrap: getComputedStyle(d.querySelector("dd")).whiteSpace })) };
         });
         const one = (key) => document.querySelector(`.home-view [data-section-key="${key}"]`);
         const frame = (key) => one(key)?.querySelector(".home-card-frame-body")?.getBoundingClientRect().height ?? null;
@@ -624,7 +638,7 @@ try {
       // Each card's size from the figure its author named (Lead 2377): none, a lead alone or two Metrics small; a chart,
       // a table or three Metrics wide; an image large.
       const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, p.size]));
-      assert.deepEqual(sizes, { setup: "small", data: "small", baseline: "small", eval: "wide", "dose-study": "small", audit: "wide", screens: "large", batches: "wide", uptime: "small" });
+      assert.deepEqual(sizes, { setup: "small", data: "small", baseline: "small", eval: "wide", "dose-study": "small", audit: "wide", "audit/notes": "small", screens: "large", batches: "wide", uptime: "small" });
       for (const place of deckShape.places.filter((p) => p.size)) {
         const span = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
         assert.equal(place.span, span, `${place.key} spans ${span}: ${JSON.stringify(place)}`);
@@ -633,10 +647,21 @@ try {
         // A wide card's figure beside its text where the deck has two columns or more; stacked on one.
         if (place.size === "wide" && place.beside !== null) assert.equal(place.beside, deckShape.columns > 1, `${place.key}'s figure beside its text: ${JSON.stringify(place)}`);
         if (place.size === "small") assert.equal(place.frame, false, `a small card has no frame: ${place.key}`);
+        // A minimum on each card, not each row (Dev 7, 2396): none on one column, nor on a card with no summary.
+        const unnamed = ["setup", "data", "baseline", "dose-study"].includes(place.key);
+        const least = deckShape.columns === 1 || unnamed ? "auto" : place.size === "large" && deckShape.columns === 4 ? "536px" : "260px";
+        assert.equal(place.minHeight, least, `${place.key}'s minimum height: ${JSON.stringify(place)}`);
+        if (place.open) assert.ok(place.open.wrap === "nowrap" && place.open.height <= 34, `${place.key}'s Open on one line: ${JSON.stringify(place.open)}`);
+        // No stripe on any card's side, nor on its conditions: one border all round.
+        assert.equal(place.borderLeft, "1px", `${place.key}: ${place.borderLeft}`);
+        if (place.conditions) assert.ok(place.conditions.widths.every((w) => w === "1px") && place.conditions.colors === 1 && place.conditions.radius === "8px", `${place.key}'s conditions: ${JSON.stringify(place.conditions)}`);
       }
+      // The audit's sub-topic says which topic it is in, first in its head.
+      assert.equal(deckShape.places.find((p) => p.key === "audit/notes").subOf, "in Audit");
+      assert.deepEqual(deckShape.places.filter((p) => p.subOf && p.key !== "audit/notes").map((p) => p.key), []);
       // The small Metrics card: its first value large, the second beside it, each with its unit on one line.
       const uptime = deckShape.places.find((p) => p.key === "uptime");
-      assert.deepEqual(uptime.numbers.map((n) => n.text), ["Uptime 99.2\u00a0%", "Incidents 1"], JSON.stringify(uptime));
+      assert.deepEqual(uptime.numbers.map((n) => [n.label, n.value]), [["Uptime", "99.2\u00a0%"], ["Incidents", "1"]], JSON.stringify(uptime));
       assert.equal(uptime.numbers[0].size, "32px");
       assert.ok(uptime.numbers.every((n) => n.wrap === "nowrap"), JSON.stringify(uptime.numbers));
       // The order on screen, row by row, is the author's: nothing packed into an earlier gap.
@@ -677,6 +702,7 @@ try {
         ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
         ".home-summary-card .home-card-conditions .brief-markdown :is(p, li)",
         ".home-summary-card .home-card-numbers :is(dt, dd)",
+        ".home-summary-card :is(.home-sub-of, .home-card-numbers-count)",
         '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-details)',
         ".home-machines :is(.home-load-title, .home-load-short, .home-machine-job-count, .home-machine-job-first, .home-machines-manage)",
       ];
@@ -762,7 +788,7 @@ try {
       return { deck: deckShape, readable };
     });
 
-  await step("a newer version of one card, its size the same, moves no card: no packing, no jump (T-18, Lead 2377)", async () => {
+  await step("a newer version of one card moves no card while Home is read: its size the same, or its figure another kind, it keeps its size until the next way to Home; no packing, no jump, no new card (T-18, Lead 2377, 2414)", async () => {
     await open(1720, 1100);
     await toHome();
     const places = () => page.evaluate(() => [...document.querySelectorAll('[data-home-project="p1"] .home-brief .home-section')].map((el) => {
@@ -779,7 +805,22 @@ try {
       assert.equal(after.find((p) => p.key === "batches").size, "wide");
       const without = (list) => list.map(({ version, ...place }) => place);
       assert.deepEqual(without(after), without(before), JSON.stringify({ before, after }));
-      return { before, after };
+      // Its figure now Metrics with two values, which on its own would make it small: while Home is read, the
+      // card keeps the size it was shown at, and stays the same element (no remount, nothing lost).
+      await card("batches").evaluate((el) => { el.dataset.probe = "same"; });
+      batchesVersion = 3;
+      await until("the version with another figure", async () => (await card("batches").getAttribute("data-section-version")) === "3", 40_000);
+      const held = await places();
+      assert.equal(held.find((p) => p.key === "batches").size, "wide", "kept while Home is read");
+      assert.deepEqual(without(held), without(before), JSON.stringify({ before, held }));
+      assert.equal(await card("batches").getAttribute("data-probe"), "same");
+      // The next explicit way to Home takes its own size now, in the same element.
+      await page.locator(".toolbar-nav .catchup-nav").first().click();
+      await until("its own size now", async () => (await card("batches").getAttribute("data-card-size")) === "small");
+      assert.equal(await card("batches").getAttribute("data-probe"), "same", "no new card");
+      assert.equal(await card("batches").locator(".home-card-frame").count(), 0);
+      assert.deepEqual(await card("batches").locator(".home-card-numbers dd").evaluateAll((ds) => ds.map((d) => d.textContent)), ["2.4\u00a0%", "9"]);
+      return { before, after, held };
     } finally {
       batchesVersion = 1;
     }
@@ -796,9 +837,10 @@ try {
     await page.locator(".home-widget-organize").click();
     const dialog = page.locator(".home-organize");
     await dialog.locator(".home-organize-sizes").waitFor();
+    assert.equal(await page.locator('[role="dialog"] h2').first().innerText(), "Organize Home");
     const row = (key) => dialog.locator(`.home-organize-sizes [data-size-for="${key}"]`);
     const listed = await dialog.locator(".home-organize-sizes [data-size-for]").evaluateAll((rows) => rows.map((li) => li.dataset.sizeFor));
-    assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "screens", "batches", "uptime"], "every report and status card, in Home's order");
+    assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "audit/notes", "screens", "batches", "uptime"], "every report and status card, in the deck's order");
     assert.equal(await row("audit").locator(".home-size-card small").innerText(), "Auto · from content: Wide");
     const setup = await row("setup").evaluate((li) => ({
       disabled: [...li.querySelectorAll("input")].filter((i) => i.disabled).map((i) => i.value), checked: li.querySelector("input:checked").value,
@@ -831,12 +873,34 @@ try {
     assert.deepEqual([...places].sort((a, b) => a.top - b.top || a.left - b.left).map((p) => p.key), places.map((p) => p.key), JSON.stringify(places));
     assert.deepEqual(places.filter((p) => p.cut), []);
     await shot("home-1720-sizes-chosen.png");
-    // Kept on this device, for this Workspace, by project and key: a reload keeps them.
-    assert.deepEqual(await saved(), { "p1:audit": "large", "p1:batches": "small" });
+    // Kept on this device, for this Workspace, by project and Home's id of the section: a reload keeps them.
+    assert.deepEqual(await saved(), { "p1:30": "large", "p1:32": "small" });
     await page.reload();
     await toHome();
     assert.equal((await sizeOf("audit")).size, "large");
     assert.equal((await sizeOf("batches")).size, "small");
+    // Small for the audit: its first two Metrics values, and how many there are; never a value dropped unsaid.
+    await card("audit").locator(".home-summary-more > button").click();
+    await card("audit").locator('.home-summary-more-list input[value="small"]').check();
+    await page.keyboard.press("Escape");
+    assert.deepEqual(await sizeOf("audit"), { size: "small", source: "user", rows: "auto", frame: false });
+    assert.deepEqual(await card("audit").locator(".home-card-numbers dt").allInnerTexts(), ["Model replies", "Pre-screened"]);
+    assert.equal(await card("audit").locator(".home-card-numbers-count").innerText(), "2 of 3 values");
+    // Its conditions still shown whole behind their toggle: a small card cuts none.
+    assert.ok(await card("audit").locator(".home-card-conditions").isVisible());
+    await shot("home-1720-audit-small.png");
+    // The audit written again under its key is another section (Home's id 40): it takes its own size, not the old one.
+    auditId = 40;
+    try {
+      await page.reload();
+      await toHome();
+      assert.deepEqual(await sizeOf("audit"), { size: "wide", source: "auto", rows: "auto", frame: true }, "a new section under an old key");
+      assert.equal((await sizeOf("batches")).size, "small", "the others keep theirs");
+    } finally {
+      auditId = 30;
+    }
+    await page.reload();
+    await toHome();
     // Reset all to Auto: each card its own size again, and nothing kept.
     await page.locator(".home-widget-organize").click();
     await dialog.locator(".home-size-reset").click();
@@ -846,6 +910,8 @@ try {
     assert.deepEqual(await sizeOf("audit"), { size: "wide", source: "auto", rows: "auto", frame: true });
     assert.deepEqual(await sizeOf("batches"), { size: "wide", source: "auto", rows: "auto", frame: true });
     assert.equal(await saved(), null);
+    // The pinned widget column is not sized here, nor are its pins, order or hidden list touched.
+    assert.equal(await page.evaluate((ws) => localStorage.getItem(`yuzuno.homeWidgets.${ws}`), WS), null);
     assert.equal(report.writes.length, writes, "choosing a size writes nothing to Core");
     return { setup, organizeInk };
   });
