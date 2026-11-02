@@ -46,8 +46,10 @@
   /* Small controls and small objects only: never a dialog, and never an
      action that approves, answers or destroys. */
   --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
-  /* The pressed colour, an inset tint that works on every palette. */
-  --press-tint: rgb(0 0 0 / 6%);
+  /* Pressed in: an inset shadow along the top edge. It leaves the background
+     under the text as it was, so a pressed control's text contrast is its
+     resting contrast on every palette. */
+  --press-shadow: inset 0 1px 3px rgb(0 0 0 / 16%);
 }
 * {
   box-sizing: border-box;
@@ -1862,8 +1864,8 @@ p {
   border-color: #cbd7bc;
 }
 /* Press (T-19): ordinary buttons and chips dip to .97 and spring back, with
-   the pressed colour. Anything that approves, answers or destroys takes the
-   colour only, so it never moves under the pointer: request cards, answer
+   the pressed-in shadow. Anything that approves, answers or destroys takes the
+   shadow only, so it never moves under the pointer: request cards, answer
    and decision rows, a dialog's actions, inline confirms, danger buttons,
    Stop and Interrupt. */
 :is(
@@ -1878,7 +1880,7 @@ p {
     .choice-chips .choice-chip
   ):active:not(:disabled) {
   transform: scale(0.97);
-  box-shadow: inset 0 0 0 99px var(--press-tint);
+  box-shadow: var(--press-shadow);
 }
 :is(
     .pending-card,
@@ -1904,7 +1906,7 @@ p {
     .interrupt-button
   ):active:not(:disabled) {
   transform: none;
-  box-shadow: inset 0 0 0 99px var(--press-tint);
+  box-shadow: var(--press-shadow);
 }
 .welcome-create {
   margin-top: 27px;
@@ -3092,7 +3094,7 @@ p {
     scroll-behavior: auto !important;
     transition: none !important;
   }
-  /* No press scale either; the pressed colour carries it (T-19). */
+  /* No press scale either; the pressed-in shadow carries it (T-19). */
   :is(
       .primary-button,
       .secondary-button,

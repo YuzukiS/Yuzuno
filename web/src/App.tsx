@@ -15,6 +15,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   ArchiveRestore,
@@ -3870,20 +3871,25 @@ export function App() {
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
-      <div className="toast-stack">
-        {notice && (
-          <div className="toast" role="status">
-            <Check size={15} />
-            {notice}
-          </div>
-        )}
-        {menuError && (
-          <div className="toast toast-error" role="alert">
-            <CircleAlert size={15} />
-            {menuError}
-          </div>
-        )}
-      </div>
+      {/* In <body>, beside Radix's dialogs: #root isolates its stacking, so a
+          toast inside it could never show above an open dialog. */}
+      {createPortal(
+        <div className="toast-stack">
+          {notice && (
+            <div className="toast" role="status">
+              <Check size={15} />
+              {notice}
+            </div>
+          )}
+          {menuError && (
+            <div className="toast toast-error" role="alert">
+              <CircleAlert size={15} />
+              {menuError}
+            </div>
+          )}
+        </div>,
+        document.body,
+      )}
       <HandoffDropStrip />
     </div>
     </HomeReplyLinks.Provider>

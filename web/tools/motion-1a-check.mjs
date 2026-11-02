@@ -88,7 +88,9 @@ const describe = (page) => page.evaluate(() => {
 });
 const ms = (v) => (v.endsWith("ms") ? parseFloat(v) : v.endsWith("s") ? parseFloat(v) * 1000 : NaN);
 
-/** Text contrast at rest and with the pressed tint, for the visible ordinary and still controls. */
+/** Text contrast of the visible pressable controls, and whether the pressed-in shadow (an inset
+ *  edge shadow) stays clear of the text: if it reaches less far than the top padding, the
+ *  background under the text is unchanged and pressed contrast is the resting contrast. */
 function measureContrast() {
   // Any CSS colour (the build writes rgb(0 0 0 / 6%) as #0000000f) resolved by the browser itself.
   const probe = document.body.appendChild(document.createElement("i"));
@@ -116,21 +118,22 @@ function measureContrast() {
   const lum = ({ r, g, b }) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
     .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-  const tint = parse(getComputedStyle(document.documentElement).getPropertyValue("--press-tint").trim());
-  if (!tint || !(tint.a > 0)) return { tint: null, rows: [] };
+  const shadow = getComputedStyle(document.documentElement).getPropertyValue("--press-shadow").trim();
+  const lengths = (shadow.match(/-?\d*\.?\d+px/g) || []).map(parseFloat);
+  if (!/inset/.test(shadow) || lengths.length < 3) return { shadow: null, rows: [] };
+  const reach = Math.abs(lengths[1]) + lengths[2] + (lengths[3] || 0);
   const selector = ".primary-button, .secondary-button, .quiet-button, .icon-button, .catchup-nav, .conversation-action, .send-button, .choice-chips .choice-chip, .phone-dock-button, .interrupt-button";
   const rows = [...document.querySelectorAll(selector)].filter((el) => {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && !el.disabled && (el.textContent || "").trim();
   }).slice(0, 40).map((el) => {
     const text = parse(getComputedStyle(el).color);
-    const rest = background(el);
-    const pressed = tint ? over(tint, rest) : rest;
+    const padding = parseFloat(getComputedStyle(el).paddingTop);
     return { el: `${el.className.toString().split(/\s+/).slice(0, 2).join(".")} "${el.textContent.trim().slice(0, 18)}"`,
-      rest: +ratio(text, rest).toFixed(2), pressed: +ratio(text, pressed).toFixed(2) };
+      rest: +ratio(text, background(el)).toFixed(2), padding, clear: padding >= reach };
   });
   probe.remove();
-  return { tint, rows };
+  return { shadow, reach, rows };
 }
 
 const browser = await launchBrowser();
@@ -279,11 +282,11 @@ for (const run of runs) {
         for (const theme of ["light", "dark"]) {
           await page.evaluate(([p, t]) => { document.documentElement.dataset.palette = p; document.documentElement.dataset.theme = t; }, [palette, theme]);
           await page.waitForTimeout(80);
-          const { tint, rows } = await page.evaluate(measureContrast);
-          report.contrast.push({ palette, theme, tint, rows });
-          ok(`${tag}: ${palette}/${theme}: the pressed tint is read (${rows.length} controls measured)`, !!tint && rows.length > 0, { tint, rows: rows.length });
-          const dropped = rows.filter((r) => r.rest >= 4.5 && r.pressed < 4.5);
-          ok(`${tag}: ${palette}/${theme}: the pressed tint never takes a control's text below 4.5:1`, dropped.length === 0, dropped);
+          const { shadow, reach, rows } = await page.evaluate(measureContrast);
+          report.contrast.push({ palette, theme, shadow, reach, rows });
+          ok(`${tag}: ${palette}/${theme}: the pressed-in shadow is read (${rows.length} controls measured)`, !!shadow && rows.length > 0, { shadow, rows: rows.length });
+          const covering = rows.filter((r) => !r.clear);
+          ok(`${tag}: ${palette}/${theme}: the pressed-in shadow stays clear of the text, so pressed contrast is the resting contrast`, covering.length === 0, { reach, covering });
         }
       await page.evaluate(() => { document.documentElement.dataset.palette = "garden"; document.documentElement.dataset.theme = "light"; });
     }
