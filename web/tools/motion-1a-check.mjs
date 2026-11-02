@@ -131,9 +131,19 @@ function measureContrast() {
     return r.width > 0 && r.height > 0 && !el.disabled && (el.textContent || "").trim();
   }).slice(0, 40).map((el) => {
     const text = parse(getComputedStyle(el).color);
-    const padding = parseFloat(getComputedStyle(el).paddingTop);
+    // How far the text starts below the control's top edge (a flex-centred button may have no padding).
+    const top = el.getBoundingClientRect().top;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let gap = Infinity;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.textContent.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      for (const r of range.getClientRects()) gap = Math.min(gap, r.top - top);
+    }
+    gap = +gap.toFixed(1);
     return { el: `${el.className.toString().split(/\s+/).slice(0, 2).join(".")} "${el.textContent.trim().slice(0, 18)}"`,
-      rest: +ratio(text, background(el)).toFixed(2), padding, clear: padding >= reach };
+      rest: +ratio(text, background(el)).toFixed(2), gap, clear: gap >= reach };
   });
   probe.remove();
   return { shadow, reach, rows };
@@ -191,7 +201,7 @@ for (const run of runs) {
     ok(`${tag}: an ordinary button ${reduced ? "keeps its size but takes the pressed colour" : "dips to .97 with the pressed colour"}`,
       reduced ? pressedStill(nav) : pressedScale(nav), nav);
     const navDuration = await page.locator(".toolbar-nav .catchup-nav").first().evaluate((n) => getComputedStyle(n).transitionDuration);
-    ok(`${tag}: the nav button's transitions use micro (none under reduced motion)`, reduced ? navDuration === "0s" : navDuration === "0.12s, 0.12s, 0.12s", navDuration);
+    ok(`${tag}: the nav button's transitions use micro (none under reduced motion)`, navDuration.split(", ").every((d) => d === (reduced ? "0s" : "0.12s")), navDuration);
 
     // Hana's question: its Send answer button only takes the colour.
     await page.locator(".agent-row", { hasText: "Hana" }).first().click();
@@ -297,9 +307,11 @@ for (const run of runs) {
           if (!(await el.count())) continue;
           await el.evaluate((node) => { for (let n = node; n; n = n.parentElement) if (n.disabled) n.disabled = false; });
           await el.scrollIntoViewIfNeeded();
-          const rest = await el.screenshot();
+          // Rest is taken under the pointer too, so the pictures differ only by the press.
           const box = await el.boundingBox();
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await page.waitForTimeout(150);
+          const rest = await el.screenshot();
           await page.mouse.down();
           await page.waitForTimeout(150);
           const pressed = await el.screenshot();
@@ -325,6 +337,7 @@ for (const run of runs) {
           }, [`data:image/png;base64,${rest.toString("base64")}`, `data:image/png;base64,${pressed.toString("base64")}`]);
           pairs.push({ theme, kind, diff, rest: rest.toString("base64"), pressed: pressed.toString("base64") });
           ok(`${tag}: ${theme}: a pressed ${kind} control shows the pressed-in edge (top-edge pixel difference ${diff.topEdge})`, diff.topEdge >= 3, diff);
+          ok(`${tag}: ${theme}: the ${kind} control's middle, behind its text, is unchanged when pressed (difference ${diff.middle})`, diff.middle < 1, diff);
         }
       }
       report.pressPairs = pairs.map(({ theme, kind, diff }) => ({ theme, kind, diff }));
