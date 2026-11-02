@@ -317,7 +317,12 @@ export function Home({
   // it again; the browser's Back closes it as the page's Back and Escape do,
   // and focus returns to what opened it. Nothing here marks seen or touches
   // a draft.
-  const [report, setReport] = useState<OpenReport | null>(null);
+  const [openedReport, setReport] = useState<OpenReport | null>(null);
+  // A report belongs to the Workspace its link names: from the first frame
+  // after the Workspace changes (Core at this address answering as another),
+  // it is neither drawn nor acted on, and nothing of it reaches the other
+  // Workspace's Home (T-18 R2).
+  const report = openedReport && openedReport.link.workspaceId === workspaceId ? openedReport : null;
   const shownReport = useRef(report);
   shownReport.current = report;
   const reportEntry = useRef(0);
@@ -377,6 +382,16 @@ export function Home({
   }, [report]);
   // Leaving Home with a report open leaves its entry as an ordinary one.
   useEffect(() => () => leaveReportEntry(shownReport.current), []);
+  // Another Workspace's report is closed for good, with its entry, where Back
+  // would go and what it would focus.
+  useEffect(() => {
+    if (!openedReport || openedReport.link.workspaceId === workspaceId) return;
+    leaveReportEntry(openedReport);
+    setReport(null);
+    returnTo.current = null;
+    afterReport.current = null;
+    closing.current = false;
+  }, [openedReport, workspaceId]);
   const incoming = useRef(0);
   useEffect(() => {
     if (!incomingReport || incoming.current === incomingReport.n) return;
@@ -655,6 +670,8 @@ export function Home({
         onOpenVersion={(link) => openReport(link, null, null)}
         onShowProject={(projectId) => closeReport(() => revealIn(projectId, () => null))}
         onSeen={seen}
+        readError={error?.kind === "read" || error?.kind === "unavailable" ? error : null}
+        onRetry={reload}
       />
     )}
     </div>

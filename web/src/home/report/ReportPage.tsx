@@ -46,6 +46,8 @@ export function ReportPage({
   onOpenVersion,
   onShowProject,
   onSeen,
+  readError = null,
+  onRetry,
 }: {
   link: ReportLink;
   /** Whether Back goes to the message the link was opened from. */
@@ -60,6 +62,10 @@ export function ReportPage({
   onOpenVersion: (link: ReportLink) => void;
   onShowProject: (projectId: string) => void;
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
+  /** Home's read failure, as Home words it ("" when it has no reason). */
+  readError?: { reason: string } | null;
+  /** Reads Home again, as Home's own Refresh does. */
+  onRetry?: () => void;
 }) {
   const language = useLanguage();
   const time = useTimeDisplay();
@@ -154,6 +160,11 @@ export function ReportPage({
     <Notice actions={null}>{t.gone}</Notice>
   ) : null;
   const block = (id: string) => <SectionBody section={shown!} projectId={link.projectId} changes={changes} only={[id]} />;
+  const retry = onRetry && (
+    <button type="button" className="report-notice-main" onClick={onRetry}>
+      {t.retry}
+    </button>
+  );
   const summary = parts?.summary ?? null;
   return (
     <section
@@ -204,8 +215,19 @@ export function ReportPage({
         </span>
       </header>
       <div className="report-page">
-        {readFailed && data && <p className="home-note report-read-note">{t.readFailed}</p>}
-        {!data && (
+        {/* A failed read is said, with a way to read again; never shown as
+            still reading. With an earlier reading, that one stays. */}
+        {readFailed && data && (
+          <Notice actions={retry}>{t.readFailed}</Notice>
+        )}
+        {readFailed && !data && (
+          <div className="report-notice" role="alert">
+            <Info size={15} />
+            <p>{t.firstReadFailed(readError?.reason ?? "")}</p>
+            {retry}
+          </div>
+        )}
+        {!data && !readFailed && (
           <div className="loading-state">
             <LoaderCircle className="spin" size={19} />
             {t.reading}

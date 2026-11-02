@@ -23,13 +23,17 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
+import {flushSync} from 'react-dom';
 import {Home} from ${JSON.stringify(path.join(root, "src/home/Home.tsx"))};
 import {MessageLinks, reportLinkHref} from ${JSON.stringify(path.join(root, "src/deep-link.ts"))};
 const root=createRoot(document.getElementById('root'));
 const links={href:()=>null,open:(link)=>window.actions.push(['open',link]),
   reportHref:(link)=>reportLinkHref('https://report.test/',{workspaceId:'ws-1',...link}),
   openReport:(link,from)=>window.actions.push(['report',link,from])};
-window.renderHome=(report=null,revision=0)=>root.render(<MessageLinks.Provider value={links}><Home workspaceId="ws-1" revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} report={report}/></MessageLinks.Provider>);`,
+const home=(report,revision,workspaceId)=><MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} report={report}/></MessageLinks.Provider>;
+window.renderHome=(report=null,revision=0,workspaceId='ws-1')=>root.render(home(report,revision,workspaceId));
+// Drawn before returning: what the first frame shows.
+window.renderHomeNow=(report=null,revision=0,workspaceId='ws-1')=>flushSync(()=>root.render(home(report,revision,workspaceId)));`,
   );
   const result = await build({
     root,
@@ -109,7 +113,12 @@ function mount(read) {
   window.actions = [];
   window.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), method: init.method || "GET", body: init.body ?? null });
-    const body = String(url) === "/api/home" ? read() : String(url) === "/api/machine-load" ? machine : { repositories: [], links: [] };
+    // Home's read may be held (a promise) or refused (an Error), as Core's can.
+    const body = String(url) === "/api/home" ? await read() : String(url) === "/api/machine-load" ? machine : { repositories: [], links: [] };
+    if (body instanceof Error) {
+      const refused = { error: body.message };
+      return { ok: false, status: 503, json: async () => refused, text: async () => JSON.stringify(refused) };
+    }
     return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
   };
   window.eval(bundle);
@@ -399,5 +408,57 @@ test("a body that names no summary opens as written: nothing lifted or folded", 
   assert.equal(report.querySelector(".report-conditions"), null);
   assert.deepEqual(flow(page), ["t", "chart", "more"]);
   assert.equal(report.querySelector(".report-detail"), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a report open in one Workspace is gone from the first frame of another, even under the same project, key, identity and version (T-18 R2)", async (t) => {
+  let current = homeData([section("eval", 7, 3)]);
+  const page = await openHome(() => current);
+  t.after(page.close);
+  page.card("eval").querySelector(".home-report-open").click();
+  await until(() => page.report()?.querySelector(".report-lead"), "the report in ws-1");
+  // Core at this address answers as ws-2 now; its first read is held.
+  let answer;
+  current = new Promise((resolve) => { answer = resolve; });
+  page.window.renderHomeNow(null, 0, "ws-2");
+  assert.equal(page.report(), null, "not drawn in the first frame of ws-2");
+  assert.doesNotMatch(page.document.body.textContent, /Model B lowers validation loss/);
+  assert.ok(!page.document.querySelector(".home-view").hasAttribute("inert"), "ws-2's Home is not held under it");
+  // Its read brings a section with the very same project, key, identity and version.
+  answer(homeData([section("eval", 7, 3, { body: reportBody("Workspace two's own conclusion.") })]));
+  await until(() => page.card("eval"), "ws-2's card");
+  await tick(40);
+  assert.equal(page.report(), null, "never drawn over ws-2's own section");
+  assert.doesNotMatch(page.document.body.textContent, /Model B lowers validation loss/);
+  assert.equal(page.window.location.hash, "", "the report's address is left");
+  assert.equal(page.window.history.state?.yuzunoReport, undefined);
+  assert.deepEqual(page.requests.filter((r) => r.method !== "GET" && !r.url.endsWith("/github_repositories")), [], "nothing was done in ws-2");
+  // Back on ws-1, nothing of that report comes back by itself.
+  page.window.renderHomeNow(null, 0, "ws-1");
+  assert.equal(page.report(), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a report link whose first read of Home fails says so with Try again, never Reading; a failed refresh keeps the last reading (T-18 R2)", async (t) => {
+  let refuse = true;
+  const page = mount(() => (refuse ? new Error("Core is restarting") : homeData([section("eval", 7, 3)])));
+  t.after(page.close);
+  page.window.renderHome({ link: linkTo(3), back: null, fromAddress: false, n: 1 });
+  const failure = await until(() => page.report()?.querySelector('.report-notice[role="alert"]'), "the failure");
+  assert.match(failure.textContent, /Home couldn't be read, so this report can't be shown yet: .*Core is restarting/);
+  assert.equal(page.report().querySelector(".loading-state"), null, "not shown as reading");
+  assert.equal(page.report().querySelector(".report-article"), null);
+  refuse = false;
+  await page.press(failure, "Try again");
+  await until(() => page.report()?.querySelector(".report-lead"), "the report after Try again");
+  assert.equal(page.report().querySelector('.report-notice[role="alert"]'), null);
+  // A later read that fails keeps what was read, and says so.
+  refuse = true;
+  page.window.renderHome(null, 1);
+  await until(() => notice(page) === "Home couldn't be read just now; this is the last reading.", "the last-reading note");
+  assert.ok(page.report().querySelector(".report-lead"), "the report stays as read");
+  refuse = false;
+  await page.press(page.report().querySelector(".report-notice"), "Try again");
+  await until(() => notice(page) === null, "read again");
   assert.deepEqual(page.errors, []);
 });
