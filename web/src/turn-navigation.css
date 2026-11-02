@@ -51,7 +51,7 @@
 }
 .current-turn-chevron {
   margin-left: auto;
-  transition: transform 160ms;
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 .current-turn-prompt[open] .current-turn-chevron {
   transform: rotate(180deg);

@@ -395,6 +395,7 @@
   --accent-ink: #e2ce8e;
   --input: #202920;
   --focus: #92ac75;
+  --press-tint: rgb(255 255 255 / 8%);
 }
 :root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
   :is(
@@ -875,4 +876,12 @@
   max-width: 100%;
   white-space: normal;
   text-align: left;
+}
+
+/* Theme and list cards ease their hover and chosen states (T-19). */
+.theme-choice {
+  transition:
+    border-color var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
 }

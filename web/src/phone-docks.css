@@ -59,6 +59,10 @@
   font-size: calc(9px + var(--font-adjust, 3px));
   font-variant-numeric: tabular-nums;
   cursor: pointer;
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .app.phone .phone-dock-work {
   left: 8px;

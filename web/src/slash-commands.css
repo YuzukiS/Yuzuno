@@ -92,6 +92,6 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .slash-menu-item {
-    transition: background-color 80ms ease-out;
+    transition: background-color var(--motion-micro) var(--ease-standard);
   }
 }

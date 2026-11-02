@@ -105,10 +105,10 @@
   background: transparent;
   transform: scale(calc(1 + var(--lift, 0) * 0.42));
   transition:
-    transform 140ms ease-out,
-    background 140ms,
-    border-color 140ms,
-    color 140ms;
+    transform var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
 }
 .turn-dock-bar {
   /* Short rounded bars: shorter and fainter with distance; near the pointer
@@ -124,10 +124,10 @@
   opacity: calc(var(--bar-rest) + var(--lift, 0) * (0.95 - var(--bar-rest)));
   transform: scale(calc(1 + var(--lift, 0) * 0.7), calc(1 + var(--lift, 0) * 0.35));
   transition:
-    width 160ms ease-out,
-    transform 140ms ease-out,
-    opacity 140ms,
-    background 140ms;
+    width var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-standard),
+    opacity var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard);
 }
 .turn-dock-stop[data-active="true"] .turn-dock-bar,
 .turn-dock-bar[data-running="true"] {
@@ -203,8 +203,8 @@
   opacity: 0;
   pointer-events: none;
   transition:
-    opacity 160ms ease,
-    color 160ms ease;
+    opacity var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
 }
 .turn-dock:is(:hover, :focus-within, [data-engaged="true"]) .turn-dock-latest {
   opacity: 1;
@@ -228,8 +228,8 @@
   box-shadow: 0 8px 26px var(--palette-shadow, #00000020);
   pointer-events: none;
   overflow: hidden;
-  animation: dock-preview-in 150ms ease-out;
-  transition: top 140ms ease-out;
+  animation: dock-preview-in var(--motion-micro) var(--ease-standard);
+  transition: top var(--motion-micro) var(--ease-standard);
 }
 @keyframes dock-preview-in {
   from {

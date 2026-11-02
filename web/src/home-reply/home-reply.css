@@ -173,7 +173,7 @@
   font-weight: 600;
 }
 .home-reply-action .chev {
-  transition: transform 0.12s;
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 .home-reply-action[aria-expanded="true"] .chev {
   transform: rotate(90deg);

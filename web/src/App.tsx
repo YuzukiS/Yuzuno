@@ -3586,7 +3586,9 @@ export function App() {
                   onClick={() => {
                     scroll.current?.scrollTo({
                       top: scroll.current.scrollHeight,
-                      behavior: "smooth",
+                      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+                        ? "auto"
+                        : "smooth",
                     });
                     stickToBottom.current = true;
                   }}
@@ -3868,18 +3870,20 @@ export function App() {
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={15} />
-          {notice}
-        </div>
-      )}
-      {menuError && (
-        <div className="toast toast-error" role="alert">
-          <CircleAlert size={15} />
-          {menuError}
-        </div>
-      )}
+      <div className="toast-stack">
+        {notice && (
+          <div className="toast" role="status">
+            <Check size={15} />
+            {notice}
+          </div>
+        )}
+        {menuError && (
+          <div className="toast toast-error" role="alert">
+            <CircleAlert size={15} />
+            {menuError}
+          </div>
+        )}
+      </div>
       <HandoffDropStrip />
     </div>
     </HomeReplyLinks.Provider>

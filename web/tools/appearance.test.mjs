@@ -219,3 +219,23 @@ test("trying again repeats the last write as it was: a refused reset is retried 
   assert.deepEqual(retryAppearanceWrite(), { saved: true });
   assert.equal(JSON.parse(store.get(KEY)).palette, "yuzu");
 });
+
+test("a theme applies in one frame: transitions are off for two frames, until the last apply's (T-19)", () => {
+  const frames = [];
+  const runFrame = () => frames.splice(0).forEach((callback) => callback());
+  window.requestAnimationFrame = (callback) => frames.push(callback);
+  try {
+    applyAppearance({ ...readAppearance(), theme: "dark" });
+    assert.equal(root.dataset.themeApplying, "");
+    runFrame();
+    assert.equal(root.dataset.themeApplying, "", "still off after one frame");
+    // A second apply before the first one's two frames have passed.
+    applyAppearance({ ...readAppearance(), theme: "light" });
+    runFrame();
+    assert.equal(root.dataset.themeApplying, "", "the first apply does not turn them back on");
+    runFrame();
+    assert.equal(root.dataset.themeApplying, undefined, "back on two frames after the last apply");
+  } finally {
+    delete window.requestAnimationFrame;
+  }
+});

@@ -148,3 +148,11 @@
   padding: 0 16px 14px;
   color: var(--danger, #b55d53);
 }
+
+/* Choice cards ease their hover and chosen states, as choice chips do (T-19). */
+.input-send-choice {
+  transition:
+    border-color var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}

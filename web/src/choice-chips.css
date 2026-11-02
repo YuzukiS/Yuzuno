@@ -39,8 +39,10 @@
   line-height: 1.3;
   cursor: pointer;
   transition:
-    border-color 140ms ease,
-    background-color 140ms ease;
+    border-color var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .choice-chips .choice-chip input[type="radio"] {
   position: absolute;

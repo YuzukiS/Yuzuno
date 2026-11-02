@@ -36,7 +36,7 @@
 }
 .artifact-history > summary > svg {
   flex-shrink: 0;
-  transition: transform 180ms ease;
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 .artifact-history[open] > summary > svg {
   transform: rotate(90deg);

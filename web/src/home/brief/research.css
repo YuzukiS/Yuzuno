@@ -491,3 +491,12 @@
 .research-part-definition .research-note {
   display: block;
 }
+
+/* The view and difference pills ease their selection (T-19). */
+.research-views .research-radio,
+.research-toggle .research-radio {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}
