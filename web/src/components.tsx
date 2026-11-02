@@ -2,7 +2,7 @@ import { MessageContent } from "./MessageContent";
 import { RewindButton } from "./Rewind";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff";
-import { parseMessageLink, useMessageLinks } from "./deep-link";
+import { parseMessageLink, parseReportLink, useMessageLinks } from "./deep-link";
 import { usePointFix } from "./point-fix";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { MailboxNotice } from "./MailboxNotice";
@@ -274,6 +274,16 @@ function CopyLinkButton({ agent, turnId, itemId }: { agent: Agent; turnId: strin
   const t = useStrings(turnWords);
   return href ? <CopyButton text={href} label={t.copyLink} /> : null;
 }
+/** The message an element is in, by its Turn and Item: where a link it holds returns to. */
+function messageOf(element: Element): { turnId: string; itemId?: string } | undefined {
+  const turnId = element.closest<HTMLElement>("[data-turn-id]")?.dataset.turnId;
+  if (!turnId) return undefined;
+  // An anchor inside a message (a sub-agent, a plan step) is not the message.
+  let item = element.closest<HTMLElement>("[data-item-id]");
+  for (let outer = item?.parentElement?.closest<HTMLElement>("[data-item-id]"); outer; outer = outer.parentElement?.closest<HTMLElement>("[data-item-id]"))
+    item = outer;
+  return { turnId, itemId: item?.dataset.itemId };
+}
 export function Prose({
   text,
   onFile,
@@ -316,6 +326,13 @@ export function Prose({
         if (message) {
           e.preventDefault();
           links.open(message);
+          return;
+        }
+        // So does a link to a Home report (T-18), with Back to this message.
+        const report = links && parseReportLink(href);
+        if (report) {
+          e.preventDefault();
+          links.openReport(report, messageOf(link));
           return;
         }
         if (/^(https?:|mailto:)/i.test(href)) {

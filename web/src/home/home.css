@@ -5,7 +5,9 @@
  * they keep at least 4.5:1 on --paper, --home-surface and --home-soft in
  * every palette, light and dark (garden light is the tightest, about 4.9:1).
  * The plain accents are for dots, icons and borders only. */
-.home-view {
+/* Home's colours, shared with a report over it (T-18). */
+.home-view,
+.home-report {
   --home-surface: var(--surface-raised, var(--paper));
   --home-soft: var(--surface-soft, var(--cream));
   --home-ink-2: var(--text-secondary, #5d6858);
@@ -15,6 +17,8 @@
   --home-error: var(--error-ink, var(--coral));
   --home-error-ink: color-mix(in srgb, var(--home-error) 60%, var(--ink));
   --home-new: color-mix(in srgb, var(--accent-ink, var(--green)) 85%, var(--ink));
+}
+.home-view {
   overflow: auto;
   /* Scroll anchoring keeps what is being read in place when content above
      it changes size (the browser default; stated here on purpose). */
@@ -1167,7 +1171,8 @@ ul.home-widget {
 }
 
 /* Focus and the needs-you jump */
-.home-view :is(button, a, summary, select, textarea):focus-visible {
+.home-view :is(button, a, summary, select, textarea):focus-visible,
+.home-report :is(button, a, summary, select, textarea):focus-visible {
   outline: 2px solid var(--home-focus);
   outline-offset: 2px;
 }

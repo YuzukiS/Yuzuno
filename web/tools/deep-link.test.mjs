@@ -3,7 +3,7 @@
 // Agent link (T-184) names only its Workspace and Agent.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentLinkHref, homeLinkHref, messageLinkHref, parseAgentLink, parseAppLink, parseHomeLink, parseMessageLink } from "../src/deep-link.ts";
+import { agentLinkHref, homeLinkHref, messageLinkHref, parseAgentLink, parseAppLink, parseHomeLink, parseMessageLink, parseReportLink, reportLinkHref } from "../src/deep-link.ts";
 import { localReadingPositions } from "../src/reading-position.ts";
 
 const link = { workspaceId: "ws-1", agentId: "agent-a", turnId: "019a-turn", itemId: "msg_7", threadId: "thread-9" };
@@ -75,6 +75,38 @@ test("a Home link names its Workspace only, as a push notification opens it (T-2
     assert.equal(parseHomeLink(text), null, text);
   // A message or Agent link is still read as one, not as a Home.
   assert.equal(parseAppLink("#/agent?w=ws-1&a=agent-a").kind, "agent");
+});
+
+test("a report link names its Workspace, Project, section, version and section identity, and reads back from any origin (T-18)", () => {
+  const report = { workspaceId: "ws-1", projectId: "p-1", key: "computable-workspace-report/example", version: 3, sectionId: 42 };
+  const href = reportLinkHref("http://127.0.0.1:4317/", report);
+  assert.equal(href, "http://127.0.0.1:4317/#/report?w=ws-1&p=p-1&k=computable-workspace-report%2Fexample&v=3&s=42");
+  assert.deepEqual(parseReportLink(href), report);
+  assert.deepEqual(parseReportLink(href.replace("http://127.0.0.1:4317", "https://core.example:8443")), report);
+  assert.deepEqual(parseAppLink(href), { kind: "report", ...report });
+  // Without the identity (an older Home): still a report link.
+  const bare = { workspaceId: "ws-1", projectId: "p-1", key: "weekly", version: 1 };
+  assert.deepEqual(parseReportLink(reportLinkHref("http://h/", bare)), bare);
+  assert.deepEqual(parseReportLink("  #/report?w=ws-1&p=p-1&k=weekly&v=1  "), bare);
+  // Not a report link: another kind, a field missing, twice or unknown, a key
+  // or version that can't be one.
+  for (const text of [
+    "#/home?w=ws-1",
+    "#/report?w=ws-1&p=p-1&k=weekly",
+    "#/report?w=ws-1&k=weekly&v=1",
+    "#/report?p=p-1&k=weekly&v=1",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=1&v=2",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=1&x=1",
+    "#/report?w=ws-1&p=p-1&k=Weekly&v=1",
+    "#/report?w=ws-1&p=p-1&k=a/b/c&v=1",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=0",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=-1",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=1.5",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=1e3",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=1&s=0",
+    "#/report?w=ws-1&p=p-1&k=weekly&v=1&s=x",
+  ]) assert.equal(parseReportLink(text), null, text);
+  assert.equal(parseHomeLink(href), null, "a report link is not a Home link");
 });
 
 test("reading positions are kept per Workspace and Agent, and the oldest are forgotten past the bound", () => {

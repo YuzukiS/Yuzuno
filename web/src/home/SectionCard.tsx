@@ -1,7 +1,7 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
-import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
+import { BookOpen, CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import type { Agent } from "../types";
@@ -19,6 +19,8 @@ import { homeText } from "./home-text";
 import { SectionBody } from "./SectionBody";
 import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
+import { useReportOpen } from "./report/report-open";
+import { reportText } from "./report/report-text";
 
 /** When a status's data is from, and whether it is past its validity. */
 function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -124,6 +126,9 @@ export const SectionCard = memo(function SectionCard({
   const time = useTimeDisplay();
   const language = useLanguage();
   const t = homeText(language);
+  // A report or status opens whole as a page over Home (T-18).
+  const openReport = useReportOpen();
+  const reportWords = reportText(language);
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
   const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
@@ -222,6 +227,17 @@ export const SectionCard = memo(function SectionCard({
           </span>
           <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
         </span>
+        {openReport && section.kind !== "ask" && (
+          <button
+            type="button"
+            className="quiet-button home-report-open"
+            aria-label={reportWords.openReportLabel(section.title)}
+            onClick={(event) => openReport(projectId, section, event.currentTarget)}
+          >
+            <BookOpen size={13} />
+            {reportWords.openReport}
+          </button>
+        )}
         {replyable && (
           <button
             type="button"
