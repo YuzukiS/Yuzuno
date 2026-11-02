@@ -718,6 +718,54 @@ try {
     return { shapes };
   });
 
+  await step("an explicit way to Home closes the report: the toolbar, a push's Home link and one in the address, after a card or an address link; another Workspace's Home link closes nothing (T-18 R3)", async () => {
+    const shape = () => page.evaluate(() => ({
+      report: !!document.querySelector(".home-report"),
+      inReach: !document.querySelector(".home-view")?.hasAttribute("inert"),
+      hash: location.hash, marker: history.state?.yuzunoReport ?? null, length: history.length,
+    }));
+    const closed = async (what) => {
+      await until(what, async () => !(await reportPage().count()));
+      return shape();
+    };
+    // A card's report, then the toolbar's Home: its entry left, as its Back leaves it.
+    await open(1440, 900);
+    await toHome();
+    const start = await page.evaluate(() => history.length);
+    await openReport("eval");
+    await page.locator(".toolbar-nav .catchup-nav").first().click();
+    const toolbar = await closed("the toolbar's Home closed it");
+    assert.deepEqual({ ...toolbar, length: toolbar.length - start }, { report: false, inReach: true, hash: "", marker: null, length: 1 }, JSON.stringify(toolbar));
+    assert.ok(await page.locator(".home-view").isVisible(), "on Home, not in a conversation");
+    // A push notification clicked while Yuzuno is open: the service worker posts its Home link to this
+    // window (T-200), with no navigation. Another Workspace's is said, and the report stays open.
+    const push = (href) => page.evaluate((href) => navigator.serviceWorker.dispatchEvent(new MessageEvent("message", { data: { type: "yuzuno:open", href } })), href);
+    await openReport("eval");
+    const opened = await page.evaluate(() => history.length);
+    await push(`https://${HOST}/#/home?w=ws-elsewhere`);
+    await page.locator(".toast", { hasText: "another Workspace" }).waitFor();
+    assert.ok(await reportPage().isVisible(), "another Workspace's Home link closes nothing");
+    // This Workspace's: the report closes, its entry left as its Back leaves it.
+    await push(`https://${HOST}/#/home?w=${WS}`);
+    const pushed = await closed("the push's Home link closed it");
+    assert.deepEqual(pushed, { report: false, inReach: true, hash: "", marker: null, length: opened }, JSON.stringify(pushed));
+    // A Home link in the address is a navigation of its own: the report closes, the address is Home's.
+    await openReport("eval");
+    await page.evaluate((ws) => { location.hash = `#/home?w=${ws}`; }, WS);
+    const linked = await closed("the address's Home link closed it");
+    assert.deepEqual({ report: linked.report, inReach: linked.inReach, hash: linked.hash, marker: linked.marker }, { report: false, inReach: true, hash: "", marker: null }, JSON.stringify(linked));
+    await page.context().close();
+    // A report from the address (a cold link), then the toolbar: the entry is Home's again, none added.
+    await open(1440, 900, { at: `/#/report?w=${WS}&p=p1&k=eval&v=3&s=7` });
+    await reportPage().locator(".report-head h1").waitFor();
+    const cold = await page.evaluate(() => history.length);
+    await page.locator(".toolbar-nav .catchup-nav").first().click();
+    const fromAddress = await closed("the toolbar's Home closed the address's report");
+    assert.deepEqual(fromAddress, { report: false, inReach: true, hash: "", marker: null, length: cold }, JSON.stringify(fromAddress));
+    await shot("explicit-home.png");
+    return { toolbar, pushed, linked, fromAddress };
+  });
+
   await step("motion: the report rises in over 220 ms, and under reduced motion nothing moves", async () => {
     const animation = async (motion) => {
       await open(1440, 900, { motion });

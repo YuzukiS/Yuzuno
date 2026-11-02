@@ -87,6 +87,7 @@ export function Home({
   arrival = null,
   onBackToReply,
   report: incomingReport = null,
+  visit = 0,
 }: {
   /** Bumped (debounced) on Agent changes and anything else Home shows. */
   revision: number;
@@ -108,6 +109,9 @@ export function Home({
    * opened from if any, for Back, and whether it came from the address;
    * another opening is another `n`. */
   report?: { link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null;
+  /** Bumped on each explicit way to Home (the toolbar, a notification, a
+   * Home link, a reply's Open on Home): an open report closes (T-18 R3). */
+  visit?: number;
 }) {
   const language = useLanguage();
   const t = homeText(language);
@@ -254,13 +258,6 @@ export function Home({
   const arrived = useRef(0);
   const replyPanel = arrival && data ? data.projects.find((p) => p.project.id === arrival.origin.projectId) : undefined;
   const landed = arrival && data ? arrivalOf(arrival.origin, replyPanel) : null;
-  useEffect(() => {
-    if (!arrival || !landed || arrived.current === arrival.n) return;
-    arrived.current = arrival.n;
-    const { projectId, key } = arrival.origin;
-    revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [arrival, data]);
   const landedNote = (ask: boolean) =>
     arrival && landed && (
       <ReplyArrival
@@ -323,6 +320,15 @@ export function Home({
   // it is neither drawn nor acted on, and nothing of it reaches the other
   // Workspace's Home (T-18 R2).
   const report = openedReport && openedReport.link.workspaceId === workspaceId ? openedReport : null;
+  // While a report is still closing over Home, Home is out of reach: the
+  // arrival lands once the page has gone (T-18 R3).
+  useEffect(() => {
+    if (!arrival || !landed || report || arrived.current === arrival.n) return;
+    arrived.current = arrival.n;
+    const { projectId, key } = arrival.origin;
+    revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrival, data, report]);
   const shownReport = useRef(report);
   shownReport.current = report;
   const reportEntry = useRef(0);
@@ -371,6 +377,8 @@ export function Home({
     leaveReportEntry(open);
     finishReport();
   }
+  const closeReportNow = useRef(closeReport);
+  closeReportNow.current = closeReport;
   useEffect(() => {
     if (!report) return;
     const popped = (event: PopStateEvent) => {
@@ -392,6 +400,16 @@ export function Home({
     afterReport.current = null;
     closing.current = false;
   }, [openedReport, workspaceId]);
+  // An explicit way to Home: the report closes as its Back closes it (its own
+  // history entry left, or that entry made Home's again), and then goes
+  // nowhere else: not to the message it came from, not back to its card.
+  // Home itself stays mounted, with its drafts, folds and scroll.
+  const visited = useRef(visit);
+  useEffect(() => {
+    if (visited.current === visit) return;
+    visited.current = visit;
+    if (shownReport.current) closeReportNow.current(() => {});
+  }, [visit]);
   const incoming = useRef(0);
   useEffect(() => {
     if (!incomingReport || incoming.current === incomingReport.n) return;
