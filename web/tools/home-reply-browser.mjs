@@ -116,19 +116,31 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     assert.ok(sizes.width <= 704.5, `card ${sizes.width}px`);
     assert.ok(sizes.answer >= 15 && sizes.answer === sizes.words && sizes.source < sizes.answer - 2, JSON.stringify(sizes));
     check("desktop: the answer at the message's size, the source smaller, the card at most 44rem", sizes);
-    // A form's field labels and "Not answered" are part of the answer: text contrast (WCAG AA, 4.5:1) on the card.
+    // A form's title, field labels and "Not answered" are part of the answer: text contrast (WCAG AA,
+    // 4.5:1) on the card, in every palette and theme (garden is the default).
     const contrast = await page.evaluate(() => {
       const probe = document.createElement("canvas").getContext("2d");
-      const rgb = (color) => { probe.fillStyle = "#000"; probe.fillStyle = color; probe.fillRect(0, 0, 1, 1); return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+      const rgb = (color) => { probe.clearRect(0, 0, 1, 1); probe.fillStyle = "#000"; probe.fillStyle = color; probe.fillRect(0, 0, 1, 1); return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3); };
       const lum = (c) => { const [r, g, b] = rgb(c).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
       const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
+      const html = document.documentElement;
+      const kept = [html.dataset.palette, html.dataset.theme];
       const card = document.querySelector('[data-case="form"] .home-reply');
-      const paper = getComputedStyle(card).backgroundColor;
-      const of = (selector) => ratio(getComputedStyle(card.querySelector(selector)).color, paper);
-      return { label: of("dt"), notAnswered: of("dd[data-empty]"), answer: of("dd:not([data-empty])") };
+      const out = {};
+      for (const palette of ["garden", "yuzu", "graphite", "pine", "sunroom"])
+        for (const theme of ["light", "dark"]) {
+          html.dataset.palette = palette;
+          html.dataset.theme = theme;
+          const paper = getComputedStyle(card).backgroundColor;
+          const of = (selector) => ratio(getComputedStyle(card.querySelector(selector)).color, paper);
+          out[`${palette} ${theme}`] = { title: of(".home-reply-form-title"), label: of("dt"), notAnswered: of("dd[data-empty]"), answer: of("dd:not([data-empty])") };
+        }
+      [html.dataset.palette, html.dataset.theme] = kept;
+      return out;
     });
-    assert.ok(contrast.label >= 4.5 && contrast.notAnswered >= 4.5 && contrast.answer >= 4.5, JSON.stringify(contrast));
-    check("desktop: a form's labels, its answers and Not answered read at 4.5:1 or more on the card", contrast);
+    const low = Object.entries(contrast).flatMap(([at, values]) => Object.entries(values).filter(([, v]) => v < 4.5).map(([what, v]) => `${at} ${what} ${v}`));
+    assert.deepEqual(low, [], JSON.stringify(contrast));
+    check("desktop: a form's title, labels, answers and Not answered read at 4.5:1 or more on the card, every palette and theme", contrast);
     // Six lines, then Show all; the whole text is there all along.
     const fold = await page.evaluate(() => {
       const words = document.querySelector('[data-case="long"] .home-reply-words');

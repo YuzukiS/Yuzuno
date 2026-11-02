@@ -76,9 +76,13 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* The form's title, its field labels and "Not answered" are part of the
+   answer: the app's secondary text colour, which reads at 4.5:1 or more on
+   the card in every palette and theme (Dev 7, 2134); --muted does not in
+   the default light theme. */
 .home-reply-form-title {
   margin: 0;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 0.82em;
 }
 .home-reply dl {
@@ -87,10 +91,8 @@
   gap: 0.55rem;
   margin: 0;
 }
-/* Part of the answer, so readable as text (Dev 7, 2126): the title's colour,
-   not --muted, which is below 4.5:1 on the card in the light theme. */
 .home-reply dt {
-  color: color-mix(in srgb, var(--ink) 80%, var(--muted));
+  color: var(--text-secondary);
   font-size: 0.82em;
   overflow-wrap: anywhere;
 }
@@ -100,7 +102,7 @@
   overflow-wrap: anywhere;
 }
 .home-reply dd[data-empty] {
-  color: color-mix(in srgb, var(--ink) 80%, var(--muted));
+  color: var(--text-secondary);
 }
 .home-reply dd p {
   margin: 0;
