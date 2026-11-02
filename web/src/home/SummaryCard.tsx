@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Eye, LoaderCircle, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
@@ -10,7 +10,9 @@ import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
-import { cardContent, cardSize, type CardFigure } from "./card-preview";
+import { allowedSizes, cardContent, shownSize, type CardContent, type CardFigure } from "./card-preview";
+import { CardSizes } from "./card-sizes";
+import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
 import { unmaintained } from "./card-summary";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -57,7 +59,9 @@ export const SummaryCard = memo(function SummaryCard({
   const t = useStrings(cardText);
   const openReport = useReportOpen();
   const content = useMemo(() => cardContent(section), [section]);
-  const size = useMemo(() => cardSize(section, content), [section, content]);
+  const sizes = useContext(CardSizes);
+  const chosen = sizes?.chosen(projectId, section.key) ?? null;
+  const { size, source } = useMemo(() => shownSize(section, content, chosen), [section, content, chosen]);
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
@@ -80,12 +84,20 @@ export const SummaryCard = memo(function SummaryCard({
   }
   const open = (from: HTMLElement) => openReport?.(projectId, section, from);
   const status = section.kind === "status";
+  // A small card has no frame (Dev 7's v12): Metrics as big numbers, any other figure left to the page.
+  const shown = content.kind === "named" ? content.figure : null;
+  const figure = !shown ? null : size !== "small" ? (
+    <FigureFrame section={section} projectId={projectId} figure={shown} />
+  ) : metricsOf(section, shown) ? (
+    <BigNumbers items={metricsOf(section, shown)!} />
+  ) : null;
   return (
     <article
       id={domId}
       data-section-key={section.key}
       data-section-version={section.version}
       data-card-size={size}
+      data-size-source={source}
       tabIndex={-1}
       className={`home-section home-summary-card kind-${section.kind} size-${size}${content.kind === "unnamed" ? " is-unnamed" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
       aria-labelledby={`${domId}-title`}
@@ -131,31 +143,38 @@ export const SummaryCard = memo(function SummaryCard({
               {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
             </button>
           )}
-          <MoreActions section={section} projectId={projectId} readOnly={readOnly} />
+          <MoreActions section={section} projectId={projectId} readOnly={readOnly} content={content} />
         </span>
       </header>
-      <h3 id={`${domId}-title`} className="home-summary-title">
-        {openReport ? (
-          <button type="button" className="home-summary-title-link" onClick={(event) => open(event.currentTarget)}>
-            {section.title}
-          </button>
-        ) : (
-          section.title
-        )}
-      </h3>
-      {content.kind === "named" ? (
-        <>
-          {content.lead && (
-            <div className="home-summary-lead">
-              <BriefMarkdown text={content.lead} />
-            </div>
+      {/* The text, and beside it on a wide card or under it otherwise, the one figure. */}
+      <div className={`home-summary-body${figure ? " has-figure" : ""}`}>
+        <div className="home-summary-text">
+          <h3 id={`${domId}-title`} className="home-summary-title">
+            {openReport ? (
+              <button type="button" className="home-summary-title-link" onClick={(event) => open(event.currentTarget)}>
+                {section.title}
+              </button>
+            ) : (
+              section.title
+            )}
+          </h3>
+          {content.kind === "named" ? (
+            <>
+              {content.lead && (
+                <div className="home-summary-lead">
+                  <BriefMarkdown text={content.lead} />
+                </div>
+              )}
+              {content.conditions && (
+                <CardConditions section={section} projectId={projectId} id={content.conditions} lines={size === "large" ? 3 : 2} />
+              )}
+            </>
+          ) : (
+            <p className="home-summary-unnamed">{t.noSummary}</p>
           )}
-          {content.conditions && <CardConditions section={section} projectId={projectId} id={content.conditions} />}
-          {content.figure && <FigureFrame section={section} projectId={projectId} figure={content.figure} />}
-        </>
-      ) : (
-        <p className="home-summary-unnamed">{t.noSummary}</p>
-      )}
+        </div>
+        {figure}
+      </div>
       <footer className="home-summary-foot">
         <span className="home-summary-byline">
           {/* A sub-topic is labelled with its own author, as before (T-197). */}
@@ -189,8 +208,8 @@ export const SummaryCard = memo(function SummaryCard({
   );
 });
 
-/** Pin and Copy report, behind "More actions". */
-function MoreActions({ section, projectId, readOnly }: { section: Section; projectId: string; readOnly: boolean }) {
+/** Pin, Copy report and the card's size, behind "More actions". */
+function MoreActions({ section, projectId, readOnly, content }: { section: Section; projectId: string; readOnly: boolean; content: CardContent }) {
   const t = useStrings(cardText);
   const language = useLanguage();
   const time = useTimeDisplay();
@@ -208,7 +227,8 @@ function MoreActions({ section, projectId, readOnly }: { section: Section; proje
   }, [open]);
   const pin = !readOnly;
   const copy = section.kind === "report";
-  if (!pin && !copy) return null;
+  const sizes = useContext(CardSizes);
+  if (!pin && !copy && !sizes) return null;
   return (
     <span
       className="home-summary-more"
@@ -237,6 +257,15 @@ function MoreActions({ section, projectId, readOnly }: { section: Section; proje
       <span id={listId} className="home-summary-more-list" role="group" aria-label={t.more} hidden={!open}>
         {pin && <PinButton section={section} projectId={projectId} />}
         {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
+        {sizes && (
+          <SizeChoice
+            name={`${listId}-size`}
+            legend={t.size}
+            value={sizes.chosen(projectId, section.key)}
+            allowed={allowedSizes(content)}
+            onChange={(size) => sizes.choose(projectId, section.key, size)}
+          />
+        )}
       </span>
     </span>
   );
@@ -246,11 +275,12 @@ type ChecklistItem = { id: string; text: string; done: boolean };
 
 /**
  * What the author's conclusion holds under, with it on the card (Dev 7's
- * v9): a Checklist as chips, as many as two lines take, then "+N more
- * conditions" (never one: a lone last chip takes a third line); Markdown
- * in two lines, then "Show all conditions". Either opens in place.
+ * v9): a Checklist as chips, as many as two lines take (three on a large
+ * card), then "+N more conditions" (never one: a lone last chip takes a
+ * line of its own); Markdown in two lines, then "Show all conditions".
+ * Either opens in place, and the card grows to hold it.
  */
-function CardConditions({ section, projectId, id }: { section: Section; projectId: string; id: string }) {
+function CardConditions({ section, projectId, id, lines: most }: { section: Section; projectId: string; id: string; lines: number }) {
   const t = useStrings(cardText);
   const node = (section.body as { elements?: Record<string, { type?: string; props?: Record<string, unknown> }> }).elements?.[id];
   const items = node?.type === "Checklist" && Array.isArray(node.props?.items) ? (node.props.items as ChecklistItem[]) : null;
@@ -267,8 +297,8 @@ function CardConditions({ section, projectId, id }: { section: Section; projectI
         chips.forEach((chip) => chip.removeAttribute("hidden"));
         if (all) return setHidden(0);
         const lines = [...new Set(chips.map((chip) => chip.offsetTop))].sort((a, b) => a - b);
-        const third = lines[2];
-        let over = third === undefined ? 0 : chips.filter((chip) => chip.offsetTop >= third).length;
+        const past = lines[most];
+        let over = past === undefined ? 0 : chips.filter((chip) => chip.offsetTop >= past).length;
         if (over === 1) over = 0;
         chips.slice(chips.length - over).forEach((chip) => chip.setAttribute("hidden", ""));
         setHidden(over);
@@ -283,7 +313,7 @@ function CardConditions({ section, projectId, id }: { section: Section; projectI
     if (target) observer.observe(target);
     document.fonts?.ready.then(measure).catch(() => {});
     return () => observer.disconnect();
-  }, [all, items, section.version]);
+  }, [all, items, section.version, most]);
   return (
     <div className={`home-card-conditions${all ? " is-open" : ""}`} role="group" aria-label={t.conditions}>
       <span className="home-card-conditions-label">{t.conditions}</span>
@@ -307,6 +337,36 @@ function CardConditions({ section, projectId, id }: { section: Section; projectI
         </button>
       )}
     </div>
+  );
+}
+
+type Metric = { label: string; value: string | number; unit?: string };
+
+/** A Metrics figure's values, for a small card; null for any other figure. */
+function metricsOf(section: Section, figure: CardFigure): Metric[] | null {
+  if (figure.kind !== "block") return null;
+  const node = (section.body as { elements?: Record<string, { type?: string; props?: { items?: unknown } }> }).elements?.[figure.id];
+  return node?.type === "Metrics" && Array.isArray(node.props?.items) ? (node.props.items as Metric[]) : null;
+}
+
+/**
+ * Metrics on a small card (Dev 7's v12): the first value large under its
+ * label, the second smaller beside it; a number never parted from its unit.
+ * A small card shows two at most; the page shows them all.
+ */
+function BigNumbers({ items }: { items: Metric[] }) {
+  return (
+    <dl className="home-card-numbers">
+      {items.slice(0, 2).map((item, index) => (
+        <div key={index} className={index === 0 ? "is-first" : undefined}>
+          <dt>{item.label}</dt>
+          <dd>
+            {String(item.value)}
+            {item.unit ? `\u00a0${item.unit}` : ""}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

@@ -43,3 +43,31 @@ test("a figure the card cannot show is as no figure: small", () => {
   assert.equal(withFigure(notImage, { attachments: [{ name: "runs.csv", kind: "data" }] }), "small");
   assert.equal(cardSize(section({ lead: "lead", visual: "gone" }, { lead })), "small");
 });
+
+test("the user's size comes first where the card may take it; a card with no summary may only be small", async () => {
+  const { allowedSizes, cardContent, shownSize } = await import("../src/home/card-preview.ts");
+  const chart = section({ lead: "lead", visual: "fig" }, { lead, fig: { type: "LineChart", props: { id: "c", title: "Loss", data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }] } } } });
+  const content = cardContent(chart);
+  assert.deepEqual(allowedSizes(content), ["small", "wide", "large"]);
+  assert.deepEqual(shownSize(chart, content, null), { size: "wide", source: "auto" });
+  assert.deepEqual(shownSize(chart, content, "small"), { size: "small", source: "user" });
+  assert.deepEqual(shownSize(chart, content, "large"), { size: "large", source: "user" });
+  const unnamed = section(null, { lead });
+  assert.deepEqual(allowedSizes(cardContent(unnamed)), ["small"]);
+  assert.deepEqual(shownSize(unnamed, cardContent(unnamed), "large"), { size: "small", source: "auto" });
+});
+
+test("the choices are kept per Workspace, by project and key; anything else in storage is ignored", async () => {
+  const store = new Map();
+  globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+  const { readSizeChoices, sizeKey } = await import("../src/home/card-sizes.ts");
+  assert.equal(sizeKey("p1", "eval/sub"), "p1:eval/sub");
+  assert.deepEqual(readSizeChoices("ws-1"), {});
+  store.set("yuzuno.homeCardSizes.ws-1", JSON.stringify({ "p1:eval": "large", "p1:old": "huge", "p2:x": 3 }));
+  assert.deepEqual(readSizeChoices("ws-1"), { "p1:eval": "large" });
+  assert.deepEqual(readSizeChoices("ws-2"), {}, "another Workspace has its own");
+  store.set("yuzuno.homeCardSizes.ws-3", "not json");
+  assert.deepEqual(readSizeChoices("ws-3"), {});
+  store.set("yuzuno.homeCardSizes.ws-4", JSON.stringify(["large"]));
+  assert.deepEqual(readSizeChoices("ws-4"), {});
+});

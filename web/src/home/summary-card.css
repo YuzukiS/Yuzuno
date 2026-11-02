@@ -73,10 +73,28 @@
 }
 /* With two or more columns, three lines kept for the lead line up the
    conditions and figures across a row; one column has no row to line up. */
-@container home (min-width: 540px) {
+@container deck (min-width: 560px) {
   .home-summary-lead .brief-markdown {
     min-height: calc(3 * 1.6em);
   }
+}
+/* A large card's conclusion reads four lines (Dev 7's v12). */
+.home-brief .home-summary-card.size-large .home-summary-lead .brief-markdown {
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+
+/* The card's body: its text, then its one figure; beside each other on a
+   wide card where the deck has two columns or more. */
+.home-summary-body,
+.home-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.home-summary-body {
+  flex: 1 1 auto;
 }
 /* A card whose author named no summary says so, lightly, and no more. It
    keeps its own height at the top of its row: stretched beside a tall
@@ -169,32 +187,51 @@
   border-radius: 8px;
   background: var(--home-soft);
 }
-@container home (max-width: 539px) {
+@container deck (max-width: 559px) {
   .home-card-frame-body {
     height: 118px;
   }
 }
-/* A large card's figure takes the room its two rows give it, and never less
-   than its own minimum; on one column the card keeps its natural height. */
-.home-summary-card.size-large .home-card-frame {
-  flex: 1 1 auto;
-}
-.home-summary-card.size-large .home-card-frame-body {
+/* On the deck, a figure's frame follows its card's size (Dev 7's v12):
+   - wide: beside the text, as tall as the body, 140 px where it stacks;
+   - large: the room its rows leave, never under 260 px, 200 px where it stacks.
+   Its image is fitted whole into the frame, whatever the frame's height. */
+.home-brief .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body {
   position: relative;
-  flex: 1 1 auto;
-  height: auto;
-  min-height: 260px;
 }
-/* The frame's height is the card's, not the image's: fitted whole inside it. */
-.home-summary-card.size-large .home-card-frame-body img {
+.home-brief .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body img {
   position: absolute;
   inset: 8px 10px;
   width: calc(100% - 20px);
   height: calc(100% - 16px);
 }
-@container home (max-width: 539px) {
-  .home-summary-card.size-large .home-card-frame-body {
-    min-height: 180px;
+.home-brief .home-summary-card.size-wide .home-card-frame-body {
+  height: 140px;
+}
+.home-brief .home-summary-card.size-large .home-card-frame,
+.home-brief .home-summary-card.size-large .home-card-frame-body {
+  flex: 1 1 auto;
+}
+.home-brief .home-summary-card.size-large .home-card-frame-body {
+  height: auto;
+  min-height: 200px;
+}
+@container deck (min-width: 560px) {
+  .home-brief .home-summary-card.size-wide .home-summary-body.has-figure {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .home-brief .home-summary-card.size-wide .has-figure > .home-card-frame,
+  .home-brief .home-summary-card.size-wide .has-figure .home-card-frame-body {
+    flex: 1 1 auto;
+  }
+  .home-brief .home-summary-card.size-wide .has-figure .home-card-frame-body {
+    height: auto;
+    min-height: 140px;
+  }
+  .home-brief .home-summary-card.size-large .home-card-frame-body {
+    min-height: 260px;
   }
 }
 .home-card-frame-body img {
@@ -294,6 +331,103 @@
   justify-content: flex-start;
   color: var(--text-secondary);
 }
+/* Metrics on a small card (Dev 7's v12): the first value large under its
+   label, the second smaller beside it; a number stays with its unit. */
+.home-card-numbers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 4px 18px;
+  margin: 0;
+}
+.home-card-numbers > div {
+  min-width: 0;
+}
+.home-card-numbers dt {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-card-numbers dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.home-card-numbers .is-first dd {
+  font-size: calc(29px + var(--font-adjust, 3px));
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+/* A card's size: Auto, Small, Wide or Large, in More actions and in
+   Organize; the radios are the controls, drawn as one segmented row. */
+.home-size-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 0 0;
+  border: 0;
+}
+.home-size-choice legend {
+  padding: 0 0 4px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-size-options {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.home-size-options label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.home-size-options input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.home-size-options label:has(input:checked) {
+  background: var(--home-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.home-size-options label:has(input:focus-visible) {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 1px;
+}
+/* A size the card cannot take: there, unavailable, its reason said below. */
+.home-size-options label.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.home-size-reason {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+@media (pointer: coarse) {
+  .home-size-options label {
+    min-height: 44px;
+    min-width: 44px;
+    justify-content: center;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .home-summary-card {
     transition: none;

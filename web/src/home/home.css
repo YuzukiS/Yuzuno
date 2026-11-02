@@ -184,6 +184,55 @@
 .home-organize .home-note {
   margin-top: 8px;
 }
+/* Card sizes (T-18): each report and status card by project, its size and
+   why, and the user's choice beside it; on a phone the choice wraps below. */
+.home-organize-sizes h4 {
+  margin: 12px 0 2px;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-size-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-size-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  min-height: 40px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+.home-size-card {
+  display: flex;
+  flex: 1 1 12rem;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.home-size-card small {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+/* Each row's card names its choice; the legend is for assistive technology. */
+.home-size-list .home-size-choice legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.home-size-list .home-size-choice {
+  padding: 0;
+}
+.home-size-reset {
+  margin-top: 10px;
+}
 /* The title and its tools share a row while they fit; on a narrow phone
    the tools wrap below it, right-aligned, never past the edge. */
 .home-header {
@@ -647,8 +696,11 @@ button.home-machine-job-line:focus-visible {
   display: flex;
   gap: 2px;
 }
+/* A project's content is its deck's container: the deck's columns follow
+   its own width (T-18, Dev 7's v12). */
 .home-panel-content {
   padding: 0 0 4px;
+  container: deck / inline-size;
 }
 .home-widgets {
   display: flex;
@@ -799,16 +851,15 @@ ul.home-widget {
 }
 
 /* The Brief */
-/* Home's cards as a deck (T-18, Dev 7's v7): as many columns as the pane
-   holds, in the author's order, each row as tall as its tallest card. A
-   topic's cards join the deck; its name, when it has no card of its own,
-   heads a row.
+/* Home's cards as a deck (T-18, Dev 7's v7 and v12): as many columns as
+   the deck holds, in the author's order. A topic's cards join the deck; its
+   name, when it has no card of its own, heads a row.
    Cards come in three sizes, as iOS widgets do (Lead 2377): small (one
    column), wide (two columns) and large (two columns, two rows). A row's
    height is a minimum, never a cap: a card that needs more grows it.
    Placement is the grid's own row flow, never dense: a card that does not
-   fit where a row ends starts the next, and the keyboard's order, the
-   author's, is the order on screen. */
+   fit where a row ends starts the next, leaving the gap empty, so the
+   keyboard's order, the author's, is the order on screen. */
 .home-brief {
   --deck-row: 0px;
   display: grid;
@@ -818,27 +869,23 @@ ul.home-widget {
   align-items: stretch;
   gap: 16px;
 }
-@container home (min-width: 540px) {
+/* Two columns, then four where each is 300 px or more; never three, where
+   two wide cards in a row would leave a hole at every row's end. */
+@container deck (min-width: 560px) {
   .home-brief {
-    --deck-row: 12rem;
+    --deck-row: 260px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .home-brief .home-summary-card:is(.size-wide, .size-large) {
     grid-column: span 2;
   }
 }
-@container home (min-width: 1100px) {
-  .home-brief {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  /* Two rows only where a column beside it is left for the cards after it. */
-  .home-brief .home-summary-card.size-large {
-    grid-row: span 2;
-  }
-}
-@container home (min-width: 1500px) {
+@container deck (min-width: 1248px) {
   .home-brief {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .home-brief .home-summary-card.size-large {
+    grid-row: span 2;
   }
 }
 .home-brief .home-topic,
@@ -849,9 +896,10 @@ ul.home-widget {
   grid-column: 1 / -1;
   margin: 4px 0 -8px;
 }
-/* An answer being written takes the whole row, and gives it back when sent
-   or put away; the deck does not animate. */
-.home-brief .home-section:has(.home-card-reply, .home-ask textarea) {
+/* An Ask always takes its row, so answering it never moves the deck (Dev 7's
+   v12); a report's reply being written takes it too, and gives it back when
+   sent or put away. The deck does not animate. */
+.home-brief .home-section:is(.kind-ask, :has(.home-card-reply, .home-ask textarea)) {
   grid-column: 1 / -1;
 }
 

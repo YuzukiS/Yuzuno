@@ -21,6 +21,8 @@ import { PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
+import { CardSizes, useCardSizes } from "./card-sizes";
+import { CardSizeList } from "./CardSizeList";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -471,6 +473,8 @@ export function Home({
   }, [agentsKey, readOnly]);
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
+  // The cards' sizes the user chose on this device; the design preview has none (T-18).
+  const cardSizes = useCardSizes(readOnly ? "" : workspaceId);
   const { layout, pin, unpin } = widgetLayout;
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
@@ -537,6 +541,7 @@ export function Home({
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
+    <CardSizes.Provider value={cardSizes}>
     <BriefDensity.Provider value={density}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
     <ReportOpen.Provider value={cardReport}>
@@ -627,6 +632,9 @@ export function Home({
             widgets={widgets}
             layout={readOnly ? (layout ?? { order: [], hidden: [], pins: [] }) : layout}
             onChange={layout ? widgetLayout.change : undefined}
+            organizeMore={
+              <CardSizeList projects={panels.map((panel) => ({ id: panel.project.id, name: panel.project.name, sections: panel.brief.sections }))} />
+            }
           />
           <div className="home-main">
             {landed?.kind === "gone" && landedNote(false)}
@@ -701,6 +709,7 @@ export function Home({
     </ReportOpen.Provider>
     </HomeReadContext.Provider>
     </BriefDensity.Provider>
+    </CardSizes.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>

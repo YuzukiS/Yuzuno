@@ -152,6 +152,11 @@ const deck = () => [
       table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
         rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } },
     { lead: "lead", visual: "table", conditions: "why" }) }),
+  // Two Metrics values: a small card, its first value large (Dev 7's v12).
+  section("uptime", 33, 1, { title: "Synthetic service uptime", body: summaryBody(
+    "Both synthetic services held their target this week.",
+    { nums: { type: "Metrics", props: { items: [{ label: "Uptime", value: 99.2, unit: "%" }, { label: "Incidents", value: 1 }] } } },
+    { lead: "lead", visual: "nums" }) }),
 ];
 const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A", attachments: evalFiles }),
   { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }, ...deck()];
@@ -566,9 +571,8 @@ try {
       await until("the image figure", () => page.evaluate(() => { const img = document.querySelector('[data-section-key="screens"] .home-card-frame img'); return img?.complete && img.naturalWidth > 0; }));
       const deckShape = await page.evaluate(() => {
         const brief = document.querySelector('[data-home-project="p1"] .home-brief');
-        const view = document.querySelector(".home-view");
-        const style = getComputedStyle(view);
-        const container = view.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        // The deck's own width decides its columns (Dev 7's v12).
+        const container = brief.closest(".home-panel-content").clientWidth;
         const cards = [...brief.querySelectorAll(".home-section")];
         const grid = getComputedStyle(brief);
         const columns = grid.gridTemplateColumns.split(" ").length, gap = parseFloat(grid.columnGap);
@@ -577,7 +581,12 @@ try {
           const r = el.getBoundingClientRect(), style = getComputedStyle(el);
           return { key: el.dataset.sectionKey, size: el.dataset.cardSize ?? null, top: Math.round(r.top), left: Math.round(r.left),
             width: Math.round(r.width), height: Math.round(r.height), span: Math.round((r.width + gap) / (column + gap)), rows: style.gridRowStart,
-            cut: el.scrollHeight > el.clientHeight + 1 };
+            cut: el.scrollHeight > el.clientHeight + 1,
+            // A wide card's figure beside its text, or under it; a small card's frame (none) and big numbers.
+            beside: (() => { const text = el.querySelector(".home-summary-text"), fig = el.querySelector(".home-card-frame");
+              return text && fig ? fig.getBoundingClientRect().left >= text.getBoundingClientRect().right - 1 : null; })(),
+            frame: !!el.querySelector(".home-card-frame"),
+            numbers: [...el.querySelectorAll(".home-card-numbers > div")].map((d) => ({ text: d.innerText.replace(/\s+/g, " "), size: getComputedStyle(d.querySelector("dd")).fontSize, wrap: getComputedStyle(d.querySelector("dd")).whiteSpace })) };
         });
         const one = (key) => document.querySelector(`.home-view [data-section-key="${key}"]`);
         const frame = (key) => one(key)?.querySelector(".home-card-frame-body")?.getBoundingClientRect().height ?? null;
@@ -610,25 +619,35 @@ try {
           sideways: scroller.scrollWidth > scroller.clientWidth || [...document.querySelectorAll(".home-view *")].some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === "auto" && !el.closest(".result-table-scroll, pre")),
         };
       });
-      const expected = deckShape.container >= 1500 ? 4 : deckShape.container >= 1100 ? 3 : deckShape.container >= 540 ? 2 : 1;
+      const expected = deckShape.container >= 1248 ? 4 : deckShape.container >= 560 ? 2 : 1;
       assert.equal(deckShape.columns, expected, JSON.stringify(deckShape));
       // Each card's size from the figure its author named (Lead 2377): none, a lead alone or two Metrics small; a chart,
       // a table or three Metrics wide; an image large.
       const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, p.size]));
-      assert.deepEqual(sizes, { setup: "small", data: "small", baseline: "small", eval: "wide", "dose-study": "small", audit: "wide", screens: "large", batches: "wide" });
+      assert.deepEqual(sizes, { setup: "small", data: "small", baseline: "small", eval: "wide", "dose-study": "small", audit: "wide", screens: "large", batches: "wide", uptime: "small" });
       for (const place of deckShape.places.filter((p) => p.size)) {
         const span = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
         assert.equal(place.span, span, `${place.key} spans ${span}: ${JSON.stringify(place)}`);
-        assert.equal(place.rows, place.size === "large" && deckShape.columns >= 3 ? "span 2" : "auto", `${place.key}'s rows: ${JSON.stringify(place)}`);
+        assert.equal(place.rows, place.size === "large" && deckShape.columns === 4 ? "span 2" : "auto", `${place.key}'s rows: ${JSON.stringify(place)}`);
         assert.equal(place.cut, false, `${place.key} shows all it holds: ${JSON.stringify(place)}`);
+        // A wide card's figure beside its text where the deck has two columns or more; stacked on one.
+        if (place.size === "wide" && place.beside !== null) assert.equal(place.beside, deckShape.columns > 1, `${place.key}'s figure beside its text: ${JSON.stringify(place)}`);
+        if (place.size === "small") assert.equal(place.frame, false, `a small card has no frame: ${place.key}`);
       }
+      // The small Metrics card: its first value large, the second beside it, each with its unit on one line.
+      const uptime = deckShape.places.find((p) => p.key === "uptime");
+      assert.deepEqual(uptime.numbers.map((n) => n.text), ["Uptime 99.2\u00a0%", "Incidents 1"], JSON.stringify(uptime));
+      assert.equal(uptime.numbers[0].size, "32px");
+      assert.ok(uptime.numbers.every((n) => n.wrap === "nowrap"), JSON.stringify(uptime.numbers));
       // The order on screen, row by row, is the author's: nothing packed into an earlier gap.
       const onScreen = [...deckShape.places].sort((a, b) => a.top - b.top || a.left - b.left).map((p) => p.key);
       assert.deepEqual(onScreen, deckShape.places.map((p) => p.key), JSON.stringify(deckShape.places));
-      const frameHeight = deckShape.container >= 540 ? 138 : 118;
+      // Frames by size (Dev 7's v12): wide 140 px stacked, as tall as the body (140 or more) beside the text;
+      // large 200 px stacked, 260 or more on two columns or four.
       for (const [key, value] of Object.entries(deckShape.frames)) {
-        if (key === "screens") assert.ok(Math.round(value) >= (deckShape.container >= 540 ? 260 : 180), `a large card's figure: ${value}`);
-        else assert.equal(Math.round(value), frameHeight, `${key} frame: ${JSON.stringify(deckShape)}`);
+        const height = Math.round(value);
+        if (key === "screens") assert.ok(deckShape.columns > 1 ? height >= 260 : height === 200, `a large card's figure: ${height}`);
+        else assert.ok(deckShape.columns > 1 ? height >= 140 : height === 140, `${key}'s frame: ${height} ${JSON.stringify(deckShape.frames)}`);
       }
       assert.ok(deckShape.chipLines <= 3 && deckShape.hidden !== 1, JSON.stringify(deckShape));
       if (deckShape.hidden > 0) assert.equal(deckShape.more, `+${deckShape.hidden} more conditions`);
@@ -638,8 +657,8 @@ try {
       assert.equal(deckShape.legacyBody, false);
       assert.equal(deckShape.sideways, false, JSON.stringify(deckShape));
       // Dev 7 (2308): the lead keeps three lines only where a row lines up.
-      assert.equal(deckShape.leadMin === "0px", deckShape.container < 540, `the lead's minimum height: ${deckShape.leadMin}`);
-      if (deckShape.container >= 540) assert.ok(deckShape.legacyHeights.every((h) => h <= 170), `legacy cards at their own height: ${deckShape.legacyHeights}`);
+      assert.equal(deckShape.leadMin === "0px", deckShape.columns === 1, `the lead's minimum height: ${deckShape.leadMin}`);
+      if (deckShape.columns > 1) assert.ok(deckShape.legacyHeights.every((h) => h <= 170), `legacy cards at their own height: ${deckShape.legacyHeights}`);
       // Machines fills its row, as one row of four cells where it is wide.
       assert.equal(deckShape.machines.width, deckShape.machines.column, JSON.stringify(deckShape.machines));
       assert.equal(deckShape.machines.cells, 4);
@@ -657,6 +676,7 @@ try {
       const CARD_TEXT = [
         ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
         ".home-summary-card .home-card-conditions .brief-markdown :is(p, li)",
+        ".home-summary-card .home-card-numbers :is(dt, dd)",
         '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-details)',
         ".home-machines :is(.home-load-title, .home-load-short, .home-machine-job-count, .home-machine-job-first, .home-machines-manage)",
       ];
@@ -710,7 +730,7 @@ try {
       assert.equal(report.refreshes.length, refreshed + 1, "showing the links asked Core for one refresh");
       await card("audit").locator(".home-summary-more > button").click();
       await card("audit").locator(".home-summary-more-list").waitFor();
-      measured.opened = await contrast([...CARD_TEXT, ".home-summary-more-list :is(.quiet-button, .copy-button)"]);
+      measured.opened = await contrast([...CARD_TEXT, ".home-summary-more-list :is(.quiet-button, .copy-button, legend, .home-size-options label:not(.is-disabled))"]);
       const ratios = Object.entries(measured).filter(([state]) => !state.endsWith(" aria"))
         .flatMap(([state, all]) => Object.entries(all).map(([selector, v]) => ({ state, selector, ...v })));
       const low = ratios.filter((v) => v.ratio < 4.5);
@@ -763,6 +783,71 @@ try {
     } finally {
       batchesVersion = 1;
     }
+  });
+
+  await step("a card's size as the user chooses it, in Organize and in its More actions: kept on this device for the Workspace, Auto by default, Reset all to Auto (T-18, Lead 2378)", async () => {
+    await open(1720, 1100);
+    await toHome();
+    const writes = report.writes.length;
+    const sizeOf = (key) => card(key).evaluate((el) => ({ size: el.dataset.cardSize, source: el.dataset.sizeSource, rows: getComputedStyle(el).gridRowStart, frame: !!el.querySelector(".home-card-frame") }));
+    const saved = () => page.evaluate((ws) => JSON.parse(localStorage.getItem(`yuzuno.homeCardSizes.${ws}`) ?? "null"), WS);
+    assert.equal(await saved(), null, "nothing is chosen for the user");
+    // Organize lists each card with its size and why; a card with no summary may only be small, and says why.
+    await page.locator(".home-widget-organize").click();
+    const dialog = page.locator(".home-organize");
+    await dialog.locator(".home-organize-sizes").waitFor();
+    const row = (key) => dialog.locator(`.home-organize-sizes [data-size-for="${key}"]`);
+    const listed = await dialog.locator(".home-organize-sizes [data-size-for]").evaluateAll((rows) => rows.map((li) => li.dataset.sizeFor));
+    assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "screens", "batches", "uptime"], "every report and status card, in Home's order");
+    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "Auto · from content: Wide");
+    const setup = await row("setup").evaluate((li) => ({
+      disabled: [...li.querySelectorAll("input")].filter((i) => i.disabled).map((i) => i.value), checked: li.querySelector("input:checked").value,
+      reason: li.querySelector(".home-size-reason")?.textContent ?? null, described: !!document.getElementById(li.querySelector("fieldset").getAttribute("aria-describedby")) }));
+    assert.deepEqual(setup, { disabled: ["wide", "large"], checked: "auto", reason: "No summary named: nothing more to show", described: true });
+    const organizeInk = await contrast([".home-organize-sizes :is(h3, h4, .home-note, .home-size-card > span, .home-size-card small, .home-size-reason, .home-size-options label:not(.is-disabled))"]);
+    const lowInk = Object.entries(organizeInk).filter(([, v]) => v.ratio < 4.5);
+    assert.deepEqual(lowInk, [], JSON.stringify(organizeInk));
+    // Large for the audit, by the keyboard: from Auto, three steps on is Large.
+    await row("audit").locator('input[value="auto"]').focus();
+    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
+    assert.equal(await row("audit").locator("input:checked").getAttribute("value"), "large");
+    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "You set Large");
+    const ring = await row("audit").locator("input:checked").evaluate((input) => ({ visible: input.matches(":focus-visible"), outline: getComputedStyle(input.parentElement).outlineWidth }));
+    assert.ok(ring.visible && parseFloat(ring.outline) >= 2, `the chosen size has a focus ring: ${JSON.stringify(ring)}`);
+    await shot("organize-sizes.png");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(await sizeOf("audit"), { size: "large", source: "user", rows: "span 2", frame: true });
+    // Small for the batches, from its own More actions: a small card has no frame; the table stays on the page.
+    await card("batches").locator(".home-summary-more > button").click();
+    await card("batches").locator('.home-summary-more-list input[value="small"]').check();
+    assert.deepEqual(await sizeOf("batches"), { size: "small", source: "user", rows: "auto", frame: false });
+    await page.keyboard.press("Escape");
+    // Still the author's order on screen, and nothing cut.
+    const places = await page.evaluate(() => [...document.querySelectorAll('[data-home-project="p1"] .home-brief .home-section')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { key: el.dataset.sectionKey, top: Math.round(r.top), left: Math.round(r.left), cut: el.scrollHeight > el.clientHeight + 1 };
+    }));
+    assert.deepEqual([...places].sort((a, b) => a.top - b.top || a.left - b.left).map((p) => p.key), places.map((p) => p.key), JSON.stringify(places));
+    assert.deepEqual(places.filter((p) => p.cut), []);
+    await shot("home-1720-sizes-chosen.png");
+    // Kept on this device, for this Workspace, by project and key: a reload keeps them.
+    assert.deepEqual(await saved(), { "p1:audit": "large", "p1:batches": "small" });
+    await page.reload();
+    await toHome();
+    assert.equal((await sizeOf("audit")).size, "large");
+    assert.equal((await sizeOf("batches")).size, "small");
+    // Reset all to Auto: each card its own size again, and nothing kept.
+    await page.locator(".home-widget-organize").click();
+    await dialog.locator(".home-size-reset").click();
+    assert.equal(await dialog.locator(".home-size-reset").isDisabled(), true);
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(await sizeOf("audit"), { size: "wide", source: "auto", rows: "auto", frame: true });
+    assert.deepEqual(await sizeOf("batches"), { size: "wide", source: "auto", rows: "auto", frame: true });
+    assert.equal(await saved(), null);
+    assert.equal(report.writes.length, writes, "choosing a size writes nothing to Core");
+    return { setup, organizeInk };
   });
 
   await step("Machines either side of 720 and 540 px and on a 320 px phone: one row of four, then two by two with the shares, then two by two without; the Jobs one line; nothing sideways", async () => {

@@ -76,21 +76,35 @@ export function figureOf(section: Section, id: string): CardFigure | null {
 }
 
 /**
- * A card's size on Home's deck, as iOS widgets have (T-18, Lead 2377):
+ * A card's size on Home's deck, as iOS widgets have (T-18, Lead 2377;
+ * Dev 7's v12):
  * - `small`: one column and one row;
  * - `wide`: two columns, one row;
  * - `large`: two columns, two rows.
  *
- * Only the figure the author named decides it, never how long the text is.
+ * By default (`cardSize`) only the figure the author named decides it, never
+ * how long the text is, nor any live value, so a refresh lays out the same.
  * - A figure that needs width (a table, a line or bar chart, Metrics with
  *   more values than a small card holds, a research desk) is wide.
  * - One that needs area (an image, a scatter chart) is large.
  * - No figure, or no summary named, is small; the card grows to fit its
  *   conditions, so no size cuts them.
+ * The user's choice, where they made one, comes first (`shownSize`).
  */
 export type CardSize = "small" | "wide" | "large";
+export const CARD_SIZES: readonly CardSize[] = ["small", "wide", "large"];
 /** Metrics with at most this many values stay small. */
 export const SMALL_METRICS = 2;
+
+/** The sizes a card may take: one with no summary named has nothing more to show than small does. */
+export const allowedSizes = (content: CardContent): readonly CardSize[] =>
+  content.kind === "unnamed" ? ["small"] : CARD_SIZES;
+
+/** The size a card is shown at, and why: the user's choice where it is one the card may take, else its own. */
+export function shownSize(section: Section, content: CardContent, chosen: CardSize | null | undefined) {
+  if (chosen && allowedSizes(content).includes(chosen)) return { size: chosen, source: "user" as const };
+  return { size: cardSize(section, content), source: "auto" as const };
+}
 
 export function cardSize(section: Section, content: CardContent = cardContent(section)): CardSize {
   if (content.kind === "unnamed" || !content.figure) return "small";
