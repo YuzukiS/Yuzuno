@@ -75,7 +75,7 @@ window.renderCases=(cases,raw)=>root.render(<HomeReplyLinks.Provider value={link
   const bundle = (Array.isArray(built) ? built[0] : built).output.find((item) => item.type === "chunk").code;
   const css = (await Promise.all(["styles.css", "appearance.css", "palettes.css", "home-reply/home-reply.css"]
     .map((file) => readFile(path.join(root, "src", file), "utf8")))).join("\n");
-  const html = `<!doctype html><html data-theme="light" data-palette="yuzu"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>${css}
+  const html = `<!doctype html><html data-theme="light" data-palette="yuzu"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" href="data:,"><style>${css}
 body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-width:860px;margin:auto}main>.user-message{margin-bottom:24px}@media(max-width:600px){body{padding:14px}}</style><div id="root"></div><script>${bundle.replaceAll("</script", "<\\/script")}</script></html>`;
   await writeFile(path.join(output, "home-reply.html"), html);
   server = createServer((request, response) => {

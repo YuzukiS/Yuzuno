@@ -234,7 +234,9 @@ test("the question as the user saw it opens on demand, its options with the chos
   assert.equal(region.querySelector(".home-reply-meta").textContent, "The question as you saw it · version 3");
   assert.equal(region.querySelector("p").textContent, bothOrigin.snapshot.question);
   assert.deepEqual([...region.querySelectorAll("li")].map((li) => [li.textContent, li.classList.contains("chosen")]),
-    [["每页 50 行（推荐） (your choice)", true], ["每页 100 行", false], ["不分页，保持滚动", false]]);
+    [["每页 50 行（推荐） (your choice)", true], ["·每页 100 行", false], ["·不分页，保持滚动", false]]);
+  // The dot is drawn only: what is read out is the option.
+  assert.ok([...region.querySelectorAll("li .dot")].every((dot) => dot.getAttribute("aria-hidden") === "true"));
   await page.press("i-both", "Question");
   assert.equal(page.document.getElementById(toggle.getAttribute("aria-controls")), null);
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
