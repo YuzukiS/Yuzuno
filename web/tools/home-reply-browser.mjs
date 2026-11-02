@@ -306,7 +306,9 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
         inView: rect.top < innerHeight && rect.bottom > 0,
         noteVisible: note.checkVisibility(), noteInCard: card.contains(note),
         focused: document.activeElement === card,
-        writes: window.requests.filter((r) => !r.startsWith("GET ")),
+        // The Repositories block's list read is a POST (home-api.ts, readLinkedRepositories:
+        // "a list read; it starts no GitHub sync"); anything else not a GET would be a write.
+        writes: window.requests.filter((r) => !r.startsWith("GET ") && r !== "POST /api/collaboration/github_repositories"),
         requests: window.requests,
       };
     }, key);
@@ -319,7 +321,7 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
       assert.ok(shown.noteVisible && shown.noteInCard, JSON.stringify(shown));
       assert.equal(shown.focused, true);
       assert.deepEqual(shown.writes, []);
-      assert.ok(!shown.requests.some((r) => /\/brief\/(seen|reply)|\/seen\b/.test(r)), JSON.stringify(shown.requests));
+      assert.ok(!shown.requests.some((r) => /\/brief\b|\/seen\b|\/reply\b/.test(r) && !r.startsWith("GET ")), JSON.stringify(shown.requests));
       check("Home: a section answered in the closed team details opens them, shows and focuses its card with the note; nothing else opens, nothing is written", shown);
       await shot(page, "home-team-arrival");
       await context.close();
