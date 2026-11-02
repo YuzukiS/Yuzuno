@@ -30,6 +30,11 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* A repository's name links to GitHub: the accent ink, readable at 4.5:1 or
+   more in every palette (the default link colour was 4.2:1 in Garden). */
+.repo-activity a.repo-name {
+  color: var(--accent-ink);
+}
 .repo-activity .repo-branch {
   flex: none;
   padding: 0 5px;

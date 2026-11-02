@@ -336,6 +336,10 @@
 .home-machines-manage {
   margin-right: auto;
 }
+/* Readable in every palette (4.5:1), not the quiet button's grey. */
+.quiet-button.home-machines-manage {
+  color: var(--text-secondary);
+}
 .home-machines-at {
   min-width: 0;
   overflow: hidden;
@@ -759,7 +763,7 @@ ul.home-widget {
   margin-top: 0.3em;
   color: var(--home-ink-2);
 }
-.home-repos-details {
+.quiet-button.home-repos-details {
   display: inline-flex;
   align-items: center;
   gap: 2px;

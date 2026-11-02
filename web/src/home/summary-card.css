@@ -126,10 +126,24 @@
   max-height: calc(2 * 1.6em);
   overflow: hidden;
 }
-.home-card-conditions-toggle {
+/* An action, in the accent ink as "Open report" is; the button's quiet grey
+   (styles.css .quiet-button) loads after this sheet, so name both classes. */
+.quiet-button.home-card-conditions-toggle {
   padding: 2px 0;
   color: var(--accent-ink);
   font-weight: 600;
+}
+/* The quiet button's hover (a fixed light grey and green, three selectors
+   strong) would win here too: hover and keyboard focus keep the accent ink
+   on the theme's soft surface, in every palette and theme. */
+.quiet-button.home-card-conditions-toggle:hover:not(:disabled),
+.quiet-button.home-card-conditions-toggle:focus-visible {
+  background: var(--home-soft);
+  color: var(--accent-ink);
+}
+.quiet-button.home-card-conditions-toggle:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
 }
 @media (pointer: coarse) {
   .home-card-conditions-toggle,

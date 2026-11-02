@@ -26,7 +26,7 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-report.test";
 const WS = "ws-report";
-const report = { task: "T-18", checks: [], failures: [], errors: [], unexpected: [], writes: [], reads: [], shots: [],
+const report = { task: "T-18", checks: [], failures: [], errors: [], unexpected: [], writes: [], reads: [], refreshes: [], shots: [],
   limits: ["Chromium only: not iOS Safari, not a real iPhone, not the native desktop window."] };
 let page;
 async function step(name, run) {
@@ -146,7 +146,7 @@ const deck = [
     { lead: "lead", visual: "shot" }) }),
   section("batches", 32, 1, { title: "Why batches were dropped", body: summaryBody(
     "All three batches stay under the 5% stop line; duplicates are the largest cause.",
-    { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ." } },
+    { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ. Dates and amounts were checked against the synthetic ledger alone, regions were not checked at all, and every other cause is counted together under other, so its share says nothing about any one of them." } },
       table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
         rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } },
     { lead: "lead", visual: "table", conditions: "why" }) }),
@@ -199,6 +199,11 @@ async function serve(route) {
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     // A list read (home-api.ts): it starts no GitHub sync.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [linkedRepo], links: [] } });
+    // The links, once Repository details show them, ask Core to refresh them (as before T-18): a read, counted apart.
+    if (path === "/api/collaboration/github_refresh") {
+      report.refreshes.push(path);
+      return route.fulfill({ json: { repositories: [linkedRepo], links: [] } });
+    }
     report.writes.push(`${request.method()} ${path}`);
     return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
   }
@@ -621,29 +626,74 @@ try {
       assert.equal(deckShape.repos.details, "Repository details");
       if (deckShape.container >= 800) assert.ok(deckShape.repos.lineHeight <= 30, `one line: ${JSON.stringify(deckShape.repos)}`);
       await shot(`${name}.png`);
+      // Every palette and theme (Dev 7, 2351), the controls that show only after a click included:
+      // the conditions' toggle both ways, a card's More actions, Repository details opened.
+      const CARD_TEXT = [
+        ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
+        '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-details)',
+        ".home-machines :is(.home-load-title, .home-load-short, .home-machine-job-count, .home-machine-job-first, .home-machines-manage)",
+      ];
+      const measured = { closed: await contrast(CARD_TEXT) };
+      // The conditions' toggles (chips: "+N more conditions"; text: "Show all conditions"; open: "Show fewer
+      // conditions"), at rest, under the pointer and with keyboard focus, in every palette and theme (Lead 2353).
+      const toggle = (key) => card(key).locator(".home-card-conditions-toggle");
+      const toggleStates = async (state) => {
+        for (const key of ["audit", "batches"]) {
+          if (!(await toggle(key).count())) continue;
+          const selector = `.home-view [data-section-key="${key}"] .home-card-conditions-toggle`;
+          const aria = await toggle(key).evaluate((el) => ({ label: el.textContent, expanded: el.getAttribute("aria-expanded"), controls: !!document.getElementById(el.getAttribute("aria-controls")) }));
+          assert.equal(aria.controls, true, `${key}: aria-controls names the conditions`);
+          await toggle(key).hover();
+          measured[`${state} ${key} hover (${aria.label})`] = await contrast([selector]);
+          await page.mouse.move(0, 0);
+          // Reached by the keyboard, as a keyboard user reaches it.
+          await toggle(key).focus();
+          await page.keyboard.press("Shift+Tab");
+          await page.keyboard.press("Tab");
+          assert.equal(await toggle(key).evaluate((el) => el === document.activeElement), true, `${key}: Tab returns to it`);
+          const ring = await toggle(key).evaluate((el) => ({ visible: el.matches(":focus-visible"), outline: getComputedStyle(el).outlineWidth }));
+          assert.ok(ring.visible && parseFloat(ring.outline) >= 2, `${key}: a focus ring ${JSON.stringify(ring)}`);
+          measured[`${state} ${key} focus (${aria.label})`] = await contrast([selector]);
+          await toggle(key).blur();
+          // The cascade as computed: at rest it is the accent ink, the colour of the card's "Open report".
+          const inks = await card(key).evaluate((el) => [el.querySelector(".home-card-conditions-toggle"), el.querySelector(".home-report-open")].map((n) => getComputedStyle(n).color));
+          assert.equal(inks[0], inks[1], `${key}: the toggle in the accent ink ${JSON.stringify(inks)}`);
+          measured[`${state} ${key} at rest`] = await contrast([selector]);
+          measured[`${state} ${key} aria`] = aria;
+        }
+      };
+      await toggleStates("closed");
+      assert.match(await toggle("batches").textContent(), /^Show all conditions$/, "the text conditions are clamped");
       if (deckShape.hidden > 0) {
-        await card("audit").locator(".home-card-conditions-toggle").click();
+        await toggle("audit").click();
         const opened = await card("audit").evaluate((el) => ({ hidden: el.querySelectorAll(".home-card-condition-chips li[hidden]").length, label: el.querySelector(".home-card-conditions-toggle").textContent }));
         assert.deepEqual(opened, { hidden: 0, label: "Show fewer conditions" });
-        await shot(`${name}-conditions-open.png`);
       }
-      const readable = await page.evaluate(() => {
-        const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
-        const paint = (colors) => { probe.clearRect(0, 0, 1, 1); probe.fillStyle = "#fff"; probe.fillRect(0, 0, 1, 1); for (const c of colors) { probe.fillStyle = "#000"; probe.fillStyle = c; probe.fillRect(0, 0, 1, 1); } return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3); };
-        const lum = (rgb) => { const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
-        const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
-        let lowest = { ratio: 99 };
-        for (const el of document.querySelectorAll(".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label)")) {
-          if (!el.checkVisibility() || !el.textContent.trim()) continue;
-          const chain = [];
-          for (let n = el; n; n = n.parentElement) chain.unshift(getComputedStyle(n).backgroundColor);
-          const bg = paint(chain);
-          const value = ratio(paint([`rgb(${bg.join(",")})`, getComputedStyle(el).color]), bg);
-          if (value < lowest.ratio) lowest = { ratio: value, text: el.textContent.trim().slice(0, 30), cls: el.className };
-        }
-        return lowest;
-      });
-      assert.ok(readable.ratio >= 4.5, JSON.stringify(readable));
+      await toggle("batches").click();
+      assert.equal(await toggle("batches").textContent(), "Show fewer conditions");
+      await toggleStates("open");
+      for (const key of ["audit", "batches"])
+        if (measured[`open ${key} aria`]) assert.equal(measured[`open ${key} aria`].expanded, "true", key);
+      await shot(`${name}-conditions-open.png`);
+      // Details first: a click outside a card's More list closes it.
+      const refreshed = report.refreshes.length;
+      await page.locator('[data-home-project="p1"] .home-repos-details').click();
+      await page.locator('[data-home-project="p1"] .home-repos .repo-activity-lists').waitFor();
+      for (let end = Date.now() + 5000; report.refreshes.length < refreshed + 1 && Date.now() < end; ) await sleep(50);
+      assert.equal(report.refreshes.length, refreshed + 1, "showing the links asked Core for one refresh");
+      await card("audit").locator(".home-summary-more > button").click();
+      await card("audit").locator(".home-summary-more-list").waitFor();
+      measured.opened = await contrast([...CARD_TEXT, ".home-summary-more-list :is(.quiet-button, .copy-button)"]);
+      const ratios = Object.entries(measured).filter(([state]) => !state.endsWith(" aria"))
+        .flatMap(([state, all]) => Object.entries(all).map(([selector, v]) => ({ state, selector, ...v })));
+      const low = ratios.filter((v) => v.ratio < 4.5);
+      assert.deepEqual(low, [], JSON.stringify(low));
+      const readable = [...ratios].sort((a, b) => a.ratio - b.ratio)[0];
+      report.toggles = { ...(report.toggles || {}), [name]: Object.fromEntries(Object.entries(measured).filter(([state]) => / (hover|focus|at rest|aria)/.test(state))) };
+      // Back as it was for the frame of the top: More closed (Escape, its button focused), details closed.
+      await page.keyboard.press("Escape");
+      await card("audit").locator(".home-summary-more-list").waitFor({ state: "hidden" });
+      await page.locator('[data-home-project="p1"] .home-repos-details').click();
       // The top: Machines and the project's Repositories line, for review.
       await page.evaluate(() => document.querySelector(".home-machines").scrollIntoView({ block: "start" }));
       await sleep(150);
