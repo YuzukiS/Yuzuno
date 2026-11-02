@@ -116,6 +116,19 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     assert.ok(sizes.width <= 704.5, `card ${sizes.width}px`);
     assert.ok(sizes.answer >= 15 && sizes.answer === sizes.words && sizes.source < sizes.answer - 2, JSON.stringify(sizes));
     check("desktop: the answer at the message's size, the source smaller, the card at most 44rem", sizes);
+    // A form's field labels and "Not answered" are part of the answer: text contrast (WCAG AA, 4.5:1) on the card.
+    const contrast = await page.evaluate(() => {
+      const probe = document.createElement("canvas").getContext("2d");
+      const rgb = (color) => { probe.fillStyle = "#000"; probe.fillStyle = color; probe.fillRect(0, 0, 1, 1); return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+      const lum = (c) => { const [r, g, b] = rgb(c).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+      const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
+      const card = document.querySelector('[data-case="form"] .home-reply');
+      const paper = getComputedStyle(card).backgroundColor;
+      const of = (selector) => ratio(getComputedStyle(card.querySelector(selector)).color, paper);
+      return { label: of("dt"), notAnswered: of("dd[data-empty]"), answer: of("dd:not([data-empty])") };
+    });
+    assert.ok(contrast.label >= 4.5 && contrast.notAnswered >= 4.5 && contrast.answer >= 4.5, JSON.stringify(contrast));
+    check("desktop: a form's labels, its answers and Not answered read at 4.5:1 or more on the card", contrast);
     // Six lines, then Show all; the whole text is there all along.
     const fold = await page.evaluate(() => {
       const words = document.querySelector('[data-case="long"] .home-reply-words');

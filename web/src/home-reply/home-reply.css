@@ -87,8 +87,10 @@
   gap: 0.55rem;
   margin: 0;
 }
+/* Part of the answer, so readable as text (Dev 7, 2126): the title's colour,
+   not --muted, which is below 4.5:1 on the card in the light theme. */
 .home-reply dt {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--ink) 80%, var(--muted));
   font-size: 0.82em;
   overflow-wrap: anywhere;
 }
@@ -98,7 +100,7 @@
   overflow-wrap: anywhere;
 }
 .home-reply dd[data-empty] {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--ink) 80%, var(--muted));
 }
 .home-reply dd p {
   margin: 0;
