@@ -1,9 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Eye, Info, LoaderCircle, MessageSquareReply } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, ChevronRight, Eye, FileText, Info, LoaderCircle, MessageSquareReply } from "lucide-react";
 import { errorText } from "../../api";
 import { CopyButton } from "../../components";
 import { useMessageLinks, type ReportLink } from "../../deep-link";
-import { useLanguage, useStrings } from "../../i18n";
+import { langTag, useLanguage, useStrings } from "../../i18n";
 import { useTimeDisplay } from "../../time-preferences";
 import type { Agent } from "../../types";
 import { changedBlocks, type BlockChanges } from "../brief/block-changes";
@@ -15,21 +15,24 @@ import type { SeenMark } from "../home-api";
 import { BriefDensity } from "../home-density";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
-import type { HomeData, Section } from "../types";
-import { linkTo, outlineOf, reportPlace, restOf, summaryOf, type ReportPlace } from "./report-model";
+import type { HomeData, Section, SectionAttachment } from "../types";
+import { figuresOf, linkTo, outlineOf, partsOf, reportPlace, type FigureEntry, type OutlineEntry, type ReportPlace } from "./report-model";
 import { reportText } from "./report-text";
 import "./report.css";
 
-/** Where a block of the report is, for its outline. */
+/** Where a top-level block of the report is, for its outline. */
 export const reportBlockDomId = (id: string) => `report-block-${id}`;
+const RAIL_ID = "report-sources";
 
 /**
- * A section's report (T-18): a page over Home, which stays as it was below
- * it. It reads the section Home read, at the linked version only: its
- * summary first (the conclusion, then the key figure, the same blocks the
- * card shows), then the rest of the body in the author's order, at full
- * density, long text folded and sources on demand. What has become of the
- * version linked is said from Home's reading, never guessed.
+ * A section's report (T-18): a whole page in the main pane, over Home,
+ * which stays as it was below it and out of reach. It shows the linked
+ * version only, from Home's reading: what the author named as its summary
+ * first (the conclusion, what it holds under, one figure), each block once;
+ * then the rest in the author's order, at full density, with only the parts
+ * the author named as details folded; its sources and attachments beside
+ * the body on wide panes and after it on narrow ones, never behind a click.
+ * What has become of the version linked is said, never guessed.
  */
 export function ReportPage({
   link,
@@ -65,20 +68,29 @@ export function ReportPage({
   const links = useMessageLinks();
   const panel = data?.projects.find((p) => p.project.id === link.projectId);
   const place: ReportPlace | null = data ? reportPlace(link, panel) : null;
-  // Home reads only a section's newest version: the version on screen stays
-  // on screen when a newer one arrives, until the user opens that one.
+  // The version on screen stays on screen when Home no longer has it (a
+  // newer one replaced it), until the user opens another: never new data
+  // under the version linked.
   const [kept, setKept] = useState<Section | null>(null);
-  if (place?.kind === "live" && place.section !== kept) setKept(place.section);
-  const shown =
-    place?.kind === "live" || place?.kind === "history" ? place.section : kept?.version === link.version ? kept : null;
-  const live = place?.kind === "live";
-  const summary = useMemo(() => (shown ? summaryOf(shown) : null), [shown]);
-  const rest = useMemo(() => (shown && summary ? restOf(shown, summary) : []), [shown, summary]);
-  const outline = useMemo(() => (shown ? outlineOf(shown, rest) : []), [shown, rest]);
+  if (place?.kind === "found" && place.section !== kept) setKept(place.section);
+  const shown = place?.kind === "found" ? place.section : kept;
+  const live = place?.kind === "found" && !place.section.history;
+  const liveNow = panel && [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].find((s) => s.key === link.key);
+  const newer =
+    place?.kind === "found" ? place.newer
+      : shown && liveNow && liveNow.id === shown.id && liveNow.version > shown.version ? liveNow : null;
+  const parts = useMemo(() => (shown ? partsOf(shown) : null), [shown]);
+  const outline = useMemo(() => (shown && parts ? outlineOf(shown, parts.flow) : []), [shown, parts]);
+  const figures = useMemo(() => {
+    if (!shown || !parts) return [];
+    return [...(parts.summary?.visual ? figuresOf(shown, [parts.summary.visual]) : []), ...figuresOf(shown, parts.flow)];
+  }, [shown, parts]);
   const changes = useMemo(
-    () => (shown && !shown.history ? changedBlocks(workspaceId, link.projectId, shown) : null),
-    [shown, workspaceId, link.projectId],
+    () => (shown && live ? changedBlocks(workspaceId, link.projectId, shown) : null),
+    [shown, live, workspaceId, link.projectId],
   );
+  const dataFiles = (shown?.attachments ?? []).filter((file) => file.kind === "data");
+  const railed = !!parts && (parts.sources.length > 0 || parts.attachments.length > 0 || dataFiles.length > 0);
   const [replying, setReplying] = useState(false);
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
@@ -104,38 +116,51 @@ export function ReportPage({
       setSeeing(false);
     }
   }
-  const title = shown?.title ?? (place?.kind === "later" ? place.section.title : undefined);
+  const open = (section: Section) => onOpenVersion({ workspaceId: link.workspaceId, ...linkTo(link.projectId, section) });
+  const title = shown?.title ?? (place?.kind === "unavailable" ? place.versions[0].title : undefined);
   const href = shown && links?.reportHref(linkTo(link.projectId, shown));
-  const current = place?.kind === "later" ? place.section : null;
-  const openCurrent = current && (
-    <button type="button" className="secondary-button" onClick={() => onOpenVersion({ workspaceId: link.workspaceId, ...linkTo(link.projectId, current) })}>
-      {t.openVersion(current.version)}
-    </button>
-  );
   const toProject = (
     <button type="button" className="secondary-button" onClick={() => onShowProject(link.projectId)}>
       {t.showProject}
     </button>
   );
-  const notice =
-    !data ? null
-      : place?.kind === "later" ? (
-        <Notice actions={openCurrent}>{shown ? t.arrived(link.version, place.section.version) : t.later(link.version, place.section.version)}</Notice>
-      ) : place?.kind === "history" ? (
-        <Notice actions={panel ? toProject : null}>
-          {t.history(place.section.historyReason ?? "removed")}
-          {place.section.version !== link.version && <> {t.historyVersion(link.version, place.section.version)}</>}
-        </Notice>
-      ) : place?.kind === "unknown" ? (
-        <Notice actions={toProject}>{t.unknown}</Notice>
-      ) : place?.kind === "gone" ? (
-        <Notice actions={null}>{t.gone}</Notice>
-      ) : null;
+  const openNewer = newer && (
+    <button type="button" className="secondary-button" onClick={() => open(newer)}>
+      {t.openVersion(newer.version)}
+    </button>
+  );
+  const notice = !data ? null : place?.kind === "found" ? (
+    place.section.history ? (
+      <Notice actions={openNewer}>
+        {t.history(place.section.historyReason ?? "removed")}
+        {newer && <> {t.newerLive(newer.version)}</>}
+      </Notice>
+    ) : null
+  ) : shown ? (
+    <Notice actions={openNewer ?? toProject}>{newer ? t.arrived(shown.version, newer.version) : t.notKept(shown.version)}</Notice>
+  ) : place?.kind === "unavailable" ? (
+    <Notice
+      actions={place.versions.map((section) => (
+        <button key={`${section.history}:${section.version}`} type="button" className="secondary-button" onClick={() => open(section)}>
+          {section.history ? t.openKept(section.version) : t.openCurrent(section.version)}
+        </button>
+      ))}
+    >
+      {t.unavailable(link.version)}
+    </Notice>
+  ) : place?.kind === "unknown" ? (
+    <Notice actions={toProject}>{t.unknown}</Notice>
+  ) : place?.kind === "gone" ? (
+    <Notice actions={null}>{t.gone}</Notice>
+  ) : null;
+  const block = (id: string) => <SectionBody section={shown!} projectId={link.projectId} changes={changes} only={[id]} />;
+  const summary = parts?.summary ?? null;
   return (
     <section
       ref={root}
       className="home-report"
       tabIndex={-1}
+      lang={langTag(language)}
       aria-label={t.page(title ?? t.report)}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || event.defaultPrevented) return;
@@ -195,63 +220,124 @@ export function ReportPage({
             {error}
           </p>
         )}
-        {shown && summary && (
-          <article className="report-article" aria-labelledby={headingId}>
-            <header className="report-head">
-              <span className={`home-kind kind-${shown.kind}`}>{home.kind[shown.kind]}</span>
-              <h1 id={headingId} ref={heading} tabIndex={-1}>
-                {shown.title}
-              </h1>
-              <p className="report-meta">
-                <span>{shown.owner.name}</span>
-                <span>{t.version(shown.version)}</span>
-                <span title={absolute(shown.updatedAt, time)}>{relative(shown.updatedAt, language)}</span>
-                {shown.status && (
-                  <span className={shown.status.stale ? "home-stale" : ""} title={absolute(shown.status.asOf, time)}>
-                    {home.dataAsOf(absolute(shown.status.asOf, time))}
-                    {shown.status.stale && home.pastValidity(duration(shown.status.validFor, language))}
-                  </span>
-                )}
-              </p>
-              {changes && changes.size > 0 && <p className="report-changes">{t.blocksUpdated(changes.size)}</p>}
-            </header>
-            <BriefDensity.Provider value="high">
+        {shown && parts && (
+          <BriefDensity.Provider value="high">
+            <article className="report-article" aria-labelledby={headingId}>
               <div className="report-layout">
                 <div className="report-main">
-                  {outline.length > 0 && (
+                  <header className="report-head">
+                    <p className="report-kicker">
+                      <span className={`home-kind kind-${shown.kind}`}>{home.kind[shown.kind]}</span>
+                      {live && changedSinceSeen(shown) && <span className="home-changed">{shown.seen ? home.updated : home.new}</span>}
+                      {panel && <span>{panel.project.name}</span>}
+                    </p>
+                    <h1 id={headingId} ref={heading} tabIndex={-1}>
+                      {shown.title}
+                    </h1>
+                    {summary && <div className="report-lead">{block(summary.lead)}</div>}
+                    <p className="report-meta">
+                      <span>{shown.owner.name}</span>
+                      <span title={absolute(shown.updatedAt, time)}>{relative(shown.updatedAt, language)}</span>
+                      <span>{t.version(shown.version)}</span>
+                      {shown.status && (
+                        <span className={shown.status.stale ? "home-stale" : ""} title={absolute(shown.status.asOf, time)}>
+                          {home.dataAsOf(absolute(shown.status.asOf, time))}
+                          {shown.status.stale && home.pastValidity(duration(shown.status.validFor, language))}
+                        </span>
+                      )}
+                      {changes && changes.size > 0 && <span className="report-changes">{t.blocksUpdated(changes.size)}</span>}
+                    </p>
+                    {summary?.conditions && (
+                      <div className="report-conditions" role="group" aria-label={t.conditions}>
+                        <span className="report-conditions-label">{t.conditions}</span>
+                        {block(summary.conditions)}
+                      </div>
+                    )}
+                  </header>
+                  {outline.length + (railed ? 1 : 0) > 1 && (
                     <details className="report-contents">
-                      <summary>{t.contents}</summary>
-                      <Outline entries={outline} />
+                      <summary>
+                        {t.contents} <span>· {t.parts(outline.length + (railed ? 1 : 0))}</span>
+                      </summary>
+                      <Outline entries={[...outline, ...(railed ? [{ id: RAIL_ID, title: t.sourcesAndAttachments }] : [])]} />
                     </details>
                   )}
-                  {summary.lead && (
-                    <div className="report-lead" id={reportBlockDomId(summary.lead)}>
-                      <SectionBody section={shown} projectId={link.projectId} changes={changes} only={[summary.lead]} />
-                    </div>
-                  )}
-                  {summary.visual && (
-                    <figure className="report-hero" id={reportBlockDomId(summary.visual)}>
-                      <SectionBody section={shown} projectId={link.projectId} changes={changes} only={[summary.visual]} />
+                  {summary?.visual && (
+                    <figure className="report-hero" id={reportBlockDomId(summary.visual)} tabIndex={-1}>
+                      {block(summary.visual)}
+                      <FigureSource section={shown} id={summary.visual} />
                     </figure>
                   )}
-                  {rest.map((id) => (
-                    <ReportBlock key={id} id={id} section={shown} projectId={link.projectId} changes={changes} />
-                  ))}
+                  {parts.flow.map((id) =>
+                    parts.details.has(id) ? (
+                      <Detail key={id} id={id} title={groupTitle(shown, id)}>
+                        {block(id)}
+                      </Detail>
+                    ) : (
+                      <section key={id} className="report-block" id={reportBlockDomId(id)} data-block={nodeType(shown, id)} tabIndex={-1}>
+                        {block(id)}
+                      </section>
+                    ),
+                  )}
                 </div>
-                {outline.length > 0 && (
-                  <nav className="report-rail" aria-label={t.onThisPage}>
-                    <p className="report-rail-title">{t.onThisPage}</p>
-                    <Outline entries={outline} />
-                  </nav>
-                )}
+                <aside className={`report-rail${railed ? "" : " is-bare"}`} id={RAIL_ID} tabIndex={-1} aria-label={t.aboutReport}>
+                  {outline.length > 0 && (
+                    <nav className="report-rail-part report-wide" aria-label={t.onThisPage}>
+                      <h2>{t.onThisPage}</h2>
+                      <Outline entries={outline} />
+                    </nav>
+                  )}
+                  {figures.length > 0 && (
+                    <section className="report-rail-part report-wide">
+                      <h2>
+                        {t.figuresAndTables} <span>· {figures.length}</span>
+                      </h2>
+                      <Figures entries={figures} />
+                    </section>
+                  )}
+                  {railed && <h2 className="report-rail-heading">{t.sourcesAndAttachments}</h2>}
+                  {(parts.sources.length > 0 || dataFiles.length > 0) && (
+                    <section className="report-rail-part">
+                      <h2>{t.sources}</h2>
+                      {dataFiles.length > 0 && <DataFiles files={dataFiles} />}
+                      {parts.sources.map((id) => (
+                        <div key={id} className="report-rail-block" id={reportBlockDomId(id)}>
+                          {block(id)}
+                        </div>
+                      ))}
+                    </section>
+                  )}
+                  {parts.attachments.length > 0 && (
+                    <section className="report-rail-part">
+                      <h2>{t.attachments}</h2>
+                      {parts.attachments.map((id) => (
+                        <div key={id} className="report-rail-block" id={reportBlockDomId(id)}>
+                          {block(id)}
+                        </div>
+                      ))}
+                    </section>
+                  )}
+                  <section className="report-rail-part report-wide">
+                    <h2>{t.versionPart}</h2>
+                    <p>
+                      {shown.version} · {live ? t.current : shown.history ? t.inHistory : t.version(shown.version)}
+                    </p>
+                    {live && shown.seen && shown.seen.version < shown.version && <p className="report-rail-note">{t.lastSaw(shown.seen.version)}</p>}
+                  </section>
+                </aside>
               </div>
-            </BriefDensity.Provider>
-          </article>
+            </article>
+          </BriefDensity.Provider>
         )}
       </div>
     </section>
   );
 }
+
+type Node = { type?: string; props?: Record<string, unknown> };
+const nodeOf = (section: Section, id: string) => (section.body as { elements?: Record<string, Node> } | null)?.elements?.[id];
+const nodeType = (section: Section, id: string) => nodeOf(section, id)?.type;
+const groupTitle = (section: Section, id: string) => String(nodeOf(section, id)?.props?.title ?? "");
 
 function Notice({ children, actions }: { children: ReactNode; actions: ReactNode }) {
   return (
@@ -263,20 +349,19 @@ function Notice({ children, actions }: { children: ReactNode; actions: ReactNode
   );
 }
 
-function Outline({ entries }: { entries: { id: string; title: string }[] }) {
-  // Buttons, not #anchors: the address keeps no place in a report.
+/** Moves to a part of the page: buttons, not #anchors, so the address and its history keep no place in a report. */
+function jump(id: string) {
+  const target = document.getElementById(id === RAIL_ID ? RAIL_ID : reportBlockDomId(id));
+  target?.scrollIntoView({ block: "start" });
+  target?.focus({ preventScroll: true });
+}
+
+function Outline({ entries }: { entries: OutlineEntry[] }) {
   return (
     <ol className="report-outline">
       {entries.map((entry) => (
         <li key={entry.id}>
-          <button
-            type="button"
-            onClick={() => {
-              const target = document.getElementById(reportBlockDomId(entry.id));
-              target?.scrollIntoView({ block: "start" });
-              target?.focus({ preventScroll: true });
-            }}
-          >
+          <button type="button" onClick={() => jump(entry.id)}>
             {entry.title}
           </button>
         </li>
@@ -285,55 +370,77 @@ function Outline({ entries }: { entries: { id: string; title: string }[] }) {
   );
 }
 
-type Node = { type?: string; props?: { items?: unknown[] } };
-
-/** One top-level block of the report: long text folds, sources and files open on demand. */
-function ReportBlock({ id, section, projectId, changes }: { id: string; section: Section; projectId: string; changes: BlockChanges | null }) {
+function Figures({ entries }: { entries: FigureEntry[] }) {
   const t = useStrings(reportText);
-  const node = (section.body as { elements?: Record<string, Node> }).elements?.[id];
-  const body = <SectionBody section={section} projectId={projectId} changes={changes} only={[id]} />;
-  const count = Array.isArray(node?.props?.items) ? node.props.items.length : 0;
-  if (node?.type === "Sources" || node?.type === "Attachments")
-    return (
-      <details className="report-block report-more" id={reportBlockDomId(id)} tabIndex={-1}>
-        <summary>{node.type === "Sources" ? t.sources(count) : t.attachments(count)}</summary>
-        {body}
-      </details>
-    );
   return (
-    <section className="report-block" id={reportBlockDomId(id)} data-block={node?.type} tabIndex={-1}>
-      {node?.type === "Markdown" ? <Fold version={section.version}>{body}</Fold> : body}
-    </section>
+    <ol className="report-outline report-figures">
+      {entries.map((entry, index) => (
+        <li key={`${entry.id}:${index}`}>
+          <button type="button" onClick={() => jump(entry.id)}>
+            <span>{entry.title}</span>
+            {entry.rows !== undefined && <small>{t.rows(entry.rows)}</small>}
+          </button>
+        </li>
+      ))}
+    </ol>
   );
 }
 
-/** Long text, whole in the page, folded after about a dozen lines behind "Show all". */
-function Fold({ version, children }: { version: number; children: ReactNode }) {
+const size = (bytes: number, language: string) =>
+  bytes < 1024 ? `${bytes.toLocaleString(language)} B` : bytes < 1024 ** 2 ? `${(bytes / 1024).toLocaleString(language, { maximumFractionDigits: 1 })} KB` : `${(bytes / 1024 ** 2).toLocaleString(language, { maximumFractionDigits: 1 })} MB`;
+
+/** The section's data files: what its charts and desks read, as Core kept them. */
+function DataFiles({ files }: { files: SectionAttachment[] }) {
   const t = useStrings(reportText);
-  const body = useRef<HTMLDivElement>(null);
-  const bodyId = useId();
-  const [long, setLong] = useState(false);
-  const [all, setAll] = useState(false);
-  useLayoutEffect(() => {
-    const element = body.current;
-    if (!element || all) return;
-    const measure = () => setLong(element.scrollHeight > element.clientHeight + 1);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [all, version]);
+  const language = langTag(useLanguage());
   return (
-    <div className={`report-fold${all ? "" : " is-folded"}${long ? " is-long" : ""}`}>
-      <div ref={body} id={bodyId} className="report-fold-body">
+    <ul className="report-files">
+      {files.map((file) => (
+        <li key={file.name}>
+          <strong>{file.name}</strong>
+          <span>{file.snapshot ? `${t.snapshot} · ${size(file.size, language)}` : t.reference}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** A chart's own source under the summary figure: the data file it reads, as Core kept it. */
+function FigureSource({ section, id }: { section: Section; id: string }) {
+  const t = useStrings(reportText);
+  const language = langTag(useLanguage());
+  const data = nodeOf(section, id)?.props?.data as { attachment?: unknown } | undefined;
+  const file = typeof data?.attachment === "string" ? section.attachments?.find((a) => a.name === data.attachment) : undefined;
+  if (!file) return null;
+  return (
+    <figcaption className="report-figure-source">
+      <FileText size={12} />
+      {file.name} · {file.snapshot ? `${t.snapshot} · ${size(file.size, language)}` : t.reference}
+    </figcaption>
+  );
+}
+
+/** A part the author named as supporting detail: its title and a short preview until opened, whole in the page. */
+function Detail({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+  const t = useStrings(reportText);
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  return (
+    <section className={`report-block report-detail${open ? " is-open" : ""}`} id={reportBlockDomId(id)} tabIndex={-1}>
+      <button
+        type="button"
+        className="report-detail-toggle"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        aria-label={open ? t.hideDetail(title) : t.showDetail(title)}
+        onClick={() => setOpen(!open)}
+      >
+        <ChevronRight size={15} />
+        <span>{title}</span>
+      </button>
+      <div id={bodyId} className="report-detail-body" inert={open ? undefined : true}>
         {children}
       </div>
-      {long && (
-        <button type="button" className="quiet-button report-fold-toggle" aria-expanded={all} aria-controls={bodyId} onClick={() => setAll(!all)}>
-          {all ? t.showLess : t.showAll}
-        </button>
-      )}
-    </div>
+    </section>
   );
 }

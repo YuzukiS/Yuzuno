@@ -58,15 +58,19 @@ async function until(read, description, ms = 3000) {
 // through edits, a resolve and a seen card written again; new for a key
 // written anew. Versions only rise under a key.
 const owner = { agentId: "a", name: "Mori", state: "active" };
-const longText = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of the method notes.`).join("\n\n");
+const longText = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of the notes.`).join("\n\n");
+// The author names the summary (conclusion, conditions, one figure) and the
+// part that starts folded on the root (T-18 contract), by the blocks' ids.
 const reportBody = (conclusion = "Model B lowers validation loss by 4% on the synthetic set.") => ({ root: "body", elements: {
-  body: { type: "BriefBody", props: {}, children: ["answer", "method", "loss", "long", "results", "sources"] },
-  answer: { type: "Group", props: { tone: "accent" }, children: ["answer-text"] },
-  "answer-text": { type: "Markdown", props: { text: conclusion } },
+  body: { type: "BriefBody", props: { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] },
+    children: ["answer", "holds", "loss", "method", "long", "evidence", "sources"] },
+  answer: { type: "Markdown", props: { text: conclusion } },
+  holds: { type: "Checklist", props: { items: [{ id: "def", text: "Scoring definition v2", done: true }, { id: "data", text: "Synthetic data, 100 items per arm", done: true }] } },
+  loss: { type: "Metrics", props: { items: [{ label: "Validation loss", value: 0.412, previous: 0.429 }] } },
   method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
   "method-text": { type: "Markdown", props: { text: "Three seeds per arm, the same data order." } },
-  loss: { type: "Metrics", props: { items: [{ label: "Validation loss", value: 0.412, previous: 0.429 }] } },
   long: { type: "Markdown", props: { text: longText } },
+  evidence: { type: "Group", props: { title: "Evidence" }, children: ["results"] },
   results: { type: "Table", props: { id: "results", title: "Results", columns: [{ key: "model", label: "Model" }, { key: "loss", label: "Loss" }],
     rows: [{ id: "a", cells: { model: "A", loss: 0.429 }, sourceIds: ["run-a"] }, { id: "b", cells: { model: "B", loss: 0.412 }, sourceIds: ["run-b"] }] } },
   sources: { type: "Sources", props: { items: [{ id: "run-a", label: "Run A log", href: "https://example.test/run-a" }, { id: "run-b", label: "Run B log", href: "https://example.test/run-b" }] } },
@@ -84,6 +88,7 @@ const homeData = (sections, history = []) => ({
 const machine = { at: "2026-11-02T10:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
   memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };
 const linkTo = (version, extra = {}) => ({ workspaceId: "ws-1", projectId: "p1", key: "eval", version, sectionId: 7, ...extra });
+const address = (version) => `#/report?w=ws-1&p=p1&k=eval&v=${version}&s=7`;
 const back = { workspaceId: "ws-1", agentId: "a", turnId: "t1", itemId: "i-2" };
 
 function mount(read) {
@@ -128,48 +133,64 @@ async function openHome(read, incoming = null) {
   return page;
 }
 const notice = (page) => page.report()?.querySelector(".report-notice p")?.textContent ?? null;
-const blocks = (page) => [...page.report().querySelectorAll(".report-main > .report-block")].map((b) => b.id.replace("report-block-", ""));
+const flow = (page) => [...page.report().querySelectorAll(".report-main > .report-block")].map((b) => b.id.replace("report-block-", ""));
+const once = (page, text) => page.report().textContent.split(text).length - 1;
 
-test("a card opens its report over Home: the conclusion and key figure first, then the rest in the author's order", async (t) => {
+test("a card opens its report as a page over Home: the summary its author named first, each block once, then the rest in order", async (t) => {
   const page = await openHome(() => homeData([section("eval", 7, 3), ask]));
   t.after(page.close);
   // An Ask keeps its quick reply on Home and has no report.
   assert.equal(page.card("paging").querySelector(".home-report-open"), null);
   const opener = page.card("eval").querySelector(".home-report-open");
   assert.equal(opener.textContent.trim(), "Open report");
+  const before = page.window.history.length;
   opener.click();
   const report = await until(page.report, "the report");
   // Home stays mounted below, laid out but out of reach.
   const view = page.document.querySelector(".home-view");
   assert.ok(view.hasAttribute("inert") && view.classList.contains("is-under-report"));
   assert.ok(page.card("eval"), "the card is still there");
-  // Its own history entry, so the browser's Back closes it.
+  // One history entry of its own, with the report's link in the address.
+  assert.equal(page.window.history.length, before + 1);
   assert.equal(typeof page.window.history.state?.yuzunoReport, "number");
+  assert.equal(page.window.location.hash, address(3));
   const heading = report.querySelector(".report-head h1");
   assert.equal(heading.textContent, "Synthetic eval: model B vs A");
   assert.equal(page.document.activeElement, heading, "the title takes focus");
   assert.match(report.querySelector(".report-meta").textContent, /Mori.*version 3/);
   assert.match(report.querySelector(".report-crumb").textContent, /atlas-notes.*Report.*Synthetic eval/);
-  // The summary: the same blocks the body has, the conclusion then the figure.
+  // The summary, as named: the conclusion, what it holds under (whole), the figure.
   assert.equal(report.querySelector(".report-lead").textContent.trim(), "Model B lowers validation loss by 4% on the synthetic set.");
+  assert.match(report.querySelector(".report-conditions").textContent, /Conditions.*Scoring definition v2.*Synthetic data, 100 items per arm/);
   assert.match(report.querySelector(".report-hero").textContent, /Validation loss.*0\.412/);
-  assert.deepEqual(blocks(page), ["method", "long", "results", "sources"]);
-  // Each block once: the summary is not drawn again below it.
-  assert.equal(report.textContent.split("Model B lowers validation loss").length - 1, 1);
-  // Outline: the author's titled Groups and figures, in the rail and as Contents.
+  // Each block once; the rest in the author's order; sources beside the body, not in it.
+  for (const text of ["Model B lowers validation loss", "Scoring definition v2", "Validation loss"]) assert.equal(once(page, text), 1, text);
+  assert.deepEqual(flow(page), ["method", "long", "evidence"]);
+  assert.ok(report.querySelector(".report-rail #report-block-sources"));
+  assert.equal(report.querySelector(".report-main #report-block-sources"), null);
+  // Nothing folds but what the author named: long text whole, the method folded under its title.
+  assert.equal(report.querySelector("#report-block-long .report-detail-toggle"), null);
+  assert.match(report.querySelector("#report-block-long").textContent, /Line 30 of the notes\./);
+  const method = report.querySelector("#report-block-method");
+  const toggle = method.querySelector(".report-detail-toggle");
+  assert.equal(toggle.textContent, "Method");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.ok(method.querySelector(".report-detail-body").hasAttribute("inert"), "a folded preview is not reached");
+  toggle.click();
+  await tick();
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.ok(!method.querySelector(".report-detail-body").hasAttribute("inert"));
+  // The outline and figures: titled parts in the rail, and as Contents with the sources.
   const outline = (selector) => [...report.querySelectorAll(`${selector} .report-outline button`)].map((b) => b.textContent);
-  assert.deepEqual(outline(".report-rail"), ["Method", "Results"]);
-  assert.deepEqual(outline(".report-contents"), ["Method", "Results"]);
-  // Sources on demand; long text whole in the page, folded by its height.
-  const sources = report.querySelector("#report-block-sources");
-  assert.equal(sources.tagName, "DETAILS");
-  assert.equal(sources.open, false);
-  assert.equal(sources.querySelector("summary").textContent, "2 sources");
-  const long = report.querySelector("#report-block-long .report-fold");
-  assert.ok(long.classList.contains("is-folded"));
-  assert.match(long.textContent, /Line 30 of the method notes\./);
-  // A table is the full one, rows and sources included.
-  assert.match(report.querySelector("#report-block-results").textContent, /Results.*A.*0\.429.*B.*0\.412/s);
+  assert.deepEqual(outline("nav.report-rail-part"), ["Method", "Evidence"]);
+  assert.deepEqual(outline(".report-contents"), ["Method", "Evidence", "Sources & attachments"]);
+  assert.deepEqual(outline(".report-figures").map((text) => text.replace(/\s+/g, " ")), ["Results2 rows"]);
+  // Jumping in the outline adds no history entry.
+  const length = page.window.history.length;
+  report.querySelector(".report-contents .report-outline button").click();
+  await tick();
+  assert.equal(page.window.history.length, length);
+  assert.equal(page.window.location.hash, address(3));
   assert.deepEqual(page.errors, []);
 });
 
@@ -184,7 +205,8 @@ test("Copy report is the card's own, and Copy link names the section and version
   await until(() => page.copied.length === 3, "three copies");
   assert.equal(page.copied[1], page.copied[0]);
   assert.match(page.copied[0], /Model B lowers validation loss/);
-  assert.equal(page.copied[2], "https://report.test/#/report?w=ws-1&p=p1&k=eval&v=3&s=7");
+  assert.match(page.copied[0], /Line 30 of the notes\./, "the whole body, the folded part and the long text too");
+  assert.equal(page.copied[2], `https://report.test/${address(3)}`);
   assert.deepEqual(page.errors, []);
 });
 
@@ -206,9 +228,10 @@ test("Back, Escape and the browser's Back close the report, and focus returns to
     assert.equal(page.document.activeElement, opener, `${how}: focus is back on Open report`);
     assert.ok(page.card("eval").hasAttribute("data-report-return"), `${how}: the card says where the page returned`);
     assert.ok(!page.document.querySelector(".home-view").hasAttribute("inert"));
-    assert.equal(page.window.history.state?.yuzunoReport, undefined, `${how}: the report's entry is gone`);
+    assert.equal(page.window.history.state?.yuzunoReport, undefined, `${how}: the report's entry is left`);
+    assert.equal(page.window.location.hash, "", `${how}: the address is Home's again`);
   }
-  // Escape in a text field is the field's.
+  // Escape in a text field is the field's; a draft written there stays the card's.
   opener.click();
   const report = await until(page.report, "the report again");
   await page.press(report.querySelector(".report-actions"), "Reply");
@@ -216,11 +239,13 @@ test("Back, Escape and the browser's Back close the report, and focus returns to
   field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await tick();
   assert.ok(page.report(), "Escape in the reply field leaves the report open");
+  // Nothing was marked seen by opening and closing.
+  assert.deepEqual(page.requests.filter((r) => r.method !== "GET" && !r.url.endsWith("/github_repositories")), []);
   assert.deepEqual(page.errors, []);
 });
 
 test("a report link from a conversation opens the report over Home, and Back returns to that message", async (t) => {
-  const page = await openHome(() => homeData([section("eval", 7, 3)]), { link: linkTo(3), back, n: 1 });
+  const page = await openHome(() => homeData([section("eval", 7, 3)]), { link: linkTo(3), back, fromAddress: false, n: 1 });
   t.after(page.close);
   const report = await until(() => page.report()?.querySelector(".report-head h1") && page.report(), "the report");
   const backButton = report.querySelector(".report-back");
@@ -232,30 +257,57 @@ test("a report link from a conversation opens the report over Home, and Back ret
   assert.deepEqual(page.errors, []);
 });
 
-test("what has become of the version linked is said from Home's reading, never guessed", async (t) => {
-  // A later version: said, with a way to it, and no body of another version under the old one's link.
-  let page = await openHome(() => homeData([section("eval", 7, 5, { body: reportBody("Model B lowers loss by 5%.") })]), { link: linkTo(3), back: null, n: 1 });
+test("a link from the address takes its own history entry, and the page's Back stays in Yuzuno", async (t) => {
+  const page = mount(() => homeData([section("eval", 7, 3)]));
+  t.after(page.close);
+  page.window.history.replaceState(null, "", `/${address(3)}`);
+  const length = page.window.history.length;
+  page.window.renderHome({ link: linkTo(3), back: null, fromAddress: true, n: 1 });
+  const report = await until(() => page.report()?.querySelector(".report-head h1") && page.report(), "the report");
+  assert.equal(page.window.history.length, length, "no entry added");
+  assert.equal(page.window.location.hash, address(3));
+  report.querySelector(".report-back").click();
+  await until(() => !page.report(), "closed");
+  assert.equal(page.window.history.length, length);
+  assert.equal(page.window.location.hash, "");
+  assert.equal(page.window.location.href, "https://report.test/", "still this page");
+  assert.deepEqual(page.errors, []);
+});
+
+test("only the very version linked is shown, live or in History; otherwise the versions there are are offered", async (t) => {
+  // Not kept: said, the current version offered, and no body of another version under its link.
+  let page = await openHome(() => homeData([section("eval", 7, 5, { body: reportBody("Model B lowers loss by 5%.") })]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
   let report = await until(page.report, "the report");
-  assert.equal(notice(page), "This link is to version 3. The report is at version 5 now, and Home keeps only its newest version.");
+  assert.equal(notice(page), "Version 3 of this report is not on Home: Home keeps a report's newest version and the versions in its History.");
   assert.equal(report.querySelector(".report-article"), null);
-  await page.press(report, "Open version 5");
+  await page.press(report, "Open version 5 (current)");
   report = await until(() => page.report()?.querySelector(".report-article") && page.report(), "version 5");
   assert.equal(notice(page), null);
   assert.match(report.querySelector(".report-meta").textContent, /version 5/);
   assert.equal(report.querySelector(".report-lead").textContent.trim(), "Model B lowers loss by 5%.");
+  assert.equal(page.window.location.hash, address(5));
   page.close();
 
-  // In History: that row, with why, and nothing to mark seen or reply to.
-  page = await openHome(() => homeData([], [section("eval", 7, 3, { history: true, historyReason: "seen", seen: { version: 3 } })]), { link: linkTo(3), back: null, n: 1 });
+  // Kept in History while a newer one is live: that very version, why it is there, and the newer one offered.
+  page = await openHome(() => homeData([section("eval", 7, 5, { body: reportBody("Model B lowers loss by 5%.") })],
+    [section("eval", 7, 3, { history: true, historyReason: "seen", seen: { version: 3 } })]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
   report = await until(page.report, "the report");
-  assert.equal(notice(page), "You marked this report seen; it is in History.");
-  assert.ok(report.querySelector(".report-article"));
+  assert.equal(notice(page), "You marked this report seen; it is in History. Version 5 is current.");
+  assert.equal(report.querySelector(".report-lead").textContent.trim(), "Model B lowers validation loss by 4% on the synthetic set.");
   assert.equal(page.button(report, "Seen"), undefined);
   assert.equal(page.button(report, "Reply"), undefined);
+  assert.ok(page.button(report, "Open version 5"));
+  page.close();
+
+  // Only other versions kept: each offered by where it is.
+  page = await openHome(() => homeData([], [section("eval", 7, 4, { history: true, historyReason: "resolved" })]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
+  report = await until(page.report, "the report");
+  assert.match(notice(page), /^Version 3 of this report is not on Home/);
+  assert.ok(page.button(report, "Open version 4 (in History)"));
   page.close();
 
   // Another section under the key now: never shown as the one linked.
-  page = await openHome(() => homeData([section("eval", 8, 4)]), { link: linkTo(3), back: null, n: 1 });
+  page = await openHome(() => homeData([section("eval", 8, 3)]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
   report = await until(page.report, "the report");
   assert.match(notice(page), /^Home has no report it can tell is the one linked/);
   assert.equal(report.querySelector(".report-article"), null);
@@ -265,17 +317,14 @@ test("what has become of the version linked is said from Home's reading, never g
   page.close();
 
   // Its project is not on Home.
-  page = await openHome(() => homeData([section("eval", 7, 3)]), { link: linkTo(3, { projectId: "p9" }), back: null, n: 1 });
+  page = await openHome(() => homeData([section("eval", 7, 3)]), { link: linkTo(3, { projectId: "p9" }), back: null, fromAddress: false, n: 1 });
   await until(page.report, "the report");
   assert.equal(notice(page), "This report's project is not on Home.");
   assert.equal(page.report().querySelector(".report-article"), null);
   page.close();
-
-  // Another Workspace's link never reaches Home: App refuses it (deep-link test).
-  t.diagnostic("version notices: later, History, another section, project gone");
 });
 
-test("a version arriving while the report is read keeps the version on screen and offers the new one", async (t) => {
+test("a version arriving while the report is read keeps the version on screen, never mixed, and offers the new one", async (t) => {
   let current = homeData([section("eval", 7, 3)]);
   const page = await openHome(() => current);
   t.after(page.close);
@@ -284,10 +333,10 @@ test("a version arriving while the report is read keeps the version on screen an
   current = homeData([section("eval", 7, 4, { body: reportBody("Model B lowers loss by 6%.") })]);
   page.window.renderHome(null, 1);
   await until(() => notice(page), "the notice");
-  assert.equal(notice(page), "You are reading version 3. Version 4 has arrived.");
+  assert.equal(notice(page), "You are reading version 3. Version 4 has arrived; parts of version 3 read from its files may no longer show.");
   assert.equal(report.querySelector(".report-lead").textContent.trim(), "Model B lowers validation loss by 4% on the synthetic set.");
+  assert.equal(once(page, "Model B lowers loss by 6%."), 0, "nothing of version 4 under version 3");
   assert.match(report.querySelector(".report-meta").textContent, /version 3/);
-  // Nothing of version 3 is offered as current: no Seen, no Reply on it.
   assert.equal(page.button(report, "Seen"), undefined);
   assert.equal(page.button(report, "Reply"), undefined);
   await page.press(report, "Open version 4");
@@ -296,23 +345,42 @@ test("a version arriving while the report is read keeps the version on screen an
   assert.deepEqual(page.errors, []);
 });
 
-test("Seen on the report marks the version shown, and a body with only text still opens", async (t) => {
-  const plain = section("plain", 12, 2, { body: { root: "b", elements: { b: { type: "BriefBody", props: {}, children: ["t"] }, t: { type: "Markdown", props: { text: "Only words here." } } } } });
-  const page = await openHome(() => homeData([section("eval", 7, 3), plain]));
+test("Seen on the report marks the version shown; Back then focuses its project, the card having moved to History", async (t) => {
+  let current = homeData([section("eval", 7, 3)]);
+  const page = await openHome(() => current);
   t.after(page.close);
   page.card("eval").querySelector(".home-report-open").click();
-  let report = await until(page.report, "the report");
+  const report = await until(page.report, "the report");
+  current = homeData([], [section("eval", 7, 3, { history: true, historyReason: "seen", seen: { version: 3 } })]);
   await page.press(report.querySelector(".report-actions"), "Seen");
   const seen = await until(() => page.requests.find((r) => r.method === "POST" && r.url.endsWith("/seen")), "the seen request");
   assert.equal(seen.url, "/api/projects/p1/brief/seen");
   assert.deepEqual(JSON.parse(seen.body), { sections: [{ key: "eval", version: 3 }] });
+  await until(() => notice(page) === "You marked this report seen; it is in History.", "the History note");
   report.querySelector(".report-back").click();
   await until(() => !page.report(), "closed");
+  await tick();
+  assert.equal(page.card("eval"), null, "the card left for History");
+  const head = page.document.querySelector("#home-project-p1 .home-panel-head > button");
+  assert.equal(page.document.activeElement, head, "focus falls back to its project");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a body that names no summary opens as written: nothing lifted or folded", async (t) => {
+  const plain = section("plain", 12, 2, { body: { root: "b", elements: {
+    b: { type: "BriefBody", props: {}, children: ["t", "chart", "more"] },
+    t: { type: "Markdown", props: { text: "Only words here." } },
+    chart: { type: "Metrics", props: { items: [{ label: "Runs", value: 3 }] } },
+    more: { type: "Markdown", props: { text: longText } },
+  } } });
+  const page = await openHome(() => homeData([plain]));
+  t.after(page.close);
   page.card("plain").querySelector(".home-report-open").click();
-  report = await until(() => page.report()?.querySelector(".report-lead") && page.report(), "the plain report");
-  assert.equal(report.querySelector(".report-lead").textContent.trim(), "Only words here.");
+  const report = await until(() => page.report()?.querySelector(".report-head h1") && page.report(), "the plain report");
+  assert.equal(report.querySelector(".report-lead"), null);
   assert.equal(report.querySelector(".report-hero"), null);
-  assert.deepEqual(blocks(page), []);
-  assert.equal(report.querySelector(".report-rail"), null);
+  assert.equal(report.querySelector(".report-conditions"), null);
+  assert.deepEqual(flow(page), ["t", "chart", "more"]);
+  assert.equal(report.querySelector(".report-detail"), null);
   assert.deepEqual(page.errors, []);
 });

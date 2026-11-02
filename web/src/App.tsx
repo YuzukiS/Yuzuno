@@ -395,9 +395,10 @@ export function App() {
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
-  /** A report link opened from outside Home (T-18), and the message it was
-   * clicked in, for Back; another opening is another `n`. */
-  const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; n: number } | null>(null);
+  /** A report link opened from outside Home (T-18), the message it was
+   * clicked in, for Back, and whether it came from the address; another
+   * opening is another `n`. */
+  const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null>(null);
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
@@ -462,7 +463,9 @@ export function App() {
   // What the source strip says about a place that is gone, worded on show (T-189).
   const [sourceNotice, setSourceNotice] = useState<((t: ShellWords) => string) | null>(null);
   // A message link waiting for the Workspace to load.
-  const [incomingLink, setIncomingLink] = useState<AppLink | null>(null);
+  // `fromAddress`: a report link read from the address (T-18), whose page
+  // takes that history entry rather than adding one.
+  const [incomingLink, setIncomingLink] = useState<(AppLink & { fromAddress?: boolean }) | null>(null);
   // Where the shown conversation was last being read, kept when it is left.
   const reading = useRef<{ agentId: string; position: ReadingPosition } | null>(null);
   const readingFrame = useRef(0);
@@ -1141,11 +1144,18 @@ export function App() {
   useEffect(() => { pruneResultViewCache(); }, []);
   // A message or Agent link in the address (T-166, T-184): read once, then
   // removed, so a reload returns to where the user is reading, not the link.
+  // A report link (T-18) is where the user is reading: it stays while its
+  // page is open, and a reload, or the browser's Forward to it, opens it
+  // again in that same history entry.
   useEffect(() => {
     if (previewMode) return;
     const take = () => {
       const link = parseAppLink(window.location.href);
       if (!link) return;
+      if (link.kind === "report") {
+        setIncomingLink({ ...link, fromAddress: true });
+        return;
+      }
       history.replaceState(history.state, "", window.location.pathname + window.location.search);
       setIncomingLink(link);
     };
@@ -1172,7 +1182,10 @@ export function App() {
     if (!incomingLink || !workspace) return;
     setIncomingLink(null);
     initialReading.current = true;
-    openAppLink(incomingLink);
+    if (incomingLink.kind === "report") {
+      const { kind: _kind, fromAddress, ...link } = incomingLink;
+      openReportLink(link, undefined, fromAddress);
+    } else openAppLink(incomingLink);
   }, [incomingLink, workspace]);
   // Another browser's place in the open conversation (T-170): offered, never
   // applied by itself. Read when it opens or the page shows again; an answer
@@ -1750,15 +1763,17 @@ export function App() {
   }
   /** Opens the report a link names (T-18) over Home; from a message, Back
    * returns to it. Another Workspace's report is said, and nothing opens. */
-  function openReportLink(link: ReportLink, from?: { turnId: string; itemId?: string }) {
-    if (!workspace) { setIncomingLink({ kind: "report", ...link }); return; }
+  function openReportLink(link: ReportLink, from?: { turnId: string; itemId?: string }, fromAddress = false) {
+    if (!workspace) { setIncomingLink({ kind: "report", ...link, fromAddress }); return; }
     if (link.workspaceId !== workspaceId) {
+      // The address keeps no link this Workspace can open.
+      if (fromAddress) history.replaceState(history.state, "", window.location.pathname + window.location.search);
       setNotice(reportText(language).otherWorkspace);
       return;
     }
     const reading = from && !homeOpen ? currentDetail?.agent : undefined;
     const back = reading && from ? { workspaceId, agentId: reading.id, turnId: from.turnId, itemId: from.itemId, threadId: reading.threadId } : null;
-    setHomeReport((last) => ({ link, back, n: (last?.n ?? 0) + 1 }));
+    setHomeReport((last) => ({ link, back, fromAddress, n: (last?.n ?? 0) + 1 }));
     setHomeOpen(true);
     setPhoneList(false);
   }

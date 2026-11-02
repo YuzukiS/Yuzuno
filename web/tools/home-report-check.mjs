@@ -1,12 +1,15 @@
 // A section's report over Home (T-18), in a browser: the production bundle
 // with an explicit API fixture (synthetic sections, no Core, daily window or
 // real Agent). Checks what JSDOM can't: the page's layout on a 1440 px
-// desktop and a 390 px phone (rail or Contents, type sizes, nothing
-// sideways), the long-text fold and sources by real visibility, a research
-// desk still interactive on the page, Home's scroll place and focus after
-// Back, the browser's Back, Escape, a link in the address and one in a
-// conversation, a version notice, and reduced motion. Reads only: nothing
-// is written. Screenshots and report.json go to YUZUNO_BROWSER_OUTPUT.
+// desktop and a 390 px phone (the rail, or Contents and "Sources &
+// attachments" after the body; type sizes; nothing sideways), the author's
+// summary, conditions and figure with its data file, sources and an image
+// visible without a click, the named detail folded by real visibility, a
+// research desk still interactive on the page, Home's scroll place and
+// focus after Back, the browser's Back and Forward, Escape, a reload, a
+// link in the address and one in a conversation, a version notice, and
+// reduced motion. Reads only: nothing is written. Screenshots and
+// report.json go to YUZUNO_BROWSER_OUTPUT.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
@@ -70,18 +73,35 @@ const turns = [{ id: "t1", status: "completed", completedAt: Math.floor((now - 3
   { id: "r1", type: "agentMessage", text: `It is on Home: [Synthetic eval: model B vs A](${linkHref(3)}).` },
 ] }];
 const longText = Array.from({ length: 30 }, (_, i) => `Note ${i + 1}: the seeds, data order and evaluation split are the same in both arms.`).join("\n\n");
+// The author names the summary (conclusion, conditions, one figure) and the
+// part that starts folded on the root, by the blocks' ids (T-18 contract).
 const evalBody = { root: "body", elements: {
-  body: { type: "BriefBody", props: {}, children: ["answer", "method", "loss", "long", "results", "sources"] },
-  answer: { type: "Group", props: { tone: "accent" }, children: ["answer-text"] },
-  "answer-text": { type: "Markdown", props: { text: "Model B lowers validation loss by 4% on the synthetic set, within the noise of three seeds." } },
-  method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
-  "method-text": { type: "Markdown", props: { text: "Three seeds per arm. Same data order, same evaluation split." } },
+  body: { type: "BriefBody", props: { summary: { lead: "answer", visual: "curve", conditions: "holds" }, details: ["method"] },
+    children: ["answer", "holds", "curve", "evidence", "method", "long", "next", "sources", "shots"] },
+  answer: { type: "Markdown", props: { text: "Model B lowers validation loss by 4% on the synthetic set, within the noise of three seeds." } },
+  holds: { type: "Checklist", props: { items: [{ id: "def", text: "Scoring definition v2", done: true }, { id: "data", text: "Synthetic data, 100 items per arm", done: true },
+    { id: "int", text: "Illustrative interval, not a statistical one", done: true }] } },
+  curve: { type: "LineChart", props: { id: "curve", title: "Validation loss by step", x: { label: "Step" }, y: { label: "Loss" },
+    data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }, { name: "B", column: "b" }] } } },
+  evidence: { type: "Group", props: { title: "Evidence" }, children: ["loss", "results"] },
   loss: { type: "Metrics", props: { items: [{ label: "Validation loss (B)", value: 0.412, previous: 0.429 }, { label: "Seeds", value: 3 }] } },
-  long: { type: "Markdown", props: { text: longText } },
   results: { type: "Table", props: { id: "results", title: "Results", columns: [{ key: "model", label: "Model" }, { key: "loss", label: "Validation loss" }],
     rows: [{ id: "a", cells: { model: "A", loss: 0.429 }, sourceIds: ["run-a"] }, { id: "b", cells: { model: "B", loss: 0.412 }, sourceIds: ["run-b"] }] } },
+  method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
+  "method-text": { type: "Markdown", props: { text: "Three seeds per arm. Same data order, same evaluation split. Scoring v2 reads the whole answer." } },
+  long: { type: "Markdown", props: { text: longText } },
+  next: { type: "Plan", props: { title: "Next steps", steps: [{ id: "s1", text: "Record the scoring definition", state: "done" }, { id: "s2", text: "Grow the long sample to 1,000", state: "todo" }] } },
   sources: { type: "Sources", props: { items: [{ id: "run-a", label: "Run A log", href: "https://example.test/run-a" }, { id: "run-b", label: "Run B log", href: "https://example.test/run-b" }] } },
+  shots: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Loss by subset" }] } },
 } };
+const evalFiles = [
+  { name: "loss.csv", kind: "data", mime: "text/csv", size: 1180, snapshot: true, mayChange: false, takenAt: iso(-60 * MIN) },
+  { name: "shot.png", kind: "image", mime: "image/png", size: 68, snapshot: true, mayChange: false, takenAt: iso(-60 * MIN), caption: "Loss by subset" },
+];
+// A 1×1 PNG and the chart's points, as Core reads them from the snapshots.
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+const chartData = { series: [{ name: "A", points: [[0, 0.61], [100, 0.5], [200, 0.43]] }, { name: "B", points: [[0, 0.6], [100, 0.47], [200, 0.41]] }],
+  downsampled: false, sourcePoints: 6 };
 const section = (key, id, version, extra = {}) => ({ id, key, kind: "report", title: `Notes ${key}`, version, owner, body: evalBody, attachments: [], refs: {},
   seen: null, history: false, updatedTurnId: null, updatedAt: iso(-5 * MIN), ...extra });
 const markdown = (text) => ({ root: "b", elements: { b: { type: "BriefBody", props: {}, children: ["t"] }, t: { type: "Markdown", props: { text } } } });
@@ -89,7 +109,7 @@ const markdown = (text) => ({ root: "b", elements: { b: { type: "BriefBody", pro
 const fillers = ["setup", "data", "baseline"].map((key, i) => section(key, 20 + i, 1, { title: `Notes on ${key}`,
   body: markdown(Array.from({ length: 6 }, (_, n) => `Paragraph ${n + 1} about the ${key}.`).join("\n\n")) }));
 let evalVersion = 3;
-const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A" }),
+const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A", attachments: evalFiles }),
   { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }];
 const pointer = (document, at) => at.split("/").slice(1).reduce((value, part) => (value && typeof value === "object" ? value[part] : undefined), document);
 /** Core's research read of the desk, from the fixture files, as research.rs answers it. */
@@ -132,6 +152,17 @@ async function serve(route) {
     report.writes.push(`${request.method()} ${path}`);
     return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
   }
+  if (path === "/api/projects/p1/brief/chart/eval/curve") {
+    report.reads.push(`${path}?${url.searchParams}`);
+    return route.fulfill({ json: chartData });
+  }
+  if (path === "/api/projects/p1/brief/attachments/eval/shot.png") {
+    report.reads.push(`${path}?${url.searchParams}`);
+    return route.fulfill({ body: PNG, contentType: "image/png" });
+  }
+  // This Agent's Codex account, tools and queued inputs: none here.
+  if (["/api/agents/a/codex/usage", "/api/agents/a/codex/mcp", "/api/agents/a/conversation/inputs"].includes(path))
+    return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
   if (path === "/api/projects/p1/brief/research/dose-study/desk") {
     report.reads.push(`${path}?${url.searchParams}`);
     return route.fulfill({ json: research(Number(url.searchParams.get("version"))) });
@@ -216,57 +247,71 @@ const layout = () => page.evaluate(() => {
   return {
     root: box(root), bar: box(root.querySelector(".report-bar")), main: box(root.querySelector(".report-main")), hero: box(root.querySelector(".report-hero")),
     lead: box(root.querySelector(".report-lead")), firstBlock: box(root.querySelector(".report-main > .report-block")),
-    rail: root.querySelector(".report-rail")?.checkVisibility() ?? null, contents: root.querySelector(".report-contents")?.checkVisibility() ?? null,
+    rail: root.querySelector(".report-rail nav")?.checkVisibility() ?? null, contents: root.querySelector(".report-contents")?.checkVisibility() ?? null,
     contentsHeight: box(root.querySelector(".report-contents > summary"))?.height ?? null,
+    railBox: box(root.querySelector(".report-rail")), railHeading: root.querySelector(".report-rail-heading")?.checkVisibility() ?? null,
+    sources: root.querySelector(".report-rail a[href='https://example.test/run-a']")?.checkVisibility() ?? null,
+    image: (() => { const img = root.querySelector(".report-rail img"); return img ? { visible: img.checkVisibility(), loaded: img.complete && img.naturalWidth > 0 } : null; })(),
+    conditions: root.querySelector(".report-conditions")?.checkVisibility() ?? null,
+    figureSource: root.querySelector(".report-figure-source")?.textContent ?? null,
     h1: px(".report-head h1"), leadSize: px(".report-lead .brief-markdown"),
     page: scroller.scrollWidth > scroller.clientWidth, sideways,
   };
 });
 
 try {
-  await step("desktop 1440: Open report over Home; the summary first, rail, long text folded, sources on demand; Back keeps Home's place and focus", async () => {
+  await step("desktop 1440: Open report over Home; the author's summary first, once; sources and an image in the rail, unfolded; only the named detail folds; Back keeps Home's place and focus", async () => {
     await open(1440, 900);
     await toHome();
     await card("eval").scrollIntoViewIfNeeded();
     const before = await page.evaluate(() => document.querySelector(".home-view").scrollTop);
     assert.ok(before > 0, `Home scrolled (${before})`);
     await openReport("eval");
+    await until("the figure's points", async () => (await reportPage().locator(".report-hero svg").count()) > 0);
+    await until("the image", async () => (await layout()).image?.loaded);
     const shown = await layout();
-    assert.ok(shown.rail === true && shown.contents === false, JSON.stringify(shown));
+    assert.ok(shown.rail === true && shown.contents === false && shown.railHeading === false, JSON.stringify(shown));
+    assert.ok(shown.sources === true && shown.image?.visible === true, `sources and the image show without a click: ${JSON.stringify(shown)}`);
+    assert.ok(shown.railBox.left >= shown.main.left + shown.main.width, "the rail beside the body");
+    assert.equal(shown.conditions, true);
+    assert.equal(shown.figureSource, "loss.csv · snapshot · 1.2 KB");
     assert.equal(shown.h1, 30);
     assert.equal(shown.leadSize, 18);
     assert.ok(shown.lead.top < shown.hero.top && shown.hero.top < shown.firstBlock.top, "the conclusion, then the figure, then the rest");
-    // The main column takes what the 1240 px page leaves beside the rail.
     assert.ok(shown.main.width >= 640 && shown.main.width <= 960, `main column ${shown.main.width}px`);
     assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
     assert.equal(await page.evaluate(() => document.activeElement?.matches(".report-head h1")), true, "the title has focus");
     const under = await page.evaluate(() => { const v = document.querySelector(".home-view"); return { inert: v.inert, hidden: getComputedStyle(v).visibility }; });
     assert.deepEqual(under, { inert: true, hidden: "hidden" });
+    // Each summary block once in the page's body (the rail names figures to go to).
+    const once = await page.evaluate(() => ["Model B lowers validation loss", "Scoring definition v2", "Validation loss by step"]
+      .map((text) => document.querySelector(".report-main").innerText.split(text).length - 1));
+    assert.deepEqual(once, [1, 1, 1]);
+    assert.equal(page.url(), `https://${HOST}/#/report?w=${WS}&p=p1&k=eval&v=3&s=7`, "the report's link is the address while it is open");
     await shot("desktop-report.png");
-    // Long text: whole in the page, folded by its height; "Show all" shows it.
-    const fold = reportPage().locator("#report-block-long");
-    await fold.scrollIntoViewIfNeeded();
-    const folded = await fold.evaluate((el) => { const body = el.querySelector(".report-fold-body"); return { client: body.clientHeight, scroll: body.scrollHeight }; });
-    assert.ok(folded.client < folded.scroll, JSON.stringify(folded));
-    await shot("desktop-fold.png", "#report-block-long");
-    await fold.getByRole("button", { name: "Show all" }).click();
-    const unfolded = await fold.evaluate((el) => { const body = el.querySelector(".report-fold-body"); return { client: body.clientHeight, scroll: body.scrollHeight }; });
-    assert.ok(unfolded.client >= unfolded.scroll - 1, JSON.stringify(unfolded));
-    assert.equal(await fold.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded"), "true");
-    // Sources: a count, opened on demand.
-    const sources = reportPage().locator("#report-block-sources");
-    assert.equal(await sources.locator("a", { hasText: "Run A log" }).isVisible(), false);
-    await sources.locator("summary").click();
-    await until("the sources", () => sources.locator("a", { hasText: "Run A log" }).isVisible());
-    // The outline goes to a block, below the sticky bar.
-    await reportPage().locator(".report-rail button", { hasText: "Results" }).click();
+    // Long text is whole; only the named detail folds, two lines showing until opened.
+    const long = await reportPage().locator("#report-block-long").evaluate((el) => ({ toggle: !!el.querySelector("button"), last: el.innerText.includes("Note 30:") }));
+    assert.deepEqual(long, { toggle: false, last: true });
+    const method = reportPage().locator("#report-block-method");
+    await method.scrollIntoViewIfNeeded();
+    const closed = await method.evaluate((el) => { const body = el.querySelector(".report-detail-body"); return { client: body.clientHeight, scroll: body.scrollHeight, inert: body.inert }; });
+    assert.ok(closed.client < closed.scroll && closed.client > 0 && closed.inert, JSON.stringify(closed));
+    await shot("desktop-method-closed.png", "#report-block-method");
+    await method.getByRole("button", { name: "Show “Method”" }).click();
+    const opened = await method.evaluate((el) => { const body = el.querySelector(".report-detail-body"); return { client: body.clientHeight, scroll: body.scrollHeight, inert: body.inert }; });
+    assert.ok(opened.client >= opened.scroll - 1 && !opened.inert, JSON.stringify(opened));
+    await shot("desktop-method-open.png", "#report-block-method");
+    // The outline goes to a part, below the sticky bar, and adds no history entry.
+    const length = await page.evaluate(() => history.length);
+    await reportPage().locator("nav.report-rail-part button", { hasText: "Evidence" }).click();
     await sleep(150);
     const placed = await page.evaluate(() => ({
       bar: document.querySelector(".report-bar").getBoundingClientRect().bottom,
-      block: document.querySelector("#report-block-results").getBoundingClientRect().top,
+      block: document.querySelector("#report-block-evidence").getBoundingClientRect().top,
+      length: history.length, hash: location.hash,
     }));
-    assert.ok(placed.block >= placed.bar - 1 && placed.block <= placed.bar + 80, JSON.stringify(placed));
-    await shot("desktop-results.png");
+    assert.ok(placed.block >= placed.bar - 1 && placed.block <= placed.bar + 80 && placed.length === length && placed.hash.startsWith("#/report?"), JSON.stringify(placed));
+    await shot("desktop-evidence.png");
     // Back: Home as it was, focus on the button that opened the report.
     await reportPage().locator(".report-back").click();
     await until("the report closed", async () => !(await reportPage().count()));
@@ -274,9 +319,10 @@ try {
       top: document.querySelector(".home-view").scrollTop,
       focus: document.activeElement?.matches('[data-section-key="eval"] .home-report-open') ?? false,
       ring: document.querySelector('.home-view [data-section-key="eval"]').hasAttribute("data-report-return"),
+      hash: location.hash,
     }));
-    assert.ok(Math.abs(after.top - before) <= 1 && after.focus && after.ring, JSON.stringify({ before, ...after }));
-    return { before, after, layout: shown, folded, unfolded, placed };
+    assert.ok(Math.abs(after.top - before) <= 1 && after.focus && after.ring && after.hash === "", JSON.stringify({ before, ...after }));
+    return { before, after, layout: shown, closed, opened, placed };
   });
 
   await step("desktop: a research desk on the report is the interactive one, reading its numbers at the version shown", async () => {
@@ -293,36 +339,56 @@ try {
     await shot("desktop-research.png");
   });
 
-  await step("the browser's Back and Escape close the report; Copy link gives the report's link", async () => {
+  await step("the browser's Back and Forward, a reload and Escape: one entry for the report, none added by going back and forth", async () => {
     await open(1440, 900);
     await toHome();
+    const start = await page.evaluate(() => history.length);
     await openReport("eval");
     await reportPage().getByRole("button", { name: "Copy link" }).click();
     const copied = await until("the copied link", () => page.evaluate(() => navigator.clipboard.readText()));
     assert.equal(copied, linkHref(3));
-    const address = page.url();
+    assert.equal(await page.evaluate(() => history.length), start + 1, "one entry for the report");
     await page.goBack();
     await until("closed by the browser's Back", async () => !(await reportPage().count()));
-    assert.equal(page.url(), address, "the page itself stayed");
+    assert.equal(page.url(), `https://${HOST}/`, "Home's address, the page itself stayed");
+    await page.goForward();
+    await reportPage().locator(".report-head h1").waitFor();
+    assert.equal(page.url(), linkHref(3));
+    await page.goBack();
+    await until("closed again", async () => !(await reportPage().count()));
+    await page.goForward();
+    await reportPage().locator(".report-head h1").waitFor();
+    assert.equal(await page.evaluate(() => history.length), start + 1, "Back and Forward add no entry");
+    // A reload opens the same report again, in the same entry.
+    await page.reload();
+    await reportPage().locator(".report-head h1").waitFor({ timeout: 15_000 });
+    assert.equal(page.url(), linkHref(3));
+    assert.equal(await page.evaluate(() => history.length), start + 1, "the reload adds no entry");
+    await page.goBack();
+    await until("closed after the reload", async () => !(await reportPage().count()));
+    await toHome();
     await openReport("eval");
     await page.keyboard.press("Escape");
     await until("closed by Escape", async () => !(await reportPage().count()));
     assert.equal(await page.evaluate(() => document.activeElement?.matches('[data-section-key="eval"] .home-report-open') ?? false), true);
-    return { copied };
+    return { copied, start };
   });
 
-  await step("a report link in the address opens it over Home and leaves the address; a later version is said, with a way to it", async () => {
+  await step("a report link in the address opens it over Home in that entry; a version not kept is said, with the versions there are; Back stays in Yuzuno", async () => {
     evalVersion = 4;
     await open(1440, 900, { at: `/#/report?w=${WS}&p=p1&k=eval&v=3&s=7` });
+    const length = await page.evaluate(() => history.length);
     const notice = await until("the notice", async () => (await reportPage().locator(".report-notice").count()) && reportPage().locator(".report-notice p").innerText());
-    assert.equal(notice, "This link is to version 3. The report is at version 4 now, and Home keeps only its newest version.");
+    assert.equal(notice, "Version 3 of this report is not on Home: Home keeps a report's newest version and the versions in its History.");
     assert.equal(await reportPage().locator(".report-article").count(), 0);
-    assert.equal(await page.evaluate(() => location.hash), "", "the link was read once, then removed");
-    await shot("desktop-later.png");
-    await reportPage().getByRole("button", { name: "Open version 4" }).click();
+    await shot("desktop-unavailable.png");
+    await reportPage().getByRole("button", { name: "Open version 4 (current)" }).click();
     await until("version 4", async () => /version 4/.test(await reportPage().locator(".report-meta").innerText().catch(() => "")));
+    assert.equal(page.url(), linkHref(4));
     await reportPage().locator(".report-back").click();
     await until("Home", async () => !(await reportPage().count()) && page.locator(".home-view").isVisible());
+    assert.equal(page.url(), `https://${HOST}/`, "the page's Back stays in Yuzuno");
+    assert.equal(await page.evaluate(() => history.length), length, "no entry added");
     evalVersion = 3;
   });
 
@@ -341,12 +407,15 @@ try {
     return { url: page.url() };
   });
 
-  await step("phone 390: one column with Contents, no rail, nothing sideways; Back returns to the card", async () => {
+  await step("phone 390: Contents first, Sources & attachments after the body, nothing sideways; Back returns to the card", async () => {
     await open(390, 844);
     await toHome();
     await openReport("eval");
+    await until("the image", async () => (await layout()).image?.loaded);
     const shown = await layout();
-    assert.ok(shown.rail === false && shown.contents === true && shown.contentsHeight >= 44, JSON.stringify(shown));
+    assert.ok(shown.rail === false && shown.contents === true && shown.contentsHeight >= 44 && shown.railHeading === true, JSON.stringify(shown));
+    assert.ok(shown.railBox.top >= shown.main.top + shown.main.height - 1, "Sources & attachments after the body");
+    assert.ok(shown.sources === true && shown.image?.visible === true, JSON.stringify(shown));
     assert.equal(shown.h1, 23);
     assert.equal(shown.leadSize, 16);
     assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
@@ -354,9 +423,9 @@ try {
     await shot("phone-report.png");
     await shot("phone-report-full.png", ".report-page");
     await reportPage().locator(".report-contents summary").click();
-    await reportPage().locator(".report-contents button", { hasText: "Results" }).click();
+    await reportPage().locator(".report-contents button", { hasText: "Sources & attachments" }).click();
     await sleep(150);
-    await shot("phone-results.png");
+    await shot("phone-sources.png");
     await reportPage().locator(".report-back").click();
     await until("the report closed", async () => !(await reportPage().count()));
     assert.equal(await page.evaluate(() => document.activeElement?.matches('[data-section-key="eval"] .home-report-open') ?? false), true);
