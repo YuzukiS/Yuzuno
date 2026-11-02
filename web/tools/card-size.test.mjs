@@ -49,12 +49,15 @@ test("the user's size comes first where the card may take it; a card with no sum
   const chart = section({ lead: "lead", visual: "fig" }, { lead, fig: { type: "LineChart", props: { id: "c", title: "Loss", data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }] } } } });
   const content = cardContent(chart);
   assert.deepEqual(allowedSizes(content), ["small", "wide", "large"]);
-  assert.deepEqual(shownSize(chart, content, null), { size: "wide", source: "auto" });
-  assert.deepEqual(shownSize(chart, content, "small"), { size: "small", source: "user" });
-  assert.deepEqual(shownSize(chart, content, "large"), { size: "large", source: "user" });
+  assert.deepEqual(shownSize(chart, content, null), { size: "wide", source: "auto", own: "wide" });
+  assert.deepEqual(shownSize(chart, content, "small"), { size: "small", source: "user", own: "wide" });
+  assert.deepEqual(shownSize(chart, content, "large"), { size: "large", source: "user", own: "wide" });
   const unnamed = section(null, { lead });
   assert.deepEqual(allowedSizes(cardContent(unnamed)), ["small"]);
-  assert.deepEqual(shownSize(unnamed, cardContent(unnamed), "large"), { size: "small", source: "auto" });
+  assert.deepEqual(shownSize(unnamed, cardContent(unnamed), "large"), { size: "small", source: "auto", own: "small" });
+  // The size already shown in this visit, held, is what Auto shows, whatever the card's figure is now (Lead 2414).
+  assert.deepEqual(shownSize(chart, content, null, () => "large"), { size: "large", source: "auto", own: "large" });
+  assert.deepEqual(shownSize(chart, content, "small", () => "large"), { size: "small", source: "user", own: "large" });
 });
 
 test("the choices are kept per Workspace, by project and Home's id of the section, never its key; anything else in storage is ignored", async () => {
