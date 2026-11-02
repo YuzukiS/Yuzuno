@@ -229,6 +229,12 @@
   flex: 1 1 18rem;
   min-width: 0;
 }
+/* Conditions sit on the soft surface: their prose is in the ink there, as
+   their chips are, readable at 4.5:1 or more in every palette (a body's
+   secondary text colour is 4.3:1 on that surface in Garden). */
+:is(.report-conditions, .home-card-conditions) .brief-body .brief-markdown {
+  color: var(--ink);
+}
 /* A checklist of conditions reads as a row of them: each item and its own
    mark, without a count of how many are ticked; on the page and on a
    folded card alike. */

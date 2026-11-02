@@ -630,6 +630,7 @@ try {
       // the conditions' toggle both ways, a card's More actions, Repository details opened.
       const CARD_TEXT = [
         ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
+        ".home-summary-card .home-card-conditions .brief-markdown :is(p, li)",
         '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-details)',
         ".home-machines :is(.home-load-title, .home-load-short, .home-machine-job-count, .home-machine-job-first, .home-machines-manage)",
       ];
@@ -690,6 +691,20 @@ try {
       assert.deepEqual(low, [], JSON.stringify(low));
       const readable = [...ratios].sort((a, b) => a.ratio - b.ratio)[0];
       report.toggles = { ...(report.toggles || {}), [name]: Object.fromEntries(Object.entries(measured).filter(([state]) => / (hover|focus|at rest|aria)/.test(state))) };
+      // The same conditions in prose on their report page, on its soft surface too.
+      if (name === "home-1720") {
+        await page.keyboard.press("Escape");
+        await opener("batches").click();
+        await reportPage().locator(".report-head h1").waitFor();
+        const page_ = await contrast([".report-conditions .brief-markdown :is(p, li)", ".report-conditions-label"]);
+        const lowPage = Object.entries(page_).filter(([, v]) => v.ratio < 4.5);
+        assert.deepEqual(lowPage, [], JSON.stringify(page_));
+        report.reportConditions = page_;
+        await reportPage().locator(".report-back").click();
+        await until("the report closed", async () => !(await reportPage().count()));
+        await card("audit").locator(".home-summary-more > button").click();
+        await card("audit").locator(".home-summary-more-list").waitFor();
+      }
       // Back as it was for the frame of the top: More closed (Escape, its button focused), details closed.
       await page.keyboard.press("Escape");
       await card("audit").locator(".home-summary-more-list").waitFor({ state: "hidden" });
