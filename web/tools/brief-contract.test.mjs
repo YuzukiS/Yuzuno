@@ -334,15 +334,18 @@ test("references, ids and attachments are checked mechanically", () => {
 test("a body may name its summary and the details that start folded, among the root's own blocks (T-18)", () => {
   const body = (props, extra = {}) => ({
     key: "eval", kind: "report", title: "Eval",
-    attachments: [{ name: "a.png", path: "/home/me/run/a.png" }, { name: "b.png", path: "/home/me/run/b.png" }],
+    attachments: [{ name: "a.png", path: "/home/me/run/a.png" }, { name: "b.png", path: "/home/me/run/b.png" },
+      { name: "runs.csv", path: "/home/me/run/runs.csv" }, { name: "design", url: "https://example.com/design.png" }],
     body: { root: "body", elements: {
-      body: { type: "BriefBody", props, children: ["answer", "holds", "loss", "runs", "shot", "shots", "method", "untitled", "plan"] },
+      body: { type: "BriefBody", props, children: ["answer", "holds", "loss", "runs", "shot", "shots", "data", "link", "method", "untitled", "plan"] },
       answer: { type: "Markdown", props: { text: "B lowers loss by 4%." } },
       holds: { type: "Checklist", props: { items: [{ id: "d", text: "Definition v2", done: true }] } },
       loss: { type: "Metrics", props: { items: [{ label: "Loss", value: 0.41 }] } },
       runs: { type: "Table", props: { id: "runs", title: "Runs", columns: [{ key: "m", label: "Model" }], rows: [] } },
       shot: { type: "Attachments", props: { items: [{ name: "a.png" }] } },
       shots: { type: "Attachments", props: { items: [{ name: "a.png" }, { name: "b.png" }] } },
+      data: { type: "Attachments", props: { items: [{ name: "runs.csv" }] } },
+      link: { type: "Attachments", props: { items: [{ name: "design" }] } },
       method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
       "method-text": { type: "Markdown", props: { text: "Three seeds." } },
       untitled: { type: "Group", props: {}, children: ["note"] },
@@ -363,6 +366,8 @@ test("a body may name its summary and the details that start folded, among the r
   assert.deepEqual(code({ summary: { lead: "method" } }), ["summary summary.lead"], "a Group is no lead");
   assert.deepEqual(code({ summary: { lead: "answer", visual: "plan" } }), ["summary summary.visual"]);
   assert.deepEqual(code({ summary: { lead: "answer", visual: "shots" } }), ["summary summary.visual"], "several files are not one figure");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "data" } }), ["summary summary.visual"], "a data file is not a figure");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "link" } }), ["summary summary.visual"], "a link is never shown as an image");
   assert.deepEqual(code({ summary: { lead: "answer", conditions: "loss" } }), ["summary summary.conditions"]);
   assert.deepEqual(code({ summary: { lead: "answer", visual: "answer" } }), ["summary summary.visual"], "each block once");
   assert.deepEqual(code({ summary: { lead: "answer", visual: "loss", conditions: "missing" } }), ["summary summary.conditions"]);

@@ -362,7 +362,7 @@ export const briefComponentProps = {
 export type BriefComponent = keyof typeof briefComponentProps;
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
 const CHARTS = ["LineChart", "BarChart", "ScatterChart"] as const;
-/** What a summary's figure may be (T-18); Attachments with exactly one item. */
+/** What a summary's figure may be (T-18); Attachments with exactly one image file. */
 const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Table", "ResearchDesk", "Attachments"]);
 const isChart = (type: string): type is (typeof CHARTS)[number] => (CHARTS as readonly string[]).includes(type);
 
@@ -698,6 +698,8 @@ export function fencedBlockLines(markdown: string): number[] {
 }
 
 const DATA_FILE = /\.(csv|json|jsonl)$/i;
+/** The files Core keeps and shows as images (attachments.rs, classify). */
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
 const ABSOLUTE = /^(\/|[A-Za-z]:[\\/])/;
 
 /** The section with display defaults filled in, and without its op. */
@@ -997,8 +999,14 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   const slots = named ? (["lead", "visual", "conditions"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
   const SLOT_RULE = {
     lead: ["a Markdown", (key: string) => typeOf(key) === "Markdown"],
-    visual: ["a chart, Metrics, Table, ResearchDesk, or Attachments with one item", (key: string) =>
-      SUMMARY_FIGURES.has(typeOf(key) ?? "") && (typeOf(key) !== "Attachments" || (spec.elements[key].props as Props<"Attachments">).items.length === 1)],
+    visual: ["a chart, Metrics, Table, ResearchDesk, or Attachments with one image file", (key: string) => {
+      if (!SUMMARY_FIGURES.has(typeOf(key) ?? "")) return false;
+      if (typeOf(key) !== "Attachments") return true;
+      // One figure: a single image file, never a link, a table of data or a page.
+      const items = (spec.elements[key].props as Props<"Attachments">).items;
+      const file = items.length === 1 ? files.get(items[0].name) : undefined;
+      return file?.path !== undefined && IMAGE_FILE.test(file.path);
+    }],
     conditions: ["a Markdown or Checklist", (key: string) => typeOf(key) === "Markdown" || typeOf(key) === "Checklist"],
   } as const;
   slots.forEach(([slot, key], index) => {
@@ -1009,7 +1017,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
     else if (slots.findIndex(([, other]) => other === key) < index)
       add(problem("summary", path, `summary.${slot} "${key}" is already named in summary; each block is shown once.`, "content"));
     else if (!fits(key))
-      add(problem("summary", path, `summary.${slot} is ${what}; "${key}" is ${typeOf(key) === "Attachments" ? "Attachments with several items" : `a ${typeOf(key)}`}.`, "content"));
+      add(problem("summary", path, `summary.${slot} is ${what}; "${key}" is ${typeOf(key) === "Attachments" ? "Attachments that is not one image file" : `a ${typeOf(key)}`}.`, "content"));
   });
   (rootProps.details ?? []).forEach((key, index) => {
     const path = `${at}.details.${index}`;
@@ -1512,7 +1520,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?}: ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one item); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order.`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?}: ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
