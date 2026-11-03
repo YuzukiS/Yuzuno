@@ -493,14 +493,19 @@ export function App() {
   // Back to latest leaves through a copy (T-19): aria-hidden, inert and not
   // hit by the pointer, it fades out where the button was, while the button
   // itself is gone at once. Only within one conversation: another one shown
-  // takes it away at once. None under reduced motion or without Web Animations.
+  // takes it away at once, and what showed for the one before is not a
+  // baseline it can leave from (some ways of opening an Agent reset `atBottom`
+  // only after it is shown). None under reduced motion or without Web
+  // Animations; reduced motion turned on, or the copy's fade cancelled, takes
+  // it away.
   const [latestLeaving, setLatestLeaving] = useState(0);
   const latestWas = useRef({ shown: latestShown, scope: "" });
   useLayoutEffect(() => {
     const scope = `${workspaceId}\n${selected}`;
     const was = latestWas.current;
-    latestWas.current = { shown: latestShown, scope };
-    if (latestShown || was.scope !== scope) {
+    const sameScope = was.scope === scope;
+    latestWas.current = { shown: latestShown && sameScope, scope };
+    if (latestShown || !sameScope) {
       setLatestLeaving(0);
       return;
     }
@@ -509,6 +514,21 @@ export function App() {
     const gone = setTimeout(() => setLatestLeaving(0), 400);
     return () => clearTimeout(gone);
   }, [latestShown, workspaceId, selected]);
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!query?.addEventListener) return;
+    const change = () => {
+      if (query.matches) setLatestLeaving(0);
+    };
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+  const latestLeavingCopy = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const cancelled = () => setLatestLeaving(0);
+    el.addEventListener("animationcancel", cancelled);
+    return () => el.removeEventListener("animationcancel", cancelled);
+  }, []);
   // Each time it shows, it comes in, rising 4 px as it fades in over small.
   const latestButton = useRef<HTMLButtonElement>(null);
   const latestShows = useRef({ shown: false, n: 0 });
@@ -3264,7 +3284,7 @@ export function App() {
                 </button>
               )}
               {latestLeaving > 0 && (
-                <div key={latestLeaving} className="jump-latest-leaving" aria-hidden="true" inert
+                <div key={latestLeaving} className="jump-latest-leaving" aria-hidden="true" inert ref={latestLeavingCopy}
                   onAnimationEnd={() => setLatestLeaving(0)}>
                   <ArrowDown size={13} />
                   Back to latest
