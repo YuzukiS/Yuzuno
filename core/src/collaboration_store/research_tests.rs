@@ -670,9 +670,20 @@ fn long_claim(store: &Store, task: &str, n: usize) -> i64 {
         finding(&format!("c{n:0>63}"), "open", "systems", &"長".repeat(100))).unwrap())
 }
 
-/// The research a comment stored, as serialized.
-fn stored_bytes(answer: &Value) -> usize {
-    serde_json::to_vec(&answer["activity"]["research"]).unwrap().len()
+/// The research a comment stored, as its activity row holds it: nothing a
+/// read adds.
+fn stored_research(store: &Store, seq: i64) -> Value {
+    let data: String = store.db.read().unwrap()
+        .query_row("SELECT data FROM collaboration_task_activity WHERE seq=?1", params![seq], |r| r.get(0)).unwrap();
+    serde_json::from_str::<Value>(&data).unwrap()["research"].clone()
+}
+
+fn stored_bytes(store: &Store, seq: i64) -> usize {
+    serde_json::to_vec(&stored_research(store, seq)).unwrap().len()
+}
+
+fn task_now(store: &Store) -> Value {
+    store.collaboration_call(None, "task_get", json!({"taskId":"T-1"})).unwrap()["task"].clone()
 }
 
 #[test]
@@ -683,8 +694,7 @@ fn a_record_is_bounded_as_stored_with_its_sources_and_entries_fixed_and_a_refusa
     let cited: Vec<i64> = (0..40).map(|n| long_claim(&store, "T-2", n)).collect();
     let source = |seq: &i64| json!({"kind":"task","taskId":"T-2","activitySeq":seq});
     // Both paths that fix a source: a record's own sources, and the sources
-    // of a comparison's entries, with what the entries share. Only the text
-    // changes between records of one path, byte for byte; ids keep a length.
+    // of a comparison's entries, with what the entries share.
     let notes = json!(vec![text_of(600); 12]);
     let with_sources = |id: &str, padding: usize| {
         let mut claim = finding(id, "open", "systems", "Layout B is faster on the small inputs");
@@ -702,39 +712,57 @@ fn a_record_is_bounded_as_stored_with_its_sources_and_entries_fixed_and_a_refusa
     let paths: [(&str, &dyn Fn(&str, usize) -> Value); 2] = [("sources", &with_sources), ("entries", &with_entries)];
     let mut kept = Value::Null;
     for (path, build) in paths {
-        let probe = build(&format!("{path}-p"), 30);
-        let first = comment(&store, "author", &format!("{path}-probe"), "T-1", probe.clone()).unwrap();
-        let grown = stored_bytes(&first) - serde_json::to_vec(&probe).unwrap().len();
+        // Version 1 of the line, inside the bound.
+        let id = format!("{path}-line");
+        let first = build(&id, 30);
+        let v1 = seq(&comment(&store, "author", &format!("{path}-v1"), "T-1", first.clone()).unwrap());
+        let grown = stored_bytes(&store, v1) - serde_json::to_vec(&first).unwrap().len();
         assert!(grown > 10_000, "{path}: fixing the sources adds {grown} bytes");
-        let base = stored_bytes(&first) - 30;
+        // Version 2 revises it; only its text changes size, byte for byte,
+        // and its revision adds exactly what `revises` serializes to.
+        let revises = json!({"activitySeq":v1,"reason":"Fresh processes."});
+        let version = |padding: usize| {
+            let mut next = build(&id, padding);
+            next["revises"] = revises.clone();
+            next
+        };
+        let base = stored_bytes(&store, v1) - 30 + serde_json::to_vec(&json!({"revises":revises})).unwrap().len() - 1;
         // One byte past the bound as stored, from what was sent inside it.
-        let before = counts(&store);
-        let over = build(&format!("{path}-o"), BOUND + 1 - base);
+        let (before, task_before) = (counts(&store), task_now(&store));
+        let over = version(BOUND + 1 - base);
         let sent = serde_json::to_vec(&over).unwrap().len();
         assert!(sent < BOUND, "{path}: what was sent is inside the bound: {sent}");
-        let refused = error(comment(&store, "author", &format!("{path}-over"), "T-1", over));
+        let key = format!("{path}-v2");
+        let refused = error(comment(&store, "author", &key, "T-1", over));
         assert!(refused.contains("exceeds 32768 bytes as stored") && refused.contains("(32769 bytes)"), "{path}: {refused}");
         assert_eq!(counts(&store), before, "{path}: no activity, receipt, task version, status or mail is written");
-        // At the bound exactly, it is written once; a retry is the same comment.
-        let input = build(&format!("{path}-a"), BOUND - base);
-        let at = comment(&store, "author", &format!("{path}-at"), "T-1", input.clone()).unwrap();
-        assert_eq!(stored_bytes(&at), BOUND, "{path}");
+        assert_eq!(task_now(&store), task_before, "{path}: the task reads as it did");
+        let line = record(&store, "T-1", v1);
+        assert_eq!((line["revisedBy"].clone(), line["latestActivitySeq"].clone()), (Value::Null, json!(v1)),
+            "{path}: the refused version left the line as it was");
+        // The refusal took no request: the same key, at the bound exactly,
+        // writes the version once; a retry is the same comment.
+        let input = version(BOUND - base);
+        let v2 = seq(&comment(&store, "author", &key, "T-1", input.clone()).unwrap());
+        assert_eq!(stored_bytes(&store, v2), BOUND, "{path}");
         let written = counts(&store);
         assert_eq!((written.0, written.2, written.3, written.4), (before.0, before.2 + 1, before.3 + 1, before.4),
-            "{path}: one activity and one receipt; the task's version is unchanged by a comment");
-        let again = comment(&store, "author", &format!("{path}-at"), "T-1", input).unwrap();
-        assert_eq!((seq(&again), counts(&store)), (seq(&at), written), "{path}: a retry writes nothing more");
-        kept = at["activity"]["research"].clone();
+            "{path}: one activity and one receipt; a comment leaves the task's version as it was");
+        assert_eq!(record(&store, "T-1", v1)["revisedBy"], v2, "{path}");
+        assert_eq!((seq(&comment(&store, "author", &key, "T-1", input).unwrap()), counts(&store)), (v2, written),
+            "{path}: a retry writes nothing more");
+        kept = stored_research(&store, v2);
     }
     // A record stored before this bound, past it, reads as it was stored.
     let mut old = kept;
-    old["id"] = json!("entries-x");
+    old["id"] = json!("stored-before");
     old["text"] = json!(text_of(8000));
+    old.as_object_mut().unwrap().remove("revises");
     assert!(serde_json::to_vec(&old).unwrap().len() > BOUND);
     let (task, _) = task_key(&store.db.read().unwrap(), "T-1").unwrap();
     let actor = TaskActor { kind: "agent".into(), id: "author".into(), name: "Agent author".into() };
     let event = activity(&store.db.write().unwrap(), &task, "comment", &actor, &json!({}),
         json!({"body":"Stored before the bound","research":old})).unwrap();
     let read = record(&store, "T-1", event["seq"].as_i64().unwrap());
-    assert_eq!((read["research"]["id"].clone(), read["research"]["text"].clone()), (json!("entries-x"), json!(text_of(8000))));
+    assert_eq!((read["research"]["id"].clone(), read["research"]["text"].clone()), (json!("stored-before"), json!(text_of(8000))));
 }
