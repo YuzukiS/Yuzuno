@@ -133,10 +133,11 @@ fn distinct_port<G>(given: &mut std::collections::BTreeSet<u16>, mut bind: impl 
 
 #[test]
 fn free_port_never_gives_one_port_twice_even_when_it_is_offered_again() {
-    // The OS offering the port it just let go of, as in CI: 40321 again and
-    // again. Handing out each first offer, as free_port did, would give a
-    // test 40321 for both its entries.
-    let offers = [40321, 40321, 40321, 40322];
+    // The OS offering the ports it just let go of, as in CI (40321 twice in a
+    // row). Handing out each first offer, as free_port did, would give a test
+    // 40321 for both its entries. A port still held is not offered again, as
+    // the OS would not: each call's repeats differ from one another.
+    let offers = [40321, 40321, 40322, 40321, 40322, 40323];
     // Each guard counts itself while bound.
     struct Bound<'a>(&'a std::cell::Cell<usize>);
     impl Drop for Bound<'_> {
@@ -153,9 +154,12 @@ fn free_port_never_gives_one_port_twice_even_when_it_is_offered_again() {
     let mut given = std::collections::BTreeSet::new();
     assert_eq!(distinct_port(&mut given, &mut bind), 40321);
     assert_eq!(live.get(), 0, "released for the code under test");
-    // The repeats of 40321 are held while it asks again, then all let go.
+    // A repeat of 40321 is held while it asks again, then let go.
     assert_eq!(distinct_port(&mut given, &mut bind), 40322);
-    assert_eq!(live.get(), 0, "every held repeat released too");
+    assert_eq!(live.get(), 0, "the held repeat released too");
+    // Both earlier ports offered again: both held, a third port given, all let go.
+    assert_eq!(distinct_port(&mut given, &mut bind), 40323);
+    assert_eq!(live.get(), 0, "every held repeat released");
     assert!(next.next().is_none(), "asked exactly as often as needed");
     // A bind that only ever offers given ports fails plainly, never loops for ever.
     let refused = std::panic::catch_unwind(|| {
