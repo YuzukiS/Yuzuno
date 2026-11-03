@@ -127,7 +127,8 @@ function pageHelpers([widgetId, pinSelector]) {
     button.focus();
     const top = button.getBoundingClientRect().top;
     button.click();
-    return Math.round(top * 10) / 10;
+    // The frames read from here on are those after the press.
+    return { top: Math.round(top * 10) / 10, from: frames.length };
   };
 }
 
@@ -175,8 +176,7 @@ for (const run of runs) {
     await page.goto("http://127.0.0.1:4323/");
     await openHome();
     // Pin pressed on the report's card.
-    const from = await page.evaluate(() => window.__now());
-    const top = await page.evaluate(() => window.__pin());
+    const { top, from } = await page.evaluate(() => window.__pin());
     await page.waitForFunction((id) => [...document.querySelectorAll(".home-widget-slot")].some((el) => el.dataset.widget === id), WIDGET, { timeout: 10_000 });
     await page.waitForTimeout(2600);
     const pinned = record("pinned here", { top, frames: await framesSince(from) });
