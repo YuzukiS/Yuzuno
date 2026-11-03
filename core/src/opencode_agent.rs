@@ -1390,10 +1390,12 @@ impl Workspace {
         self.changed(id);
         let request = c.server.summarize(&c.session, &provider, &model)?;
         let (done, checked) = tokio::sync::oneshot::channel();
-        let (ws, agent, attempted, connection) = (self.clone(), id.to_owned(), turn.clone(), c.clone());
+        // Only the generation: holding the connection would hold its server,
+        // and so its process, until the request ends.
+        let (ws, agent, attempted, generation) = (self.clone(), id.to_owned(), turn.clone(), c.generation);
         tokio::spawn(async move {
             let answer = request.await;
-            ws.opencode_compact_answered(&agent, &connection, &attempted, answer).await;
+            ws.opencode_compact_answered(&agent, generation, &attempted, answer).await;
             let _ = done.send(());
         });
         self.opencode_compact_started(id, &turn, checked).await
@@ -1431,9 +1433,10 @@ impl Workspace {
     }
 
     /// A compaction request's answer (T-10), kept with its Turn, then
-    /// OpenCode's whole record of the session read again on the same
-    /// connection: the answer alone says neither that it ran nor how it ended.
-    async fn opencode_compact_answered(&self, id: &str, c: &Connection, turn: &str, answer: Submission) {
+    /// OpenCode's whole record of the session read again while the connection
+    /// it went on is still the Agent's: the answer alone says neither that it
+    /// ran nor how it ended.
+    async fn opencode_compact_answered(&self, id: &str, generation: u64, turn: &str, answer: Submission) {
         let answer = match &answer {
             Submission::Accepted => json!({"kind":"accepted"}),
             Submission::Refused(status) => json!({"kind":"refused","code":status.code,"body":status.body}),
@@ -1449,8 +1452,8 @@ impl Workspace {
             eprintln!("Workspace OpenCode compaction answer not recorded: {error:#}");
         }
         self.changed(id);
-        if self.opencode_current(id, c.generation).is_some() {
-            if let Err(error) = self.opencode_resync(id, c).await {
+        if let Some(c) = self.opencode_current(id, generation) {
+            if let Err(error) = self.opencode_resync(id, &c).await {
                 eprintln!("Workspace OpenCode compaction not checked: {error:#}");
             }
         }

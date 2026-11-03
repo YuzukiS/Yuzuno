@@ -360,6 +360,33 @@ async fn a_stopped_compaction_keeps_new_messages_out_while_opencode_holds_it() {
     assert_eq!(lab.summarized().len(), 1);
 }
 
+/// A compaction request still going holds nothing of its connection: once
+/// that connection ends, so does its OpenCode process, as for any request.
+#[tokio::test]
+async fn a_request_still_going_keeps_no_opencode_process_alive_after_its_connection_ends() {
+    let lab = lab(true).await;
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(lab.root().join("start.json")).unwrap()).unwrap();
+    let pid = seen["pid"].as_u64().unwrap();
+    // Running, or a zombie not yet reaped, which runs nothing.
+    let alive = || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(") ").is_some_and(|(_, rest)| !rest.starts_with('Z'))
+    });
+    lab.summarize("hold").await;
+    lab.ws.opencode_compact(ID).await.unwrap();
+    // The event stream breaks and cannot be opened again: the connection ends.
+    lab.control("refuseEvents", json!({"seconds":30})).await;
+    lab.control("drop", json!({})).await;
+    lab.until("the connection's end", |d| d.agent.connection_state == "disconnected").await;
+    for _ in 0..200 {
+        if !alive() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!alive(), "OpenCode {pid} still runs while the compaction's request is held open");
+    assert_eq!(compaction(&lab.detail())["_opencodeCompact"]["state"], "unknown");
+}
+
 /// The composer's `/compact` route runs an OpenCode Agent's own compaction.
 #[tokio::test]
 async fn the_compact_route_runs_an_opencode_agents_own_compaction() {
