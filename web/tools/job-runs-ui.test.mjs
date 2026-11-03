@@ -109,7 +109,7 @@ test("a run's cost and an attempt's say what recorded none, and a known $0 stays
   // attempt's file was empty.
   const [mixed, empty, card] = await shownFor({ knownUsd: 1.5, unknownEntries: 1, invalidLines: 1, attemptsReporting: 3, attemptsNotRecorded: 3,
     attemptsWithUnknown: 3, attemptsRunning: 0, truncated: false, complete: false }, summary(0));
-  assert.equal(mixed, '$1.5000 · plus 2 of unknown cost · 3 with an unknown amount · 3 attempts recorded none · soft limit $12.00');
+  assert.equal(mixed, '$1.50 · plus 2 of unknown cost · 3 with an unknown amount · 3 attempts recorded none · soft limit $12.00');
   assert.equal(empty, 'None recorded');
   assert.match(card, /an attempt that recorded none is said apart/);
   // None of the run's attempts reported: none recorded, not $0. This
