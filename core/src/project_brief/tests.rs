@@ -525,6 +525,118 @@ async fn attachments_are_snapshots_on_the_core_host_and_references_otherwise() {
     assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
 }
 
+/// A synthetic picture of `format`, `width` by `height`.
+fn picture(format: image::ImageFormat, width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(vec![]);
+    image::RgbImage::from_pixel(width, height, image::Rgb([90, 130, 170])).write_to(&mut bytes, format).unwrap();
+    bytes.into_inner()
+}
+
+/// EXIF as a camera writes it for a picture taken turned: orientation 6, a
+/// quarter clockwise (big-endian TIFF, one entry).
+const QUARTER_EXIF: &[u8] = b"MM\x00\x2a\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00";
+
+/// `jpeg` with QUARTER_EXIF in an APP1 segment, after its JFIF one.
+fn turned_jpeg(jpeg: &[u8]) -> Vec<u8> {
+    let at = if jpeg[2..4] == [0xFF, 0xE0] { 4 + usize::from(u16::from_be_bytes([jpeg[4], jpeg[5]])) } else { 2 };
+    let mut segment = vec![0xFF, 0xE1];
+    segment.extend(u16::try_from(2 + 6 + QUARTER_EXIF.len()).unwrap().to_be_bytes());
+    segment.extend(b"Exif\0\0");
+    segment.extend(QUARTER_EXIF);
+    [&jpeg[..at], &segment, &jpeg[at..]].concat()
+}
+
+/// `png` with QUARTER_EXIF in an eXIf chunk, after its IHDR.
+fn turned_png(png: &[u8]) -> Vec<u8> {
+    let crc = |bytes: &[u8]| {
+        let mut crc = !0u32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        !crc
+    };
+    let typed = [b"eXIf".as_slice(), QUARTER_EXIF].concat();
+    let mut chunk = u32::try_from(QUARTER_EXIF.len()).unwrap().to_be_bytes().to_vec();
+    chunk.extend(&typed);
+    chunk.extend(crc(&typed).to_be_bytes());
+    let at = 8 + 25;
+    [&png[..at], &chunk, &png[at..]].concat()
+}
+
+#[tokio::test]
+async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_has_one() {
+    let (dir, ws, project) = lab();
+    let files = dir.path().join("pictures");
+    std::fs::create_dir_all(&files).unwrap();
+    let file = |name: &str, bytes: &[u8]| {
+        std::fs::write(files.join(name), bytes).unwrap();
+        files.join(name).to_string_lossy().into_owned()
+    };
+    let jpeg = picture(image::ImageFormat::Jpeg, 40, 20);
+    let png = picture(image::ImageFormat::Png, 40, 20);
+    let wide = file("wide.png", &png);
+    let big = std::fs::File::create(files.join("big.png")).unwrap();
+    big.set_len(SNAPSHOT_FILE_BYTES + 1).unwrap();
+    let mut change = put("shots", "report");
+    change["attachments"] = json!([
+        {"name":"wide.png","path":wide},
+        {"name":"plain.jpg","path":file("plain.jpg", &jpeg)},
+        {"name":"turned.jpg","path":file("turned.jpg", &turned_jpeg(&jpeg))},
+        {"name":"turned.png","path":file("turned.png", &turned_png(&png))},
+        {"name":"broken.png","path":file("broken.png", b"\x89PNG\r\n\x1a\nnot a picture")},
+        {"name":"tall.png","path":file("tall.png", &picture(image::ImageFormat::Png, 1, 70_000))},
+        {"name":"moving.gif","path":file("moving.gif", b"GIF89a\x10\x00\x10\x00\x00\x00\x00;")},
+        {"name":"claimed.png","path":wide,"width":900,"height":900},
+        {"name":"big.png","path":files.join("big.png")},
+        {"name":"linked.png","url":"https://example.com/linked.png"},
+    ]);
+    accept(&ws, "a", input("a1", 0, vec![change])).await;
+    let shown = section(&brief(&ws, "a"), "shots")["attachments"].clone();
+    let size = |at: usize| (shown[at]["name"].clone(), shown[at].get("width").cloned(), shown[at].get("height").cloned());
+    let sized = |at: usize, width: u32, height: u32| (shown[at]["name"].clone(), Some(json!(width)), Some(json!(height)));
+    let without = |at: usize| (shown[at]["name"].clone(), None, None);
+    assert_eq!(size(0), sized(0, 40, 20));
+    assert_eq!(size(1), sized(1, 40, 20));
+    // Drawn turned, as a browser draws it: as wide as it is stored high.
+    assert_eq!(size(2), sized(2, 20, 40));
+    // A PNG that says to turn it: browsers do not all do, so no shape is given.
+    assert_eq!(size(3), without(3));
+    // Not a picture, past the longest side, or a format Core reads no size of:
+    // each is kept all the same, without a size.
+    for at in [4, 5, 6] {
+        assert_eq!(size(at), without(at));
+        assert_eq!((shown[at]["kind"].clone(), shown[at]["snapshot"].clone()), (json!("image"), json!(true)), "{}", shown[at]);
+    }
+    // What an Agent says of a size is not taken: Core reads its own.
+    assert_eq!(size(7), sized(7, 40, 20));
+    // A file only referenced, or a link, has no bytes Core read.
+    assert_eq!(shown[8]["snapshot"], false);
+    assert_eq!(size(8), without(8));
+    assert_eq!(shown[9]["kind"], "link");
+    assert_eq!(size(9), without(9));
+    // Home shows the same.
+    let home = &home::build(&ws.store).unwrap()["projects"][0]["brief"]["sections"][0]["attachments"];
+    assert_eq!((home[2]["width"].clone(), home[2]["height"].clone()), (json!(20), json!(40)));
+
+    // Released into history, a snapshot is a reference and its size goes with it.
+    sections::mark_seen(&ws.store, &project, &[("shots".into(), 1)]).unwrap();
+    let mut writer = ws.store.db.write().unwrap();
+    let tx = writer.transaction().unwrap();
+    attachments::prune(&tx, &project, 0).unwrap();
+    tx.commit().unwrap();
+    drop(writer);
+    let stored: String = ws.store.db.read().unwrap()
+        .query_row("SELECT data FROM project_brief_sections WHERE key='shots' AND live=0", [], |r| r.get(0)).unwrap();
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    let released = &stored["attachments"][0];
+    assert_eq!((released["snapshot"].clone(), released.get("width"), released.get("height")), (json!(false), None, None), "{released}");
+    let history = &home::build(&ws.store).unwrap()["projects"][0]["brief"]["history"][0]["attachments"];
+    assert!(history.as_array().unwrap().iter().all(|shown| shown.get("width").is_none() && shown.get("height").is_none()), "{history}");
+}
+
 fn attach(file: &std::path::Path) -> Value {
     json!([{"name":file.file_name().unwrap().to_string_lossy(),"path":file}])
 }
