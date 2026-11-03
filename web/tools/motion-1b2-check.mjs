@@ -7,7 +7,8 @@
 // a resize close it at once. A phone dock opened or closed by the reader rises or fades; one
 // that comes back as the keyboard goes does not move. On its way out a closed panel is inert and
 // hidden: on the app with a synthetic conversation of three Turns, each way the reader closes it
-// (Escape, its close button the scrim, its own button) is followed at once by a real key or tap
+// (Escape, its close button the scrim, Enter on its own button, which the scrim covers from a
+// finger) is followed at once by a real key or tap
 // (Enter, Shift+Tab and Tab, a tap where its Back to latest was), and none reaches the panel;
 // focus goes back to the dock's button, and a reopen, reduced motion and a browser with no Web
 // Animations leave nothing marked. A toast rises in; set
@@ -313,55 +314,61 @@ for (const run of runs) {
         { name: "Escape, then Shift+Tab and Tab", ...byKey, kind: "keydown", then: async () => { await page.keyboard.press("Shift+Tab"); await page.keyboard.press("Tab"); } },
         { name: "its close button (the scrim), then a tap on Back to latest", ...byTap, kind: "pointerdown",
           close: () => page.locator(".phone-dock-scrim").tap({ position: { x: 20, y: 20 } }), then: tapLatest, tapsLatest: true },
-        { name: "its own button, then a tap on Back to latest", ...byTap, kind: "pointerdown", close: () => toggle.tap(), then: tapLatest, tapsLatest: true },
+        // The open panel's scrim covers its button from a finger; a key still reaches the button.
+        { name: "Enter on its own button, then a tap on Back to latest", open: byKey.open, close: () => page.keyboard.press("Enter"), closeKind: "keydown",
+          kind: "pointerdown", then: tapLatest, tapsLatest: true },
       ];
       for (const sequence of sequences) {
         const name = `${tag}: ${sequence.name}`;
-        // Away from the latest, so that the open turn panel offers Back to latest.
-        await page.evaluate(() => { document.querySelector(".conversation-scroll").scrollTop = 0; });
-        await page.waitForTimeout(300);
-        await sequence.open();
-        await page.waitForTimeout(400);
-        const latest = await page.locator(".turn-dock .turn-dock-latest").boundingBox();
-        if (!latest) {
-          ok(`${name}: the open turn panel offers Back to latest`, false, await page.evaluate(() => window.__dock()));
-          continue;
-        }
-        point = { x: latest.x + latest.width / 2, y: latest.y + latest.height / 2 };
-        const scrolled = await page.evaluate((probe) => {
-          window.__probe = probe;
-          window.__record();
-          window.__watch("__dock", ["Escape"], 500);
-          return document.querySelector(".conversation-scroll").scrollTop;
-        }, point);
-        await sequence.close();
-        await sequence.then();
-        await page.waitForTimeout(700);
-        const { frames, events, now } = await page.evaluate(() => ({ frames: window.__frames, events: window.__events,
-          now: { ...window.__dock(), focus: window.__describe(document.activeElement), scrollTop: document.querySelector(".conversation-scroll").scrollTop } }));
-        const closedBy = events.findIndex((e) => e.type === sequence.kind);
-        const followed = events.slice(closedBy + 1).filter((e) => e.type === sequence.kind);
-        const out = frames.filter((f) => f.way === "out");
-        record.sequences[sequence.name] = { latest, scrolled, events, now, out: out.length, first: frames[0] };
-        report.frames[name] = frames;
-        if (moving) {
-          ok(`${name}: the panel fades back (phone-dock-out) and every key or tap that follows comes while it does`,
-            out.length > 0 && out[0].panelAnimation === "phone-dock-out" && followed.length > 0 && followed.every((e) => e.way === "out"), { out: out.length, followed });
-          ok(`${name}: on its way out the panel is inert and aria-hidden, holds no focus, and a tap where Back to latest was lands beside it`,
-            out.every((f) => f.panelInert && f.panelHidden && !f.focusInPanel && f.atProbe !== "panel"), out.slice(0, 2));
-        } else ok(`${name}: the panel goes at once, with no way out`, out.length === 0 && !frames[0]?.panelShown, frames.slice(0, 2));
-        ok(`${name}: no press, click, key or focus reaches the panel`, closedBy >= 0 && events.every((e) => !e.inPanel), events);
-        // Where focus is when the next key or tap comes: after a tap elsewhere it rightly moves on.
-        ok(`${name}: focus is back on the dock's button by the next key or tap`, /^button\.phone-dock-button\.phone-dock-turns/.test(followed[0]?.focus || ""), followed[0]);
-        if (sequence.tapsLatest)
-          ok(`${name}: Back to latest did not run (the conversation stayed where it was read)`, Math.abs(now.scrollTop - scrolled) < 4, { before: scrolled, after: now.scrollTop });
-        // Nothing left marked: not while it is reopened, not after it has gone.
-        ok(`${name}: the panel is marked only while on its way out, and nothing is left after`,
-          frames.every((f) => f.way === "out" || f.marked === 0) && now.marked === 0 && !now.scrim?.hidden &&
-          (sequence.reopens ? now.panelShown && now.way === null && !now.panelInert : !now.panelShown && !now.scrim), { last: now });
-        if (sequence.reopens) {
-          await page.keyboard.press("Escape");
-          await page.waitForTimeout(500);
+        try {
+          // Away from the latest, so that the open turn panel offers Back to latest.
+          await page.evaluate(() => { document.querySelector(".conversation-scroll").scrollTop = 0; });
+          await page.waitForTimeout(300);
+          await sequence.open();
+          await page.waitForTimeout(400);
+          const latest = await page.locator(".turn-dock .turn-dock-latest").boundingBox();
+          if (!latest) {
+            ok(`${name}: the open turn panel offers Back to latest`, false, await page.evaluate(() => window.__dock()));
+            continue;
+          }
+          point = { x: latest.x + latest.width / 2, y: latest.y + latest.height / 2 };
+          const scrolled = await page.evaluate((probe) => {
+            window.__probe = probe;
+            window.__record();
+            window.__watch("__dock", ["Escape"], 500);
+            return document.querySelector(".conversation-scroll").scrollTop;
+          }, point);
+          await sequence.close();
+          await sequence.then();
+          await page.waitForTimeout(700);
+          const { frames, events, now } = await page.evaluate(() => ({ frames: window.__frames, events: window.__events,
+            now: { ...window.__dock(), focus: window.__describe(document.activeElement), scrollTop: document.querySelector(".conversation-scroll").scrollTop } }));
+          const closedBy = events.findIndex((e) => e.type === (sequence.closeKind || sequence.kind));
+          const followed = events.slice(closedBy + 1).filter((e) => e.type === sequence.kind);
+          const out = frames.filter((f) => f.way === "out");
+          record.sequences[sequence.name] = { latest, scrolled, events, now, out: out.length, first: frames[0] };
+          report.frames[name] = frames;
+          if (moving) {
+            ok(`${name}: the panel fades back (phone-dock-out) and every key or tap that follows comes while it does`,
+              out.length > 0 && out[0].panelAnimation === "phone-dock-out" && followed.length > 0 && followed.every((e) => e.way === "out"), { out: out.length, followed });
+            ok(`${name}: on its way out the panel is inert and aria-hidden, holds no focus, and a tap where Back to latest was lands beside it`,
+              out.every((f) => f.panelInert && f.panelHidden && !f.focusInPanel && f.atProbe !== "panel"), out.slice(0, 2));
+          } else ok(`${name}: the panel goes at once, with no way out`, out.length === 0 && !frames[0]?.panelShown, frames.slice(0, 2));
+          ok(`${name}: no press, click, key or focus reaches the panel`, closedBy >= 0 && events.every((e) => !e.inPanel), events);
+          // Where focus is when the next key or tap comes: after a tap elsewhere it rightly moves on.
+          ok(`${name}: focus is back on the dock's button by the next key or tap`, /^button\.phone-dock-button\.phone-dock-turns/.test(followed[0]?.focus || ""), followed[0]);
+          if (sequence.tapsLatest)
+            ok(`${name}: Back to latest did not run (the conversation stayed where it was read)`, Math.abs(now.scrollTop - scrolled) < 4, { before: scrolled, after: now.scrollTop });
+          // Nothing left marked: not while it is reopened, not after it has gone.
+          ok(`${name}: the panel is marked only while on its way out, and nothing is left after`,
+            frames.every((f) => f.way === "out" || f.marked === 0) && now.marked === 0 && !now.scrim?.hidden &&
+            (sequence.reopens ? now.panelShown && now.way === null && !now.panelInert : !now.panelShown && !now.scrim), { last: now });
+          if (sequence.reopens) {
+            await page.keyboard.press("Escape");
+            await page.waitForTimeout(500);
+          }
+        } catch (error) {
+          ok(`${name}: ran to the end`, false, String(error).slice(0, 600));
         }
       }
     } else report.notShown.push(`${tag}: no visible turn dock button on the app`);
