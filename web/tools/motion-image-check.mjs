@@ -310,7 +310,16 @@ for (const run of runs) {
   const showAll = async () => {
     if ((await more.count()) && (await more.getAttribute("aria-expanded")) === "false") await more.click();
   };
-  const complete = (name, also = "") => page.waitForFunction(([name, also]) => {
+  /** The attachment named `name`, brought into view as a reader scrolling to it would: its picture
+   * loads lazily, only once it is near the screen. */
+  const bringIn = (name) => page.evaluate((name) => [...document.querySelectorAll('.home-section[data-section-key="shots"] .brief-attachments > li')]
+    .find((li) => li.querySelector(".brief-image-info dd")?.textContent === name)
+    ?.scrollIntoView({ block: "center", behavior: "instant" }), name);
+  const complete = async (name, also = "") => {
+    await bringIn(name);
+    return loaded(name, also);
+  };
+  const loaded = (name, also = "") => page.waitForFunction(([name, also]) => {
     const img = [...document.querySelectorAll('.home-section[data-section-key="shots"] .brief-attachments > li')]
       .find((li) => li.querySelector(".brief-image-info dd")?.textContent === name)?.querySelector("img");
     return !!img && img.complete && img.naturalWidth > 0 && img.getAttribute("src").includes(also);
@@ -322,6 +331,7 @@ for (const run of runs) {
     await complete("known.png");
     await complete("unknown.png");
     await complete("turned.jpg");
+    await bringIn("gone.png");
     await card.locator(".brief-image-failed").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(800);
     const first = record("first view", await framesSince(0));
