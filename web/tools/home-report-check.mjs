@@ -930,6 +930,8 @@ try {
       assert.equal(await pinned.locator(".home-card-metrics-grid dd").count(), 2);
       const metricsPlace = await centred();
       assert.ok(!metricsPlace.shorter || metricsPlace.offset <= 2, JSON.stringify(metricsPlace));
+      await slot.scrollIntoViewIfNeeded();
+      await shot("widgets-1720-pinned-large-metrics.png");
       // Its own menu: the size first, then Unpin and Copy report.
       await widgetMore().click();
       assert.equal(await widgetMenu().locator("legend").innerText(), "SIZE OF THIS WIDGET");
