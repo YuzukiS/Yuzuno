@@ -103,3 +103,10 @@
   border-color: color-mix(in srgb, var(--coral) 40%, var(--paper));
   color: var(--ink);
 }
+
+/* The row's menu trigger eases its hover colours (T-19). */
+.agent-row-menu {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
+}

@@ -49,8 +49,8 @@
   text-align: left;
   white-space: nowrap;
   transition:
-    background-color 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
 }
 .settings-nav [role="tab"] svg {
   flex: none;
@@ -307,7 +307,7 @@
   display: none;
 }
 .updates-notes > summary svg {
-  transition: rotate 160ms ease;
+  transition: rotate var(--motion-micro) var(--ease-standard);
 }
 .updates-notes[open] > summary svg {
   rotate: 90deg;
@@ -546,7 +546,7 @@
   display: none;
 }
 .update-details > summary svg {
-  transition: rotate 160ms ease;
+  transition: rotate var(--motion-micro) var(--ease-standard);
 }
 .update-details[open] > summary svg {
   rotate: 90deg;

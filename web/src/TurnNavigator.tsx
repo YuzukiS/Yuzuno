@@ -35,7 +35,8 @@ const BAR_ROW = 11;
 const TOUCH_NUMBER_ROW = 44;
 /** Distance within which the pointer magnifies rows, strongest at its tip. */
 const LENS = 64;
-const GLIDE = { duration: 260, easing: "cubic-bezier(.2, .8, .2, 1)" };
+/** The rows' glide: --motion-medium with --ease-standard (styles.css). */
+const GLIDE = { duration: 240, easing: "cubic-bezier(.2, .8, .2, 1)" };
 
 const still = () =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;

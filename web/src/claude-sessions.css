@@ -129,3 +129,11 @@
     gap: 2px;
   }
 }
+
+/* Session rows ease their hover and chosen states (T-19). */
+.claude-session-list button {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}

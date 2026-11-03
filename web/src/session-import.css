@@ -122,3 +122,15 @@
     flex: 1 1 auto;
   }
 }
+
+/* The setup segments ease their states, with a hover of their own (T-19). */
+.agent-create-modes button {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}
+.agent-create-modes button:hover:not(:disabled, [aria-pressed="true"]) {
+  background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
+}
