@@ -175,9 +175,10 @@ function pageHelpers() {
   window.__reset = after({ type: "reset", reason: "check" });
   window.__announceThenReset = after({ type: "agent.changed", agentId: "a" }, { type: "reset", reason: "check" });
   // Lead 3359: the replay ends while a read is due (the announcement's 150 ms window), or while a
-  // change the shown copy already has (rev 0) waits to be applied.
+  // change the shown copy already has (rev 0) waits to be applied. That change names a field, or it
+  // would be read as `agent.changed` (workspace-events.ts) and start a read.
   window.__announceThenHeartbeat = async () => { await after({ type: "agent.changed", agentId: "a" })(); window.__heartbeat(); };
-  window.__appliedThenHeartbeat = () => { send({ type: "agent.context", agentId: "a", rev: 0 }); window.__heartbeat(); };
+  window.__appliedThenHeartbeat = () => { send({ type: "agent.context", agentId: "a", rev: 0, contextUsage: null }); window.__heartbeat(); };
   // A short break, as the browser's own reconnect has it: the same stream errs, opens again 300 ms
   // later, before any poll could, and says what Core says then. What was staged changed meanwhile.
   const reconnect = (...events) => async () => {
@@ -428,8 +429,11 @@ for (const run of runs) {
     // once it is, nothing is pending, and the wait ends without another read.
     await page.evaluate(() => window.__quietResume());
     await page.waitForTimeout(200);
+    const appliedReads = moriReads;
     await page.evaluate(() => window.__appliedThenHeartbeat());
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(400);
+    ok(`${tag}: a change the shown copy already has, with the replay's end, reads nothing (${moriReads - appliedReads} reads)`,
+      moriReads === appliedReads, moriReads - appliedReads);
     fadesIn("after a replay that ended while a change already shown waited to be applied, a request announced live",
       await bring(request("post-applied", "npm run applied"), "__announce"));
 
