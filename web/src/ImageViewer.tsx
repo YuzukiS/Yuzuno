@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, Minus, Plus } from "lucide-react";
+import { ChevronDown, ImageOff, Minus, Plus } from "lucide-react";
 import { strings, useStrings } from "./i18n";
 import {
   bounds,
@@ -69,12 +69,15 @@ const middle = (box: Size) => ({ x: box.width / 2, y: box.height / 2 });
 export function ImageViewer({
   src,
   alt,
+  unreadable,
   onError,
   onSize,
   actions,
 }: {
   src: string;
   alt: string;
+  /** What to say, in the stage, when the image cannot be read. */
+  unreadable: string;
   onError?: () => void;
   /** The image's own size, once it has loaded. */
   onSize?: (size: Size) => void;
@@ -90,6 +93,7 @@ export function ImageViewer({
   const [mode, setMode] = useState<Mode>("fit");
   const [opened, setOpened] = useState<Fixed | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [failed, setFailed] = useState(false);
   // A button's or key's change glides; a gesture follows the hand at once.
   const [animate, setAnimate] = useState(false);
   const [coarse] = useState(() => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
@@ -332,7 +336,7 @@ export function ImageViewer({
     act();
   };
 
-  const shown = ready(natural) && ready(box) && opened !== null;
+  const shown = ready(natural) && ready(box) && opened !== null && !failed;
   const limits = shown ? bounds(natural, box) : null;
   const scale = shown ? percent(view.scale) : "–";
   const names: Record<Fixed, string> = { fit: t.fit, width: t.width, actual: t.actual };
@@ -416,14 +420,25 @@ export function ImageViewer({
             setNatural(size);
             onSize?.(size);
           }}
-          onError={onError}
+          onError={() => {
+            setFailed(true);
+            onError?.();
+          }}
           style={shown ? {
             width: natural.width,
             height: natural.height,
             transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
           } : { visibility: "hidden" }}
         />
-        {!shown && <span className="image-viewer-loading">{t.loading}</span>}
+        {/* Loading and failing keep the stage's frame, so nothing jumps. */}
+        {failed ? (
+          <div className="image-viewer-failed" role="alert">
+            <ImageOff size={22} aria-hidden="true" />
+            <p>{unreadable}</p>
+          </div>
+        ) : (
+          !shown && <span className="image-viewer-loading">{t.loading}</span>
+        )}
         {(["x", "y"] as const).map((axis) => {
           const bar = bars[axis];
           if (!bar) return null;

@@ -146,6 +146,10 @@
   padding-left: 12px;
   border-left: 1px solid var(--line);
 }
+/* Mark up in ink, its icon too: the shared button's own grey is too faint here. */
+.image-viewer-actions .secondary-button {
+  color: var(--ink);
+}
 /* Wheel, drag and pinch are taken here only: no page scroll or zoom. A flat
    ground a step from the dialog's, so the image's edges show. */
 .image-viewer-stage {
@@ -194,6 +198,24 @@
   .image-viewer-stage[data-animate] > img {
     transition: none;
   }
+}
+/* An image that cannot be read: said in the middle of the stage. */
+.image-viewer-failed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary, #5d6656);
+}
+.image-viewer-failed p {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
 }
 .image-viewer-loading {
   position: absolute;

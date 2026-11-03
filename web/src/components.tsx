@@ -1705,25 +1705,20 @@ export function ArtifactModal({
               {error}
             </p>
           ) : artifact?.kind === "image" ? (
-            unreadable === imageSrc ? (
-              <p className="inline-error" role="alert">
-                {t.imageUnreadable}
-              </p>
-            ) : (
-              // Mark up on the viewer's bar, as for any other image (T-20).
-              <ImageViewer
-                key={imageSrc}
-                src={imageSrc}
-                alt={artifact.name}
-                onError={() => setUnreadable(imageSrc)}
-                actions={onAnnotate && (
-                  <button type="button" className="secondary-button" onClick={onAnnotate}>
-                    <SquareDashedMousePointer size={14} aria-hidden="true" />
-                    <span className="image-viewer-action-label">{t.markUp}</span>
-                  </button>
-                )}
-              />
-            )
+            // Mark up on the viewer's bar, as for any other image (T-20).
+            <ImageViewer
+              key={imageSrc}
+              src={imageSrc}
+              alt={artifact.name}
+              unreadable={t.imageUnreadable}
+              onError={() => setUnreadable(imageSrc)}
+              actions={onAnnotate && unreadable !== imageSrc && (
+                <button type="button" className="secondary-button" onClick={onAnnotate}>
+                  <SquareDashedMousePointer size={14} aria-hidden="true" />
+                  <span className="image-viewer-action-label">{t.markUp}</span>
+                </button>
+              )}
+            />
           ) : null}
         </div>
       )}

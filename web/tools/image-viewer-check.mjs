@@ -500,7 +500,10 @@ try {
     await gone.locator("button.brief-attachment-open").click();
     await dialog.waitFor();
     await dialog.getByRole("alert").waitFor();
-    assert.equal(await dialog.locator(".image-viewer").count(), 0);
+    // Said in the stage's frame; nothing to zoom or mark.
+    assert.equal(await dialog.locator(".image-viewer-stage [role=alert]").count(), 1);
+    assert.equal(await dialog.getByRole("button", { name: "Zoom in" }).isDisabled(), true);
+    assert.equal(await dialog.getByRole("button", { name: "Mark up" }).count(), 0);
     await shot("unreadable");
     await escape();
     check(`${viewport.name}: an image that cannot be read says so, with nothing to zoom`);

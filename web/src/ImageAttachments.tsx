@@ -184,24 +184,24 @@ export function ImagePreview({
         }
       }}
     >
-      {open && (failed === src ? (
-        <p role="alert">{unavailable}</p>
-      ) : (
-        // Its own viewer for each image: one image's zoom never carries over (T-20).
+      {open && (
+        // Its own viewer for each image: one image's zoom never carries over
+        // (T-20). One that cannot be read says so there, with nothing to mark.
         <ImageViewer
           key={src}
           src={src}
           alt={caption || name}
+          unreadable={unavailable}
           onError={() => setFailed(src)}
           onSize={(next) => setSize({ src, ...next })}
-          actions={onAnnotate && (
+          actions={onAnnotate && failed !== src && (
             <button type="button" className="secondary-button input-image-annotate" onClick={onAnnotate}>
               <SquareDashedMousePointer size={14} aria-hidden="true" />
               <span className="image-viewer-action-label">{t.markUpButton}</span>
             </button>
           )}
         />
-      ))}
+      )}
     </Modal>
   );
 }

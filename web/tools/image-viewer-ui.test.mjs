@@ -287,9 +287,14 @@ test("T-20 a caption leads; a resize keeps the mode; a new image starts afresh; 
   await until(() => p.image()?.getAttribute("src") === "/gone.png", "the missing image");
   p.image().dispatchEvent(new p.window.Event("error"));
   await until(() => p.dialog().querySelector('[role="alert"]'), "the failure");
-  assert.match(p.dialog().querySelector('[role="alert"]').textContent, /unavailable/);
-  assert.equal(p.dialog().querySelector(".image-viewer"), null);
+  // Said in the stage's own frame, so nothing jumps; nothing to zoom or mark.
+  const alert = p.stageEl().querySelector('[role="alert"]');
+  assert.match(alert.textContent, /unavailable/);
+  assert.ok(alert.querySelector("svg"), "with its icon");
+  assert.equal(p.output(), "–");
+  assert.ok(p.button("Zoom in").disabled && p.button("Zoom out").disabled && p.button("Fit").disabled);
   assert.equal(p.button("Mark up"), undefined);
+  assert.equal(p.stageEl().textContent.includes("Loading image"), false);
   assert.deepEqual(p.errors, []);
 });
 
@@ -310,7 +315,7 @@ test("T-20 an Agent's image file opens in the same viewer, Mark up on its bar; o
   assert.equal(p.window.annotated, true);
   p.image().dispatchEvent(new p.window.Event("error"));
   await until(() => p.dialog().querySelector('[role="alert"]'), "the failure");
-  assert.match(p.dialog().querySelector('[role="alert"]').textContent, /can't be read/);
+  assert.match(p.stageEl().querySelector('[role="alert"]').textContent, /can't be read/);
   assert.equal(p.button("Mark up"), undefined, "nothing to mark");
   // A text file opens as before, not in the viewer.
   p.window.showArtifact({ artifact: { kind: "text", name: "notes.md", path: "notes.md" } });
