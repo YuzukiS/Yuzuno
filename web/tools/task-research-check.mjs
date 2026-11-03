@@ -10,7 +10,8 @@
 // - Its words are readable (contrast at least 4.5:1); nothing scrolls sideways.
 // - A comparison (slice 2) shows every entry, left out or not, each with
 //   why, and says what its included entries share; no difference is computed.
-// - Reads only: no write leaves the page.
+// - Reads only: no write leaves the page, and every read it makes is one
+//   this fixture answers on purpose (none falls through to an empty {}).
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or real Agent. Screenshots and report.json go to
 // YUZUNO_BROWSER_OUTPUT.
@@ -173,6 +174,11 @@ async function serve(route) {
     "/api/ci": () => noCiRuns,
     "/api/reviews": () => noReviews,
     "/api/backlog": () => ({ observedAt: at, agents: {} }),
+    // The task pane's own reads, answered in their real empty shapes (Lead
+    // 2784: #479's check answered them {} and listed them as unexpected).
+    "/api/tasks/T-1/workspaces": () => ({ taskId: "T-1", repositories: [], workspaces: [] }),
+    "/api/pr-reviews": () => ({ reviews: [], hasMore: false, nextBefore: null }),
+    "/api/pr-operations": () => ({ operations: [], repositories: [], hasMore: false, nextBefore: null }),
     "/api/machines": () => ({ machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture" }] }),
     "/api/models": () => ({ models: [] }),
   }[path];
@@ -354,9 +360,10 @@ await step("desktop: a Home research desk's definition versions each show their 
 });
 
 await browser.close();
-await step("reads only: nothing is written and no other host is asked", async () => {
+await step("reads only: nothing is written, no other host is asked, and every read is one the fixture answers", async () => {
   assert.deepEqual(report.writes, []);
-  assert.deepEqual(report.unexpected.filter((url) => !url.startsWith("/api/")), []);
+  // Every request the page made was answered by this fixture on purpose.
+  assert.deepEqual(report.unexpected, []);
   assert.deepEqual(report.errors, []);
 });
 await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
