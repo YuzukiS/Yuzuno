@@ -1393,11 +1393,11 @@ impl Workspace {
         // Only the generation, and the Workspace weakly: holding the
         // connection would hold its server, and so its process, until the
         // request ends. The request itself goes on until OpenCode answers.
-        let (ws, agent, attempted, generation) = (Arc::downgrade(self), id.to_owned(), turn.clone(), c.generation);
+        let (ws, agent, attempted, generation, session) = (Arc::downgrade(self), id.to_owned(), turn.clone(), c.generation, c.session.clone());
         tokio::spawn(async move {
             let answer = request.await;
             if let Some(ws) = ws.upgrade() {
-                ws.opencode_compact_answered(&agent, generation, &attempted, answer).await;
+                ws.opencode_compact_answered(&agent, generation, &session, &attempted, answer).await;
             }
             let _ = done.send(());
         });
@@ -1432,7 +1432,8 @@ impl Workspace {
         ensure!(attempt["nativePending"] == true || attempt["state"] == "unknown", "这次压缩没有留在 OpenCode 里的待办；不需要放弃");
         let (Some(message), Some(part)) = (attempt["message"].as_str().map(str::to_owned), attempt["part"].as_str().map(str::to_owned))
             else { bail!("不知道 OpenCode 里哪一条是这次压缩；不能放弃，没有删除任何内容") };
-        ensure!(attempt["answer"]["kind"] == "ended",
+        ensure!(attempt["answer"]["kind"] == "ended" && attempt["answer"]["generation"] == attempt["generation"]
+            && attempt["answer"]["session"] == attempt["session"],
             "还没有这次压缩的请求已经结束的证据（OpenCode 对它回答 200 和 true）；不能放弃，没有删除任何内容");
         ensure!(!d.turns.iter().any(|t| t["status"] == "inProgress" && t["id"] != turn), "OpenCode 正在执行；不能放弃，没有删除任何内容");
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 未连接；连接后才能放弃，没有删除任何内容")?;
@@ -1535,17 +1536,20 @@ impl Workspace {
     /// OpenCode's whole record of the session read again while the connection
     /// it went on is still the Agent's: the answer alone says neither that it
     /// ran nor how it ended.
-    async fn opencode_compact_answered(&self, id: &str, generation: u64, turn: &str, answer: CompactAnswer) {
+    async fn opencode_compact_answered(&self, id: &str, generation: u64, session: &str, turn: &str, answer: CompactAnswer) {
         // `ended`: 200 and `true` from the process it went to, its handler
         // returned there; the only proof here that its run has ended.
         let answer = match &answer {
-            CompactAnswer::Ended => json!({"kind":"ended","status":200,"body":true,"generation":generation,"at":now()}),
-            CompactAnswer::Refused(status) => json!({"kind":"refused","code":status.code,"body":status.body,"generation":generation,"at":now()}),
-            CompactAnswer::Unknown(reason) => json!({"kind":"unknown","detail":reason,"generation":generation,"at":now()}),
+            CompactAnswer::Ended => json!({"kind":"ended","status":200,"body":true,"generation":generation,"session":session,"at":now()}),
+            CompactAnswer::Refused(status) => json!({"kind":"refused","code":status.code,"body":status.body,"generation":generation,"session":session,"at":now()}),
+            CompactAnswer::Unknown(reason) => json!({"kind":"unknown","detail":reason,"generation":generation,"session":session,"at":now()}),
         };
-        let (attempt, kept) = (turn.to_owned(), answer.clone());
+        let (attempt, kept, asked) = (turn.to_owned(), answer.clone(), session.to_owned());
         let recorded = self.record_update(id, "opencode/compactAnswered", json!({"turnId":turn,"answer":answer}), Sel::Turns(vec![turn.to_owned()]), move |d| {
-            if let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == attempt.as_str() && t["_opencodeCompact"].is_object()) {
+            // Only the attempt it answers: the one sent to that process and session under this Turn.
+            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == attempt.as_str() && t["_opencodeCompact"].is_object()) else { return };
+            let of = &entry["_opencodeCompact"];
+            if of["generation"] == generation && of["session"] == asked.as_str() {
                 entry["_opencodeCompact"]["answer"] = kept;
             }
         }).await;
@@ -1969,6 +1973,15 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     for turn in d.turns.iter_mut().filter(|t| t["_opencodeCompact"].is_object()) {
         let live = turn["_opencodeCompact"]["generation"] == generation;
         settle_compaction(turn, idle, true, live);
+        // Whether OpenCode still holds one that ended unfinished, given up
+        // or not: its part, as this read finds it, and no summary of it that
+        // ended. Its old summary alone never says so (Lead 3803).
+        let attempt = &mut turn["_opencodeCompact"];
+        if let (Some(message), Some(part), Some("stopped" | "failed" | "unknown" | "abandoned")) =
+            (attempt["message"].as_str().map(str::to_owned), attempt["part"].as_str().map(str::to_owned), attempt["state"].as_str()) {
+            let held = holds_part(&snapshot.messages, &message, &part) && !summary_ended(&snapshot.messages, &message);
+            attempt["nativePending"] = held.into();
+        }
     }
 }
 
@@ -2188,7 +2201,9 @@ fn bind(attempt: &mut Value) {
 
 /// An answer naming a compaction's message (T-10): its summary, kept as
 /// OpenCode last wrote it. Written before the run, it says nothing until it
-/// completes. Whether it was one.
+/// completes. Whether OpenCode still holds the compaction is never read from
+/// it: only a whole read finds that, in its parts (`apply_snapshot`). Whether
+/// it was one.
 fn compaction_summary(d: &mut AgentDetail, info: &Value) -> bool {
     let Some(parent) = info["parentID"].as_str() else { return false };
     let Some(turn) = d.turns.iter_mut().rev().find(|t| t["_opencodeCompact"]["message"] == parent) else { return false };
@@ -2197,10 +2212,6 @@ fn compaction_summary(d: &mut AgentDetail, info: &Value) -> bool {
     }
     let attempt = &mut turn["_opencodeCompact"];
     attempt["summary"] = json!({"id":info["id"],"completed":info["time"]["completed"],"finish":info["finish"],"error":info["error"]});
-    // Once it ended, whether OpenCode still holds it unfinished.
-    if !matches!(attempt["state"].as_str(), Some("pending" | "unknown")) {
-        attempt["nativePending"] = info["finish"].is_null().into();
-    }
     true
 }
 

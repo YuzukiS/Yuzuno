@@ -78,7 +78,9 @@ counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
-         'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok'}
+         'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False}
+# Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
+late = {}
 # Compactions held open (`summarize` mode `hold`), by session: what ends one.
 held = {}
 streams = []
@@ -277,6 +279,9 @@ def control(name, body):
         # A compaction message in the session (T-10): one asked for, or OpenCode's own (`auto`).
         return compaction(body['sessionID'], body.get('model', {'providerID': 'deepseek', 'modelID': 'deepseek-flash'}),
                           body.get('auto', True))
+    if name == 'answerLate':
+        late.pop(body['sessionID']).set()
+        return True
     if name == 'finishSummary':
         # A held compaction's run ends with its summary.
         summary = held.pop(body['sessionID'])
@@ -432,6 +437,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == 'DELETE' and len(rest) == 4 and rest[0] == 'message' and rest[2] == 'part':
             return self.delete_part(session, rest[1], rest[3])
         if (method, *rest) == ('GET', 'message'):
+            if modes['failListOnce']:
+                modes['failListOnce'] = False
+                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: list read failed'}})
             stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
             return self.reply(200, stored)
         if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
@@ -623,6 +631,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, True)
         time.sleep(0.05)
         finish(session, info, 'The conversation so far, in short.')
+        if mode == 'late':
+            # The run ended, as its events say; its answer comes only on `answerLate`.
+            ended = threading.Event()
+            late[session] = ended
+            ended.wait(60)
+            return self.reply(200, True)
         if mode == 'drop':
             self.close_connection = True
             return None
@@ -636,6 +650,9 @@ class Handler(BaseHTTPRequestHandler):
         (removed, then the connection ends with no answer) or `lie`
         (answered true, nothing removed)."""
         mode = modes['deletePart']
+        if mode == 'read-fails':
+            # Removed and answered; the next read of the session's messages fails.
+            modes['failListOnce'] = True
         if mode != 'lie':
             with lock:
                 for m in messages.get(session, {}).values():

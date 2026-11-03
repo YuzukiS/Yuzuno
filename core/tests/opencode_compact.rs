@@ -459,6 +459,22 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
     assert_eq!((compaction(&d)["_opencodeCompact"]["state"].as_str(), compaction(&d)["_opencodeCompact"]["nativePending"].as_bool()), (Some("abandoned"), Some(false)));
     lab.send("after", "Anything new?").await.unwrap();
     assert_eq!(lab.sent().len(), 1, "the message is sent");
+    let session = lab.session();
+    lab.control("reply", json!({"sessionID":session,"text":"Here."})).await;
+    lab.until("its answer", |d| d.turns.last().is_some_and(|t| t["status"] == "completed")).await;
+    // Read again from the whole record, after a break and from a new
+    // process: its old summary, still there, does not make it pending again.
+    let resynced = lab.kinds().iter().filter(|k| *k == "opencode/resynced").count();
+    lab.control("drop", json!({})).await;
+    lab.until("the record read again", |_| lab.kinds().iter().filter(|k| *k == "opencode/resynced").count() > resynced).await;
+    let given_up = |d: &AgentDetail| (compaction(d)["_opencodeCompact"]["state"].clone(), compaction(d)["_opencodeCompact"]["nativePending"].clone());
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
+    lab.control("die", json!({})).await;
+    lab.until("the connection's end", |d| d.agent.connection_state == "disconnected").await;
+    lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
+    lab.send("again", "And now?").await.unwrap();
+    assert_eq!(lab.sent().len(), 2, "sent after the new process read it all");
     assert_eq!(lab.summarized().len(), 1);
 }
 
@@ -544,4 +560,54 @@ async fn a_removal_is_settled_by_the_record_never_by_its_answer() {
     lab.control("mode", json!({"deletePart":"ok"})).await;
     lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
     assert_eq!(lab.removals().len(), 2, "asked again only as the user's next try");
+}
+
+/// An earlier compaction ended as its events say, its request's answer
+/// still out: the next one runs, and that late answer is the earlier one's
+/// alone. It neither binds, ends nor lets in anything of the next.
+#[tokio::test]
+async fn an_earlier_compactions_late_answer_is_its_own_alone() {
+    let lab = lab(true).await;
+    let session = lab.session();
+    lab.summarize("late").await;
+    lab.ws.opencode_compact(ID).await.unwrap();
+    let d = lab.until("the first one's end, by its events", |d| compaction(d)["status"] == "completed").await;
+    let first = compaction(&d).clone();
+    assert!(first["_opencodeCompact"]["answer"].is_null(), "its answer is still out");
+    lab.summarize("hold").await;
+    lab.ws.opencode_compact(ID).await.unwrap();
+    let d = lab.until("the next one's summary", |d| compactions(d).len() == 2 && compaction(d)["_opencodeCompact"]["summary"].is_object()).await;
+    let next = compaction(&d).clone();
+    assert!(next["_opencodeCompact"]["known"].as_array().unwrap().contains(&first["_opencodeCompact"]["message"]), "{next:#}");
+    lab.control("answerLate", json!({"sessionID":session})).await;
+    let d = lab.until("the late answer", |d| compactions(d)[0]["_opencodeCompact"]["answer"]["kind"] == "ended").await;
+    let (first_now, next_now) = (compactions(&d)[0], compactions(&d)[1]);
+    assert_eq!(first_now["status"], "completed");
+    assert_eq!(first_now["_opencodeCompact"]["answer"]["generation"], first["_opencodeCompact"]["generation"]);
+    assert!(next_now["_opencodeCompact"]["answer"].is_null(), "{next_now:#}");
+    assert_eq!(next_now["_opencodeCompact"]["message"], next["_opencodeCompact"]["message"]);
+    assert_ne!(next_now["_opencodeCompact"]["message"], first["_opencodeCompact"]["message"]);
+    assert_eq!((next_now["status"].as_str(), next_now["_opencodeCompact"]["state"].as_str()), (Some("inProgress"), Some("pending")));
+    refuses_new_writes(&lab, "正在压缩").await;
+    lab.control("finishSummary", json!({"sessionID":session})).await;
+    lab.until("the next one's end", |d| compaction(d)["status"] == "completed").await;
+    assert_eq!(lab.summarized().len(), 2);
+}
+
+/// A removal answered, the read after it failed: new messages stay out;
+/// the user's next try reads first, finds the part gone, settles it, and
+/// asks for no removal again.
+#[tokio::test]
+async fn a_removal_whose_read_failed_is_settled_by_the_next_try_without_another() {
+    let lab = lab(true).await;
+    let turn = lab.stopped().await;
+    lab.control("mode", json!({"deletePart":"read-fails"})).await;
+    let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+    assert!(error.contains("没有读到删除后的 OpenCode 会话"), "{error}");
+    assert_eq!(lab.removals().len(), 1);
+    refuses_new_writes(&lab, "还留着上一次没有完成的压缩").await;
+    lab.control("mode", json!({"deletePart":"ok"})).await;
+    lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
+    assert_eq!(lab.removals().len(), 1, "the part was gone: not asked for again");
+    assert_eq!(compaction(&lab.detail())["_opencodeCompact"]["state"], "abandoned");
 }
