@@ -319,8 +319,10 @@ for (const run of runs) {
     const again = await page.evaluate(() => window.__scrollTo("bottom"));
     const redrawn = atEnd.drawn.filter((id) => !atStart.drawn.includes(id) && again.drawn.includes(id));
     const afterAway = await page.evaluate(() => window.__sample(300));
-    ok(`${tag}: scrolled to the start and back, the Turns drawn again (${redrawn.length}, the arrived ones among them: ${["remote-1", "t-c3"].filter((id) => redrawn.includes(id)).join(", ") || "none"}) play nothing (${(await calls()) - mark} calls)`,
-      redrawn.includes("remote-1") && (await calls()) === mark && still(afterAway), { atEnd: atEnd.drawn, atStart: atStart.drawn, again: again.drawn });
+    // Which Turns are drawn at the end depends on their heights: any that arrived live will do.
+    const arrived = ["remote-1", "t-c3"].filter((id) => redrawn.includes(id));
+    ok(`${tag}: scrolled to the start and back, the Turns drawn again (${redrawn.length}, live arrivals among them: ${arrived.join(", ") || "none"}) play nothing (${(await calls()) - mark} calls)`,
+      arrived.length > 0 && (await calls()) === mark && still(afterAway), { atEnd: atEnd.drawn, atStart: atStart.drawn, again: again.drawn });
 
     // To another Agent and back: nothing plays.
     const leave = await calls();
