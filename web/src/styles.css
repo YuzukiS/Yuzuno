@@ -2099,7 +2099,24 @@ p {
   font-size: calc(11px + var(--font-adjust, 3px));
   color: #7e9664;
   max-width: 90vw;
-  animation: appear 0.15s ease-out;
+  /* Rises 6px into place with the spring: a small object, never an action. */
+  animation: toast-in var(--motion-small) var(--ease-spring);
+}
+/* A toast replaced or timed out (Toasts.tsx): its copy fades and sinks. */
+.toast.toast-leaving {
+  animation: toast-out var(--motion-exit-small) var(--ease-exit) forwards;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    translate: 0 6px;
+  }
 }
 .sr-only {
   position: absolute;

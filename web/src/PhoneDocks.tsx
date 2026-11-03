@@ -5,9 +5,10 @@
 // (WorkDock.tsx, TurnNavigator.tsx): phone-docks.css lays the open one out
 // as a panel above its button. Each button shows only while its dock has
 // something to show.
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BriefcaseBusiness, History } from "lucide-react";
 import { strings, useStrings } from "./i18n";
+import { animates } from "./motion";
 import "./phone-docks.css";
 
 // The two buttons' own names (T-189).
@@ -31,15 +32,48 @@ const text = strings({
 
 export type PhoneDock = "work" | "turns" | null;
 
+/** The longer of a dock's way in (small) and out (exit-small), and a margin. */
+const DOCK_MOTION_MS = 180 + 100;
+
+/**
+ * The dock shown and its way in or out (T-19): a panel the reader opens rises
+ * from its button, one they close fades back into it, taking no taps on its
+ * way. Any other change is at once: navigating, switching docks, or the panel
+ * coming back as the on-screen keyboard goes. `choose` is for the reader's
+ * own open and close; `end` for the animation's end.
+ */
+export function usePhoneDockMotion(open: PhoneDock, setOpen: (dock: PhoneDock) => void) {
+  const [moving, setMoving] = useState<{ dock: "work" | "turns"; way: "in" | "out" } | null>(null);
+  const choose = useCallback((dock: PhoneDock) => {
+    setOpen(dock);
+    if (!animates()) setMoving(null);
+    else setMoving(dock ? { dock, way: "in" } : open ? { dock: open, way: "out" } : null);
+  }, [open, setOpen]);
+  // A change it did not make (navigation) stops it.
+  useEffect(() => {
+    setMoving((was) => (was && (was.way === "in" ? was.dock === open : open === null) ? was : null));
+  }, [open]);
+  useEffect(() => {
+    if (!moving) return;
+    const timer = window.setTimeout(() => setMoving(null), DOCK_MOTION_MS);
+    return () => window.clearTimeout(timer);
+  }, [moving]);
+  const end = useCallback(() => setMoving(null), []);
+  return { shown: open ?? (moving?.way === "out" ? moving.dock : null), way: moving?.way ?? null, choose, end };
+}
+
 export function PhoneDockButtons({
   open,
   onOpen,
+  leaving = false,
   turn,
   turns,
   inputs = false,
 }: {
   open: PhoneDock;
   onOpen: (dock: PhoneDock) => void;
+  /** A closed panel is on its way out: its scrim stays, taking no taps. */
+  leaving?: boolean;
   /** The Turn being read, counted from 1, and how many there are. */
   turn: number;
   turns: number;
@@ -61,14 +95,14 @@ export function PhoneDockButtons({
   }, [open, onOpen]);
   return (
     <>
-      {open && (
+      {open ? (
         <button
           type="button"
           className="phone-dock-scrim"
           aria-label={open === "work" ? t.closeWork : t.closeTurns}
           onClick={() => onOpen(null)}
         />
-      )}
+      ) : leaving && <div className="phone-dock-scrim" aria-hidden="true" />}
       <button
         type="button"
         className="phone-dock-button phone-dock-work"
