@@ -1806,9 +1806,9 @@ test("what each kind of study keeps apart shows as given with what it cannot sho
     }],
     ["zh-Hans", {
       bound: ["证明 · 枚举核对至 n ≤ 12", "有限枚举不是一般性证明。", "证明义务"],
-      timing: ["层级：1 台机器 · 2 次构建 · 10 个进程 · 5 次迭代", "同一进程内的多次迭代不是相互独立的运行。"],
+      timing: ["层级: 1 台机器 · 2 次构建 · 10 个进程 · 5 次迭代", "同一进程内的多次迭代不是相互独立的运行。"],
       gain: ["基线", "选模", "预算", "种子数", "数据划分"],
-      episodes: ["回合：20 计划 · 18 执行 · 12 完成 · 3 介入 · 6 停止 · ≈9007199254740992 排除", "这些计数会重叠"],
+      episodes: ["回合: 20 计划 · 18 执行 · 12 完成 · 3 介入 · 6 停止 · ≈9007199254740992 排除", "这些计数会重叠"],
       narrowed: "收窄活动 8 Machine B reverses it.",
       revised: "活动 9 收窄了这一适用范围: Machine B reverses it.",
     }],
