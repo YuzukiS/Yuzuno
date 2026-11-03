@@ -1,0 +1,136 @@
+import "./jsdom-guard.mjs";
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { JSDOM, VirtualConsole } from "jsdom";
+import { uiTestBundle } from "./ui-test-bundle.mjs";
+
+// A dialog's exit (T-19 M1, DialogExitGhost.tsx): Radix removes the dialog at
+// once, and a copy that nothing can reach fades out instead. jsdom has no Web
+// Animations, so the app makes no copy there; these tests give it a stub
+// `animate` to make one. jsdom plays no CSS animation either, so the copy
+// goes by its 400 ms fallback. Timing, focus and clicks are checked in
+// Chromium (motion-1b-check.mjs).
+const dist = pathToFileURL(resolve(process.env.YUZUNO_UI_DIST || "dist") + "/");
+const html = await readFile(new URL("index.html", dist), "utf8");
+const bundle = await uiTestBundle(new URL(html.match(/src="\/(assets\/[^" ]+\.js)"/)[1], dist));
+const pause = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(read, message, ms = 4000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = read();
+    if (value) return value;
+    if (Date.now() > deadline) assert.fail(message);
+    await pause(25);
+  }
+}
+
+const agent = (id, name) => ({
+  id, name, goal: "", cwd: "/w", model: "m", color: "green", status: "idle", createdAt: "", updatedAt: "",
+  unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", harness: "codex", connectionState: "connected",
+});
+const agents = [agent("a", "Mori"), agent("b", "Hana")];
+
+async function mount({ animations = true, reduced = false } = {}) {
+  const errors = [];
+  const vc = new VirtualConsole();
+  vc.on("jsdomError", (e) => errors.push(e.message));
+  const dom = new JSDOM('<html><body><div id="root"></div></body></html>', {
+    url: "http://127.0.0.1:4492/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc,
+  });
+  const w = dom.window;
+  w.matchMedia = (media) => ({ media, matches: reduced && /reduced-motion: reduce/.test(media), addEventListener() {}, removeEventListener() {} });
+  if (animations) w.Element.prototype.animate = () => ({ addEventListener() {}, cancel() {}, finished: Promise.resolve() });
+  w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  w.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
+  w.EventSource = class { addEventListener() {} close() {} };
+  w.HTMLElement.prototype.scrollIntoView = () => {};
+  w.HTMLElement.prototype.scrollTo = () => {};
+  const project = { id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" };
+  const response = (body) => ({ ok: true, status: 200, json: async () => structuredClone(body), text: async () => JSON.stringify(body) });
+  w.fetch = async (url) => {
+    const path = new URL(String(url), "http://127.0.0.1:4492").pathname;
+    if (path === "/api/workspace") return response({ workspace: { id: "fixture" }, agents, projects: [project], runtime: { connected: true }, defaultCwd: "/w" });
+    const detail = /^\/api\/agents\/([ab])$/.exec(path);
+    if (detail) return response({ agent: agents.find((a) => a.id === detail[1]), pending: [], artifacts: [], turns: [] });
+    return response({});
+  };
+  w.eval(bundle);
+  const doc = w.document;
+  await waitFor(() => doc.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori is open");
+  return { w, doc, errors, close: () => w.close() };
+}
+const ghost = (page) => page.doc.querySelector(".dialog-exit-ghost");
+const dialogs = (page) => [...page.doc.querySelectorAll('[role="dialog"]')].filter((el) => !ghost(page)?.contains(el));
+const escape = (page) => page.doc.activeElement.dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+
+async function openNewAgent(page) {
+  const add = await waitFor(() => page.doc.querySelector(".add-agent"), "New agent is offered");
+  add.click();
+  return waitFor(() => dialogs(page)[0], "the New agent dialog opens");
+}
+
+test("a closed dialog leaves a copy no one can reach, with what was typed, gone by 400 ms; the dialog itself goes at once", async () => {
+  const page = await mount();
+  try {
+    const dialog = await openNewAgent(page);
+    assert.ok(dialog.classList.contains("modal") && !dialog.classList.contains("modal-confirm"), "an ordinary dialog: it may rise as it enters");
+    const field = dialog.querySelector('input[type="text"], input:not([type]), textarea');
+    assert.ok(field, "the dialog has a field to type in");
+    field.value = "Typed before closing";
+    escape(page);
+    await pause(0);
+    assert.deepEqual(dialogs(page), [], "the dialog is gone in the close");
+    assert.equal(page.doc.querySelectorAll("[data-aria-hidden]").length, 0, "Radix's aria-hidden on the rest of the page is undone");
+    const copy = ghost(page);
+    assert.ok(copy, "a copy fades out instead");
+    assert.equal(copy.getAttribute("aria-hidden"), "true");
+    assert.ok(copy.hasAttribute("inert"));
+    assert.equal(copy.parentElement, page.doc.body);
+    assert.deepEqual([...copy.children].map((el) => el.classList.contains("modal") ? "box" : el.className), ["modal-overlay", "box"]);
+    assert.equal(copy.querySelectorAll("[id], [role], [name], [for], [aria-modal], [aria-labelledby], [aria-describedby], [tabindex]").length, 0,
+      "nothing in it is a dialog, a field's name, a label target or a tab stop");
+    assert.ok([...copy.querySelectorAll("input, textarea")].some((el) => el.value === "Typed before closing"), "it shows what was typed");
+    await pause(450);
+    assert.equal(ghost(page), null, "gone by the 400 ms fallback");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("with reduced motion, or without Web Animations, a dialog simply goes", async () => {
+  for (const options of [{ reduced: true }, { animations: false }]) {
+    const page = await mount(options);
+    try {
+      await openNewAgent(page);
+      escape(page);
+      await pause(0);
+      assert.deepEqual(dialogs(page), []);
+      assert.equal(ghost(page), null, JSON.stringify(options));
+      assert.deepEqual(page.errors, []);
+    } finally { page.close(); }
+  }
+});
+
+test("a confirmation removed while open (Disconnect, Cancel) leaves a copy too, and only fades", async () => {
+  const page = await mount();
+  try {
+    const more = await waitFor(() => page.doc.querySelector(".agent-actions-button"), "an Agent's actions are offered");
+    more.click();
+    const item = await waitFor(() => [...page.doc.querySelectorAll('[role="menuitem"]')].find((el) => /^Disconnect/.test(el.textContent.trim())),
+      "Disconnect is offered for a connected idle Codex Agent");
+    item.click();
+    const dialog = await waitFor(() => dialogs(page)[0], "the Disconnect confirmation opens");
+    assert.ok(dialog.classList.contains("modal-confirm"), "a confirmation only fades in");
+    [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === "Cancel").click();
+    await pause(0);
+    assert.deepEqual(dialogs(page), [], "the dialog is removed with its Agent");
+    const copy = ghost(page);
+    assert.ok(copy, "its copy was taken as it unmounted, nodes still attached");
+    assert.ok(copy.querySelector(".modal.modal-confirm"), "and fades out without moving");
+    await pause(450);
+    assert.equal(ghost(page), null);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});

@@ -91,6 +91,7 @@ export function DisconnectAgentDialog({
   return (
     <Modal
       open={open}
+      confirm
       onOpenChange={(next) => !busy && onOpenChange(next)}
       title={t.title(agent.name)}
       description={t.description}
