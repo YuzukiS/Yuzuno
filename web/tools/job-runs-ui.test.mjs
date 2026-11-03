@@ -255,3 +255,15 @@ test("a task's Jobs show what it recorded spending: every attempt once, unknown 
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+test("an answer that is not a spend summary is said, and the task's panel stays (T-17)", async () => {
+  const p = mount(url => url.startsWith('/api/jobs/runs?') ? { runs: [], hasMore: false } : page([]));
+  try {
+    await open(p);
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: 'T-105' } }));
+    await until(() => p.doc.querySelector('.job-task-spend'));
+    assert.match(p.doc.querySelector('.job-task-spend').textContent, /Could not read the recorded spend: Core's answer was not a spend summary/);
+    assert.equal(p.doc.querySelector('.job-task-scope').textContent, 'Task T-105', 'the panel around it stays');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});

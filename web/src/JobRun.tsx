@@ -191,6 +191,8 @@ const text = strings({
   gpuNotMeasured: (n: number) => `GPU use is not measured; ${n} attempt${n === 1 ? "" : "s"} reserved a GPU`,
   partial: "Only the newest 5000 attempts are added up",
   spendNote: "A soft total, not a bill or a limit: failed and retried attempts count, unknown is never zero, and nothing resets when the method or the run changes.",
+  spendUnreadable: "Core's answer was not a spend summary",
+  spendFailed: (error: string) => `Could not read the recorded spend: ${error}`,
 }, {
   run: {
     waiting_analysis: "等待分析",
@@ -275,6 +277,8 @@ const text = strings({
   gpuNotMeasured: (n) => `GPU 用量未测量；${n} 次尝试预留了 GPU`,
   partial: "只合计了最新的 5000 次尝试",
   spendNote: "这是软性合计，不是账单也不是上限：失败和重试的尝试都计入，未知从不当作零，更换方法或运行也不会清零。",
+  spendUnreadable: "Core 的回答不是花费汇总",
+  spendFailed: (error) => `无法读取记录的花费：${error}`,
 });
 type Text = ReturnType<typeof text>;
 const ended = new Set(["failed", "cancelled", "rejected", "interrupted"]);
@@ -472,13 +476,25 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
     setSpend(null);
     setError("");
     post<TaskSpend>("/collaboration/job_cost", { taskId })
-      .then((value) => current && setSpend(value))
+      .then((value) => {
+        if (!current) return;
+        // Only an answer of the expected shape is added up; anything else
+        // says it could not be read, and the panel around it stays.
+        if (typeof value?.usd?.knownUsd === "number" && typeof value.compute?.cpuSeconds === "number" && value.gpu)
+          setSpend(value);
+        else setError(t.spendUnreadable);
+      })
       .catch((e) => current && setError(errorText(e)));
     return () => {
       current = false;
     };
   }, [taskId, revision]);
-  if (!spend) return error ? <p className="inline-error" role="alert">{error}</p> : null;
+  if (!spend)
+    return error ? (
+      <JobCard title={t.spendTitle} className="job-task-spend">
+        <p className="job-footnote">{t.spendFailed(error)}</p>
+      </JobCard>
+    ) : null;
   const { usd: cost, compute, gpu } = spend;
   const gaps = [
     cost.attemptsWithUnknown > 0 && t.unknownAmount(cost.attemptsWithUnknown),
