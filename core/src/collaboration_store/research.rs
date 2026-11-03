@@ -323,11 +323,12 @@ fn fix_entry(db: &Connection, task: &SharedTask, entry: &Value, ids: &mut std::c
         for field in ["value", "low", "high"] {
             match value.get(field) {
                 None | Some(Value::Null) => ensure!(field != "value", "invalid_input: an entry's value needs value"),
-                Some(number) => {
-                    let number = number.as_f64().filter(|n| n.is_finite())
-                        .with_context(|| format!("invalid_input: an entry's {field} is a finite number"))?;
-                    kept[field] = json!(number);
+                // Kept as written: checked to be a finite number, never
+                // converted, so an integer past 2^53 stays exact (#479 R1).
+                Some(number @ Value::Number(n)) if n.as_f64().is_some_and(f64::is_finite) => {
+                    kept[field] = number.clone();
                 }
+                Some(_) => bail!("invalid_input: an entry's {field} is a finite number"),
             }
         }
         out["value"] = kept;

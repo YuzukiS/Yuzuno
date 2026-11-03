@@ -91,6 +91,7 @@ const text = strings({
   lowMissing: "low not given",
   highMissing: "high not given",
   noValue: "No value given",
+  inexact: "≈: this page cannot show integers past 2^53 exactly; Core keeps the value as written.",
   unit: (unit: string) => `unit ${unit}`,
   field: { theory: "Theory", systems: "Systems", ml: "ML", robotics: "Robotics", other: "Other" } as Record<string, string>,
   status: {
@@ -162,6 +163,7 @@ const text = strings({
   lowMissing: "下限未给",
   highMissing: "上限未给",
   noValue: "未给数值",
+  inexact: "≈：本页面无法精确显示超过 2^53 的整数；Core 按原样保存该数值。",
   unit: (unit) => `单位 ${unit}`,
   field: { theory: "理论", systems: "系统", ml: "ML", robotics: "机器人", other: "其他" },
   status: { supported: "得到支持", conditional: "在条件下成立", unsupported: "不支持", open: "未定" },
@@ -213,8 +215,12 @@ const text = strings({
 });
 
 const short = (sha: string) => sha.slice(0, 12);
-/** A number as its author gave it, with a true minus sign. */
-const figure = (n: number) => String(n).replace("-", "−");
+/** Past 2^53 a browser cannot hold every integer exactly: Core keeps the
+ * number as written, but this page has only the nearest one it can hold. */
+const inexact = (n: number) => Number.isInteger(n) && !Number.isSafeInteger(n);
+/** A number as its author gave it, with a true minus sign; marked ≈ when
+ * this page cannot show it exactly. */
+const figure = (n: number) => (inexact(n) ? "≈" : "") + String(n).replace("-", "−");
 
 /** A comparison's entries: every one, left out or not, each with why. */
 function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; comparability?: Comparability; now?: ResearchEntry[] }) {
@@ -247,7 +253,10 @@ function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; co
             </span>
             {entry.reason && <span className="task-research-note">{entry.reason}</span>}
             {entry.value ? (
-              <span className="task-research-value">
+              <span
+                className="task-research-value"
+                title={[entry.value.value, entry.value.low, entry.value.high].some((n) => n !== undefined && inexact(n)) ? t.inexact : undefined}
+              >
                 {figure(entry.value.value)}
                 {(entry.value.low !== undefined || entry.value.high !== undefined) &&
                   ` [${entry.value.low !== undefined ? figure(entry.value.low) : t.lowMissing}, ${

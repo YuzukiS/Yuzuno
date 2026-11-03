@@ -1725,3 +1725,38 @@ test("a comparison entry shows each part its author gave and says which part is 
     }
   }
 });
+
+test("an integer past 2^53 reads as approximate on this page, never as exact; others as given (T-17)", async () => {
+  const entries = [
+    // JSON.parse gives this page 9007199254740992 for Core's 9007199254740993.
+    { id: "big", label: "Big", status: "included", unit: "events", value: JSON.parse('{"value":9007199254740993,"low":-9007199254740993}') },
+    { id: "small", label: "Small", status: "included", unit: "events", value: { value: -1.25, high: 12 } },
+  ];
+  const record = { schema: "research/1", type: "comparison", id: "counts", title: "Event counts", text: "As counted.", entries,
+    comparability: { aligned: false, shared: { unit: "events" }, differs: [], unknown: ["definition", "level", "method"],
+      counts: { included: 2, excluded: 0, missing: 0, not_done: 0 } } };
+  for (const [language, note] of [
+    ["en", "≈: this page cannot show integers past 2^53 exactly; Core keeps the value as written."],
+    ["zh-Hans", "≈：本页面无法精确显示超过 2^53 的整数；Core 按原样保存该数值。"],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(9, record, "Counted.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
+      const [big, small] = card.querySelectorAll(".task-research-value");
+      const high = language === "en" ? "high not given" : "上限未给";
+      assert.equal(big.textContent, `≈9007199254740992 [≈−9007199254740992, ${high}] events`);
+      assert.equal(big.getAttribute("title"), note);
+      assert.equal(small.textContent, `−1.25 [${language === "en" ? "low not given" : "下限未给"}, 12] events`);
+      assert.equal(small.getAttribute("title"), null, "an exact number is not marked");
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
