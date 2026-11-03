@@ -4,8 +4,8 @@
 // - while Core has not answered, New Agent defaults, Phone access and Workspace backup each say they
 //   are reading (a status line), and show none of their settings yet;
 // - once Core answers, the line is gone and the settings show;
-// - opened again and failing, the line shows while the read is on its way, then gives way to the
-//   error alone.
+// - in another window, the read failing: the line shows while it is on its way, then gives way to
+//   the error alone (an editor once opened stays mounted, so each read checked is a window's first).
 // On the desktop (1280×860) and a phone (390×844), each with normal and reduced motion; the lines in
 // Chinese once, on the desktop. Writes: none but the app's own saves of where an Agent was read;
 // anything else is refused and counted. Served from http://127.0.0.1. Chromium is not Safari.
@@ -130,14 +130,20 @@ for (const run of runs) {
   const tag = run.name;
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion, locale: "en-US",
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
-  const page = await context.newPage();
-  page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
-  page.on("console", (m) => { if (m.type() === "error") report.console.push(`${tag}: ${m.text().slice(0, 600)}`); });
-  await page.route("**/*", serve);
-  await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
-  if (run.language)
-    await page.addInitScript((language) => localStorage.setItem("yuzuno.language", JSON.stringify({ language })), run.language);
-  const openEditor = async (s) => {
+  /** A window of the app, opened afresh: an editor once opened stays mounted, so each read checked is its first. */
+  const open = async () => {
+    const page = await context.newPage();
+    page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
+    page.on("console", (m) => { if (m.type() === "error") report.console.push(`${tag}: ${m.text().slice(0, 600)}`); });
+    await page.route("**/*", serve);
+    await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
+    if (run.language)
+      await page.addInitScript((language) => localStorage.setItem("yuzuno.language", JSON.stringify({ language })), run.language);
+    await page.goto("http://127.0.0.1:4320/");
+    await page.locator(".agent-row").first().waitFor({ timeout: 15_000 });
+    return page;
+  };
+  const openEditor = async (page, s) => {
     if (!(await page.locator(".settings-search input").isVisible())) {
       await page.getByRole("button", { name: run.language ? "设置与更新" : "Settings and updates" }).click({ timeout: 10_000 });
       await page.locator(".settings-search input").waitFor({ timeout: 10_000 });
@@ -148,7 +154,7 @@ for (const run of runs) {
     await page.locator(`#settings-editor-${s.editor}`).waitFor({ timeout: 10_000 });
   };
   /** The section as it is now: its status lines, alerts and whether its settings show. */
-  const state = (s) => page.evaluate(([section, settings]) => {
+  const state = (page, s) => page.evaluate(([section, settings]) => {
     const el = document.querySelector(section);
     if (!el) return null;
     return {
@@ -157,48 +163,48 @@ for (const run of runs) {
       settings: !!el.querySelector(settings),
     };
   }, [s.section, s.settings]);
-  /** Another editor, so the section's own goes and comes back with a read of its own. */
-  const away = async (s) => {
-    const other = sections.find((o) => o !== s);
-    await openEditor(other);
-    await page.locator(`${other.section} ${other.settings}`).waitFor({ timeout: 10_000 });
+  /** Opens the section with its read held, and how it is once that read is on its way. */
+  const opened = async (page, s) => {
+    hold(s.path);
+    await openEditor(page, s);
+    await waiting(s.path);
+    // A frame for what the open drew, with Core's answer still to come.
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    return state(page, s);
   };
   try {
-    await page.goto("http://127.0.0.1:4320/");
-    await page.locator(".agent-row").first().waitFor({ timeout: 15_000 });
+    // Each section opened, its read answered.
+    let page = await open();
     for (const s of sections) {
       const words = run.language ? s.zh : s.en;
-      hold(s.path);
-      await openEditor(s);
-      await waiting(s.path);
-      // A frame for what the open drew, with Core's answer still to come.
-      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-      const before = report.states[`${tag}: ${s.name}: before the answer`] = await state(s);
+      const before = report.states[`${tag}: ${s.name}: before the answer`] = await opened(page, s);
       ok(`${tag}: ${s.name} while Core has not answered: the section says "${words}" in a status line, and shows none of its settings yet (${JSON.stringify(before)})`,
         !!before && before.status.includes(words) && !before.settings && before.alerts.length === 0, before);
       await answer(s.path, s.view);
       await page.locator(`${s.section} ${s.settings}`).waitFor({ timeout: 10_000 }).catch(() => {});
-      const after = report.states[`${tag}: ${s.name}: answered`] = await state(s);
+      const after = report.states[`${tag}: ${s.name}: answered`] = await state(page, s);
       ok(`${tag}: ${s.name} once Core answers: the line is gone and its settings show (${JSON.stringify(after)})`,
         !!after && !after.status.includes(words) && after.settings && after.alerts.length === 0, after);
-      if (run.language) continue;
-      // Opened again, the read on its way fails.
-      await away(s);
-      hold(s.path);
-      await openEditor(s);
-      await waiting(s.path);
-      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-      const again = report.states[`${tag}: ${s.name}: read again`] = await state(s);
-      ok(`${tag}: ${s.name} opened again: the line shows while its read is on its way (${JSON.stringify(again)})`,
-        !!again && again.status.includes(words) && !again.settings && again.alerts.length === 0, again);
-      await answer(s.path, { error: "fixture: Core could not read this" }, 500);
-      await page.locator(`${s.section} [role=alert]`).first().waitFor({ timeout: 10_000 }).catch(() => {});
-      const failed = report.states[`${tag}: ${s.name}: failed`] = await state(s);
-      ok(`${tag}: ${s.name} failing: the line gives way to the error alone (${JSON.stringify(failed)})`,
-        !!failed && !failed.status.includes(words) && failed.alerts.some((a) => a.includes("fixture: Core could not read this")) && !failed.settings, failed);
-      await away(s);
     }
     await page.screenshot({ path: join(output, `${tag}.png`) });
+    await page.close();
+    if (!run.language) {
+      // In another window, each section's read failing.
+      page = await open();
+      for (const s of sections) {
+        const words = s.en;
+        const again = report.states[`${tag}: ${s.name}: read again`] = await opened(page, s);
+        ok(`${tag}: ${s.name} in another window, its read failing: while it is on its way, the line shows (${JSON.stringify(again)})`,
+          !!again && again.status.includes(words) && !again.settings && again.alerts.length === 0, again);
+        await answer(s.path, { error: "fixture: Core could not read this" }, 500);
+        await page.locator(`${s.section} [role=alert]`).first().waitFor({ timeout: 10_000 }).catch(() => {});
+        const failed = report.states[`${tag}: ${s.name}: failed`] = await state(page, s);
+        ok(`${tag}: ${s.name} failing: the line gives way to the error alone (${JSON.stringify(failed)})`,
+          !!failed && !failed.status.includes(words) && failed.alerts.some((a) => a.includes("fixture: Core could not read this")) && !failed.settings, failed);
+      }
+      await page.screenshot({ path: join(output, `${tag}-failed.png`) });
+      await page.close();
+    }
   } catch (error) {
     report.failures.push({ name: `${tag}: sequence ran to its end`, detail: String(error?.stack || error).slice(0, 1200) });
     console.log(`FAIL ${tag}: sequence ran to its end: ${String(error).slice(0, 300)}`);
