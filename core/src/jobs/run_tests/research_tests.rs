@@ -120,7 +120,8 @@ fn a_tasks_recorded_spend_counts_each_attempt_once_and_keeps_unknown_apart() {
     assert_eq!(cost["byStatus"], json!({"cancelled":1,"failed":1,"running":1,"succeeded":1}));
     assert_eq!(cost["usd"], json!({"knownUsd":1.75,"attemptsReporting":2,"attemptsNotRecorded":1,"attemptsWithUnknown":1,
         "unknownEntries":1,"invalidLines":0,"attemptsRunning":1,"complete":false}));
-    assert_eq!(cost["compute"], json!({"cpuSeconds":0.0,"workerWallSeconds":0.0,"attemptsMeasured":0,"attemptsUnmeasured":3}),
+    assert_eq!(cost["compute"], json!({"cpuSeconds":0.0,"attemptsWithCpu":0,"attemptsWithoutCpu":3,"workerWallSeconds":0.0,
+        "attemptsWithWall":0,"attemptsWithoutWall":3,"attemptsMeasured":0,"attemptsUnmeasured":3}),
         "no worker evidence: unmeasured, not zero seconds measured");
     assert_eq!((cost["runs"].clone(), cost["reusedStages"].clone()), (json!(1), json!(1)));
     assert_eq!(cost["gpu"], json!({"attemptsReserving":0,"measured":false}), "GPU use is not measured");
@@ -184,6 +185,55 @@ fn an_empty_usage_file_recorded_no_spend_and_an_entry_of_zero_dollars_is_a_known
         "attemptsWithUnknown":0,"unknownEntries":0,"invalidLines":0,"attemptsRunning":0,"complete":true}));
     assert_eq!(s.task_cost("T-3").unwrap()["usd"], json!({"knownUsd":0.0,"attemptsReporting":0,"attemptsNotRecorded":1,
         "attemptsWithUnknown":0,"unknownEntries":0,"invalidLines":0,"attemptsRunning":0,"complete":false}));
+}
+
+/// A finished attempt of `task` with its worker's final evidence, shaped as
+/// the collector records it, with these CPU and monotonic start/exit counters.
+fn metered(task: &str, id: &str, cpu: Value, start: Value, end: Value) -> Value {
+    let attempt = format!("{id}-attempt");
+    json!({"id":id,"taskId":task,"agentId":"a","attempt":attempt,"bootId":"boot","status":"succeeded",
+        "resources":{"cpuMillis":1000,"memoryMiB":64,"swapMiB":0},
+        "result":{"jobId":id,"attempt":attempt,"bootId":"boot","status":"succeeded",
+            "started":{"jobId":id,"attempt":attempt,"bootId":"boot","invocationId":"invocation","at":100.0},
+            "evidence":{"systemd":{"InvocationID":"invocation","MainPID":"0","SubState":"exited","Result":"success",
+                "MemoryPeak":"67108864","CPUUsageNSec":cpu,
+                "ExecMainStartTimestampMonotonic":start,"ExecMainExitTimestampMonotonic":end}}}})
+}
+
+fn insert_job(s: &Store, job: &Value) {
+    s.db.write().unwrap().execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)",
+        params![job["id"].as_str().unwrap(), job["taskId"].as_str().unwrap(), job["status"].as_str().unwrap(), job.to_string()]).unwrap();
+}
+
+#[test]
+fn cpu_and_wall_time_are_each_added_where_an_attempt_measured_them() {
+    let (_dir, s) = setup();
+    let task = crate::collaboration_store::task_key(&s.db.read().unwrap(), "T-1").unwrap().0;
+    let (start, end) = (json!("1000000"), json!("4000000"));
+    for job in [
+        metered(&task, "both", json!("1500000000"), start.clone(), end.clone()),
+        metered(&task, "cpu-missing", Value::Null, start.clone(), end.clone()),
+        metered(&task, "cpu-sentinel", json!(u64::MAX.to_string()), start.clone(), end.clone()),
+        // An exit before the start is no wall time; the CPU time still counts.
+        metered(&task, "wall-invalid", json!("2000000000"), json!("5000000"), json!("1000000")),
+        metered(&task, "neither", json!("[not set]"), Value::Null, Value::Null),
+        metered(&task, "cpu-zero", json!("0"), start.clone(), end.clone()),
+    ] {
+        insert_job(&s, &job);
+    }
+    // Evidence a local summary does not meter: a remote attempt, and one whose
+    // evidence names another attempt. Their counters are never added.
+    let mut remote = metered(&task, "remote", json!("9000000000"), start.clone(), end.clone());
+    remote["executor"] = json!({"kind":"ssh","machineId":"synthetic"});
+    let mut other = metered(&task, "other", json!("9000000000"), start, end);
+    other["result"]["attempt"] = json!("someone-else");
+    insert_job(&s, &remote);
+    insert_job(&s, &other);
+    let cost = s.task_cost("T-1").unwrap();
+    assert_eq!(cost["attempts"], 8);
+    assert_eq!(cost["compute"], json!({"cpuSeconds":3.5,"attemptsWithCpu":3,"attemptsWithoutCpu":5,
+        "workerWallSeconds":12.0,"attemptsWithWall":4,"attemptsWithoutWall":4,"attemptsMeasured":2,"attemptsUnmeasured":6}),
+        "CPU from both, wall-invalid and an explicit zero; wall from both, cpu-missing, cpu-sentinel and cpu-zero; remote and other add nothing");
 }
 
 #[test]

@@ -95,7 +95,18 @@ export type TaskSpend = {
     attemptsRunning: number;
     complete: boolean;
   };
-  compute: { cpuSeconds: number; workerWallSeconds: number; attemptsMeasured: number; attemptsUnmeasured: number };
+  compute: {
+    cpuSeconds: number;
+    workerWallSeconds: number;
+    /** Each added over the attempts that measured it; absent from an older Core. */
+    attemptsWithCpu?: number;
+    attemptsWithoutCpu?: number;
+    attemptsWithWall?: number;
+    attemptsWithoutWall?: number;
+    /** Attempts with both measured, and the rest. */
+    attemptsMeasured: number;
+    attemptsUnmeasured: number;
+  };
   gpu: { attemptsReserving: number; measured: boolean };
   runs: number;
   reusedStages: number;
@@ -190,7 +201,8 @@ const text = strings({
   spendRunning: (n: number) => `${n} still running`,
   compute: "Compute",
   cpu: (seconds: string, measured: number) => `${seconds} s of CPU over ${measured} measured attempt${measured === 1 ? "" : "s"}`,
-  unmeasured: (n: number) => `${n} not measured`,
+  cpuMissing: (n: number) => `${n} without a CPU measurement`,
+  cpuNone: "CPU not measured",
   attempts: "Attempts",
   attemptsLine: (n: number, runs: number) => `${n} attempt${n === 1 ? "" : "s"}, each counted once, in ${runs} run${runs === 1 ? "" : "s"} and single Jobs`,
   reusedStages: (n: number) => `${n} reused stage${n === 1 ? "" : "s"} ran nothing and ${n === 1 ? "is" : "are"} not counted again`,
@@ -279,7 +291,8 @@ const text = strings({
   spendRunning: (n) => `${n} 次仍在运行`,
   compute: "计算",
   cpu: (seconds, measured) => `${measured} 次已测量的尝试共用 CPU ${seconds} 秒`,
-  unmeasured: (n) => `${n} 次未测量`,
+  cpuMissing: (n) => `${n} 次没有 CPU 计量`,
+  cpuNone: "CPU 未测量",
   attempts: "尝试",
   attemptsLine: (n, runs) => `${n} 次尝试，每次只计一次，分布在 ${runs} 个运行和单独的 Job 中`,
   reusedStages: (n) => `${n} 个复用的阶段没有运行，不再重复计算`,
@@ -515,6 +528,10 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
   // older Core says only that something stopped, read as the attempts.
   const limit = spend.limit ?? 5000;
   const attemptsPartial = (spend.attemptsTruncated ?? spend.truncated) && t.partialAttempts(limit);
+  // CPU time is said over the attempts that measured CPU, whatever their
+  // wall time; an older Core counts only attempts with both.
+  const withCpu = compute.attemptsWithCpu ?? compute.attemptsMeasured;
+  const withoutCpu = compute.attemptsWithoutCpu ?? compute.attemptsUnmeasured;
   const gaps = [
     cost.attemptsWithUnknown > 0 && t.unknownAmount(cost.attemptsWithUnknown),
     cost.attemptsNotRecorded > 0 && t.notRecorded(cost.attemptsNotRecorded),
@@ -529,8 +546,8 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
         <dt>{t.compute}</dt>
         <dd>
           {[
-            t.cpu(compute.cpuSeconds.toFixed(1), compute.attemptsMeasured),
-            compute.attemptsUnmeasured > 0 && t.unmeasured(compute.attemptsUnmeasured),
+            withCpu > 0 ? t.cpu(compute.cpuSeconds.toFixed(1), withCpu) : t.cpuNone,
+            withoutCpu > 0 && t.cpuMissing(withoutCpu),
             gpu.attemptsReserving > 0 && t.gpuNotMeasured(gpu.attemptsReserving),
             attemptsPartial,
           ]
