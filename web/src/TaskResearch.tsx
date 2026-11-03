@@ -78,7 +78,7 @@ const text = strings({
     `The method as cited is version ${version ?? "?"}` + (latest && latest !== seq ? `; a newer version is activity ${latest}` : ""),
   now: "Now",
   state: {
-    recorded_match: "Job record still matches",
+    recorded_match: "the Job's record still lists this file and hash; the file itself was not read",
     attempt_mismatch: "Job record no longer shows this attempt",
     artifact_missing: "Job record no longer lists this file",
     artifact_mismatch: "Job record now differs",
@@ -117,7 +117,7 @@ const text = strings({
     `引用的方法是第 ${version ?? "?"} 版` + (latest && latest !== seq ? `；较新的版本是活动 ${latest}` : ""),
   now: "现在",
   state: {
-    recorded_match: "Job 记录仍然一致",
+    recorded_match: "Job 记录仍列出这个文件和哈希；没有读取文件本身",
     attempt_mismatch: "Job 记录不再显示这次尝试",
     artifact_missing: "Job 记录不再列出这个文件",
     artifact_mismatch: "Job 记录现在不同",

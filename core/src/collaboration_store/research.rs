@@ -46,7 +46,7 @@ pub(super) const SCHEMA: &str = "CREATE INDEX IF NOT EXISTS collaboration_activi
     ON collaboration_task_activity(task_id,json_extract(data,'$.research.revises.activitySeq'))
     WHERE json_extract(data,'$.research.revises.activitySeq') IS NOT NULL;";
 
-const NOTE: &str = "A research record is its author's statement, fixed when it was written; a claim's status is the author's judgement, not a verdict, independent verification or acceptance. Each source shows the identity recorded with it and, separately, its state now. A Job source was a recorded match of this task's exact Job attempt when written; its state now compares retained Job records only, no file is read. A task source keeps its original producer and is not this task's artifact. An external source is as its author stated it and is never checked.";
+const NOTE: &str = "A research record is its author's statement, fixed when it was written; a claim's status is the author's judgement, not a verdict, independent verification or acceptance. Each source shows the identity recorded with it and, separately, its state now. A Job source was a recorded match of this task's exact Job attempt when written; its state now compares retained Job records only: no file is read, so whether the file can still be read is unknown, and nothing here keeps it. A file deleted or replaced at the same path never changes the recorded identity. A task source keeps its original producer and is not this task's artifact. An external source is as its author stated it and is never checked.";
 
 pub(super) fn schema() -> Value {
     let text = |max: usize| json!({"type":"string","maxLength":max});
@@ -298,9 +298,14 @@ fn cited_record(row: &Value) -> Option<Value> {
     })
 }
 
+/// A record's sources, if it has any; never adds a field to anything else.
+fn sources_mut(value: &mut Value) -> Option<&mut Vec<Value>> {
+    value.get_mut("research")?.get_mut("sources")?.as_array_mut()
+}
+
 /// Stored task references are UUIDs; answers name tasks as T-n.
 pub(super) fn project(db: &Connection, activity: &mut Value) -> Result<()> {
-    if let Some(sources) = activity["research"]["sources"].as_array_mut() {
+    if let Some(sources) = sources_mut(activity) {
         for source in sources {
             if source["kind"] == "task" {
                 if let Some(reference) = source["taskId"].as_str() {
@@ -316,7 +321,7 @@ pub(super) fn project(db: &Connection, activity: &mut Value) -> Result<()> {
 
 /// Retries name tasks either way; compare them as the stored UUID.
 pub(super) fn normalize(db: &Connection, input: &mut Value) {
-    if let Some(sources) = input["research"]["sources"].as_array_mut() {
+    if let Some(sources) = sources_mut(input) {
         for source in sources {
             if source["kind"] == "task" {
                 if let Some(reference) = source["taskId"].as_str() {
@@ -358,7 +363,8 @@ fn now(db: &Connection, task: &str, source: &Value) -> Result<Value> {
     Ok(match source["kind"].as_str() {
         Some("job") => {
             let binding = result_outcome::resolve(db, task, "", source)?;
-            json!({"state":binding["state"],"jobStatus":binding["jobStatus"],
+            // Only the Job's record is read: the file's availability is unknown.
+            json!({"state":binding["state"],"jobStatus":binding["jobStatus"],"file":"not_read",
                 "downloadable":binding["downloadable"],"index":binding["index"]})
         }
         Some("task") => {
@@ -377,7 +383,7 @@ fn now(db: &Connection, task: &str, source: &Value) -> Result<Value> {
 /// state now.
 fn view(db: &Connection, task: &SharedTask, seq: i64, row: Value) -> Result<Value> {
     let mut research = row["research"].clone();
-    if let Some(sources) = research["sources"].as_array_mut() {
+    if let Some(sources) = research.get_mut("sources").and_then(Value::as_array_mut) {
         for source in sources {
             source["now"] = now(db, &task.id, source)?;
         }

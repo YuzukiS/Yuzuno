@@ -101,7 +101,9 @@ fn a_record_is_a_comment_that_changes_nothing_else_and_reads_back_with_its_sourc
     assert!(read["revisedBy"].is_null());
     assert_eq!(read["actor"]["id"], "author");
     assert_eq!(read["research"]["sources"][0]["now"]["state"], "recorded_match");
+    assert_eq!(read["research"]["sources"][0]["now"]["file"], "not_read", "a record read is no claim that the file is there");
     assert_eq!(read["research"]["sources"][1]["now"], json!({"state":"stated"}));
+    assert!(read["note"].as_str().unwrap().contains("whether the file can still be read is unknown"));
     assert_eq!((read["method"]["activitySeq"].clone(), read["method"]["version"].clone()), (json!(m1), json!(1)));
     assert_eq!(read["method"]["research"]["text"], "Time each build in a fresh process; 10 processes.");
     assert!(read["note"].as_str().unwrap().contains("not a verdict"));
@@ -109,9 +111,11 @@ fn a_record_is_a_comment_that_changes_nothing_else_and_reads_back_with_its_sourc
     let history = store.collaboration_call(None, "task_get", json!({"taskId":"T-1"})).unwrap();
     let shown = history["activities"].as_array().unwrap().iter().find(|a| a["seq"] == c1).unwrap();
     assert_eq!(shown["research"], answer["activity"]["research"]);
-    // A plain comment is as it always was.
+    // A plain comment is as it always was, and other activities gain no field.
     let plain = store.collaboration_call(Some("author"), "task_comment", json!({"requestId":"plain","taskId":"T-1","body":"Just a note"})).unwrap();
     assert!(plain["activity"].get("research").is_none());
+    let history = store.collaboration_call(None, "task_get", json!({"taskId":"T-1"})).unwrap();
+    assert!(history["activities"][0].get("research").is_none(), "the created activity: {}", history["activities"][0]);
     assert!(error(store.collaboration_call(Some("author"), "task_research_get", json!({"taskId":"T-1","activitySeq":seq(&plain)})))
         .starts_with("not_found:"));
 }

@@ -1228,7 +1228,7 @@ test("a research record shows as its author wrote it with each source's identity
     await waitFor(() => /Version 2 of this record/.test(text()), "the record's version");
     assert.match(text(), /This is the newest version/);
     assert.match(text(), /The method as cited is version 1; a newer version is activity 6/);
-    assert.match(text(), /Now: Job record still matches/);
+    assert.match(text(), /Now: the Job's record still lists this file and hash; the file itself was not read/);
     assert.match(text(), /Now: Record readable/);
     assert.match(text(), /Now: Not checked/);
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
