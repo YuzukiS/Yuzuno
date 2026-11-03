@@ -299,7 +299,7 @@ for (const run of runs) {
           const t0 = performance.now();
           const seen = [];
           const frame = () => {
-            seen.push({ t: Math.round(performance.now() - t0), ...window.__panels().rail });
+            seen.push({ t: Math.round(performance.now() - t0), reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, ...window.__panels().rail });
             if (performance.now() - t0 < span) requestAnimationFrame(frame);
             else done(seen);
           };
@@ -311,8 +311,12 @@ for (const run of runs) {
         const back = await railFrames(300);
         report.frames[`${tag}: reduced motion turned on mid-way`] = { held, during, back };
         const inPlace = (f) => f.shown && !f.plays.length && f.opacity === 1 && f.transform === "none";
-        ok(`${tag}: reduced motion turned on while the Agent list comes in (held at 60 ms, opacity ${held.opacity}): it stops at once, the list in place (${during.length} frames)`,
-          held.held && held.opacity < 1 && during.length > 0 && during.every(inPlace), { held, during: during.slice(0, 3) });
+        // The change reaches the page on its own schedule: the frame drawn as it lands may still hold
+        // the move, unadvanced, at 60 ms (run fa9490c9 saw that at 12 ms, then the list in place).
+        const stillHeld = (f) => f.plays.length === 1 && Math.round(f.plays[0].current) === 60;
+        ok(`${tag}: reduced motion turned on while the Agent list comes in (held at 60 ms, opacity ${held.opacity}): it stops within a frame of the change, the list in place from then on (first frame: ${during[0] && inPlace(during[0]) ? "in place" : "still held"}; ${during.length} frames)`,
+          held.held && held.opacity < 1 && during.length > 1 && (inPlace(during[0]) || stillHeld(during[0])) && during.slice(1).every(inPlace),
+          { held, during: during.slice(0, 3) });
         ok(`${tag}: and turned off again, nothing plays again (${back.length} frames)`, back.length > 0 && back.every(inPlace), back.slice(0, 3));
 
         // A window narrowed while the Portal comes in: it covers the chat, and nothing is left playing.
