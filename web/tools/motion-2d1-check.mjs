@@ -7,7 +7,7 @@
 // one in a new native session, one shown again after a return from another Agent (also straight back,
 // before the other was read), the same list read again, or one made while the stream was down,
 // whether Core replays its announcement when the stream resumes or resets it (Lead 3299; a resume with
-// nothing to replay reads the conversation once, and the next request fades, R1 276d4a1d), or one
+// nothing to replay reads nothing, and once it has stayed quiet the next request fades, R1 276d4a1d), or one
 // announced while Home was over the conversation (Lead 3301); a request announced after each of these
 // fades again. Nothing plays under reduced motion, and reduced motion
 // turned on while it fades stops the fade.
@@ -329,14 +329,15 @@ for (const run of runs) {
     onlyShows("after a short break, Core resets the stream instead: the request made meanwhile",
       await bring(request("reset-1", "npm run deps"), "__resetReplay", 1500));
     fadesIn("after that recovery, a request announced live", await bring(request("live-after", "npm run size"), "__announce"));
-    // A short break that resumes with nothing to replay (R1 276d4a1d): the conversation is read once,
-    // and the first request announced after that read fades in.
+    // A short break that resumes with nothing to replay (R1 276d4a1d): the conversation is not read
+    // again (a resumed reconnect reads no conversation, ui.test #137), and once the stream has stayed
+    // quiet about Mori (1.5 s) the first request announced live fades in.
     const readsBefore = moriReads;
     await page.evaluate(() => window.__quietResume());
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(2000);
     const recoveryReads = moriReads - readsBefore;
-    ok(`${tag}: after a short break the stream resumes with nothing to replay: Mori's conversation is read once (${recoveryReads})`,
-      recoveryReads === 1, recoveryReads);
+    ok(`${tag}: after a short break the stream resumes with nothing to replay: Mori's conversation is not read again (${recoveryReads} reads)`,
+      recoveryReads === 0, recoveryReads);
     fadesIn("after that quiet recovery, the first request announced live", await bring(request("live-quiet", "npm run quiet"), "__announce"));
 
     // To another Agent and straight back, before that one is read: Mori's next detail is a new baseline,
