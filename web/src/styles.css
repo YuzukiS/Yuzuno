@@ -50,6 +50,8 @@
      under the text as it was, so a pressed control's text contrast is its
      resting contrast on every palette. */
   --press-shadow: inset 0 1px 3px rgb(0 0 0 / 16%);
+  /* The same on a transparent control; a dark theme differs (appearance.css). */
+  --press-shadow-quiet: inset 0 1px 3px rgb(0 0 0 / 16%);
 }
 * {
   box-sizing: border-box;
@@ -867,7 +869,6 @@ p {
 }
 .turn-divider .copy-button {
   font-size: calc(8px + var(--font-adjust, 3px));
-  padding-right: 0;
 }
 .message-label {
   display: flex;
@@ -1862,6 +1863,11 @@ p {
 .secondary-button:hover:not(:disabled) {
   background: #f0f4e7;
   border-color: #cbd7bc;
+}
+/* A transparent control is pressed in with its own shadow, whichever rule
+   below presses it: in a dark theme, the ring alone (appearance.css). */
+:is(.quiet-button, .icon-button, .catchup-nav, .conversation-action) {
+  --press-shadow: var(--press-shadow-quiet);
 }
 /* Press (T-19): ordinary buttons and chips dip to .97 and spring back, with
    the pressed-in shadow. Anything that approves, answers or destroys takes the
