@@ -350,6 +350,23 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // An Agent row this window just added (T-19 SH:R11): one it created,
+  // imported or forked, never one a read of the Workspace brings. It is
+  // brought into view at once, comes in over small (opacity, 4 px up) and
+  // settles once; under reduced motion it is there at once.
+  const [joined, setJoined] = useState<{ id: string; n: number } | null>(null);
+  const joinedRow = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    joinedRow.current = null;
+    if (!joined) return;
+    const row = [...document.querySelectorAll<HTMLElement>(".agent-list .agent-row")].find((shown) => shown.dataset.agentId === joined.id);
+    if (!row) return;
+    joinedRow.current = row;
+    row.scrollIntoView?.({ block: "nearest", behavior: "instant" });
+    return settleWhenLanded(row, "data-settle", false, "animation");
+  }, [joined]);
+  useSurfaceIn(joinedRow, joined?.n ?? 0, "small", !!joined, "translateY(4px)");
+  const markJoined = (id: string) => setJoined((last) => ({ id, n: (last?.n ?? 0) + 1 }));
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
@@ -3965,6 +3982,7 @@ export function App() {
           onForked={(outcome) => {
             const fork = outcome.agent!;
             const sourceId = agent.id;
+            if (!workspace?.agents.some((listed) => listed.id === fork.id)) markJoined(fork.id);
             // Draft protection: the unsent text is copied, never sent.
             copyDraft(sourceId, fork.id);
             setWorkspace((w) =>
@@ -4004,6 +4022,7 @@ export function App() {
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}
         onCreated={(a, source) => {
+          if (source !== "existing" && !workspace?.agents.some((listed) => listed.id === a.id)) markJoined(a.id);
           setWorkspace((w) =>
             w
               ? {
