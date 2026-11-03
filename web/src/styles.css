@@ -2078,10 +2078,11 @@ p {
   align-items: center;
   gap: 8px;
   max-width: 90vw;
+  /* A toast has nothing to click, and above a dialog it may sit on the
+     dialog's buttons (a phone's, at the bottom): clicks go through it. */
   pointer-events: none;
 }
 .toast {
-  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 9px;
