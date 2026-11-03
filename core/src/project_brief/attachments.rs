@@ -224,7 +224,46 @@ fn stage_one(cache: &Path, own: &Path, remote: bool, attachment: &Value, hold: O
         ("snapshot", json!(true)), ("mayChange", json!(false)), ("sha256", json!(sha))] {
         entry[field] = value;
     }
+    if kind == "image" {
+        if let Some((width, height)) = image_size(&bytes) {
+            entry["width"] = json!(width);
+            entry["height"] = json!(height);
+        }
+    }
     Ok(Ok(Staged { entry, sha: Some(sha), size }))
+}
+
+/// The longest side Core gives a kept image a size for.
+const IMAGE_SIDE: u32 = 65_535;
+
+/// The size a kept image is drawn at, read from its header alone (T-19
+/// HM:B14), so Home can give it its shape before it loads: a JPEG turned a
+/// quarter by its EXIF orientation is as wide as it is stored high. None
+/// when Core reads no size of that format (GIF, SVG, AVIF, BMP), the header
+/// is not one, a side is 0 or past IMAGE_SIDE, or a PNG or WebP says to turn
+/// it, which browsers do not all do: the image is kept all the same, and
+/// Home shows it without a known shape.
+fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    use image::{metadata::Orientation, ImageDecoder, ImageFormat, ImageReader, Limits};
+    let format = image::guess_format(bytes).ok()
+        .filter(|format| matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(IMAGE_SIDE);
+    limits.max_image_height = Some(IMAGE_SIDE);
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    if !(1..=IMAGE_SIDE).contains(&width) || !(1..=IMAGE_SIDE).contains(&height) {
+        return None;
+    }
+    let quarter = matches!(decoder.orientation().ok()?,
+        Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH);
+    match (quarter, format) {
+        (false, _) => Some((width, height)),
+        (true, ImageFormat::Jpeg) => Some((height, width)),
+        (true, _) => None,
+    }
 }
 
 fn write_snapshot(cache: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
@@ -278,7 +317,8 @@ pub(super) fn snapshot_bytes(db: &Connection, project: &str) -> Result<u64> {
     Ok(bytes as u64)
 }
 
-/// A history entry stops keeping its snapshots: they become references.
+/// A history entry stops keeping its snapshots: they become references,
+/// and the size read from a snapshot no longer holds for the file named.
 fn release(db: &Connection, seq: i64) -> Result<()> {
     db.execute("DELETE FROM project_brief_snapshots WHERE section_seq=?1", [seq])?;
     let data: String = db.query_row("SELECT data FROM project_brief_sections WHERE seq=?1", [seq], |r| r.get(0))?;
@@ -287,7 +327,10 @@ fn release(db: &Connection, seq: i64) -> Result<()> {
         if attachment["snapshot"] == true {
             attachment["snapshot"] = json!(false);
             attachment["mayChange"] = json!(true);
-            attachment.as_object_mut().unwrap().remove("sha256");
+            let entry = attachment.as_object_mut().unwrap();
+            for field in ["sha256", "width", "height"] {
+                entry.remove(field);
+            }
         }
     }
     db.execute("UPDATE project_brief_sections SET data=?2 WHERE seq=?1", params![seq, data.to_string()])?;

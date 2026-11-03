@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useTimeDisplay } from "../../time-preferences";
 import {
   ArrowUpRight,
@@ -23,6 +23,8 @@ import { useBriefDensity } from "../home-density";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
 import { OpenChoice } from "../../portal/OpenChoice";
 import { htmlFile } from "../../portal/html-file";
+import { useSurfaceIn } from "../../surface";
+import { CardFoldWorkspace } from "../card-fold";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -314,14 +316,116 @@ function Path({ path }: { path: string }) {
  * never changes the image being looked at or marked (T-177). */
 type Shown = { url: string; version: number; takenAt: string; title: string; ownerId: string };
 
+/** The size Core read from a kept image's bytes (T-19 HM:B14): both sides
+ * whole numbers from 1, or none (an older card, a format Core reads no size
+ * of, a file only referenced). */
+function shapeOf({ width, height }: SectionAttachment) {
+  const side = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value > 0;
+  return side(width) && side(height) ? { width, height } : null;
+}
+
+/** Snapshots this window has shown, so one shown again (Show all, Home
+ * opened again) is there at once rather than coming in a second time. */
+const shownHere = new Set<string>();
+
+/**
+ * A kept image in its box (T-19 HM:B14). With the size Core read, the box
+ * has the picture's own shape from its first frame, at most the card's width
+ * and 420 px high (200 px on a short card); without one, a fixed box the
+ * picture is fitted into whole. Loading, shown and failed are this one box,
+ * so nothing after it moves when the picture arrives or cannot. Once
+ * decoded, the picture fades in over small, the first time this window shows
+ * that snapshot; under reduced motion it is there at once. Nothing else moves:
+ * its caption, details, focus and scroll are left as they are.
+ *
+ * What a load or a decode says is taken only for what it was started for:
+ * this Workspace, project, section, version and snapshot. One that settles
+ * after the card has moved on changes nothing.
+ */
+function KeptImage({ attachment, url, label, onOpen }: {
+  attachment: SectionAttachment;
+  url: string;
+  label: string | undefined;
+  onOpen: () => void;
+}) {
+  const t = useStrings(briefText);
+  const workspaceId = useContext(CardFoldWorkspace);
+  const { projectId, section } = useBrief();
+  const snapshot = [workspaceId, projectId, section.key, attachment.name, attachment.takenAt].join("\n");
+  const identity = `${snapshot}\n${section.version}`;
+  const current = useRef(identity);
+  current.current = identity;
+  // The snapshot whose picture is shown: a newer version of the card with
+  // the same snapshot keeps it shown while that version's address loads.
+  const [shown, setShown] = useState<string | null>(null);
+  // What could not be loaded, so a newer version or snapshot tries again.
+  const [failed, setFailed] = useState<string | null>(null);
+  const [arrivals, setArrivals] = useState(0);
+  const picture = useRef<HTMLImageElement>(null);
+  useSurfaceIn(picture, arrivals, "small", arrivals > 0);
+  const show = (from: string, img: HTMLImageElement) => {
+    if (current.current !== from || !img.isConnected) return;
+    setShown(snapshot);
+    if (shownHere.has(snapshot)) return;
+    shownHere.add(snapshot);
+    setArrivals((n) => n + 1);
+  };
+  // One this window already holds is there before the first paint.
+  useLayoutEffect(() => {
+    const img = picture.current;
+    if (!img?.complete || !img.naturalWidth) return;
+    shownHere.add(snapshot);
+    setShown(snapshot);
+  }, [snapshot]);
+  const shape = shapeOf(attachment);
+  const box = {
+    "data-shape": shape ? "known" : "unknown",
+    style: shape ? ({ "--image-width": shape.width, "--image-height": shape.height } as CSSProperties) : undefined,
+  };
+  if (failed === identity)
+    return (
+      <div className="brief-image" data-failed {...box}>
+        <p className="brief-image-failed" role="status">
+          <ImageIcon size={16} aria-hidden="true" />
+          {t.imageNotLoaded}
+        </p>
+      </div>
+    );
+  return (
+    <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={onOpen} {...box}>
+      {/* A new snapshot under the same name loads again. */}
+      <img
+        key={snapshot}
+        ref={picture}
+        src={url}
+        alt={label || attachment.name}
+        loading="lazy"
+        decoding="async"
+        data-loading={shown === snapshot ? undefined : ""}
+        onLoad={(event) => {
+          const from = identity;
+          const img = event.currentTarget;
+          (img.decode ? img.decode() : Promise.resolve()).catch(() => undefined).then(() => show(from, img));
+        }}
+        onError={() => {
+          const from = identity;
+          if (current.current === from) setFailed(from);
+        }}
+      />
+      {/* It opens larger: said on the picture, for touch as for the pointer. */}
+      <span className="brief-image-zoom" aria-hidden="true">
+        <Maximize2 size={13} />
+      </span>
+    </button>
+  );
+}
+
 function Attachment({ name, caption }: { name: string; caption?: string }) {
   const time = useTimeDisplay();
   const t = useStrings(briefText);
   const { projectId, section } = useBrief();
   const markUp = usePointFix();
   const [shown, setShown] = useState<Shown | null>(null);
-  // The snapshot this card failed to load, so a new one under the same name tries again.
-  const [unloaded, setUnloaded] = useState<string | null>(null);
   const attachment = section.attachments.find((item) => item.name === name);
   if (!attachment)
     return (
@@ -379,31 +483,9 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   // details are there when asked for. What the user must know (it may have
   // changed, it could not be loaded) stays in view.
   if (image) {
-    const failed = unloaded === attachment.takenAt;
     return (
       <div className="brief-attachment" data-kind="image" data-picture>
-        {failed ? (
-          <p className="brief-image-failed" role="status">
-            <Icon size={16} aria-hidden="true" />
-            {t.imageNotLoaded}
-          </p>
-        ) : (
-          <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={preview}>
-            {/* A new snapshot under the same name loads again. */}
-            <img
-              key={attachment.takenAt}
-              src={url}
-              alt={label || attachment.name}
-              loading="lazy"
-              decoding="async"
-              onError={() => setUnloaded(attachment.takenAt)}
-            />
-            {/* It opens larger: said on the picture, for touch as for the pointer. */}
-            <span className="brief-image-zoom" aria-hidden="true">
-              <Maximize2 size={13} />
-            </span>
-          </button>
-        )}
+        <KeptImage attachment={attachment} url={url} label={label} onOpen={preview} />
         {label ? (
           <p className="brief-attachment-caption">{label}</p>
         ) : (

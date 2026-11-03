@@ -853,20 +853,43 @@ span.brief-ref {
   margin-bottom: 4px;
   background: none;
 }
-.brief-attachment[data-kind="image"] .brief-image img {
-  width: auto;
+/* A kept picture's box (T-19 HM:B14): loading, shown or failed, the same.
+ * With the size Core read, the picture's own shape, at most the card's
+ * width and --image-cap high; without one, a fixed box the picture is
+ * fitted into whole. Its frame is the box's, so it shows while the picture
+ * loads, and the picture fills it. Its width is a length (--image-room, of
+ * the card's body): where its column is as wide as what is in it (low
+ * density, beside its words), a percentage would leave the width to the
+ * picture again, which is not there until it loads. */
+.brief-attachment[data-picture] .brief-image {
+  --image-cap: 420px;
+  --image-room: 100cqw;
+  position: relative;
   max-width: 100%;
-  height: auto;
-  max-height: 420px;
-  object-fit: contain;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
 }
-/* A picture's button wraps the picture, so its enlarge mark sits on it. */
-.brief-attachment[data-picture] button.brief-image {
-  position: relative;
-  width: fit-content;
-  max-width: 100%;
+/* Sized inside its frame, so the picture has its own shape exactly. */
+.brief-attachment[data-picture] .brief-image[data-shape="known"] {
+  box-sizing: content-box;
+  width: min(calc(var(--image-width) * 1px), calc(var(--image-cap) * var(--image-width) / var(--image-height)), var(--image-room) - 2px);
+  max-width: calc(100% - 2px);
+  aspect-ratio: var(--image-width) / var(--image-height);
+}
+.brief-attachment[data-picture] .brief-image[data-shape="unknown"] {
+  width: var(--image-room);
+  height: min(240px, var(--image-cap));
+}
+.brief-attachment[data-picture] .brief-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+/* Until it is decoded; then it fades in over small (or, under reduced
+ * motion, is there at once). */
+.brief-attachment[data-picture] .brief-image img[data-loading] {
+  opacity: 0;
 }
 .brief-image-zoom {
   position: absolute;
@@ -903,7 +926,18 @@ button.brief-image:focus-visible .brief-image-zoom {
 .brief-attachment[data-picture] > .brief-chip {
   align-self: flex-start;
 }
-/* An image that could not be loaded says so where it would have been. */
+/* An image that could not be loaded says so where it would have been: in
+ * its own box, when it is a kept picture's. */
+.brief-attachment[data-picture] .brief-image[data-failed] {
+  border-style: dashed;
+}
+.brief-image[data-failed] > .brief-image-failed {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
 .brief-image-failed {
   display: flex;
   align-items: center;
@@ -1290,10 +1324,11 @@ p.brief-preview-frame {
   grid-area: image;
   margin: 0;
 }
-/* Whole, never cropped: a screenshot keeps its edges at any density. */
-.brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] .brief-image img {
-  max-height: 200px;
-  object-fit: contain;
+/* Whole, never cropped: a screenshot keeps its edges at any density. Beside
+ * its words, a picture has at most its column's 60%. */
+.brief-attachments-block[data-density="low"] .brief-attachment[data-picture] .brief-image {
+  --image-cap: 200px;
+  --image-room: 60cqw;
 }
 .brief-attachments-block[data-density="low"] .brief-attachment[data-kind="image"] header {
   grid-area: header;
@@ -1326,5 +1361,8 @@ p.brief-preview-frame {
       "info";
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: none;
+  }
+  .brief-attachments-block[data-density="low"] .brief-attachment[data-picture] .brief-image {
+    --image-room: 100cqw;
   }
 }
