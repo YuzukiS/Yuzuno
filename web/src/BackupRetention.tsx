@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
+import { useRevealIn } from "./surface";
 
 /** T-196: what keeping only the latest backups in one folder would do, as
  * Core previews it (core/src/workspace_backup/retention.rs), and (slice 3)
@@ -161,6 +162,15 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
   const [reading, setReading] = useState(false);
   /** The one backup whose removal is being confirmed. */
   const [confirming, setConfirming] = useState<Entry | null>(null);
+  // The confirmation opens below its backup and takes focus; Cancel gives it
+  // back to the Remove… that opened it (T-19 ST:BR2).
+  const confirmBox = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const confirmingName = confirming?.name;
+  useRevealIn(confirmBox, confirmingName);
+  useLayoutEffect(() => {
+    if (confirmingName) confirmBox.current?.focus({ preventScroll: true });
+  }, [confirmingName]);
   /** The backup whose removal was just asked for, said until the next preview. */
   const [started, setStarted] = useState("");
   const count = Number(keep);
@@ -282,14 +292,21 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                             {t.check}
                           </button>
                           {verdict === "remove" && e.manifestSha256 && preview.unreadableNames === 0 && (
-                            <button type="button" disabled={busy} onClick={() => setConfirming(e)}>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={(event) => {
+                                opener.current = event.currentTarget;
+                                setConfirming(e);
+                              }}
+                            >
                               {t.remove}
                             </button>
                           )}
                         </span>
                       )}
                       {confirming?.name === e.name && e.manifestSha256 && (
-                        <div className="backup-retention-confirm" role="group" aria-label={t.removeLabel(e.name)}>
+                        <div className="backup-retention-confirm" role="group" aria-label={t.removeLabel(e.name)} ref={confirmBox} tabIndex={-1}>
                           <p>
                             {t.confirmBefore}
                             <code>{e.path}</code>
@@ -312,7 +329,13 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                             >
                               {t.removeThis}
                             </button>
-                            <button type="button" onClick={() => setConfirming(null)}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                opener.current?.focus();
+                                setConfirming(null);
+                              }}
+                            >
                               {t.cancel}
                             </button>
                           </span>
