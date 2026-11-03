@@ -272,6 +272,97 @@ fn a_desk_reads_a_task_record_by_the_same_resolver() {
     assert_eq!(desk_source(&db, "T-404", m1).unwrap()["reason"], "task_not_found");
 }
 
+/// A comparison (T-17 slice 2): layout B vs A timed two ways, one input set
+/// missing and one never run.
+fn comparison(m1: i64, m2: i64, entries: Value) -> Value {
+    let _ = (m1, m2);
+    json!({"type":"comparison","id":"layouts","title":"Layout B vs A, small inputs","field":"systems",
+        "text":"Runtime change of layout B against A on the small inputs.","entries":entries})
+}
+
+fn entry(id: &str, status: &str, method: i64, unit: &str, level: &str) -> Value {
+    json!({"id":id,"label":format!("Entry {id}"),"status":status,"method":{"activitySeq":method},
+        "unit":unit,"level":level,"definition":"median of runs","n":10,"value":{"value":-4.1,"low":-6.0,"high":-2.2}})
+}
+
+#[test]
+fn a_comparison_keeps_what_was_left_out_and_says_what_its_entries_share() {
+    let (_dir, store) = setup();
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Ten iterations in one process.")).unwrap());
+    let mut revised = method("timing", "Ten fresh processes.");
+    revised["revises"] = json!({"activitySeq":m1,"reason":"Iterations share caches."});
+    let m2 = seq(&comment(&store, "author", "m2", "T-1", revised).unwrap());
+    let mut sourced = entry("processes", "included", m2, "%", "process");
+    sourced["source"] = job_source(ATTEMPT, "a");
+    let entries = json!([
+        sourced,
+        entry("again", "included", m2, "%", "process"),
+        {"id":"large","label":"Large inputs","status":"missing","reason":"The large set was not exported."},
+        {"id":"other-machine","label":"Second machine","status":"not_done","reason":"No second machine yet."},
+        {"id":"warm","label":"Warm cache run","status":"excluded","reason":"Cache left warm by a previous run.","value":{"value":-9.0}},
+    ]);
+    let answer = comment(&store, "author", "c1", "T-1", comparison(m1, m2, entries.clone())).unwrap();
+    let stored = &answer["activity"]["research"];
+    assert_eq!(stored["entries"].as_array().unwrap().len(), 5, "nothing left out is dropped");
+    assert_eq!(stored["comparability"]["aligned"], true, "kept with the entries when written");
+    assert_eq!(stored["entries"][0]["source"]["recorded"], "recorded_match");
+    assert_eq!(stored["entries"][0]["method"]["activitySeq"], m2);
+    let read = record(&store, "T-1", seq(&answer));
+    let summary = &read["research"]["comparability"];
+    assert_eq!(summary["aligned"], true, "{summary}");
+    assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","level":"process","method":m2}));
+    assert_eq!(summary["counts"], json!({"included":2,"excluded":1,"missing":1,"not_done":1}));
+    assert_eq!(read["research"]["entries"][0]["source"]["now"]["state"], "recorded_match");
+    assert!(read["research"]["entries"][0].get("difference").is_none() && summary.get("difference").is_none(), "no difference is computed");
+
+    // Entries timed by different methods, in different units, one with no level: side by side only.
+    let mut mixed = entries.as_array().unwrap().clone();
+    mixed[1] = entry("iterations", "included", m1, "ms", "iteration");
+    mixed[0]["level"] = Value::Null;
+    let answer = comment(&store, "author", "c2", "T-1", {
+        let mut record = comparison(m1, m2, json!(mixed));
+        record["id"] = json!("layouts-mixed");
+        record
+    }).unwrap();
+    let summary = record(&store, "T-1", seq(&answer))["research"]["comparability"].clone();
+    assert_eq!(summary["aligned"], false);
+    assert_eq!(summary["differs"], json!(["unit", "method"]));
+    assert_eq!(summary["unknown"], json!(["level"]));
+
+    // A Home desk citing the comparison sees its counts.
+    let db = store.db.read().unwrap();
+    let shown = desk_source(&db, "T-1", seq(&answer)).unwrap();
+    assert_eq!((shown["record"]["type"].clone(), shown["record"]["counts"]["missing"].clone()), (json!("comparison"), json!(1)));
+}
+
+#[test]
+fn a_comparison_entry_says_why_it_was_left_out_and_states_no_value_it_does_not_have() {
+    let (_dir, store) = setup();
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Fresh processes.")).unwrap());
+    let before = counts(&store);
+    let refused = [
+        (json!([{"id":"a","label":"A","status":"excluded"}]), "excluded entry needs a reason"),
+        (json!([{"id":"a","label":"A","status":"missing","reason":"Lost.","value":{"value":1.0}}]), "missing entry has no value"),
+        (json!([{"id":"a","label":"A","status":"not_done","reason":"Later.","value":{"value":1.0}}]), "not_done entry has no value"),
+        (json!([entry("a", "included", m1, "%", "process"), entry("a", "included", m1, "%", "process")]), "used twice"),
+        (json!([{"id":"a","label":"A","status":"kept"}]), "status is one of"),
+        (json!([{"id":"a","label":"A","status":"included","method":{"activitySeq":m1 + 100}}]), "not a method record"),
+        (json!([{"id":"a","label":"A","status":"included","source":job_source(ATTEMPT, "f")}]), "artifact_mismatch"),
+        (json!([]), "1 to 40"),
+    ];
+    for (n, (entries, expected)) in refused.into_iter().enumerate() {
+        let mut record = comparison(m1, m1, entries);
+        record["id"] = json!(format!("bad-{n}"));
+        let message = error(comment(&store, "author", &format!("bad-{n}"), "T-1", record));
+        assert!(message.starts_with("invalid_input:") && message.contains(expected), "{n}: {message}");
+    }
+    assert!(error(comment(&store, "author", "no-entries", "T-1",
+        json!({"type":"comparison","id":"none","title":"T","text":"S"}))).contains("needs research.entries"));
+    assert!(error(comment(&store, "author", "entries-on-claim", "T-1",
+        json!({"type":"claim","id":"c","title":"T","text":"S","status":"open","entries":[{"id":"a","label":"A","status":"included"}]}))).contains("for comparisons only"));
+    assert_eq!(counts(&store), before, "nothing refused is written");
+}
+
 #[test]
 fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
     let (_dir, store) = setup();
@@ -297,4 +388,84 @@ fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
     let db = store.db.read().unwrap();
     let cited = desk_source(&db, "T-1", first).unwrap();
     assert!(cited["latestActivitySeq"].is_null() && cited["version"] == 1, "{cited}");
+}
+
+#[test]
+fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() {
+    let (_dir, store) = setup();
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Ten iterations in one process.")).unwrap());
+    let mut revised = method("timing", "Ten fresh processes.");
+    revised["revises"] = json!({"activitySeq":m1,"reason":"Iterations in one process are not independent runs."});
+    let m2 = seq(&comment(&store, "author", "m2", "T-1", revised).unwrap());
+    // Units ms, s and none; methods by their fixed activities; a level given
+    // by two of three; one definition throughout. Partial facts stay as given.
+    let entries = json!([
+        {"id":"a","label":"A","status":"included","unit":"ms","definition":"median of runs","level":"process",
+            "method":{"activitySeq":m1},"value":{"value":12.0,"low":10.5}},
+        {"id":"b","label":"B","status":"included","unit":"s","definition":"median of runs",
+            "method":{"activitySeq":m2},"n":10},
+        {"id":"c","label":"C","status":"included","definition":"median of runs","level":"process",
+            "method":{"activitySeq":m1},"value":{"value":11.0,"high":12.5}},
+        {"id":"d","label":"D","status":"missing","reason":"The large set was not exported.","unit":"ms"},
+    ]);
+    let answer = comment(&store, "author", "mixed", "T-1", comparison(m1, m2, entries)).unwrap();
+    let stored = &answer["activity"]["research"];
+    let summary = &stored["comparability"];
+    assert_eq!(summary["differs"], json!(["unit", "method"]), "known values that differ are said: {summary}");
+    assert_eq!(summary["unknown"], json!(["unit", "level"]), "and so is what some entries leave out: {summary}");
+    assert_eq!(summary["shared"], json!({"definition":"median of runs"}), "a field missing anywhere is never shared");
+    assert_eq!(summary["aligned"], false);
+    assert_eq!(summary["counts"], json!({"included":3,"excluded":0,"missing":1,"not_done":0}));
+    // The entries keep exactly what their author gave, nothing made up.
+    assert_eq!(stored["entries"][0]["value"], json!({"value":12.0,"low":10.5}));
+    assert_eq!(stored["entries"][1].get("value"), None);
+    assert_eq!((stored["entries"][1]["n"].clone(), stored["entries"][1].get("level")), (json!(10), None));
+    assert_eq!(stored["entries"][2]["value"], json!({"value":11.0,"high":12.5}));
+    assert_eq!((stored["entries"][3]["unit"].clone(), stored["entries"][3].get("value")), (json!("ms"), None));
+    assert_eq!(stored["entries"][1]["method"]["activitySeq"], m2, "each entry keeps the method version it names");
+    // Every entry giving the same value for a field is shared, and with one
+    // missing field the comparison says that alone.
+    let same = json!([entry("x", "included", m2, "%", "process"), {"id":"y","label":"Y","status":"included",
+        "method":{"activitySeq":m2},"unit":"%","definition":"median of runs","n":10}]);
+    let mut record = comparison(m2, m2, same);
+    record["id"] = json!("same");
+    let summary = comment(&store, "author", "same", "T-1", record).unwrap()["activity"]["research"]["comparability"].clone();
+    assert_eq!((summary["differs"].clone(), summary["unknown"].clone()), (json!([]), json!(["level"])));
+    assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","method":m2}));
+}
+
+#[test]
+fn an_entry_keeps_its_numbers_exactly_as_written_past_two_to_the_fifty_third() {
+    let (_dir, store) = setup();
+    // Parsed from JSON text, as a request arrives: integers past 2^53 within
+    // the 64-bit range, a negative one, and ordinary decimals.
+    let research: Value = serde_json::from_str(r#"{"type":"comparison","id":"counts","title":"Event counts","text":"As counted.",
+        "entries":[
+            {"id":"big","label":"Big","status":"included","unit":"events",
+                "value":{"value":9007199254740993,"low":-9007199254740993,"high":18446744073709551615}},
+            {"id":"small","label":"Small","status":"included","unit":"events","value":{"value":-1.25,"low":0.1,"high":2.5e-7}},
+            {"id":"whole","label":"Whole","status":"excluded","reason":"Counted twice.","value":{"value":12}}
+        ]}"#).unwrap();
+    let written = comment(&store, "author", "big", "T-1", research).unwrap();
+    let at = seq(&written);
+    let exact = r#"{"high":18446744073709551615,"low":-9007199254740993,"value":9007199254740993}"#;
+    // As written, as stored, as read back, and as sent: the same digits.
+    assert_eq!(serde_json::to_string(&written["activity"]["research"]["entries"][0]["value"]).unwrap(), exact);
+    let raw: String = store.db.read().unwrap().query_row("SELECT data FROM collaboration_task_activity WHERE seq=?1",
+        params![at], |r| r.get(0)).unwrap();
+    assert!(raw.contains("9007199254740993") && raw.contains("-9007199254740993") && raw.contains("18446744073709551615"), "{raw}");
+    assert!(!raw.contains("9007199254740992"), "never rounded to the nearest double");
+    let read = record(&store, "T-1", at);
+    assert_eq!(serde_json::to_string(&read["research"]["entries"][0]["value"]).unwrap(), exact);
+    assert_eq!(read["research"]["entries"][1]["value"], json!({"value":-1.25,"low":0.1,"high":2.5e-7}));
+    assert_eq!(serde_json::to_string(&read["research"]["entries"][2]["value"]).unwrap(), r#"{"value":12}"#, "an integer stays an integer");
+    // Anything that is not a number is still refused, and nothing is written.
+    let before = counts(&store);
+    for (n, bad) in [json!({"value":"12"}), json!({"value":true}), json!({"value":1,"low":[0]}), json!({"value":1,"high":{"v":2}})].into_iter().enumerate() {
+        let record = json!({"type":"comparison","id":format!("bad-{n}"),"title":"T","text":"S",
+            "entries":[{"id":"a","label":"A","status":"included","value":bad}]});
+        let refused = error(comment(&store, "author", &format!("bad-number-{n}"), "T-1", record));
+        assert!(refused.contains("is a finite number"), "{n}: {refused}");
+    }
+    assert_eq!(counts(&store), before);
 }

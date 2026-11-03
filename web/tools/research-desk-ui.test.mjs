@@ -175,6 +175,28 @@ test("a definition's versions show the Task method records they cite, each its o
   }
 });
 
+test("a source naming a Task comparison shows its entry counts (T-17)", async () => {
+  const put = structuredClone(layoutStudy);
+  put.body.elements.desk.props.sources.push({ id: "compared", label: "Layout comparison", kind: "data", task: { taskId: "T-1", activitySeq: 9 } });
+  put.body.elements.desk.props.claims[0].paper = [{ label: "Compared runs", cite: { source: "compared" } }];
+  const sources = { ...layoutStudyRecords(), compared: { taskId: "T-1", activitySeq: 9, available: true,
+    record: { kind: "research", type: "comparison", id: "layouts", title: "Layout B vs A", counts: { included: 2, excluded: 1, missing: 1, not_done: 1 } },
+    producer: { kind: "agent", id: "mina", name: "Mina" }, at: "2026-11-02T09:00:00Z", version: 1, latestActivitySeq: 9 } };
+  const page = mount((url) => /\/brief\/research\//.test(url)
+    ? { body: { key: put.key, version: 3, elementId: "desk", values: {}, sources } }
+    : { status: 404, body: { error: "not here" } });
+  try {
+    page.window.renderSection(section(page, put, 3), PROJECT, "ws-1");
+    const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+    await until(() => desk.textContent.includes("2 included, 1 excluded, 1 missing, 1 not done"), "the comparison's counts");
+    assert.ok(desk.textContent.includes("Task record T-1 · activity 9"));
+    assert.ok(desk.textContent.includes("Comparison “Layout B vs A”"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 /** A desk read of layoutStudy with these sources, answered at once or by `answer`. */
 const layoutRead = (sources) => ({ body: { key: layoutStudy.key, version: 3, elementId: "desk", values: {}, sources } });
 
