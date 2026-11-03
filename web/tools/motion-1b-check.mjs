@@ -8,8 +8,9 @@
 // left; the copy is aria-hidden, inert and clicked through, adds no
 // duplicate id and is gone within 400 ms; under reduced motion there is no
 // copy; reopening during the exit shows the new dialog at once. Both ways a
-// dialog closes are covered: its `open` going false (New agent, Jobs) and its
-// unmounting while open (Disconnect). An emulated phone is not a real one,
+// dialog closes are tried: its `open` going false (New agent, Search, Jobs)
+// and its unmounting while open (Changes, Disconnect). What the read-only
+// preview does not offer is listed as not shown. An emulated phone is not a real one,
 // and Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1b-check.mjs [--baseline]
 import assert from "node:assert/strict";
@@ -141,11 +142,18 @@ async function exitCase(page, tag, reduced, { name, open, close, confirm = false
   if (baseline) return;
   const first = after[0] || {};
   const ghostFrames = after.filter((f) => f.ghost);
-  // Where focus settles is compared with the build before this batch (BASELINE_REPORT); here, that it is there at once.
-  const settled = after.at(-1)?.focus;
-  ok(`${tag}: ${name}: in the first frame after the close the dialog is gone, focus is where it settles (${settled}), and no aria-hidden mark or scroll lock is left`,
-    first.dialog === 0 && first.focus === settled && !first.focusInGhost && first.ariaHiddenMarks === before.ariaHiddenMarks && first.scrollLocked === before.scrollLocked,
+  ok(`${tag}: ${name}: in the first frame after the close the dialog is gone, focus is out of it, and no aria-hidden mark (in the copy either) or scroll lock is left`,
+    first.dialog === 0 && !first.focusInGhost && first.ariaHiddenMarks === before.ariaHiddenMarks && first.scrollLocked === before.scrollLocked,
     { before, first });
+  // Radix gives focus back in a timeout after the close: it must settle no later than in the build
+  // before this batch (where it settles is compared at the end). A click right after moves it, so not then.
+  if (!clickThrough && baselineExits) {
+    const settledAt = (list) => { const settled = list.at(-1)?.focus; return list.findIndex((f) => f.focus === settled); };
+    const was = (baselineExits[`${tag}: ${name}`] || []).filter((f) => f.phase !== "before");
+    const now = settledAt(after), then = was.length ? settledAt(was) : null;
+    ok(`${tag}: ${name}: focus settles by frame ${now} after the close, as in the build before this batch (frame ${then})`,
+      then !== null && now >= 0 && now <= then, { now, then, frames: after.slice(0, 4).map((f) => [f.t, f.focus]) });
+  }
   if (reduced) {
     ok(`${tag}: ${name}: no copy under reduced motion`, ghostFrames.length === 0, ghostFrames.length);
   } else {
@@ -164,6 +172,7 @@ async function exitCase(page, tag, reduced, { name, open, close, confirm = false
   }
 }
 
+const baselineExits = process.env.BASELINE_REPORT ? JSON.parse(await readFile(process.env.BASELINE_REPORT, "utf8")).exits : null;
 const browser = await launchBrowser();
 report.browser = browser.version();
 const runs = [
@@ -253,6 +262,29 @@ for (const run of runs) {
       return true;
     },
     close: () => page.locator(".modal .secondary-button", { hasText: /^Cancel/ }).first().click(),
+  });
+  // Changes (`/changes`): a dialog App mounts as `{… && (` and removes when it closes: the unmount path in Chromium.
+  // It reads nothing until asked, and the command sends nothing.
+  await exitCase(page, tag, reduced, {
+    name: "Changes (unmounted on close)",
+    open: async () => {
+      const row = visible(".agent-row");
+      if (await row.count()) await page.locator(".agent-row", { hasText: "Mikan" }).first().click().catch(() => {});
+      const input = visible("[data-composer-input]");
+      if (!(await input.count())) return false;
+      await input.click();
+      await page.keyboard.type("/changes");
+      const send = visible(".send-button");
+      if (!(await send.count()) || !(await send.isEnabled())) return false;
+      await send.click();
+      try {
+        await page.locator(".modal.codex-changes").first().waitFor({ timeout: 3000 });
+      } catch {
+        return false;
+      }
+      return true;
+    },
+    close: () => page.keyboard.press("Escape"),
   });
   if (!reduced && !baseline && !run.phone) await page.screenshot({ path: join(output, `${tag}-after.png`) });
   await context.close();

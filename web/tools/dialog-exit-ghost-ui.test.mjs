@@ -100,8 +100,8 @@ test("a closed dialog leaves a copy no one can reach, with what was typed, gone 
     assert.ok(copy.hasAttribute("inert"));
     assert.equal(copy.parentElement, page.doc.body);
     assert.deepEqual([...copy.children].map((el) => el.classList.contains("modal") ? "box" : el.className), ["modal-overlay", "box"]);
-    assert.equal(copy.querySelectorAll("[id], [role], [name], [for], [aria-modal], [aria-labelledby], [aria-describedby], [tabindex]").length, 0,
-      "nothing in it is a dialog, a field's name, a label target or a tab stop");
+    assert.equal(copy.querySelectorAll("[id], [role], [name], [for], [aria-modal], [aria-labelledby], [aria-describedby], [tabindex], [data-aria-hidden]").length, 0,
+      "nothing in it is a dialog, a field's name, a label target, a tab stop or a mark of Radix's aria-hidden");
     assert.ok([...copy.querySelectorAll("input, textarea")].some((el) => el.value === "Typed before closing"), "it shows what was typed");
     await pause(450);
     assert.equal(ghost(page), null, "gone by the 400 ms fallback");

@@ -8,8 +8,9 @@ const MAX_CHARACTERS = 100_000;
 const FALLBACK_MS = 400;
 /** Without these the copy is no dialog, form control, label or tab stop that
     code finding the open dialog (App.tsx, useAutoRead.ts, ConversationSearch.tsx)
-    or a radio group could count. */
-const STRIPPED = ["id", "name", "for", "form", "role", "aria-modal", "aria-labelledby", "aria-describedby", "aria-controls", "autofocus", "tabindex"];
+    or a radio group could count, and carries no mark of Radix's aria-hidden on
+    the page (its overlay has one), which that release would never remove. */
+const STRIPPED = ["id", "name", "for", "form", "role", "aria-modal", "aria-labelledby", "aria-describedby", "aria-controls", "autofocus", "tabindex", "data-aria-hidden"];
 /** Copied as an empty box of the same size: a copy would load or play again. */
 const MEDIA = "iframe, video, audio, object, embed, canvas";
 
