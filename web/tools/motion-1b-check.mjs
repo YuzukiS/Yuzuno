@@ -199,7 +199,8 @@ for (const run of runs) {
   const visible = (selector) => page.locator(selector).filter({ visible: true }).first();
   const clickIfShown = async (selector) => {
     const el = visible(selector);
-    if (!(await el.count())) return false;
+    // The read-only preview disables some (Jobs): those are reported as not shown.
+    if (!(await el.count()) || !(await el.isEnabled())) return false;
     await el.click();
     await page.locator(".modal").first().waitFor({ timeout: 3000 });
     return true;
@@ -228,8 +229,9 @@ for (const run of runs) {
     await page.waitForTimeout(500);
   }
 
-  // Jobs: a direct Radix dialog.
+  // Jobs and the conversation search: direct Radix dialogs.
   await exitCase(page, tag, reduced, { name: "Jobs", open: () => clickIfShown(".jobs-nav"), close: () => page.keyboard.press("Escape") });
+  await exitCase(page, tag, reduced, { name: "Search", open: () => clickIfShown(".conversation-search-trigger"), close: () => page.keyboard.press("Escape") });
 
   // Disconnect: a confirmation that unmounts while open, from an Agent's action menu.
   await exitCase(page, tag, reduced, {

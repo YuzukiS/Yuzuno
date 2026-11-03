@@ -32,6 +32,11 @@ const agent = (id, name) => ({
   unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", harness: "codex", connectionState: "connected",
 });
 const agents = [agent("a", "Mori"), agent("b", "Hana")];
+const budget = {
+  machine: { name: "Host", memoryAvailableMiB: 4096, scope: "" },
+  budget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 }, reserved: { cpuMillis: 0, memoryMiB: 0, swapMiB: 0 },
+  activeCount: 0, queuedCount: 0,
+};
 
 async function mount({ animations = true, reduced = false } = {}) {
   const errors = [];
@@ -55,6 +60,8 @@ async function mount({ animations = true, reduced = false } = {}) {
     if (path === "/api/workspace") return response({ workspace: { id: "fixture" }, agents, projects: [project], runtime: { connected: true }, defaultCwd: "/w" });
     const detail = /^\/api\/agents\/([ab])$/.exec(path);
     if (detail) return response({ agent: agents.find((a) => a.id === detail[1]), pending: [], artifacts: [], turns: [] });
+    if (path === "/api/jobs") return response({ jobs: [], hasMore: false, nextBefore: null });
+    if (path === "/api/jobs/budget") return response(budget);
     return response({});
   };
   w.eval(bundle);
@@ -83,9 +90,12 @@ test("a closed dialog leaves a copy no one can reach, with what was typed, gone 
     escape(page);
     await pause(0);
     assert.deepEqual(dialogs(page), [], "the dialog is gone in the close");
-    assert.equal(page.doc.querySelectorAll("[data-aria-hidden]").length, 0, "Radix's aria-hidden on the rest of the page is undone");
     const copy = ghost(page);
     assert.ok(copy, "a copy fades out instead");
+    // Radix undoes its aria-hidden in an effect after the close (in Chromium, by the next frame:
+    // motion-1b-check.mjs); here, it is undone while the copy is still showing.
+    await waitFor(() => page.doc.querySelectorAll("[data-aria-hidden]").length === 0, "Radix's aria-hidden on the rest of the page is undone", 200);
+    assert.ok(copy.isConnected, "the copy does not hold up that release");
     assert.equal(copy.getAttribute("aria-hidden"), "true");
     assert.ok(copy.hasAttribute("inert"));
     assert.equal(copy.parentElement, page.doc.body);
@@ -95,6 +105,24 @@ test("a closed dialog leaves a copy no one can reach, with what was typed, gone 
     assert.ok([...copy.querySelectorAll("input, textarea")].some((el) => el.value === "Typed before closing"), "it shows what was typed");
     await pause(450);
     assert.equal(ghost(page), null, "gone by the 400 ms fallback");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a direct Radix dialog (Jobs) leaves its copy in the same way", async () => {
+  const page = await mount();
+  try {
+    const nav = await waitFor(() => page.doc.querySelector(".jobs-nav:not(:disabled)"), "Jobs can open");
+    nav.click();
+    await waitFor(() => dialogs(page).find((el) => el.classList.contains("jobs-dialog")), "the Jobs dialog opens");
+    escape(page);
+    await pause(0);
+    assert.deepEqual(dialogs(page), []);
+    const copy = ghost(page);
+    assert.ok(copy?.querySelector(".modal.jobs-dialog"), "its copy, without the dialog's role or ids");
+    assert.equal(copy.querySelectorAll("[id], [role]").length, 0);
+    await pause(450);
+    assert.equal(ghost(page), null);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
