@@ -64,8 +64,9 @@ let attempts;
 let agentStatus;
 let holdNextRead;
 let heldAsked;
-// The run the fixture answers for.
+// The run the fixture answers for, and reads it answers late (ms by result).
 let currentRun;
+let slowReads;
 const view = (id) => ({ resultId: id, agentId: "a", proposal: results[id].spec.elements.status.props, task: tasks[id], blocked: null, attempts: attempts[id] });
 const turns = [{ id: "t1", status: "completed", items: [
   { id: "u1", type: "userMessage", content: [{ type: "text", text: "Where do T-88 and T-89 stand?" }] },
@@ -106,6 +107,13 @@ async function serve(route) {
       heldAsked();
       await new Promise((done) => setTimeout(done, 1500));
       return route.fulfill({ json: then });
+    }
+    const slow = request.method() === "GET" && url.pathname.match(/^\/api\/results\/(r[1-5])\/task-status$/)?.[1];
+    if (slow && slowReads[slow]) {
+      const wait = slowReads[slow];
+      delete slowReads[slow];
+      await new Promise((done) => setTimeout(done, wait));
+      return route.fulfill({ json: view(slow) });
     }
     if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
       report.readingSaves.push(url.pathname);
@@ -249,6 +257,7 @@ for (const run of runs) {
   agentStatus = "idle";
   holdNextRead = false;
   heldAsked = () => {};
+  slowReads = {};
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion, locale: "en-US",
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
   const page = await context.newPage();
@@ -312,8 +321,10 @@ for (const run of runs) {
       came(late, reduced) && still(back) && !(onBack?.card === "Proposed status change for T-92" && onBack.className.includes("task-status-outcome")),
       { decided: late?.filter(Boolean).slice(0, 2), back: back?.filter(Boolean).slice(0, 3), focus: onBack });
 
-    /** The conversation opened again, watching `selector` from the document's start. */
-    const reopen = async (selector) => {
+    /** The conversation opened again, watching `selector` from the document's start. With `idle`, focus
+     * is let go once it is open (as when the browser brings the conversation back by itself), before
+     * the read held back for it lands. */
+    const reopen = async (selector, idle = false) => {
       await page.evaluate((selector) => sessionStorage.setItem("__watch", selector), selector);
       await page.reload();
       await page.locator(".agent-row").first().waitFor({ timeout: 10_000 });
@@ -321,6 +332,7 @@ for (const run of runs) {
         if (run.phone && await page.locator(".phone-back").count()) await page.locator(".phone-back").click();
         await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').first().click();
       }
+      if (idle) await page.evaluate(() => document.activeElement?.blur());
       await page.locator(selector).waitFor({ timeout: 10_000 });
       await page.waitForFunction(() => (window.__watched?.length ?? 0) >= 30, null, { timeout: 10_000 });
       return page.evaluate(() => window.__watched);
@@ -341,8 +353,10 @@ for (const run of runs) {
     const sentBefore = (id) => report.decisions.filter((d) => d.run === tag && d.id === id);
     const lostT91 = sentBefore("r4")[0]?.requestId;
 
-    // Opened again: the first read finds T-90 decided.
-    const restored = record("lost answer, decided on opening", await reopen(`${CARD("T-90")} .task-status-outcome`));
+    // Opened again: the first read finds T-90 decided. It is held back 800 ms, so it lands with focus on
+    // the page itself, where an outcome that comes in would take it.
+    slowReads.r3 = 800;
+    const restored = record("lost answer, decided on opening", await reopen(`${CARD("T-90")} .task-status-outcome`, true));
     await page.waitForTimeout(600);
     const restoredFocus = await focused();
     ok(`${tag}: a decision whose answer was lost, found decided when the conversation opens again: its outcome is as it is from its first frame, takes no focus, and nothing is sent (${restoredFocus?.className || restoredFocus?.tag})`,
