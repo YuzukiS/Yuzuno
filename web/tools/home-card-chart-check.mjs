@@ -101,9 +101,16 @@ const sections = [
   section("swing", 46, "Quarterly net flow", body("Net flow turned positive in Q3.", { type: "BarChart", props: { id: "swing",
     title: "Net flow by quarter", x: { label: "Quarter" }, y: { label: "Net flow", unit: "USD" },
     series: [{ name: "Net flow", points: [["Q1", -200_000_000], ["Q2", -45_500_000], ["Q3", 150_000_000], ["Q4", 12_345_678]] }] } }, "wide")),
+  // Five scatter series, more than the legend's line names at most widths: each one drawn keeps the marker its
+  // legend shows (R2, Lead 3275), however many fit.
+  section("cohorts", 47, "Cohorts by size", body("Every cohort scores higher at a larger size.", { type: "ScatterChart", props: { id: "cohorts",
+    title: "Score by size, per cohort", x: { label: "Size", unit: "M" }, y: { label: "Score", unit: "%" },
+    series: ["A", "B", "C", "D", "E"].map((c, i) => ({ name: `Cohort ${c}`, points: [[10, 50 + i], [40, 55 + i], [120, 60 + i], [300, 64 + i]] })) } }, "wide")),
 ];
-const CHARTS = { trend: "line", stages: "bar", sizes: "scatter", pool: "line", bench: "bar", swing: "bar" };
-const SERIES = { trend: 2, stages: 3, sizes: 2, pool: 12, bench: 2, swing: 1 };
+const CHARTS = { trend: "line", stages: "bar", sizes: "scatter", pool: "line", bench: "bar", swing: "bar", cohorts: "scatter" };
+const SERIES = { trend: 2, stages: 3, sizes: 2, pool: 12, bench: 2, swing: 1, cohorts: 5 };
+/** The marker shapes, in Charts.tsx's order; a scatter of more than three series gives each its own. */
+const SHAPES = ["circle", "square", "triangle", "diamond", "cross", "star", "wye"];
 // The user's widgets: the bars at Large, the scatter at Wide, the trend following its Agent (wide).
 const pins = [["stages", 42, "large"], ["sizes", 43, "wide"], ["trend", 41, null]].map(([key, id, size]) => ({
   projectId: "p1", key, id, title: sections.find((s) => s.key === key).title, projectName: "atlas-notes", ...(size ? { size } : {}) }));
@@ -228,6 +235,14 @@ const charts = (where) => page.evaluate((where) => {
       .filter((t) => t.textContent.trim()).map((t) => ({ text: t.textContent, inside: inside(t, plot, 1) }));
     const baseline = svg?.querySelector(".recharts-xAxis .recharts-cartesian-axis-line");
     const drawn = svg ? svg.querySelectorAll(".recharts-line, .recharts-bar, .recharts-scatter").length : 0;
+    // A scatter's markers: each drawn series' shape, read from its symbols' path (d3: arcs a circle, h a square,
+    // else by its segments), beside its key's shape in the legend.
+    const shapeOfPath = (d) => !d ? null : /A/.test(d) ? "circle" : /[hH]/.test(d) ? "square"
+      : ({ 2: "triangle", 3: "diamond", 11: "cross", 9: "star", 8: "wye" })[(d.match(/L/g) || []).length] ?? `unknown:${d.slice(0, 20)}`;
+    const markers = root?.dataset.chart === "scatter" && svg ? {
+      plot: [...svg.querySelectorAll(".recharts-scatter")].map((g) => shapeOfPath(g.querySelector("path.recharts-symbols")?.getAttribute("d"))),
+      legend: named.map((li) => li.querySelector("i")?.dataset.shape ?? null),
+    } : null;
     // Each series in its slot's colour: a line's stroke, a bar's or a point's fill, and its key in the legend.
     const paint = svg ? [...svg.querySelectorAll(".recharts-line .recharts-curve, .recharts-bar-rectangle path, .recharts-scatter-symbol path")]
       .map((el) => getComputedStyle(el)[el.closest(".recharts-line") ? "stroke" : "fill"]) : [];
@@ -244,6 +259,7 @@ const charts = (where) => page.evaluate((where) => {
       baseline: baseline ? inside(baseline, plot, 1) : null,
       xTicks: ticks("x"), yTicks: ticks("y"),
       drawn,
+      markers,
       paint: [...new Set(paint)],
       keys: named.map((li) => getComputedStyle(li.querySelector("i")).backgroundColor),
       legend: legend ? { named: named.length, lines: new Set(named.concat([...legend.querySelectorAll(".is-count")]).map((li) => li.offsetTop)).size,
@@ -280,6 +296,13 @@ function assertBounded(found, label) {
   assert.ok(found.paint.length >= 1 && !found.paint.some(colourless), `${name}: its series in their colours: ${JSON.stringify(found.paint)}`);
   assert.ok(!found.keys.some(colourless), `${name}: each key in the legend in its colour: ${JSON.stringify(found.keys)}`);
   const total = SERIES[found.key];
+  if (found.markers) {
+    // The plot's marker for each series it draws is the one its place among all the series gives it; the legend
+    // shows that same shape for each series it names (none when three or fewer share plain circles).
+    const expected = found.markers.plot.map((_, i) => (total > 3 ? SHAPES[i % SHAPES.length] : "circle"));
+    assert.deepEqual(found.markers.plot, expected, `${name}: each drawn series' marker by its place: ${JSON.stringify(found.markers)}`);
+    if (total > 3) assert.deepEqual(found.markers.legend, found.markers.plot, `${name}: the legend's markers are the plot's: ${JSON.stringify(found.markers)}`);
+  }
   if (total > 1) {
     assert.ok(found.legend && found.legend.inside, `${name}: a legend inside the chart`);
     assert.ok(found.legend.lines <= (found.size === "large" ? 2 : 1), `${name}: the legend in its lines: ${JSON.stringify(found.legend)}`);
@@ -322,7 +345,7 @@ try {
       const deck = await charts("deck");
       const widgets = await charts("widgets");
       assert.deepEqual(deck.map((c) => [c.key, c.size, c.source]), [["trend", "wide", "author"], ["stages", "wide", "author"], ["sizes", "large", "author"],
-        ["pool", "wide", "author"], ["bench", "large", "author"], ["swing", "wide", "author"]]);
+        ["pool", "wide", "author"], ["bench", "large", "author"], ["swing", "wide", "author"], ["cohorts", "wide", "author"]]);
       assert.deepEqual(widgets.map((c) => [c.key, c.size, c.source]), [["stages", "large", "user"], ["sizes", "wide", "user"], ["trend", "wide", "author"]]);
       for (const found of deck) assertBounded(found, `${width} deck`);
       for (const found of widgets) assertBounded(found, `${width} widget`);

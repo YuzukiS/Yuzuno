@@ -50,6 +50,9 @@ const LABEL_CHARS = { single: 10, grouped: 6 };
 const SLOTS = 8;
 const color = (index: number) => `var(--brief-series-${(index % SLOTS) + 1})`;
 const SHAPES = ["circle", "square", "triangle", "diamond", "cross", "star", "wye"] as const;
+/** A scatter series' marker, by its place among all the chart's series (not those a card draws), so a card's plot and
+ * legend agree however many series its legend's lines name (R2, Lead 3275). */
+const shapeOf = (index: number, total: number) => (total > 3 ? SHAPES[index % SHAPES.length] : "circle");
 
 const ticks = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 3 });
 const tick = (value: unknown) => (typeof value === "number" ? ticks.format(value) : String(value));
@@ -442,7 +445,7 @@ export const BriefScatterChart = (props: Placed) => <BriefChart kind="scatter" p
  * hover or focus. `labelPx` is its tick labels' size, which follows the
  * user's text size: the x axis is as tall as its labels need.
  */
-function CardPlot({ kind, series, labelPx }: { kind: Kind; series: Series[]; labelPx: number }) {
+function CardPlot({ kind, series, total, labelPx }: { kind: Kind; series: Series[]; total: number; labelPx: number }) {
   const numeric = series.every((item) => item.points.every(([x]) => typeof x === "number"));
   const merged = useMemo(() => mergeRows(series, kind === "line" && numeric), [series, kind, numeric]);
   const grid = <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" vertical={false} />;
@@ -467,7 +470,7 @@ function CardPlot({ kind, series, labelPx }: { kind: Kind; series: Series[]; lab
               .filter((point): point is [number, number] => typeof point[0] === "number" && typeof point[1] === "number")
               .map(([x, y]) => ({ x, y }))}
             fill={color(index)}
-            shape={series.length > 3 ? SHAPES[index % SHAPES.length] : "circle"}
+            shape={shapeOf(index, total)}
             isAnimationActive={false}
           />
         ))}
@@ -587,7 +590,7 @@ export function CardChart({ kind, props, elementKey, legendLines }: { kind: Kind
               <i
                 data-slot={(index % SLOTS) + 1}
                 data-repeat={index >= SLOTS || undefined}
-                data-shape={kind === "scatter" && names.length > 3 ? SHAPES[index % SHAPES.length] : undefined}
+                data-shape={kind === "scatter" && names.length > 3 ? shapeOf(index, names.length) : undefined}
                 aria-hidden="true"
               />
               <span>{name}</span>
@@ -604,7 +607,7 @@ export function CardChart({ kind, props, elementKey, legendLines }: { kind: Kind
           </p>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <CardPlot kind={kind} series={drawn} labelPx={labelPx} />
+            <CardPlot kind={kind} series={drawn} total={names.length} labelPx={labelPx} />
           </ResponsiveContainer>
         )}
       </div>
