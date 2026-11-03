@@ -159,7 +159,8 @@ test("a definition's versions show the Task method records they cite, each its o
       page.window.renderSection(section(page, layoutStudy, 3), PROJECT, "ws-1");
       const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
       radio(page.document, "Views of this desk", "Definitions").click();
-      await until(() => desk.textContent.includes(expected[1]), `the records: ${expected[1]}`);
+      // The record's line is drawn before Core's read answers: wait for every part of it.
+      await until(() => expected.every((text) => desk.textContent.includes(text)), `the records: ${expected.join(" / ")}`);
       for (const text of expected) assert.ok(desk.textContent.includes(text), text);
       // Version 1 still names its own record, after version 2 replaced it.
       const versions = [...desk.querySelectorAll(".research-versions > li")].map((item) => item.textContent);
