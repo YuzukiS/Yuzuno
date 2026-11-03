@@ -1861,7 +1861,8 @@ p {
 .secondary-button {
   background: #f9faf5;
   border: 1px solid #e1e7d8;
-  color: #8c9d78;
+  /* As in the other palettes (appearance.css): 4.5:1 at rest and hovered (T-19). */
+  color: var(--text-secondary);
 }
 .secondary-button:hover:not(:disabled) {
   background: #f0f4e7;
