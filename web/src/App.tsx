@@ -200,7 +200,7 @@ import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
-import { useSurfaceIn } from "./surface";
+import { useArrivalsIn, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -592,6 +592,33 @@ export function App() {
   // The Agent whose conversation is on screen now, for a reply that comes later.
   const shownConversation = useRef<string | null>(null);
   shownConversation.current = homeOpen || listShown ? null : selected;
+  // Core announced a change to the open Agent (`agent.changed`, which is how a
+  // new request is announced) since the stream last reset: the next request
+  // its detail lists arrived live and may fade in (T-19 CV:Q-01).
+  const liveChange = useRef<{ workspace: string; agent: string } | null>(null);
+  // Since a reset, since the stream broke, or since the conversation was
+  // left: until a detail from a read started after `after` (DetailSync.reads;
+  // never while the stream is down) is shown, nothing arrives live. That
+  // detail only becomes what was shown, so neither a read already on its way,
+  // a copy kept from before, nor a change Core replays when the stream resumes
+  // makes an old request play (Lead 3299, 3301). After Core resumed the stream
+  // (`drain`), only the end of what it replays (`drained`) or a reset ends the
+  // wait: no read starts for it, and no timer guesses it (Lead 3356).
+  const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
+  // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
+  const [, setDrains] = useState(0);
+  // Told in the stream's order, so a reset that follows always wins (R1 276d4a1d; Lead 3356).
+  const onReplay = useCallback((state: "resumed" | "drained") => {
+    if (state === "resumed") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity, drain: true };
+      return;
+    }
+    const mark = arrivalsSettle.current;
+    if (!mark?.drain) return;
+    mark.drained = true;
+    setDrains((n) => n + 1);
+  }, []);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -622,7 +649,10 @@ export function App() {
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
-          if (event.agentId === currentSelected.current) live.sync.refetch();
+          if (event.agentId === currentSelected.current) {
+            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.refetch();
+          }
           return;
         case "agent.progress": {
           // Its Items went out already; only its rail entry changes.
@@ -673,6 +703,9 @@ export function App() {
           else refresh();
           return;
         case "reset":
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
+          liveChange.current = null;
+          arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
           refresh();
@@ -683,7 +716,18 @@ export function App() {
     },
     [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
-  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
+  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
+  // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
+  // Core has resumed it (`onReplay`, then the end of its replay) or reset it (a read after that).
+  // Those two are told in the stream's order; this render only marks the break.
+  const lastConnection = useRef(eventConnection);
+  if (lastConnection.current !== eventConnection) {
+    lastConnection.current = eventConnection;
+    if (eventConnection !== "open") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity };
+    }
+  }
   useEffect(() => {
     if (eventConnection === "open" && !previewMode) jobsRefresh.now();
   }, [eventConnection, previewMode, jobsRefresh]);
@@ -930,6 +974,58 @@ export function App() {
   const time = useTimeDisplay();
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
+  // A request that arrives live while its conversation is open fades in, once (T-19 CV:Q-01): one
+  // that a detail lists, new in this Workspace, Agent and native session, after Core announced a
+  // change to the Agent. The first detail of that scope, and any new request a reconnect, poll or
+  // reset brings, only become what was shown; so do a return to the Agent and another session.
+  const pendingScope = currentDetail && currentDetail.agent.id === selected && !homeOpen && !listShown
+    ? [workspaceId, selected, nativeSession(currentDetail.agent) ?? ""].join("\n") : null;
+  const pendingSeen = useRef<{ scope: string; ids: Set<string>; arrived: string[] } | null>(null);
+  // The conversation was left: another Agent or Workspace opened, or Home or
+  // the phone's list over it. Nothing arrives live until a detail read after
+  // this is shown, and that one is a new baseline (Lead 3301).
+  if (!pendingScope && pendingSeen.current) {
+    const was = arrivalsSettle.current;
+    pendingSeen.current = null;
+    liveChange.current = null;
+    arrivalsSettle.current = { ...was, after: Math.max(was?.after ?? 0, live.sync.reads) };
+  }
+  // The detail shown came from this read; the first one started after a
+  // reset or leaving settles it, and what it lists only becomes shown. It is
+  // current when it is the newest read and the sync has nothing failed,
+  // running, queued, due or waiting to be applied.
+  const readNumber = (live.detail && live.sync.readOf.get(live.detail)) ?? 0;
+  const sync = live.sync;
+  const current = !!live.detail && readNumber === sync.currentRead && !sync.running && !sync.queued && !sync.failed
+    && sync.refetchTimer === undefined && sync.retryTimer === undefined && sync.flushTimer === undefined && !sync.queue.length;
+  // After a stream opened again, only once its replay is over: if a read was on its way then, when
+  // it and any after it are done.
+  const mark = arrivalsSettle.current;
+  let settles = !!mark && (mark.drain ? !!mark.drained && current && !!pendingScope : readNumber > mark.after);
+  if (pendingScope) {
+    const seen = pendingSeen.current;
+    if (!seen || seen.scope !== pendingScope) {
+      pendingSeen.current = { scope: pendingScope, ids: new Set(pending.map((request) => request.id)), arrived: [] };
+      liveChange.current = null;
+      // Back to a conversation whose detail is current (from Home, say): it is the new baseline
+      // now, unless the stream is down or its replay not over (the case above).
+      if (current && !mark?.drain && mark?.after !== Infinity) settles = true;
+    } else {
+      const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
+      if (fresh.length) {
+        const announced = !arrivalsSettle.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        if (announced) liveChange.current = null;
+        pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
+          arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
+      }
+    }
+  }
+  if (settles) arrivalsSettle.current = liveChange.current = null;
+  useArrivalsIn(
+    pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
+    (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
+    "small",
+  );
   // Browser drafts of answers to native questions (T-170) last only while
   // Core still lists their request for this Agent.
   const requestDraftScope = previewMode || !workspaceId ? null : workspaceId;
