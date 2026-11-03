@@ -37,6 +37,8 @@ export type ResearchRecord = {
   method?: { activitySeq: number; id?: string; title?: string };
   sources?: ResearchSource[];
   revises?: { activitySeq: number; reason: string };
+  /** What the record proposes next (T-17 slice 4): a proposal, never an action. */
+  next?: { action: "check" | "stop"; text: string };
   /** A comparison's entries (T-17 slice 2), as their author gave them. */
   entries?: ResearchEntry[];
   comparability?: Comparability;
@@ -96,6 +98,8 @@ const text = strings({
   limits: "Limits",
   madeWith: (title: string, seq: number) => `Made with the method “${title}” as written in activity ${seq}`,
   revises: (seq: number) => `Revises activity ${seq}`,
+  next: { check: "Proposes a next check", stop: "Proposes to stop" } as Record<string, string>,
+  nextNote: "A proposal: nothing runs or stops because of it.",
   sources: "Sources",
   job: "Job artifact",
   jobRecorded: "Matched this task's recorded Job check when written",
@@ -155,6 +159,8 @@ const text = strings({
   limits: "限制",
   madeWith: (title, seq) => `用活动 ${seq} 中写下的方法“${title}”得出`,
   revises: (seq) => `修订活动 ${seq}`,
+  next: { check: "提议下一项检查", stop: "提议停止" },
+  nextNote: "只是提议：不会因此运行或停止任何东西。",
   sources: "来源",
   job: "Job 产物",
   jobRecorded: "写下时与本任务 Job 的记录检查一致",
@@ -409,6 +415,11 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
           <strong>{t.limits}</strong>
           <ul>{record.limits.map((item, n) => <li key={n}>{item}</li>)}</ul>
         </div>
+      )}
+      {record.next && (
+        <p className="task-research-next" data-action={record.next.action} title={t.nextNote}>
+          <strong>{t.next[record.next.action] ?? record.next.action}</strong> {record.next.text}
+        </p>
       )}
       {!!record.entries?.length && <Entries entries={record.entries} comparability={record.comparability} now={view?.data?.research.entries} />}
       {!!record.sources?.length && (

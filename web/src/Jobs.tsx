@@ -29,7 +29,7 @@ import {
   type GpuView,
   type WindowsJobsView,
 } from "./JobBudget";
-import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, type Artifact, type Cost, type Progress } from "./JobRun";
+import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
 import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import { ProvenanceCard } from "./Provenance";
 import type { Agent } from "./types";
@@ -1002,6 +1002,7 @@ export function Jobs({
                     />
                   ) : (
                     <>
+                    {scope.taskId && <TaskSpendCard key={scope.taskId} taskId={scope.taskId} revision={revision} />}
                     <PendingAnalysisRuns key={`${scope.agentId || ""}:${scope.taskId || ""}`} scope={scope} revision={revision} onOpen={setSelected} />
                     <div className="jobs-browser">
                       <StateGroups

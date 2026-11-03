@@ -199,3 +199,59 @@ test('an all-reused run with no new Jobs remains reachable and can be cancelled 
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+test('a run names the method record it follows, and a decided gate the record that explains it (T-17)', async () => {
+  const completed = { ...failed, status: 'succeeded', reason: 'success', run: { id: 'method-run', stage: 'api', attempt: 2 } };
+  const current = { ...run, id: 'method-run', status: 'cancelled', cancelRequestedAt: 'now',
+    method: { activitySeq: 3, id: 'timing', title: 'Timing protocol', version: 1 },
+    methodNow: { state: 'readable', revisedBy: 6, latestActivitySeq: 6 },
+    stages: [{ key: 'api', needs: [], status: 'succeeded', attempts: [{ id: completed.id, status: 'succeeded', run: { attempt: 2 } }],
+      analysis: { id: 'gate-1', state: 'cancelled', jobId: completed.id, attemptId: 'attempt-2', execution: 'succeeded',
+        record: { activitySeq: 9, version: 1, record: { type: 'observation', id: 'ranking-flips', title: 'Ranking flips with link order' },
+          next: { action: 'stop', text: 'Time fresh processes before any further stage.' } },
+        recordNow: { state: 'readable', revisedBy: null, latestActivitySeq: 9 } } }] };
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    if (url === '/api/jobs/job-2') return completed;
+    if (url === '/api/jobs/runs/method-run') return current;
+    return page([completed]);
+  });
+  try {
+    await open(p);
+    await until(() => row(p, '· api'));
+    row(p, '· api').click();
+    await until(() => p.doc.querySelector('.job-run-method'));
+    const card = p.doc.querySelector('.job-run').textContent;
+    assert.match(card, /Follows the method “Timing protocol”, activity 3, version 1; a newer version is activity 6, and the run keeps the version it followed/);
+    assert.match(card, /Cancelled, as the observation “Ranking flips with link order” \(activity 9\) explains · It proposed to stop: Time fresh processes before any further stage\./);
+    assert.equal(p.calls.filter(c => c.url.includes('/decide')).length, 0, 'reading a decision decides nothing');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("a task's Jobs show what it recorded spending: every attempt once, unknown apart, nothing limited (T-17)", async () => {
+  const spend = { taskId: 'T-105', attempts: 4, byStatus: { cancelled: 1, failed: 1, running: 1, succeeded: 1 },
+    usd: { knownUsd: 1.75, attemptsReporting: 2, attemptsNotRecorded: 1, attemptsWithUnknown: 1, unknownEntries: 1, invalidLines: 0, attemptsRunning: 1, complete: false },
+    compute: { cpuSeconds: 12.34, workerWallSeconds: 20, attemptsMeasured: 2, attemptsUnmeasured: 1 },
+    gpu: { attemptsReserving: 1, measured: false }, runs: 1, reusedStages: 1, truncated: false };
+  const p = mount((url, body) => {
+    if (url === '/api/collaboration/job_cost') return body.taskId === 'T-105' ? spend : { error: 'unexpected task' };
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    return page([]);
+  });
+  try {
+    await open(p);
+    assert.equal(p.doc.querySelector('.job-task-spend'), null, 'only for one task');
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: 'T-105' } }));
+    await until(() => p.doc.querySelector('.job-task-spend dd'));
+    const text = p.doc.querySelector('.job-task-spend').textContent;
+    for (const expected of ['Recorded spend on this task',
+      '$1.75 · 1 with an unknown amount · 1 attempt recorded none · 1 still running',
+      '12.3 s of CPU over 2 measured attempts · 1 not measured · GPU use is not measured; 1 attempt reserved a GPU',
+      '4 attempts, each counted once, in 1 run and single Jobs · 1 reused stage ran nothing and is not counted again',
+      'unknown is never zero', 'nothing resets when the method or the run changes'])
+      assert.ok(text.includes(expected), `${expected}: ${text}`);
+    assert.deepEqual(p.calls.find(c => c.url === '/api/collaboration/job_cost').body, { taskId: 'T-105' });
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
