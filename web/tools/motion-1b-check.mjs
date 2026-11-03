@@ -102,6 +102,9 @@ function pageHelpers() {
       ghostHidden: ghost ? ghost.getAttribute("aria-hidden") === "true" && ghost.inert && getComputedStyle(ghost).pointerEvents === "none" : null,
       ghostRoles: ghost ? ghost.querySelectorAll("[role], [id], [aria-modal]").length : 0,
       ghostAnimations: ghost ? ghost.getAnimations({ subtree: true }).map((a) => `${a.animationName}:${a.effect.getTiming().duration}`) : [],
+      // The box's and the overlay's own: both fade, so only the box tells a confirmation's copy from another.
+      ghostBox: ghost ? [...ghost.querySelectorAll(":scope > .modal")].flatMap((el) => el.getAnimations().map((a) => `${a.animationName}:${a.effect.getTiming().duration}`)) : [],
+      ghostOverlay: ghost ? [...ghost.querySelectorAll(":scope > .modal-overlay")].flatMap((el) => el.getAnimations().map((a) => `${a.animationName}:${a.effect.getTiming().duration}`)) : [],
       ariaHiddenMarks: document.querySelectorAll("[data-aria-hidden]").length,
       scrollLocked: document.body.hasAttribute("data-scroll-locked") || getComputedStyle(document.body).overflow === "hidden",
       duplicateIds: ids.length - new Set(ids).size,
@@ -187,9 +190,9 @@ async function exitCase(page, tag, reduced, { name, open, close, confirm = false
   } else {
     ok(`${tag}: ${name}: a copy fades out, aria-hidden, inert and clicked through, with no role, id or duplicate id`,
       ghostFrames.length > 0 && ghostFrames.every((f) => f.ghostHidden && f.ghostRoles === 0 && f.duplicateIds === before.duplicateIds), ghostFrames.slice(0, 2));
-    const animations = ghostFrames[0]?.ghostAnimations || [];
+    const { ghostBox = [], ghostOverlay = [] } = ghostFrames[0] || {};
     ok(`${tag}: ${name}: the copy plays exit-medium, the box ${confirm ? "only fading" : "fading and sinking 4px"}`,
-      animations.includes("dialog-fade-out:170") && animations.includes(`${confirm ? "dialog-fade-out" : "dialog-out"}:170`), animations);
+      ghostOverlay.join() === "dialog-fade-out:170" && ghostBox.join() === `${confirm ? "dialog-fade-out" : "dialog-out"}:170`, { box: ghostBox, overlay: ghostOverlay });
     if (title)
       ok(`${tag}: ${name}: the copy shows what was open (${title}), and it is the only dialog left`,
         ghostFrames.every((f) => title.test(f.ghostTitle || "") && f.dialog === 0 && f.ghostConfirm === confirm), ghostFrames.slice(0, 1));
