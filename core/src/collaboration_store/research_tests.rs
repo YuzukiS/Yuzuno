@@ -833,6 +833,92 @@ fn an_entry_keeps_its_numbers_exactly_as_written_past_two_to_the_fifty_third() {
     assert_eq!(counts(&store), before);
 }
 
+#[test]
+fn a_record_keeps_what_its_kind_of_study_keeps_apart_and_requires_none_of_it() {
+    let (_dir, store) = setup();
+    let with = |id: &str, kind: &str, field: &str, details: Value| {
+        let mut record = json!({"type":kind,"id":id,"title":format!("Record {id}"),"text":"As written.","field":field,"details":details});
+        if kind == "claim" {
+            record["status"] = json!("open");
+        }
+        record
+    };
+    let kept = |id: &str, kind: &str, field: &str, details: Value| -> Value {
+        comment(&store, "author", id, "T-1", with(id, kind, field, details)).unwrap()["activity"]["research"]["details"].clone()
+    };
+    // Theory: a proof checked by enumeration says how far it went.
+    let proof = json!({"result":"proof","checked":"enumeration","bound":"n ≤ 12","obligations":["Base case","Induction step"]});
+    assert_eq!(kept("bound", "claim", "theory", proof.clone()), proof);
+    // Systems: the levels of an evaluation, as given.
+    let levels = json!({"machines":1,"builds":2,"processes":10,"iterations":5,"warmup":"One discarded process"});
+    assert_eq!(kept("levels", "method", "systems", levels.clone()), levels);
+    // ML: baseline, selection and budget apart from the result.
+    let ml = json!({"baseline":"Tuned baseline, same code base","selection":"Best validation loss","budget":"20 trials each","seeds":5,"split":"Fixed 80/10/10"});
+    assert_eq!(kept("selection", "claim", "ml", ml.clone()), ml);
+    // Robotics: counts overlap and are kept as given, the largest exactly.
+    let episodes: Value = serde_json::from_str(r#"{"planned":20,"executed":18,"completed":12,"intervened":3,"stopped":6,"excluded":9007199254740993,"protocol":"Grasp protocol v1"}"#).unwrap();
+    let stored = kept("episodes", "observation", "robotics", episodes.clone());
+    assert_eq!(serde_json::to_string(&stored["excluded"]).unwrap(), "9007199254740993");
+    assert_eq!(stored, episodes, "overlapping counts are not reconciled or judged");
+    // Refused, and nothing written.
+    let before = counts(&store);
+    for (n, (record, expected)) in [
+        (with("e1", "claim", "theory", json!({"result":"proof","checked":"enumeration"})), "a finite enumeration is no general proof"),
+        (with("e2", "claim", "theory", json!({"builds":2})), "unknown field builds"),
+        (with("e3", "observation", "other", json!({"protocol":"p"})), "theory, systems, ml or robotics"),
+        (json!({"type":"observation","id":"e4","title":"T","text":"S","details":{"planned":1}}), "needs research.field"),
+        (with("e5", "observation", "robotics", json!({"planned":1.5})), "is a whole number"),
+        (with("e6", "observation", "robotics", json!({"stopped":-1})), "is a whole number"),
+        (with("e7", "observation", "robotics", json!({"executed":"18"})), "is a whole number"),
+        (with("e8", "claim", "theory", json!({"result":"lemma"})), "must be one of"),
+        (with("e9", "method", "systems", json!({})), "research.details is empty"),
+    ].into_iter().enumerate() {
+        let refused = error(comment(&store, "author", &format!("bad-details-{n}"), "T-1", record));
+        assert!(refused.contains(expected), "{n}: {refused}");
+    }
+    assert_eq!(counts(&store), before);
+}
+
+#[test]
+fn a_claims_new_version_says_what_it_does_to_the_earlier_scope_and_never_revokes_it_by_itself() {
+    let (_dir, store) = setup();
+    let mut claim = finding("faster", "conditional", "systems", "Layout B is faster");
+    claim["conditions"] = json!(["Small inputs", "Machine A"]);
+    let v1 = seq(&comment(&store, "author", "v1", "T-1", claim.clone()).unwrap());
+    let next = |key: &str, previous: i64, scope: Option<&str>, reason: &str, title: &str| -> i64 {
+        let mut revised = finding("faster", "conditional", "systems", title);
+        revised["revises"] = json!({"activitySeq":previous,"reason":reason});
+        if let Some(scope) = scope {
+            revised["revises"]["scope"] = json!(scope);
+        }
+        seq(&comment(&store, "author", key, "T-1", revised).unwrap())
+    };
+    let v2 = next("v2", v1, Some("narrows"), "Faster on machine A only; machine B reverses it.", "Layout B is faster on machine A");
+    let v3 = next("v3", v2, None, "Same scope, clearer wording.", "On machine A, layout B is faster");
+    let v4 = next("v4", v3, Some("unchecked"), "Moved to the new build server; the earlier scope is not checked there yet.", "Layout B is faster on the build server");
+    let v5 = next("v5", v4, Some("withdraws"), "The gain was the warm cache.", "Layout B is not shown faster");
+    // Each earlier version reads as written, with how the next one revised it.
+    let read = |seq: i64| record(&store, "T-1", seq);
+    assert_eq!(read(v1)["research"]["conditions"], json!(["Small inputs", "Machine A"]), "a later version rewrites nothing");
+    assert_eq!(read(v1)["revision"], json!({"activitySeq":v2,"scope":"narrows","reason":"Faster on machine A only; machine B reverses it."}));
+    assert_eq!(read(v2)["revision"], json!({"activitySeq":v3,"scope":null,"reason":"Same scope, clearer wording."}), "unsaid: the scope stands");
+    assert_eq!(read(v3)["revision"]["scope"], "unchecked");
+    assert_eq!(read(v4)["revision"]["scope"], "withdraws");
+    assert!(read(v5).get("revision").is_none(), "the newest has no revision yet");
+    assert_eq!(read(v1)["research"]["status"], "conditional", "status is never changed by a later version");
+    // Scope is for claims, and only these three.
+    let before = counts(&store);
+    let mut method_revision = method("timing", "Fresh processes.");
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method_revision.clone()).unwrap());
+    let before = (before.0, before.1, before.2 + 1, before.3 + 1, before.4);
+    method_revision["revises"] = json!({"activitySeq":m1,"reason":"r","scope":"narrows"});
+    assert!(error(comment(&store, "author", "m2", "T-1", method_revision)).contains("revises.scope is for claims"));
+    let mut invented = finding("faster", "conditional", "systems", "T");
+    invented["revises"] = json!({"activitySeq":v5,"reason":"r","scope":"replaces"});
+    assert!(error(comment(&store, "author", "v6", "T-1", invented)).contains("must be one of narrows, withdraws, unchecked"));
+    assert_eq!(counts(&store), before);
+}
+
 /// A claim of `task` with a 64-byte id and a 300-byte multibyte title: a
 /// task source that cites it fixes all of that, its producer and its time.
 fn long_claim(store: &Store, task: &str, n: usize) -> i64 {
