@@ -203,9 +203,10 @@ jobs:
       # One test at a time in each process, since with parallel threads
       # Store drop-and-reopen tests intermittently fail with "lock acquisition
       # failed because the operation would block". The test binaries run in
-      # up to one process per CPU, the lib's split by test name; the script
-      # checks that every listed test ran. Tests that need an installed Codex
-      # CLI are #[ignore]d with a reason.
+      # up to one process per CPU, the lib's split by test name, after
+      # data_dir's move tests have run alone (they refuse while any update
+      # helper runs on the host); the script checks that every listed test
+      # ran. Tests that need an installed Codex CLI are #[ignore]d with a reason.
       - name: Test (one test at a time per process)
         run: |
           # Preserve runner capacity evidence when SQLite reports disk full.
