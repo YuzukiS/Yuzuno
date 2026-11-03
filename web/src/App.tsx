@@ -96,7 +96,7 @@ import { useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi } from "./deep-link";
+import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { ageText, markOfferHandled, offerable, restoredOffset, type Handoff } from "./reading-handoff";
 import { publishReading, readHandoff } from "./reading-handoff-api";
@@ -202,6 +202,7 @@ import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
+import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
@@ -395,6 +396,25 @@ export function App() {
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
+  /** A report link opened from outside Home (T-18), the message it was
+   * clicked in, for Back, and whether it came from the address; another
+   * opening is another `n`. */
+  const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null>(null);
+  /** Each explicit way to Home (T-18 R3): Home closes a report open over it. */
+  const [homeVisit, setHomeVisit] = useState(0);
+  /** Each report opening, numbered once and only upward: Home, mounted all
+   * along, tells a new opening from one it has handled by this number, even
+   * after a way to Home has dropped the last report (T-18 R3). */
+  const reportOpenings = useRef(0);
+  /** Home, by the user's own way there: the toolbar, a notification, a Home
+   * link, a reply's Open on Home, the way back from a jump. A report open over
+   * Home closes, and none opened before comes back. */
+  function goHome() {
+    setHomeReport(null);
+    setHomeVisit((n) => n + 1);
+    setHomeOpen(true);
+    setPhoneList(false);
+  }
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
@@ -459,7 +479,9 @@ export function App() {
   // What the source strip says about a place that is gone, worded on show (T-189).
   const [sourceNotice, setSourceNotice] = useState<((t: ShellWords) => string) | null>(null);
   // A message link waiting for the Workspace to load.
-  const [incomingLink, setIncomingLink] = useState<AppLink | null>(null);
+  // `fromAddress`: a report link read from the address (T-18), whose page
+  // takes that history entry rather than adding one.
+  const [incomingLink, setIncomingLink] = useState<(AppLink & { fromAddress?: boolean }) | null>(null);
   // Where the shown conversation was last being read, kept when it is left.
   const reading = useRef<{ agentId: string; position: ReadingPosition } | null>(null);
   const readingFrame = useRef(0);
@@ -1016,10 +1038,8 @@ export function App() {
       if (notice.backup.workspaceId !== workspaceId) return;
       setSettingsAt({ editor: "backup", nonce: Date.now() });
       setUpdatesOpen(true);
-    } else if (notice.home) {
-      setHomeOpen(true);
-      setPhoneList(false);
-    } else if (notice.agentId) selectAgent(notice.agentId);
+    } else if (notice.home) goHome();
+    else if (notice.agentId) selectAgent(notice.agentId);
   }, backupRun);
   // Settings closed, however (its own close, or a card that opens another
   // dialog): a notification's request is used up, not repeated next time.
@@ -1138,11 +1158,18 @@ export function App() {
   useEffect(() => { pruneResultViewCache(); }, []);
   // A message or Agent link in the address (T-166, T-184): read once, then
   // removed, so a reload returns to where the user is reading, not the link.
+  // A report link (T-18) is where the user is reading: it stays while its
+  // page is open, and a reload, or the browser's Forward to it, opens it
+  // again in that same history entry.
   useEffect(() => {
     if (previewMode) return;
     const take = () => {
       const link = parseAppLink(window.location.href);
       if (!link) return;
+      if (link.kind === "report") {
+        setIncomingLink({ ...link, fromAddress: true });
+        return;
+      }
       history.replaceState(history.state, "", window.location.pathname + window.location.search);
       setIncomingLink(link);
     };
@@ -1169,7 +1196,10 @@ export function App() {
     if (!incomingLink || !workspace) return;
     setIncomingLink(null);
     initialReading.current = true;
-    openAppLink(incomingLink);
+    if (incomingLink.kind === "report") {
+      const { kind: _kind, fromAddress, ...link } = incomingLink;
+      openReportLink(link, undefined, fromAddress);
+    } else openAppLink(incomingLink);
   }, [incomingLink, workspace]);
   // Another browser's place in the open conversation (T-170): offered, never
   // applied by itself. Read when it opens or the page shows again; an answer
@@ -1742,16 +1772,34 @@ export function App() {
       setNotice(shell.linkOtherHome);
       return;
     }
+    goHome();
+  }
+  /** Opens the report a link names (T-18) over Home; from a message, Back
+   * returns to it. Another Workspace's report is said, and nothing opens. */
+  function openReportLink(link: ReportLink, from?: { turnId: string; itemId?: string }, fromAddress = false) {
+    if (!workspace) { setIncomingLink({ kind: "report", ...link, fromAddress }); return; }
+    if (link.workspaceId !== workspaceId) {
+      // The address keeps no link this Workspace can open.
+      if (fromAddress) history.replaceState(history.state, "", window.location.pathname + window.location.search);
+      setNotice(reportText(language).otherWorkspace);
+      return;
+    }
+    const reading = from && !homeOpen ? currentDetail?.agent : undefined;
+    const back = reading && from ? { workspaceId, agentId: reading.id, turnId: from.turnId, itemId: from.itemId, threadId: reading.threadId } : null;
+    setHomeReport({ link, back, fromAddress, n: ++reportOpenings.current });
     setHomeOpen(true);
     setPhoneList(false);
   }
   function openAppLink(link: AppLink) {
     if (link.kind === "agent") openAgentLink(link);
     else if (link.kind === "home") openHomeLink(link);
+    else if (link.kind === "report") openReportLink(link);
     else openMessageLink(link);
   }
   const openLink = useRef(openMessageLink);
   openLink.current = openMessageLink;
+  const openReport = useRef(openReportLink);
+  openReport.current = openReportLink;
   /** "Open on Home" on a reply from Home (T-9): Home, at the section and
    * version it answered, where Home says what has become of it. A reply
    * from another Workspace's Home opens nothing here. */
@@ -1763,19 +1811,23 @@ export function App() {
     }
     const owner = workspace?.agents.find((a) => a.id === from.agentId);
     setHomeArrival((last) => ({ origin, back: { workspaceId, ...from, threadId: owner?.threadId }, n: (last?.n ?? 0) + 1 }));
-    setHomeOpen(true);
-    setPhoneList(false);
+    goHome();
   };
   const homeReplyLinks = useMemo<HomeReplyLinksApi>(() => ({ open: (origin, from) => openHomeReply.current(origin, from) }), []);
   // Leaving Home ends the arrival: opening it again some other way is not one.
   useEffect(() => {
-    if (!homeOpen) setHomeArrival(null);
+    if (!homeOpen) {
+      setHomeArrival(null);
+      setHomeReport(null);
+    }
   }, [homeOpen]);
   const messageLinks = useMemo<MessageLinkApi>(() => ({
     href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
       ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
       : null,
     open: (link) => openLink.current(link),
+    reportHref: (link) => linkBase && workspaceId && !previewMode ? reportLinkHref(linkBase, { workspaceId, ...link }) : null,
+    openReport: (link, from) => openReport.current(link, from),
   }), [linkBase, workspaceId]);
   /** Notes where the shown conversation is being read (T-166). */
   function noteReading(latest: boolean) {
@@ -1798,8 +1850,8 @@ export function App() {
       if (position) reading.current = { agentId: shown, position };
     });
   }
-  // Search offers to open a message or an Agent link; a Home link is what a
-  // notification opens, not something to paste.
+  // Search offers to open a message, Agent or report link; a Home link is
+  // what a notification opens, not something to paste.
   const pastedLink = searchOpen ? parseAppLink(search) : null;
   const searchLink = pastedLink?.kind === "home" ? null : pastedLink;
   function openSearchLink() {
@@ -2448,10 +2500,7 @@ export function App() {
               className={`catchup-nav ${homeOpen ? "selected" : ""}`}
               aria-current={homeOpen ? "page" : undefined}
               title={needsYou > 0 ? shell.homeWaiting(needsYou) : shell.home}
-              onClick={() => {
-                setHomeOpen(true);
-                setPhoneList(false);
-              }}
+              onClick={goHome}
             >
               <House size={15} />
               <span className="toolbar-nav-label">{shell.home}</span>
@@ -2553,7 +2602,7 @@ export function App() {
           {searchLink && (
             <button className="quiet-button open-message-link" onClick={openSearchLink}>
               <Link2 size={13} />
-              {searchLink.kind === "agent" ? shell.openLinkedAgent : shell.openLinkedMessage}
+              {searchLink.kind === "agent" ? shell.openLinkedAgent : searchLink.kind === "report" ? shell.openLinkedReport : shell.openLinkedMessage}
             </button>
           )}
         </div>
@@ -2621,10 +2670,7 @@ export function App() {
         {outsidePending > 0 && (
           <button
             className="elsewhere-notice"
-            onClick={() => {
-              setHomeOpen(true);
-              setPhoneList(false);
-            }}
+            onClick={goHome}
             title={shell.elsewhereTitle}
           >
             <Bell size={14} />
@@ -2703,6 +2749,8 @@ export function App() {
             onNeedsYou={reportNeedsYou}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
+            report={homeReport}
+            visit={homeVisit}
           />
         ) : agent ? (
           <>
@@ -2838,7 +2886,7 @@ export function App() {
                   className="quiet-button"
                   onClick={() =>
                     sourceOrigin === "home"
-                      ? setHomeOpen(true)
+                      ? goHome()
                       : backToLatest()
                   }
                 >

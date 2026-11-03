@@ -1,7 +1,7 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
-import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
+import { BookOpen, CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import type { Agent } from "../types";
@@ -12,13 +12,15 @@ import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
-import { sectionSummary, unmaintained } from "./card-summary";
+import { sectionConditions, sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
 import { deferSection, type SeenMark } from "./home-api";
 import { homeText } from "./home-text";
 import { SectionBody } from "./SectionBody";
 import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
+import { useReportOpen } from "./report/report-open";
+import { reportText } from "./report/report-text";
 
 /** When a status's data is from, and whether it is past its validity. */
 function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -124,6 +126,9 @@ export const SectionCard = memo(function SectionCard({
   const time = useTimeDisplay();
   const language = useLanguage();
   const t = homeText(language);
+  // A report or status opens whole as a page over Home (T-18).
+  const openReport = useReportOpen();
+  const reportWords = reportText(language);
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
   const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
@@ -144,6 +149,8 @@ export const SectionCard = memo(function SectionCard({
   // A folded card still says what it is about, when it is from and whether
   // anyone still keeps it up to date (T-173); unfolded, the body says so.
   const summary = useMemo(() => (section.kind === "ask" ? null : sectionSummary(section)), [section]);
+  // What the author's conclusion holds under goes with it (T-18).
+  const conditions = useMemo(() => (summary ? sectionConditions(section) : null), [summary, section]);
   const orphaned = unmaintained(section);
   const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
@@ -222,6 +229,17 @@ export const SectionCard = memo(function SectionCard({
           </span>
           <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
         </span>
+        {openReport && section.kind !== "ask" && (
+          <button
+            type="button"
+            className="quiet-button home-report-open"
+            aria-label={reportWords.openReportLabel(section.title)}
+            onClick={(event) => openReport(projectId, section, event.currentTarget)}
+          >
+            <BookOpen size={13} />
+            {reportWords.openReport}
+          </button>
+        )}
         {replyable && (
           <button
             type="button"
@@ -257,6 +275,12 @@ export const SectionCard = memo(function SectionCard({
           {summary && (
             <div className="home-card-summary">
               <BriefMarkdown text={summary} />
+            </div>
+          )}
+          {conditions && (
+            <div className="home-card-conditions" role="group" aria-label={reportWords.conditions}>
+              <span className="home-card-conditions-label">{reportWords.conditions}</span>
+              <SectionBody section={section} projectId={projectId} only={[conditions]} />
             </div>
           )}
           {section.status && (
