@@ -443,9 +443,13 @@ function BigNumbers({ items }: { items: Metric[] }) {
 function FigureFrame({ section, projectId, figure, large }: { section: Section; projectId: string; figure: CardFigure; large: boolean }) {
   const t = useStrings(cardText);
   const words = useStrings(briefText);
-  // The image this frame failed to load, by version, name and snapshot: another one in its place loads again (R2, Lead 3275).
+  // The image this frame failed to load, by its whole source: the project, the section (its key, Core's id for it and its
+  // version), the file and its snapshot. The image element is keyed by it and its error names it, so an older image's
+  // late error never marks another, and another image in its place loads again (R2, Lead 3275, 3278).
   const [unloaded, setUnloaded] = useState<string | null>(null);
-  const shot = figure.kind === "image" ? `${section.version}:${figure.name}:${figure.takenAt ?? ""}` : null;
+  const shot = figure.kind === "image"
+    ? JSON.stringify([projectId, section.key, section.id ?? null, section.version, figure.name, figure.takenAt])
+    : null;
   const shape = large ? LARGE_TABLE_PREVIEW : TABLE_PREVIEW;
   const table = figure.kind === "table" ? { columns: figure.columns.slice(0, shape.columns), rows: figure.rows.slice(0, shape.rows) } : null;
   const metrics = large ? metricsOf(section, figure) : null;
