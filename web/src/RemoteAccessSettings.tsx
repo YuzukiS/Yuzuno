@@ -63,6 +63,7 @@ const text = strings({
   intro:
     "Open this Workspace from your phone through Tailscale on your private network. Yuzuno changes only its own Serve entry, and shows an address only once Core listens and the entry is its own.",
   asReported: "As Core reports it now",
+  reading: "Reading phone access…",
   couldNotRead: (error: string) => `Could not read phone access: ${error}`,
   tryAgain: "Try again",
   startup: (error: string) => `When Core started, it could not serve the phone entry: ${error}`,
@@ -134,6 +135,7 @@ const text = strings({
   title: "手机访问",
   intro: "通过你私有网络上的 Tailscale，从手机打开此 Workspace。Yuzuno 只更改它自己的 Serve 入口，并且只有在 Core 正在监听且该入口属于它时才显示地址。",
   asReported: "按 Core 现在的报告",
+  reading: "正在读取手机访问…",
   couldNotRead: (error) => `无法读取手机访问：${error}`,
   tryAgain: "重试",
   startup: (error) => `Core 启动时无法提供手机入口：${error}`,
@@ -450,6 +452,12 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
           </span>
         )}
       </header>
+      {/* Until Core answers, the section says it is reading (T-19 ST:R1). */}
+      {active && !view && !loadError && (
+        <p className="settings-row-help" role="status">
+          {t.reading}
+        </p>
+      )}
       {loadError && (
         <p className="updates-error" role="alert">
           {t.couldNotRead(loadError)}{" "}
