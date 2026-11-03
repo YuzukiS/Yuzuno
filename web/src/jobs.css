@@ -1,7 +1,10 @@
 /* Jobs: the sources on the left, as Settings lists its categories; then a
    source's rows, grouped by what they need, beside the chosen one. Rows wear
    the dock's status marks (StatusMark), so a job reads the same here and on
-   the conversation's edge. Cards and type follow Settings (updates.css). */
+   the conversation's edge. Cards and type follow Settings (updates.css).
+   Its text is never --text-quiet: on a card's mixed background (--jobs-card)
+   that reads below 4.5:1 in the garden palette's light theme, so even what is
+   there to look up rather than read first takes --text-secondary (T-19). */
 .modal.jobs-dialog {
   --jobs-card: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
   /* A little deeper than a card, for command and output text. */
@@ -79,7 +82,7 @@
 }
 .jobs-rail-count {
   margin-left: auto;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(8.5px + var(--font-adjust, 3px));
   font-variant-numeric: tabular-nums;
 }
@@ -196,7 +199,6 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--text-quiet);
   cursor: help;
 }
 .jobs-key {
@@ -232,7 +234,7 @@
 .jobs-meter-name {
   min-width: 0;
   overflow: hidden;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   text-overflow: ellipsis;
 }
 .jobs-meter-value {
@@ -268,7 +270,7 @@
   align-items: baseline;
   gap: 2px 12px;
   min-width: 0;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
 }
 .jobs-reserved-text,
 .jobs-budget-host,
@@ -277,7 +279,7 @@
 .jobs-gpu-held {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
 }
 .jobs-gpu-busy {
   color: var(--text-secondary);
@@ -374,13 +376,13 @@
   align-items: center;
   gap: 6px;
   margin: 0 2px;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(7.5px + var(--font-adjust, 3px));
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
-.job-group-title span {
+.job-group-count {
   font-weight: 500;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
@@ -450,7 +452,7 @@
 }
 .job-row-time {
   flex: none;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(8.5px + var(--font-adjust, 3px));
   font-variant-numeric: tabular-nums;
 }
@@ -460,15 +462,11 @@
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.job-row small.job-row-note {
-  color: var(--text-quiet);
-}
-/* When it was queued and finished: there to look up, not to read first. */
+/* When it was queued and finished: there to look up, not to read first,
+   so smaller; still at 4.5:1 (T-19), so not fainter. */
 .job-row small.job-row-moments {
-  color: var(--text-quiet);
   font-size: calc(8px + var(--font-adjust, 3px));
   font-variant-numeric: tabular-nums;
-  opacity: 0.85;
 }
 .job-group-more {
   justify-self: start;
@@ -566,9 +564,6 @@
   justify-content: space-between;
   gap: 12px;
 }
-/* On a card's mixed background (--jobs-card) the quiet text colour reads
-   below 4.5:1 in some palettes; a card's heading and note, a detail's terms,
-   the footnotes and the empty states take the secondary one (T-19). */
 .job-card-heading strong {
   color: var(--text-secondary);
   font-size: calc(7.5px + var(--font-adjust, 3px));
@@ -668,7 +663,7 @@
   font-weight: 600;
 }
 .job-run-stage small {
-  color: var(--text-quiet);
+  color: var(--text-secondary);
 }
 .job-run-wait {
   flex-basis: 100%;
@@ -774,7 +769,7 @@
   flex-shrink: 0;
 }
 .ci-subscription small {
-  color: var(--text-quiet);
+  color: var(--text-secondary);
 }
 .ci-subscription p {
   margin: 0;
@@ -821,7 +816,7 @@
   font-size: calc(9px + var(--font-adjust, 3px));
 }
 .ci-child-job .ci-step-state {
-  color: var(--text-quiet);
+  color: var(--text-secondary);
 }
 @media (prefers-reduced-motion: reduce) {
   .ci-jobs .spin {
@@ -858,7 +853,7 @@
   float: left;
   grid-column: 1 / -1;
   padding: 0;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(7.5px + var(--font-adjust, 3px));
   font-weight: 600;
   letter-spacing: 0.07em;
@@ -908,7 +903,7 @@
 .job-form details p,
 .job-form-footer small {
   margin: 0;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
   line-height: 1.5;
 }
