@@ -485,17 +485,24 @@ export function Home({
   // A section pinned here (T-19 HM:W5): what was pressed keeps its place
   // while the widget column above it grows, and the new widget comes in over
   // small (opacity, 4 px up) and settles once; under reduced motion it is
-  // there at once. A layout read again, or another window's pin, does neither.
-  const [pinnedHere, setPinnedHere] = useState<{ id: string; n: number } | null>(null);
+  // there at once. Only a widget this press added does so: not one already
+  // pinned (a pin that changed nothing, or Pin the new section for one pinned
+  // already), not one past the limit, a layout read again or another
+  // window's pin. It is this Workspace's: another one opened drops it.
+  const [pinnedHere, setPinnedHere] = useState<{ workspace: string; id: string; n: number; had: boolean } | null>(null);
   const pinAnchor = useRef<{ element: HTMLElement; top: number } | null>(null);
   const pinnedWidget = useRef<HTMLElement | null>(null);
+  const layoutNow = useRef(layout);
+  layoutNow.current = layout;
   useLayoutEffect(() => {
     pinnedWidget.current = null;
     const anchor = pinAnchor.current;
     pinAnchor.current = null;
-    if (!pinnedHere) return;
-    // Held now and for two more frames, so whatever the browser's own scroll
-    // anchoring did or does, the pressed control ends where it was.
+    if (!pinnedHere || pinnedHere.workspace !== workspaceId) return;
+    // Held now, and for two more frames until the reader scrolls, presses a
+    // key or touches: so whatever the browser's own scroll anchoring did or
+    // does, the pressed control ends where it was, and what the reader then
+    // does stands.
     const view = anchor?.element.isConnected ? anchor.element.closest<HTMLElement>(".home-view") : null;
     const hold = () => {
       if (!anchor || !view || !anchor.element.isConnected) return;
@@ -507,14 +514,26 @@ export function Home({
       hold();
       frame = requestAnimationFrame(hold);
     });
-    const widget = [...document.querySelectorAll<HTMLElement>(".home-widget-slot")].find((slot) => slot.dataset.widget === pinnedHere.id);
-    pinnedWidget.current = widget ?? null;
-    const settled = widget ? settleWhenLanded(widget, "data-settle", false, "animation") : null;
-    return () => {
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    const yield_ = () => {
       cancelAnimationFrame(frame);
+      for (const kind of inputs) window.removeEventListener(kind, yield_, true);
+    };
+    for (const kind of inputs) window.addEventListener(kind, yield_, { capture: true, passive: true });
+    const added = !pinnedHere.had && !!layout?.pins.some((p) => pinWidgetId(p) === pinnedHere.id);
+    const widget = added ? [...document.querySelectorAll<HTMLElement>(".home-widget-slot")].find((slot) => slot.dataset.widget === pinnedHere.id) : undefined;
+    pinnedWidget.current = widget ?? null;
+    // The tint paints the widget's own card: the card's background would
+    // hide one painted behind it.
+    const card = widget?.firstElementChild instanceof HTMLElement ? widget.firstElementChild : widget;
+    const settled = card ? settleWhenLanded(card, "data-settle", false, "animation") : null;
+    return () => {
+      yield_();
       settled?.();
     };
-  }, [pinnedHere]);
+    // `layout` is read as this pin committed it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedHere, workspaceId]);
   useSurfaceIn(pinnedWidget, pinnedHere?.n ?? 0, "small", !!pinnedHere, "translateY(4px)");
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
@@ -526,11 +545,13 @@ export function Home({
       pinAnchor.current = pressed instanceof HTMLElement && pressed.closest(".home-view")
         ? { element: pressed, top: pressed.getBoundingClientRect().top }
         : null;
-      pin(projectId, source.projectName, source.section);
       const id = pinWidgetId({ projectId, key: source.section.key, id: source.section.id! });
-      setPinnedHere((last) => ({ id, n: (last?.n ?? 0) + 1 }));
+      // Pinned already before this press, as the layout was last drawn.
+      const had = !!layoutNow.current?.pins.some((p) => pinWidgetId(p) === id);
+      pin(projectId, source.projectName, source.section);
+      setPinnedHere((last) => ({ workspace: workspaceId, id, n: (last?.n ?? 0) + 1, had }));
     },
-    [data, pin],
+    [data, pin, workspaceId],
   );
   const pins = useMemo<PinControl | null>(
     () =>
