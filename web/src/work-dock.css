@@ -71,7 +71,7 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
-  transition: color 160ms ease;
+  transition: color var(--motion-micro) var(--ease-standard);
 }
 .work-dock-heading:focus-visible,
 .work-dock-item:focus-visible,
@@ -129,7 +129,7 @@
   /* The paper behind the node, which cuts the line around it. */
   background: var(--node-hole, var(--paper));
   box-shadow: 0 0 0 2px var(--node-hole, var(--paper));
-  transition: scale 160ms ease;
+  transition: scale var(--motion-micro) var(--ease-standard);
 }
 .work-dock-heading .work-dock-node {
   width: 18px;
@@ -277,8 +277,8 @@
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 140ms ease,
-    visibility 140ms;
+    opacity var(--motion-micro) var(--ease-standard),
+    visibility var(--motion-micro);
 }
 .work-dock-tip > span {
   color: var(--text-secondary);
@@ -340,16 +340,16 @@
   }
   .work-dock-item .work-dock-label {
     grid-template-rows: 0fr auto 0fr;
-    transition: grid-template-rows 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: grid-template-rows var(--motion-small) var(--ease-standard);
   }
   .work-dock-item .work-dock-label :is(strong, small.work-dock-when) {
     min-height: 0;
     opacity: 0;
-    transition: opacity 160ms ease;
+    transition: opacity var(--motion-micro) var(--ease-standard);
   }
   .work-dock-heading .work-dock-label {
     opacity: 0;
-    transition: opacity 160ms ease;
+    transition: opacity var(--motion-micro) var(--ease-standard);
   }
   .work-dock:is(:hover, :focus-within) .work-dock-item .work-dock-label {
     grid-template-rows: 1fr auto 1fr;

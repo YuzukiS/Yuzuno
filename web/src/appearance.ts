@@ -121,7 +121,23 @@ export function appearanceFrom(saved: any): Appearance {
   };
 }
 
+// The applies in flight: only the latest one turns transitions back on.
+let applying = 0;
+
 export function applyAppearance(appearance: Appearance) {
+  // Every colour takes the new theme in the same frame (T-19): transitions are
+  // off for two frames, so no control fades in from the old colours on its own.
+  const root = document.documentElement;
+  const frame = window.requestAnimationFrame?.bind(window);
+  if (frame) {
+    const mine = ++applying;
+    root.dataset.themeApplying = "";
+    frame(() =>
+      frame(() => {
+        if (mine === applying) delete root.dataset.themeApplying;
+      }),
+    );
+  }
   const theme =
     appearance.theme === "system"
       ? window.matchMedia("(prefers-color-scheme: dark)").matches

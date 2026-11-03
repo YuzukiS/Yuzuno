@@ -234,3 +234,13 @@
   overflow-wrap: anywhere;
   font-size: 0.95em;
 }
+
+/* Options take their hover and chosen colours the way choice chips do (T-19). */
+.clarification-options label {
+  transition:
+    border-color var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard);
+}
+.clarification-options label:hover {
+  border-color: var(--focus);
+}

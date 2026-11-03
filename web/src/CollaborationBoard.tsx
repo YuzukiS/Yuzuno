@@ -2082,7 +2082,9 @@ function Messages({
                           );
                           original?.scrollIntoView({
                             block: "center",
-                            behavior: "smooth",
+                            behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+                              ? "auto"
+                              : "smooth",
                           });
                           original?.focus({ preventScroll: true });
                         }}

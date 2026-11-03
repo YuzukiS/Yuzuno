@@ -26,7 +26,7 @@
 }
 .claude-subagent-calls-toggle:hover { background: var(--surface-hover, transparent); }
 .claude-subagent-calls-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.claude-subagent-calls-toggle svg { transition: transform .15s; }
+.claude-subagent-calls-toggle svg { transition: transform var(--motion-micro) var(--ease-standard); }
 .claude-subagent-calls-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
 .claude-subagent-calls > div { padding-left: 10px; border-left: 2px solid var(--line); }
 /* An ExitPlanMode request and its call: the plan as Markdown. A long plan

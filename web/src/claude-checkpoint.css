@@ -1,7 +1,7 @@
 .message-label .checkpoint-open {
   margin-left: auto;
   padding: 2px 5px;
-  color: #a3aa96;
+  color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
   font-weight: 400;
 }

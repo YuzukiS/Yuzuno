@@ -35,7 +35,7 @@
   display: grid;
   height: min(680px, calc(var(--safe-dvh) - 235px));
   grid-template-columns: minmax(0, 1fr) minmax(0, 0fr);
-  transition: grid-template-columns 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: grid-template-columns var(--motion-medium) var(--ease-standard);
 }
 .collab-task-layout.with-detail {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
@@ -201,7 +201,7 @@
   border-top: 1px solid var(--line);
   border-radius: 0;
   text-align: left;
-  transition: background 0.15s ease;
+  transition: background-color var(--motion-micro) var(--ease-standard);
 }
 .collab-task-card:first-child {
   border-top: 0;
@@ -497,14 +497,14 @@
   border-left: 1px solid var(--line);
   overflow-x: hidden;
   overflow-y: auto;
-  animation: collab-detail-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: collab-detail-in var(--motion-medium) var(--ease-standard) both;
 }
 .collab-task-layout[data-entry="switch"] .collab-detail {
-  animation: collab-detail-switch 180ms ease-out both;
+  animation: collab-detail-switch var(--motion-small) var(--ease-standard) both;
 }
 /* Closing: the detail is still mounted while its column shrinks away. */
 .collab-task-layout:not(.with-detail) .collab-detail {
-  animation: collab-detail-out 220ms ease-in both;
+  animation: collab-detail-out var(--motion-exit-medium) var(--ease-exit) both;
   pointer-events: none;
 }
 /* The detail shows once its column has mostly opened, and is gone before
@@ -944,7 +944,7 @@
 }
 .mailbox-chevron {
   color: var(--text-quiet);
-  transition: rotate 160ms;
+  transition: rotate var(--motion-micro) var(--ease-standard);
 }
 .mailbox-notice[open] .mailbox-chevron {
   rotate: 90deg;
@@ -1031,7 +1031,7 @@
   color: var(--text-quiet);
 }
 .mailbox-prompt-chevron {
-  transition: rotate 160ms;
+  transition: rotate var(--motion-micro) var(--ease-standard);
 }
 .mailbox-prompt[open] .mailbox-prompt-chevron {
   rotate: 90deg;
@@ -1225,4 +1225,11 @@
 }
 .task-workspace-suggestion {
   font-size: 0.84rem;
+}
+
+/* Board tabs ease their hover and selection colours (T-19). */
+.collab-tabs button {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
 }
