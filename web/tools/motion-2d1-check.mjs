@@ -125,11 +125,13 @@ function pageHelpers() {
       this.url = url;
       this.readyState = 0;
       streams.push(this);
+      // As Core starts a stream: a fresh one with `reset`, one from a last ID with `resumed` (events.rs).
       setTimeout(() => {
         if (this.readyState === 2) return;
         this.readyState = 1;
         this.onopen?.({});
-        this.onmessage?.({ data: JSON.stringify({ type: "resumed" }), lastEventId: String(++id) });
+        const start = url.includes("lastEventId") ? { type: "resumed" } : { type: "reset", reason: "new" };
+        this.onmessage?.({ data: JSON.stringify(start), lastEventId: String(++id) });
       }, 0);
     }
     addEventListener(type, listener) { ((this.listeners ??= {})[type] ??= []).push(listener); }
@@ -172,6 +174,10 @@ function pageHelpers() {
   // Core cannot resume the stream: everything is read again.
   window.__reset = after({ type: "reset", reason: "check" });
   window.__announceThenReset = after({ type: "agent.changed", agentId: "a" }, { type: "reset", reason: "check" });
+  // Lead 3359: the replay ends while a read is due (the announcement's 150 ms window), or while a
+  // change the shown copy already has (rev 0) waits to be applied.
+  window.__announceThenHeartbeat = async () => { await after({ type: "agent.changed", agentId: "a" })(); window.__heartbeat(); };
+  window.__appliedThenHeartbeat = () => { send({ type: "agent.context", agentId: "a", rev: 0 }); window.__heartbeat(); };
   // A short break, as the browser's own reconnect has it: the same stream errs, opens again 300 ms
   // later, before any poll could, and says what Core says then. What was staged changed meanwhile.
   const reconnect = (...events) => async () => {
@@ -413,6 +419,19 @@ for (const run of runs) {
     ok(`${tag}: requests read by reads still on their way when the replay ended show with nothing playing (${heldShown.length} frames, ${(await calls()) - inflightMark} calls)`,
       heldShown.length > 5 && (await calls()) === inflightMark && still(inflightFrames), heldShown[0]?.cards["request-held-1"]);
     fadesIn("once those reads are done, a request announced live", await bring(request("post-held", "npm run done"), "__announce"));
+    // S4b (Lead 3359): the replay ends while a read is due: what it brings is the new baseline.
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(200);
+    onlyShows("a request whose read was due when the replay ended", await bring(request("due-1", "npm run due"), "__announceThenHeartbeat"));
+    fadesIn("after that read, a request announced live", await bring(request("post-due", "npm run after-due"), "__announce"));
+    // S5 (Lead 3356, 3359): the replay ends while a change the shown copy has waits to be applied;
+    // once it is, nothing is pending, and the wait ends without another read.
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.__appliedThenHeartbeat());
+    await page.waitForTimeout(500);
+    fadesIn("after a replay that ended while a change already shown waited to be applied, a request announced live",
+      await bring(request("post-applied", "npm run applied"), "__announce"));
 
     // To another Agent and straight back, before that one is read: Mori's next detail is a new baseline,
     // whatever was announced for it before (a request made meanwhile shows with nothing playing).
