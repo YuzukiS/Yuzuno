@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "An isolated build is required");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -15,6 +15,8 @@ const report = {
   checks: [],
   errors: [],
   mutations: [],
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
 };
 const agent = {
   id: "a",
@@ -123,10 +125,19 @@ await page.route("**/*", async (route) => {
     return route.fulfill({ json: { agent: otherAgent, turns: [], pending: [], artifacts: [] } });
   if (url.pathname === "/api/updates")
     return route.fulfill({ json: unmanagedUpdates });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected request: ${url.pathname}`,
-  );
+  // What the app reads as it loads, answered as having nothing (T-19): Jobs and CI waiting on no
+  // Agent, no jobs or runs for the conversation's dock, and no PR reviews for the bottom bar.
+  if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
+  if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: { agents: {} } });
+  if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
+  if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -262,8 +273,8 @@ try {
         open: el.open,
       };
     });
-    // Opening unfolds a little slower than closing folds (tool-activity.css).
-    assert.equal(animation.duration, opening ? 300 : 220, JSON.stringify(animation));
+    // Opening unfolds over --motion-medium, closing folds over --motion-exit-medium (T-19 1a).
+    assert.equal(animation.duration, opening ? 240 : 170, JSON.stringify(animation));
     assert.equal(animation.open, opening);
     assert.ok(
       animation.middle > Math.min(animation.before, animation.after) &&
@@ -491,6 +502,7 @@ try {
     { path: "/api/agents/a/messages", method: "POST" },
   ]);
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";
