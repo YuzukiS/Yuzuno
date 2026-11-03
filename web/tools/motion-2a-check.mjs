@@ -6,7 +6,9 @@
 // after the body, already at the place they are read from, in one step, never scrolled there;
 // with the fade that first frame, rows not yet in, is at opacity 0. A rapid switch leaves one fade,
 // on the newest. Under reduced motion nothing plays; on a phone the conversation does not fade (its
-// push and pop are M8, later). The app saves where an Agent was read as it leaves it (PUT
+// push and pop are M8, later). The rows come in, already placed, while the fade is still faint
+// (asserted below 0.5), and frames held at 0, 16 ms, 50 % and the end are saved for review. Closing
+// the task board onto another Agent's conversation (SH:D10) fades it in once. The app saves where an Agent was read as it leaves it (PUT
 // /api/agents/<id>/reading); that is answered, any other write fails the check. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-2a-check.mjs
 import assert from "node:assert/strict";
@@ -43,12 +45,30 @@ const gets = {
   "/api/agents/b": { agent: agents[1], pending: [], artifacts: [], turns: turns("Hana") },
   "/api/home": { generatedAt: new Date().toISOString(), order: ["p"], needsYou: [], projects: [] },
 };
+// The task board's reads are POSTs (CollaborationBoard.tsx `call`); a task of Hana's to open her from.
+const boardTask = { id: "T-1", title: "Synthetic task for Hana", description: "", status: "doing", assigneeAgentId: "b",
+  assignee: { kind: "agent", id: "b", name: "Hana" }, progress: "", blocker: "", result: null, version: 1,
+  createdBy: { kind: "user", id: "user", name: "You" }, updatedBy: { kind: "user", id: "user", name: "You" },
+  createdAt: "2026-11-03T04:00:00Z", updatedAt: "2026-11-03T04:00:00Z" };
+const boardReads = {
+  task_list: () => ({ tasks: [boardTask], hasMore: false, counts: { doing: 1 } }),
+  task_get: () => ({ task: boardTask, activities: [], executions: [], hasMore: false }),
+  peer_read: () => ({ messages: [], hasMore: false }),
+  peers_list: () => ({ peers: [] }),
+  workspaces: () => ({ taskId: "T-1", repositories: [], workspaces: [] }),
+  github_links: () => ({ links: [], repositories: [] }),
+  delivery_get: () => ({ flow: null, settings: { harness: "codex", model: "m" } }),
+  task_research_list: () => ({ records: [] }),
+};
+const WRITES = /^(task_(create|update|comment|dispatch|submit_result|claim|result_ack|research_add)|peer_send|github_pr_submit|github_links_link|review_start|delivery_(enable|continue|stop)|ci_subscribe|job_)/;
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
   ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 async function serve(route) {
   const request = route.request();
   const url = new URL(request.url());
   if (url.pathname.startsWith("/api/")) {
+    const operation = url.pathname.startsWith("/api/collaboration/") ? url.pathname.slice("/api/collaboration/".length) : null;
+    if (request.method() === "POST" && operation !== null && !WRITES.test(operation)) return route.fulfill({ json: boardReads[operation]?.() ?? {} });
     if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
       report.readingSaves.push(url.pathname);
       return route.fulfill({ json: { accepted: true } });
@@ -75,7 +95,7 @@ function pageHelpers() {
     const home = document.querySelector(".home-view");
     const body = document.querySelector(".conversation-body");
     const plays = (el) => (el ? el.getAnimations().map((a) => ({ name: a.animationName ?? null, keyframes: a.effect?.getKeyframes?.().map((k) => Object.keys(k).filter((p) => !["offset", "easing", "composite", "computedOffset"].includes(p)).join("+")).join("/"),
-      duration: a.effect.getTiming().duration, easing: a.effect.getTiming().easing })) : []);
+      duration: a.effect.getTiming().duration, easing: a.effect.getTiming().easing, current: a.currentTime })) : []);
     const scroller = document.querySelector(".conversation-scroll");
     const row = document.querySelector(".turn");
     return {
@@ -168,6 +188,10 @@ for (const run of runs) {
     withRows.length > 0 && withRows.every((f) => f.rowTransform === "none" && f.scrollTop === backLast.scrollTop) &&
       before.every((f) => f.scrollTop === 0 && (reduced || f.bodyOpacity === 0)), back.slice(0, 3));
 
+  if (!reduced)
+    ok(`${tag}: the rows come in, already placed, while the conversation is still faint (opacity ${withRows[0]?.bodyOpacity} < 0.5 in their first frame, ${withRows[0]?.t} ms after the click)`,
+      withRows.length > 0 && withRows[0].bodyOpacity < 0.5, withRows.slice(0, 2));
+
   // Another Agent's conversation takes its place (SH:C01).
   await page.waitForTimeout(300);
   const swap = await step("switch Agent", () => open("Mori"));
@@ -182,6 +206,25 @@ for (const run of runs) {
   ok(`${tag}: and its rows never move, placed in one step (scrollTop ${swapRows[0]?.scrollTop})`,
     swapRows.length > 0 && swapRows.every((f) => f.rowTransform === "none" && f.scrollTop === swap.at(-1).scrollTop), swap.slice(0, 2));
 
+  if (!reduced)
+    ok(`${tag}: and they come in while it is still faint (opacity ${swapRows[0]?.bodyOpacity} < 0.5)`, swapRows.length > 0 && swapRows[0].bodyOpacity < 0.5, swapRows.slice(0, 2));
+
+  // Closing the task board onto another Agent's conversation (SH:D10): one fade.
+  await page.waitForTimeout(300);
+  await page.locator(".collab-nav").first().click();
+  await page.locator(".collab-task-card", { hasText: "Synthetic task for Hana" }).first().click();
+  const owner = page.locator(".collab-owner-line .text-button", { hasText: "Hana" }).first();
+  await owner.waitFor({ timeout: 5000 });
+  await page.waitForTimeout(300);
+  const board = await step("board → Hana", () => owner.click(), 500);
+  const boardFades = board.filter((f) => f.title === "Hana").map((f) => fadeOf(f.bodyPlays)).filter(Boolean);
+  if (reduced)
+    ok(`${tag}: closing the board onto another Agent plays nothing on the conversation`, board.some((f) => f.title === "Hana") && !boardFades.length, board.slice(0, 2));
+  else
+    ok(`${tag}: closing the board onto another Agent fades the conversation in once over small (${boardFades.length} frames of one fade, never restarted)`,
+      boardFades.length > 0 && boardFades.every((p) => p.duration === 180) && boardFades.every((p, i) => i === 0 || p.current >= boardFades[i - 1].current) &&
+        board.every((f) => f.bodyPlays.filter((p) => p.keyframes === "opacity/opacity").length <= 1) && board.at(-1).title === "Hana" && board.at(-1).bodyOpacity === 1, boardFades.slice(0, 3));
+
   // A rapid switch: one fade, on the newest.
   if (!reduced) {
     await page.waitForTimeout(300);
@@ -192,6 +235,32 @@ for (const run of runs) {
       rapid.title === "Mori" && rapid.bodyPlays.filter((p) => p.keyframes?.includes("opacity")).length <= 1, rapid);
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(output, `${tag}-after.png`) });
+    // The fade itself, held at 0, 16 ms, 50 % and its end, on a switch to Hana.
+    await open("Hana");
+    const held = [];
+    for (const at of [0, 16, 90, 180]) {
+      const state = await page.evaluate((at) => new Promise((done) => {
+        const find = () => document.querySelector(".conversation-body")?.getAnimations().find((a) => a.effect?.getKeyframes?.()[0]?.opacity !== undefined);
+        let tries = 0;
+        const hold = () => {
+          const fade = find();
+          // No fade to hold (the build before this slice): say so after half a second of frames.
+          if (!fade && ++tries > 30) return done({ at, missing: true });
+          if (!fade) return requestAnimationFrame(hold);
+          fade.pause();
+          fade.currentTime = at;
+          requestAnimationFrame(() => requestAnimationFrame(() => done({ at, opacity: Number(getComputedStyle(document.querySelector(".conversation-body")).opacity),
+            rows: !!document.querySelector(".turn"), scrollTop: Math.round(document.querySelector(".conversation-scroll")?.scrollTop ?? -1) })));
+        };
+        hold();
+      }), at);
+      await page.screenshot({ path: join(output, `${tag}-fade-${at}ms.png`) });
+      held.push(state);
+    }
+    await page.evaluate(() => document.querySelector(".conversation-body")?.getAnimations().forEach((a) => a.finish()));
+    report.frames[`${tag}: held`] = held;
+    ok(`${tag}: held at 0, 16, 90 and 180 ms the conversation shows at ${held.map((h) => h.opacity).join(", ")}, its rows already at scrollTop ${held.at(-1)?.scrollTop} (screenshots ${tag}-fade-*.png)`,
+      held.length === 4 && held[0].opacity === 0 && held[3].opacity === 1 && held.every((h) => h.rows && h.scrollTop === held[3].scrollTop), held);
   }
   await context.close();
 }
