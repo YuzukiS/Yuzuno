@@ -9,7 +9,8 @@
 // was, never from the centre. Run on the build before this batch too, where
 // the top moves (the red). Reduced motion, a narrow window and a narrow one
 // with a phone's insets (DevTools' override, as tools/safe-area-check.mjs) are
-// run. The Portal's service confirmation is not opened here. Emulated insets
+// run. The Portal's service confirmation and Agent settings (whose reads this
+// fixture does not answer) are not opened here. Emulated insets
 // are not an iPhone, and Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1c-anchor-check.mjs
 import assert from "node:assert/strict";
@@ -39,12 +40,14 @@ const gets = {
     runtime: { connected: true }, defaultCwd: "/w" },
   "/api/agents/a": { agent, pending: [], artifacts: [], turns: [] },
 };
-// The task board's reads are POSTs (CollaborationBoard.tsx `call`); none changes anything.
+// The task board's reads are POSTs (CollaborationBoard.tsx `call`), answered here; one in WRITES
+// would change something in Core, and is recorded instead (as tools/motion-1c-board-check.mjs).
 const boardReads = {
   task_list: () => ({ tasks: [], hasMore: false, counts: {} }),
   peer_read: () => ({ messages: [], hasMore: false }),
   peers_list: () => ({ peers: [] }),
 };
+const WRITES = /^(task_(create|update|comment|dispatch|submit_result|claim|result_ack|research_add)|peer_send|github_pr_submit|github_links_link|review_start|delivery_(enable|continue|stop)|ci_subscribe|job_)/;
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
   ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 // /stop's read waits for the check to let it answer.
@@ -55,7 +58,7 @@ async function serve(route) {
   if (url.pathname.startsWith("/api/")) {
     const method = request.method();
     const operation = url.pathname.startsWith("/api/collaboration/") ? url.pathname.slice("/api/collaboration/".length) : null;
-    if (method === "POST" && operation && boardReads[operation]) return route.fulfill({ json: boardReads[operation]() });
+    if (method === "POST" && operation !== null && !WRITES.test(operation)) return route.fulfill({ json: boardReads[operation]?.() ?? {} });
     if (method === "GET" && url.pathname === "/api/agents/a/codex/terminals") {
       await new Promise((go) => { releaseTerminals = go; });
       return route.fulfill({ json: listing });
@@ -176,7 +179,9 @@ for (const run of runs) {
   const shot = (name) => !reduced && page.screenshot({ path: join(output, `${tag}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`) });
 
   /** Where a dialog stands once open: hung from near the top, or for a fixed panel centred. */
+  const broken = () => page.getByText("couldn't show this screen").count();
   async function place(name, open, { centred = false, close = () => page.keyboard.press("Escape") } = {}) {
+    if (await broken()) return ok(`${tag}: ${name}: the app is showing its error screen`, false, null);
     if (!(await open())) return report.notShown.push(`${tag}: ${name}`);
     const box = await settle();
     report.places[`${tag}: ${name}`] = box;
@@ -197,6 +202,7 @@ for (const run of runs) {
 
   /** A dialog whose content changes while open keeps its top; then its copy fades where it was. */
   async function switching(name, open, change, { after }) {
+    if (await broken()) return ok(`${tag}: ${name}: the app is showing its error screen`, false, null);
     if (!(await open())) return report.notShown.push(`${tag}: ${name}`);
     const before = await settle();
     await shot(`${name} before`);
@@ -220,10 +226,13 @@ for (const run of runs) {
         shown.length > 0 && shown.every((f) => f.top >= now.top - 0.5 && f.top <= now.top + 4.5 && near(f.centreX, now.centreX)), shown.slice(0, 3));
   }
 
-  // Hung from near the top.
+  // Hung from near the top. New agent from the list; then the Agent's conversation is opened
+  // (a phone shows one or the other), for its menu and composer.
   await place("New agent", openBy(".add-agent"));
+  const select = visible(".agent-row .agent-select");
+  if (await select.count()) await select.click();
+  await visible("[data-composer-input]").waitFor({ timeout: 3000 }).catch(() => report.notShown.push(`${tag}: the conversation`));
   await place("Search", openBy(".conversation-search-trigger"));
-  await place("Agent settings", agentMenu(/^Agent settings/));
   await place("Disconnect", agentMenu(/^Disconnect/));
   await place("Close agent", openBy(".agent-close-button"));
   await place("Changes (/changes)", command("/changes"));
