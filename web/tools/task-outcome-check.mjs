@@ -418,7 +418,18 @@ try {
       assert.ok(text.includes(expected), `${name}: ${expected}`);
     assert.doesNotMatch(text, /verified|已验证/i);
     const low = await cited.page.evaluate(() => {
-      const rgb = (t) => (t.match(/[\d.]+/g) || []).map(Number);
+      // Any CSS colour (rgb, color(srgb …) from color-mix, oklch …) as 0–255
+      // RGB and 0–1 alpha, read back from a 1×1 canvas: a computed colour is
+      // not always rgb(), and reading its numbers as 0–255 is wrong.
+      const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+      const rgb = (css) => {
+        pixel.clearRect(0, 0, 1, 1);
+        pixel.fillStyle = "rgba(0, 0, 0, 0)";
+        pixel.fillStyle = css;
+        pixel.fillRect(0, 0, 1, 1);
+        const [r, g, b, a] = pixel.getImageData(0, 0, 1, 1).data;
+        return [r, g, b, a / 255];
+      };
       const lum = ([r, g, b]) =>
         [r, g, b]
           .map((v) => {
@@ -429,7 +440,7 @@ try {
       const behind = (el) => {
         for (let node = el; node; node = node.parentElement) {
           const c = rgb(getComputedStyle(node).backgroundColor);
-          if (c.length >= 3 && (c.length < 4 || c[3] > 0.95)) return c;
+          if (c[3] > 0.95) return c;
         }
         return [255, 255, 255];
       };
@@ -439,8 +450,11 @@ try {
       )) {
         if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
           continue;
-        const fg = lum(rgb(getComputedStyle(el).color)),
-          bg = lum(behind(el));
+        // Text with alpha is seen blended over what is behind it.
+        const under = behind(el),
+          [r, g, b, a] = rgb(getComputedStyle(el).color);
+        const fg = lum([r, g, b].map((v, i) => v * a + under[i] * (1 - a))),
+          bg = lum(under);
         const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
         rows.push({ what: el.className, ratio: Math.round(ratio * 100) / 100 });
       }
