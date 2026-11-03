@@ -2394,10 +2394,11 @@ export function App() {
         return;
       }
       if (control?.command === "compact") {
-        if (control.args) throw new Error("Codex's own compaction takes no instructions. Send /compact alone; your draft is kept.");
+        const opencode = agent.harness === "opencode";
+        if (control.args) throw new Error(`${opencode ? "OpenCode" : "Codex"}'s own compaction takes no instructions. Send /compact alone; your draft is kept.`);
         await post(`/agents/${encodeURIComponent(target)}/compact`);
         clearIfUnchanged(target, sentDraft);
-        setNotice(shell.compactAccepted);
+        setNotice(opencode ? shell.opencodeCompactAccepted : shell.compactAccepted);
         refresh();
         return;
       }

@@ -599,6 +599,40 @@ impl Server {
         })
     }
 
+    /// The session as OpenCode holds it now (`GET /session/:id`): its
+    /// `revert`, among the rest, set while a revert waits to be applied.
+    pub async fn session(&self, session: &str) -> Result<Value> {
+        self.json(Method::GET, &format!("/session/{}", segment(session)?), None).await
+    }
+
+    /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
+    pub async fn messages(&self, session: &str) -> Result<Value> {
+        let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
+        ensure!(messages.is_array(), "OpenCode's session messages is not a list");
+        Ok(messages)
+    }
+
+    /// The request that compacts the session with `provider`'s `model`
+    /// (T-10), as its own `/compact` does (`POST /session/:id/summarize`,
+    /// `auto: false`). OpenCode 1.19.3 writes the compaction's own user
+    /// message, under an ID of its choosing, then runs the compaction and
+    /// answers only once that run ends (`handlers/session.ts` summarize); it
+    /// takes no variant. So, as a command's, the request has no time limit of
+    /// its own and holds nothing of this server, and its answer alone says
+    /// nothing a caller can wait for.
+    pub fn summarize(&self, session: &str, provider: &str, model: &str) -> Result<impl std::future::Future<Output = Submission> + Send + 'static> {
+        let path = format!("/session/{}/summarize", segment(session)?);
+        let request = self.request(Method::POST, &path).json(&json!({"providerID": provider, "modelID": model, "auto": false}));
+        Ok(async move {
+            match request.send().await {
+                Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().is_success() => Submission::Accepted,
+                Ok(response) if response.status().is_client_error() => Submission::Refused(status(response).await),
+                Ok(response) => Submission::Unknown(status(response).await.to_string()),
+            }
+        })
+    }
+
     /// The sessions OpenCode started under `session` (its `task` tool's
     /// sub-agents, `parentID` = `session`), as `GET /session/:id/children`
     /// lists them.

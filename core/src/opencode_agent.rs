@@ -68,6 +68,21 @@
 //! prompt is stored, no interrupt is asked and no request waits for the user;
 //! never a command.
 //!
+//! A `/compact` (T-10, contract on T-10 #3109) is OpenCode's own compaction
+//! of the Agent's session (`POST /session/:id/summarize`, `auto: false`), a
+//! model run, never a prompt: a Turn of its own, recorded before the request
+//! with the model asked for and the compaction messages the session already
+//! held. OpenCode writes the compaction's user message under an ID of its own
+//! choosing, so the Turn is its only new `auto: false` compaction message of
+//! that model, and the compaction's summary is the `summary` answer naming it
+//! (`parentID`). Done once that summary completed and the session is idle;
+//! the request's answer, which comes only when the run ends, and a summary
+//! written before the run (as OpenCode writes it) decide nothing alone. While
+//! a compaction is going on, or its end is unknown, or OpenCode still holds
+//! one that did not finish, nothing new is sent to the Agent. Its summary is
+//! the compaction item's text. The model OpenCode runs it with may still be
+//! its own compaction agent's, whatever was asked.
+//!
 //! Not yet: no model is chosen when the Agent is created, and no OpenCode
 //! `agent` at all; a sub-agent's own conversation is not shown, nor are
 //! background sub-agents (OpenCode's experimental flag); a sub-agent of a
@@ -308,6 +323,29 @@ fn chosen_variant(model: Option<&ModelChoice>, variant: Option<&str>) -> Result<
     Ok(Some(variant.to_owned()))
 }
 
+/// The model a compaction is asked to run with (T-10): the one chosen for the
+/// Agent's next messages, as its OpenCode lists it now; with none chosen,
+/// the one the session's newest user message went with, if OpenCode still
+/// lists it. With neither, nothing is sent: no model is guessed. OpenCode
+/// may still run the compaction with its compaction agent's own model
+/// (`compaction.ts`), whatever was asked.
+async fn compact_model(server: &Server, d: &AgentDetail, messages: &Value) -> Result<(String, String)> {
+    let unread = "没有读到 OpenCode 的模型；没有执行 /compact";
+    if !d.agent.model.is_empty() {
+        let listed = server.models().await.context(unread)?;
+        let model = listed.into_iter().find(|m| m.id() == d.agent.model)
+            .with_context(|| format!("所选模型 {} 已不在 OpenCode 当前的配置中；没有执行 /compact。请在设置里另选模型", d.agent.model))?;
+        return Ok((model.provider, model.model));
+    }
+    let newest = messages.as_array().into_iter().flatten().rev().map(|m| &m["info"]).find(|info| info["role"] == "user");
+    let (provider, model) = newest.and_then(|info| info["model"]["providerID"].as_str().zip(info["model"]["modelID"].as_str()))
+        .context("还不知道这个会话用的是哪个模型：请先在设置里选定模型，或先发一条消息；没有执行 /compact")?;
+    let listed = server.models().await.context(unread)?;
+    ensure!(listed.iter().any(|m| m.provider == provider && m.model == model),
+        "会话上一条消息用的模型 {provider}/{model} 已不在 OpenCode 当前的配置中；没有执行 /compact。请在设置里选定模型");
+    Ok((provider.to_owned(), model.to_owned()))
+}
+
 /// Images go only to a chosen model that reads them, as OpenCode lists it now.
 /// A command can carry no images here (T-10).
 const IMAGES_WITH_COMMAND: &str = "OpenCode 命令不能附带图片；这条消息没有发送，草稿保留";
@@ -344,6 +382,30 @@ fn joinable(d: &AgentDetail, expected: &str) -> Result<()> {
     ensure!(turn["interruptRequested"] != true, "这一轮正在中断；补充消息未发送，草稿保留");
     ensure!(!d.pending.iter().any(|p| !p.stale), "OpenCode 正在等待你的回应；请先回答，再补充消息。草稿保留");
     Ok(())
+}
+
+/// Why a compaction keeps the Agent from taking anything new (T-10), if one
+/// does: one going on or not yet confirmed, one whose end could not be
+/// known, or one OpenCode still holds unfinished. OpenCode's next run takes
+/// up an unfinished compaction under the newest user message
+/// (`message-v2.ts` latest, `prompt.ts` compaction), so a message sent then
+/// may only be compacted, not answered. `what` says what was not done.
+pub(crate) fn compaction_blocks(d: &AgentDetail, what: &str) -> Option<String> {
+    let c = d.turns.iter().rev().map(|t| &t["_opencodeCompact"])
+        .find(|c| matches!(c["state"].as_str(), Some("pending" | "unknown")) || c["nativePending"] == true)?;
+    Some(match c["state"].as_str() {
+        Some("pending") => format!("OpenCode 正在压缩这段对话，或压缩的结果尚未确认；{what}"),
+        Some("unknown") => format!("上一次 /compact 的结果无法确认，请先重新连接核对；{what}"),
+        _ => format!("OpenCode 里还留着上一次没有完成的压缩：现在发出的内容会先被它拿去压缩，可能得不到回答；{what}"),
+    })
+}
+
+/// The IDs of the session's compaction messages (T-10): user messages with a
+/// `compaction` part, whoever asked for them.
+fn compaction_messages(messages: &Value) -> Vec<String> {
+    messages.as_array().into_iter().flatten()
+        .filter(|m| m["info"]["role"] == "user" && m["parts"].as_array().is_some_and(|parts| parts.iter().any(|p| p["type"] == "compaction")))
+        .filter_map(|m| m["info"]["id"].as_str().map(str::to_owned)).collect()
 }
 
 fn takes_images(model: Option<&ModelChoice>) -> Result<()> {
@@ -846,6 +908,9 @@ impl Workspace {
         if let Some(expected) = &input.expected_turn_id {
             return self.opencode_admit_input(id, input, detail, expected).await;
         }
+        if let Some(blocked) = compaction_blocks(detail, "这条消息没有发送，草稿保留") {
+            bail!(blocked);
+        }
         self.opencode_after_restart(id, detail).await?;
         ensure!(!busy(detail), "OpenCode 正在执行或等待回应；这条消息没有发送，草稿保留");
         let c = self.opencode_ensure(id).await?;
@@ -862,6 +927,9 @@ impl Workspace {
     /// Before the receipt of a message added to the running Turn `expected`
     /// (T-10): only on the connection that runs it, never one started for it.
     async fn opencode_admit_input(self: &Arc<Self>, id: &str, input: &crate::model::MessageInput, detail: &AgentDetail, expected: &str) -> Result<()> {
+        if let Some(blocked) = compaction_blocks(detail, "补充消息未发送，草稿保留") {
+            bail!(blocked);
+        }
         joinable(detail, expected)?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
         let model = chosen(&c.server, &detail.agent.model).await?;
@@ -948,6 +1016,9 @@ impl Workspace {
     async fn opencode_add_input_once(self: &Arc<Self>, id: &str, text: &str, expected: &str, client_id: &str, images: &[String], sent: &mut bool) -> Result<Value> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
+        if let Some(blocked) = compaction_blocks(&d, "补充消息未发送，草稿保留") {
+            bail!(blocked);
+        }
         joinable(&d, expected)?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
         self.require_collaboration(id).await?;
@@ -1091,6 +1162,9 @@ impl Workspace {
     async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], commands: bool, sent: &mut bool) -> Result<Value> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
+        if let Some(blocked) = compaction_blocks(&d, "这条消息没有发送") {
+            bail!(blocked);
+        }
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
         self.require_collaboration(id).await?;
@@ -1261,6 +1335,125 @@ impl Workspace {
         c.server.abort(&c.session).await?;
         // OpenCode's own end of the run, not this answer, ends the Turn.
         Ok(())
+    }
+
+    /// The user's `/compact` for an OpenCode Agent (T-10, contract on T-10
+    /// #3109): OpenCode's own compaction of the Agent's session, under the
+    /// Agent gate, on the connection already serving it, only while the
+    /// Agent and the session are idle and nothing earlier waits to be
+    /// confirmed. Read first, with nothing sent if any read fails: the
+    /// session, refused while a revert waits in it (`summarize` would apply
+    /// it first, deleting messages), its status and its messages. Recorded
+    /// before the request (`compactRequested`): the model asked for and the
+    /// compaction messages already there, so only a new one can be this
+    /// compaction's. The request goes in the background, as a command's
+    /// does; what is known of its start within COMMAND_START is the answer
+    /// here, and nothing is ever sent again.
+    pub async fn opencode_compact(self: &Arc<Self>, id: &str) -> Result<Value> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        let d = self.send_view(id).await?;
+        ensure_agent_open(&d.agent)?;
+        ensure!(d.agent.harness == "opencode", "Agent 不是 OpenCode");
+        if let Some(blocked) = compaction_blocks(&d, "没有执行 /compact") {
+            bail!(blocked);
+        }
+        ensure!(!d.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")),
+            "上一条消息的发送结果尚未确认，请先重连核对；没有执行 /compact");
+        self.opencode_after_restart(id, &d).await?;
+        ensure!(!busy(&d), "OpenCode 正在执行或等待回应；/compact 只在空闲时执行，没有执行");
+        let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能压缩，没有执行 /compact")?;
+        let unread = "没有读到 OpenCode 会话现在的状态；没有执行 /compact";
+        let session = c.server.session(&c.session).await.context(unread)?;
+        ensure!(session["revert"].is_null(),
+            "OpenCode 会话里有一次尚未处理的回退，压缩会先把它应用掉（删除被回退的消息）；没有执行 /compact。请先在 OpenCode 中处理这次回退");
+        ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有执行 /compact");
+        let messages = c.server.messages(&c.session).await.context(unread)?;
+        let (provider, model) = compact_model(&c.server, &d, &messages).await?;
+        let known = compaction_messages(&messages);
+        ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化；没有执行 /compact");
+        let turn = format!("compact_{}", uuid::Uuid::new_v4());
+        let item = format!("{turn}:compaction");
+        let attempt = json!({"state":"pending","session":c.session,"generation":c.generation,"providerID":provider,"modelID":model,
+            "known":known,"candidates":{},"message":null,"summary":null,"answer":null});
+        let (requested, data) = (turn.clone(), json!({"turnId":turn,"attempt":attempt}));
+        self.record_update(id, "opencode/compactRequested", data, Sel::Turns(vec![turn.clone()]), move |d| {
+            let entry = d.turn_mut(&requested);
+            entry["status"] = "inProgress".into();
+            entry["items"] = json!([{"id":item,"type":"contextCompaction","trigger":"manual"}]);
+            entry["_yuzunoCompactionId"] = item.into();
+            entry["_opencodeCompact"] = attempt;
+            d.agent.status = "working".into();
+            d.agent.error = None;
+        }).await?;
+        self.changed(id);
+        let request = c.server.summarize(&c.session, &provider, &model)?;
+        let (done, checked) = tokio::sync::oneshot::channel();
+        let (ws, agent, attempted, connection) = (self.clone(), id.to_owned(), turn.clone(), c.clone());
+        tokio::spawn(async move {
+            let answer = request.await;
+            ws.opencode_compact_answered(&agent, &connection, &attempted, answer).await;
+            let _ = done.send(());
+        });
+        self.opencode_compact_started(id, &turn, checked).await
+    }
+
+    /// What is known of a compaction's start (T-10): accepted once OpenCode
+    /// wrote its compaction message, or the record read after its request's
+    /// answer says it ran; refused when that read says OpenCode refused it;
+    /// otherwise unknown, after COMMAND_START, with the request still going
+    /// and the Turn still waiting for what OpenCode says.
+    async fn opencode_compact_started(&self, id: &str, turn: &str, mut checked: tokio::sync::oneshot::Receiver<()>) -> Result<Value> {
+        let deadline = Instant::now() + COMMAND_START;
+        loop {
+            let answered = !matches!(checked.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty));
+            let d = self.send_view(id).await?;
+            let entry = d.turns.iter().find(|t| t["id"] == turn).cloned().unwrap_or_default();
+            let attempt = &entry["_opencodeCompact"];
+            if attempt["state"] == "refused" {
+                bail!("{}", entry["error"]["message"].as_str().unwrap_or("OpenCode 拒绝了 /compact"));
+            }
+            if attempt["state"] == "unknown" {
+                return Err(OutcomeUnknown(entry["error"]["message"].as_str().unwrap_or("压缩的结果未确认，不会重发").to_owned()).into());
+            }
+            if attempt["message"].is_string() || attempt["state"] == "completed" {
+                return Ok(json!({"accepted":true,"turnId":turn}));
+            }
+            if answered {
+                return Err(OutcomeUnknown("OpenCode 回答了 /compact，但它的记录里没有找到这次压缩；结果未确认，不会重发".into()).into());
+            }
+            if Instant::now() >= deadline {
+                return Err(OutcomeUnknown("OpenCode 还没有确认开始压缩；不会重发。若它已开始，结果会显示在这一轮".into()).into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// A compaction request's answer (T-10), kept with its Turn, then
+    /// OpenCode's whole record of the session read again on the same
+    /// connection: the answer alone says neither that it ran nor how it ended.
+    async fn opencode_compact_answered(&self, id: &str, c: &Connection, turn: &str, answer: Submission) {
+        let answer = match &answer {
+            Submission::Accepted => json!({"kind":"accepted"}),
+            Submission::Refused(status) => json!({"kind":"refused","code":status.code,"body":status.body}),
+            Submission::Unknown(reason) => json!({"kind":"unknown","detail":reason}),
+        };
+        let (attempt, kept) = (turn.to_owned(), answer.clone());
+        let recorded = self.record_update(id, "opencode/compactAnswered", json!({"turnId":turn,"answer":answer}), Sel::Turns(vec![turn.to_owned()]), move |d| {
+            if let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == attempt.as_str() && t["_opencodeCompact"].is_object()) {
+                entry["_opencodeCompact"]["answer"] = kept;
+            }
+        }).await;
+        if let Err(error) = recorded {
+            eprintln!("Workspace OpenCode compaction answer not recorded: {error:#}");
+        }
+        self.changed(id);
+        if self.opencode_current(id, c.generation).is_some() {
+            if let Err(error) = self.opencode_resync(id, c).await {
+                eprintln!("Workspace OpenCode compaction not checked: {error:#}");
+            }
+        }
     }
 
     /// An answer to one of this Agent's OpenCode requests; false if it has
@@ -1666,6 +1859,13 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         }
     }
     status(d, &snapshot.status);
+    // The whole session read (T-10): what became of a compaction its events
+    // alone could not tell, by this process or one before it.
+    let idle = snapshot.status["type"] == "idle";
+    for turn in d.turns.iter_mut().filter(|t| t["_opencodeCompact"].is_object()) {
+        let live = turn["_opencodeCompact"]["generation"] == generation;
+        settle_compaction(turn, idle, true, live);
+    }
 }
 
 fn message(d: &mut AgentDetail, info: &Value) {
@@ -1674,9 +1874,13 @@ fn message(d: &mut AgentDetail, info: &Value) {
         Some("user") => {
             confirm(d, id);
             confirm_input(d, id);
+            compaction_message(d, info);
             followed(d, id);
         }
         Some("assistant") => {
+            if compaction_summary(d, info) {
+                return;
+            }
             // Its Turn: the one whose prompt it answers, or whose added message (T-10).
             let Some(parent) = info["parentID"].as_str() else { return };
             let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
@@ -1743,7 +1947,7 @@ fn followed(d: &mut AgentDetail, id: &str) {
     if d.turns.iter().any(|t| t["id"] == id || t["_opencodeInputs"].get(id).is_some()) {
         return;
     }
-    let Some(turn) = running(d) else { return };
+    let Some(turn) = running(d).filter(|t| t["_opencodeCompact"].is_null()) else { return };
     if turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str()).is_some_and(|last| id > last) {
         turn["_opencodeFollowed"] = id.into();
     }
@@ -1753,6 +1957,9 @@ fn followed(d: &mut AgentDetail, id: &str) {
 /// the Turn's item of the same ID.
 fn part(d: &mut AgentDetail, part: &Value) {
     let (Some(message), Some(id)) = (part["messageID"].as_str(), part["id"].as_str()) else { return };
+    if compaction_part(d, message, id, part) {
+        return;
+    }
     let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some()) else { return };
     let item = match part["type"].as_str() {
         Some("text") if part["synthetic"] != true => json!({"id":id,"type":"agentMessage","text":part["text"],"nativeMessageId":message}),
@@ -1775,6 +1982,172 @@ fn part(d: &mut AgentDetail, part: &Value) {
     }
 }
 
+/// The newest compaction Turn still finding out what became of it (T-10):
+/// pending, or unknown.
+fn compacting(d: &mut AgentDetail) -> Option<&mut Value> {
+    d.turns.iter_mut().rev().find(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown")))
+}
+
+/// A user message of the session while a compaction finds out what became of
+/// it (T-10): a candidate for its compaction message unless the session held
+/// it before the request, noting whether it went with the model asked for.
+fn compaction_message(d: &mut AgentDetail, info: &Value) {
+    let Some(id) = info["id"].as_str() else { return };
+    let Some(turn) = compacting(d) else { return };
+    let attempt = &mut turn["_opencodeCompact"];
+    if attempt["known"].as_array().is_some_and(|known| known.iter().any(|k| k == id)) {
+        return;
+    }
+    let asked = info["model"]["providerID"] == attempt["providerID"] && info["model"]["modelID"] == attempt["modelID"];
+    attempt["candidates"][id]["model"] = asked.into();
+    bind(attempt);
+}
+
+/// A part of the session while a compaction finds out what became of it, or
+/// of its summary (T-10): a compaction part says whether its message is a
+/// compaction asked for (`auto: false`) or one OpenCode started itself; a
+/// text part of the summary is the compaction item's text. Whether it was
+/// one of these.
+fn compaction_part(d: &mut AgentDetail, message: &str, id: &str, part: &Value) -> bool {
+    if part["type"] == "compaction" {
+        if let Some(turn) = compacting(d) {
+            let attempt = &mut turn["_opencodeCompact"];
+            if !attempt["known"].as_array().is_some_and(|known| known.iter().any(|k| k == message)) {
+                attempt["candidates"][message]["auto"] = part["auto"].clone();
+                bind(attempt);
+            }
+        }
+        return true;
+    }
+    let Some(turn) = d.turns.iter_mut().rev().find(|t| t["_opencodeCompact"]["summary"]["id"] == message) else { return false };
+    if part["type"] == "text" && part["synthetic"] != true {
+        turn["_opencodeCompact"]["text"][id] = part["text"].clone();
+        let text: Vec<&str> = turn["_opencodeCompact"]["text"].as_object().into_iter().flatten().filter_map(|(_, t)| t.as_str()).collect();
+        let text = text.join("\n\n");
+        if let Some(item) = turn["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["type"] == "contextCompaction")) {
+            item["text"] = text.into();
+        }
+    }
+    true
+}
+
+/// The compaction's message (T-10): the one candidate asked for, with the
+/// model asked for. Two such are never told apart.
+fn bind(attempt: &mut Value) {
+    let ours: Vec<String> = attempt["candidates"].as_object().into_iter().flatten()
+        .filter(|(_, c)| c["model"] == true && c["auto"] == false).map(|(id, _)| id.clone()).collect();
+    match ours.as_slice() {
+        [] => {}
+        [one] => {
+            if attempt["message"].is_null() {
+                attempt["message"] = one.as_str().into();
+            }
+        }
+        _ => attempt["ambiguous"] = true.into(),
+    }
+}
+
+/// An answer naming a compaction's message (T-10): its summary, kept as
+/// OpenCode last wrote it. Written before the run, it says nothing until it
+/// completes. Whether it was one.
+fn compaction_summary(d: &mut AgentDetail, info: &Value) -> bool {
+    let Some(parent) = info["parentID"].as_str() else { return false };
+    let Some(turn) = d.turns.iter_mut().rev().find(|t| t["_opencodeCompact"]["message"] == parent) else { return false };
+    if info["summary"] != true {
+        return false;
+    }
+    let attempt = &mut turn["_opencodeCompact"];
+    attempt["summary"] = json!({"id":info["id"],"completed":info["time"]["completed"],"finish":info["finish"],"error":info["error"]});
+    // Once it ended, whether OpenCode still holds it unfinished.
+    if !matches!(attempt["state"].as_str(), Some("pending" | "unknown")) {
+        attempt["nativePending"] = info["finish"].is_null().into();
+    }
+    true
+}
+
+/// What a compaction Turn's record tells of it now (T-10, contract on T-10
+/// #3109): `idle`, OpenCode said the session is idle; `full`, its whole
+/// record was read; `live`, by the process the request went to. Done only
+/// once its summary completed and the session is idle. Its summary's error
+/// ends it as OpenCode said, or an abort the session reported while it ran.
+/// Not found in a whole read of the idle session, it was refused only if
+/// OpenCode answered 400, 401 or 403, which it does before its handler
+/// runs; any other answer, none, or another process leaves it unknown. Two
+/// candidates leave it unknown.
+fn settle_compaction(turn: &mut Value, idle: bool, full: bool, live: bool) {
+    let attempt = turn["_opencodeCompact"].clone();
+    if !matches!(attempt["state"].as_str(), Some("pending" | "unknown")) {
+        return;
+    }
+    if attempt["ambiguous"] == true {
+        return compaction_unknown(turn, "OpenCode 的记录里有不止一条新的压缩，无法确认哪一条是这次的；结果未确认，不会重发。");
+    }
+    let summary = &attempt["summary"];
+    if attempt["message"].is_string() {
+        if summary["error"].is_object() {
+            let interrupted = summary["error"]["name"] == "MessageAbortedError";
+            return compaction_ended(turn, if interrupted { "interrupted" } else { "failed" }, &summary["error"], summary["finish"].is_null());
+        }
+        if idle && summary["completed"].is_number() && summary["finish"].is_string() {
+            turn["status"] = "completed".into();
+            // Found by a later read after its end was unknown.
+            turn.as_object_mut().expect("turn").remove("error");
+            compaction_settled(turn, "completed", false);
+            return;
+        }
+        if idle && halted(&turn["_opencodeSessionError"]) == Some("interrupted") {
+            let error = turn["_opencodeSessionError"].clone();
+            return compaction_ended(turn, "interrupted", &error, true);
+        }
+        if full && idle {
+            let message = if live { "OpenCode 已空闲，但这次压缩没有完成的摘要；结果未确认，不会重发。" }
+                else { "这次压缩开始后，OpenCode 进程已经更换，它的记录里没有完成的摘要；结果未确认，不会重发。" };
+            compaction_unknown(turn, message);
+            turn["_opencodeCompact"]["nativePending"] = true.into();
+        }
+        return;
+    }
+    if !(full && idle) {
+        return;
+    }
+    let answer = &attempt["answer"];
+    match (answer["kind"].as_str(), answer["code"].as_u64()) {
+        (Some("refused"), Some(code @ (400 | 401 | 403))) => {
+            turn["status"] = "failed".into();
+            turn["error"] = json!({"message":format!("OpenCode 拒绝了 /compact（HTTP {code}），它的记录里没有这次压缩：{}", answer["body"].as_str().unwrap_or_default())});
+            compaction_settled(turn, "refused", false);
+        }
+        // Its request not yet answered, by the process it went to.
+        (None, _) if live => {}
+        _ => compaction_unknown(turn, "OpenCode 的记录里没有找到这次压缩，也无法确认它没有开始；结果未确认，不会重发。"),
+    }
+}
+
+/// A compaction ended as OpenCode said (T-10): `native`, its error.
+/// `unfinished`: OpenCode still holds it, to be taken up by its next run.
+fn compaction_ended(turn: &mut Value, status: &str, native: &Value, unfinished: bool) {
+    let mut message = error_text(native);
+    if unfinished {
+        message.push_str("。OpenCode 里这次压缩仍未完成，在处理它之前不会发送新消息");
+    }
+    turn["status"] = status.into();
+    turn["error"] = json!({"message":message,"native":native});
+    compaction_settled(turn, if status == "interrupted" { "stopped" } else { "failed" }, unfinished);
+}
+
+/// A compaction whose end is not known (T-10): later reads may still find it.
+fn compaction_unknown(turn: &mut Value, message: &str) {
+    unknown(turn, message);
+    turn["_opencodeCompact"]["state"] = "unknown".into();
+    turn.as_object_mut().expect("turn").remove("_yuzunoCompactionId");
+}
+
+fn compaction_settled(turn: &mut Value, state: &str, unfinished: bool) {
+    turn["_opencodeCompact"]["state"] = state.into();
+    turn["_opencodeCompact"]["nativePending"] = unfinished.into();
+    turn.as_object_mut().expect("turn").remove("_yuzunoCompactionId");
+}
+
 fn tool_status(status: Option<&str>) -> &'static str {
     match status {
         Some("pending" | "running") => "inProgress",
@@ -1787,7 +2160,11 @@ fn tool_status(status: Option<&str>) -> &'static str {
 fn status(d: &mut AgentDetail, status: &Value) {
     if status["type"] == "idle" {
         if let Some(turn) = running(d) {
-            settle(turn);
+            if turn["_opencodeCompact"].is_object() {
+                settle_compaction(turn, true, false, true);
+            } else {
+                settle(turn);
+            }
         }
     }
 }
@@ -1878,7 +2255,12 @@ fn unknown(turn: &mut Value, message: &str) {
 fn ended(d: &mut AgentDetail, message: &str) {
     for turn in &mut d.turns {
         if turn["status"] == "inProgress" {
-            unknown(turn, message);
+            if turn["_opencodeCompact"].is_object() {
+                // Still found by a later read of the session (T-10).
+                compaction_unknown(turn, message);
+            } else {
+                unknown(turn, message);
+            }
         }
     }
     for p in &mut d.pending {

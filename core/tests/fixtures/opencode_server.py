@@ -78,7 +78,9 @@ counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
-         'command': 'run'}
+         'command': 'run', 'summarize': 'run', 'defaultModel': None}
+# Compactions held open (`summarize` mode `hold`), by session: what ends one.
+held = {}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 tools = []
@@ -121,8 +123,10 @@ def load():
         counter[0] = state['counter']
 
 
-def store(session, message_id, text, files=(), announce=True):
+def store(session, message_id, text, files=(), announce=True, model=None):
     info = {'id': message_id, 'sessionID': session, 'role': 'user', 'time': {'created': int(time.time() * 1000)}}
+    if model:
+        info['model'] = model
     message = {'info': info, 'parts': [{'id': new_id('prt'), 'sessionID': session, 'messageID': message_id,
                                          'type': 'text', 'text': text}]}
     # A file part as OpenCode stores one sent inline: its `data:` URL kept as it is.
@@ -264,7 +268,61 @@ def control(name, body):
         with lock:
             generation[0] += 1
         return True
+    if name == 'revert':
+        # A revert waiting in the session, as OpenCode keeps one until its next prompt.
+        sessions[body['sessionID']]['revert'] = {'messageID': body.get('messageID', 'msg_reverted')}
+        save()
+        return True
+    if name == 'compaction':
+        # A compaction message in the session (T-10): one asked for, or OpenCode's own (`auto`).
+        return compaction(body['sessionID'], body.get('model', {'providerID': 'deepseek', 'modelID': 'deepseek-flash'}),
+                          body.get('auto', True))
+    if name == 'finishSummary':
+        # A held compaction's run ends with its summary.
+        summary = held.pop(body['sessionID'])
+        finish(body['sessionID'], summary['info'], body.get('text', 'The conversation so far, in short.'))
+        summary['ended'].set()
+        return summary['info']
     raise ValueError(name)
+
+
+def compaction(session, model, auto):
+    """A compaction's user message under an ID of OpenCode's own, with its
+    `compaction` part (`session/compaction.ts` create), announced as stored."""
+    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'user', 'agent': 'build', 'model': model,
+            'time': {'created': int(time.time() * 1000)}}
+    part = {'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'compaction', 'auto': auto}
+    with lock:
+        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': [part]}
+    save()
+    publish('message.updated', {'sessionID': session, 'info': info})
+    publish('message.part.updated', {'sessionID': session, 'part': part, 'time': info['time']['created']})
+    return info
+
+
+def summary_for(session, parent):
+    """The compaction's summary, as OpenCode writes it before the run: `summary`, no completion, no finish."""
+    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent, 'mode': 'compaction',
+            'agent': 'compaction', 'summary': True, 'time': {'created': int(time.time() * 1000)}}
+    with lock:
+        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': []}
+    save()
+    publish('message.updated', {'sessionID': session, 'info': info})
+    return info
+
+
+def finish(session, info, text):
+    """A compaction's run ending well: its summary's text, completion and finish, then idle."""
+    part = {'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text}
+    now = int(time.time() * 1000)
+    info['time']['completed'] = now
+    info['finish'] = 'stop'
+    with lock:
+        messages[session][info['id']] = {'info': info, 'parts': [part]}
+    save()
+    publish('message.part.updated', {'sessionID': session, 'part': part, 'time': now})
+    publish('message.updated', {'sessionID': session, 'info': info})
+    go_idle(session)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -368,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.prompt(session, body)
         if (method, *rest) == ('POST', 'command'):
             return self.run_command(session, body)
+        if (method, *rest) == ('POST', 'summarize'):
+            return self.summarize(session, body)
         if (method, *rest) == ('GET', 'message'):
             stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
             return self.reply(200, stored)
@@ -385,6 +445,20 @@ class Handler(BaseHTTPRequestHandler):
                 without(questions, [q for q in questions if q['sessionID'] == session])
             self.reply(200, True)
             aborted = {'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}}
+            if session in held:
+                # As OpenCode 1.19.3 halts an aborted compaction: the session
+                # error and idle first, then its summary with the error and no
+                # finish, then the runner's own idle.
+                summary = held.pop(session)
+                publish('session.error', {'sessionID': session, 'error': aborted})
+                go_idle(session)
+                summary['info']['error'] = aborted
+                summary['info']['time']['completed'] = int(time.time() * 1000)
+                save()
+                publish('message.updated', {'sessionID': session, 'info': summary['info']})
+                go_idle(session)
+                summary['ended'].set()
+                return None
             if running and modes['abortEvidence'] and modes['abortOrder'] == 'native':
                 # As OpenCode 1.19.3's processor halts an aborted run: the
                 # session error and idle first, the aborted answer only after
@@ -415,8 +489,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: a file part needs mime and url'}})
         files = [{k: f[k] for k in ('type', 'mime', 'filename', 'url') if k in f} for f in files]
         mode = modes['prompt']
+        model = body.get('model') or modes['defaultModel']
         if mode == 'store':
-            store(session, message_id, text, files)
+            store(session, message_id, text, files, model=model)
             self.reply(204)
             # The run starts: OpenCode is busy until it ends.
             statuses[session] = {'type': 'busy'}
@@ -488,6 +563,61 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, answers[-1])
             time.sleep(0.02)
         return self.reply(400, {'name': 'UnknownError', 'data': {'message': 'fixture: no answer'}})
+
+    def summarize(self, session, body):
+        """As OpenCode 1.19.3's summarize (`handlers/session.ts`): a body
+        without a provider and model is refused (400) before the handler; the
+        compaction's message is written, the run goes on, and the answer
+        (`true`) comes only once it ends. Mode `summarize`: `run`, `hold`
+        (written, its summary too, then held until `finishSummary` or an
+        abort), `drop` (run, then the connection ends with no answer),
+        `refuse` / `refuse-404` (refused, nothing written), `refuse-late` (written,
+        then refused), `silent` (nothing written, no answer for 30 s), `auto`
+        (only a compaction of OpenCode's own is written, then idle, answered),
+        `double` (two compactions asked for are written, then idle, answered)."""
+        if not isinstance(body, dict) or not isinstance(body.get('providerID'), str) or not isinstance(body.get('modelID'), str):
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: providerID and modelID are required'}})
+        mode = modes['summarize']
+        model = {'providerID': body['providerID'], 'modelID': body['modelID']}
+        if mode == 'refuse':
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused'}})
+        if mode == 'refuse-404':
+            return self.reply(404, {'name': 'NotFoundError', 'data': {'message': 'fixture: not found'}})
+        if mode == 'silent':
+            time.sleep(30)
+            self.close_connection = True
+            return None
+        statuses[session] = {'type': 'busy'}
+        publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+        if mode == 'auto':
+            compaction(session, model, True)
+            go_idle(session)
+            return self.reply(200, True)
+        if mode == 'double':
+            compaction(session, model, False)
+            compaction(session, model, False)
+            go_idle(session)
+            return self.reply(200, True)
+        user = compaction(session, model, body.get('auto', False))
+        if mode == 'refuse-late':
+            go_idle(session)
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused after writing'}})
+        info = summary_for(session, user['id'])
+        if mode == 'hold':
+            ended = threading.Event()
+            held[session] = {'info': info, 'ended': ended}
+            ended.wait(60)
+            if info.get('error'):
+                # Its run was aborted: the request ends without an answer.
+                self.close_connection = True
+                return None
+            return self.reply(200, True)
+        time.sleep(0.05)
+        finish(session, info, 'The conversation so far, in short.')
+        if mode == 'drop':
+            self.close_connection = True
+            return None
+        return self.reply(200, True)
 
     def dispose(self):
         how = switch('dispose')

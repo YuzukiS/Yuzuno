@@ -1197,8 +1197,12 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
     };
     Ok(Json(serde_json::to_value(agent)?))
 }
-/// The composer's `/compact` for a Codex Agent: Codex's own compaction.
+/// The composer's `/compact`: a Codex Agent's own compaction, or an OpenCode
+/// Agent's (T-10).
 async fn compact(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    if ws.listed(&id).await?.harness == "opencode" {
+        return Ok(Json(ws.opencode_compact(&id).await?));
+    }
     Ok(Json(ws.codex_compact(&id).await?))
 }
 #[derive(Deserialize)]
