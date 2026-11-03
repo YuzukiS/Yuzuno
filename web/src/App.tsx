@@ -403,15 +403,17 @@ export function App() {
   // On a phone (T-19 M8), what the list opens is pushed in from the right and
   // Back brings the list in from the left, over medium; the toolbar's brand
   // and Back swap with a fade over micro. Only a move between the list and
-  // what is open plays them, never a window turning into a phone's.
+  // what is open plays them, never a window turning into a phone's, and
+  // never the first screen: nothing has moved before the first one.
   const phoneMove = useRef({ list: phoneList, n: 0 });
   if (phoneMove.current.list !== phoneList) phoneMove.current = { list: phoneList, n: phoneMove.current.n + 1 };
+  const moved = phoneMove.current.n > 0;
   const railBox = useRef<HTMLElement>(null);
   const mainBox = useRef<HTMLElement>(null);
   const brandBox = useRef<HTMLDivElement>(null);
-  useSurfaceIn(mainBox, phoneMove.current.n, "medium", phone && !phoneList, "translateX(8px)");
-  useSurfaceIn(railBox, phoneMove.current.n, "medium", phone && phoneList, "translateX(-8px)");
-  useSurfaceIn(brandBox, phoneMove.current.n, "micro", phone);
+  useSurfaceIn(mainBox, phoneMove.current.n, "medium", phone && moved && !phoneList, "translateX(8px)");
+  useSurfaceIn(railBox, phoneMove.current.n, "medium", phone && moved && phoneList, "translateX(-8px)");
+  useSurfaceIn(brandBox, phoneMove.current.n, "micro", phone && moved);
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
