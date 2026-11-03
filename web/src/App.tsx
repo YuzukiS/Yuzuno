@@ -264,10 +264,6 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
-/** How long a stream opened again after a break may stay quiet about the shown Agent before what is
- * shown counts as where arrivals start again (T-19 CV:Q-01, R1 276d4a1d). Core sends what was missed
- * right after `resumed`, so this is far longer than a replay takes. */
-const ARRIVALS_QUIET_MS = 1_500;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -605,8 +601,18 @@ export function App() {
   // never while the stream is down) is shown, nothing arrives live. That
   // detail only becomes what was shown, so neither a read already on its way,
   // a copy kept from before, nor a change Core replays when the stream resumes
-  // makes an old request play (Lead 3299, 3301).
-  const arrivalsSettle = useRef<{ after: number; quiet?: boolean } | null>(null);
+  // makes an old request play (Lead 3299, 3301). After a stream opened again
+  // (`drain`), only the end of what Core replays (`drained`) or a reset ends
+  // the wait: no read starts for it, and no timer guesses it (Lead 3356).
+  const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
+  // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
+  const [, setDrains] = useState(0);
+  const replayDrained = useCallback(() => {
+    const mark = arrivalsSettle.current;
+    if (!mark?.drain) return;
+    mark.drained = true;
+    setDrains((n) => n + 1);
+  }, []);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -704,14 +710,12 @@ export function App() {
     },
     [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
-  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
-  // The stream broke, or opened again after breaking (T-19 CV:Q-01; Lead 3299, R1 276d4a1d). A
-  // short break can resume without a reset and with nothing replayed: then nothing reads the shown
-  // Agent again (a resumed reconnect reads no conversation), so the wait also ends once the stream
-  // has stayed quiet about it for a while (below). The first opening has nothing to replay and
-  // marks nothing.
+  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, replayDrained);
+  // The stream broke, or opened again after breaking (T-19 CV:Q-01; Lead 3299, 3356; R1
+  // 276d4a1d). What it replays is not live, and a resumed reconnect reads no conversation, so the
+  // wait lasts until Core says its replay is over (`replayDrained`), or a reset's read. The first
+  // opening has nothing to replay and marks nothing.
   const lastConnection = useRef(eventConnection);
-  const reopened = useRef(false);
   if (lastConnection.current !== eventConnection) {
     const was = lastConnection.current;
     lastConnection.current = eventConnection;
@@ -720,29 +724,12 @@ export function App() {
       arrivalsSettle.current = { after: Infinity };
     } else if (was === "reconnecting") {
       liveChange.current = null;
-      arrivalsSettle.current = { after: live.sync.reads };
-      reopened.current = true;
+      arrivalsSettle.current = { after: Infinity, drain: true };
     }
   }
   useEffect(() => {
-    if (eventConnection !== "open" || previewMode) return;
-    jobsRefresh.now();
-    if (!reopened.current) return;
-    reopened.current = false;
-    // Core sends what the stream missed right after it says `resumed` (core/src/events.rs). Once a
-    // reopened stream has gone this long with no read of the shown Agent running, queued or due,
-    // there was nothing to replay for it: what is shown is the baseline, without reading it again.
-    // A read a replay asks for still settles the wait itself, and a read already on its way when the
-    // stream broke never does.
-    const mark = arrivalsSettle.current;
-    const timer = setTimeout(() => {
-      if (!mark || arrivalsSettle.current !== mark) return;
-      mark.quiet = true;
-      const sync = live.sync;
-      if (!sync.running && !sync.queued && sync.refetchTimer === undefined) arrivalsSettle.current = null;
-    }, ARRIVALS_QUIET_MS);
-    return () => clearTimeout(timer);
-  }, [eventConnection, previewMode, jobsRefresh, live.sync]);
+    if (eventConnection === "open" && !previewMode) jobsRefresh.now();
+  }, [eventConnection, previewMode, jobsRefresh]);
   useEffect(() => {
     const refreshJobs = () => jobsRefresh.now();
     // Jobs open as a dialog above Home (whose own Jobs widget sends this),
@@ -969,27 +956,31 @@ export function App() {
   // the phone's list over it. Nothing arrives live until a detail read after
   // this is shown, and that one is a new baseline (Lead 3301).
   if (!pendingScope && pendingSeen.current) {
+    const was = arrivalsSettle.current;
     pendingSeen.current = null;
     liveChange.current = null;
-    arrivalsSettle.current = { after: Math.max(arrivalsSettle.current?.after ?? 0, live.sync.reads) };
+    arrivalsSettle.current = { ...was, after: Math.max(was?.after ?? 0, live.sync.reads) };
   }
   // The detail shown came from this read; the first one started after a
-  // reconnect, reset or leaving settles it, and what it lists only becomes
-  // shown. One that is the newest read, none on its way, is current.
+  // reset or leaving settles it, and what it lists only becomes shown. It is
+  // current when it is the newest read and the sync has nothing failed,
+  // running, queued, due or waiting to be applied.
   const readNumber = (live.detail && live.sync.readOf.get(live.detail)) ?? 0;
-  const newest = !!live.detail && readNumber === live.sync.currentRead && !live.sync.running;
-  // A quiet reopened stream whose last read was on its way when the window ended settles when the
-  // shown detail is the newest read and nothing more is running, queued or due.
-  const settled = newest && !live.sync.queued && live.sync.refetchTimer === undefined;
-  let settles = !!arrivalsSettle.current && (readNumber > arrivalsSettle.current.after || (!!arrivalsSettle.current.quiet && settled));
+  const sync = live.sync;
+  const current = !!live.detail && readNumber === sync.currentRead && !sync.running && !sync.queued && !sync.failed
+    && sync.refetchTimer === undefined && sync.retryTimer === undefined && sync.flushTimer === undefined && !sync.queue.length;
+  // After a stream opened again, only once its replay is over: if a read was on its way then, when
+  // it and any after it are done.
+  const mark = arrivalsSettle.current;
+  let settles = !!mark && (mark.drain ? !!mark.drained && current && !!pendingScope : readNumber > mark.after);
   if (pendingScope) {
     const seen = pendingSeen.current;
     if (!seen || seen.scope !== pendingScope) {
       pendingSeen.current = { scope: pendingScope, ids: new Set(pending.map((request) => request.id)), arrived: [] };
       liveChange.current = null;
-      // Back to a conversation whose detail is current (from Home, say): it
-      // is the new baseline now, unless the stream is down.
-      if (newest && arrivalsSettle.current?.after !== Infinity) settles = true;
+      // Back to a conversation whose detail is current (from Home, say): it is the new baseline
+      // now, unless the stream is down or its replay not over (the case above).
+      if (current && !mark?.drain && mark?.after !== Infinity) settles = true;
     } else {
       const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
       if (fresh.length) {
