@@ -39,8 +39,9 @@
    out of a dialog keeps its drop strip above that dialog's overlay
    (send-to-agent.css), and the Agent actions menu (70) stays above all.
    Toasts show above the Portal and its dialogs too (T-19); the handoff strip,
-   at the same height and mounted later, stays above them. */
-:root[data-portal="full"] .modal-overlay {
+   at the same height and mounted later, stays above them. A closed dialog's
+   copy (DialogExitGhost.tsx) fades out where its overlay was. */
+:root[data-portal="full"] :is(.modal-overlay, .dialog-exit-ghost) {
   z-index: 61;
 }
 :root[data-portal="full"] .modal {

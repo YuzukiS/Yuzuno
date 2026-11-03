@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { DialogExitGhost } from "./DialogExitGhost";
 import { ArrowUpRight, Search, X } from "lucide-react";
 import { api, errorText, shortcutModifier } from "./api";
 import {
@@ -89,6 +90,8 @@ export function ConversationSearch({
   const keys = useShortcutKeys();
   const inputId = useId();
   const input = useRef<HTMLInputElement>(null);
+  const overlay = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const destination = useRef<ConversationMatch | null>(null);
   const highlight = useRef<HTMLElement | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -176,6 +179,7 @@ export function ConversationSearch({
         setError("");
       }}
     >
+      <DialogExitGhost open={open} parts={[overlay, box]} />
       <Dialog.Trigger asChild>
         <button
           className="conversation-action conversation-search-trigger"
@@ -188,8 +192,9 @@ export function ConversationSearch({
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
-        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content
+          ref={box}
           className="modal conversation-search-dialog"
           lang={langTag(language)}
           onOpenAutoFocus={(event) => {

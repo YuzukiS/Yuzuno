@@ -8,6 +8,8 @@
 // - What holds now is read only on request (task_research_get), by keyboard,
 //   and says that a Job source's file itself is not read.
 // - Its words are readable (contrast at least 4.5:1); nothing scrolls sideways.
+// - A comparison (slice 2) shows every entry, left out or not, each with
+//   why, and says what its included entries share; no difference is computed.
 // - Reads only: no write leaves the page.
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or real Agent. Screenshots and report.json go to
@@ -68,6 +70,25 @@ const claim = { schema: "research/1", type: "claim", id: "faster", title: "Layou
     { kind: "task", taskId: "T-2", activitySeq: 9, record: { kind: "research", type: "observation", id: "ranking", title: "Ranking flips with link order" }, producer: iris, at },
     { kind: "external", label: "Upstream benchmark notes", url: "https://example.invalid/bench", version: "v3", observedAt: "2026-11-01", coverage: "Small inputs only; the large set was not exported", checked: false },
   ] };
+// Two comparisons on the same study: one whose included entries share unit,
+// definition, level and method; one whose included entries do not.
+const entries = [
+  { id: "processes", label: "Fresh processes", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+    method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -1.2, low: -3.5, high: 1.1 },
+    source: { kind: "job", label: "Process timings", jobId: "job-synthetic", attempt, path: "out/processes.json", sha256: "7a1e".padEnd(64, "0"), bytes: 2048, recorded: "recorded_match" } },
+  { id: "again", label: "Fresh processes, second run", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+    method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -0.8, low: -2.9, high: 1.3 } },
+  { id: "large", label: "Large inputs", status: "missing", reason: "The large set was not exported." },
+  { id: "second-machine", label: "Second machine", status: "not_done", reason: "No second machine yet." },
+  { id: "warm", label: "Warm cache run", status: "excluded", reason: "The cache was left warm between runs, so its runs are not independent.", value: { value: -9 } },
+];
+const counts = { included: 2, excluded: 1, missing: 1, not_done: 1 };
+const aligned = { schema: "research/1", type: "comparison", id: "layouts", title: "Layout B vs A, fresh processes", field: "systems",
+  text: "Runtime change of layout B against layout A.", entries,
+  comparability: { aligned: true, shared: { unit: "%", definition: "median of runs", level: "process", method: 6 }, differs: [], unknown: [], counts } };
+const mixed = { ...aligned, id: "layouts-mixed", title: "Layout B vs A, two methods",
+  entries: [entries[0], { ...entries[1], unit: "ms", level: undefined, method: { activitySeq: 3, id: "timing", title: "Timing protocol" } }, ...entries.slice(2)],
+  comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["level"], counts } };
 const task = { id: "T-1", title: "Is layout B faster? (synthetic)", description: "Compare two layouts under a fixed timing method.",
   status: "doing", version: 3, projectId: "p1", progress: "", blocker: "", github: [], assigneeAgentId: "mina", assignee: mina,
   createdAt: at, updatedAt: at, createdBy: mina, updatedBy: mina, result: null };
@@ -76,12 +97,19 @@ const activities = [
   { seq: 3, taskId: "T-1", kind: "comment", body: "Method v1.", actor: mina, at, research: methodV1 },
   { seq: 4, taskId: "T-1", kind: "comment", body: "Claim with its sources.", actor: mina, at, research: claim },
   { seq: 6, taskId: "T-1", kind: "comment", body: "Method v2.", actor: mina, at, research: methodV2 },
+  { seq: 7, taskId: "T-1", kind: "comment", body: "Compared.", actor: mina, at, research: aligned },
+  { seq: 8, taskId: "T-1", kind: "comment", body: "Compared again.", actor: mina, at, research: mixed },
 ];
 const now = { job: { state: "recorded_match", file: "not_read", jobStatus: "succeeded", downloadable: true, index: 0 }, task: { state: "readable" }, external: { state: "stated" } };
 const view = (seq) => {
   if (seq === 4) return { taskId: "T-1", activitySeq: 4, version: 1, revisedBy: null, latestActivitySeq: 4,
     research: { ...claim, sources: claim.sources.map((source) => ({ ...source, now: now[source.kind] })) },
     method: { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: 6, research: methodV1, method: null } };
+  if (seq === 7 || seq === 8) {
+    const record = seq === 7 ? aligned : mixed;
+    return { taskId: "T-1", activitySeq: seq, version: 1, revisedBy: null, latestActivitySeq: seq,
+      research: { ...record, entries: record.entries.map((entry) => (entry.source ? { ...entry, source: { ...entry.source, now: now.job } } : entry)) }, method: null };
+  }
   if (seq === 3) return { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: 6, research: methodV1, method: null };
   return { taskId: "T-1", activitySeq: 6, version: 2, revisedBy: null, latestActivitySeq: 6, research: methodV2, method: null };
 };
@@ -219,7 +247,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await open(width, height, theme);
     await openTask();
     const cards = page.locator(".task-research");
-    assert.equal(await cards.count(), 3);
+    assert.equal(await cards.count(), 5);
     const claimCard = cards.nth(1);
     const text = await claimCard.innerText();
     for (const expected of ["CLAIM", "faster", "Layout B is faster on the small inputs", "Holds under conditions", "the author's judgement",
@@ -261,6 +289,42 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await page.screenshot({ path: resolve(output, `${name}-task.png`) });
     report.shots.push(`${name}-task.png`);
     return { lowestContrast: Math.min(...rows.map((row) => row.ratio)), measured: rows.length };
+  });
+  await step(`${name}: a comparison shows every entry, left out or not, with why, and what its included entries share; no difference is computed`, async () => {
+    const cards = page.locator(".task-research");
+    const [first, second] = [cards.nth(3), cards.nth(4)];
+    for (const card of [first, second]) {
+      const text = await card.innerText();
+      for (const expected of ["COMPARISON", "Fresh processes", "Included", "Large inputs", "Missing", "The large set was not exported.",
+        "Second machine", "Not done", "No second machine yet.", "Warm cache run", "Excluded", "so its runs are not independent",
+        "2 included · 1 excluded · 1 missing · 1 not done", "Yuzuno computes no difference", "out/processes.json"])
+        assert.ok(text.includes(expected), `${expected}: ${text}`);
+      assert.equal(await card.locator(".task-research-entry").count(), 5, "nothing left out is dropped");
+      assert.ok(!/−0\.4|0\.4 %|difference of/i.test(text), "no difference between entries is shown");
+      assert.ok(!/verified/i.test(text));
+    }
+    assert.match(await first.innerText(), /−1\.2 \[−3\.5, 1\.1\] %/, "a value as its author gave it");
+    assert.match(await first.innerText(), /The included entries share unit \(%\), definition \(median of runs\), sample level \(process\), method \(method in activity 6\)/);
+    assert.match(await second.innerText(), /Side by side only: the included entries differ in unit, method; sample level is not given for every entry/);
+    // An entry's own source says what holds now, read on request like a record's.
+    const reads = report.reads.filter((read) => read === "task_research_get").length;
+    const toggle = first.locator(".task-research-toggle");
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await until("the comparison's state now", async () => (await first.innerText()).includes("Version 1 of this record"));
+    assert.ok((await first.locator(".task-research-entry").first().innerText()).includes("the file itself was not read"), "the entry's source now");
+    assert.equal(report.reads.filter((read) => read === "task_research_get").length, reads + 1);
+    const wide = await sideways();
+    assert.ok(!wide.page && wide.inside.length === 0, JSON.stringify(wide));
+    const rows = await contrast();
+    const low = rows.filter((row) => row.ratio < 4.5);
+    assert.deepEqual(low, [], "every word of every card is readable");
+    for (const [card, file] of [[first, `${name}-comparison.png`], [second, `${name}-comparison-mixed.png`]]) {
+      await card.scrollIntoViewIfNeeded();
+      await card.screenshot({ path: resolve(output, file) });
+      report.shots.push(file);
+    }
+    return { sideways: wide, lowestContrast: Math.min(...rows.map((row) => row.ratio)), measured: rows.length };
   });
   await page.close();
 }
