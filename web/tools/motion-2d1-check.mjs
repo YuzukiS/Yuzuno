@@ -4,8 +4,11 @@
 // the detail lists it) fades in over small, opacity only: nothing in it moves, and its buttons work
 // from the first frame it shows. Nothing plays for a request listed when the conversation first
 // shows, one a Core reset brings (also when it comes right after an announcement, before the read),
-// one in a new native session, one shown again after a return from another Agent, or the same list
-// read again; nor under reduced motion, and reduced motion turned on while it fades stops the fade.
+// one in a new native session, one shown again after a return from another Agent (also straight back,
+// before the other was read), the same list read again, or one made while the stream was down,
+// whether Core replays its announcement when the stream resumes or resets it (Lead 3299); a request
+// announced after that recovery fades again. Nothing plays under reduced motion, and reduced motion
+// turned on while it fades stops the fade.
 // Allow once, pressed while its card is still coming in, is sent and every decision locks. Writes:
 // one decision per run, held and never answered, and the app's own saves of where an Agent was read;
 // anything else is refused and counted. Chromium is not Safari.
@@ -44,6 +47,8 @@ let moriPending;
 // Changes Core makes before it announces them. Staged here, they are applied only when the page asks
 // for /__check/release right before the event, so a read already on its way cannot see one early.
 let staged = [];
+// While set, Hana's detail is answered this late: a return to Mori comes before it is read.
+let holdHana = 0;
 // A Codex Agent with a native thread reads its account usage and MCP tools: none known here.
 const usage = {
   revision: 1, status: "unknown", account: null, accountId: null,
@@ -85,6 +90,7 @@ async function serve(route) {
       report.writes.push(`${request.method()} ${url.pathname}`);
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
+    if (holdHana && url.pathname === "/api/agents/b") await new Promise((done) => setTimeout(done, holdHana));
     const known = gets()[url.pathname];
     if (known === undefined && !report.unknownGets.includes(url.pathname)) report.unknownGets.push(url.pathname);
     return route.fulfill({ json: known ?? {} });
@@ -134,6 +140,23 @@ function pageHelpers() {
   // Core cannot resume the stream: everything is read again.
   window.__reset = after({ type: "reset", reason: "check" });
   window.__announceThenReset = after({ type: "agent.changed", agentId: "a" }, { type: "reset", reason: "check" });
+  // A short break, as the browser's own reconnect has it: the same stream errs, opens again 300 ms
+  // later, before any poll could, and says what Core says then. What was staged changed meanwhile.
+  const reconnect = (...events) => async () => {
+    const stream = streams.findLast((s) => s.readyState === 1);
+    if (!stream) throw new Error("no open stream");
+    stream.readyState = 0;
+    stream.onerror?.({});
+    await new Promise((done) => setTimeout(done, 300));
+    await fetch("/__check/release");
+    stream.readyState = 1;
+    stream.onopen?.({});
+    for (const event of events) stream.onmessage?.({ data: JSON.stringify(event), lastEventId: String(++id) });
+  };
+  // Core resumes from the last ID and replays what was missed: here, the request's announcement.
+  window.__resumeReplay = reconnect({ type: "resumed" }, { type: "agent.changed", agentId: "a" });
+  // Core cannot resume: everything is read again.
+  window.__resetReplay = reconnect({ type: "reset", reason: "check" });
   const plays = (el) => el.getAnimations().map((a) => {
     const frames = a.effect?.getKeyframes?.() ?? [];
     return { keys: frames.map((k) => Object.keys(k).filter((p) => !["offset", "easing", "composite", "computedOffset"].includes(p)).sort().join("+")).join("/"),
@@ -220,6 +243,16 @@ for (const run of runs) {
     const shown = frames.filter((f) => f.cards[id]);
     return { id, frames, shown, at: shown[0]?.cards[id], calls: (await page.evaluate(() => window.__calls.slice())).slice(before) };
   };
+  const fadesIn = (label, got) => {
+    if (reduced) return ok(`${tag}: under reduced motion, ${label}: it shows with nothing playing`,
+      !got.frames[0]?.cards[got.id] && got.shown.length > 5 && got.calls.length === 0 && still(got.shown), got.at);
+    const fade = fadeOf(got.at?.plays);
+    const end = got.shown.at(-1)?.cards[got.id];
+    ok(`${tag}: ${label}: it fades in over small, opacity only (${fade?.keys}, ${fade?.duration} ms), and ends at 1 with nothing left`,
+      !got.frames[0]?.cards[got.id] && !!fade && fade.duration === 180 && got.at.plays.length === 1 && got.at.opacity < 1
+        && got.shown.every((f) => f.cards[got.id].transform === "none") && got.calls.length === 1 && got.calls[0].id === got.id
+        && end?.opacity === 1 && !end.plays.length, { at: got.at, end, calls: got.calls });
+  };
   const onlyShows = (label, got) => ok(`${tag}: ${label}: it shows with nothing playing (${got.shown.length} frames, ${got.calls.length} animate() calls)`,
     !got.frames[0]?.cards[got.id] && got.shown.length > 5 && got.calls.length === 0 && still(got.frames), { at: got.at, first: got.frames[0] });
   try {
@@ -280,6 +313,31 @@ for (const run of runs) {
     const back = await page.evaluate(() => window.__sample(400));
     ok(`${tag}: to another Agent and back, every card shows with nothing playing (${(await calls()) - leave} calls)`,
       (await calls()) === leave && still(back) && back.every((f) => f.cards[LISTED] && f.cards[came.id] && f.cards["request-session-1"]), back[0]);
+
+    // A short break (Lead 3299): what Core replays as the stream resumes, or what its reset brings, only
+    // shows; a request announced after that recovery fades in again.
+    onlyShows("after a short break, the stream resumes and Core replays the announcement of a request made meanwhile",
+      await bring(request("replayed-1", "npm run audit"), "__resumeReplay", 1300));
+    onlyShows("after a short break, Core resets the stream instead: the request made meanwhile",
+      await bring(request("reset-1", "npm run deps"), "__resetReplay", 1500));
+    fadesIn("after that recovery, a request announced live", await bring(request("live-after", "npm run size"), "__announce"));
+
+    // To another Agent and straight back, before that one is read: Mori's next detail is a new baseline,
+    // whatever was announced for it before (a request made meanwhile shows with nothing playing).
+    await page.evaluate(() => window.__sample(400, "__announce"));
+    staged.push(() => { moriPending = [...moriPending, request("quick-1", "npm run ci")]; });
+    await page.evaluate(() => fetch("/__check/release"));
+    const quickMark = await calls();
+    holdHana = 1500;
+    if (run.phone) await page.locator(".phone-back").click();
+    await open("Hana");
+    if (run.phone) await page.locator(".phone-back").click();
+    await open("Mori");
+    await page.locator("#request-quick-1").waitFor();
+    const quick = await page.evaluate(() => window.__sample(600));
+    holdHana = 0;
+    ok(`${tag}: to another Agent and straight back before it was read, a request made meanwhile shows with nothing playing (${(await calls()) - quickMark} calls)`,
+      (await calls()) === quickMark && quick.every((f) => f.cards["request-quick-1"]) && still(quick), quick[0]?.cards["request-quick-1"]);
 
     if (!reduced) {
       // Reduced motion turned on while a live request fades in, held at 60 ms; in the new session, after the return.
