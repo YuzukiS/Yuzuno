@@ -500,3 +500,16 @@
     color var(--motion-micro) var(--ease-standard),
     box-shadow var(--motion-micro) var(--ease-standard);
 }
+/* Checking a desk's Task records again (T-17): when they were read, or why not. */
+.research-recheck {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.research-recheck [data-failed] {
+  color: var(--ink);
+}

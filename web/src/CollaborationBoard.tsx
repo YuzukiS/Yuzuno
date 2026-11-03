@@ -1,4 +1,5 @@
 import { TaskOutcome, TaskOutcomeEditor } from "./TaskOutcome";
+import { TaskResearch, type ResearchRecord } from "./TaskResearch";
 import { outcomeInput, type OutcomeReport, type OutcomeResult } from "./task-outcome";
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
@@ -90,6 +91,8 @@ interface Activity {
   at: string;
   source?: ExecutionSource | null;
   changes?: Record<string, unknown>;
+  /** A comment that is a research record (T-17). */
+  research?: ResearchRecord;
 }
 interface PeerMessage {
   id: string;
@@ -452,6 +455,7 @@ export function CollaborationBoard({
   projects = [],
   scope = ALL_PROJECTS,
   focus = null,
+  workspaceId = "",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -465,6 +469,8 @@ export function CollaborationBoard({
   scope?: ProjectScope;
   /** A link to one task, optionally to one of its reviews. */
   focus?: { taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null;
+  /** Which Workspace the board is reading: what is kept per record names it (T-17). */
+  workspaceId?: string;
 }) {
   const t = useStrings(boardText);
   const language = useLanguage();
@@ -1009,8 +1015,13 @@ export function CollaborationBoard({
             ) : (
               selected && (
                 <TaskPane
-                  key={selected}
+                  // One pane per Workspace and task (T-17): its read, its
+                  // generations and its drafts belong to that task. The same
+                  // task ID in another Workspace is another task, so turning
+                  // to it starts a new pane; the board itself stays.
+                  key={`${workspaceId}\n${selected}`}
                   id={selected}
+                  workspaceId={workspaceId}
                   agents={agents}
                   projects={projects}
                   revision={revision}
@@ -1162,6 +1173,7 @@ function NewTask({
 
 function TaskPane({
   id,
+  workspaceId,
   agents,
   projects,
   revision,
@@ -1172,6 +1184,7 @@ function TaskPane({
   focusWorkspaces = false,
 }: {
   id: string;
+  workspaceId: string;
   agents: Agent[];
   projects: Project[];
   revision: number;
@@ -1210,6 +1223,16 @@ function TaskPane({
   const [managing, setManaging] = useState(false);
   const mutation = useMutation();
   const loadGeneration = useRef(0);
+  // An answer arriving after this pane closed (another task or Workspace)
+  // reports nothing to the board.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      loadGeneration.current++;
+    };
+  }, []);
   const load = useCallback(
     async (afterSeq?: number) => {
       const generation = ++loadGeneration.current;
@@ -1256,6 +1279,7 @@ function TaskPane({
   const task = detail?.task;
   const owner = agents.find((agent) => agent.id === task?.assigneeAgentId);
   const changed = (next: SharedTask) => {
+    if (!alive.current) return;
     setDetail((previous) =>
       previous ? { ...previous, task: next } : previous,
     );
@@ -1867,6 +1891,9 @@ function TaskPane({
                     <Prose text={activity.body} />
                   ) : (
                     <p className="collab-hint">{t.activityKinds[activity.kind]}</p>
+                  )}
+                  {activity.research && (
+                    <TaskResearch workspaceId={workspaceId} taskId={detail.task.id} seq={activity.seq} record={activity.research} />
                   )}
                   {activity.source &&
                     agents.some(
