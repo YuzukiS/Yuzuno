@@ -105,6 +105,8 @@ function pageHelpers() {
       portalMode: document.documentElement.dataset.portal ?? null,
       focus: focus ? { tag: focus.tagName, text: (focus.textContent || "").trim().slice(0, 40), inInspector: !!focus.closest("aside.inspector") } : null,
       sideways: scroller ? scroller.scrollWidth - scroller.clientWidth : 0,
+      mainInert: !!document.querySelector(".main-panel")?.inert,
+      now: Math.round(performance.now()),
     };
   };
   window.__calls = [];
@@ -244,6 +246,78 @@ for (const run of runs) {
       ok(`${tag}: and the chat has its column back in that frame`, shut.frames[0].portalMode === null, shut.frames[0]);
 
       if (!reduced) {
+        // Interrupted while it comes in (Lead 3183). Driven in the page, so each step lands within the 240 ms.
+        await page.waitForTimeout(300);
+        const cut = await page.evaluate(async () => {
+          const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+          const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+          const toggle = () => document.querySelector('.toolbar button[aria-label="Toggle context panel"]').click();
+          const close = () => document.querySelector('aside.inspector button[aria-label="Close context panel"]').click();
+          close(); await frame(); await frame();
+          toggle(); await frame(); await wait(40);
+          const coming = window.__panels();
+          close(); await frame();
+          const closed = window.__panels();
+          toggle(); await frame();
+          const again = window.__panels();
+          await wait(400);
+          close(); await frame(); toggle(); await frame(); close(); await frame(); toggle(); await frame();
+          const quick = window.__panels();
+          await wait(400);
+          return { coming, closed, again, quick };
+        });
+        report.frames[`${tag}: the context panel interrupted`] = cut;
+        ok(`${tag}: closing the context panel while it comes in: it is gone in the next frame, nothing left of it`,
+          !!moveOf(cut.coming.inspector?.plays) && !cut.closed.inspector && !cut.closed.withInspector, { coming: cut.coming.inspector, closed: cut.closed.inspector });
+        const fresh = moveOf(cut.again.inspector?.plays);
+        ok(`${tag}: and opened again at once, it comes in afresh (${Math.round(fresh?.current ?? -1)} ms in)`,
+          !!fresh && fresh.current < 100 && cut.again.inspector.plays.length === 1, cut.again.inspector);
+        ok(`${tag}: opened, closed and opened again frame by frame, it plays one move, the newest (${cut.quick.inspector?.plays.length})`,
+          cut.quick.inspector?.plays.length === 1 && !!moveOf(cut.quick.inspector.plays), cut.quick.inspector);
+
+        // Reduced motion turned on while the Agent list comes in, then off again.
+        await page.evaluate(async () => {
+          document.querySelector('.toolbar button[aria-label="Hide agent sidebar"]').click();
+          await new Promise((done) => setTimeout(done, 150));
+          document.querySelector('.toolbar button[aria-label="Show agent sidebar"]').click();
+          await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 30)));
+          window.__coming = window.__panels();
+        });
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        const turned = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done({ coming: window.__coming, now: window.__panels() }))));
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+        const back = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(window.__panels())))));
+        report.frames[`${tag}: reduced motion turned on mid-way`] = { ...turned, back };
+        const was = moveOf(turned.coming.rail?.plays);
+        const due = was ? was.current + (turned.now.now - turned.coming.now) : Infinity;
+        ok(`${tag}: reduced motion turned on while the Agent list comes in (${Math.round(due)} of 240 ms): it stops at once, the list in place`,
+          !!was && due < 240 && !turned.now.rail.plays.length && turned.now.rail.opacity === 1 && turned.now.rail.transform === "none", { coming: turned.coming.rail, now: turned.now.rail });
+        ok(`${tag}: and turned off again, nothing plays again`, !back.rail.plays.length && back.rail.shown, back.rail);
+
+        // A window narrowed while the Portal comes in: it covers the chat, and nothing is left playing.
+        await page.locator('aside.inspector .artifact-row', { hasText: "timer.html" }).first().click();
+        await choice.waitFor();
+        await page.evaluate(async () => {
+          document.querySelector(".modal-footer .open-choice-split > .primary-button:not(.open-choice-more)").click();
+          for (let n = 0; n < 30 && !document.querySelector(".portal-panel"); n++) await new Promise((done) => requestAnimationFrame(() => done()));
+          await new Promise((done) => setTimeout(done, 30));
+          window.__coming = window.__panels();
+        });
+        await page.setViewportSize({ width: 700, height: 860 });
+        const narrowed = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done({ coming: window.__coming, now: window.__panels() })))));
+        await page.setViewportSize(run.viewport);
+        const widened = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done(window.__panels()))))));
+        report.frames[`${tag}: the Portal narrowed mid-way`] = { ...narrowed, widened };
+        const went = moveOf(narrowed.coming.portal?.plays);
+        const left = went ? went.current + (narrowed.now.now - narrowed.coming.now) : Infinity;
+        ok(`${tag}: a window narrowed while the Portal comes in (${Math.round(left)} of 240 ms): it covers the chat at once, nothing left playing`,
+          !!went && left < 240 && narrowed.now.portalMode === "full" && narrowed.now.portal?.shown && !narrowed.now.portal.plays.length && narrowed.now.portal.opacity === 1,
+          { coming: narrowed.coming.portal, now: narrowed.now.portal, mode: narrowed.now.portalMode });
+        ok(`${tag}: and widened again, it is beside the chat with nothing played again`,
+          widened.portalMode === "side" && widened.portal?.shown && !widened.portal.plays.length, { mode: widened.portalMode, portal: widened.portal });
+        await page.locator('.portal-panel button[aria-label="Close preview"]').click();
+        await page.waitForTimeout(150);
+
         // A window turning into a phone's and back, with both panels on: no panel comes in.
         await page.waitForTimeout(300);
         await page.evaluate(() => { window.__mark = window.__calls.length; });
@@ -263,6 +337,7 @@ for (const run of runs) {
       comesIn(opening, "inspector", "translateX(8px)", "the context panel");
       const focus = opening.frames.at(-1).focus;
       ok(`${tag}: and its heading takes focus (${focus?.tag} "${focus?.text}")`, focus?.inInspector && focus.text === "At a glance", focus);
+      ok(`${tag}: and the conversation under it is inert while it shows`, opening.frames.at(-1).mainInert, opening.frames.at(-1));
       const close = await step("close the context panel", () => page.locator('aside.inspector button[aria-label="Close context panel"]').click());
       instant(close, "inspector", "the context panel");
       if (!reduced) {
