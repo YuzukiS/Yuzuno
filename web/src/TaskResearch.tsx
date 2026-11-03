@@ -26,7 +26,7 @@ export type ResearchSource =
   | { kind: "external"; label?: string; url?: string; version?: string; observedAt?: string; sha256?: string; coverage?: string; checked?: boolean; now?: { state?: string } };
 export type ResearchRecord = {
   schema?: string;
-  type: "method" | "claim" | "observation";
+  type: "method" | "claim" | "observation" | "comparison";
   id: string;
   title: string;
   text: string;
@@ -37,6 +37,30 @@ export type ResearchRecord = {
   method?: { activitySeq: number; id?: string; title?: string };
   sources?: ResearchSource[];
   revises?: { activitySeq: number; reason: string };
+  /** A comparison's entries (T-17 slice 2), as their author gave them. */
+  entries?: ResearchEntry[];
+  comparability?: Comparability;
+};
+export type ResearchEntry = {
+  id: string;
+  label: string;
+  status: "included" | "excluded" | "missing" | "not_done";
+  reason?: string;
+  source?: ResearchSource;
+  method?: { activitySeq: number; id?: string; title?: string };
+  definition?: string;
+  unit?: string;
+  level?: string;
+  n?: number;
+  value?: { value: number; low?: number; high?: number };
+};
+/** What the included entries share, as Core worked it out when they were written. */
+type Comparability = {
+  aligned: boolean;
+  shared: Partial<Record<"unit" | "definition" | "level" | "method", string | number>>;
+  differs: string[];
+  unknown: string[];
+  counts: Record<"included" | "excluded" | "missing" | "not_done", number>;
 };
 type ResearchView = {
   activitySeq: number;
@@ -48,7 +72,18 @@ type ResearchView = {
 };
 
 const text = strings({
-  type: { method: "Method", claim: "Claim", observation: "Observation" } as Record<string, string>,
+  type: { method: "Method", claim: "Claim", observation: "Observation", comparison: "Comparison" } as Record<string, string>,
+  entries: "Compared",
+  entryState: { included: "Included", excluded: "Excluded", missing: "Missing", not_done: "Not done" } as Record<string, string>,
+  aspect: { unit: "unit", definition: "definition", level: "sample level", method: "method" } as Record<string, string>,
+  aligned: (shared: string) => `The included entries share ${shared}. Yuzuno computes no difference: they are compared as their author compares them.`,
+  sideBySide: (differs: string, unknown: string) =>
+    `Side by side only: ${[differs && `the included entries differ in ${differs}`, unknown && `${unknown} is not given for every entry`].filter(Boolean).join("; ")}. Yuzuno computes no difference.`,
+  tooFew: "Fewer than two included entries: nothing to compare yet.",
+  counts: (counts: Record<string, number>) =>
+    [`${counts.included} included`, `${counts.excluded} excluded`, `${counts.missing} missing`, `${counts.not_done} not done`].join(" · "),
+  methodActivity: (seq: number) => `method in activity ${seq}`,
+  level: (level: string, n?: number) => (n === undefined ? level : `${level} · n = ${n}`),
   field: { theory: "Theory", systems: "Systems", ml: "ML", robotics: "Robotics", other: "Other" } as Record<string, string>,
   status: {
     supported: "Supported",
@@ -94,7 +129,17 @@ const text = strings({
     stated: "Not checked",
   } as Record<string, string>,
 }, {
-  type: { method: "方法", claim: "主张", observation: "观察" },
+  type: { method: "方法", claim: "主张", observation: "观察", comparison: "比较" },
+  entries: "比较的条目",
+  entryState: { included: "纳入", excluded: "排除", missing: "缺失", not_done: "未做" },
+  aspect: { unit: "单位", definition: "定义", level: "样本层级", method: "方法" },
+  aligned: (shared) => `纳入的条目共用${shared}。Yuzuno 不计算差异：按作者的方式比较。`,
+  sideBySide: (differs, unknown) =>
+    `仅并列展示：${[differs && `纳入的条目在${differs}上不同`, unknown && `并非每个条目都给出了${unknown}`].filter(Boolean).join("；")}。Yuzuno 不计算差异。`,
+  tooFew: "纳入的条目不足两个：还没有可比较的内容。",
+  counts: (counts) => [`纳入 ${counts.included}`, `排除 ${counts.excluded}`, `缺失 ${counts.missing}`, `未做 ${counts.not_done}`].join(" · "),
+  methodActivity: (seq) => `活动 ${seq} 中的方法`,
+  level: (level, n) => (n === undefined ? level : `${level} · n = ${n}`),
   field: { theory: "理论", systems: "系统", ml: "ML", robotics: "机器人", other: "其他" },
   status: { supported: "得到支持", conditional: "在条件下成立", unsupported: "不支持", open: "未定" },
   authors: "作者的判断",
@@ -137,6 +182,64 @@ const text = strings({
 });
 
 const short = (sha: string) => sha.slice(0, 12);
+/** A number as its author gave it, with a true minus sign. */
+const figure = (n: number) => String(n).replace("-", "−");
+
+/** A comparison's entries: every one, left out or not, each with why. */
+function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; comparability?: Comparability; now?: ResearchEntry[] }) {
+  const t = useStrings(text);
+  const named = (fields: string[]) => fields.map((field) => t.aspect[field] ?? field).join(", ");
+  const shared = comparability
+    ? Object.entries(comparability.shared)
+        .map(([field, value]) => (field === "method" ? `${t.aspect.method} (${t.methodActivity(Number(value))})` : `${t.aspect[field] ?? field} (${value})`))
+        .join(", ")
+    : "";
+  return (
+    <div className="task-research-entries">
+      <strong>{t.entries}</strong>
+      {comparability && (
+        <p className="task-research-comparability" data-aligned={comparability.aligned || undefined}>
+          {comparability.counts.included < 2
+            ? t.tooFew
+            : comparability.aligned
+              ? t.aligned(shared)
+              : t.sideBySide(named(comparability.differs), named(comparability.unknown))}
+          <span>{t.counts(comparability.counts)}</span>
+        </p>
+      )}
+      <ul>
+        {entries.map((entry, n) => (
+          <li key={entry.id} className="task-research-entry" data-state={entry.status}>
+            <span className="task-research-entry-head">
+              <span className="task-research-source-name">{entry.label}</span>
+              <span className="task-research-tag" data-state={entry.status}>{t.entryState[entry.status] ?? entry.status}</span>
+            </span>
+            {entry.reason && <span className="task-research-note">{entry.reason}</span>}
+            {entry.value && (
+              <span className="task-research-value">
+                {figure(entry.value.value)}
+                {entry.value.low !== undefined && entry.value.high !== undefined && ` [${figure(entry.value.low)}, ${figure(entry.value.high)}]`}
+                {entry.unit && ` ${entry.unit}`}
+              </span>
+            )}
+            {(entry.level || entry.definition || entry.method) && (
+              <span className="task-research-identity">
+                {[entry.level && t.level(entry.level, entry.n), entry.definition, entry.method && t.methodActivity(entry.method.activitySeq)]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
+            {entry.source && (
+              <ul className="task-research-entry-source">
+                <SourceRow source={entry.source} now={now?.[n]?.source?.now?.state} />
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function SourceRow({ source, now }: { source: ResearchSource; now?: string }) {
   const t = useStrings(text);
@@ -293,6 +396,7 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
           <ul>{record.limits.map((item, n) => <li key={n}>{item}</li>)}</ul>
         </div>
       )}
+      {!!record.entries?.length && <Entries entries={record.entries} comparability={record.comparability} now={view?.data?.research.entries} />}
       {!!record.sources?.length && (
         <div className="task-research-sources">
           <strong>{t.sources}</strong>

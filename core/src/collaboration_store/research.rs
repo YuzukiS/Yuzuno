@@ -16,11 +16,24 @@
 //!   match at writing (the check results use, `result_outcome::matched`);
 //! - task: a research record or result on a task, with its original producer;
 //! - external: material from elsewhere, as its author stated it, never checked.
+//!
+//! A comparison (slice 2) is a record too: a fixed set of entries compared
+//! for one question. Each entry is included, excluded, missing or not done,
+//! and only an included one goes without a reason, so what was left out stays
+//! in view. An entry states its source (the same fixed identities), method
+//! record, definition, unit, sample level and value as its author gives them.
+//! A read says which of unit, definition, level and method the included
+//! entries share; Yuzuno never computes a difference.
 use super::*;
 use anyhow::anyhow;
+use serde_json::Map;
 
 const MAX_BYTES: usize = 32_768;
-const TYPES: &[&str] = &["method", "claim", "observation"];
+const TYPES: &[&str] = &["method", "claim", "observation", "comparison"];
+const ENTRY_STATES: &[&str] = &["included", "excluded", "missing", "not_done"];
+const MAX_ENTRIES: usize = 40;
+/// What included entries must share before they are more than side by side.
+const ALIGNED: &[&str] = &["unit", "definition", "level", "method"];
 const FIELDS: &[&str] = &["theory", "systems", "ml", "robotics", "other"];
 const STANDING: &[&str] = &["supported", "conditional", "unsupported", "open"];
 const MAX_SOURCES: usize = 20;
@@ -71,8 +84,16 @@ pub(super) fn schema() -> Value {
             "status":{"type":"string","enum":STANDING,"description":"Claims only: the author's judgement of support."},
             "conditions":notes.clone(),"limits":notes,
             "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone()},"required":["activitySeq"]},
-            "sources":{"type":"array","maxItems":MAX_SOURCES,"items":source},
-            "revises":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq,"reason":text(2000)},"required":["activitySeq","reason"]}},
+            "sources":{"type":"array","maxItems":MAX_SOURCES,"items":source.clone()},
+            "revises":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone(),"reason":text(2000)},"required":["activitySeq","reason"]},
+            "entries":{"type":"array","maxItems":MAX_ENTRIES,"description":"Comparisons only: what is compared. Every entry is included, excluded, missing or not_done; all but included need a reason, and missing or not_done carry no value. Values are as their author states them.",
+                "items":{"type":"object","additionalProperties":false,
+                    "properties":{"id":{"type":"string","pattern":"^[a-z0-9][a-z0-9-]{0,63}$"},"label":text(300),
+                        "status":{"type":"string","enum":ENTRY_STATES},"reason":text(600),"source":source.clone(),
+                        "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq},"required":["activitySeq"]},
+                        "definition":text(300),"unit":text(40),"level":text(60),"n":{"type":"integer","minimum":0},
+                        "value":{"type":"object","additionalProperties":false,"properties":{"value":{"type":"number"},"low":{"type":"number"},"high":{"type":"number"}},"required":["value"]}},
+                    "required":["id","label","status"]}}},
         "required":["type","id","title","text"]})
 }
 
@@ -145,7 +166,7 @@ pub(super) fn validate(db: &Connection, task: &SharedTask, input: Option<&Value>
     );
     allowed(
         input,
-        &["type", "id", "title", "text", "field", "status", "conditions", "limits", "method", "sources", "revises"],
+        &["type", "id", "title", "text", "field", "status", "conditions", "limits", "method", "sources", "revises", "entries"],
     )?;
     let kind = choice(input, "type", TYPES)?.context("invalid_input: research.type is required")?;
     let id = required_text(input, "id", 64)?;
@@ -171,6 +192,7 @@ pub(super) fn validate(db: &Connection, task: &SharedTask, input: Option<&Value>
     }
     if let Some(method) = input.get("method").filter(|v| !v.is_null()) {
         ensure!(kind != "method", "invalid_input: a method does not cite a method; revise it instead");
+        ensure!(kind != "comparison", "invalid_input: a comparison names each entry's method");
         allowed(method, &["activitySeq"])?;
         let seq = positive(method, "activitySeq")?;
         let cited = record_in(db, &task.id, seq)?
@@ -220,7 +242,113 @@ pub(super) fn validate(db: &Connection, task: &SharedTask, input: Option<&Value>
             out["sources"] = json!(fixed);
         }
     }
+    match (kind.as_str(), input.get("entries").filter(|v| !v.is_null())) {
+        ("comparison", Some(entries)) => {
+            let entries = entries.as_array().context("invalid_input: research.entries must be an array")?;
+            ensure!(
+                !entries.is_empty() && entries.len() <= MAX_ENTRIES,
+                "invalid_input: a comparison has 1 to {MAX_ENTRIES} research.entries"
+            );
+            let mut ids = std::collections::BTreeSet::new();
+            let fixed = entries
+                .iter()
+                .enumerate()
+                .map(|(n, entry)| {
+                    fix_entry(db, task, entry, &mut ids).map_err(|error| anyhow!("{error} (research.entries[{n}])"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            // Entries are fixed, so what they share is too: kept with them.
+            out["comparability"] = comparability(&fixed);
+            out["entries"] = json!(fixed);
+        }
+        ("comparison", None) => bail!("invalid_input: a comparison needs research.entries"),
+        (_, Some(_)) => bail!("invalid_input: research.entries is for comparisons only"),
+        (_, None) => {}
+    }
     Ok(Some(out))
+}
+
+/// One entry of a comparison, checked and with its source's identity fixed.
+fn fix_entry(db: &Connection, task: &SharedTask, entry: &Value, ids: &mut std::collections::BTreeSet<String>) -> Result<Value> {
+    ensure!(entry.is_object(), "invalid_input: a comparison entry is an object");
+    allowed(entry, &["id", "label", "status", "reason", "source", "method", "definition", "unit", "level", "n", "value"])?;
+    let id = required_text(entry, "id", 64)?;
+    ensure!(valid_id(&id), "invalid_input: an entry id is 1 to 64 lowercase letters, digits and hyphens");
+    ensure!(ids.insert(id.clone()), "invalid_input: entry id {id} is used twice in this comparison");
+    let state = match entry.get("status") {
+        Some(Value::String(state)) if ENTRY_STATES.contains(&state.as_str()) => state.clone(),
+        _ => bail!("invalid_input: an entry's status is one of {}", ENTRY_STATES.join(", ")),
+    };
+    let mut out = json!({"id":id,"label":required_text(entry, "label", 300)?,"status":state});
+    match optional_text(entry, "reason", 600)?.filter(|reason| !reason.trim().is_empty()) {
+        Some(reason) => out["reason"] = json!(reason),
+        // What was left out says why: the reader sees it beside what was kept.
+        None => ensure!(state == "included", "invalid_input: a {state} entry needs a reason"),
+    }
+    if let Some(value) = entry.get("value").filter(|v| !v.is_null()) {
+        ensure!(
+            !matches!(state.as_str(), "missing" | "not_done"),
+            "invalid_input: a {state} entry has no value"
+        );
+        allowed(value, &["value", "low", "high"])?;
+        let mut kept = json!({});
+        for field in ["value", "low", "high"] {
+            match value.get(field) {
+                None | Some(Value::Null) => ensure!(field != "value", "invalid_input: an entry's value needs value"),
+                Some(number) => {
+                    let number = number.as_f64().filter(|n| n.is_finite())
+                        .with_context(|| format!("invalid_input: an entry's {field} is a finite number"))?;
+                    kept[field] = json!(number);
+                }
+            }
+        }
+        out["value"] = kept;
+    }
+    if let Some(source) = entry.get("source").filter(|v| !v.is_null()) {
+        out["source"] = fix_source(db, task, source)?;
+    }
+    if let Some(method) = entry.get("method").filter(|v| !v.is_null()) {
+        allowed(method, &["activitySeq"])?;
+        let seq = positive(method, "activitySeq")?;
+        let cited = record_in(db, &task.id, seq)?
+            .filter(|row| row["research"]["type"] == "method")
+            .with_context(|| format!("invalid_input: an entry's method: activity {seq} is not a method record of this task"))?;
+        out["method"] = json!({"activitySeq":seq,"id":cited["research"]["id"],"title":cited["research"]["title"]});
+    }
+    for (field, max) in [("definition", 300), ("unit", 40), ("level", 60)] {
+        if let Some(text) = optional_text(entry, field, max)?.filter(|text| !text.trim().is_empty()) {
+            out[field] = json!(text);
+        }
+    }
+    if let Some(n) = entry.get("n").filter(|v| !v.is_null()) {
+        out["n"] = json!(n.as_u64().context("invalid_input: an entry's n is a whole number")?);
+    }
+    Ok(out)
+}
+
+/// Which of unit, definition, level and method the included entries share,
+/// differ in, or leave unknown (missing on some). Nothing is computed from
+/// their values.
+fn comparability(entries: &[Value]) -> Value {
+    let included: Vec<&Value> = entries.iter().filter(|entry| entry["status"] == "included").collect();
+    let (mut shared, mut differs, mut unknown) = (Map::new(), vec![], vec![]);
+    for field in ALIGNED {
+        let values: Vec<&Value> = included
+            .iter()
+            .map(|entry| if *field == "method" { &entry["method"]["activitySeq"] } else { &entry[*field] })
+            .collect();
+        if values.iter().any(|value| value.is_null()) {
+            unknown.push(*field);
+        } else if values.windows(2).any(|pair| pair[0] != pair[1]) {
+            differs.push(*field);
+        } else if let Some(value) = values.first() {
+            shared.insert((*field).to_owned(), (*value).clone());
+        }
+    }
+    let count = |state: &str| entries.iter().filter(|entry| entry["status"] == state).count();
+    json!({"aligned": included.len() > 1 && differs.is_empty() && unknown.is_empty(),
+        "shared":shared,"differs":differs,"unknown":unknown,
+        "counts":{"included":count("included"),"excluded":count("excluded"),"missing":count("missing"),"not_done":count("not_done")}})
 }
 
 /// A source with the identity it has now, kept as it is written.
@@ -290,6 +418,9 @@ fn cited_record(row: &Value) -> Option<Value> {
         if let Some(status) = research.get("status") {
             record["status"] = status.clone();
         }
+        if let Some(entries) = research.get("entries").and_then(Value::as_array) {
+            record["counts"] = comparability(entries)["counts"].clone();
+        }
         return Some(record);
     }
     (row["kind"] == "result").then(|| {
@@ -298,15 +429,27 @@ fn cited_record(row: &Value) -> Option<Value> {
     })
 }
 
-/// A record's sources, if it has any; never adds a field to anything else.
-fn sources_mut(value: &mut Value) -> Option<&mut Vec<Value>> {
-    value.get_mut("research")?.get_mut("sources")?.as_array_mut()
+/// A record's sources, its entries' sources included; never adds a field
+/// to anything else.
+fn sources_mut(value: &mut Value) -> Vec<&mut Value> {
+    let Some(research) = value.get_mut("research").and_then(Value::as_object_mut) else { return vec![] };
+    let mut found = vec![];
+    for (key, field) in research.iter_mut() {
+        match (key.as_str(), field) {
+            ("sources", Value::Array(sources)) => found.extend(sources.iter_mut()),
+            ("entries", Value::Array(entries)) => {
+                found.extend(entries.iter_mut().filter_map(|entry| entry.get_mut("source")).filter(|source| source.is_object()));
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 /// Stored task references are UUIDs; answers name tasks as T-n.
 pub(super) fn project(db: &Connection, activity: &mut Value) -> Result<()> {
-    if let Some(sources) = sources_mut(activity) {
-        for source in sources {
+    {
+        for source in sources_mut(activity) {
             if source["kind"] == "task" {
                 if let Some(reference) = source["taskId"].as_str() {
                     if let Ok((_, number)) = task_key(db, reference) {
@@ -321,8 +464,8 @@ pub(super) fn project(db: &Connection, activity: &mut Value) -> Result<()> {
 
 /// Retries name tasks either way; compare them as the stored UUID.
 pub(super) fn normalize(db: &Connection, input: &mut Value) {
-    if let Some(sources) = sources_mut(input) {
-        for source in sources {
+    {
+        for source in sources_mut(input) {
             if source["kind"] == "task" {
                 if let Some(reference) = source["taskId"].as_str() {
                     if let Ok((id, _)) = task_key(db, reference) {
@@ -386,6 +529,13 @@ fn view(db: &Connection, task: &SharedTask, seq: i64, row: Value) -> Result<Valu
     if let Some(sources) = research.get_mut("sources").and_then(Value::as_array_mut) {
         for source in sources {
             source["now"] = now(db, &task.id, source)?;
+        }
+    }
+    if let Some(entries) = research.get_mut("entries").and_then(Value::as_array_mut) {
+        for entry in entries.iter_mut() {
+            if let Some(source) = entry.get_mut("source").filter(|source| source.is_object()) {
+                source["now"] = now(db, &task.id, source)?;
+            }
         }
     }
     let (revised_by, latest) = newer(db, &task.id, seq)?;

@@ -271,3 +271,94 @@ fn a_desk_reads_a_task_record_by_the_same_resolver() {
     assert_eq!(desk_source(&db, "T-1", m1 + 1000).unwrap()["reason"], "activity_not_found");
     assert_eq!(desk_source(&db, "T-404", m1).unwrap()["reason"], "task_not_found");
 }
+
+/// A comparison (T-17 slice 2): layout B vs A timed two ways, one input set
+/// missing and one never run.
+fn comparison(m1: i64, m2: i64, entries: Value) -> Value {
+    let _ = (m1, m2);
+    json!({"type":"comparison","id":"layouts","title":"Layout B vs A, small inputs","field":"systems",
+        "text":"Runtime change of layout B against A on the small inputs.","entries":entries})
+}
+
+fn entry(id: &str, status: &str, method: i64, unit: &str, level: &str) -> Value {
+    json!({"id":id,"label":format!("Entry {id}"),"status":status,"method":{"activitySeq":method},
+        "unit":unit,"level":level,"definition":"median of runs","n":10,"value":{"value":-4.1,"low":-6.0,"high":-2.2}})
+}
+
+#[test]
+fn a_comparison_keeps_what_was_left_out_and_says_what_its_entries_share() {
+    let (_dir, store) = setup();
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Ten iterations in one process.")).unwrap());
+    let mut revised = method("timing", "Ten fresh processes.");
+    revised["revises"] = json!({"activitySeq":m1,"reason":"Iterations share caches."});
+    let m2 = seq(&comment(&store, "author", "m2", "T-1", revised).unwrap());
+    let mut sourced = entry("processes", "included", m2, "%", "process");
+    sourced["source"] = job_source(ATTEMPT, "a");
+    let entries = json!([
+        sourced,
+        entry("again", "included", m2, "%", "process"),
+        {"id":"large","label":"Large inputs","status":"missing","reason":"The large set was not exported."},
+        {"id":"other-machine","label":"Second machine","status":"not_done","reason":"No second machine yet."},
+        {"id":"warm","label":"Warm cache run","status":"excluded","reason":"Cache left warm by a previous run.","value":{"value":-9.0}},
+    ]);
+    let answer = comment(&store, "author", "c1", "T-1", comparison(m1, m2, entries.clone())).unwrap();
+    let stored = &answer["activity"]["research"];
+    assert_eq!(stored["entries"].as_array().unwrap().len(), 5, "nothing left out is dropped");
+    assert_eq!(stored["comparability"]["aligned"], true, "kept with the entries when written");
+    assert_eq!(stored["entries"][0]["source"]["recorded"], "recorded_match");
+    assert_eq!(stored["entries"][0]["method"]["activitySeq"], m2);
+    let read = record(&store, "T-1", seq(&answer));
+    let summary = &read["research"]["comparability"];
+    assert_eq!(summary["aligned"], true, "{summary}");
+    assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","level":"process","method":m2}));
+    assert_eq!(summary["counts"], json!({"included":2,"excluded":1,"missing":1,"not_done":1}));
+    assert_eq!(read["research"]["entries"][0]["source"]["now"]["state"], "recorded_match");
+    assert!(read["research"]["entries"][0].get("difference").is_none() && summary.get("difference").is_none(), "no difference is computed");
+
+    // Entries timed by different methods, in different units, one with no level: side by side only.
+    let mut mixed = entries.as_array().unwrap().clone();
+    mixed[1] = entry("iterations", "included", m1, "ms", "iteration");
+    mixed[0]["level"] = Value::Null;
+    let answer = comment(&store, "author", "c2", "T-1", {
+        let mut record = comparison(m1, m2, json!(mixed));
+        record["id"] = json!("layouts-mixed");
+        record
+    }).unwrap();
+    let summary = record(&store, "T-1", seq(&answer))["research"]["comparability"].clone();
+    assert_eq!(summary["aligned"], false);
+    assert_eq!(summary["differs"], json!(["unit", "method"]));
+    assert_eq!(summary["unknown"], json!(["level"]));
+
+    // A Home desk citing the comparison sees its counts.
+    let db = store.db.read().unwrap();
+    let shown = desk_source(&db, "T-1", seq(&answer)).unwrap();
+    assert_eq!((shown["record"]["type"].clone(), shown["record"]["counts"]["missing"].clone()), (json!("comparison"), json!(1)));
+}
+
+#[test]
+fn a_comparison_entry_says_why_it_was_left_out_and_states_no_value_it_does_not_have() {
+    let (_dir, store) = setup();
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Fresh processes.")).unwrap());
+    let before = counts(&store);
+    let refused = [
+        (json!([{"id":"a","label":"A","status":"excluded"}]), "excluded entry needs a reason"),
+        (json!([{"id":"a","label":"A","status":"missing","reason":"Lost.","value":{"value":1.0}}]), "missing entry has no value"),
+        (json!([{"id":"a","label":"A","status":"not_done","reason":"Later.","value":{"value":1.0}}]), "not_done entry has no value"),
+        (json!([entry("a", "included", m1, "%", "process"), entry("a", "included", m1, "%", "process")]), "used twice"),
+        (json!([{"id":"a","label":"A","status":"kept"}]), "status is one of"),
+        (json!([{"id":"a","label":"A","status":"included","method":{"activitySeq":m1 + 100}}]), "not a method record"),
+        (json!([{"id":"a","label":"A","status":"included","source":job_source(ATTEMPT, "f")}]), "artifact_mismatch"),
+        (json!([]), "1 to 40"),
+    ];
+    for (n, (entries, expected)) in refused.into_iter().enumerate() {
+        let mut record = comparison(m1, m1, entries);
+        record["id"] = json!(format!("bad-{n}"));
+        let message = error(comment(&store, "author", &format!("bad-{n}"), "T-1", record));
+        assert!(message.starts_with("invalid_input:") && message.contains(expected), "{n}: {message}");
+    }
+    assert!(error(comment(&store, "author", "no-entries", "T-1",
+        json!({"type":"comparison","id":"none","title":"T","text":"S"}))).contains("needs research.entries"));
+    assert!(error(comment(&store, "author", "entries-on-claim", "T-1",
+        json!({"type":"claim","id":"c","title":"T","text":"S","status":"open","entries":[{"id":"a","label":"A","status":"included"}]}))).contains("for comparisons only"));
+    assert_eq!(counts(&store), before, "nothing refused is written");
+}

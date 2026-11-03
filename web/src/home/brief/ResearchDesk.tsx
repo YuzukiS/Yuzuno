@@ -41,7 +41,7 @@ type SourceInfo = {
   reason?: string;
   stated?: "same" | "different" | "unknown";
   // A source naming a Task research record (T-17), as its task keeps it.
-  record?: { kind: string; type?: string; title?: string; summary?: string };
+  record?: { kind: string; type?: string; title?: string; summary?: string; counts?: Record<string, number> };
   producer?: { name?: string };
   at?: string;
   version?: number | null;
@@ -399,6 +399,7 @@ function SourceLine({ source, info, lines }: { source: Source; info?: SourceInfo
             <>
               {" · "}
               {t.recordType[info.record.type ?? info.record.kind] ?? info.record.kind} “{info.record.title ?? info.record.summary}”
+              {info.record.counts ? <> · {t.recordCounts(info.record.counts)}</> : null}
               {info.version ? <> · {t.recordVersion(info.version)}</> : null}
               {info.producer?.name && info.at ? <> · {t.recordBy(info.producer.name, formatTime(info.at, time))}</> : null}
               {info.latestActivitySeq && info.latestActivitySeq !== source.task.activitySeq ? <> · {t.recordNewer(info.latestActivitySeq)}</> : null}

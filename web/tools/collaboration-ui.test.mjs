@@ -1419,6 +1419,50 @@ test("an update in the same Workspace keeps a note being written (T-17)", async 
   }
 });
 
+test("a comparison shows every entry, left out or not, with why, and says what the included ones share; no difference is computed (T-17)", async () => {
+  const entries = [
+    { id: "processes", label: "Fresh processes", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -1.2, low: -3.5, high: 1.1 } },
+    { id: "again", label: "Fresh processes, second run", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -0.8, low: -2.9, high: 1.3 } },
+    { id: "large", label: "Large inputs", status: "missing", reason: "The large set was not exported." },
+    { id: "second-machine", label: "Second machine", status: "not_done", reason: "No second machine yet." },
+    { id: "warm", label: "Warm cache run", status: "excluded", reason: "The cache was left warm.", value: { value: -9 } },
+  ];
+  const counts = { included: 2, excluded: 1, missing: 1, not_done: 1 };
+  const aligned = { schema: "research/1", type: "comparison", id: "layouts", title: "Layout B vs A, fresh processes", text: "Runtime change.", entries,
+    comparability: { aligned: true, shared: { unit: "%", definition: "median of runs", level: "process", method: 6 }, differs: [], unknown: [], counts } };
+  const mixed = { ...aligned, id: "layouts-mixed", title: "Layout B vs A, two methods",
+    entries: [entries[0], { ...entries[1], unit: "ms", level: undefined, method: { activitySeq: 3, id: "timing", title: "Timing protocol" } }, ...entries.slice(2)],
+    comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["level"], counts } };
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: { task: task(), activities: [recorded(7, aligned, "Compared."), recorded(8, mixed, "Compared again.")], executions: [], hasMore: false },
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "both comparisons");
+    const [first, second] = page.document.querySelectorAll(".task-research");
+    for (const card of [first, second]) {
+      const text = card.textContent;
+      for (const expected of ["Comparison", "Fresh processes", "Included", "Large inputs", "Missing", "The large set was not exported.",
+        "Second machine", "Not done", "No second machine yet.", "Warm cache run", "Excluded", "The cache was left warm.",
+        "2 included · 1 excluded · 1 missing · 1 not done", "Yuzuno computes no difference"])
+        assert.ok(text.includes(expected), `${expected}: ${text}`);
+      assert.equal(card.querySelectorAll(".task-research-entry").length, 5, "nothing left out is dropped");
+      assert.ok(!/−0\.4|0\.4 %|difference of/i.test(text), "no difference between entries is shown");
+    }
+    assert.match(first.textContent, /−1\.2 \[−3\.5, 1\.1\] %/, "a value as its author gave it");
+    assert.match(first.textContent, /The included entries share unit \(%\), definition \(median of runs\), sample level \(process\), method \(method in activity 6\)/);
+    assert.match(second.textContent, /Side by side only: the included entries differ in unit, method; sample level is not given for every entry/);
+    assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "the table is the record as written; nothing is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("the task list and a task read in Chinese; what was written stays as written (T-189)", async () => {
   const page = mount(quietCore({
     task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },
