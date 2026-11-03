@@ -621,8 +621,9 @@ export function CollaborationBoard({
     listConditions(status, owner, projectFilter),
   );
   const [taskReads] = useState(() => new ReadSlot());
-  // Reads a revision: at once, or once the read on its way ends.
+  // Reads a revision: at once, or after the read on its way (catchUpAfter).
   const catchUp = useRef(() => {});
+  const [catchUpAfter, setCatchUpAfter] = useState<number | null>(null);
   const pageRef = useRef(page);
   pageRef.current = page;
   const loadTasks = useCallback(
@@ -668,7 +669,7 @@ export function CollaborationBoard({
         if (taskReads.current(generation)) setError(errorText(error));
       } finally {
         if (taskReads.current(generation)) setLoading(false);
-        if (taskReads.end(generation)) catchUp.current();
+        if (taskReads.end(generation)) setCatchUpAfter(generation);
       }
     },
     [conditions, taskReads],
@@ -714,10 +715,19 @@ export function CollaborationBoard({
     } catch {
       /* A failed background check changes nothing; Refresh is still there. */
     } finally {
-      if (taskReads.end(generation)) catchUp.current();
+      if (taskReads.end(generation)) setCatchUpAfter(generation);
     }
   }, [conditions, loadTasks, taskReads]);
   catchUp.current = () => void checkForChanges();
+  // A revision that came during a read is read once that read's answer is on
+  // the board: after the render that shows it, so what it reads (pageRef: no
+  // page yet, one page or more) is that answer's. Not once the board has
+  // closed, turned to other conditions or started another read.
+  useEffect(() => {
+    if (catchUpAfter === null) return;
+    setCatchUpAfter(null);
+    if (open && !disabled && taskReads.current(catchUpAfter)) catchUp.current();
+  }, [catchUpAfter, open, disabled, taskReads]);
   // Only a Workspace revision is read again: other conditions, opening the
   // board or another tab read for themselves, and once is enough.
   const seenWorkspaceRevision = useRef(workspaceRevision);

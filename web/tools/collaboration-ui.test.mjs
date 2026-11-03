@@ -1611,15 +1611,16 @@ function quietBoard() {
   const held = {};
   const queue = {};
   const counts = {};
-  const state = { holding: new Set(), failList: false, current: task(), messages: [] };
+  // `list`, when set, answers task_list from its request body.
+  const state = { holding: new Set(), failList: false, current: task(), messages: [], list: null };
   const hold = (operation, answer) => new Promise((resolve) => {
     held[operation] = () => resolve(answer);
     (queue[operation] ||= []).push(held[operation]);
   });
-  const page = mount((operation) => {
+  const page = mount((operation, body) => {
     counts[operation] = (counts[operation] || 0) + 1;
     const answer =
-      operation === "task_list" ? (state.failList ? { httpStatus: 503, error: "Core is away" } : { tasks: [state.current], hasMore: false })
+      operation === "task_list" ? (state.failList ? { httpStatus: 503, error: "Core is away" } : state.list ? state.list(body) : { tasks: [state.current], hasMore: false })
       : operation === "task_get" ? { task: state.current, activities: [], executions: [], hasMore: false }
       : operation === "peer_read" ? { messages: state.messages, hasMore: false }
       : operation === "task_update" ? { task: (state.current = task({ version: 2, title: "Preview line links clearly" })) }
@@ -1919,6 +1920,71 @@ test("revisions faster than a slow Messages read: the read on its way answers, o
     await waitFor(() => /The reader's mail answer/.test(shown()) && !refreshButton("Refresh messages").disabled, "the reader's answer");
     await tick(700);
     assert.equal(counts.peer_read, base + 4, "nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// The read after a revision that came during another read sees that read's answer on the board
+// (Lead, before R1): with no page yet it still reads, and after Load more it keeps both pages and
+// only says the list changed, as with more than one page loaded (T-19 F4: CB-04).
+test("a revision while the board's first read is on its way is read once that read shows (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue } = board;
+  const listed = () => page.document.querySelector(".collab-cards, .collab-groups")?.textContent || "";
+  try {
+    state.holding = new Set(["task_list"]);
+    state.current = task({ title: "The first answer" });
+    page.render({ revision: 0 });
+    await waitFor(() => counts.task_list === 1, "the first read");
+    page.render({ revision: 1 });
+    await tick(700);
+    assert.equal(counts.task_list, 1, "no other read while the first is on its way");
+    state.holding = new Set();
+    state.current = task({ title: "The revision's answer" });
+    queue.task_list.shift()();
+    await waitFor(() => /The revision's answer/.test(listed()), "the revision is read once the first read shows");
+    assert.equal(counts.task_list, 2);
+    await tick(700);
+    assert.equal(counts.task_list, 2, "and nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a revision while Load more is on its way keeps both pages and only says the list changed (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue } = board;
+  const listed = () => page.document.querySelector(".collab-cards, .collab-groups")?.textContent || "";
+  const first = task({ id: "T-1", title: "A task on the first page" });
+  const second = task({ id: "T-2", title: "A task on the second page" });
+  state.list = (body) =>
+    body.afterSeq !== undefined ? { tasks: [second], hasMore: false, nextAfterSeq: null }
+    : body.limit === 200 ? { tasks: [first, { ...second, version: 2 }], hasMore: false }
+    : { tasks: [first], hasMore: true, nextAfterSeq: 7 };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => /A task on the first page/.test(listed()) && button(page, "Load more tasks"), "the first page");
+    const base = counts.task_list;
+    state.holding = new Set(["task_list"]);
+    click(page, "Load more tasks");
+    await waitFor(() => counts.task_list === base + 1, "the second page's read");
+    page.render({ revision: 1 });
+    await tick(700);
+    assert.equal(counts.task_list, base + 1, "no other read while the second page is on its way");
+    state.holding = new Set();
+    queue.task_list.shift()();
+    await waitFor(() => /A task on the second page/.test(listed()), "the second page shows");
+    await waitFor(() => counts.task_list === base + 2, "then the revision is read");
+    const read = page.calls.filter((call) => call.operation === "task_list").at(-1).body;
+    assert.equal(read.limit, 200, "as with more than one page: Core's first 200, compared");
+    assert.equal(read.afterSeq, undefined);
+    await waitFor(() => page.document.querySelector(".collab-outdated"), "the list says it changed");
+    assert.ok(/A task on the first page/.test(listed()) && /A task on the second page/.test(listed()), "both pages are kept");
+    await tick(700);
+    assert.equal(counts.task_list, base + 2, "and nothing more is read");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
