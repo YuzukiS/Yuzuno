@@ -28,18 +28,19 @@ type Ghost = { layer: HTMLElement; scrolls: [HTMLElement, number, number][] };
  * changes the dialog. componentWillUnmount takes it for a dialog mounted as
  * `{open && …}`, removed while open. Put it first in the dialog's Root, with
  * the Root's `open`: React unmounts children in order, so this runs before
- * the dialog's nodes are removed.
+ * the dialog's nodes are removed. `confirm` (Modal's) is read as it was just
+ * before the close: such a copy only fades.
  */
-export class DialogExitGhost extends Component<{ open: boolean; parts: Parts }> {
-  getSnapshotBeforeUpdate(previous: Readonly<{ open: boolean }>): Ghost | null {
-    return previous.open && !this.props.open ? capture(this.props.parts) : null;
+export class DialogExitGhost extends Component<{ open: boolean; confirm?: boolean; parts: Parts }> {
+  getSnapshotBeforeUpdate(previous: Readonly<{ open: boolean; confirm?: boolean }>): Ghost | null {
+    return previous.open && !this.props.open ? capture(this.props.parts, !!previous.confirm) : null;
   }
   componentDidUpdate(_props: unknown, _state: unknown, ghost?: Ghost | null) {
     if (ghost) play(ghost);
   }
   componentWillUnmount() {
     if (!this.props.open) return;
-    const ghost = capture(this.props.parts);
+    const ghost = capture(this.props.parts, !!this.props.confirm);
     if (ghost) play(ghost);
   }
   render() {
@@ -47,7 +48,7 @@ export class DialogExitGhost extends Component<{ open: boolean; parts: Parts }> 
   }
 }
 
-function capture(parts: Parts): Ghost | null {
+function capture(parts: Parts, confirm: boolean): Ghost | null {
   // Without the Web Animations API (jsdom) nothing would play; with reduced
   // motion the dialog simply goes.
   if (typeof Element.prototype.animate !== "function") return null;
@@ -60,6 +61,7 @@ function capture(parts: Parts): Ghost | null {
   layer.className = "dialog-exit-ghost";
   layer.setAttribute("aria-hidden", "true");
   layer.setAttribute("inert", "");
+  if (confirm) layer.dataset.confirm = "";
   const scrolls: Ghost["scrolls"] = [];
   for (const node of nodes) {
     const copy = node.cloneNode(true) as HTMLElement;

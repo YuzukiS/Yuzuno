@@ -190,18 +190,21 @@ export function Modal({
 }) {
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
-  // As it was when it opened: a change while open (Agent actions → Delete)
-  // would restart its entrance.
-  const [shown, setShown] = useState({ open, confirm });
-  if (shown.open !== open) setShown({ open, confirm });
+  // Its entrance as it opened, kept until it has gone: a change while open
+  // (Agent actions → Delete) would restart it, and one as it closes (the
+  // confirmation's mode cleared) would change its animation, which Radix
+  // waits for as an exit before it lets go of focus and the page. Its copy
+  // fades or moves as the dialog was just before it closed.
+  const [entrance, setEntrance] = useState({ open, confirm });
+  if (entrance.open !== open) setEntrance({ open, confirm: open ? confirm : entrance.confirm });
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <DialogExitGhost open={open} parts={[overlay, box]} />
+      <DialogExitGhost open={open} confirm={confirm} parts={[overlay, box]} />
       <Dialog.Portal>
         <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content
           ref={box}
-          className={`modal ${wide ? "modal-wide" : ""} ${shown.confirm ? "modal-confirm" : ""} ${className}`.trim()}
+          className={`modal ${wide ? "modal-wide" : ""} ${entrance.confirm ? "modal-confirm" : ""} ${className}`.trim()}
           onCloseAutoFocus={onCloseAutoFocus}
           lang={lang}
         >

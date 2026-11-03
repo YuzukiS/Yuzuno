@@ -2170,7 +2170,8 @@ p {
 .dialog-exit-ghost > .modal {
   animation: dialog-out var(--motion-exit-medium) var(--ease-exit) forwards;
 }
-.dialog-exit-ghost > .modal.modal-confirm {
+/* As the dialog was just before it closed, whatever entrance it had. */
+.dialog-exit-ghost[data-confirm] > .modal {
   animation-name: dialog-fade-out;
 }
 .dialog-exit-ghost > .modal * {
