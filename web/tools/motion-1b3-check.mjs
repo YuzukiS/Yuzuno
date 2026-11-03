@@ -169,7 +169,8 @@ for (const run of runs) {
         await page.waitForTimeout(700);
         const frames = await page.evaluate(() => window.__frames);
         report.frames[`${tag}: phone dock jump`] = frames;
-        report.focus[`${tag}: a Turn reached from the phone's dock`] = await describe(page);
+        // Not compared with the 1a build (its phone dock had no landing): asserted on the target itself below.
+        report.phoneFocus = { ...report.phoneFocus, [`${tag}: a Turn reached from the phone's dock`]: await describe(page) };
         const first = frames.find((f) => f.settled);
         ok(`${tag}: a Turn reached from the phone's turn dock is the landing${reduced ? " (a still tint)" : " (settle-tint)"} with focus on it, and the dock is gone at once with nothing left marked`,
           !!first && first.t <= 50 && first.focusOnTarget && (reduced ? first.animation === "none" && !/rgba\(0, 0, 0, 0\)|transparent/.test(first.tint || "transparent") : first.animation === "settle-tint") &&
