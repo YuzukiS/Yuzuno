@@ -18,14 +18,16 @@ export const LARGE_METRICS = 6;
  * - `block`: a chart or Metrics, drawn by its own renderer, small.
  * - `table`: its rows and columns, of which a card shows the first few
  *   (more on a large card), with how many there are.
- * - `image`: one image attachment, fitted whole.
+ * - `image`: one image attachment, fitted whole: its snapshot when Core keeps
+ *   one (`kept`, taken at `takenAt`), else only named, as referenced, with
+ *   nothing to load.
  * - `desk`: a research desk's question and how many claims and plots it
  *   has; no claim, whose strength and conditions it would leave behind.
  */
 export type CardFigure =
   | { kind: "block"; id: string }
   | { kind: "table"; id: string; title: string; columns: { key: string; label: string }[]; rows: { id: string; cells: Record<string, unknown> }[]; totalRows: number; totalColumns: number }
-  | { kind: "image"; id: string; name: string; caption: string | null }
+  | { kind: "image"; id: string; name: string; caption: string | null; kept: boolean; takenAt: string | null }
   | { kind: "desk"; id: string; title: string; claims: number; plots: number };
 
 /**
@@ -70,7 +72,8 @@ export function figureOf(section: Section, id: string): CardFigure | null {
     const name = text(items[0]?.name);
     const file = section.attachments?.find((attachment) => attachment.name === name);
     if (items.length !== 1 || file?.kind !== "image") return null;
-    return { kind: "image", id, name, caption: text(items[0].caption) || file.caption || null };
+    // A referenced image (not kept: too large, or never copied) has no snapshot to ask Core for (AttachmentView.tsx).
+    return { kind: "image", id, name, caption: text(items[0].caption) || file.caption || null, kept: file.snapshot === true, takenAt: file.takenAt ?? null };
   }
   if (node.type === "ResearchDesk") {
     const count = (value: unknown) => (Array.isArray(value) ? value.length : 0);

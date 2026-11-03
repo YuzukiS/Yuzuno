@@ -241,6 +241,25 @@
     min-height: 260px;
   }
 }
+/* An image the card can't show (Lead 3275): referenced, not kept; or kept and not loaded. Said in its frame,
+   which keeps its size; the caption and Open report stay. */
+.home-card-figure-unavailable {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 100%;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.home-card-figure-unavailable span {
+  color: var(--ink);
+}
 .home-card-frame-body img {
   display: block;
   width: 100%;

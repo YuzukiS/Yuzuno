@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Eye, LoaderCircle, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
+import { ArrowRight, Eye, Image as ImageIcon, LoaderCircle, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
@@ -7,6 +7,7 @@ import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
 import { attachmentUrl, type ChartProps } from "./brief/brief-catalog";
 import { BriefContext } from "./brief/BriefContext";
+import { briefText } from "./brief/brief-text";
 import { CardChart, type ChartKind } from "./brief/Charts";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
@@ -441,6 +442,10 @@ function BigNumbers({ items }: { items: Metric[] }) {
  */
 function FigureFrame({ section, projectId, figure, large }: { section: Section; projectId: string; figure: CardFigure; large: boolean }) {
   const t = useStrings(cardText);
+  const words = useStrings(briefText);
+  // The image this frame failed to load, by version, name and snapshot: another one in its place loads again (R2, Lead 3275).
+  const [unloaded, setUnloaded] = useState<string | null>(null);
+  const shot = figure.kind === "image" ? `${section.version}:${figure.name}:${figure.takenAt ?? ""}` : null;
   const shape = large ? LARGE_TABLE_PREVIEW : TABLE_PREVIEW;
   const table = figure.kind === "table" ? { columns: figure.columns.slice(0, shape.columns), rows: figure.rows.slice(0, shape.rows) } : null;
   const metrics = large ? metricsOf(section, figure) : null;
@@ -473,7 +478,27 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
             </tbody>
           </table>
         ) : figure.kind === "image" ? (
-          <img src={attachmentUrl(projectId, section.key, figure.name, section.version)} alt={figure.caption ?? figure.name} />
+          // As its report page says them (AttachmentView.tsx): a referenced image is named, never asked for;
+          // a kept one that could not be loaded says so.
+          !figure.kept ? (
+            <p className="home-card-figure-unavailable">
+              <ImageIcon size={16} aria-hidden="true" />
+              <span>{words.referenced} · {figure.name}</span>
+              <small>{words.notKept}</small>
+            </p>
+          ) : unloaded === shot ? (
+            <p className="home-card-figure-unavailable" role="status">
+              <ImageIcon size={16} aria-hidden="true" />
+              <span>{words.imageNotLoaded}</span>
+            </p>
+          ) : (
+            <img
+              key={shot}
+              src={attachmentUrl(projectId, section.key, figure.name, section.version)}
+              alt={figure.caption ?? figure.name}
+              onError={() => setUnloaded(shot)}
+            />
+          )
         ) : figure.kind === "desk" ? (
           <p className="home-card-desk">
             <strong>{figure.title}</strong>
