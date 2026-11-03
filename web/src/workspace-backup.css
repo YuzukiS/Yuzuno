@@ -33,9 +33,19 @@
   color: var(--danger, #b42318);
 }
 .workspace-backup-operation {
+  position: relative;
   padding: 8px 10px;
   border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
   border-radius: 6px;
+}
+/* While it runs, a segment moves along the bottom, inside the padding, where
+   it takes no room. */
+.workspace-backup-operation > .step-moving {
+  position: absolute;
+  right: 10px;
+  bottom: 3px;
+  left: 10px;
+  height: 2px;
 }
 .workspace-backup-operation[data-state="succeeded"] {
   border-color: var(--success, #2e7d32);

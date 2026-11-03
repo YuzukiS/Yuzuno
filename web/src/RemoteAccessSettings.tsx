@@ -559,6 +559,7 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   {operationSteps.map((step, index) => (
                     <li key={step} data-state={index < stepIndex ? "done" : index === stepIndex ? "running" : "pending"}>
                       {labels.operation[step]}
+                      {index === stepIndex && <span className="step-moving" aria-hidden="true" />}
                     </li>
                   ))}
                 </ol>
