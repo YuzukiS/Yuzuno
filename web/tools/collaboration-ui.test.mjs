@@ -1604,102 +1604,118 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
 // off for it, and an error stays until an answer replaces it (CB-04, TD-01,
 // MS-01); a Refresh the reader asks for still shows. A save of the open task
 // does not play its entrance again (CB-13), and the list that takes over as
-// cards become rows, or rows cards, fades in (CB-09).
-test("a Workspace revision reloads the board, an open task and Messages quietly; the reader's own Refresh still shows (T-19 1c)", async () => {
+// cards become rows fades in (CB-09). One test per row, each failing alone on
+// the board before this batch.
+function quietBoard() {
   const held = {};
-  let failList = false;
-  const hold = (operation, answer) => new Promise((resolve) => { held[operation] = () => resolve(answer); });
   const counts = {};
-  let holding = new Set();
-  let current = task();
+  const state = { holding: new Set(), failList: false, current: task() };
+  const hold = (operation, answer) => new Promise((resolve) => { held[operation] = () => resolve(answer); });
   const page = mount((operation) => {
     counts[operation] = (counts[operation] || 0) + 1;
-    if (operation === "task_list") {
-      const answer = failList ? { httpStatus: 503, error: "Core is away" } : { tasks: [current], hasMore: false };
-      return holding.has(operation) ? hold(operation, answer) : answer;
-    }
-    if (operation === "task_get") {
-      const answer = { task: current, activities: [], executions: [], hasMore: false };
-      return holding.has(operation) ? hold(operation, answer) : answer;
-    }
-    if (operation === "peer_read") {
-      const answer = { messages: [], hasMore: false };
-      return holding.has(operation) ? hold(operation, answer) : answer;
-    }
-    if (operation === "task_update") return { task: (current = task({ version: 2, title: "Preview line links clearly" })) };
-    if (operation === "workspaces") return { taskId: "T-1", repositories: [], workspaces: [] };
-    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [] };
-    if (operation === "delivery_get") return { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } };
-    if (operation === "peers_list") return { peers: [] };
-    if (operation.startsWith("pr-reviews")) return { reviews: [], hasMore: false, nextBefore: null };
-    if (operation.startsWith("pr-operations")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
-    return {};
+    const answer =
+      operation === "task_list" ? (state.failList ? { httpStatus: 503, error: "Core is away" } : { tasks: [state.current], hasMore: false })
+      : operation === "task_get" ? { task: state.current, activities: [], executions: [], hasMore: false }
+      : operation === "peer_read" ? { messages: [], hasMore: false }
+      : operation === "task_update" ? { task: (state.current = task({ version: 2, title: "Preview line links clearly" })) }
+      : operation === "workspaces" ? { taskId: "T-1", repositories: [], workspaces: [] }
+      : operation === "github_links" || operation === "github_refresh" ? { links: [], repositories: [] }
+      : operation === "delivery_get" ? { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } }
+      : operation === "peers_list" ? { peers: [] }
+      : operation.startsWith("pr-reviews") ? { reviews: [], hasMore: false, nextBefore: null }
+      : operation.startsWith("pr-operations") ? { operations: [], repositories: [], hasMore: false, nextBefore: null }
+      : {};
+    return state.holding.has(operation) ? hold(operation, answer) : answer;
   });
   const refreshButton = (label) => page.document.querySelector(`[aria-label="${label}"]`);
-  const shows = (label) => {
-    const node = refreshButton(label);
-    return { disabled: node.disabled, spins: !!node.querySelector("svg.spin") };
+  const shows = (label) => ({ disabled: refreshButton(label).disabled, spins: !!refreshButton(label).querySelector("svg.spin") });
+  // A revision, held in flight: what the Refresh labelled `label` shows meanwhile.
+  const duringRevision = async (operation, revision, label) => {
+    state.holding = new Set([operation]);
+    const before = counts[operation] || 0;
+    page.render({ revision });
+    await waitFor(() => (counts[operation] || 0) > before, `${operation} again for revision ${revision}`);
+    const seen = shows(label);
+    held[operation]();
+    state.holding = new Set();
+    await tick();
+    return seen;
   };
+  const openTask = async () => {
+    page.document.querySelector(".collab-task-card").click();
+    await waitFor(() => refreshButton("Refresh task details") && !refreshButton("Refresh task details").disabled, "the task opens");
+  };
+  return { page, held, counts, state, refreshButton, shows, duringRevision, openTask };
+}
+
+test("a Workspace revision reloads the board's list quietly; an error stays until an answer replaces it, and the reader's own Refresh still shows (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, refreshButton, shows, held } = board;
   const errorShown = () => /Core is away/.test(page.document.body.textContent);
   try {
     page.render({ revision: 0 });
     await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
-
-    // The board: a revision's reload, held in flight, shows nothing.
-    holding = new Set(["task_list"]);
-    const lists = counts.task_list;
-    page.render({ revision: 1 });
-    await waitFor(() => counts.task_list > lists, "the board reloads for the revision");
-    assert.deepEqual(shows("Refresh tasks"), { disabled: false, spins: false }, "the board's Refresh during a revision's reload");
-    held.task_list();
-    await tick();
-
-    // An error stays through a revision's reload that is still on its way, and goes once one answers.
-    holding = new Set();
-    failList = true;
+    assert.deepEqual(await board.duringRevision("task_list", 1, "Refresh tasks"), { disabled: false, spins: false }, "the board's Refresh during a revision's reload");
+    state.failList = true;
     refreshButton("Refresh tasks").click();
     await waitFor(errorShown, "the reader's Refresh fails");
-    holding = new Set(["task_list"]);
-    failList = false;
-    const again = counts.task_list;
+    state.failList = false;
+    state.holding = new Set(["task_list"]);
+    const before = board.counts.task_list;
     page.render({ revision: 2 });
-    await waitFor(() => counts.task_list > again, "a revision reloads again");
+    await waitFor(() => board.counts.task_list > before, "a revision reloads again");
     assert.ok(errorShown(), "the error stays while the reload is on its way");
     assert.deepEqual(shows("Refresh tasks"), { disabled: false, spins: false });
     held.task_list();
+    state.holding = new Set();
     await waitFor(() => !errorShown(), "the answer replaces the error");
-
-    // The reader's own Refresh still spins and turns off until it answers.
-    holding = new Set(["task_list"]);
+    state.holding = new Set(["task_list"]);
     refreshButton("Refresh tasks").click();
     await tick();
     assert.deepEqual(shows("Refresh tasks"), { disabled: true, spins: true }, "the reader's Refresh shows");
     held.task_list();
     await waitFor(() => !refreshButton("Refresh tasks").disabled, "it ends");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
 
-    // A task opens: cards become rows, and the rows fade in (CB-09).
-    holding = new Set();
-    page.document.querySelector(".collab-task-card").click();
-    await waitFor(() => page.document.querySelector('[aria-label="Refresh task details"]'), "the task opens");
-    const rows = page.document.querySelector(".collab-groups");
-    assert.ok(rows?.classList.contains("collab-list-flip"), "the rows that take over fade in");
-    rows.dispatchEvent(new page.window.Event("animationend", { bubbles: true }));
-    await tick();
-    assert.ok(!page.document.querySelector(".collab-groups").classList.contains("collab-list-flip"), "and are done once that ends");
+test("a Workspace revision reloads an open task quietly (T-19 TD-01)", async () => {
+  const board = quietBoard();
+  try {
+    board.page.render({ revision: 0 });
+    await waitFor(() => board.page.document.querySelector(".collab-task-card"), "the board's list");
+    await board.openTask();
+    assert.deepEqual(await board.duringRevision("task_get", 1, "Refresh task details"), { disabled: false, spins: false }, "the task's Refresh during a revision's reload");
+    assert.deepEqual(board.page.errors, []);
+  } finally {
+    board.page.close();
+  }
+});
 
-    // The open task: a revision's reload shows nothing (TD-01).
-    holding = new Set(["task_get"]);
-    const reads = counts.task_get;
-    page.render({ revision: 3 });
-    await waitFor(() => counts.task_get > reads, "the open task reloads for the revision");
-    assert.deepEqual(shows("Refresh task details"), { disabled: false, spins: false }, "the task's Refresh during a revision's reload");
-    held.task_get();
-    await tick();
+test("a Workspace revision reloads Messages quietly (T-19 MS-01)", async () => {
+  const board = quietBoard();
+  try {
+    board.page.render({ revision: 0 });
+    await waitFor(() => board.page.document.querySelector(".collab-task-card"), "the board's list");
+    click(board.page, "Messages");
+    await waitFor(() => board.refreshButton("Refresh messages") && !board.refreshButton("Refresh messages").disabled, "Messages read");
+    assert.deepEqual(await board.duringRevision("peer_read", 1, "Refresh messages"), { disabled: false, spins: false }, "Messages' Refresh during a revision's reload");
+    assert.deepEqual(board.page.errors, []);
+  } finally {
+    board.page.close();
+  }
+});
 
-    // A save of the open task leaves its entry as it was (CB-13).
-    holding = new Set();
-    const layout = page.document.getElementById("collab-tasks");
-    const entry = layout.dataset.entry;
+test("a save of the open task leaves its pane's entry as it was (T-19 CB-13)", async () => {
+  const board = quietBoard();
+  const { page } = board;
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    await board.openTask();
+    const entry = page.document.getElementById("collab-tasks").dataset.entry;
     click(page, "Edit task");
     await tick();
     await value(page, field(page, "Task title"), "Preview line links clearly");
@@ -1707,17 +1723,26 @@ test("a Workspace revision reloads the board, an open task and Messages quietly;
     await waitFor(() => page.calls.some((call) => call.operation === "task_update"), "the save");
     await tick(100);
     assert.equal(page.document.getElementById("collab-tasks").dataset.entry, entry, "the open pane's entry is unchanged by its save");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
 
-    // Messages: a revision's reload shows nothing (MS-01).
-    click(page, "Messages");
-    await waitFor(() => refreshButton("Refresh messages") && !refreshButton("Refresh messages").disabled, "Messages read");
-    holding = new Set(["peer_read"]);
-    const mail = counts.peer_read;
-    page.render({ revision: 4 });
-    await waitFor(() => counts.peer_read > mail, "Messages reload for the revision");
-    assert.deepEqual(shows("Refresh messages"), { disabled: false, spins: false }, "Messages' Refresh during a revision's reload");
-    held.peer_read();
+test("as a task opens, the rows that take over from the cards fade in, and are done once that ends (T-19 CB-09)", async () => {
+  const board = quietBoard();
+  const { page } = board;
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-cards"), "the board's cards");
+    assert.ok(!page.document.querySelector(".collab-cards").classList.contains("collab-list-flip"), "the first list shown does not fade");
+    await board.openTask();
+    const rows = page.document.querySelector(".collab-groups");
+    assert.ok(rows?.classList.contains("collab-list-flip"), "the rows that take over fade in");
+    // jsdom has no AnimationEvent, so React listens for the prefixed name there; a browser sends animationend.
+    for (const type of ["animationend", "webkitAnimationEnd"]) rows.dispatchEvent(new page.window.Event(type, { bubbles: true }));
     await tick();
+    assert.ok(!page.document.querySelector(".collab-groups").classList.contains("collab-list-flip"), "and are done once that ends");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
