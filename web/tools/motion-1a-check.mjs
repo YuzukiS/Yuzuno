@@ -481,7 +481,8 @@ for (const run of runs) {
       // The quiet labels read at 4.5:1 at rest, hovered, focused from the keyboard and pressed, in every
       // palette and theme. Each state is made for real (pointer, keyboard), and left without a click.
       const kinds = [["nav", ".toolbar-nav .catchup-nav:not(.selected)"], ["Copy turn", ".turn-divider .copy-button"],
-        ["Copy reply", ".reply-actions .copy-button"], ["Send to Agent", ".reply-actions .send-to-agent-button"]];
+        ["Copy reply", ".reply-actions .copy-button"], ["Send to Agent", ".reply-actions .send-to-agent-button"],
+        ["secondary button", ".secondary-button:not(:disabled)"]];
       report.stateContrast = [];
       for (const palette of ["garden", "graphite", "pine", "sunroom", "yuzu"])
         for (const theme of ["light", "dark"]) {

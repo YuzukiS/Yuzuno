@@ -3,8 +3,8 @@
 // synthetic Workspace that is never written to. An Agent's action menu
 // comes from its button once placed; closed by Escape, a press or a choice
 // it stays on screen for its way out, inert, hidden and clicked through,
-// with focus back on its button at once; Tab, a scroll or a resize close it
-// at once. A phone dock opened or closed by the reader rises or fades; one
+// while focus goes at once where it went before this batch; Tab, a scroll or
+// a resize close it at once. A phone dock opened or closed by the reader rises or fades; one
 // that comes back as the keyboard goes does not move. A toast rises in; set
 // again with the same text it shows for its full time; replaced, it leaves
 // through a hidden copy. Under reduced motion nothing moves and no copy is
@@ -103,7 +103,7 @@ function pageHelpers() {
     const open = menus.find((m) => !m.classList.contains("is-leaving"));
     const leaving = menus.find((m) => m.classList.contains("is-leaving"));
     return {
-      open: !!open, leaving: !!leaving,
+      open: !!open, leaving: !!leaving, focusInLeaving: !!leaving?.contains(document.activeElement),
       leavingHidden: leaving ? leaving.getAttribute("aria-hidden") === "true" && leaving.inert && getComputedStyle(leaving).pointerEvents === "none" && !leaving.querySelector("[role], [id]") && !leaving.hasAttribute("role") : null,
       leavingAnimation: leaving ? leaving.getAnimations().map((a) => `${a.animationName}:${a.effect.getTiming().duration}`) : [],
     };
@@ -183,8 +183,9 @@ for (const run of runs) {
       report.focus[`${tag}: Agent menu closed with Escape`] = frames[0]?.focus;
       const first = frames[0] || {};
       const leavingFrames = frames.filter((f) => f.leaving);
-      ok(`${tag}: in the first frame after Escape the menu takes no keys or taps and focus is back on its button`,
-        !first.open && /agent-actions-button/.test(first.focus || ""), first);
+      // Where focus goes is compared with the build before this batch below; here, that it is out of the copy at once.
+      ok(`${tag}: in the first frame after Escape the menu is closed and focus is not in its copy`,
+        first.open === false && !first.focusInLeaving, first);
       if (reduced) ok(`${tag}: no leaving menu under reduced motion`, leavingFrames.length === 0, leavingFrames.length);
       else {
         ok(`${tag}: the menu leaves through a copy that is aria-hidden, inert, clicked through and has no role or id, over exit-small`,
@@ -233,15 +234,17 @@ for (const run of runs) {
         const last = out.at(-1)?.t ?? Infinity;
         ok(`${tag}: the closed dock is gone within 400 ms (last seen at ${last} ms)`, last <= 400 && !frames.at(-1).panelShown, last);
       }
-      // Open again, the keyboard comes and goes (keyboard-viewport.ts sets data-keyboard): no way in on its return.
+      // Open again; the keyboard comes and goes. With it up, phone-docks.css hides the open panel
+      // (display: none); keyboard-viewport.ts sets that from the real viewport and focus, so here the same
+      // display: none is put on and taken off directly. The panel back on screen has no way in.
       await button.tap();
       await page.waitForTimeout(400);
       const back = await page.evaluate(async () => {
-        const root = document.documentElement;
-        root.dataset.keyboard = "";
+        const style = document.head.appendChild(document.createElement("style"));
+        style.textContent = ".conversation-body > :is(.work-dock, .turn-dock, .phone-dock-scrim) { display: none !important; }";
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         const hidden = !window.__dock().panelShown;
-        delete root.dataset.keyboard;
+        style.remove();
         await new Promise((r) => requestAnimationFrame(r));
         return { hidden, ...window.__dock() };
       });
