@@ -26,7 +26,8 @@
 //! entries share; Yuzuno never computes a difference.
 //!
 //! A formal result (slice 3) may cite this task's records under a criterion,
-//! each fixed as it read when the result was submitted. A cited claim's status
+//! each by a citation summary fixed when the result was submitted; the text,
+//! method and sources stay with the record. A cited claim's status
 //! is its author's scientific judgement; the criterion's reported status is
 //! the result author's against the fixed acceptance, and neither is derived
 //! from the other.
@@ -607,8 +608,10 @@ pub(crate) fn desk_source(db: &Connection, reference: &str, seq: i64) -> Result<
 }
 
 /// A result criterion's research record (T-17): one of this task's own
-/// records by its activity, fixed as it reads now, when the result is
-/// submitted. A later version never changes which version a result cites.
+/// records by its activity, as a citation summary fixed when the result is
+/// submitted: its type, id, title, status or counts, version, author and
+/// time. Its text, method and sources are not copied. A later version never
+/// changes which version a result cites.
 pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &Value) -> Result<Value> {
     ensure!(reference.is_object(), "invalid_input: a criterion's research record is an object");
     allowed(reference, &["activitySeq"])?;
