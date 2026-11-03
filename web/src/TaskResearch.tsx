@@ -86,12 +86,12 @@ const text = strings({
     [`${counts.included} included`, `${counts.excluded} excluded`, `${counts.missing} missing`, `${counts.not_done} not done`].join(" · "),
   methodActivity: (seq: number) => `method in activity ${seq}`,
   // Each part of an entry as its author gave it; a missing part is said, never made up.
-  n: (n: number) => `n = ${n}`,
+  n: (n: string) => `n = ${n}`,
   levelMissing: "sample level not given",
   lowMissing: "low not given",
   highMissing: "high not given",
   noValue: "No value given",
-  inexact: "≈: this page cannot show integers past 2^53 exactly; Core keeps the value as written.",
+  inexact: "≈: past JavaScript's safe integer range, the value shown may have been rounded; Core keeps the value it parsed.",
   unit: (unit: string) => `unit ${unit}`,
   field: { theory: "Theory", systems: "Systems", ml: "ML", robotics: "Robotics", other: "Other" } as Record<string, string>,
   status: {
@@ -163,7 +163,7 @@ const text = strings({
   lowMissing: "下限未给",
   highMissing: "上限未给",
   noValue: "未给数值",
-  inexact: "≈：本页面无法精确显示超过 2^53 的整数；Core 按原样保存该数值。",
+  inexact: "≈：超出 JavaScript 安全整数范围，显示值可能已舍入；Core 保留它解析的数值。",
   unit: (unit) => `单位 ${unit}`,
   field: { theory: "理论", systems: "系统", ml: "ML", robotics: "机器人", other: "其他" },
   status: { supported: "得到支持", conditional: "在条件下成立", unsupported: "不支持", open: "未定" },
@@ -215,8 +215,10 @@ const text = strings({
 });
 
 const short = (sha: string) => sha.slice(0, 12);
-/** Past 2^53 a browser cannot hold every integer exactly: Core keeps the
- * number as written, but this page has only the nearest one it can hold. */
+/** Past JavaScript's safe integers (2^53 − 1) a browser cannot hold every
+ * integer exactly: Core keeps the number it parsed, but this page has only
+ * the nearest one it can hold, which may be rounded. One check for value,
+ * low, high and n alike. */
 const inexact = (n: number) => Number.isInteger(n) && !Number.isSafeInteger(n);
 /** A number as its author gave it, with a true minus sign; marked ≈ when
  * this page cannot show it exactly. */
@@ -268,10 +270,10 @@ function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; co
               entry.unit && <span className="task-research-value">{t.noValue} · {t.unit(entry.unit)}</span>
             )}
             {(entry.level || entry.n !== undefined || entry.definition || entry.method) && (
-              <span className="task-research-identity">
+              <span className="task-research-identity" title={entry.n !== undefined && inexact(entry.n) ? t.inexact : undefined}>
                 {[
                   entry.level ?? (entry.n !== undefined && t.levelMissing),
-                  entry.n !== undefined && t.n(entry.n),
+                  entry.n !== undefined && t.n(figure(entry.n)),
                   entry.definition,
                   entry.method && t.methodActivity(entry.method.activitySeq),
                 ]
