@@ -27,6 +27,8 @@ export function useAgentDetail(workspaceId: string, agentId: string | null) {
   const [missing, setMissing] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [error, setError] = useState<unknown>(null);
+  // Renders again when streamed changes applied nothing new (see DetailSync `quiet`).
+  const [, setQuiet] = useState(0);
   const [sync] = useState(
     () =>
       new DetailSync({
@@ -50,6 +52,7 @@ export function useAgentDetail(workspaceId: string, agentId: string | null) {
         },
         publish: setDetail,
         error: setError,
+        quiet: () => setQuiet((n) => n + 1),
       }),
   );
   useEffect(() => {

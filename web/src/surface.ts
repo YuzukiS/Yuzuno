@@ -65,3 +65,58 @@ export function useSurfaceIn(
     return () => query.removeEventListener("change", change);
   }, []);
 }
+
+/**
+ * What arrives while its view is open fades in, once each (T-19 M9; CV:Q-01, a
+ * request card arriving in its conversation). Opacity only, so nothing in it
+ * moves under the pointer and it works from its first frame. `arrivals` names
+ * what has arrived since the view opened; each fades the first time it is
+ * named, found by `find` after the commit. Under reduced motion, or without
+ * the Web Animations API, nothing plays; a fade under way stops, fully shown,
+ * when `enabled` turns off or reduced motion turns on, and none plays again.
+ */
+export function useArrivalsIn(
+  arrivals: readonly string[],
+  find: (key: string) => HTMLElement | null,
+  duration: "micro" | "small" | "medium",
+  enabled = true,
+) {
+  const fades = useRef(new Map<string, Animation>());
+  const named = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    for (const key of arrivals) {
+      if (named.current.has(key)) continue;
+      named.current.add(key);
+      const element = find(key);
+      if (!enabled || !element || typeof element.animate !== "function") continue;
+      if (window.matchMedia?.(REDUCED).matches) continue;
+      const ms = tokenMs(`--motion-${duration}`);
+      if (!ms) continue;
+      const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
+      const fade = element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing });
+      fades.current.set(key, fade);
+      const forget = () => {
+        if (fades.current.get(key) === fade) fades.current.delete(key);
+      };
+      fade.finished.then(forget, forget);
+    }
+    // `find` and `duration` only say how the next one plays.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrivals.join("\n"), enabled]);
+  useLayoutEffect(() => {
+    if (enabled) return;
+    for (const fade of fades.current.values()) fade.cancel();
+    fades.current.clear();
+  }, [enabled]);
+  useEffect(() => {
+    const query = window.matchMedia?.(REDUCED);
+    if (!query?.addEventListener) return;
+    const change = () => {
+      if (!query.matches) return;
+      for (const fade of fades.current.values()) fade.cancel();
+      fades.current.clear();
+    };
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+}
