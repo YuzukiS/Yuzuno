@@ -120,3 +120,52 @@ export function useArrivalsIn(
     return () => query.removeEventListener("change", change);
   }, []);
 }
+
+/**
+ * An inline panel the user opened (a confirm, a preview) reveals (T-19 M9):
+ * as it mounts, the box it is in opens from nothing to its height and fades
+ * in over small, pushing what is below down; it is brought into view first
+ * (nearest, at once) if it would not be. `ref` is that box, a `.reveal` with
+ * the panel inside: only its height and opacity move, and the panel keeps
+ * its own padding and margins, so nothing in it moves as it opens. A newer
+ * `key` reveals the panel shown then; a falsy one, or no panel, reveals
+ * nothing. What it holds is clipped only while it opens. Under reduced
+ * motion, or without the Web Animations API, it is there at once; reduced
+ * motion turned on meanwhile shows it whole.
+ */
+export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
+  const reveal = useRef<Animation | null>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!key || !element) return;
+    element.scrollIntoView?.({ block: "nearest" });
+    if (typeof element.animate !== "function" || window.matchMedia?.(REDUCED).matches) return;
+    const ms = tokenMs("--motion-small");
+    if (!ms) return;
+    const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
+    const open = { height: `${element.getBoundingClientRect().height}px`, opacity: 1 };
+    const shut = { height: "0px", opacity: 0 };
+    const overflow = element.style.overflow;
+    element.style.overflow = "hidden";
+    const played = element.animate([shut, open], { duration: ms, easing });
+    reveal.current = played;
+    const done = () => {
+      element.style.overflow = overflow;
+      if (reveal.current === played) reveal.current = null;
+    };
+    played.addEventListener("finish", done);
+    played.addEventListener("cancel", done);
+    return () => played.cancel();
+    // `ref` is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  useEffect(() => {
+    const query = window.matchMedia?.(REDUCED);
+    if (!query?.addEventListener) return;
+    const change = () => {
+      if (query.matches) reveal.current?.cancel();
+    };
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+}
