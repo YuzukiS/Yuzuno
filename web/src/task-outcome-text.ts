@@ -107,7 +107,7 @@ export const outcomeText = strings(
     // Research records a criterion cites (T-17).
     records: "Research records",
     recordsNote:
-      "Each record is cited as it read when this result was submitted. A claim's support is its record author's judgement; this item's status is the result author's report against the acceptance. Neither is derived from the other.",
+      "Each record is cited by the summary shown here, fixed when this result was submitted; its full text, method and sources stay with the record. A claim's support is its record author's judgement; this item's status is the result author's report against the acceptance. Neither is derived from the other.",
     recordType: {
       method: "Method",
       claim: "Claim",
@@ -228,7 +228,7 @@ export const outcomeText = strings(
     evidenceCount: (n) => `${n} 个产物引用`,
     records: "研究记录",
     recordsNote:
-      "每条记录按本结果提交时的样子引用。主张的支持程度是记录作者的判断；这一项的状态是结果作者对照验收的报告。两者互不推导。",
+      "每条记录引用的是这里显示的摘要，在本结果提交时固定；全文、方法和来源仍在记录本身。主张的支持程度是记录作者的判断；这一项的状态是结果作者对照验收的报告。两者互不推导。",
     recordType: { method: "方法", claim: "主张", observation: "观察", comparison: "比较" },
     recordLine: (seq, version) => `活动 ${seq} · ${version ? `第 ${version} 版` : "版本数未计出"}`,
     recordBy: (name) => `作者 ${name}`,

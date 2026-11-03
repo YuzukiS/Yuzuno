@@ -4,7 +4,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 const MAX_BYTES: usize = 32_768;
-const NOTE: &str = "Criteria, remaining work and the suggested next Agent are the result author's report. Artifact states compare this result's references with retained Job attempt checks only; no file was read again and current availability is unknown. A recorded match checks identity and structure, not criterion satisfaction, independent verification or acceptance. Task status and result acknowledgment do not establish acceptance. A cited research record is fixed as it read when the result was submitted; its status is its own author's scientific judgement, kept apart from the criterion's reported status against the fixed acceptance, and neither is derived from the other.";
+const NOTE: &str = "Criteria, remaining work and the suggested next Agent are the result author's report. Artifact states compare this result's references with retained Job attempt checks only; no file was read again and current availability is unknown. A recorded match checks identity and structure, not criterion satisfaction, independent verification or acceptance. Task status and result acknowledgment do not establish acceptance. A cited research record keeps a citation summary fixed when the result was submitted: its type, id, title, status or comparison counts, version, author and time. Its text, method and sources are not copied; they are read through the record's activity. Its status is its own author's scientific judgement, kept apart from the criterion's reported status against the fixed acceptance, and neither is derived from the other.";
 
 pub(super) fn schema() -> Value {
     let text = |max| json!({"type":"string","maxLength":max});
@@ -15,7 +15,7 @@ pub(super) fn schema() -> Value {
     let record = json!({"type":"object","additionalProperties":false,
         "properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"]});
     json!({"type":"object","additionalProperties":false,
-        "description":"Optional author report, at most 32768 UTF-8 bytes, 20 criteria, 40 artifact references and 40 research records in total. References must match checked artifacts of this task's exact Job attempt. records name this task's own research records (task_comment research) by activity; each is fixed as it reads at submission. Reported criterion status is the result author's judgement against the fixed acceptance, not independent verification or acceptance, and is never derived from a cited claim's status: a negative finding can meet a criterion that asks a question. nextAgentId is a suggestion, never assignment or mail.",
+        "description":"Optional author report, at most 32768 UTF-8 bytes both as sent and as stored, once each cited record's summary and the next Agent are filled in; 20 criteria, 40 artifact references and 40 research records in total. References must match checked artifacts of this task's exact Job attempt. records name this task's own research records (task_comment research) by activity; each keeps a citation summary fixed at submission (type, id, title, status or counts, version, author, time), not a copy of its text, method or sources. Reported criterion status is the result author's judgement against the fixed acceptance, not independent verification or acceptance, and is never derived from a cited claim's status: a negative finding can meet a criterion that asks a question. nextAgentId is a suggestion, never assignment or mail.",
         "properties":{"criteria":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,
             "properties":{"id":text(128),"label":text(300),"report":text(4000),
                 "reportedStatus":{"type":"string","enum":["met","not_met","unknown"]},
@@ -119,6 +119,13 @@ pub(super) fn validate(
         let id = required_text(input, "nextAgentId", 128)?;
         value["nextAgent"] = serde_json::to_value(agent_actor(store, db, &id)?)?;
     }
+    // What is stored is bounded, not only what was sent: the cited records'
+    // summaries and the next Agent are filled in above (T-17).
+    let stored = serde_json::to_vec(&value)?.len();
+    ensure!(
+        stored <= MAX_BYTES,
+        "invalid_input: outcome exceeds 32768 bytes as stored, once its cited research records and next Agent are filled in ({stored} bytes); cite fewer records or shorten the text"
+    );
     Ok(Some(value))
 }
 

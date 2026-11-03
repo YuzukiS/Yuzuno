@@ -510,6 +510,7 @@ test("a criterion's research records show as cited, their support apart from the
     expect(second, [
       "Author reports a gap",
       "Research records",
+      "Each record is cited by the summary shown here, fixed when this result was submitted; its full text, method and sources stay with the record.",
       "Neither is derived from the other.",
       "Claim",
       "Touch targets are large enough at 390 px",
@@ -533,6 +534,7 @@ test("a criterion's research records show as cited, their support apart from the
     await until(() => second.textContent.includes("研究记录"), "Chinese");
     expect(second, [
       "作者报告有缺项",
+      "每条记录引用的是这里显示的摘要，在本结果提交时固定；全文、方法和来源仍在记录本身。",
       "两者互不推导",
       "主张",
       "活动 12 · 第 1 版 · 作者 Mina",
