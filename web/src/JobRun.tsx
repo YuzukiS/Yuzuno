@@ -25,6 +25,12 @@ export type Artifact = {
 export type Cost = {
   knownUsd: number;
   unknownEntries: number;
+  /** One attempt's readable entries; 0 with nothing unreadable: it recorded none. */
+  entries?: number;
+  /** A run's total (T-17): attempts that reported, recorded none, or an unknown amount. */
+  attemptsReporting?: number;
+  attemptsNotRecorded?: number;
+  attemptsWithUnknown?: number;
   invalidLines?: number;
   incompleteLines?: number;
   truncated?: boolean;
@@ -162,7 +168,7 @@ const text = strings({
   cancelAt: (key: string) => `Cancel run at ${key}`,
   recordedCost: "Recorded cost",
   softLimit: (limit: string) => ` · soft limit ${limit}`,
-  costNote: "Cost is what each attempt recorded, failed ones included; calls in flight or never recorded are missing, and unknown is not zero.",
+  costNote: "Cost is what each attempt recorded, failed ones included; an attempt that recorded none is said apart, calls in flight are missing, and unknown is not zero.",
   retryStage: "Retry stage",
   cancelRun: "Cancel run",
   awaiting: "Awaiting analysis",
@@ -260,7 +266,7 @@ const text = strings({
   cancelAt: (key) => `在 ${key} 处取消运行`,
   recordedCost: "记录的成本",
   softLimit: (limit) => ` · 软上限 ${limit}`,
-  costNote: "成本是每次尝试记录的数值，包括失败的尝试；进行中或从未记录的调用不在其中，未知并不等于零。",
+  costNote: "成本是每次尝试记录的数值，包括失败的尝试；没有记录的尝试单独说明，进行中的调用不在其中，未知并不等于零。",
   retryStage: "重试阶段",
   cancelRun: "取消运行",
   awaiting: "等待分析",
@@ -329,9 +335,18 @@ export function costText(cost?: Cost | null, language: Language = "en") {
   const t = text(language);
   if (!cost) return t.noCost;
   const unknown = (cost.unknownEntries || 0) + (cost.invalidLines || 0) + (cost.incompleteLines || 0);
+  // As job_cost reads a task (T-17): an attempt's empty usage file, or a run
+  // none of whose attempts reported or left an unknown amount, recorded none;
+  // an entry of $0 is a known $0. An older Core's run total has no counts.
+  const run = typeof cost.attemptsNotRecorded === "number";
+  const none = run
+    ? cost.attemptsReporting === 0 && !cost.attemptsWithUnknown
+    : cost.entries === 0 && unknown === 0 && !cost.truncated;
   return [
-    usd(cost.knownUsd || 0),
+    none ? t.noCost : usd(cost.knownUsd || 0),
     unknown > 0 && t.unknownCost(unknown),
+    run && !none && (cost.attemptsWithUnknown || 0) > 0 && t.unknownAmount(cost.attemptsWithUnknown || 0),
+    run && !none && (cost.attemptsNotRecorded || 0) > 0 && t.notRecorded(cost.attemptsNotRecorded || 0),
     cost.truncated && t.truncated,
     (cost.attemptsRunning || 0) > 0 && t.stillRunning,
   ]

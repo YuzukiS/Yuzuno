@@ -143,6 +143,10 @@ host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
 files = {'missing': None, 'empty': '', 'blank': '  \n\t\n\n', 'zero': '{"usd": 0, "source": "synthetic"}\n',
          'unknown': '{"source": "synthetic"}\n', 'unreadable': 'not json\n', 'paid': '{"usd": 1.5, "source": "synthetic"}\n'}
+# Longer than the host reads: blank to its limit, or a paid line and then a
+# tail past it, where more paid lines could be.
+files['truncated'] = ' ' * (host.USAGE_LIMIT + 1)
+files['cut'] = '{"usd": 0.25, "source": "synthetic"}\n' + ' ' * host.USAGE_LIMIT
 summaries = {}
 for name, text in files.items():
     folder = Path(sys.argv[2]) / name
@@ -289,4 +293,95 @@ fn past_five_thousand_runs_the_spend_says_its_run_counts_are_partial() {
         "the newest 5000 runs are read, and the read says its run counts are partial");
     assert_eq!((past["usd"]["complete"].clone(), past["limit"].clone()), (json!(true), json!(5000)),
         "every attempt was read: only the run counts are partial");
+}
+
+/// A run whose stages each finished with the usage summary the host wrote for
+/// one file of `usage_summaries()` (`None`: no file at all), one at a time.
+fn run_with_usage(s: &Store, request: &str, files: &[(&str, Option<Value>)]) -> Value {
+    let keys: Vec<&str> = files.iter().map(|(key, _)| *key).collect();
+    let run = create(s, request, json!(keys.iter().map(|key| stage(key, &[])).collect::<Vec<_>>()));
+    for _ in files {
+        let job = start(s);
+        let key = job["run"]["stage"].as_str().unwrap().to_owned();
+        let mut extra = json!({"artifacts":[artifact(&format!("{key}.json"), "aaa")]});
+        if let Some(cost) = files.iter().find(|(k, _)| *k == key).unwrap().1.clone() {
+            extra["cost"] = cost;
+        }
+        assert!(finish(s, &job, "succeeded", json!({"Result":"success","ExecMainStatus":"0"}), extra), "{key}");
+    }
+    s.run(run["id"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn a_runs_cost_reads_usage_as_a_tasks_does_and_its_known_amount_and_limit_are_unchanged() {
+    let (_dir, s) = setup();
+    let u = usage_summaries();
+    let file = |name: &str| Some(u[name].clone());
+    let run = run_with_usage(&s, "mixed", &[
+        ("missing", None), ("empty", file("empty")), ("blank", file("blank")), ("zero", file("zero")),
+        ("unknown", file("unknown")), ("unreadable", file("unreadable")), ("paid", file("paid")),
+        ("uncounted", Some(json!({"knownUsd":0,"complete":true}))),
+    ]);
+    let cost = &run["cost"];
+    assert_eq!((cost["knownUsd"].clone(), cost["attemptsReporting"].clone(), cost["attemptsNotRecorded"].clone(),
+        cost["attemptsWithUnknown"].clone(), cost["unknownEntries"].clone(), cost["invalidLines"].clone(),
+        cost["attemptsRunning"].clone(), cost["complete"].clone()),
+        (json!(1.5), json!(3), json!(3), json!(3), json!(1), json!(1), json!(0), json!(false)),
+        "missing, empty and blank recorded none; zero, unknown and paid reported; unknown, unreadable and uncounted are unknown");
+    assert!(cost["scope"].as_str().unwrap().contains("recorded none"));
+    let told = told(&s, &run);
+    assert!(told.contains("Recorded cost $1.5000 plus 2 entries of unknown cost, incomplete: 3 attempts with an unknown amount, 3 attempts recorded none."),
+        "{told}");
+    // On their own: an entry of $0 is a complete known $0; an empty file is none.
+    let zero = run_with_usage(&s, "zero", &[("zero", file("zero"))]);
+    assert_eq!((zero["cost"]["knownUsd"].clone(), zero["cost"]["attemptsReporting"].clone(), zero["cost"]["complete"].clone()),
+        (json!(0.0), json!(1), json!(true)));
+    let empty = run_with_usage(&s, "empty", &[("empty", file("empty"))]);
+    assert_eq!((empty["cost"]["attemptsReporting"].clone(), empty["cost"]["attemptsNotRecorded"].clone(), empty["cost"]["complete"].clone()),
+        (json!(0), json!(1), json!(false)));
+    assert!(mail(&s).iter().any(|m| m["body"].as_str().unwrap_or("").contains("No usage was recorded.")));
+}
+
+/// The completion mail of `run`: its body ("Run NAME (ID) STATUS: …"; a
+/// stage's own mail says "Run NAME (ID), stage …").
+fn told(s: &Store, run: &Value) -> String {
+    let id = format!("({}) ", run["id"].as_str().unwrap());
+    let found: Vec<String> = mail(s).iter().filter_map(|m| m["body"].as_str()).filter(|body| body.contains(&id)).map(str::to_owned).collect();
+    assert_eq!(found.len(), 1, "one completion mail for {id}: {found:?}");
+    found[0].clone()
+}
+
+#[test]
+fn a_runs_completion_mail_names_why_its_cost_is_partial_as_its_cost_does() {
+    let (_dir, s) = setup();
+    let u = usage_summaries();
+    let file = |name: &str| Some(u[name].clone());
+    // The host's own summary of a file longer than it reads, blank to there:
+    // no entry read, nothing unknown or unreadable, yet not complete.
+    assert_eq!(u["truncated"], json!({"entries":0,"knownUsd":0.0,"unknownEntries":0,"invalidLines":0,"incompleteLines":0,
+        "truncated":true,"sources":[],"complete":false}));
+    assert_eq!((u["cut"]["entries"].clone(), u["cut"]["knownUsd"].clone(), u["cut"]["truncated"].clone(), u["cut"]["complete"].clone()),
+        (json!(1), json!(0.25), json!(true), json!(false)));
+    for (request, files, partial, says) in [
+        ("uncounted", vec![("uncounted", Some(json!({"knownUsd":0,"complete":true})))], true,
+            "Recorded cost $0.0000, incomplete: 1 attempt with an unknown amount."),
+        ("truncated", vec![("truncated", file("truncated"))], true,
+            "Recorded cost $0.0000, incomplete: 1 attempt with an unknown amount, a usage file too long to read whole."),
+        ("cut", vec![("cut", file("cut"))], true,
+            "Recorded cost $0.2500, incomplete: 1 attempt with an unknown amount, a usage file too long to read whole."),
+        // Kept: a known $0 is complete, an empty file recorded none.
+        ("zero", vec![("zero", file("zero"))], false, "Recorded cost $0.0000. Task"),
+        ("empty", vec![("empty", file("empty"))], true, "No usage was recorded. Task"),
+        ("both", vec![("paid", file("paid")), ("empty", file("empty"))], true,
+            "Recorded cost $1.5000, incomplete: 1 attempt recorded none."),
+    ] {
+        let run = run_with_usage(&s, request, &files);
+        assert_eq!(run["cost"]["complete"], json!(!partial), "{request}: {}", run["cost"]);
+        let told = told(&s, &run);
+        assert!(told.contains(says), "{request}: {told}");
+        // What makes the cost partial is in the mail, never a bare amount.
+        if partial && !says.starts_with("No usage") {
+            assert!(told.contains(", incomplete: "), "{request}: {told}");
+        }
+    }
 }

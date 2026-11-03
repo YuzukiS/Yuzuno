@@ -86,6 +86,40 @@ test('a waiting stage is live, says what it waits for, and names its stage and a
   } finally { p.close(); }
 });
 
+test("a run's cost and an attempt's say what recorded none, and a known $0 stays $0 (T-17)", async () => {
+  // A run's total as Core now gives it, and an attempt's own usage summary
+  // as the host writes it, read in a fresh panel each.
+  const shownFor = async (total, attemptCost) => {
+    const current = { ...run, cost: total };
+    const detail = { ...failed, result: { ...failed.result, cost: attemptCost } };
+    const p = mount(url => url === '/api/jobs/job-2' ? detail : url === '/api/jobs/runs/run-1' ? current : page([waiting, failed]));
+    const shown = () => [p.doc.querySelector('.job-run dd')?.textContent,
+      [...p.doc.querySelectorAll('.job-detail dd')].find(d => d.previousElementSibling?.textContent === 'Recorded cost')?.textContent];
+    try {
+      await open(p);
+      await until(() => row(p, '· api'));
+      row(p, '· api').click();
+      await until(() => shown()[0] && shown()[1]);
+      assert.deepEqual(p.errors, []);
+      return [...shown(), p.doc.querySelector('.job-run').textContent];
+    } finally { p.close(); }
+  };
+  const summary = (entries) => ({ entries, knownUsd: 0, unknownEntries: 0, invalidLines: 0, incompleteLines: 0, truncated: false, complete: true });
+  // Some attempts reported, some recorded none, some an unknown amount; this
+  // attempt's file was empty.
+  const [mixed, empty, card] = await shownFor({ knownUsd: 1.5, unknownEntries: 1, invalidLines: 1, attemptsReporting: 3, attemptsNotRecorded: 3,
+    attemptsWithUnknown: 3, attemptsRunning: 0, truncated: false, complete: false }, summary(0));
+  assert.equal(mixed, '$1.50 · plus 2 of unknown cost · 3 with an unknown amount · 3 attempts recorded none · soft limit $12.00');
+  assert.equal(empty, 'None recorded');
+  assert.match(card, /an attempt that recorded none is said apart/);
+  // None of the run's attempts reported: none recorded, not $0. This
+  // attempt's entry says $0: a known $0.
+  const [none, zero] = await shownFor({ knownUsd: 0, unknownEntries: 0, invalidLines: 0, attemptsReporting: 0, attemptsNotRecorded: 2,
+    attemptsWithUnknown: 0, attemptsRunning: 0, truncated: false, complete: false }, summary(1));
+  assert.equal(none, 'None recorded · soft limit $12.00');
+  assert.equal(zero, '$0.0000');
+});
+
 test('a failed attempt shows its run, verified and rejected artifacts and recorded cost, and retries the stage once', async () => {
   let current = run;
   const p = mount((url, body) => {
