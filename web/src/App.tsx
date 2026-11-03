@@ -764,7 +764,8 @@ export function App() {
   }
   const inspectorBox = useRef<HTMLElement>(null);
   const inspectorTitle = useRef<HTMLSpanElement>(null);
-  useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && panelOpens.current.rails > 0, "translateX(-8px)");
+  // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
+  useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
   useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
   // On a phone the context panel is a screen of its own: opening it takes focus to its heading
   // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
