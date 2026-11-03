@@ -138,6 +138,8 @@ const summaryBody = (lead, extra, summary) => ({ root: "body", elements: {
 // small; 4 a table again with no size, as a summary kept from before sizes (its figure's: wide). The refresh step
 // reads 2 and 3 while Home stays open; the widget step reads 3 and 4 on a card pinned to the widgets.
 let batchesVersion = 1;
+// The batches written again under its key, another section (Home's id 52), for the widget step.
+let batchesId = 32;
 // Home's read failing on purpose, for the widget step.
 let homeFails = false;
 const batchesSize = () => (batchesVersion < 3 ? { size: "wide" } : batchesVersion === 3 ? { size: "small" } : {});
@@ -158,7 +160,7 @@ const deck = () => [
   // An Ask: it always takes its row, at its own height (Dev 7's v12, 2396), and Organize does not list it.
   section("pages", 35, 1, { kind: "ask", title: "Rows per export page", body: markdown("The export page will show its table in pages."),
     ask: { question: "How many rows should one export page show?", reply: { options: [{ id: "50", label: "50 rows" }, { id: "100", label: "100 rows" }], freeText: true }, state: "open" } }),
-  section("batches", 32, batchesVersion, { title: "Why batches were dropped", body: summaryBody(
+  section("batches", batchesId, batchesVersion, { title: "Why batches were dropped", body: summaryBody(
     `All three batches stay under the ${batchesVersion === 1 ? 5 : 6}% stop line; duplicates are the largest cause.`,
     { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ. Dates and amounts were checked against the synthetic ledger alone, regions were not checked at all, and every other cause is counted together under other, so its share says nothing about any one of them." } },
       ...batchesFigure() },
@@ -844,7 +846,7 @@ try {
     }
   });
 
-  await step("only a card pinned to the widgets takes the user's size: none on the deck's cards, old choices ignored; a pinned card starts at its Agent's size, keeps the user's through newer versions, never writes it back, and follows the version it shows when given back to the Agent (T-18, Lead 2457, 2473)", async () => {
+  await step("only a card pinned to the widgets takes the user's size: none on the deck's cards, old choices ignored; a pinned card is its summary card, follows its Agent until the user chooses, keeps that through newer versions, never writes it back; unpinned and pinned again, or its section written again, it follows its Agent; a pin with no summary is shown in full (T-18, Lead 2457, 2473; Dev 7's v19)", async () => {
     await open(1720, 1100);
     // Choices an earlier build kept for the deck's cards: no longer read, never over the author's size.
     await page.evaluate((ws) => localStorage.setItem(`yuzuno.homeCardSizes.${ws}`, JSON.stringify({ "p1:30": "large", "p1:32": "small", "p1:31": "small" })), WS);
@@ -853,76 +855,143 @@ try {
     const writes = report.writes.length;
     const deckSize = (key) => card(key).evaluate((el) => `${el.dataset.cardSize} ${el.dataset.sizeSource}`);
     assert.deepEqual([await deckSize("audit"), await deckSize("batches"), await deckSize("screens")], ["wide author", "wide author", "large author"]);
-    // A deck card's More actions offer Pin and Copy report, no size.
-    await card("batches").locator(".home-summary-more > button").click();
-    const more = card("batches").locator(".home-summary-more-list");
-    assert.equal(await more.locator(".home-size-choice").count(), 0);
-    // Pin it: the widget starts at its Agent's size.
-    await more.getByRole("button", { name: /Pin/ }).click();
-    await page.keyboard.press("Escape");
-    const widget = page.locator('.home-widget-slot[data-widget^="pin:p1:32:"]');
-    await widget.waitFor();
-    assert.equal(await widget.getAttribute("data-widget-size"), "wide");
-    // Organize lists it with its source and the choice; Machines has none to choose.
+    const pinFromDeck = async (key) => {
+      await card(key).locator(".home-summary-more > button").click();
+      const more = card(key).locator(".home-summary-more-list");
+      assert.equal(await more.locator(".home-size-choice").count(), 0, "a deck card offers no size");
+      await more.getByRole("button", { name: /^Pin “/ }).click();
+      await page.keyboard.press("Escape");
+    };
+    // Pinned, the batches is its summary card on the widgets, at its Agent's size; Machines takes its own row.
+    await pinFromDeck("batches");
+    const slot = page.locator('.home-widget-slot[data-widget^="pin:p1:32:"]');
+    await slot.waitFor();
+    const pinned = slot.locator(".home-summary-card[data-pin-widget]");
+    assert.equal(await slot.getAttribute("data-widget-size"), "wide");
+    assert.equal(await pinned.getAttribute("data-section-key"), null, "the card in its project stays the one found by key");
+    const machines = await page.evaluate(() => {
+      const grid = document.querySelector(".home-widget-grid"), m = document.querySelector('.home-widget-slot[data-widget="machines"]');
+      return { full: Math.abs(m.getBoundingClientRect().width - grid.getBoundingClientRect().width) <= 1, columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length };
+    });
+    assert.deepEqual(machines, { full: true, columns: 4 }, JSON.stringify(machines));
+    // Organize Home lists the widgets: Machines built in, the pin with its source and the choice.
     await page.locator(".home-widget-organize").click();
     const dialog = page.locator(".home-organize");
-    const row = dialog.locator('.home-organize-list li[data-widget^="pin:p1:32:"]');
-    await row.waitFor();
-    assert.equal(await row.locator(".home-size-source").innerText(), "Agent's size: Wide 1×2");
-    assert.equal(await dialog.locator('.home-organize-list li[data-widget="machines"] .home-size-choice').count(), 0);
-    assert.deepEqual(await row.locator(".home-size-options label").allInnerTexts(), ["Agent", "Small", "Wide", "Large"]);
-    const inks = await contrast([".home-organize-list :is(.home-size-source, .home-size-options label)", ".home-organize .home-widget-sizes-note"]);
+    const row = (prefix) => dialog.locator(`.home-organize-list li[data-widget^="${prefix}"]`);
+    await row("pin:p1:32:").waitFor();
+    assert.equal(await page.locator('[role="dialog"] h2').first().innerText(), "Organize Home");
+    assert.equal(await row("machines").locator(".home-size-source").innerText(), "Built in: the whole row, as tall as its content");
+    assert.equal(await row("machines").locator(".home-size-choice").count(), 0);
+    assert.equal(await row("pin:p1:32:").locator(".home-size-source").innerText(), "Follow Agent: Wide 1×2");
+    assert.deepEqual(await row("pin:p1:32:").locator(".home-size-options label").allInnerTexts(), ["Follow Agent", "Small", "Wide", "Large"]);
+    const inks = await contrast([".home-organize :is(.home-size-source, .home-size-options label, .home-widget-sizes-note, .home-widget-name)"]);
     assert.deepEqual(Object.entries(inks).filter(([, v]) => v.ratio < 4.5), [], JSON.stringify(inks));
-    // Large, by the keyboard: from Agent, three steps on.
-    await row.locator('input[value="auto"]').focus();
+    // Large, by the keyboard: from Follow Agent, three steps on.
+    await row("pin:p1:32:").locator('input[value="auto"]').focus();
     for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
-    assert.equal(await row.locator("input:checked").getAttribute("value"), "large");
-    assert.equal(await row.locator(".home-size-source").innerText(), "You set Large 2×2");
+    assert.equal(await row("pin:p1:32:").locator("input:checked").getAttribute("value"), "large");
+    assert.equal(await row("pin:p1:32:").locator(".home-size-source").innerText(), "You set Large 2×2 · the card stays Wide 1×2");
+    const reset = dialog.locator(".home-size-reset");
+    assert.equal(await reset.isDisabled(), false);
+    const resetInk = await contrast([".home-organize .home-size-reset"]);
+    assert.deepEqual(Object.values(resetInk).filter((v) => v.ratio < 4.5), [], JSON.stringify(resetInk));
     await shot("organize-widget-size.png");
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(await widget.getAttribute("data-widget-size"), "large");
+    assert.equal(await slot.getAttribute("data-widget-size"), "large");
+    await slot.scrollIntoViewIfNeeded();
+    await shot("widgets-1720-pinned-large.png");
     // Never written back: the card on the deck keeps its author's size, and nothing is sent to Core.
     assert.equal(await deckSize("batches"), "wide author");
     const layout = () => page.evaluate((ws) => JSON.parse(localStorage.getItem(`yuzuno.homeWidgets.${ws}`)), WS);
-    assert.equal((await layout()).pins.find((p) => p.key === "batches").size, "large");
+    const pinOf = async (key) => (await layout()).pins.find((p) => p.key === key);
+    assert.equal((await pinOf("batches")).size, "large");
     assert.equal(report.writes.length, writes, "a widget's size writes nothing to Core");
-    // A newer version whose author names it small: the widget keeps the user's size, and shows that version.
-    batchesVersion = 3;
+    const widgetMore = () => slot.locator(".home-summary-more > button");
+    const widgetMenu = () => slot.locator(".home-summary-more-list");
+    const menuRows = () => widgetMenu().locator(".home-size-options label").evaluateAll((labels) => labels.map((l) => l.innerText.replace(/\s+/g, " ").trim()));
     try {
+      // A newer version whose Agent names it small: the widget keeps the user's size, and shows that version.
+      batchesVersion = 3;
       await page.reload();
       await toHome();
-      assert.deepEqual([await widget.getAttribute("data-widget-size"), await deckSize("batches")], ["large", "small author"]);
-      assert.ok((await widget.locator(".home-pinned-body dd").count()) > 0, "the Metrics of version 3");
-      // Given back to the Agent from the widget's own menu: the size of the version it shows, the focus kept.
-      const sizeButton = widget.locator(".home-pinned-size > button");
-      await sizeButton.click();
-      const menu = widget.locator(".home-pinned-size-list");
-      assert.deepEqual(await menu.locator(".home-size-options label").evaluateAll((labels) => labels.map((l) => l.innerText.replace(/\s+/g, " ").trim())),
-        ["Agent Small 1×1", "Small 1×1", "Wide 1×2", "Large 2×2 You set"]);
-      await menu.locator('input[value="auto"]').check();
-      assert.equal(await widget.getAttribute("data-widget-size"), "small");
-      assert.equal(await menu.locator('input[value="auto"]').evaluate((input) => input === document.activeElement), true, "the focus stays on the choice");
+      assert.deepEqual([await slot.getAttribute("data-widget-size"), await deckSize("batches")], ["large", "small author"]);
+      assert.equal(await pinned.getAttribute("data-section-version"), "3");
+      // Its own menu: the size first, then Unpin and Copy report.
+      await widgetMore().click();
+      assert.equal(await widgetMenu().locator("legend").innerText(), "SIZE OF THIS WIDGET");
+      assert.deepEqual(await menuRows(), ["Follow Agent Small 1×1", "Small 1×1", "Wide 1×2", "Large 2×2 You set"]);
+      assert.deepEqual(await widgetMenu().locator(":scope > button, :scope > .copy-button").allInnerTexts().then((t) => t.map((x) => x.trim())), ["Unpin", "Copy report"]);
+      await shot("widget-menu.png");
+      // Given back to its Agent: the size of the version it shows, the focus kept on the choice.
+      await widgetMenu().locator('input[value="auto"]').check();
+      assert.equal(await slot.getAttribute("data-widget-size"), "small");
+      assert.equal(await widgetMenu().locator('input[value="auto"]').evaluate((input) => input === document.activeElement), true, "the focus stays on the choice");
       await page.keyboard.press("Escape");
-      assert.equal(await sizeButton.evaluate((b) => b === document.activeElement), true, "Escape gives the focus back to the button");
-      assert.equal((await layout()).pins.find((p) => p.key === "batches").size, undefined);
-      // Its author's size taken off (a summary kept from before sizes, a table again): the widget follows the version it shows.
+      assert.equal(await widgetMore().evaluate((b) => b === document.activeElement), true, "Escape gives the focus back to its button");
+      assert.equal((await pinOf("batches")).size, undefined);
+      // Its Agent's size taken off (a summary kept from before sizes, a table again): the widget follows the version it shows.
       batchesVersion = 4;
       await page.reload();
       await toHome();
-      assert.deepEqual([await widget.getAttribute("data-widget-size"), await deckSize("batches")], ["wide", "wide content"]);
-      assert.equal(await widget.locator(".home-pinned-body table").count() > 0, true, "the table of version 4");
-      // Home's next read fails: the widget says it is not current and keeps the size of what it shows.
+      assert.deepEqual([await slot.getAttribute("data-widget-size"), await deckSize("batches"), await pinned.getAttribute("data-section-version")], ["wide", "wide content", "4"]);
+      // Home's next read fails: the widget says it may not be current and keeps what it shows, the focus where it was.
       homeFails = true;
-      await sizeButton.focus();
-      await until("the failed read said", async () => (await widget.locator(".home-pinned-note").count()) > 0, 40_000);
-      assert.equal(await widget.getAttribute("data-widget-size"), "wide");
-      assert.equal(await sizeButton.evaluate((b) => b === document.activeElement), true, "the focus stays where it was");
+      await widgetMore().focus();
+      await until("the failed read said", async () => (await pinned.locator(".home-pinned-note").count()) > 0, 40_000);
+      assert.deepEqual([await slot.getAttribute("data-widget-size"), await pinned.getAttribute("data-section-version")], ["wide", "4"]);
+      assert.equal(await widgetMore().evaluate((b) => b === document.activeElement), true, "the focus stays where it was");
       await shot("widget-not-current.png");
+      homeFails = false;
+      batchesVersion = 1;
+      await page.reload();
+      await toHome();
+      // Large again, then unpinned and pinned again: the new pin follows its Agent, nothing kept from the old one.
+      await widgetMore().click();
+      await widgetMenu().locator('input[value="large"]').check();
+      await widgetMenu().getByRole("button", { name: "Unpin" }).click();
+      await slot.waitFor({ state: "detached" });
+      assert.equal(await pinOf("batches"), undefined);
+      await pinFromDeck("batches");
+      await slot.waitFor();
+      assert.equal(await slot.getAttribute("data-widget-size"), "wide");
+      assert.equal((await pinOf("batches")).size, undefined);
+      // Large once more; then the batches written again under its key, another section: the old pin says so, and
+      // pinning the new one starts it at its Agent's size.
+      await widgetMore().click();
+      await widgetMenu().locator('input[value="large"]').check();
+      await page.keyboard.press("Escape");
+      batchesId = 52;
+      await page.reload();
+      await toHome();
+      const old = page.locator('.home-widget-slot[data-widget^="pin:p1:32:"]');
+      assert.equal(await old.locator(".home-pinned[data-pin-state=\"replaced\"]").count(), 1);
+      assert.equal(await old.getAttribute("class").then((c) => c.includes("is-full")), true);
+      await old.locator(".home-pinned-actions .quiet-button").first().click();
+      const renewed = page.locator('.home-widget-slot[data-widget^="pin:p1:52:"]');
+      await renewed.waitFor();
+      assert.equal(await renewed.getAttribute("data-widget-size"), "wide");
+      assert.equal((await pinOf("batches")).size, undefined, "a section written again does not inherit the size");
     } finally {
       batchesVersion = 1;
+      batchesId = 32;
       homeFails = false;
     }
+    // A pin with no summary is shown in full, across the row, with nothing to size.
+    await page.reload();
+    await toHome();
+    await card("setup").scrollIntoViewIfNeeded();
+    await card("setup").locator(".home-summary-more > button").click();
+    await card("setup").locator(".home-summary-more-list").getByRole("button", { name: /^Pin “/ }).click();
+    await page.keyboard.press("Escape");
+    const legacy = page.locator('.home-widget-slot[data-widget^="pin:p1:20:"]');
+    await legacy.waitFor();
+    assert.equal(await legacy.getAttribute("class").then((c) => c.includes("is-full")), true);
+    assert.equal(await legacy.locator(".home-pinned-body").count(), 1, "its whole body, as before");
+    await page.locator(".home-widget-organize").click();
+    assert.equal(await row("pin:p1:20:").locator(".home-size-source").innerText(), "No summary named: shown in full, as before.");
+    assert.equal(await row("pin:p1:20:").locator(".home-size-choice").count(), 0);
+    await page.keyboard.press("Escape");
     assert.equal(report.writes.length, writes);
     // The old choices for the deck are still there, unread; the widget layout is this Workspace's alone.
     assert.ok(await page.evaluate((ws) => localStorage.getItem(`yuzuno.homeCardSizes.${ws}`) !== null, WS));
@@ -930,11 +999,11 @@ try {
   });
 
   for (const [width, height, name] of [[1200, 900, "organize-1200"], [390, 844, "organize-390"]])
-    await step(`Organize my widgets at ${width}: a pinned card's size and its source beside its name; on a phone the choice takes its own row, its four buttons sharing it (T-18)`, async () => {
+    await step(`Organize Home at ${width}: a pinned card's size and its source under its name; on a phone the choice takes its own row, its four buttons sharing it (T-18, Dev 7's v19)`, async () => {
       await open(width, height);
       await toHome();
       await card("audit").locator(".home-summary-more > button").click();
-      await card("audit").locator(".home-summary-more-list").getByRole("button", { name: /Pin/ }).click();
+      await card("audit").locator(".home-summary-more-list").getByRole("button", { name: /^Pin “/ }).click();
       await page.keyboard.press("Escape");
       await page.locator('.home-widget-slot[data-widget^="pin:p1:30:"]').waitFor();
       await page.locator(".home-widget-organize").click();

@@ -17,12 +17,13 @@ import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
-import { PinnedSection } from "./PinnedSection";
+import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
-import { DeckSizes, useHeldSizes } from "./card-sizes";
-import { cardSize, type CardSize } from "./card-preview";
+import { DeckSizes, sizable, useHeldSizes } from "./card-sizes";
+import { cardContent, shownSize, type CardSize } from "./card-preview";
+import { SummaryCard } from "./SummaryCard";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -475,7 +476,7 @@ export function Home({
   const widgetLayout = useWidgetLayout(workspaceId);
   // The sizes the deck's cards are shown at in this visit (T-18).
   const deckSizes = useHeldSizes(readOnly ? "" : workspaceId, visit);
-  const { layout, pin, unpin, resize } = widgetLayout;
+  const { layout, pin, unpin, resize, resetSizes } = widgetLayout;
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
     (projectId: string, section: Section) => {
@@ -504,23 +505,51 @@ export function Home({
     {
       id: "machines",
       name: t.machines,
+      // Built in: the whole row at its content's height, no size to choose (Dev 7's v19).
+      full: "builtin",
       body: <MachineWidget projectName={projectName} readOnly={readOnly} />,
     },
     // The design preview has no pins: its sections are not this workspace's.
-    ...(readOnly || !layout ? [] : layout.pins).map((p) => {
+    ...(readOnly || !layout ? [] : layout.pins).map((p): HomeWidget => {
       const source = resolvePin(p, data, readFailed);
-      // The widget's size: the user's for it, else its Agent's from the version it shows (T-18, Lead 2457, 2473).
-      const own = source.state === "shown" ? cardSize(source.section) : "small";
+      const id = pinWidgetId(p);
+      const name = source.state === "shown" ? source.section.title : p.title;
+      const onResize = (size: CardSize | null) => resize(p, size);
+      // A pinned card with a summary is the same card as in its project, at the size the user gave the widget,
+      // else its Agent's, held for the visit (T-18, Lead 2457, 2473; Dev 7's v19). Nothing is written to the card.
+      if (source.state === "shown" && cardContent(source.section).kind === "named") {
+        const section = source.section;
+        const { size, own } = shownSize(section, cardContent(section), p.size ?? null,
+          sizable(section) ? (computed) => deckSizes.held(p.projectId, section.id!, computed) : undefined);
+        return {
+          id,
+          name,
+          size: { shown: size, own, chosen: p.size ?? null, onChange: onResize },
+          onUnpin: () => unpin(p),
+          body: (
+            <SummaryCard
+              section={section}
+              projectId={p.projectId}
+              workspaceId={workspaceId}
+              agents={byProject.get(p.projectId) || noAgents}
+              readOnly={readOnly}
+              onSeen={(marks) => seen(p.projectId, marks)}
+              widget={{ id, chosen: p.size ?? null, onResize, onUnpin: () => unpin(p) }}
+              notice={<PinNotes source={source} />}
+            />
+          ),
+        };
+      }
+      // Any other pin as before: its whole body, or why it can't show it, across the row (Dev 7's v19).
       return {
-        id: pinWidgetId(p),
-        name: source.state === "shown" ? source.section.title : p.title,
-        size: { shown: p.size ?? own, own, chosen: p.size ?? null, onChange: (size: CardSize | null) => resize(p, size) },
+        id,
+        name,
+        full: "legacy",
         onUnpin: () => unpin(p),
         body: (
           <PinnedSection
             pin={p}
             source={source}
-            size={{ own, chosen: p.size ?? null, onChange: (size) => resize(p, size) }}
             onOpen={() => revealIn(p.projectId, () => document.getElementById(sectionDomId(p.projectId, p.key)))}
             onUnpin={() => unpin(p)}
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
@@ -636,6 +665,7 @@ export function Home({
             widgets={widgets}
             layout={readOnly ? (layout ?? { order: [], hidden: [], pins: [] }) : layout}
             onChange={layout ? widgetLayout.change : undefined}
+            onResetSizes={layout ? resetSizes : undefined}
           />
           <div className="home-main">
             {landed?.kind === "gone" && landedNote(false)}

@@ -79,7 +79,7 @@
   }
 }
 /* A large card's conclusion reads four lines (Dev 7's v12). */
-.home-brief .home-summary-card.size-large .home-summary-lead .brief-markdown {
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-summary-lead .brief-markdown {
   -webkit-line-clamp: 4;
   line-clamp: 4;
 }
@@ -192,45 +192,45 @@
     height: 118px;
   }
 }
-/* On the deck, a figure's frame follows its card's size (Dev 7's v12):
+/* On the deck and the widgets, a figure's frame follows its card's size (Dev 7's v12, v19):
    - wide: beside the text, as tall as the body, 140 px where it stacks;
    - large: the room its rows leave, never under 260 px, 200 px where it stacks.
    Its image is fitted whole into the frame, whatever the frame's height. */
-.home-brief .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body {
+:is(.home-brief, .home-widget-grid) .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body {
   position: relative;
 }
-.home-brief .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body img {
+:is(.home-brief, .home-widget-grid) .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body img {
   position: absolute;
   inset: 8px 10px;
   width: calc(100% - 20px);
   height: calc(100% - 16px);
 }
-.home-brief .home-summary-card.size-wide .home-card-frame-body {
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .home-card-frame-body {
   height: 140px;
 }
-.home-brief .home-summary-card.size-large .home-card-frame,
-.home-brief .home-summary-card.size-large .home-card-frame-body {
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame,
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame-body {
   flex: 1 1 auto;
 }
-.home-brief .home-summary-card.size-large .home-card-frame-body {
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame-body {
   height: auto;
   min-height: 200px;
 }
 @container deck (min-width: 560px) {
-  .home-brief .home-summary-card.size-wide .home-summary-body.has-figure {
+  :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .home-summary-body.has-figure {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
   }
-  .home-brief .home-summary-card.size-wide .has-figure > .home-card-frame,
-  .home-brief .home-summary-card.size-wide .has-figure .home-card-frame-body {
+  :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .has-figure > .home-card-frame,
+  :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .has-figure .home-card-frame-body {
     flex: 1 1 auto;
   }
-  .home-brief .home-summary-card.size-wide .has-figure .home-card-frame-body {
+  :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .has-figure .home-card-frame-body {
     height: auto;
     min-height: 140px;
   }
-  .home-brief .home-summary-card.size-large .home-card-frame-body {
+  :is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame-body {
     min-height: 260px;
   }
 }

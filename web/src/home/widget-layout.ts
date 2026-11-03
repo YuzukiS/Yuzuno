@@ -161,7 +161,12 @@ export function useWidgetLayout(workspaceId: string) {
       })),
     [change],
   );
-  return { layout, change, pin, unpin, resize };
+  /** Every pinned widget given back to its Agent's size. */
+  const resetSizes = useCallback(
+    () => change((current) => ({ ...current, pins: current.pins.map(({ size: _size, ...pin }) => pin) })),
+    [change],
+  );
+  return { layout, change, pin, unpin, resize, resetSizes };
 }
 
 /** What a pin shows now: its section, or why it can't. */

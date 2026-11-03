@@ -10,8 +10,10 @@ import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
-import { cardContent, shownSize, type CardFigure } from "./card-preview";
+import { PinOff } from "lucide-react";
+import { cardContent, shownSize, type CardFigure, type CardSize } from "./card-preview";
 import { DeckSizes, sizable } from "./card-sizes";
+import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
 import { unmaintained } from "./card-summary";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -40,6 +42,7 @@ export const SummaryCard = memo(function SummaryCard({
   agents,
   topic,
   deck = false,
+  widget,
   readOnly,
   onSeen,
   notice,
@@ -52,6 +55,13 @@ export const SummaryCard = memo(function SummaryCard({
   topic?: string;
   /** On the project's deck, where cards have sizes; elsewhere (the team's details) a card keeps its frame. */
   deck?: boolean;
+  /**
+   * Pinned to the user's widgets (T-18, Dev 7's v19): the same card, at the
+   * size the user gave the widget or else its Agent's, with Size and Unpin in
+   * its More actions. Its own element ids, so the card in its project stays
+   * the one found by key.
+   */
+  widget?: { id: string; chosen: CardSize | null; onResize: (size: CardSize | null) => void; onUnpin: () => void };
   readOnly: boolean;
   onSeen: (marks: SeenMark[]) => Promise<void>;
   notice?: React.ReactNode;
@@ -65,9 +75,9 @@ export const SummaryCard = memo(function SummaryCard({
   const sub = topic !== undefined;
   // Only a card on the deck has a size: its author's, as first shown in this visit.
   const sizes = useContext(DeckSizes);
-  const { size, source } = deck
-    ? shownSize(section, content, null, sizes && sizable(section) ? (own) => sizes.held(projectId, section.id!, own) : undefined)
-    : { size: null, source: null };
+  const { size, source, own } = deck || widget
+    ? shownSize(section, content, widget?.chosen ?? null, sizes && sizable(section) ? (computed) => sizes.held(projectId, section.id!, computed) : undefined)
+    : { size: null, source: null, own: null };
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
@@ -76,7 +86,7 @@ export const SummaryCard = memo(function SummaryCard({
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => rememberSeenBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
-  const domId = sectionDomId(projectId, section.key);
+  const domId = widget ? `${widget.id}-card` : sectionDomId(projectId, section.key);
   async function seen() {
     setSeeing(true);
     setError("");
@@ -103,7 +113,8 @@ export const SummaryCard = memo(function SummaryCard({
   return (
     <article
       id={domId}
-      data-section-key={section.key}
+      data-section-key={widget ? undefined : section.key}
+      data-pin-widget={widget?.id}
       data-section-version={section.version}
       data-card-size={size ?? undefined}
       data-size-source={source ?? undefined}
@@ -153,7 +164,7 @@ export const SummaryCard = memo(function SummaryCard({
               {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
             </button>
           )}
-          <MoreActions section={section} projectId={projectId} readOnly={readOnly} />
+          <MoreActions section={section} projectId={projectId} readOnly={readOnly} widget={widget && own ? { ...widget, own } : undefined} />
         </span>
       </header>
       {/* The text, and beside it on a wide card or under it otherwise, the one figure. */}
@@ -218,8 +229,21 @@ export const SummaryCard = memo(function SummaryCard({
   );
 });
 
-/** Pin and Copy report, behind "More actions". */
-function MoreActions({ section, projectId, readOnly }: { section: Section; projectId: string; readOnly: boolean }) {
+/**
+ * Behind "More actions": Pin and Copy report; on a pinned widget, its size
+ * first (Follow Agent, Small, Wide, Large), then Unpin and Copy report.
+ */
+function MoreActions({
+  section,
+  projectId,
+  readOnly,
+  widget,
+}: {
+  section: Section;
+  projectId: string;
+  readOnly: boolean;
+  widget?: { id: string; chosen: CardSize | null; own: CardSize; onResize: (size: CardSize | null) => void; onUnpin: () => void };
+}) {
   const t = useStrings(cardText);
   const language = useLanguage();
   const time = useTimeDisplay();
@@ -264,7 +288,16 @@ function MoreActions({ section, projectId, readOnly }: { section: Section; proje
         <MoreHorizontal size={14} />
       </button>
       <span id={listId} className="home-summary-more-list" role="group" aria-label={t.more} hidden={!open}>
-        {pin && <PinButton section={section} projectId={projectId} />}
+        {widget && (
+          <SizeChoice name={`${widget.id}-size`} legend={t.widgetSizeHeading} value={widget.chosen} own={widget.own} variant="menu" onChange={widget.onResize} />
+        )}
+        {widget ? (
+          <button type="button" className="quiet-button" onClick={widget.onUnpin}>
+            <PinOff size={13} aria-hidden="true" /> {homeText(language).unpinShort}
+          </button>
+        ) : (
+          pin && <PinButton section={section} projectId={projectId} />
+        )}
         {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
       </span>
     </span>
