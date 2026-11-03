@@ -858,9 +858,14 @@ span.brief-ref {
  * width and --image-cap high; without one, a fixed box the picture is
  * fitted into whole. Its frame is the box's, so it shows while the picture
  * loads, and the picture fills it. Its width is a length (--image-room, of
- * the card's body): where its column is as wide as what is in it (low
- * density, beside its words), a percentage would leave the width to the
- * picture again, which is not there until it loads. */
+ * its attachment, which is a container for this): where its column is as
+ * wide as what is in it (low density, beside its words), a percentage would
+ * leave the width to the picture again, which is not there until it loads.
+ * The attachment's width is its grid cell's, two side by side on a wide
+ * card; its preview opens in a portal, outside it. */
+.brief-attachment[data-picture] {
+  container-type: inline-size;
+}
 .brief-attachment[data-picture] .brief-image {
   --image-cap: 420px;
   --image-room: 100cqw;
@@ -1325,7 +1330,7 @@ p.brief-preview-frame {
   margin: 0;
 }
 /* Whole, never cropped: a screenshot keeps its edges at any density. Beside
- * its words, a picture has at most its column's 60%. */
+ * its words, a picture has at most 60% of its attachment, as its column does. */
 .brief-attachments-block[data-density="low"] .brief-attachment[data-picture] .brief-image {
   --image-cap: 200px;
   --image-room: 60cqw;
