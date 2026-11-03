@@ -621,7 +621,7 @@ export function CollaborationBoard({
     listConditions(status, owner, projectFilter),
   );
   const [taskReads] = useState(() => new ReadSlot());
-  // A revision that came during a read, read once that read ends.
+  // Reads a revision: at once, or once the read on its way ends.
   const catchUp = useRef(() => {});
   const pageRef = useRef(page);
   pageRef.current = page;
@@ -718,14 +718,27 @@ export function CollaborationBoard({
     }
   }, [conditions, loadTasks, taskReads]);
   catchUp.current = () => void checkForChanges();
+  // Only a Workspace revision is read again: other conditions, opening the
+  // board or another tab read for themselves, and once is enough.
+  const seenWorkspaceRevision = useRef(workspaceRevision);
+  const revisionDue = useRef(false);
   useEffect(() => {
-    if (!open || disabled) return;
+    if (seenWorkspaceRevision.current !== workspaceRevision) {
+      seenWorkspaceRevision.current = workspaceRevision;
+      revisionDue.current = true;
+    }
+    if (!open || disabled) {
+      revisionDue.current = false;
+      return;
+    }
+    if (!revisionDue.current) return;
     const timer = window.setTimeout(() => {
+      revisionDue.current = false;
       setRevision((n) => n + 1);
-      if (tab === "tasks") void checkForChanges();
+      if (tab === "tasks") catchUp.current();
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [workspaceRevision, open, disabled, tab, checkForChanges]);
+  }, [workspaceRevision, open, disabled, tab]);
   const refresh = () => {
     setRevision((n) => n + 1);
     void loadTasks();
