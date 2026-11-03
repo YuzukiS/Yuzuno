@@ -472,6 +472,10 @@ export function Jobs({
   // list, so it is brought into view (T-19 JB-07).
   const detailBox = useRef<HTMLDivElement>(null);
   const reveal = useRef(false);
+  // The chosen job's own read (T-19 JB-07), apart from the list's: whose it
+  // is, and why it failed. null: under way or done; "": the list read failed
+  // first, so this one did not happen; text: it failed, and says why.
+  const [detailRead, setDetailRead] = useState<{ id: string; failure: string | null } | null>(null);
   const [detail, setDetail] = useState<Job | null>(null);
   const [log, setLog] = useState<Log | null>(null);
   const [error, setError] = useState("");
@@ -544,18 +548,30 @@ export function Jobs({
           setBudget(capacity);
           setBudgetRefusal("");
         }
-        if (selected) {
-          const [job, output] = await Promise.all([
-            api<Job>(`/jobs/${selected}`),
-            api<Log>(`/jobs/${selected}/logs`),
-          ]);
-          if (stamp === generation.current) {
-            setDetail(job);
-            setLog(output);
-          }
+      } catch (e) {
+        if (stamp === generation.current) {
+          setError(errorText(e));
+          if (selected)
+            setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: "" }));
+        }
+        return;
+      }
+      if (!selected) return;
+      // A failure already shown for this job stays until its read succeeds.
+      if (stamp === generation.current)
+        setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
+      try {
+        const [job, output] = await Promise.all([
+          api<Job>(`/jobs/${selected}`),
+          api<Log>(`/jobs/${selected}/logs`),
+        ]);
+        if (stamp === generation.current) {
+          setDetail(job);
+          setLog(output);
+          setDetailRead({ id: selected, failure: null });
         }
       } catch (e) {
-        if (stamp === generation.current) setError(errorText(e));
+        if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
       }
     },
     [scope, selected],
@@ -616,11 +632,14 @@ export function Jobs({
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     detailBox.current?.scrollIntoView?.({ block: "start", behavior: still ? "auto" : "smooth" });
   }, [selected]);
-  // A job chosen whose answer has not come yet is being read, not unchosen.
-  const reading = !!selected && detail?.id !== selected && !error;
+  // A job chosen whose answer has not come yet is being read, not unchosen;
+  // one whose read failed, or could not start, is not.
+  const detailFailure = selected && detailRead?.id === selected ? detailRead.failure : null;
+  const reading = !!selected && detail?.id !== selected && detailFailure === null;
   useEffect(() => {
     setDetail(null);
     setLog(null);
+    setDetailRead(selected ? { id: selected, failure: null } : null);
   }, [selected]);
   useEffect(() => {
     if (disabled || open) return;
@@ -1009,9 +1028,9 @@ export function Jobs({
                       {budgetRefusal}
                     </p>
                   )}
-                  {error && (
+                  {(error || detailFailure) && (
                     <p className="inline-error" role="alert">
-                      {shownError(error)}
+                      {shownError(error || detailFailure || "")}
                     </p>
                   )}
                   {creating ? (

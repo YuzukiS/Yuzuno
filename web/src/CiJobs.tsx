@@ -590,6 +590,10 @@ export function CiJobs({
   const [listedFor, setListedFor] = useState<string | null>(null);
   const [selected, setSelected] = useState(initial.runKey || "");
   const [report, setReport] = useState<Report | null>(null);
+  // The chosen run's own read of its jobs and steps (T-19 CI-04), apart from
+  // the list's: whose it is, and why it failed (null: under way or done). A
+  // list answer does not clear it.
+  const [reportRead, setReportRead] = useState<{ id: string; failure: string | null } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState<Check | null>(null);
@@ -665,6 +669,8 @@ export function CiJobs({
       const request = ++reportRequest.current;
       const current = () =>
         request === reportRequest.current && selection.current === runKey;
+      // A failure already shown for this run stays until a read succeeds.
+      setReportRead((old) => (old?.id === runKey && old.failure ? old : { id: runKey, failure: null }));
       try {
         let r: Report | null = null;
         let details: Report["details"] = null;
@@ -676,7 +682,7 @@ export function CiJobs({
           );
           if (!current()) return;
           if (next.error) {
-            setError(next.error);
+            setReportRead({ id: runKey, failure: next.error });
             setReport((old) => ({
               ...next,
               details: old?.run.id === next.run.id ? old.details : null,
@@ -690,6 +696,7 @@ export function CiJobs({
         if (!r) return;
         const complete = r;
         setError("");
+        setReportRead({ id: runKey, failure: null });
         setReport((old) =>
           number > 1 && old?.run.id === complete.run.id
             ? {
@@ -699,11 +706,15 @@ export function CiJobs({
             : complete,
         );
       } catch (e) {
-        if (current()) setError(errorText(e));
+        if (current()) setReportRead({ id: runKey, failure: errorText(e) });
       }
     },
     [],
   );
+  const reportFailure = selected && reportRead?.id === selected ? reportRead.failure : null;
+  // A chosen run whose jobs and steps have not come is being read, unless
+  // its read failed.
+  const readingRun = !!selected && report?.run.id !== selected && reportFailure === null;
   const observedRun = page.runs.find((r) => r.id === selected);
   const observedState = observedRun ? stateOf(observedRun) : null;
   // A hidden window reads no steps; it catches up once when shown again.
@@ -898,9 +909,9 @@ export function CiJobs({
           </p>
         )
       )}
-      {error && (
+      {(error || reportFailure) && (
         <p className="inline-error" role="alert">
-          {error === ciEn.updatedCore ? t.updatedCore : error}
+          {error ? (error === ciEn.updatedCore ? t.updatedCore : error) : reportFailure}
         </p>
       )}
       {creating ? (
@@ -1090,7 +1101,7 @@ export function CiJobs({
             </StateGroups>
             <div
               className="job-detail"
-              aria-busy={(!!selected && report?.run.id !== selected && !error) || undefined}
+              aria-busy={readingRun || undefined}
             >
               {chosen ? (
                 <>
@@ -1140,7 +1151,7 @@ export function CiJobs({
                   {/* Its jobs and steps are being read: their card is there
                       already, saying so, instead of appearing later under the
                       summary (T-19 CI-04). */}
-                  {report?.run.id !== selected && !error && (
+                  {readingRun && (
                     <JobCard title={t.jobsSteps}>
                       <p className="jobs-empty">{t.readingSteps}</p>
                     </JobCard>
@@ -1219,7 +1230,7 @@ export function CiJobs({
                 </>
               ) : (
                 <p className="jobs-empty">
-                  {selected && !error ? t.readingRun : t.selectRun}
+                  {readingRun ? t.readingRun : t.selectRun}
                 </p>
               )}
             </div>
