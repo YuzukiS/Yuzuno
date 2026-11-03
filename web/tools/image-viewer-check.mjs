@@ -493,6 +493,8 @@ try {
 
     // One Core no longer has: said, with nothing to zoom.
     const gone = card.locator(".brief-attachment", { has: page.locator(".brief-attachment-caption", { hasText: "Old capture" }) });
+    // A lazy image loads, and so fails, only once it is near the screen.
+    await gone.scrollIntoViewIfNeeded();
     await gone.locator(".brief-image-failed").waitFor();
     await gone.locator("details.brief-image-info > summary").click();
     await gone.locator("button.brief-attachment-open").click();

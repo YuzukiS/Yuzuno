@@ -221,12 +221,14 @@
   bottom: 3px;
   height: 6px;
 }
+/* Over light and dark images alike: a mid tone with an edge of the other. */
 .image-viewer-thumb {
   position: absolute;
   min-width: 6px;
   min-height: 6px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--ink) 45%, transparent);
+  background: rgb(60 66 58 / 0.6);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7);
   cursor: grab;
   touch-action: none;
 }
