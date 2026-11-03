@@ -3,8 +3,8 @@
 // it go, so what shows before it can be seen:
 // - Jobs: the list says it is being read, not that there are no jobs; a chosen job says it is
 //   being read, not that none is chosen. On a narrow window (640 px, where the list and the job
-//   stack) the chosen job is brought to the top of the panel: smoothly, or at once under reduced
-//   motion. A wide window leaves the list where it is.
+//   stack) the chosen job is brought into view, toward the top of the panel as far as it scrolls:
+//   smoothly, or at once under reduced motion. A wide window leaves the list where it is.
 // - GitHub Actions: the list says it is being read; a chosen run's jobs and steps card is there at
 //   once, saying it is being read, and the steps fill it when they come.
 // Screenshots of each held state go to YUZUNO_BROWSER_OUTPUT. Chromium is not Safari.
@@ -127,6 +127,7 @@ for (const run of runs) {
         const box = document.querySelector(".job-detail").getBoundingClientRect();
         const top = pane.getBoundingClientRect().top;
         return { top: Math.round(box.top - top), pane: Math.round(pane.scrollTop), list: Math.round(list?.scrollTop ?? 0),
+          height: pane.clientHeight, end: pane.scrollHeight - pane.clientHeight,
           busy: document.querySelector(".job-detail").getAttribute("aria-busy"), text: document.querySelector(".job-detail").textContent };
       };
       window.__frames = [];
@@ -150,13 +151,15 @@ for (const run of runs) {
       frames.every((f) => /Reading this job…/.test(f.text) && !/Select a job/.test(f.text)) && last.busy === "true", last);
     if (run.narrow) {
       const moving = frames.filter((f) => f.top !== last.top && f.top !== start.top);
-      ok(`${tag}: on a narrow window it comes to the top of the panel (from ${start.top} px to ${last.top} px below the panel's top)`,
-        start.top > 400 && Math.abs(last.top) <= 4, { start, last });
+      // In view: its top inside the panel, the panel scrolled to it (top at 0) or as far as it goes.
+      const inView = (f) => f.top >= -4 && f.top < f.height - 40 && (Math.abs(f.top) <= 4 || Math.abs(f.pane - f.end) <= 2);
+      ok(`${tag}: on a narrow window it is brought into view (from ${start.top} px below the panel's top, under its ${start.height} px, to ${last.top} px, the panel at ${last.pane} of ${last.end} px)`,
+        start.top > start.height && inView(last), { start, last });
       if (reduced)
         ok(`${tag}: at once under reduced motion (first frame ${frames[0].top} px, ${moving.length} frames between)`,
-          Math.abs(last.top) <= 4 && Math.abs(frames[0].top - last.top) <= 4 && moving.length === 0, frames.slice(0, 3));
+          inView(frames[0]) && Math.abs(frames[0].top - last.top) <= 4 && moving.length === 0, frames.slice(0, 3));
       else
-        ok(`${tag}: smoothly otherwise (${moving.length} frames between ${start.top} and ${last.top} px)`, Math.abs(last.top) <= 4 && moving.length >= 3, frames.slice(0, 6));
+        ok(`${tag}: smoothly otherwise (${moving.length} frames between ${start.top} and ${last.top} px)`, inView(last) && moving.length >= 3, frames.slice(0, 6));
     } else {
       ok(`${tag}: a wide window leaves the list and the panel where they were`,
         frames.every((f) => f.pane === start.pane && f.list === start.list), { start, last });
