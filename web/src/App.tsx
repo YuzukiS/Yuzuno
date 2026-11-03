@@ -592,6 +592,10 @@ export function App() {
   // The Agent whose conversation is on screen now, for a reply that comes later.
   const shownConversation = useRef<string | null>(null);
   shownConversation.current = homeOpen || listShown ? null : selected;
+  // Core announced a change to the open Agent (`agent.changed`, which is how a
+  // new request is announced) since the stream last reset: the next request
+  // its detail lists arrived live and may fade in (T-19 CV:Q-01).
+  const liveChange = useRef<{ workspace: string; agent: string } | null>(null);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -622,7 +626,10 @@ export function App() {
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
-          if (event.agentId === currentSelected.current) live.sync.refetch();
+          if (event.agentId === currentSelected.current) {
+            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.refetch();
+          }
           return;
         case "agent.progress": {
           // Its Items went out already; only its rail entry changes.
@@ -673,6 +680,8 @@ export function App() {
           else refresh();
           return;
         case "reset":
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
+          liveChange.current = null;
           jobsRefresh.now();
           presetRefresh.now();
           refresh();
@@ -902,21 +911,31 @@ export function App() {
   const time = useTimeDisplay();
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
-  // A request that arrives while its conversation is open fades in (T-19 CV:Q-01). Those Core
-  // listed when the conversation first showed here, or lists again on a refresh, do not; nor does
-  // another Agent's, or one listed again after a return to this Agent.
-  const pendingSeen = useRef<{ agent: string; ids: Set<string>; arrived: string[] } | null>(null);
-  if (currentDetail && currentDetail.agent.id === selected) {
+  // A request that arrives live while its conversation is open fades in, once (T-19 CV:Q-01): one
+  // that a detail lists, new in this Workspace, Agent and native session, after Core announced a
+  // change to the Agent. The first detail of that scope, and any new request a reconnect, poll or
+  // reset brings, only become what was shown; so do a return to the Agent and another session.
+  const pendingScope = currentDetail && currentDetail.agent.id === selected
+    ? [workspaceId, selected, nativeSession(currentDetail.agent) ?? ""].join("\n") : null;
+  const pendingSeen = useRef<{ scope: string; ids: Set<string>; arrived: string[] } | null>(null);
+  if (pendingScope) {
     const seen = pendingSeen.current;
-    if (!seen || seen.agent !== selected) pendingSeen.current = { agent: selected, ids: new Set(pending.map((request) => request.id)), arrived: [] };
-    else {
+    if (!seen || seen.scope !== pendingScope) {
+      pendingSeen.current = { scope: pendingScope, ids: new Set(pending.map((request) => request.id)), arrived: [] };
+      liveChange.current = null;
+    } else {
       const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
-      if (fresh.length) pendingSeen.current = { agent: selected, ids: new Set([...seen.ids, ...fresh]), arrived: [...seen.arrived, ...fresh].slice(-20) };
+      if (fresh.length) {
+        const announced = liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        if (announced) liveChange.current = null;
+        pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
+          arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
+      }
     }
   }
   useArrivalsIn(
-    pendingSeen.current?.agent === selected ? pendingSeen.current.arrived.map((id) => `${selected}\n${id}`) : [],
-    (key) => document.getElementById(`request-${key.slice(key.indexOf("\n") + 1)}`),
+    pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
+    (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
     "small",
   );
   // Browser drafts of answers to native questions (T-170) last only while
