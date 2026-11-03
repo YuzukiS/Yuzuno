@@ -35,7 +35,8 @@ const agent = (id, name, extra = {}) => ({ id, name, goal: "", cwd: "/w", model:
   connectionState: "connected", threadId: `019a1234-5678-4321-aaaa-${id.padStart(12, "0").slice(-12)}`, ...extra });
 // Enough Agents that the list scrolls.
 const fillers = Array.from({ length: 24 }, (_, n) => agent(`f${n + 1}`, `Agent ${String(n + 1).padStart(2, "0")}`));
-const mori = agent("mori", "Mori");
+// Another Codex client holds Mori's session, so Mori is not connected here (the notice shows only then).
+const mori = agent("mori", "Mori", { connectionState: "disconnected" });
 const turn = { id: "t1", status: "completed", items: [{ id: "u1", type: "userMessage", content: [{ type: "text", text: "Hello" }] },
   { id: "m1", type: "agentMessage", text: "Hello back." }] };
 const preview = { sourceThreadId: mori.threadId, throughTurnId: "t1", throughCompletedAt: 1791856000, includedTurns: 1, excludedTurns: 0,
