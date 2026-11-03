@@ -78,10 +78,13 @@
     min-height: calc(3 * 1.6em);
   }
 }
-/* A large card's conclusion reads four lines (Dev 7's v12). */
+/* A large card's conclusion reads four lines (Dev 7's v12), and keeps no
+   room it does not use: the conditions and the figure follow it, and the
+   rows' height goes to the figure (Dev 7, 2547). */
 :is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-summary-lead .brief-markdown {
   -webkit-line-clamp: 4;
   line-clamp: 4;
+  min-height: 0;
 }
 
 /* The card's body: its text, then its one figure; beside each other on a
@@ -198,6 +201,10 @@
    Its image is fitted whole into the frame, whatever the frame's height. */
 :is(.home-brief, .home-widget-grid) .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body {
   position: relative;
+  /* Shorter than its frame, a figure sits in its middle; taller, it starts at the top (Dev 7, 2547). */
+  display: flex;
+  flex-direction: column;
+  justify-content: safe center;
 }
 :is(.home-brief, .home-widget-grid) .home-summary-card:is(.size-wide, .size-large) .home-card-frame-body img {
   position: absolute;
@@ -366,6 +373,29 @@
   font-weight: 600;
   line-height: 1.1;
 }
+/* Up to six Metrics values in a grid on a large card (Dev 7, 2547). */
+.home-card-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 12px 18px;
+  margin: 0;
+}
+.home-card-metrics-grid > div {
+  min-width: 0;
+}
+.home-card-metrics-grid dt {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-card-metrics-grid dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(17px + var(--font-adjust, 3px));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Where a small card leaves its figure: its kind, and that the page has it. */
 .home-card-figure-note {
   margin: 0;

@@ -6,14 +6,18 @@ type Node = { type?: string; props?: Record<string, unknown>; children?: string[
 type Body = { root?: unknown; elements?: Record<string, Node> } | null | undefined;
 
 const CHARTS = new Set(["LineChart", "BarChart", "ScatterChart"]);
-/** Rows and columns a table shows on a card (Dev 7, T-18). */
+/** Rows and columns a table shows on a card, and on a large one (Dev 7, T-18; 2547). */
 export const TABLE_PREVIEW = { rows: 3, columns: 3 } as const;
+export const LARGE_TABLE_PREVIEW = { rows: 8, columns: 6 } as const;
+/** Metrics values a large card shows in its frame (Dev 7, 2547); the page shows them all. */
+export const LARGE_METRICS = 6;
 
 /**
  * The one figure a card shows in its frame, bounded (T-18): never the
  * whole block, always read from the block itself.
  * - `block`: a chart or Metrics, drawn by its own renderer, small.
- * - `table`: its first rows and columns, with how many there are.
+ * - `table`: its rows and columns, of which a card shows the first few
+ *   (more on a large card), with how many there are.
  * - `image`: one image attachment, fitted whole.
  * - `desk`: a research desk's question and how many claims and plots it
  *   has; no claim, whose strength and conditions it would leave behind.
@@ -57,7 +61,7 @@ export function figureOf(section: Section, id: string): CardFigure | null {
     const rows = (Array.isArray(props.rows) ? props.rows : []) as { id: string; cells: Record<string, unknown> }[];
     return {
       kind: "table", id, title: text(props.title),
-      columns: columns.slice(0, TABLE_PREVIEW.columns), rows: rows.slice(0, TABLE_PREVIEW.rows),
+      columns: columns.slice(0, LARGE_TABLE_PREVIEW.columns), rows: rows.slice(0, LARGE_TABLE_PREVIEW.rows),
       totalRows: rows.length, totalColumns: columns.length,
     };
   }

@@ -605,6 +605,9 @@ try {
             beside: (() => { const text = el.querySelector(".home-summary-text"), fig = el.querySelector(".home-card-frame");
               return text && fig ? fig.getBoundingClientRect().left >= text.getBoundingClientRect().right - 1 : null; })(),
             frame: !!el.querySelector(".home-card-frame"),
+            // Nothing kept between the text and the figure but the body's gap (Dev 7, 2547).
+            leadGap: (() => { const text = el.querySelector(".home-summary-text"), fig = el.querySelector(".home-card-frame");
+              return text && fig && fig.getBoundingClientRect().top > text.getBoundingClientRect().top ? Math.round(fig.getBoundingClientRect().top - text.getBoundingClientRect().bottom) : null; })(),
             minHeight: style.minHeight,
             // "Open report" on one line, however the foot wraps (Dev 7, 2396).
             open: (() => { const b = el.querySelector(".home-report-open"); return b ? { wrap: getComputedStyle(b).whiteSpace, height: Math.round(b.getBoundingClientRect().height) } : null; })(),
@@ -660,6 +663,7 @@ try {
         // A wide card's figure beside its text where the deck has two columns or more; stacked on one.
         if (place.size === "wide" && place.beside !== null) assert.equal(place.beside, deckShape.columns > 1, `${place.key}'s figure beside its text: ${JSON.stringify(place)}`);
         if (place.size === "small") assert.equal(place.frame, false, `a small card has no frame: ${place.key}`);
+        if (place.size === "large" && place.leadGap !== null) assert.ok(place.leadGap <= 12, `${place.key}: ${place.leadGap} px between its text and its figure`);
         // A minimum on each card, not each row (Dev 7, 2396): none on one column, nor on a card with no summary.
         const unnamed = ["setup", "data", "baseline", "dose-study"].includes(place.key);
         const least = deckShape.columns === 1 || unnamed ? "auto" : place.size === "large" && deckShape.columns === 4 ? "536px" : "260px";
@@ -917,6 +921,15 @@ try {
       await toHome();
       assert.deepEqual([await slot.getAttribute("data-widget-size"), await deckSize("batches")], ["large", "small author"]);
       assert.equal(await pinned.getAttribute("data-section-version"), "3");
+      // Large, its two Metrics values in a grid, in the middle of the frame (Dev 7, 2547).
+      const centred = () => pinned.evaluate((card) => {
+        const body = card.querySelector(".home-card-frame-body"), inner = body.firstElementChild;
+        const b = body.getBoundingClientRect(), i = inner.getBoundingClientRect();
+        return { shorter: i.height < b.height - 20, offset: Math.round(Math.abs((i.top + i.bottom) / 2 - (b.top + b.bottom) / 2)) };
+      });
+      assert.equal(await pinned.locator(".home-card-metrics-grid dd").count(), 2);
+      const metricsPlace = await centred();
+      assert.ok(!metricsPlace.shorter || metricsPlace.offset <= 2, JSON.stringify(metricsPlace));
       // Its own menu: the size first, then Unpin and Copy report.
       await widgetMore().click();
       assert.equal(await widgetMenu().locator("legend").innerText(), "SIZE OF THIS WIDGET");
@@ -949,6 +962,16 @@ try {
       // Large again, then unpinned and pinned again: the new pin follows its Agent, nothing kept from the old one.
       await widgetMore().click();
       await widgetMenu().locator('input[value="large"]').check();
+      await page.keyboard.press("Escape");
+      assert.equal(await slot.getAttribute("data-widget-size"), "large");
+      // Large, its table: the first 8 rows and 6 columns, said, in the middle of the frame (Dev 7, 2547).
+      assert.equal(await pinned.locator("figcaption").innerText(), "8 of 9 rows · 6 of 6 columns");
+      assert.equal(await pinned.locator(".home-card-table tbody td").count(), 48);
+      const tablePlace = await centred();
+      assert.ok(!tablePlace.shorter || tablePlace.offset <= 2, JSON.stringify(tablePlace));
+      await slot.scrollIntoViewIfNeeded();
+      await shot("widgets-1720-pinned-large-table.png");
+      await widgetMore().click();
       await widgetMenu().getByRole("button", { name: "Unpin" }).click();
       await slot.waitFor({ state: "detached" });
       assert.equal(await pinOf("batches"), undefined);
@@ -998,7 +1021,7 @@ try {
     assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("yuzuno.homeWidgets.")).sort()), [`yuzuno.homeWidgets.${WS}`]);
   });
 
-  for (const [width, height, name] of [[1200, 900, "organize-1200"], [390, 844, "organize-390"]])
+  for (const [width, height, name] of [[1200, 900, "organize-1200"], [647, 900, "organize-647"], [390, 844, "organize-390"]])
     await step(`Organize Home at ${width}: a pinned card's size and its source under its name; on a phone the choice takes its own row, its four buttons sharing it (T-18, Dev 7's v19)`, async () => {
       await open(width, height);
       await toHome();
@@ -1006,6 +1029,9 @@ try {
       await card("audit").locator(".home-summary-more-list").getByRole("button", { name: /^Pin “/ }).click();
       await page.keyboard.press("Escape");
       await page.locator('.home-widget-slot[data-widget^="pin:p1:30:"]').waitFor();
+      // My widgets with the pinned card, at this width (Dev 7, 2547).
+      await page.locator(".home-widget-column").scrollIntoViewIfNeeded();
+      await shot(`widgets-${width}.png`);
       await page.locator(".home-widget-organize").click();
       const row = page.locator('.home-organize .home-organize-list li[data-widget^="pin:p1:30:"]');
       await row.waitFor();

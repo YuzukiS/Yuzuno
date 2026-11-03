@@ -11,7 +11,7 @@ import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { PinOff } from "lucide-react";
-import { cardContent, shownSize, type CardFigure, type CardSize } from "./card-preview";
+import { cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, shownSize, TABLE_PREVIEW, type CardFigure, type CardSize } from "./card-preview";
 import { DeckSizes, sizable } from "./card-sizes";
 import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
@@ -104,7 +104,7 @@ export const SummaryCard = memo(function SummaryCard({
   // any other, one line naming it and where it is read, "Open report" below.
   const shown = content.kind === "named" ? content.figure : null;
   const figure = !shown ? null : size !== "small" ? (
-    <FigureFrame section={section} projectId={projectId} figure={shown} />
+    <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} />
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
   ) : (
@@ -415,44 +415,72 @@ function BigNumbers({ items }: { items: Metric[] }) {
   );
 }
 
-/** The card's one figure, bounded, in a fixed frame; it is no control and opens nothing. */
-function FigureFrame({ section, projectId, figure }: { section: Section; projectId: string; figure: CardFigure }) {
+/**
+ * The card's one figure, bounded, in a fixed frame; it is no control and
+ * opens nothing. A large card shows more of what the figure has (Dev 7,
+ * 2547): a table's first 8 rows and 6 columns, up to 6 Metrics values in a
+ * grid; anything shorter than the frame sits in its middle.
+ */
+function FigureFrame({ section, projectId, figure, large }: { section: Section; projectId: string; figure: CardFigure; large: boolean }) {
   const t = useStrings(cardText);
+  const shape = large ? LARGE_TABLE_PREVIEW : TABLE_PREVIEW;
+  const table = figure.kind === "table" ? { columns: figure.columns.slice(0, shape.columns), rows: figure.rows.slice(0, shape.rows) } : null;
+  const metrics = large ? metricsOf(section, figure) : null;
   return (
     <figure className={`home-card-frame kind-${figure.kind}`}>
       <div className="home-card-frame-body" inert>
-        {figure.kind === "block" ? (
+        {metrics ? (
+          <MetricsGrid items={metrics} />
+        ) : figure.kind === "block" ? (
           <BriefDensity.Provider value="low">
             <SectionBody section={section} projectId={projectId} only={[figure.id]} />
           </BriefDensity.Provider>
-        ) : figure.kind === "table" ? (
+        ) : figure.kind === "table" && table ? (
           <table className="home-card-table">
             <thead>
-              <tr>{figure.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr>
+              <tr>{table.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr>
             </thead>
             <tbody>
-              {figure.rows.map((row) => (
+              {table.rows.map((row) => (
                 <tr key={row.id}>
-                  {figure.columns.map((column) => <td key={column.key}>{String(row.cells[column.key] ?? "—")}</td>)}
+                  {table.columns.map((column) => <td key={column.key}>{String(row.cells[column.key] ?? "—")}</td>)}
                 </tr>
               ))}
             </tbody>
           </table>
         ) : figure.kind === "image" ? (
           <img src={attachmentUrl(projectId, section.key, figure.name, section.version)} alt={figure.caption ?? figure.name} />
-        ) : (
+        ) : figure.kind === "desk" ? (
           <p className="home-card-desk">
             <strong>{figure.title}</strong>
             <span>{t.deskCounts(figure.claims, figure.plots)} · {t.deskInteractive}</span>
           </p>
-        )}
+        ) : null}
       </div>
-      {(figure.kind === "table" || (figure.kind === "image" && figure.caption)) && (
+      {(table || (figure.kind === "image" && figure.caption) || (metrics && metrics.length > LARGE_METRICS)) && (
         <figcaption>
-          {figure.kind === "table" && t.tableCounts(figure.rows.length, figure.totalRows, figure.columns.length, figure.totalColumns)}
+          {table && figure.kind === "table" && t.tableCounts(table.rows.length, figure.totalRows, table.columns.length, figure.totalColumns)}
           {figure.kind === "image" && figure.caption}
+          {metrics && metrics.length > LARGE_METRICS && t.valuesShown(LARGE_METRICS, metrics.length)}
         </figcaption>
       )}
     </figure>
+  );
+}
+
+/** Up to six Metrics values in a grid, on a large card; each number with its unit on one line. */
+function MetricsGrid({ items }: { items: Metric[] }) {
+  return (
+    <dl className="home-card-metrics-grid">
+      {items.slice(0, LARGE_METRICS).map((item, index) => (
+        <div key={index}>
+          <dt>{item.label}</dt>
+          <dd>
+            {String(item.value)}
+            {item.unit ? `\u00a0${item.unit}` : ""}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
