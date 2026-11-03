@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
 import { API_BASE } from "./api";
+import { ImageViewer } from "./ImageViewer";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import "./image-input.css";
 
@@ -115,10 +116,10 @@ export function ImageAttachments({
 }
 
 /**
- * An image shown whole in the app, with Point & Fix when it is offered: the
- * preview a conversation's images open (T-31), and Home's Brief images too
- * (T-177). Only the image is read; it loads when opened, and closing it
- * drops the read.
+ * An image shown in the app, to zoom into and move around (T-20), with
+ * Point & Fix when it is offered: the preview a conversation's images open
+ * (T-31), and Home's Brief images too (T-177). Only the original image is
+ * read; it loads when opened, and closing it drops the read.
  */
 export function ImagePreview({
   open,
@@ -163,6 +164,7 @@ export function ImagePreview({
       lang={langTag(language)}
       closeLabel={t.closeDialog}
       wide
+      className="image-viewer-modal"
       onCloseAutoFocus={(event) => {
         const back = opener.current;
         if (back?.isConnected) {
@@ -171,18 +173,23 @@ export function ImagePreview({
         }
       }}
     >
-      {open && (
-        <div className="input-image-dialog">
-          <img src={src} alt={name} onError={() => setFailed(src)} />
-          {failed === src && <p role="alert">{unavailable}</p>}
-          {onAnnotate && failed !== src && (
+      {open && (failed === src ? (
+        <p role="alert">{unavailable}</p>
+      ) : (
+        // Its own viewer for each image: one image's zoom never carries over (T-20).
+        <ImageViewer
+          key={src}
+          src={src}
+          alt={name}
+          onError={() => setFailed(src)}
+          actions={onAnnotate && (
             <button type="button" className="secondary-button input-image-annotate" onClick={onAnnotate}>
               <SquareDashedMousePointer size={14} />
               {t.markUpButton}
             </button>
           )}
-        </div>
-      )}
+        />
+      ))}
     </Modal>
   );
 }

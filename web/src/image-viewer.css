@@ -1,0 +1,146 @@
+/* The image viewer (T-20): a bar of controls over the stage the image is
+   zoomed and moved in. The dialog it opens in takes the window's height, so
+   the stage gets all the room the heading and bar leave. */
+.modal.image-viewer-modal {
+  width: min(1180px, calc(var(--safe-vw) - 32px));
+  height: calc(var(--safe-dvh) - 52px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.image-viewer-modal > .image-viewer,
+.image-viewer-modal > .artifact-content {
+  flex: 1;
+  min-height: 0;
+}
+.image-viewer-modal > .artifact-content {
+  display: flex;
+  max-height: none;
+  overflow: hidden;
+}
+.image-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  margin-top: 14px;
+}
+.artifact-content > .image-viewer {
+  margin-top: 0;
+}
+.image-viewer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.image-viewer-zoom,
+.image-viewer-modes {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+}
+.image-viewer-zoom {
+  gap: 2px;
+  padding: 1px;
+}
+.image-viewer-zoom output {
+  min-width: 4.4em;
+  text-align: center;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.image-viewer-zoom .icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+.image-viewer-modes {
+  overflow: hidden;
+}
+.image-viewer-modes button {
+  padding: 5px 10px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: none;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.image-viewer-modes button:first-child {
+  border-left: 0;
+}
+.image-viewer-modes button:hover:not(:disabled) {
+  background: var(--cream);
+}
+.image-viewer-modes button[aria-pressed="true"] {
+  background: var(--accent-wash, #f5edcf);
+  color: var(--accent-ink, #786637);
+  font-weight: 600;
+}
+.image-viewer-modes button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.image-viewer-hint {
+  color: var(--muted);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.image-viewer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+/* Wheel, drag and pinch are taken here only: no page scroll or zoom. */
+.image-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--cream);
+  touch-action: none;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.image-viewer-stage:focus-visible {
+  outline: 2px solid var(--accent-ink, #786637);
+  outline-offset: 2px;
+}
+.image-viewer-stage[data-movable] {
+  cursor: grab;
+}
+.image-viewer-stage[data-movable][data-dragging] {
+  cursor: grabbing;
+}
+.image-viewer-stage > img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  max-height: none;
+  transform-origin: 0 0;
+  -webkit-user-drag: none;
+}
+/* A phone: the whole screen for the image. */
+@media (max-width: 520px) {
+  .modal.image-viewer-modal {
+    width: var(--safe-vw);
+    height: var(--safe-dvh);
+    max-height: var(--safe-dvh);
+    border-radius: 0;
+    padding: 14px;
+  }
+  .image-viewer {
+    margin-top: 8px;
+  }
+  .image-viewer-bar {
+    gap: 6px 8px;
+  }
+}

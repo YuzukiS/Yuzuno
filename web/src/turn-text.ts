@@ -100,6 +100,7 @@ export const turnWords = strings({
   filePreview: "File preview",
   opening: "Opening file…",
   readOnly: "Read-only preview",
+  imageUnreadable: "This image can't be read. The file may have moved or been removed.",
   markUp: "Mark up",
   closeDialog: "Close dialog",
 }, {
@@ -189,6 +190,7 @@ export const turnWords = strings({
   filePreview: "文件预览",
   opening: "正在打开文件…",
   readOnly: "只读预览",
+  imageUnreadable: "无法读取这张图片，文件可能已被移动或删除。",
   markUp: "标注",
   closeDialog: "关闭对话框",
 });
