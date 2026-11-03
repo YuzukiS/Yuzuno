@@ -120,6 +120,46 @@
   cursor: default;
 }
 
+/* Opened by the reader, the panel rises 8px from its button and the scrim
+   fades in; closed by them, both fade back, taking no taps on the way
+   (data-phone-dock-way, PhoneDocks.tsx). Any other change is at once. */
+.app.phone .conversation-body[data-phone-dock-way="in"] > :is(.work-dock, .turn-dock) {
+  animation: phone-dock-in var(--motion-small) var(--ease-standard);
+}
+.app.phone .conversation-body[data-phone-dock-way="in"] > .phone-dock-scrim {
+  animation: phone-dock-fade-in var(--motion-micro) var(--ease-standard);
+}
+.app.phone .conversation-body[data-phone-dock-way="out"] > :is(.work-dock, .turn-dock) {
+  pointer-events: none;
+  animation: phone-dock-out var(--motion-exit-small) var(--ease-exit) both;
+}
+.app.phone .conversation-body[data-phone-dock-way="out"] > .phone-dock-scrim {
+  pointer-events: none;
+  animation: phone-dock-fade-out var(--motion-exit-small) var(--ease-exit) both;
+}
+@keyframes phone-dock-in {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+@keyframes phone-dock-out {
+  to {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+@keyframes phone-dock-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes phone-dock-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
 /* The open dock: a panel above its button that scrolls on its own. */
 .app.phone .conversation-body[data-phone-dock="work"] > .work-dock,
 .app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock {
