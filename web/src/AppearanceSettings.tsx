@@ -571,6 +571,8 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
   const [chosen, setChosen] = useState<AppearanceField[]>([]);
   const [said, setSaid] = useState<{ error: boolean; message: FileMessage; n: number } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
+  // Apply and Cancel close the preview: focus goes back to Import, which opened it (T-19 ST:A14).
+  const importButton = useRef<HTMLButtonElement>(null);
   const line = useRef<HTMLParagraphElement>(null);
   // In a short pane the line can lie below the button pressed.
   useEffect(() => {
@@ -623,6 +625,7 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
       say(true, { kind: "notImported", outcome });
       return;
     }
+    importButton.current?.focus();
     setFile(null);
     say(false, { kind: "imported", count: selected.length, name: file.name });
   }
@@ -641,7 +644,7 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
           <button type="button" onClick={exportFile}>
             {t.export}
           </button>
-          <button type="button" onClick={() => picker.current?.click()}>
+          <button ref={importButton} type="button" onClick={() => picker.current?.click()}>
             {t.import}
           </button>
           <input
@@ -706,6 +709,7 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
             <button
               type="button"
               onClick={() => {
+                importButton.current?.focus();
                 setFile(null);
                 setSaid(null);
               }}
