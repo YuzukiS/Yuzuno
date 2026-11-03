@@ -156,9 +156,46 @@ test("a confirmation removed while open (Disconnect, Cancel) leaves a copy too, 
     assert.deepEqual(dialogs(page), [], "the dialog is removed with its Agent");
     const copy = ghost(page);
     assert.ok(copy, "its copy was taken as it unmounted, nodes still attached");
-    assert.ok(copy.querySelector(".modal.modal-confirm"), "and fades out without moving");
+    assert.ok(copy.hasAttribute("data-confirm"), "and fades out without moving");
     await pause(450);
     assert.equal(ghost(page), null);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an Agent's confirmation keeps its entrance as it closes, and its copy only fades, as it was just before", async () => {
+  const page = await mount();
+  try {
+    // Close, a confirmation from its opening: its mode clears as it closes.
+    (await waitFor(() => page.doc.querySelector(".agent-close-button"), "Close agent is offered")).click();
+    let dialog = await waitFor(() => dialogs(page)[0], "the Close confirmation opens");
+    assert.ok(dialog.classList.contains("modal-confirm"), "a confirmation only fades in");
+    // A class change as it closes would change its animation, which Radix waits for as an exit.
+    const changed = [];
+    new page.w.MutationObserver((records) => changed.push(...records.map((r) => r.target.className))).observe(dialog, { attributes: true, attributeFilter: ["class"] });
+    escape(page);
+    await pause(0);
+    assert.deepEqual(dialogs(page), [], "the dialog is removed at once");
+    assert.deepEqual(changed, [], "its class did not change as it closed");
+    assert.ok(ghost(page)?.hasAttribute("data-confirm"), "its copy only fades");
+    assert.match(ghost(page).querySelector("h2").textContent, /^Close Mori\?/, "and shows what was open");
+    await pause(450);
+    assert.equal(ghost(page), null);
+
+    // Actions, from the Agent menu's Manage…, turned into Delete while open.
+    (await waitFor(() => page.doc.querySelector(".agent-actions-button"), "an Agent's actions are offered")).click();
+    (await waitFor(() => [...page.doc.querySelectorAll('[role="menuitem"]')].find((el) => /^Manage/.test(el.textContent.trim())), "Manage… is offered")).click();
+    dialog = await waitFor(() => dialogs(page)[0], "the actions open");
+    assert.ok(!dialog.classList.contains("modal-confirm"), "the actions rise in");
+    (await waitFor(() => dialog.querySelector(".agent-action-card.danger-action"), "Delete is offered")).click();
+    await waitFor(() => /^Delete Mori\?/.test(dialog.querySelector("h2")?.textContent || ""), "Delete asks");
+    assert.ok(!dialog.classList.contains("modal-confirm"), "its entrance is kept: it would start again");
+    escape(page);
+    await pause(0);
+    assert.deepEqual(dialogs(page), []);
+    assert.ok(ghost(page)?.hasAttribute("data-confirm"), "Delete's copy only fades, though it entered as actions");
+    assert.match(ghost(page).querySelector("h2").textContent, /^Delete Mori\?/);
+    await pause(450);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

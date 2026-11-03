@@ -12,7 +12,11 @@
 // and its unmounting while open (Changes, Disconnect). The read-only preview
 // offers neither Jobs, Disconnect nor a sent `/changes`, so two more runs
 // ("app") load the app itself on a synthetic Workspace that is never written
-// to. What a run cannot open is listed as not shown. An emulated phone is not
+// to. There an Agent's confirmations close too: Close, a confirmation from
+// its opening, and Actions turned into Delete while open. Neither changes
+// the live dialog's animation as it closes (Radix would wait for that), and
+// each copy shows what was open and only fades. What a run cannot open is
+// listed as not shown. An emulated phone is not
 // a real one, and Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1b-check.mjs [--baseline]
 import assert from "node:assert/strict";
@@ -103,6 +107,8 @@ function pageHelpers() {
       duplicateIds: ids.length - new Set(ids).size,
       focus: window.__describe(document.activeElement),
       focusInGhost: !!ghost?.contains(document.activeElement),
+      ghostTitle: ghost?.querySelector("h2")?.textContent ?? null,
+      ghostConfirm: ghost ? ghost.hasAttribute("data-confirm") : null,
     };
   };
   /** Sample every frame from the next Escape or click, for `span` ms. */
@@ -127,7 +133,7 @@ function pageHelpers() {
 }
 
 /** Open a dialog, read its entrance, close it and judge every frame after. */
-async function exitCase(page, tag, reduced, { name, open, close, confirm = false, clickThrough = false }) {
+async function exitCase(page, tag, reduced, { name, open, close, confirm = false, entered = confirm, title = null, clickThrough = false }) {
   const before = await page.evaluate(() => window.__state());
   if (!(await open())) return report.notShown.push(`${tag}: ${name} could not be opened in the preview`);
   // As computed, so an entrance already over still counts; the keyframes themselves are checked once per run.
@@ -140,9 +146,9 @@ async function exitCase(page, tag, reduced, { name, open, close, confirm = false
     const { box, overlay } = entrance;
     if (reduced) ok(`${tag}: ${name} opens with no animation under reduced motion`, box?.name === "none" && overlay?.name === "none", entrance);
     else
-      ok(`${tag}: ${name} enters over medium with the standard easing: the overlay fades, the box ${confirm ? "only fades" : "fades and rises 4px"}`,
+      ok(`${tag}: ${name} enters over medium with the standard easing: the overlay fades, the box ${entered ? "only fades" : "fades and rises 4px"}`,
         overlay?.name === "dialog-fade-in" && ms(overlay.duration) === 240 && ms(box?.duration) === 240 && /cubic-bezier\(0\.2, 0\.8, 0\.2, 1\)/.test(box.easing) &&
-          box.name === (confirm ? "dialog-fade-in" : "dialog-in"), entrance);
+          box.name === (entered ? "dialog-fade-in" : "dialog-in"), entrance);
   }
   const rect = await page.evaluate(() => {
     const r = [...document.querySelectorAll(".modal")].find((el) => !el.closest(".dialog-exit-ghost")).getBoundingClientRect();
@@ -184,6 +190,9 @@ async function exitCase(page, tag, reduced, { name, open, close, confirm = false
     const animations = ghostFrames[0]?.ghostAnimations || [];
     ok(`${tag}: ${name}: the copy plays exit-medium, the box ${confirm ? "only fading" : "fading and sinking 4px"}`,
       animations.includes("dialog-fade-out:170") && animations.includes(`${confirm ? "dialog-fade-out" : "dialog-out"}:170`), animations);
+    if (title)
+      ok(`${tag}: ${name}: the copy shows what was open (${title}), and it is the only dialog left`,
+        ghostFrames.every((f) => title.test(f.ghostTitle || "") && f.dialog === 0 && f.ghostConfirm === confirm), ghostFrames.slice(0, 1));
     const last = ghostFrames.at(-1)?.t ?? Infinity;
     ok(`${tag}: ${name}: the copy is gone within 400 ms (last seen at ${last} ms)`, last <= 400 && !after.at(-1).ghost, last);
   }
@@ -288,6 +297,59 @@ for (const run of runs) {
     },
     close: () => page.locator(".modal .secondary-button", { hasText: /^Cancel/ }).first().click(),
   });
+  // An Agent's confirmations (AgentManagement): Close, a confirmation from its opening, whose mode clears
+  // as it closes; and Actions (from the Agent menu's Manage…) turned into Delete while open.
+  if (run.fixture) {
+    const closeAgent = async () => {
+      const button = visible(".agent-close-button");
+      if (!(await button.count()) || !(await button.isEnabled())) return false;
+      await button.click();
+      await page.locator(".modal").first().waitFor({ timeout: 3000 });
+      return true;
+    };
+    await exitCase(page, tag, reduced, { name: "Close agent", confirm: true, title: /^Close Mori\?/, open: closeAgent, close: () => page.keyboard.press("Escape") });
+    await exitCase(page, tag, reduced, {
+      name: "Actions, then Delete", entered: false, confirm: true, title: /^Delete Mori\?/,
+      open: async () => {
+        await visible(".agent-row").hover();
+        const more = visible(".agent-actions-button");
+        if (!(await more.count())) return false;
+        await more.click();
+        const manage = page.locator('.agent-actions-menu [role="menuitem"]', { hasText: /^Manage/ }).first();
+        if (!(await manage.count())) {
+          await page.keyboard.press("Escape");
+          return false;
+        }
+        await manage.click();
+        const remove = page.locator(".modal .agent-action-card.danger-action").first();
+        await remove.waitFor({ timeout: 3000 });
+        await page.waitForTimeout(350);
+        await remove.click();
+        await page.locator(".modal h2", { hasText: /^Delete Mori\?/ }).first().waitFor({ timeout: 3000 });
+        return true;
+      },
+      close: () => page.keyboard.press("Escape"),
+    });
+    // Closed and opened again at once: the new confirmation shows, a confirmation from its first frame,
+    // with focus in it; no Actions dialog is left.
+    if (!baseline && (await closeAgent())) {
+      await page.waitForTimeout(350);
+      await page.keyboard.press("Escape");
+      await visible(".agent-close-button").click();
+      const reopened = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => {
+        const boxes = [...document.querySelectorAll(".modal")].filter((el) => !el.closest(".dialog-exit-ghost"));
+        const box = boxes[0];
+        done({ boxes: boxes.length, confirm: !!box?.classList.contains("modal-confirm"), animation: box && getComputedStyle(box).animationName,
+          title: box?.querySelector("h2")?.textContent, focusIn: !!box?.contains(document.activeElement) });
+      })));
+      ok(`${tag}: Close agent reopened during its exit is one confirmation at once${reduced ? "" : ", fading in"}, with focus in it`,
+        reopened.boxes === 1 && reopened.confirm && /^Close Mori\?/.test(reopened.title || "") && reopened.focusIn &&
+          reopened.animation === (reduced ? "none" : "dialog-fade-in"), reopened);
+      await page.waitForTimeout(350);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(500);
+    }
+  }
   // Changes (`/changes`): a dialog App mounts as `{… && (` and removes when it closes: the unmount path in Chromium.
   // It reads nothing until asked, and the command sends nothing.
   await exitCase(page, tag, reduced, {
