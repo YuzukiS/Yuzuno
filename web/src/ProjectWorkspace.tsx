@@ -55,7 +55,7 @@ function useOutsideClose(
 }
 
 /** How long the project menu takes to sink back (projects.css). */
-const MENU_OUT_MS = 120;
+const MENU_OUT_MS = 130;
 
 /** The bottom-left entry: which part of this Workspace the window shows. */
 // The project menu's own words (T-189); project and workspace names are

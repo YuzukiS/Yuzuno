@@ -55,7 +55,7 @@
   margin-top: 3px;
 }
 .project-group-chevron {
-  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 .project-group.is-folded .project-group-chevron {
   transform: rotate(-90deg);
@@ -94,7 +94,7 @@
   display: inline-flex;
   flex: none;
   gap: 4px;
-  animation: project-group-summary 200ms ease-out;
+  animation: project-group-summary var(--motion-small) var(--ease-standard);
 }
 @keyframes project-group-summary {
   from {
@@ -138,8 +138,8 @@
   grid-template-rows: 1fr;
   opacity: 1;
   transition:
-    grid-template-rows 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 200ms ease;
+    grid-template-rows var(--motion-medium) var(--ease-standard),
+    opacity var(--motion-small) var(--ease-standard);
 }
 .project-group.is-folded > .project-group-body {
   grid-template-rows: 0fr;
@@ -253,4 +253,13 @@
 .project-group-bands.is-unassigned .project-group-dot {
   border: 1.5px solid var(--line);
   background: none;
+}
+
+/* The group toggle and + ease their hover colours (T-19). */
+.project-group-toggle,
+.project-group-add {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    opacity var(--motion-micro) var(--ease-standard);
 }

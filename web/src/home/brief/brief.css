@@ -442,7 +442,7 @@
  * header pointed at or focused. aria-sort says it to assistive technology. */
 .brief-body .result-table-scroll th[aria-sort="none"] button svg {
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--motion-micro) var(--ease-standard);
 }
 .brief-body .result-table-scroll th:hover button svg,
 .brief-body .result-table-scroll th button:focus-visible svg {
@@ -881,7 +881,7 @@ span.brief-ref {
   color: var(--ink);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 18%, transparent);
   opacity: 0.8;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--motion-micro) var(--ease-standard);
 }
 button.brief-image:hover .brief-image-zoom,
 button.brief-image:focus-visible .brief-image-zoom {
