@@ -53,3 +53,64 @@ export function workActivity(items: readonly WorkItem[]): WorkActivity {
   const exception = total("exception");
   return { byKind, current, exception, any: current + exception + total("done") > 0 };
 }
+
+/**
+ * Whether a piece of work is counted at all, and as what. Classifying is
+ * where this can go wrong quietly, so each kind reads its own vocabulary
+ * here rather than at the call sites.
+ *
+ * An ending nobody can vouch for is not a normal ending: Core keeps
+ * `unknown` for a Job whose outcome it lost, and calling that done would
+ * report a success that was never observed.
+ */
+export type Counted = WorkState | "uncounted";
+
+/** A Job, by the status Core gives it. */
+export function jobWork(status: string): Counted {
+  switch (status) {
+    case "waiting": case "queued": case "starting": case "running": case "cancelling":
+      return "current";
+    // Core's own word for exit 0 with its artifacts checked, not our verdict.
+    case "succeeded":
+      return "done";
+    case "failed": case "cancelled": case "rejected": case "interrupted": case "unknown":
+      return "exception";
+    default:
+      // A status this does not know is left out rather than guessed at: it
+      // is still in the Jobs panel, and a guess here would either invent a
+      // success or raise an alarm that may not be one.
+      return "uncounted";
+  }
+}
+
+/** A CI run, by what GitHub concluded for it. */
+export function runWork(status: string, conclusion: string | null | undefined): Counted {
+  if (status === "running" || status === "pending") return "current";
+  switch (conclusion) {
+    case "success":
+      return "done";
+    case "failure": case "cancelled": case "timed_out": case "action_required":
+      return "exception";
+    // Neither: a run that was not asked to decide anything. It is only worth
+    // a number if the line says that word itself.
+    case "skipped": case "neutral":
+      return "uncounted";
+    default:
+      return "uncounted";
+  }
+}
+
+/** A sub-agent, by the status its harness reports (claude-subagents.ts). */
+export function subAgentWork(status: string): Counted {
+  switch (status) {
+    // Starting, paused and running in the background are all still going.
+    case "running": case "pending": case "paused":
+      return "current";
+    case "succeeded": case "completed": case "ended":
+      return "done";
+    case "failed": case "cancelled": case "unknown":
+      return "exception";
+    default:
+      return "uncounted";
+  }
+}

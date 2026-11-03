@@ -64,3 +64,55 @@ test("work that is not of a known kind is ignored rather than guessed at", () =>
   ]);
   assert.equal(seen.current, 1);
 });
+
+const { jobWork, runWork, subAgentWork } = await import("../src/work-activity.ts");
+
+test("a Job's normal ending is the only one that counts as done", () => {
+  assert.equal(jobWork("succeeded"), "done");
+  for (const going of ["waiting", "queued", "starting", "running", "cancelling"])
+    assert.equal(jobWork(going), "current", going);
+  // Every other ending, including one nobody can vouch for.
+  for (const bad of ["failed", "cancelled", "rejected", "interrupted", "unknown"])
+    assert.equal(jobWork(bad), "exception", bad);
+});
+
+test("an outcome Core lost is never read as a success", () => {
+  assert.notEqual(jobWork("unknown"), "done");
+  assert.equal(jobWork("unknown"), "exception");
+});
+
+test("a status we do not know is left out, not guessed at", () => {
+  assert.equal(jobWork("some-new-status"), "uncounted");
+  assert.equal(subAgentWork(""), "uncounted");
+});
+
+test("CI counts by what it concluded", () => {
+  assert.equal(runWork("running", null), "current");
+  assert.equal(runWork("pending", null), "current");
+  assert.equal(runWork("completed", "success"), "done");
+  for (const bad of ["failure", "cancelled", "timed_out", "action_required"])
+    assert.equal(runWork("completed", bad), "exception", bad);
+  // Decided nothing: not a pass, not a problem.
+  assert.equal(runWork("completed", "skipped"), "uncounted");
+  assert.equal(runWork("completed", "neutral"), "uncounted");
+  assert.equal(runWork("completed", null), "uncounted");
+});
+
+test("a sub-agent paused or working in the background is still going", () => {
+  for (const going of ["running", "pending", "paused"])
+    assert.equal(subAgentWork(going), "current", going);
+  assert.equal(subAgentWork("succeeded"), "done");
+  assert.equal(subAgentWork("completed"), "done");
+  for (const bad of ["failed", "cancelled", "unknown"])
+    assert.equal(subAgentWork(bad), "exception", bad);
+});
+
+test("uncounted work stays out of every total", () => {
+  const seen = workActivity([
+    { id: "r1", kind: "run", state: runWork("completed", "skipped") },
+    { id: "j1", kind: "job", state: jobWork("succeeded") },
+  ].filter((i) => i.state !== "uncounted"));
+  assert.equal(seen.byKind.run.done, 0);
+  assert.equal(seen.byKind.job.done, 1);
+  assert.equal(seen.any, true);
+});
