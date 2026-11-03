@@ -1970,16 +1970,18 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     // The whole session read (T-10): what became of a compaction its events
     // alone could not tell, by this process or one before it.
     let idle = snapshot.status["type"] == "idle";
+    let pending = pending_tasks(&snapshot.messages);
     for turn in d.turns.iter_mut().filter(|t| t["_opencodeCompact"].is_object()) {
         let live = turn["_opencodeCompact"]["generation"] == generation;
         settle_compaction(turn, idle, true, live);
         // Whether OpenCode still holds one that ended unfinished, given up
-        // or not: its part, as this read finds it, and no summary of it that
-        // ended. Its old summary alone never says so (Lead 3803).
+        // or not: whether its part is among those OpenCode's next run takes
+        // up, as this read finds them. Never its old summary (Lead 3803),
+        // nor its part merely left in the record once a later answer
+        // finished (Lead 3816).
         let attempt = &mut turn["_opencodeCompact"];
-        if let (Some(message), Some(part), Some("stopped" | "failed" | "unknown" | "abandoned")) =
-            (attempt["message"].as_str().map(str::to_owned), attempt["part"].as_str().map(str::to_owned), attempt["state"].as_str()) {
-            let held = holds_part(&snapshot.messages, &message, &part) && !summary_ended(&snapshot.messages, &message);
+        if let (Some(part), Some("stopped" | "failed" | "unknown" | "abandoned")) = (attempt["part"].as_str(), attempt["state"].as_str()) {
+            let held = pending.iter().any(|p| p == part);
             attempt["nativePending"] = held.into();
         }
     }
@@ -2202,8 +2204,8 @@ fn bind(attempt: &mut Value) {
 /// An answer naming a compaction's message (T-10): its summary, kept as
 /// OpenCode last wrote it. Written before the run, it says nothing until it
 /// completes. Whether OpenCode still holds the compaction is never read from
-/// it: only a whole read finds that, in its parts (`apply_snapshot`). Whether
-/// it was one.
+/// it: only a whole read finds that, among the parts OpenCode would take up
+/// (`apply_snapshot`). Whether it was one.
 fn compaction_summary(d: &mut AgentDetail, info: &Value) -> bool {
     let Some(parent) = info["parentID"].as_str() else { return false };
     let Some(turn) = d.turns.iter_mut().rev().find(|t| t["_opencodeCompact"]["message"] == parent) else { return false };

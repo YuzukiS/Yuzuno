@@ -417,6 +417,21 @@ impl Lab {
         self.calls().into_iter().filter(|c| c["method"] == "DELETE" && c["path"].as_str().unwrap().contains("/part/")).collect()
     }
 
+    /// The event stream broken, and the whole record read again after it.
+    async fn read_again(&self) {
+        let resynced = self.kinds().iter().filter(|k| *k == "opencode/resynced").count();
+        self.control("drop", json!({})).await;
+        self.until("the record read again", |_| self.kinds().iter().filter(|k| *k == "opencode/resynced").count() > resynced).await;
+    }
+
+    /// The stand-in's process gone, and the Agent connected to a new one,
+    /// which reads the whole record.
+    async fn new_process(&self) {
+        self.control("die", json!({})).await;
+        self.until("the connection's end", |d| d.agent.connection_state == "disconnected").await;
+        self.ws.reconnect(ID).await.unwrap();
+    }
+
     /// The session's messages as the stand-in holds them now.
     fn stored(&self) -> Value {
         let state: Value = serde_json::from_str(&std::fs::read_to_string(self.root().join("state.json")).unwrap()).unwrap();
@@ -455,26 +470,54 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
     assert!(stored[&message]["parts"].as_array().unwrap().is_empty(), "the message stays, without its part");
     let summary = stored.as_object().unwrap().values().find(|m| m["info"]["parentID"] == message.as_str()).expect("the summary stays");
     assert_eq!(summary["info"]["summary"], true);
-    let d = lab.detail();
-    assert_eq!((compaction(&d)["_opencodeCompact"]["state"].as_str(), compaction(&d)["_opencodeCompact"]["nativePending"].as_bool()), (Some("abandoned"), Some(false)));
+    let given_up = |d: &AgentDetail| (compaction(d)["_opencodeCompact"]["state"].clone(), compaction(d)["_opencodeCompact"]["nativePending"].clone());
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
+    // Read again from the whole record at once, nothing answered since:
+    // after a break, then by a new process. Its old summary, still there
+    // and unfinished, does not make it pending again (Lead 3803/3816).
+    lab.read_again().await;
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
+    lab.new_process().await;
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
     lab.send("after", "Anything new?").await.unwrap();
     assert_eq!(lab.sent().len(), 1, "the message is sent");
     let session = lab.session();
     lab.control("reply", json!({"sessionID":session,"text":"Here."})).await;
     lab.until("its answer", |d| d.turns.last().is_some_and(|t| t["status"] == "completed")).await;
-    // Read again from the whole record, after a break and from a new
-    // process: its old summary, still there, does not make it pending again.
-    let resynced = lab.kinds().iter().filter(|k| *k == "opencode/resynced").count();
-    lab.control("drop", json!({})).await;
-    lab.until("the record read again", |_| lab.kinds().iter().filter(|k| *k == "opencode/resynced").count() > resynced).await;
-    let given_up = |d: &AgentDetail| (compaction(d)["_opencodeCompact"]["state"].clone(), compaction(d)["_opencodeCompact"]["nativePending"].clone());
-    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
-    lab.control("die", json!({})).await;
-    lab.until("the connection's end", |d| d.agent.connection_state == "disconnected").await;
-    lab.ws.reconnect(ID).await.unwrap();
+    // And again once that was answered.
+    lab.read_again().await;
     assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
     lab.send("again", "And now?").await.unwrap();
-    assert_eq!(lab.sent().len(), 2, "sent after the new process read it all");
+    assert_eq!(lab.sent().len(), 2, "sent after the record was read again");
+    assert_eq!(lab.summarized().len(), 1);
+}
+
+/// A stopped compaction whose part is still in the record, but no longer
+/// one OpenCode takes up: a later answer finished after it (as OpenCode's
+/// `latest` reads the session). A whole read lets new messages in, with no
+/// removal and nothing to give up.
+#[tokio::test]
+async fn a_part_left_behind_a_later_finished_answer_keeps_nothing_out() {
+    let lab = lab(true).await;
+    let turn = lab.stopped().await;
+    refuses_new_writes(&lab, "还留着上一次没有完成的压缩").await;
+    let (message, part) = {
+        let attempt = &compaction(&lab.detail())["_opencodeCompact"];
+        (attempt["message"].as_str().unwrap().to_owned(), attempt["part"].as_str().unwrap().to_owned())
+    };
+    // Another client's answer, finished, under a message this Agent never sent.
+    let session = lab.session();
+    lab.control("reply", json!({"sessionID":session,"text":"Elsewhere.","parentID":"msg_another_client"})).await;
+    lab.read_again().await;
+    let stored = lab.stored();
+    assert!(stored[&message]["parts"].as_array().unwrap().iter().any(|p| p["id"] == part.as_str()), "the part is still in the record");
+    let attempt = compaction(&lab.detail())["_opencodeCompact"].clone();
+    assert_eq!((attempt["state"].as_str(), attempt["nativePending"].as_bool()), (Some("stopped"), Some(false)), "{attempt:#}");
+    let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+    assert!(error.contains("不需要放弃"), "{error}");
+    lab.send("after", "Anything new?").await.unwrap();
+    assert_eq!(lab.sent().len(), 1, "the message is sent");
+    assert!(lab.removals().is_empty());
     assert_eq!(lab.summarized().len(), 1);
 }
 
