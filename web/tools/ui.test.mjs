@@ -1106,9 +1106,10 @@ test("each call is its own capsule, named by its kind, its MCP server and tool o
   ] };
   const page = await mount({ extraTurns: [turn] });
   try {
-    // How many steps; each call says the rest in its own capsule (T-9).
+    // How many steps, and how many returned beside the one still running
+    // (T-15); each call says the rest in its own capsule (T-9).
     const overview = () => page.document.querySelector('[data-turn-id="counts"] .tool-activity > summary .tool-overview').textContent;
-    assert.equal(overview(), "12 tool steps");
+    assert.equal(overview(), "12 tool steps1 returned");
     assert.equal(page.document.querySelectorAll('[data-turn-id="counts"] .tool-count').length, 0);
     const group = page.document.querySelector('[data-turn-id="counts"] .tool-activity');
     if (!group.open) { group.querySelector("summary").click(); await pause(); }
@@ -3524,11 +3525,12 @@ test("tool activity that arrives live unfolds and settles; what loads with the p
     assert.deepEqual(played, [], "what loads with the page does not move");
     assert.equal(row("tool-a")?.hasAttribute("data-running"), true);
     assert.equal(spinner()?.hasAttribute("data-on"), true);
-    // A row arrives: it unfolds, the count ticks, the finished status settles.
+    // A row arrives: it unfolds, the count ticks, the finished status settles,
+    // and the returned count beside the running row comes in (T-15).
     turn.items[2] = shell("tool-a", "completed", 0);
     turn.items.push(shell("tool-b"));
     await refresh();
-    assert.deepEqual(played.sort(), ["tool-count-tick:tool-overview-part", "tool-result:tool-result", "tool-unfold:item-tool-b"]);
+    assert.deepEqual(played.sort(), ["tool-count-in:tool-overview-part", "tool-count-tick:tool-overview-part", "tool-result:tool-result", "tool-unfold:item-tool-b"]);
     assert.equal(row("tool-a")?.hasAttribute("data-running"), false);
     // Commentary folds the block, whose rows then change out of sight; the
     // heading settles and the next block unfolds.
