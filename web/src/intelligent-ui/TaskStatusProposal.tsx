@@ -1,10 +1,11 @@
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ClipboardCheck, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { api, errorText, post } from "../api";
 import { ClarificationHost } from "./ClarificationHost";
 import { useResult } from "./ResultContext";
 import { TASK_STATUSES } from "./contract";
 import { strings, useLanguage } from "../i18n";
+import { useSurfaceIn } from "../surface";
 import {
   failureText,
   finalAttempt,
@@ -115,6 +116,23 @@ export function TaskStatusCard({
   const edited = status !== proposal.status || reason.trim() !== proposal.reason.trim();
   const same = !!task && task.status === status;
   const disabled = !!busy || !!blocked || !task || !onDecide || !!unanswered;
+  // Decided here (T-19 HM:T3): once Core records this window's decision, its
+  // outcome takes the edit area's place, fades in and, focus having gone with
+  // the buttons, takes it. A proposal already decided when it is shown, or
+  // decided elsewhere, does neither.
+  const outcome = useRef<HTMLParagraphElement>(null);
+  const finalId = final?.requestId ?? null;
+  const shownFinal = useRef(finalId);
+  const [decided, setDecided] = useState(0);
+  useLayoutEffect(() => {
+    const before = shownFinal.current;
+    shownFinal.current = finalId;
+    if (finalId && !before && finalId === mine) setDecided((n) => n + 1);
+  }, [finalId, mine]);
+  useSurfaceIn(outcome, decided, "small", decided > 0);
+  useLayoutEffect(() => {
+    if (decided && (!document.activeElement || document.activeElement === document.body)) outcome.current?.focus({ preventScroll: true });
+  }, [decided]);
   return (
     <section className="task-status-card" aria-label={t.aria(proposal.taskId)}>
       <header>
@@ -143,7 +161,7 @@ export function TaskStatusCard({
         </div>
       </dl>
       {final ? (
-        <p className="task-status-outcome" role="status">
+        <p className="task-status-outcome" role="status" ref={outcome} tabIndex={-1}>
           {final.state === "applied"
             ? t.applied(final.by.name, proposal.taskId, label(final.status), final.taskVersion, final.reason)
             : t.declined(final.by.name, proposal.taskId)}
