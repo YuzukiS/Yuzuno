@@ -228,7 +228,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await open(width, height, theme);
     await page.getByRole("button", { name: "Tasks & messages", exact: true }).first().click();
     await page.locator('button[data-task-id="T-1"]').first().click();
-    await page.locator(".task-research-details").first().waitFor();
+    await page.locator(".task-research-study").first().waitFor();
     for (const [title, expected] of [
       ["The bound holds for every n", ["Proof · checked by enumeration up to n ≤ 12", "A finite enumeration is no general proof.", "Proof obligations", "Induction step"]],
       ["Timing protocol", ["Levels: 1 machine · 2 builds · 10 processes · 5 iterations", "Warm-up: One discarded process", "Iterations within one process are not independent runs."]],
@@ -236,12 +236,12 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
       ["Real-arm episodes", ["Episodes: 20 planned · 18 executed · 12 completed · 3 intervened · 6 stopped · 2 excluded", "Protocol: Grasp protocol v1",
         "These counts overlap: an intervened episode may also be completed, and the denominator is the protocol's."]],
     ]) {
-      const text = await card(title).locator(".task-research-details").innerText();
+      const text = await card(title).locator(".task-research-study").innerText();
       for (const part of expected) assert.ok(text.includes(part), `${title}: ${part} in ${text}`);
     }
     assert.ok(!/verified/i.test(await page.locator(".collab-activity").innerText()));
     assert.ok(!report.reads.includes("task_research_get"), "nothing is read to show what was written");
-    const measured = await readable(".task-research-details");
+    const measured = await readable(".task-research-study");
     await card("Real-arm episodes").scrollIntoViewIfNeeded();
     await card("Real-arm episodes").screenshot({ path: resolve(output, `${name}-robotics.png`) });
     await card("The bound holds for every n").screenshot({ path: resolve(output, `${name}-theory.png`) });

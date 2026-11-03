@@ -1827,7 +1827,7 @@ test("what each kind of study keeps apart shows as given with what it cannot sho
       const cards = [...page.document.querySelectorAll(".task-research")];
       const card = (title) => cards.find((el) => el.textContent.includes(title));
       for (const [title, key] of [["The bound holds", "bound"], ["Timing protocol", "timing"], ["A gain on task A", "gain"], ["Real-arm episodes", "episodes"]]) {
-        const details = card(title).querySelector(".task-research-details");
+        const details = card(title).querySelector(".task-research-study");
         for (const text of expected[key]) assert.ok(details.textContent.includes(text), `${language} ${key}: ${text} in ${details.textContent}`);
       }
       const v2 = card("Layout B is faster on machine A");
@@ -1838,6 +1838,71 @@ test("what each kind of study keeps apart shows as given with what it cannot sho
       toggleOf(v1).click();
       await waitFor(() => v1.querySelector(".task-research-revised"), `${language}: how it was revised`);
       assert.ok(v1.querySelector(".task-research-revised").textContent.includes(expected.revised), v1.querySelector(".task-research-revised").textContent);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("a theory record's bound shows as its author wrote it whatever was checked, and an enumeration's only once (T-17)", async () => {
+  const base = { schema: "research/1", text: "As written.", type: "claim", field: "theory", status: "conditional" };
+  const records = [
+    { ...base, id: "by-hand", title: "Claim by hand", details: { result: "partial", checked: "by_hand", bound: "n ≤ 12" } },
+    { ...base, id: "alone", title: "Claim with a bound alone", details: { bound: "k < 5, for prime k only" } },
+    { ...base, id: "formal", title: "Claim in Lean", details: { checked: "formal", bound: "|x| ≤ 2^10" } },
+    { ...base, id: "none", title: "Claim not yet looked at", details: { checked: "none", bound: "m ≥ 3" } },
+    { ...base, id: "enumerated", title: "Claim enumerated", details: { result: "proof", checked: "enumeration", bound: "n ≤ 12" } },
+  ];
+  for (const [language, expected] of [
+    ["en", {
+      "Claim by hand": ["Partial result · checked by hand", "Bound: n ≤ 12"],
+      "Claim with a bound alone": ["Bound: k < 5, for prime k only"],
+      "Claim in Lean": ["checked formally", "Bound: |x| ≤ 2^10", "A formal check covers the formal statement"],
+      "Claim not yet looked at": ["not checked", "Bound: m ≥ 3"],
+      "Claim enumerated": ["Proof · checked by enumeration up to n ≤ 12", "A finite enumeration is no general proof."],
+      label: "Bound",
+    }],
+    ["zh-Hans", {
+      "Claim by hand": ["部分结果 · 人工核对", "界限: n ≤ 12"],
+      "Claim with a bound alone": ["界限: k < 5, for prime k only"],
+      "Claim in Lean": ["形式化核对", "界限: |x| ≤ 2^10", "形式化核对只覆盖形式化的命题"],
+      "Claim not yet looked at": ["未核对", "界限: m ≥ 3"],
+      "Claim enumerated": ["证明 · 枚举核对至 n ≤ 12", "有限枚举不是一般性证明。"],
+      label: "界限",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: records.map((record, n) => recorded(3 + n, record, "T.")), executions: [], hasMore: false },
+      task_research_get: (body) => readOf(body.activitySeq, records[body.activitySeq - 3], 1, body.activitySeq),
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === records.length, "every record");
+      const cards = [...page.document.querySelectorAll(".task-research")];
+      const card = (title) => cards.find((el) => el.querySelector("h5").textContent === title);
+      const shows = (title, state) => {
+        const details = card(title).querySelector(".task-research-study");
+        assert.ok(details, `${language} ${state} ${title}: its details`);
+        for (const text of expected[title]) assert.ok(details.textContent.includes(text), `${language} ${state} ${title}: ${text} in ${details.textContent}`);
+        return details.textContent;
+      };
+      for (const state of ["collapsed", "expanded"]) {
+        for (const record of records) shows(record.title, state);
+        // An enumeration's line already says how far it went: no second bound.
+        const enumerated = shows("Claim enumerated", state);
+        assert.equal(enumerated.split("n ≤ 12").length - 1, 1, `${language} ${state}: the bound once in ${enumerated}`);
+        assert.ok(!enumerated.includes(`${expected.label}:`), `${language} ${state}: no bound line in ${enumerated}`);
+        if (state === "collapsed") {
+          for (const el of cards) toggleOf(el).click();
+          await waitFor(() => cards.every((el) => el.querySelector(".task-research-read")), `${language}: every record read`);
+          // The read's panel is not the record's details.
+          for (const el of cards) assert.ok(!el.querySelector(".task-research-details").textContent.includes(expected.label), el.querySelector(".task-research-details").textContent);
+        }
+      }
       assert.deepEqual(page.errors, []);
     } finally {
       page.close();

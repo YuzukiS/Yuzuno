@@ -224,7 +224,7 @@
 }
 /* What a record's kind of study keeps apart (T-17 slice 5): as given, with
    what each part cannot show. */
-.task-research-details {
+.task-research-study {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -233,29 +233,29 @@
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.task-research-details strong {
+.task-research-study strong {
   margin-top: 2px;
   font-size: 0.74rem;
   font-weight: 600;
   color: var(--text-secondary);
 }
-.task-research-details ul {
+.task-research-study ul {
   margin: 0;
   padding-left: 18px;
 }
-.task-research-details dl {
+.task-research-study dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 2px 12px;
   margin: 0;
 }
-.task-research-details dl > div {
+.task-research-study dl > div {
   display: contents;
 }
-.task-research-details dt {
+.task-research-study dt {
   color: var(--text-secondary);
 }
-.task-research-details dd {
+.task-research-study dd {
   margin: 0;
 }
 .task-research-revised strong {

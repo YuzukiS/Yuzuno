@@ -124,6 +124,7 @@ const text = strings({
   result: { proof: "Proof", counterexample: "Counterexample", conjecture: "Conjecture", partial: "Partial result" } as Record<string, string>,
   checkedHow: (how: string, bound?: string) =>
     ({ by_hand: "checked by hand", formal: "checked formally", enumeration: `checked by enumeration up to ${bound}`, none: "not checked" } as Record<string, string>)[how] ?? how,
+  bound: "Bound",
   enumerationNote: "A finite enumeration is no general proof.",
   formalNote: "A formal check covers the formal statement; whether it answers the question is the author's judgement.",
   obligations: "Proof obligations",
@@ -217,6 +218,7 @@ const text = strings({
   result: { proof: "证明", counterexample: "反例", conjecture: "猜想", partial: "部分结果" },
   checkedHow: (how, bound) =>
     ({ by_hand: "人工核对", formal: "形式化核对", enumeration: `枚举核对至 ${bound}`, none: "未核对" } as Record<string, string>)[how] ?? how,
+  bound: "界限",
   enumerationNote: "有限枚举不是一般性证明。",
   formalNote: "形式化核对只覆盖形式化的命题；它是否回答了原问题是作者的判断。",
   obligations: "证明义务",
@@ -298,10 +300,13 @@ function Details({ field, details }: { field: string; details: Record<string, st
   let body: ReactNode = null;
   if (field === "theory") {
     const result = typeof details.result === "string" ? t.result[details.result] ?? details.result : undefined;
-    const checked = typeof details.checked === "string" ? t.checkedHow(details.checked, details.bound as string | undefined) : undefined;
+    const bound = typeof details.bound === "string" ? details.bound : undefined;
+    const checked = typeof details.checked === "string" ? t.checkedHow(details.checked, bound) : undefined;
     body = (
       <>
         {(result || checked) && <span>{[result, checked].filter(Boolean).join(" · ")}</span>}
+        {/* An enumeration's line already says how far it went. */}
+        {bound !== undefined && details.checked !== "enumeration" && <span>{t.bound}: {bound}</span>}
         {details.checked === "enumeration" && note(t.enumerationNote)}
         {details.checked === "formal" && note(t.formalNote)}
         {Array.isArray(details.obligations) && details.obligations.length > 0 && (
@@ -342,7 +347,7 @@ function Details({ field, details }: { field: string; details: Record<string, st
       </>
     );
   }
-  return body ? <div className="task-research-details" data-field={field}>{body}</div> : null;
+  return body ? <div className="task-research-study" data-field={field}>{body}</div> : null;
 }
 
 /** A comparison's entries: every one, left out or not, each with why. */
