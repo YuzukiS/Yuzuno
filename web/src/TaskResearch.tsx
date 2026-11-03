@@ -77,13 +77,19 @@ const text = strings({
   entryState: { included: "Included", excluded: "Excluded", missing: "Missing", not_done: "Not done" } as Record<string, string>,
   aspect: { unit: "unit", definition: "definition", level: "sample level", method: "method" } as Record<string, string>,
   aligned: (shared: string) => `The included entries share ${shared}. Yuzuno computes no difference: they are compared as their author compares them.`,
-  sideBySide: (differs: string, unknown: string) =>
-    `Side by side only: ${[differs && `the included entries differ in ${differs}`, unknown && `${unknown} is not given for every entry`].filter(Boolean).join("; ")}. Yuzuno computes no difference.`,
+  sideBySide: (differs: string, unknown: string, unknowns: number) =>
+    `Side by side only: ${[differs && `the included entries differ in ${differs}`, unknown && `${unknown} ${unknowns > 1 ? "are" : "is"} not given for every entry`].filter(Boolean).join("; ")}. Yuzuno computes no difference.`,
   tooFew: "Fewer than two included entries: nothing to compare yet.",
   counts: (counts: Record<string, number>) =>
     [`${counts.included} included`, `${counts.excluded} excluded`, `${counts.missing} missing`, `${counts.not_done} not done`].join(" · "),
   methodActivity: (seq: number) => `method in activity ${seq}`,
-  level: (level: string, n?: number) => (n === undefined ? level : `${level} · n = ${n}`),
+  // Each part of an entry as its author gave it; a missing part is said, never made up.
+  n: (n: number) => `n = ${n}`,
+  levelMissing: "sample level not given",
+  lowMissing: "low not given",
+  highMissing: "high not given",
+  noValue: "No value given",
+  unit: (unit: string) => `unit ${unit}`,
   field: { theory: "Theory", systems: "Systems", ml: "ML", robotics: "Robotics", other: "Other" } as Record<string, string>,
   status: {
     supported: "Supported",
@@ -147,7 +153,12 @@ const text = strings({
   tooFew: "纳入的条目不足两个：还没有可比较的内容。",
   counts: (counts) => [`纳入 ${counts.included}`, `排除 ${counts.excluded}`, `缺失 ${counts.missing}`, `未做 ${counts.not_done}`].join(" · "),
   methodActivity: (seq) => `活动 ${seq} 中的方法`,
-  level: (level, n) => (n === undefined ? level : `${level} · n = ${n}`),
+  n: (n) => `n = ${n}`,
+  levelMissing: "未给样本层级",
+  lowMissing: "下限未给",
+  highMissing: "上限未给",
+  noValue: "未给数值",
+  unit: (unit) => `单位 ${unit}`,
   field: { theory: "理论", systems: "系统", ml: "ML", robotics: "机器人", other: "其他" },
   status: { supported: "得到支持", conditional: "在条件下成立", unsupported: "不支持", open: "未定" },
   authors: "作者的判断",
@@ -217,7 +228,7 @@ function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; co
             ? t.tooFew
             : comparability.aligned
               ? t.aligned(shared)
-              : t.sideBySide(named(comparability.differs), named(comparability.unknown))}
+              : t.sideBySide(named(comparability.differs), named(comparability.unknown), comparability.unknown.length)}
           <span>{t.counts(comparability.counts)}</span>
         </p>
       )}
@@ -229,17 +240,27 @@ function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; co
               <span className="task-research-tag" data-state={entry.status}>{t.entryState[entry.status] ?? entry.status}</span>
             </span>
             {entry.reason && <span className="task-research-note">{entry.reason}</span>}
-            {entry.value && (
+            {entry.value ? (
               <span className="task-research-value">
                 {figure(entry.value.value)}
-                {entry.value.low !== undefined && entry.value.high !== undefined && ` [${figure(entry.value.low)}, ${figure(entry.value.high)}]`}
+                {(entry.value.low !== undefined || entry.value.high !== undefined) &&
+                  ` [${entry.value.low !== undefined ? figure(entry.value.low) : t.lowMissing}, ${
+                    entry.value.high !== undefined ? figure(entry.value.high) : t.highMissing
+                  }]`}
                 {entry.unit && ` ${entry.unit}`}
               </span>
+            ) : (
+              entry.unit && <span className="task-research-value">{t.noValue} · {t.unit(entry.unit)}</span>
             )}
-            {(entry.level || entry.definition || entry.method) && (
+            {(entry.level || entry.n !== undefined || entry.definition || entry.method) && (
               <span className="task-research-identity">
-                {[entry.level && t.level(entry.level, entry.n), entry.definition, entry.method && t.methodActivity(entry.method.activitySeq)]
-                  .filter(Boolean)
+                {[
+                  entry.level ?? (entry.n !== undefined && t.levelMissing),
+                  entry.n !== undefined && t.n(entry.n),
+                  entry.definition,
+                  entry.method && t.methodActivity(entry.method.activitySeq),
+                ]
+                  .filter((part) => part !== false && part !== undefined && part !== "")
                   .join(" · ")}
               </span>
             )}

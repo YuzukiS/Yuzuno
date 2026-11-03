@@ -336,21 +336,26 @@ fn fix_entry(db: &Connection, task: &SharedTask, entry: &Value, ids: &mut std::c
 }
 
 /// Which of unit, definition, level and method the included entries share,
-/// differ in, or leave unknown (missing on some). Nothing is computed from
+/// differ in, or leave unknown (missing on some). A field can both differ
+/// among the entries that give it and be missing on others: each is said,
+/// and a field missing anywhere is never shared. Nothing is computed from
 /// their values.
 fn comparability(entries: &[Value]) -> Value {
     let included: Vec<&Value> = entries.iter().filter(|entry| entry["status"] == "included").collect();
     let (mut shared, mut differs, mut unknown) = (Map::new(), vec![], vec![]);
     for field in ALIGNED {
-        let values: Vec<&Value> = included
+        let known: Vec<&Value> = included
             .iter()
             .map(|entry| if *field == "method" { &entry["method"]["activitySeq"] } else { &entry[*field] })
+            .filter(|value| !value.is_null())
             .collect();
-        if values.iter().any(|value| value.is_null()) {
+        let missing = known.len() < included.len();
+        if missing {
             unknown.push(*field);
-        } else if values.windows(2).any(|pair| pair[0] != pair[1]) {
+        }
+        if known.windows(2).any(|pair| pair[0] != pair[1]) {
             differs.push(*field);
-        } else if let Some(value) = values.first() {
+        } else if let Some(value) = known.first().filter(|_| !missing) {
             shared.insert((*field).to_owned(), (*value).clone());
         }
     }
