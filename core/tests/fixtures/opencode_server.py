@@ -78,7 +78,7 @@ counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
-         'command': 'run', 'summarize': 'run', 'defaultModel': None}
+         'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok'}
 # Compactions held open (`summarize` mode `hold`), by session: what ends one.
 held = {}
 streams = []
@@ -280,7 +280,7 @@ def control(name, body):
     if name == 'finishSummary':
         # A held compaction's run ends with its summary.
         summary = held.pop(body['sessionID'])
-        finish(body['sessionID'], summary['info'], body.get('text', 'The conversation so far, in short.'))
+        finish(body['sessionID'], summary['info'], body.get('text', 'The conversation so far, in short.'), body.get('completed', True))
         summary['ended'].set()
         return summary['info']
     raise ValueError(name)
@@ -311,11 +311,12 @@ def summary_for(session, parent):
     return info
 
 
-def finish(session, info, text):
-    """A compaction's run ending well: its summary's text, completion and finish, then idle."""
+def finish(session, info, text, completed=True):
+    """A compaction's run ending well: its summary's text, finish (and completion), then idle."""
     part = {'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text}
     now = int(time.time() * 1000)
-    info['time']['completed'] = now
+    if completed:
+        info['time']['completed'] = now
     info['finish'] = 'stop'
     with lock:
         messages[session][info['id']] = {'info': info, 'parts': [part]}
@@ -428,6 +429,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.run_command(session, body)
         if (method, *rest) == ('POST', 'summarize'):
             return self.summarize(session, body)
+        if method == 'DELETE' and len(rest) == 4 and rest[0] == 'message' and rest[2] == 'part':
+            return self.delete_part(session, rest[1], rest[3])
         if (method, *rest) == ('GET', 'message'):
             stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
             return self.reply(200, stored)
@@ -574,7 +577,8 @@ class Handler(BaseHTTPRequestHandler):
         `refuse` / `refuse-404` (refused, nothing written), `refuse-late` (written,
         then refused), `silent` (nothing written, no answer for 30 s), `auto`
         (only a compaction of OpenCode's own is written, then idle, answered),
-        `double` (two compactions asked for are written, then idle, answered)."""
+        `double` (two compactions asked for are written, then idle, answered), `proxy500` (written, its
+        summary too, then idle and a 500, as OpenCode's proxy answers a broken upstream)."""
         if not isinstance(body, dict) or not isinstance(body.get('providerID'), str) or not isinstance(body.get('modelID'), str):
             return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: providerID and modelID are required'}})
         mode = modes['summarize']
@@ -602,18 +606,42 @@ class Handler(BaseHTTPRequestHandler):
         if mode == 'refuse-late':
             go_idle(session)
             return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused after writing'}})
+        if mode == 'proxy500':
+            # Written, its summary too, then the upstream broke: OpenCode's
+            # proxy answers 500 (`middleware/proxy.ts`), and the session is idle.
+            summary_for(session, user['id'])
+            go_idle(session)
+            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: upstream broke'}})
         info = summary_for(session, user['id'])
         if mode == 'hold':
             ended = threading.Event()
             held[session] = {'info': info, 'ended': ended}
             ended.wait(60)
-            if info.get('error'):
-                # Its run was aborted: the request ends without an answer.
-                self.close_connection = True
-                return None
+            # Aborted or not, the run ended and the waiting request is
+            # answered (`effect/runner.ts`: a cancelled run's waiters get
+            # its onInterrupt), so the handler returns true.
             return self.reply(200, True)
         time.sleep(0.05)
         finish(session, info, 'The conversation so far, in short.')
+        if mode == 'drop':
+            self.close_connection = True
+            return None
+        return self.reply(200, True)
+
+    def delete_part(self, session, message_id, part_id):
+        """As OpenCode 1.19.3's part removal (`session.ts` removePart and
+        `core/src/session/projector.ts`): announced, then deleted by its ID
+        and session alone, with no check that it exists or is that
+        message's, and answered true. Mode `deletePart`: `ok`, `drop`
+        (removed, then the connection ends with no answer) or `lie`
+        (answered true, nothing removed)."""
+        mode = modes['deletePart']
+        if mode != 'lie':
+            with lock:
+                for m in messages.get(session, {}).values():
+                    m['parts'] = [p for p in m['parts'] if p['id'] != part_id]
+            save()
+            publish('message.part.removed', {'sessionID': session, 'messageID': message_id, 'partID': part_id})
         if mode == 'drop':
             self.close_connection = True
             return None

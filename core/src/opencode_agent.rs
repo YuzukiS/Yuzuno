@@ -91,7 +91,7 @@
 //! machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, ContextUsage, PendingRequest, UsageSeen},
-    opencode::{self, CommandChoice, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
+    opencode::{self, CommandChoice, CompactAnswer, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
     workspace::Workspace,
@@ -1390,15 +1390,114 @@ impl Workspace {
         self.changed(id);
         let request = c.server.summarize(&c.session, &provider, &model)?;
         let (done, checked) = tokio::sync::oneshot::channel();
-        // Only the generation: holding the connection would hold its server,
-        // and so its process, until the request ends.
-        let (ws, agent, attempted, generation) = (self.clone(), id.to_owned(), turn.clone(), c.generation);
+        // Only the generation, and the Workspace weakly: holding the
+        // connection would hold its server, and so its process, until the
+        // request ends. The request itself goes on until OpenCode answers.
+        let (ws, agent, attempted, generation) = (Arc::downgrade(self), id.to_owned(), turn.clone(), c.generation);
         tokio::spawn(async move {
             let answer = request.await;
-            ws.opencode_compact_answered(&agent, generation, &attempted, answer).await;
+            if let Some(ws) = ws.upgrade() {
+                ws.opencode_compact_answered(&agent, generation, &attempted, answer).await;
+            }
             let _ = done.send(());
         });
         self.opencode_compact_started(id, &turn, checked).await
+    }
+
+    /// The user's giving up of a compaction OpenCode still holds unfinished
+    /// (T-10, contract on T-10 #3150 and Lead 3773): only that compaction's
+    /// own compaction part is removed, so that OpenCode's next run does not
+    /// take it up under a new message. Its message, its summary (whose text,
+    /// if any, may still reach the model, as an aborted answer's does) and
+    /// every file stay; nothing is summarized, prompted or aborted.
+    ///
+    /// Under the Agent gate, and only with proof that its request ended
+    /// where it went (200 and `true`): a whole read of the session must find
+    /// it idle, the part still that message's, no summary of it that ended
+    /// (then it is a compaction that happened), and nothing else left for
+    /// OpenCode to take up (removing this part would not let a message in).
+    /// New messages are let in again only once a whole read after the
+    /// removal finds the session idle, the part gone and nothing left to take
+    /// up. A lost answer is read for, never sent again; a part already gone
+    /// is not asked for again. Another client of the same OpenCode could
+    /// still change the session between the read and the removal.
+    pub async fn opencode_compact_abandon(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        let d = self.send_view(id).await?;
+        ensure_agent_open(&d.agent)?;
+        let attempt = d.turns.iter().find(|t| t["id"] == turn).map(|t| t["_opencodeCompact"].clone()).filter(Value::is_object)
+            .context("没有这次压缩")?;
+        ensure!(attempt["nativePending"] == true || attempt["state"] == "unknown", "这次压缩没有留在 OpenCode 里的待办；不需要放弃");
+        let (Some(message), Some(part)) = (attempt["message"].as_str().map(str::to_owned), attempt["part"].as_str().map(str::to_owned))
+            else { bail!("不知道 OpenCode 里哪一条是这次压缩；不能放弃，没有删除任何内容") };
+        ensure!(attempt["answer"]["kind"] == "ended",
+            "还没有这次压缩的请求已经结束的证据（OpenCode 对它回答 200 和 true）；不能放弃，没有删除任何内容");
+        ensure!(!d.turns.iter().any(|t| t["status"] == "inProgress" && t["id"] != turn), "OpenCode 正在执行；不能放弃，没有删除任何内容");
+        let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 未连接；连接后才能放弃，没有删除任何内容")?;
+        ensure!(attempt["session"] == c.session.as_str(), "OpenCode 会话已变化；不能放弃，没有删除任何内容");
+        // A whole read, by the same connection from start to end.
+        let read = |what: &'static str| {
+            let c = c.clone();
+            async move {
+                let messages = c.server.messages(&c.session).await.context(what)?;
+                let idle = c.server.session_status(&c.session).await.context(what)?["type"] == "idle";
+                anyhow::Ok((messages, idle))
+            }
+        };
+        let unread = "没有读到 OpenCode 会话现在的状态；没有删除任何内容";
+        let (messages, idle) = read(unread).await?;
+        ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化；没有删除任何内容");
+        ensure!(idle, "OpenCode 会话不是空闲状态；不能放弃，没有删除任何内容");
+        let ended = summary_ended(&messages, &message);
+        let (present, others) = (holds_part(&messages, &message, &part), pending_tasks(&messages).into_iter().filter(|p| *p != part).count());
+        if ended {
+            bail!("这次压缩在 OpenCode 里已经完成；没有删除任何内容。请重新连接核对");
+        }
+        ensure!(others == 0, "OpenCode 里还有其他待办的压缩或子任务；放弃这一次也不能让新消息进来，没有删除任何内容");
+        let (attempted, data) = (turn.to_owned(), json!({"turnId":turn,"messageId":message,"partId":part,"present":present}));
+        self.record_update(id, "opencode/compactAbandonRequested", data, Sel::Turns(vec![turn.to_owned()]), move |d| {
+            if let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == attempted.as_str()) {
+                entry["_opencodeCompact"]["abandonRequested"] = now().into();
+            }
+        }).await?;
+        self.changed(id);
+        // A part already gone is not asked for again; the read below decides.
+        let removed = if present { Some(c.server.delete_part(&c.session, &message, &part).await) } else { None };
+        let unread = "没有读到删除后的 OpenCode 会话；仍不发送新消息，可以再试一次";
+        let after = read(unread).await;
+        let current = self.opencode_current(id, c.generation).is_some();
+        let outcome = match &after {
+            Ok((messages, idle)) if current && *idle && !holds_part(messages, &message, &part) && pending_tasks(messages).is_empty()
+                && !summary_ended(messages, &message) => Ok(()),
+            Ok((messages, _)) if holds_part(messages, &message, &part) => Err("删除后，OpenCode 的记录里仍有这次压缩的待办；仍不发送新消息".to_owned()),
+            Ok((_, false)) => Err("删除后 OpenCode 会话不是空闲状态；仍不发送新消息".to_owned()),
+            Ok(_) if !current => Err("删除后 OpenCode 连接已变化；仍不发送新消息".to_owned()),
+            Ok(_) => Err("删除后，OpenCode 里仍有待办，或这次压缩已经完成；仍不发送新消息。请重新连接核对".to_owned()),
+            Err(error) => Err(format!("{error:#}")),
+        };
+        let removal = match &removed {
+            None => json!("alreadyGone"),
+            Some(Ok(())) => json!("answered"),
+            Some(Err(error)) => json!({"error":format!("{error:#}")}),
+        };
+        let (attempted, settled) = (turn.to_owned(), outcome.clone());
+        let data = json!({"turnId":turn,"removal":removal,"error":outcome.as_ref().err()});
+        self.record_update(id, if outcome.is_ok() { "opencode/compactAbandoned" } else { "opencode/compactAbandonUnconfirmed" }, data,
+            Sel::Turns(vec![turn.to_owned()]), move |d| {
+            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == attempted.as_str()) else { return };
+            if settled.is_ok() {
+                entry["_opencodeCompact"]["state"] = "abandoned".into();
+                entry["_opencodeCompact"]["nativePending"] = false.into();
+                entry["_opencodeCompact"]["abandonedAt"] = now().into();
+            }
+        }).await?;
+        self.changed(id);
+        match outcome {
+            Ok(()) => Ok(json!({"abandoned":true,"turnId":turn})),
+            Err(why) => bail!(why),
+        }
     }
 
     /// What is known of a compaction's start (T-10): accepted once OpenCode
@@ -1436,11 +1535,13 @@ impl Workspace {
     /// OpenCode's whole record of the session read again while the connection
     /// it went on is still the Agent's: the answer alone says neither that it
     /// ran nor how it ended.
-    async fn opencode_compact_answered(&self, id: &str, generation: u64, turn: &str, answer: Submission) {
+    async fn opencode_compact_answered(&self, id: &str, generation: u64, turn: &str, answer: CompactAnswer) {
+        // `ended`: 200 and `true` from the process it went to, its handler
+        // returned there; the only proof here that its run has ended.
         let answer = match &answer {
-            Submission::Accepted => json!({"kind":"accepted"}),
-            Submission::Refused(status) => json!({"kind":"refused","code":status.code,"body":status.body}),
-            Submission::Unknown(reason) => json!({"kind":"unknown","detail":reason}),
+            CompactAnswer::Ended => json!({"kind":"ended","status":200,"body":true,"generation":generation,"at":now()}),
+            CompactAnswer::Refused(status) => json!({"kind":"refused","code":status.code,"body":status.body,"generation":generation,"at":now()}),
+            CompactAnswer::Unknown(reason) => json!({"kind":"unknown","detail":reason,"generation":generation,"at":now()}),
         };
         let (attempt, kept) = (turn.to_owned(), answer.clone());
         let recorded = self.record_update(id, "opencode/compactAnswered", json!({"turnId":turn,"answer":answer}), Sel::Turns(vec![turn.to_owned()]), move |d| {
@@ -1985,6 +2086,39 @@ fn part(d: &mut AgentDetail, part: &Value) {
     }
 }
 
+/// The compaction and sub-agent parts OpenCode 1.19.3 would take up at its
+/// next run (`MessageV2.latest`, message-v2.ts:595-610): those of messages
+/// after its newest finished answer, by creation time, then ID. Its own
+/// `filterCompacted` first leaves out what came before the newest finished
+/// compaction, whose summary is itself a finished answer, so this is the same.
+fn pending_tasks(messages: &Value) -> Vec<String> {
+    let after = |a: &Value, b: &Value| match (a["time"]["created"].as_i64(), b["time"]["created"].as_i64()) {
+        (x, y) if x != y => x > y,
+        _ => a["id"].as_str() > b["id"].as_str(),
+    };
+    let list = messages.as_array().map(Vec::as_slice).unwrap_or_default();
+    let finished = list.iter().map(|m| &m["info"])
+        .filter(|i| i["role"] == "assistant" && i["finish"].as_str().is_some_and(|f| !f.is_empty()))
+        .fold(None, |newest: Option<&Value>, i| if newest.is_some_and(|n| !after(i, n)) { newest } else { Some(i) });
+    list.iter().filter(|m| finished.is_none_or(|f| after(&m["info"], f)))
+        .flat_map(|m| m["parts"].as_array().into_iter().flatten())
+        .filter(|p| matches!(p["type"].as_str(), Some("compaction" | "subtask")))
+        .filter_map(|p| p["id"].as_str().map(str::to_owned)).collect()
+}
+
+/// Whether `message` still holds the compaction part `part` (T-10).
+fn holds_part(messages: &Value, message: &str, part: &str) -> bool {
+    messages.as_array().into_iter().flatten().filter(|m| m["info"]["id"] == message)
+        .flat_map(|m| m["parts"].as_array().into_iter().flatten()).any(|p| p["id"] == part && p["type"] == "compaction")
+}
+
+/// Whether a summary of `message` ended as OpenCode's `filterCompacted` takes
+/// a compaction's boundary: finished, with no error (T-10).
+fn summary_ended(messages: &Value, message: &str) -> bool {
+    messages.as_array().into_iter().flatten().map(|m| &m["info"]).any(|i| i["role"] == "assistant" && i["parentID"] == message
+        && i["summary"] == true && i["finish"].as_str().is_some_and(|f| !f.is_empty()) && i["error"].is_null())
+}
+
 /// The newest compaction Turn still finding out what became of it (T-10):
 /// pending, or unknown.
 fn compacting(d: &mut AgentDetail) -> Option<&mut Value> {
@@ -2017,6 +2151,7 @@ fn compaction_part(d: &mut AgentDetail, message: &str, id: &str, part: &Value) -
             let attempt = &mut turn["_opencodeCompact"];
             if !attempt["known"].as_array().is_some_and(|known| known.iter().any(|k| k == message)) {
                 attempt["candidates"][message]["auto"] = part["auto"].clone();
+                attempt["candidates"][message]["part"] = id.into();
                 bind(attempt);
             }
         }
@@ -2043,6 +2178,7 @@ fn bind(attempt: &mut Value) {
         [] => {}
         [one] => {
             if attempt["message"].is_null() {
+                attempt["part"] = attempt["candidates"][one.as_str()]["part"].clone();
                 attempt["message"] = one.as_str().into();
             }
         }
@@ -2091,7 +2227,8 @@ fn settle_compaction(turn: &mut Value, idle: bool, full: bool, live: bool) {
             let interrupted = summary["error"]["name"] == "MessageAbortedError";
             return compaction_ended(turn, if interrupted { "interrupted" } else { "failed" }, &summary["error"], summary["finish"].is_null());
         }
-        if idle && summary["completed"].is_number() && summary["finish"].is_string() {
+        // A boundary as OpenCode's own `filterCompacted` takes one: finished, no error.
+        if idle && summary["finish"].is_string() {
             turn["status"] = "completed".into();
             // Found by a later read after its end was unknown.
             turn.as_object_mut().expect("turn").remove("error");

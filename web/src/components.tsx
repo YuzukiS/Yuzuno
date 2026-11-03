@@ -42,7 +42,7 @@ import type {
   PendingRequest,
   MessageReceipt,
 } from "./types";
-import { api, artifactUrl, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
+import { api, artifactUrl, errorText, NO_ANSWER_REPLY, post, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { useRequestDraft } from "./request-draft";
 import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool, PlanText, planTitle } from "./ClaudeControls";
@@ -792,6 +792,35 @@ function ToolActivity({
     </details>
   );
 }
+/** Giving up an OpenCode compaction that OpenCode still holds unfinished
+ * (T-10): the user's own act, run by Core, which removes only its part. */
+function CompactionGiveUp({ agentId, turn }: { agentId: string; turn: NativeTurn }) {
+  const t = useStrings(turnWords);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const attempt = turn._opencodeCompact;
+  if (!attempt || !attempt.message || !attempt.part || !(attempt.nativePending === true || attempt.state === "unknown")) return null;
+  async function giveUp() {
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/agents/${encodeURIComponent(agentId)}/compact/abandon`, { turnId: turn.id });
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="turn-compaction-give-up">
+      <button type="button" className="secondary-button" disabled={busy} title={t.giveUpCompactionHelp} onClick={() => void giveUp()}>
+        {busy ? t.givingUpCompaction : t.giveUpCompaction}
+      </button>
+      {error && <p role="alert" className="inline-error" lang="">{error}</p>}
+    </div>
+  );
+}
+
 export function Turn({
   turn,
   index,
@@ -1229,6 +1258,7 @@ export function Turn({
               : errorText(turn.error)}
           </div>
         )}
+        {agent.harness === "opencode" && <CompactionGiveUp agentId={agent.id} turn={turn} />}
         {turn.status === "interrupted" && (
           <div className="turn-interrupted">
             {turn.missingNative ? (

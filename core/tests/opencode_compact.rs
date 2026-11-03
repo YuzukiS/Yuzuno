@@ -182,6 +182,15 @@ async fn a_compaction_runs_once_and_ends_only_with_its_completed_summary() {
     assert_eq!(turn["_yuzunoCompactionId"], format!("{}:compaction", turn["id"].as_str().unwrap()));
     assert_eq!(d.agent.status, "working");
     refuses_new_writes(&lab, "正在压缩").await;
+    // The event stream breaks while it runs: the whole record, read again,
+    // holds the earlier compaction too, which is still not this one.
+    let resynced = lab.kinds().iter().filter(|k| *k == "opencode/resynced").count();
+    lab.control("drop", json!({})).await;
+    lab.until("the record read again", |_| lab.kinds().iter().filter(|k| *k == "opencode/resynced").count() > resynced).await;
+    let d = lab.detail();
+    let attempt = &compaction(&d)["_opencodeCompact"];
+    assert_eq!((attempt["state"].as_str(), attempt["ambiguous"].as_bool()), (Some("pending"), None), "{attempt:#}");
+    assert_eq!(attempt["message"], turn["_opencodeCompact"]["message"]);
 
     lab.control("finishSummary", json!({"sessionID":session,"text":SUMMARY})).await;
     let d = lab.until("the compaction's end", |d| compaction(d)["status"] == "completed").await;
@@ -398,4 +407,141 @@ async fn the_compact_route_runs_an_opencode_agents_own_compaction() {
     assert_eq!(response.status().as_u16(), 200);
     lab.until("its end", |d| compaction(d)["status"] == "completed").await;
     assert_eq!(lab.summarized().len(), 1);
+}
+
+// ---- giving up a compaction OpenCode still holds (T-10, Lead 3773) -------
+
+impl Lab {
+    /// The part removals OpenCode was sent.
+    fn removals(&self) -> Vec<Value> {
+        self.calls().into_iter().filter(|c| c["method"] == "DELETE" && c["path"].as_str().unwrap().contains("/part/")).collect()
+    }
+
+    /// The session's messages as the stand-in holds them now.
+    fn stored(&self) -> Value {
+        let state: Value = serde_json::from_str(&std::fs::read_to_string(self.root().join("state.json")).unwrap()).unwrap();
+        state["messages"][self.session()].clone()
+    }
+
+    /// A compaction stopped while it ran: one OpenCode still holds, its
+    /// request answered 200 and true. Its Turn's ID.
+    async fn stopped(&self) -> String {
+        self.summarize("hold").await;
+        self.ws.opencode_compact(ID).await.unwrap();
+        self.until("its summary", |d| compaction(d)["_opencodeCompact"]["summary"].is_object()).await;
+        self.ws.interrupt(ID).await.unwrap();
+        let d = self.until("its request's end", |d| compaction(d)["_opencodeCompact"]["answer"]["kind"] == "ended").await;
+        let attempt = &compaction(&d)["_opencodeCompact"];
+        assert_eq!((attempt["state"].as_str(), attempt["nativePending"].as_bool()), (Some("stopped"), Some(true)), "{attempt:#}");
+        compaction(&d)["id"].as_str().unwrap().to_owned()
+    }
+}
+
+/// Given up once its request ended (200 and `true`), a stopped compaction's
+/// part, and only it, is removed: its message and summary stay. A whole read
+/// after the removal lets new messages in again, which OpenCode answers.
+#[tokio::test]
+async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_in() {
+    let lab = lab(true).await;
+    let turn = lab.stopped().await;
+    let attempt = compaction(&lab.detail())["_opencodeCompact"].clone();
+    let (message, part) = (attempt["message"].as_str().unwrap().to_owned(), attempt["part"].as_str().unwrap().to_owned());
+    let done = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
+    assert_eq!(done["abandoned"], true, "{done}");
+    let removals = lab.removals();
+    assert_eq!(removals.len(), 1, "{removals:#?}");
+    assert!(removals[0]["path"].as_str().unwrap().ends_with(&format!("/message/{message}/part/{part}")), "{removals:#?}");
+    let stored = lab.stored();
+    assert!(stored[&message]["parts"].as_array().unwrap().is_empty(), "the message stays, without its part");
+    let summary = stored.as_object().unwrap().values().find(|m| m["info"]["parentID"] == message.as_str()).expect("the summary stays");
+    assert_eq!(summary["info"]["summary"], true);
+    let d = lab.detail();
+    assert_eq!((compaction(&d)["_opencodeCompact"]["state"].as_str(), compaction(&d)["_opencodeCompact"]["nativePending"].as_bool()), (Some("abandoned"), Some(false)));
+    lab.send("after", "Anything new?").await.unwrap();
+    assert_eq!(lab.sent().len(), 1, "the message is sent");
+    assert_eq!(lab.summarized().len(), 1);
+}
+
+/// Without proof that its request ended (a 500, as OpenCode's proxy answers
+/// a broken upstream; or no answer at all), nothing is removed.
+#[tokio::test]
+async fn without_its_requests_end_a_compaction_is_never_given_up() {
+    for mode in ["proxy500", "drop-before"] {
+        let lab = lab(true).await;
+        let turn = if mode == "proxy500" {
+            lab.summarize("proxy500").await;
+            let _ = lab.ws.opencode_compact(ID).await;
+            let d = lab.until("its end found unknown", |d| compaction(d)["_opencodeCompact"]["state"] == "unknown").await;
+            assert_eq!(compaction(&d)["_opencodeCompact"]["answer"]["kind"], "unknown", "a 500 proves nothing");
+            compaction(&d)["id"].as_str().unwrap().to_owned()
+        } else {
+            // Its process gone mid-run: unknown, and unfinished.
+            lab.summarize("hold").await;
+            lab.ws.opencode_compact(ID).await.unwrap();
+            lab.until("its summary", |d| compaction(d)["_opencodeCompact"]["summary"].is_object()).await;
+            lab.control("die", json!({})).await;
+            lab.until("the connection's end", |d| d.agent.connection_state == "disconnected").await;
+            lab.ws.reconnect(ID).await.unwrap();
+            compaction(&lab.detail())["id"].as_str().unwrap().to_owned()
+        };
+        let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+        assert!(error.contains("请求已经结束的证据"), "{mode}: {error}");
+        assert!(lab.removals().is_empty(), "{mode}");
+        refuses_new_writes(&lab, "无法确认").await;
+    }
+}
+
+/// Not given up, with nothing removed: while OpenCode is busy; while it holds
+/// another compaction or task to take up (giving this one up would not let a
+/// message in); or once its summary has ended, finished with no error, even
+/// with no completion time (then it is a compaction that happened).
+#[tokio::test]
+async fn a_compaction_is_not_given_up_while_busy_with_more_to_take_up_or_once_it_happened() {
+    let lab = lab(true).await;
+    let turn = lab.stopped().await;
+    let session = lab.session();
+    lab.control("busy", json!({"sessionID":session})).await;
+    let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+    assert!(error.contains("不是空闲状态"), "{error}");
+    lab.control("idle", json!({"sessionID":session})).await;
+    // OpenCode starts a compaction of its own meanwhile, left to take up.
+    lab.control("compaction", json!({"sessionID":session,"auto":true})).await;
+    let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+    assert!(error.contains("还有其他待办"), "{error}");
+    assert!(lab.removals().is_empty());
+
+    let lab = self::lab(true).await;
+    lab.summarize("hold").await;
+    lab.ws.opencode_compact(ID).await.unwrap();
+    lab.until("its summary", |d| compaction(d)["_opencodeCompact"]["summary"].is_object()).await;
+    let session = lab.session();
+    lab.control("finishSummary", json!({"sessionID":session,"completed":false})).await;
+    let d = lab.until("its end", |d| compaction(d)["status"] == "completed").await;
+    let turn = compaction(&d)["id"].as_str().unwrap().to_owned();
+    let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+    assert!(error.contains("没有留在 OpenCode 里的待办"), "{error}");
+    assert!(lab.removals().is_empty());
+}
+
+/// The removal's answer lost, its part gone: the read after it settles it,
+/// and nothing is asked again. Answered, but the part still there: new
+/// messages stay out, and the next try reads before it asks.
+#[tokio::test]
+async fn a_removal_is_settled_by_the_record_never_by_its_answer() {
+    let lab = lab(true).await;
+    let turn = lab.stopped().await;
+    lab.control("mode", json!({"deletePart":"drop"})).await;
+    lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
+    assert_eq!(lab.removals().len(), 1);
+    assert_eq!(compaction(&lab.detail())["_opencodeCompact"]["state"], "abandoned");
+
+    let lab = self::lab(true).await;
+    let turn = lab.stopped().await;
+    lab.control("mode", json!({"deletePart":"lie"})).await;
+    let error = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap_err().to_string();
+    assert!(error.contains("仍有这次压缩的待办"), "{error}");
+    refuses_new_writes(&lab, "还留着上一次没有完成的压缩").await;
+    lab.control("mode", json!({"deletePart":"ok"})).await;
+    lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
+    assert_eq!(lab.removals().len(), 2, "asked again only as the user's next try");
 }

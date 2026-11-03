@@ -206,6 +206,9 @@ export interface NativeTurn {
   _yuzunoPlan?: { step: string; status: string }[];
   /** Live contextCompaction item ID; omitted when execution is unconfirmed. */
   _yuzunoCompactionId?: string | null;
+  /** An OpenCode Agent's /compact (T-10): what Core knows of it. `nativePending`:
+   * OpenCode still holds it unfinished, which keeps new messages out. */
+  _opencodeCompact?: { state?: string; nativePending?: boolean; message?: string | null; part?: string | null };
   /** Interactive results published in this Turn with result_publish: the
    * latest version of each, in publication order (see core/src/results.rs). */
   _yuzunoResults?: PublishedResultRef[];
