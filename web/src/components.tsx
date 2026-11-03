@@ -1336,6 +1336,14 @@ function CodexPendingCard({
         omitted?: number;
       }
     | undefined;
+  // Which decision is on its way: its button shows the spinner the answer
+  // form has (T-19 CV:Q-02).
+  const [deciding, setDeciding] = useState("");
+  const busy = (decision: string) => sending && deciding === decision;
+  const decide = (decision: string) => {
+    setDeciding(decision);
+    void respond({ decision });
+  };
   const respond = async (response: unknown) => {
     if (disabled || answering.current) return;
     answering.current = true;
@@ -1510,23 +1518,39 @@ function CodexPendingCard({
             <button
               className="primary-button"
               disabled={disabled || sending || !canDecide("accept")}
-              onClick={() => void respond({ decision: "accept" })}
+              aria-busy={busy("accept") || undefined}
+              onClick={() => decide("accept")}
             >
+              {busy("accept") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {t.allowOnce}
             </button>
-            {canDecide("acceptForSession") && <button className="secondary-button" disabled={disabled || sending} onClick={() => void respond({ decision: "acceptForSession" })}>{t.allowSession}</button>}
+            {canDecide("acceptForSession") && (
+              <button
+                className="secondary-button"
+                disabled={disabled || sending}
+                aria-busy={busy("acceptForSession") || undefined}
+                onClick={() => decide("acceptForSession")}
+              >
+                {busy("acceptForSession") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
+                {t.allowSession}
+              </button>
+            )}
             <button
               className="secondary-button"
               disabled={disabled || sending || !canDecide("decline")}
-              onClick={() => void respond({ decision: "decline" })}
+              aria-busy={busy("decline") || undefined}
+              onClick={() => decide("decline")}
             >
+              {busy("decline") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {t.decline}
             </button>
             <button
               className="quiet-button"
               disabled={disabled || sending || !canDecide("cancel")}
-              onClick={() => void respond({ decision: "cancel" })}
+              aria-busy={busy("cancel") || undefined}
+              onClick={() => decide("cancel")}
             >
+              {busy("cancel") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {subAgent ? t.cancelSub : t.cancelTurn}
             </button>
           </div>
