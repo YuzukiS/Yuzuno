@@ -384,8 +384,15 @@ for (const run of runs) {
       await bring("a", "reset-1", made("reset-1", "Also meanwhile"), "__resetReplay", 1500));
     await nextItem("live-after", "After the break");
     fades("after that recovery, a Turn Core streams", await bring("a", "live-after", made("live-after", "After the break"), "__stream"));
-    // A resumed stream's replay ends at its first heartbeat (Lead 3356): a Turn streamed before it
-    // only shows, and one streamed after it fades in.
+    // A resumed stream's replay ends at its first heartbeat (Lead 3356; #504 R1 276d4a1d): the first
+    // Turn streamed after it fades in. One streamed before it only shows, and one after it fades in.
+    await page.evaluate(() => window.__quietResume("a"));
+    await page.waitForTimeout(300);
+    await page.evaluate(() => window.__heartbeat());
+    await page.waitForTimeout(150);
+    await nextItem("beat-1", "First after the heartbeat");
+    fades("after the resumed stream's first heartbeat, the first Turn Core streams",
+      await bring("a", "beat-1", made("beat-1", "First after the heartbeat"), "__stream"));
     await page.evaluate(() => window.__quietResume("a"));
     await page.waitForTimeout(300);
     await nextItem("pre-beat", "Before the heartbeat");
