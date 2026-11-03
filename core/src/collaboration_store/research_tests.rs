@@ -361,6 +361,8 @@ fn a_comparison_entry_says_why_it_was_left_out_and_states_no_value_it_does_not_h
     assert!(error(comment(&store, "author", "entries-on-claim", "T-1",
         json!({"type":"claim","id":"c","title":"T","text":"S","status":"open","entries":[{"id":"a","label":"A","status":"included"}]}))).contains("for comparisons only"));
     assert_eq!(counts(&store), before, "nothing refused is written");
+}
+
 #[test]
 fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
     let (_dir, store) = setup();

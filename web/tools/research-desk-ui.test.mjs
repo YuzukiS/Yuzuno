@@ -191,6 +191,12 @@ test("a source naming a Task comparison shows its entry counts (T-17)", async ()
     await until(() => desk.textContent.includes("2 included, 1 excluded, 1 missing, 1 not done"), "the comparison's counts");
     assert.ok(desk.textContent.includes("Task record T-1 · activity 9"));
     assert.ok(desk.textContent.includes("Comparison “Layout B vs A”"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 /** A desk read of layoutStudy with these sources, answered at once or by `answer`. */
 const layoutRead = (sources) => ({ body: { key: layoutStudy.key, version: 3, elementId: "desk", values: {}, sources } });
 

@@ -1460,6 +1460,9 @@ test("a comparison shows every entry, left out or not, with why, and says what t
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
+  }
+});
+
 test("a record whose newest version is unknown never reads as the newest, in English and Chinese (T-17)", async () => {
   const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional",
     method: { activitySeq: 3, id: "timing", title: "Timing protocol" } };
