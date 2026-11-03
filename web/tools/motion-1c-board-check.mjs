@@ -2,8 +2,9 @@
 // covered in collaboration-ui.test.mjs): in Chromium on a production build of
 // the app with a synthetic Workspace whose board has three tasks, never
 // written to. Opening a task turns the cards into rows beside it: the rows
-// that take over fade in once over small (collab-list-flip). The cards coming
-// back after a close are not read here. Under reduced motion nothing fades. A
+// that take over fade in once over small from 0.4 (collab-list-flip), so the
+// list is never gone; frames held at 0 % and 50 % of it are saved for review.
+// The cards coming back after a close are not read here. Under reduced motion nothing fades. A
 // narrow window is run too. The board's Core calls are reads; one in WRITES
 // would be recorded and fail the check. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1c-board-check.mjs
@@ -131,12 +132,40 @@ for (const run of runs) {
   } else if (reduced) {
     ok(`${tag}: under reduced motion the rows take over at once, with nothing playing`, rows.length > 0 && rows.every((f) => !f.plays.length && f.opacity === 1), rows.slice(0, 2));
   } else {
-    ok(`${tag}: the cards (${cards.as}) become rows that fade in once over small (collab-list-flip 180 ms)`,
-      cards.as === "cards" && rows.length > 0 && rows[0].plays.includes("collab-list-flip:180") && rows[0].opacity < 1, rows.slice(0, 2));
+    ok(`${tag}: the cards (${cards.as}) become rows that fade in once over small (collab-list-flip 180 ms) from 0.4, never gone`,
+      cards.as === "cards" && rows.length > 0 && rows[0].plays.includes("collab-list-flip:180") && rows[0].opacity < 1 &&
+        rows.every((f) => f.opacity >= 0.39), rows.slice(0, 2));
     const settled = rows.at(-1);
     ok(`${tag}: and are done after it, fully shown, with nothing left playing`, !!settled && !settled.plays.length && settled.opacity === 1, settled);
   }
-  if (!reduced && run.name !== "narrow") await page.screenshot({ path: join(output, `${tag}-rows.png`) });
+  if (!reduced && run.name !== "narrow") {
+    await page.screenshot({ path: join(output, `${tag}-rows.png`) });
+    // The fade itself, held: close the task, open another, and stop its fade at 0 % and at 50 %.
+    await page.locator('[aria-label="Close task"]').first().click();
+    await page.locator(".collab-cards").first().waitFor({ timeout: 3000 });
+    await page.waitForTimeout(400);
+    await page.locator(".collab-task-card").nth(2).click();
+    const held = [];
+    for (const at of [0, 90]) {
+      const state = await page.evaluate((at) => new Promise((done) => {
+        const find = () => document.querySelector(".collab-groups.collab-list-flip")?.getAnimations().find((a) => a.animationName === "collab-list-flip");
+        const hold = () => {
+          const animation = find();
+          if (!animation) return requestAnimationFrame(hold);
+          animation.pause();
+          animation.currentTime = at;
+          requestAnimationFrame(() => done({ at, opacity: Number(getComputedStyle(document.querySelector(".collab-groups")).opacity) }));
+        };
+        hold();
+      }), at);
+      await page.screenshot({ path: join(output, `${tag}-flip-${at}ms.png`) });
+      held.push(state);
+    }
+    await page.evaluate(() => document.querySelector(".collab-groups")?.getAnimations().forEach((a) => a.play()));
+    report.frames[`${tag}: held`] = held;
+    ok(`${tag}: held at 0 % the rows show at 0.4, at 50 % between (screenshots ${tag}-flip-0ms.png, ${tag}-flip-90ms.png)`,
+      Math.abs(held[0]?.opacity - 0.4) < 0.02 && held[1]?.opacity > 0.4 && held[1]?.opacity < 1, held);
+  }
   await context.close();
 }
 await browser.close();
