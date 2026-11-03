@@ -8,14 +8,23 @@
 //!
 //! None of it is a check of the research. A number read from a snapshot is
 //! only in that file; a stated SHA-256 equal to the snapshot's is only the
-//! same file content. Core reads nothing but this section's own snapshots:
-//! no source location, path or URL a desk names.
+//! same file content. Core reads nothing but this section's own snapshots
+//! and the Task research records a desk names (T-17): no source location,
+//! path or URL.
+//!
+//! A source may name a Task research record (`task: {taskId, activitySeq}`)
+//! instead of a snapshot. The record holds its own identity, fixed when it
+//! was written, so a definition version may cite a Task method record as it
+//! cites a saved file; the desk reads it through the collaboration store's
+//! resolver, as the task's own view does. Nothing is copied into the Brief,
+//! and removing the section leaves the record where it is.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
 use axum::http::StatusCode;
+use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
 use super::attachments::{self, Missing};
@@ -130,16 +139,29 @@ pub(super) fn desk(store: &Store, cache: &Path, project: &str, key: &str, elemen
         values.insert(at, read);
     }
     let mut sources = Map::new();
+    let mut db = None;
     for source in props["sources"].as_array().into_iter().flatten() {
         if let (Some(id), Some(name)) = (source["id"].as_str(), source["snapshot"].as_str()) {
             sources.insert(id.to_owned(), snapshot(cache, &row, name, source["sha256"].as_str()));
+        } else if let (Some(id), Some((task, seq))) = (source["id"].as_str(), task_record(source)) {
+            if db.is_none() {
+                db = Some(store.db.read()?);
+            }
+            let db: &Connection = db.as_deref().expect("opened above");
+            sources.insert(id.to_owned(), crate::collaboration_store::research_desk_source(db, task, seq)?);
         }
     }
     Ok(Ok(json!({"key":row.key,"version":row.version,"elementId":element,"values":values,"sources":sources})))
 }
 
+/// The Task research record a source names, if it names one.
+fn task_record(source: &Value) -> Option<(&str, i64)> {
+    Some((source["task"]["taskId"].as_str()?, source["task"]["activitySeq"].as_i64()?))
+}
+
 /// A definition version as a section keeps it: its text, citation and the
-/// SHA-256 of the snapshot it cites, with where it is in the body.
+/// SHA-256 of the snapshot it cites (or the Task method record), with where
+/// it is in the body.
 struct Kept {
     path: String,
     content: Value,
@@ -150,9 +172,16 @@ struct Kept {
 /// desks of one section may each have a definition "d" version 1.
 type DefinitionKey = (String, String, i64);
 
+/// What a definition version cites: a file by name, or a Task record.
+enum Cited {
+    File(Option<String>),
+    Record(Value),
+}
+
 /// Every definition version of every desk in a section's data, by desk,
-/// definition id and version.
-fn definitions(data: &Value) -> Vec<(DefinitionKey, Kept, Option<String>)> {
+/// definition id and version. A Task record is named as the store names it
+/// (T-n), so the same record cited as T-n or by UUID is one content.
+fn definitions(db: &Connection, data: &Value) -> Result<Vec<(DefinitionKey, Kept, Cited)>> {
     let attachments: HashMap<&str, &Value> = data["attachments"].as_array().into_iter().flatten()
         .filter_map(|a| Some((a["name"].as_str()?, a)))
         .collect();
@@ -165,45 +194,74 @@ fn definitions(data: &Value) -> Vec<(DefinitionKey, Kept, Option<String>)> {
         let snapshots: HashMap<&str, &str> = props["sources"].as_array().into_iter().flatten()
             .filter_map(|s| Some((s["id"].as_str()?, s["snapshot"].as_str()?)))
             .collect();
+        let records: HashMap<&str, (&str, i64)> = props["sources"].as_array().into_iter().flatten()
+            .filter_map(|s| Some((s["id"].as_str()?, task_record(s)?)))
+            .collect();
         for (d, definition) in props["definitions"].as_array().into_iter().flatten().enumerate() {
             let Some(id) = definition["id"].as_str() else { continue };
             for (v, version) in definition["versions"].as_array().into_iter().flatten().enumerate() {
                 let Some(number) = version["version"].as_i64() else { continue };
                 let cite = &version["cite"];
+                let path = format!("body.elements.{key}.props.definitions.{d}.versions.{v}");
+                // A Task record holds its identity: the record, as it was written.
+                if let Some((task, seq)) = cite["source"].as_str().and_then(|source| records.get(source)).copied() {
+                    let record = crate::collaboration_store::research_desk_source(db, task, seq)?;
+                    let content = json!({"text":version["text"],"cite":cite,"sha256":null,
+                        "task":{"taskId":record["taskId"],"activitySeq":seq}});
+                    found.push(((key.clone(), id.to_owned(), number), Kept { path, content }, Cited::Record(record)));
+                    continue;
+                }
                 let file = cite["source"].as_str().and_then(|source| snapshots.get(source)).copied();
                 // Only a file Core kept a copy of names one content.
                 let sha = file.and_then(|name| attachments.get(name))
                     .and_then(|a| a["sha256"].as_str().filter(|_| a["snapshot"] == true))
                     .map(str::to_owned);
                 let content = json!({"text":version["text"],"cite":cite,"sha256":sha});
-                let path = format!("body.elements.{key}.props.definitions.{d}.versions.{v}");
-                found.push(((key.clone(), id.to_owned(), number), Kept { path, content }, file.map(str::to_owned)));
+                found.push(((key.clone(), id.to_owned(), number), Kept { path, content }, Cited::File(file.map(str::to_owned))));
             }
         }
     }
-    found
+    Ok(found)
 }
 
 /// One problem a write has: (path in the section, code, reason).
 pub(super) type Problem = (String, &'static str, String);
 
 /// The rule only Core can check, with the attachments as it took them: each
-/// definition version cites a file Core kept a snapshot of, and keeps the
-/// text, citation and cited file it had in the section's previous version.
-/// A changed definition is a new version.
-pub(super) fn kept(previous: Option<&Value>, next: &Value) -> Vec<Problem> {
+/// definition version cites a file Core kept a snapshot of or a Task method
+/// record (T-17), and keeps the text, citation and cited file or record it had
+/// in the section's previous version. A changed definition is a new version.
+pub(super) fn kept(db: &Connection, previous: Option<&Value>, next: &Value) -> Result<Vec<Problem>> {
     let mut problems = vec![];
-    let before: HashMap<DefinitionKey, Value> = previous.map(definitions).unwrap_or_default().into_iter()
-        .map(|(key, kept, _)| (key, kept.content))
-        .collect();
+    let before: HashMap<DefinitionKey, Value> = match previous {
+        Some(previous) => definitions(db, previous)?,
+        None => vec![],
+    }
+    .into_iter()
+    .map(|(key, kept, _)| (key, kept.content))
+    .collect();
     let mut now: HashMap<DefinitionKey, Value> = HashMap::new();
-    for ((desk, id, version), kept, file) in definitions(next) {
-        if kept.content["sha256"].is_null() {
-            let file = file.unwrap_or_default();
-            problems.push((format!("{}.cite", kept.path), "unsaved_definition", format!(
-                "Definition \"{id}\" version {version} cites a file Core kept no snapshot of (\"{file}\": over 25 MB, missing or not a file): \
-                 a definition version must point to a saved file. Attach the file the definition is written in.")));
-            continue;
+    for ((desk, id, version), kept, cited) in definitions(db, next)? {
+        match cited {
+            Cited::Record(record) => {
+                let method = record["available"] == true && record["record"]["kind"] == "research"
+                    && record["record"]["type"] == "method";
+                if !method {
+                    problems.push((format!("{}.cite", kept.path), "unsaved_definition", format!(
+                        "Definition \"{id}\" version {version} cites a Task record that is not a method record Core can read \
+                         ({}): a definition version must point to a saved file or a Task method record.",
+                        record["reason"].as_str().unwrap_or("not a method"))));
+                    continue;
+                }
+            }
+            Cited::File(file) if kept.content["sha256"].is_null() => {
+                let file = file.unwrap_or_default();
+                problems.push((format!("{}.cite", kept.path), "unsaved_definition", format!(
+                    "Definition \"{id}\" version {version} cites a file Core kept no snapshot of (\"{file}\": over 25 MB, missing or not a file): \
+                     a definition version must point to a saved file or a Task method record. Attach the file the definition is written in.")));
+                continue;
+            }
+            Cited::File(_) => {}
         }
         let changed = |earlier: &Value| earlier != &kept.content;
         let at = (desk, id.clone(), version);
@@ -214,12 +272,17 @@ pub(super) fn kept(previous: Option<&Value>, next: &Value) -> Vec<Problem> {
         }
         now.insert(at, kept.content);
     }
-    problems
+    Ok(problems)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rule for sections citing files: no Task record is read.
+    fn k(previous: Option<&Value>, next: &Value) -> Vec<Problem> {
+        kept(&Connection::open_in_memory().unwrap(), previous, next).unwrap()
+    }
 
     fn data(text: &str, sha: Option<&str>) -> Value {
         let attachment = match sha {
@@ -238,14 +301,14 @@ mod tests {
     fn a_definition_version_keeps_one_content() {
         let a = "a".repeat(64);
         let b = "b".repeat(64);
-        assert!(kept(None, &data("Per sub-menu.", Some(&a))).is_empty());
-        assert!(kept(Some(&data("Per sub-menu.", Some(&a))), &data("Per sub-menu.", Some(&a))).is_empty(), "unchanged");
-        let text = kept(Some(&data("Per sub-menu.", Some(&a))), &data("Per menu.", Some(&a)));
+        assert!(k(None, &data("Per sub-menu.", Some(&a))).is_empty());
+        assert!(k(Some(&data("Per sub-menu.", Some(&a))), &data("Per sub-menu.", Some(&a))).is_empty(), "unchanged");
+        let text = k(Some(&data("Per sub-menu.", Some(&a))), &data("Per menu.", Some(&a)));
         assert_eq!((text.len(), text[0].1), (1, "definition_changed"));
         assert_eq!(text[0].0, "body.elements.desk.props.definitions.0.versions.0");
-        let file = kept(Some(&data("Per sub-menu.", Some(&a))), &data("Per sub-menu.", Some(&b)));
+        let file = k(Some(&data("Per sub-menu.", Some(&a))), &data("Per sub-menu.", Some(&b)));
         assert_eq!(file[0].1, "definition_changed", "the cited file changed under the same version");
-        let unsaved = kept(None, &data("Per sub-menu.", None));
+        let unsaved = k(None, &data("Per sub-menu.", None));
         assert_eq!((unsaved[0].1, unsaved[0].0.as_str()), ("unsaved_definition", "body.elements.desk.props.definitions.0.versions.0.cite"));
     }
 
@@ -261,9 +324,9 @@ mod tests {
             both
         };
         // Two desks may each have a "static" version 1 of their own, from the first write on.
-        assert!(kept(None, &two("Per menu.")).is_empty());
+        assert!(k(None, &two("Per menu.")).is_empty());
         // Each still keeps its own: the second desk changing its version 1 is refused there.
-        let changed = kept(Some(&two("Per menu.")), &two("Per whole menu."));
+        let changed = k(Some(&two("Per menu.")), &two("Per whole menu."));
         assert_eq!((changed.len(), changed[0].1), (1, "definition_changed"));
         assert_eq!(changed[0].0, "body.elements.other.props.definitions.0.versions.0");
     }

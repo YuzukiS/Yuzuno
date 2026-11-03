@@ -1032,7 +1032,7 @@ fn research_rules(
             }
             _ => continue,
         };
-        for (path, code, reason) in super::research::kept(current.as_ref().map(|row| &row.data), &next) {
+        for (path, code, reason) in super::research::kept(tx, current.as_ref().map(|row| &row.data), &next)? {
             problems.push(problem(code, change_path(change, index, &path), reason, "research"));
         }
     }

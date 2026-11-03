@@ -2074,6 +2074,55 @@ async fn the_users_presentation_preference_reaches_editors_until_the_default_rem
     assert_eq!(count, 0, "the default is no row at all");
 }
 
+/// A desk whose definition is a Task method record (T-17): no attachment,
+/// read by the same resolver as the task's own view.
+fn task_desk(cited: i64) -> Value {
+    json!({"op":"put","key":"study","kind":"report","title":"Layout study (synthetic)",
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"B is faster","statement":"About 4% on the small inputs.",
+                    "status":"conditional","dependsOn":[{"id":"timing","version":1}]}],
+                "plots":[],
+                "sources":[{"id":"method","label":"Timing protocol","kind":"notes","task":{"taskId":"T-1","activitySeq":cited}}],
+                "definitions":[{"id":"timing","title":"Timing","versions":[{"version":1,"text":"Ten fresh processes.","cite":{"source":"method"}}]}]}}}}})
+}
+
+#[tokio::test]
+async fn a_research_desk_may_hold_its_method_as_a_task_record() {
+    let (_dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Layout study (synthetic)"})).unwrap();
+    let record = |key: &str, research: Value| ws.store.collaboration_call(Some("b"), "task_comment",
+        json!({"requestId":key,"taskId":"T-1","body":"Synthetic","research":research})).unwrap()["activity"]["seq"].as_i64().unwrap();
+    let m1 = record("m1", json!({"type":"method","id":"timing","title":"Timing protocol","text":"Ten fresh processes."}));
+    let c1 = record("c1", json!({"type":"claim","id":"faster","title":"B is faster","text":"About 4% on small inputs.",
+        "status":"conditional","method":{"activitySeq":m1}}));
+
+    // The definition cites the record: accepted with no attachment at all.
+    let accepted = update::update(&ws, &checker, "a", input("d1", 0, vec![task_desk(m1)])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+    let cache = attachments::dir(&ws.data_dir);
+    let desk = research::desk(&ws.store, &cache, &project, "study", "desk", None).unwrap().ok().unwrap();
+    let source = &desk["sources"]["method"];
+    assert_eq!((source["available"].clone(), source["taskId"].clone(), source["activitySeq"].clone()), (json!(true), json!("T-1"), json!(m1)));
+    assert_eq!((source["record"]["type"].clone(), source["producer"]["id"].clone(), source["version"].clone()), (json!("method"), json!("b"), json!(1)));
+    assert!(source.get("path").is_none() && source.get("attachment").is_none(), "nothing of the Brief's files");
+
+    // Only a method record holds a definition; another record keeps the version.
+    let claim = update::update(&ws, &checker, "a", input("d2", 1, vec![task_desk(c1)])).await.unwrap().unwrap_err();
+    assert_eq!(claim["problems"][0]["code"], "unsaved_definition", "{claim}");
+    let m2 = record("m2", json!({"type":"method","id":"timing","title":"Timing protocol","text":"Twenty fresh processes.",
+        "revises":{"activitySeq":m1,"reason":"Ten was too few for the noise seen."}}));
+    let moved = update::update(&ws, &checker, "a", input("d3", 1, vec![task_desk(m2)])).await.unwrap().unwrap_err();
+    assert_eq!(moved["problems"][0]["code"], "definition_changed", "a version keeps the record it cited: {moved}");
+
+    // Removing the section removes nothing from the task.
+    assert!(update::update(&ws, &checker, "a", input("d4", 1, vec![op("remove", "study")])).await.unwrap().is_ok());
+    let kept = ws.store.collaboration_call(Some("a"), "task_research_get", json!({"taskId":"T-1","activitySeq":m1})).unwrap();
+    assert_eq!((kept["research"]["text"].clone(), kept["latestActivitySeq"].clone()), (json!("Ten fresh processes."), json!(m2)));
+}
+
 /// A small synthetic ResearchDesk section (T-9) reading `results.json` and
 /// citing `defs.md`, both files in `dir`; `definition` is version 1's text.
 fn research_section(dir: &std::path::Path, definition: &str, stated: &str) -> Value {
