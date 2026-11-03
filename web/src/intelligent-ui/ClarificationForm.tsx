@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ArrowRight, Check, LoaderCircle } from "lucide-react";
+import { ArrowRight, Check, Clock, LoaderCircle } from "lucide-react";
 import {
   clarificationDraftKey,
   initialClarificationValues,
@@ -28,6 +28,7 @@ const formText = strings({
   goesTo: (agent: string) => `Your answers go to ${agent} in this conversation.`,
   sending: "Sending answers…",
   answered: "Answers sent",
+  waiting: "Sent · waiting",
   submit: "Submit answers",
   check: "Check delivery",
 }, {
@@ -42,6 +43,7 @@ const formText = strings({
   goesTo: (agent) => `你的答案会在此会话中发给 ${agent}。`,
   sending: "正在发送答案…",
   answered: "答案已发送",
+  waiting: "已发送 · 等待中",
   submit: "提交答案",
   check: "检查投递",
 });
@@ -153,19 +155,26 @@ function Form({
     }
   }, [key, form, values]);
   const status = delivery?.status;
-  const accepted = status === "accepted" || status === "queued";
-  const uncertain =
-    status === "uncertain" || status === "unknown" || status === "sending";
-  const disabled =
-    busy || accepted || uncertain || !!blockedReason || !onSubmit;
+  // Three judgments from one receipt (T-19 CX-75/76). From the send on,
+  // short of a refusal, the form is locked and shows the answers sent. Only
+  // `accepted` reads as success; `queued` is sent and waiting; only
+  // `uncertain` or `unknown` is unconfirmed, with Check delivery. A send
+  // still on its way is said as sending.
+  const sending = status === "sending";
+  const queued = status === "queued";
+  const accepted = status === "accepted";
+  const uncertain = status === "uncertain" || status === "unknown";
+  const submitted = sending || queued || accepted || uncertain;
+  const disabled = busy || submitted || !!blockedReason || !onSubmit;
   const t = useStrings(formText);
-  const notice =
-    status === "accepted"
-      ? t.sent(agentName)
-      : status === "queued"
-        ? t.queued(agentName)
-        : uncertain
-          ? t.unconfirmed
+  const notice = accepted
+    ? t.sent(agentName)
+    : queued
+      ? t.queued(agentName)
+      : uncertain
+        ? t.unconfirmed
+        : sending
+          ? ""
           : blockedReason || delivery?.error || failure;
 
   function change(id: string, value: string | string[]) {
@@ -241,7 +250,7 @@ function Form({
         {form.fields.map((field) => {
           const fieldId = `${domId}-${field.id}`;
           const value = (
-            (accepted || uncertain) && delivery?.values
+            submitted && delivery?.values
               ? delivery.values
               : values
           )[field.id];
@@ -347,14 +356,16 @@ function Form({
             disabled={disabled}
             onClick={() => void submit()}
           >
-            {busy ? (
+            {busy || sending ? (
               <LoaderCircle size={15} className="spin" />
             ) : accepted ? (
               <Check size={15} />
+            ) : queued ? (
+              <Clock size={15} />
             ) : (
               <ArrowRight size={15} />
             )}
-            {busy ? t.sending : accepted ? t.answered : t.submit}
+            {busy || sending ? t.sending : accepted ? t.answered : queued ? t.waiting : t.submit}
           </button>
         </footer>
         {notice && (
