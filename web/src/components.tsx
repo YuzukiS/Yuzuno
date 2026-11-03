@@ -769,6 +769,9 @@ function ToolActivity({
             closed; each call says the rest in its own capsule (T-9). */}
         <span className="execution-count tool-overview">
           <span className="tool-overview-part" data-count-key="steps">{t.toolSteps(overview.steps)}</span>
+          {overview.returned > 0 && (
+            <span className="tool-overview-part" data-count-key="returned" data-tone="returned">{t.toolReturned(overview.returned)}</span>
+          )}
           {overview.notable.map(({ tone, count }) => (
             <span className="tool-overview-part" key={tone} data-count-key={tone} data-tone={tone}>
               {t.toolStatePart(count, words.tone[tone])}

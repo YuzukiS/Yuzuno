@@ -208,11 +208,12 @@ test("a refusal comes first; a cut or unreadable answer is left to expand; other
     { name: "npm test", note: null, end: "exit 1", tone: "failed" },
   ]);
   assert.equal(page.row("r4").querySelector(":scope > summary").hasAttribute("data-to-expand"), true);
-  // The heading keeps only an overview: how many steps, and what went wrong.
+  // The heading keeps only an overview: how many steps, how many returned
+  // beside the ones that did not (T-15), and what went wrong.
   const heading = page.document.querySelector(".tool-activity > summary");
   assert.equal(heading.querySelectorAll(".tool-count").length, 0, "no capsule stack in the heading");
   assert.deepEqual([...heading.querySelectorAll(".tool-overview-part")].map((part) => [part.dataset.countKey, part.textContent]),
-    [["steps", "9 tool steps"], ["failed", "2 failed"], ["refused", "2 refused"]]);
+    [["steps", "9 tool steps"], ["returned", "4 returned"], ["failed", "2 failed"], ["refused", "2 refused"]]);
   assert.deepEqual(page.calls, [], "a cut answer is not fetched to say a result");
   assert.deepEqual(page.errors, []);
 });
@@ -295,6 +296,44 @@ test("a call still reported as running is not confirmed once its turn is no long
   assert.deepEqual(page.capsule("g"), { name: "yuzuno/peer_read", note: null, end: "Unconfirmed", tone: "unconfirmed" });
   assert.deepEqual([...page.document.querySelectorAll(".tool-overview-part")].map((part) => part.textContent),
     ["1 tool step", "1 not confirmed"]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a Tool activity says how many returned only beside a call that did not, each counted by its own state (T-15)", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const run = (id, exitCode) => ({ id, type: "commandExecution", command: `step ${id}`, status: "completed", exitCode });
+  const live = (id) => ({ id, type: "commandExecution", command: `step ${id}`, status: "inProgress" });
+  const parts = () => [...page.document.querySelectorAll(".tool-activity > summary .tool-overview-part")]
+    .map((part) => [part.dataset.countKey, part.textContent]);
+  for (const [case_, items, status, expected] of [
+    // Every call returned: the steps say it, and no word is added.
+    ["all returned", [run("a", 0), run("b", 0), run("c", 0)], "completed", [["steps", "3 tool steps"]]],
+    // Beside a failure, how many returned is said apart from it.
+    ["mixed", [run("a", 0), run("b", 0), run("c", 1)], "completed", [["steps", "3 tool steps"], ["returned", "2 returned"], ["failed", "1 failed"]]],
+    // Beside a running call, and beside one no longer confirmed.
+    ["running", [run("a", 0), live("b")], "inProgress", [["steps", "2 tool steps"], ["returned", "1 returned"]]],
+    ["unconfirmed", [run("a", 0), live("b")], "completed", [["steps", "2 tool steps"], ["returned", "1 returned"], ["unconfirmed", "1 not confirmed"]]],
+    // None returned: no returned part, not a zero.
+    ["none returned", [run("a", 1), live("b")], "completed", [["steps", "2 tool steps"], ["failed", "1 failed"], ["unconfirmed", "1 not confirmed"]]],
+    // A step with no state of its own is not counted as returned: never the
+    // steps less the failures.
+    ["no state", [{ id: "think", type: "reasoning", summary: ["Reading the logs."] }, run("a", 1)], "completed",
+      [["steps", "2 tool steps"], ["failed", "1 failed"]]],
+    // A call shown twice is one call.
+    ["duplicate", [run("a", 0), run("a", 0), run("c", 1)], "completed", [["steps", "2 tool steps"], ["returned", "1 returned"], ["failed", "1 failed"]]],
+  ]) {
+    page.render(items, { status });
+    await tick();
+    assert.deepEqual(parts(), expected, case_);
+  }
+  // Neutral in Chinese too, and never a word of success in either.
+  page.speak("zh-Hans");
+  page.render([run("a", 0), run("b", 0), run("c", 1)]);
+  await tick();
+  assert.deepEqual(parts().map(([, text]) => text), ["3 个工具步骤", "已返回 2 次", "1 个失败"]);
+  assert.doesNotMatch(page.document.querySelector(".tool-overview").textContent, /成功|succeed|success/i);
+  assert.deepEqual(page.calls, []);
   assert.deepEqual(page.errors, []);
 });
 
