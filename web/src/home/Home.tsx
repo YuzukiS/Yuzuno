@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
 import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
@@ -482,11 +482,53 @@ export function Home({
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
   const { layout, pin, unpin } = widgetLayout;
+  // A section pinned here (T-19 HM:W5): what was pressed keeps its place
+  // while the widget column above it grows, and the new widget comes in over
+  // small (opacity, 4 px up) and settles once; under reduced motion it is
+  // there at once. A layout read again, or another window's pin, does neither.
+  const [pinnedHere, setPinnedHere] = useState<{ id: string; n: number } | null>(null);
+  const pinAnchor = useRef<{ element: HTMLElement; top: number } | null>(null);
+  const pinnedWidget = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    pinnedWidget.current = null;
+    const anchor = pinAnchor.current;
+    pinAnchor.current = null;
+    if (!pinnedHere) return;
+    // Held now and for two more frames, so whatever the browser's own scroll
+    // anchoring did or does, the pressed control ends where it was.
+    const view = anchor?.element.isConnected ? anchor.element.closest<HTMLElement>(".home-view") : null;
+    const hold = () => {
+      if (!anchor || !view || !anchor.element.isConnected) return;
+      const moved = anchor.element.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(moved) >= 1) view.scrollTop += moved;
+    };
+    hold();
+    let frame = requestAnimationFrame(() => {
+      hold();
+      frame = requestAnimationFrame(hold);
+    });
+    const widget = [...document.querySelectorAll<HTMLElement>(".home-widget-slot")].find((slot) => slot.dataset.widget === pinnedHere.id);
+    pinnedWidget.current = widget ?? null;
+    const settled = widget ? settleWhenLanded(widget, "data-settle", false, "animation") : null;
+    return () => {
+      cancelAnimationFrame(frame);
+      settled?.();
+    };
+  }, [pinnedHere]);
+  useSurfaceIn(pinnedWidget, pinnedHere?.n ?? 0, "small", !!pinnedHere, "translateY(4px)");
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
     (projectId: string, section: Section) => {
       const source = pinSource(data, projectId, section);
-      if (source) pin(projectId, source.projectName, source.section);
+      if (!source) return;
+      // What was pressed (the Pin button, or Pin the current version) holds its place.
+      const pressed = document.activeElement;
+      pinAnchor.current = pressed instanceof HTMLElement && pressed.closest(".home-view")
+        ? { element: pressed, top: pressed.getBoundingClientRect().top }
+        : null;
+      pin(projectId, source.projectName, source.section);
+      const id = pinWidgetId({ projectId, key: source.section.key, id: source.section.id! });
+      setPinnedHere((last) => ({ id, n: (last?.n ?? 0) + 1 }));
     },
     [data, pin],
   );
