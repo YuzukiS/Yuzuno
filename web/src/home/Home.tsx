@@ -24,6 +24,7 @@ import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type 
 import { DeckSizes, sizable, useHeldSizes } from "./card-sizes";
 import { cardContent, shownSize, type CardSize } from "./card-preview";
 import { SummaryCard } from "./SummaryCard";
+import { replyableIn } from "./CardReply";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -547,6 +548,8 @@ export function Home({
               readOnly={readOnly}
               onSeen={(marks) => seen(p.projectId, marks)}
               widget={{ id, chosen: p.size ?? null, onResize, onUnpin: () => unpin(p) }}
+              // Marked seen, it keeps its Reply and the reply being written, as History does (T-174, Lead 2655).
+              referable={replyableIn(data?.projects.find((panel) => panel.project.id === p.projectId), section)}
               notice={<PinNotes source={source} />}
             />
           ),

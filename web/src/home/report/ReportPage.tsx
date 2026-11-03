@@ -10,7 +10,7 @@ import { changedBlocks, type BlockChanges } from "../brief/block-changes";
 import { reportMarkdown } from "../brief/brief-copy";
 import { changedSinceSeen } from "../brief-layout";
 import { unmaintained } from "../card-summary";
-import { CardReply } from "../CardReply";
+import { CardReply, replyableIn } from "../CardReply";
 import { absolute, duration, relative } from "../format";
 import type { SeenMark } from "../home-api";
 import { BriefDensity } from "../home-density";
@@ -99,6 +99,9 @@ export function ReportPage({
   );
   const dataFiles = (shown?.attachments ?? []).filter((file) => file.kind === "data");
   const railed = !!parts && (parts.sources.length > 0 || parts.attachments.length > 0 || dataFiles.length > 0);
+  // A reply where Home takes one (T-174): on the live version, or on a report marked seen that a reply can still
+  // refer to (replyableIn), as its card and pin do (Lead 2655). Never another version kept in History.
+  const replyable = !readOnly && place?.kind === "found" && replyableIn(panel, place.section);
   const [replying, setReplying] = useState(false);
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
@@ -201,7 +204,7 @@ export function ReportPage({
               {home.seen}
             </button>
           )}
-          {live && shown && !readOnly && shown.kind !== "ask" && (
+          {replyable && shown && (
             <button
               type="button"
               className="quiet-button home-reply-open"
@@ -236,7 +239,7 @@ export function ReportPage({
           </div>
         )}
         {notice}
-        {live && shown && replying && (
+        {replyable && shown && replying && (
           <CardReply section={shown} projectId={link.projectId} workspaceId={workspaceId} agents={agents} onClose={() => setReplying(false)} />
         )}
         {error && (

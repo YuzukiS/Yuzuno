@@ -383,12 +383,22 @@ test("Seen on the report marks the version shown; Back then focuses its project,
   t.after(page.close);
   page.card("eval").querySelector(".home-report-open").click();
   const report = await until(page.report, "the report");
+  // A reply being written on the page (T-174) stays through its Seen: the version
+  // seen is still one a reply can refer to (T-18, Lead 2655).
+  await page.press(report.querySelector(".report-actions"), "Reply");
+  const field = await until(() => report.querySelector(".home-card-reply textarea"), "the reply field");
+  Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(field, "Kept through Seen");
+  field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
   current = homeData([], [section("eval", 7, 3, { history: true, historyReason: "seen", seen: { version: 3 } })]);
   await page.press(report.querySelector(".report-actions"), "Seen");
   const seen = await until(() => page.requests.find((r) => r.method === "POST" && r.url.endsWith("/seen")), "the seen request");
   assert.equal(seen.url, "/api/projects/p1/brief/seen");
   assert.deepEqual(JSON.parse(seen.body), { sections: [{ key: "eval", version: 3 }] });
   await until(() => notice(page) === "You marked this report seen; it is in History.", "the History note");
+  assert.equal(report.querySelector(".home-card-reply textarea") === field, true, "the same reply field");
+  assert.equal(field.value, "Kept through Seen");
+  assert.equal(page.button(report.querySelector(".report-actions"), "Reply")?.getAttribute("aria-expanded"), "true", "Reply stays, open");
   report.querySelector(".report-back").click();
   await until(() => !page.report(), "closed");
   await tick();

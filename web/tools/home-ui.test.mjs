@@ -1699,6 +1699,117 @@ test("a reply begun on a card the user then marks seen stays sendable, at that v
   }
 });
 
+// T-18 (Lead 2655): a pinned report with a summary is its summary card in
+// the widgets. Marked seen, it is History's entry, which a reply can still
+// refer to: the reply being written stays, as it does in History.
+function pinnedNotes() {
+  const home = homeFixture();
+  home.projects.forEach((panel, n) => panel.brief.sections.forEach((s, i) => (s.id = 100 * (n + 1) + i)));
+  const notes = home.projects[0].brief.sections.find((s) => s.key === "notes");
+  Object.assign(notes, { seen: null, body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text"] },
+    text: { type: "Markdown", props: { text: "Notes body" } },
+  } } });
+  return home;
+}
+async function pinWithReply(p, text) {
+  card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to My widgets"]').click();
+  await waitFor(() => !!p.doc.querySelector(".home-widget-column article[data-pin-widget]"), "Notes is pinned as its card");
+  const widget = p.doc.querySelector(".home-widget-column article[data-pin-widget]");
+  p.button("Reply", widget).click();
+  await waitFor(() => !!replyBox(widget), "the reply opens in the widget");
+  await choose(p, replyBox(widget).querySelector("select"), "b");
+  await type(p, replyBox(widget).querySelector("textarea"), text);
+  return widget;
+}
+/** Core's reading once the user marked Notes seen (elsewhere: on another device, or its page). */
+function notesSeen(p) {
+  const app = p.state.home.projects[0].brief;
+  const notes = app.sections.find((s) => s.key === "notes");
+  app.sections = app.sections.filter((s) => s !== notes);
+  app.history.unshift({ ...notes, history: true, historyReason: "seen", currentSource: true, seen: { version: 2, at: at(0) } });
+  p.event({ type: "workspace.changed", scope: "brief" });
+}
+
+test("a pinned report marked seen keeps its reply: the same field, text, focus and recipient, sent at its version, Seen left as it is (T-18)", async () => {
+  const p = await mount({ home: pinnedNotes() });
+  try {
+    const widget = await pinWithReply(p, "Before it is seen");
+    const box = replyBox(widget), field = box.querySelector("textarea");
+    field.focus();
+    assert.equal(p.doc.activeElement === field, true);
+    notesSeen(p);
+    await waitFor(() => /Marked seen/.test(widget.textContent), "the widget says it is marked seen");
+    assert.equal(p.doc.querySelector(".home-widget-column article[data-pin-widget]") === widget, true, "the same widget");
+    assert.equal(replyBox(widget) === box && box.querySelector("textarea") === field, true, "the same reply and field");
+    assert.equal(field.value, "Before it is seen");
+    assert.equal(p.doc.activeElement === field, true, "focus stays in the field");
+    assert.equal(box.querySelector("select").value, "b", "the recipient the user chose");
+    assert.match(box.textContent, /Reply to “Notes” · version 2/);
+    assert.equal(p.button("Reply", widget)?.getAttribute("aria-expanded"), "true", "its Reply stays, open");
+    // Its page takes a reply too: the card and the page never disagree.
+    widget.querySelector(".home-report-open").click();
+    await waitFor(() => p.doc.querySelector(".home-report .report-head h1"), "its report");
+    assert.ok(p.button("Reply", p.doc.querySelector(".home-report .report-actions")), "the page offers Reply on the same version");
+    await closeReport(p);
+    p.button("Send", replyBox(widget)).click();
+    await waitFor(() => /Sent to Hana, referring to version 2/.test(replyBox(widget).textContent), "sent");
+    const [post] = p.posts(/\/brief\/reply$/);
+    assert.deepEqual([post.body.key, post.body.version, post.body.title, post.body.agentId, post.body.text], ["notes", 2, "Notes", "b", "Before it is seen"]);
+    assert.equal(p.posts(/\/brief\/(seen|defer)$/).length, 0, "nothing marked seen or deferred");
+    assert.match(widget.textContent, /Marked seen/, "still the seen entry");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a pinned report removed, gone from History, or another section under its key takes no reply in its widget; the draft is kept, sent nowhere (T-18)", async () => {
+  const removed = (p) => {
+    const app = p.state.home.projects[0].brief;
+    const notes = app.sections.find((s) => s.key === "notes");
+    app.sections = app.sections.filter((s) => s !== notes);
+    app.history.unshift({ ...notes, history: true, historyReason: "removed" });
+  };
+  // Seen, then past History's 30 days: Core no longer has it.
+  const expired = (p) => {
+    const app = p.state.home.projects[0].brief;
+    app.history = app.history.filter((s) => s.key !== "notes");
+  };
+  const anew = (p) => {
+    const app = p.state.home.projects[0].brief;
+    const index = app.sections.findIndex((s) => s.key === "notes");
+    app.sections[index] = { ...app.sections[index], id: 999, version: 3, title: "Notes, anew", seen: null };
+  };
+  for (const [how, change, pinState] of [["removed", removed, "removed"], ["expired", expired, "removed"], ["written anew", anew, "replaced"]]) {
+    const p = await mount({ home: pinnedNotes() });
+    try {
+      await pinWithReply(p, `Draft before ${how}`);
+      if (how === "expired") {
+        notesSeen(p);
+        await waitFor(() => /Marked seen/.test(p.doc.querySelector(".home-widget-column article[data-pin-widget]")?.textContent ?? ""), `${how}: seen first`);
+        assert.ok(replyBox(p.doc.querySelector(".home-widget-column article[data-pin-widget]")), `${how}: the seen entry keeps the reply`);
+      }
+      change(p);
+      p.event({ type: "workspace.changed", scope: "brief" });
+      const column = p.doc.querySelector(".home-widget-column");
+      await waitFor(() => column.querySelector(`.home-pinned[data-pin-state="${pinState}"]`), `${how}: the widget says why`);
+      assert.equal(column.querySelector(".home-card-reply"), null, `${how}: no reply in the widget`);
+      assert.equal(p.button("Reply", column.querySelector(".home-pinned")), undefined, `${how}: no Reply in the widget`);
+      if (how !== "written anew") {
+        const kept = p.panel("p-app").querySelector(".home-kept-reply");
+        assert.ok(kept, `${how}: the draft is kept in its project`);
+        assert.match(kept.textContent, new RegExp(`Draft before ${how}`));
+        assert.equal(p.button("Send", kept), undefined, `${how}: never sent from there`);
+      }
+      assert.equal(p.posts(/\/brief\/reply$/).length, 0, `${how}: nothing sent`);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  }
+});
+
 // T-177: a Home image opens in the app's preview and Point & Fix marks it,
 // on Codex Agents that can take images. What Point & Fix needs from a
 // browser, which jsdom lacks, is stubbed: decoding (400×300), drawing,

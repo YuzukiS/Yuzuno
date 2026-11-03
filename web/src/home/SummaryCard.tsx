@@ -43,6 +43,7 @@ export const SummaryCard = memo(function SummaryCard({
   topic,
   deck = false,
   widget,
+  referable = false,
   readOnly,
   onSeen,
   notice,
@@ -62,6 +63,8 @@ export const SummaryCard = memo(function SummaryCard({
    * the one found by key.
    */
   widget?: { id: string; chosen: CardSize | null; onResize: (size: CardSize | null) => void; onUnpin: () => void };
+  /** In History: whether it still takes a reply (replyableIn), as a pinned report the user marked seen does. */
+  referable?: boolean;
   readOnly: boolean;
   onSeen: (marks: SeenMark[]) => Promise<void>;
   notice?: React.ReactNode;
@@ -81,7 +84,9 @@ export const SummaryCard = memo(function SummaryCard({
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
-  const replyable = !readOnly && !section.history;
+  // Where Home takes a reply (T-174): a live card, or a report marked seen that a reply can still refer to, so a
+  // pinned report the user marks seen keeps its Reply and the reply being written (Lead 2655).
+  const replyable = !readOnly && section.kind !== "ask" && (!section.history || referable);
   const [replying, setReplying] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
