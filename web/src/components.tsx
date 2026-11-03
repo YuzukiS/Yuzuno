@@ -5,6 +5,7 @@ import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff"
 import { parseMessageLink, parseReportLink, useMessageLinks } from "./deep-link";
 import { usePointFix } from "./point-fix";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { ImageViewer } from "./ImageViewer";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
@@ -1682,6 +1683,11 @@ export function ArtifactModal({
   const text = loaded ? content.text : "";
   const error = loaded ? content.error : "";
   const loading = !!artifact && artifact.kind !== "image" && !loaded;
+  // An image is read by the viewer itself (T-20); one it could not read says so.
+  const imageSrc = artifact?.kind === "image" ? artifactUrl(agentId, artifact.path) : "";
+  const [unreadable, setUnreadable] = useState("");
+  // Each opening reads it again: an image that failed may be back.
+  useEffect(() => setUnreadable(""), [artifact]);
   const language = useLanguage();
   const t = turnWords(language);
   useEffect(() => {
@@ -1726,6 +1732,7 @@ export function ArtifactModal({
       lang={langTag(language)}
       closeLabel={t.closeDialog}
       wide
+      className={imageSrc ? "image-viewer-modal" : ""}
     >
       {!loading && !error && artifact && artifact.kind !== "image" ? (
         <ArtifactText text={text} path={artifact.path} line={artifact.line} />
@@ -1741,20 +1748,21 @@ export function ArtifactModal({
               {error}
             </p>
           ) : artifact?.kind === "image" ? (
-            <img
-              src={artifactUrl(agentId, artifact.path)}
+            // Mark up on the viewer's bar, as for any other image (T-20).
+            <ImageViewer
+              key={imageSrc}
+              src={imageSrc}
               alt={artifact.name}
+              unreadable={t.imageUnreadable}
+              onError={() => setUnreadable(imageSrc)}
+              actions={onAnnotate && unreadable !== imageSrc && (
+                <button type="button" className="secondary-button" onClick={onAnnotate}>
+                  <SquareDashedMousePointer size={14} aria-hidden="true" />
+                  <span className="image-viewer-action-label">{t.markUp}</span>
+                </button>
+              )}
             />
           ) : null}
-        </div>
-      )}
-      {artifact?.kind === "image" && onAnnotate && (
-        <div className="modal-footer">
-          <span>{t.readOnly}</span>
-          <button type="button" className="secondary-button" onClick={onAnnotate}>
-            <SquareDashedMousePointer size={14} />
-            {t.markUp}
-          </button>
         </div>
       )}
       {text && (
