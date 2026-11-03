@@ -275,6 +275,30 @@ for (const run of runs) {
         ok(`${tag}: opened, closed and opened again frame by frame, it plays one move, the newest (${cut.quick.inspector?.plays.length})`,
           cut.quick.inspector?.plays.length === 1 && !!moveOf(cut.quick.inspector.plays), cut.quick.inspector);
 
+        // Hiding the Agent list while it comes in (Lead 3219): nothing of its move is left behind on the
+        // hidden list, and shown again at once it comes in afresh.
+        const railCut = await page.evaluate(async () => {
+          const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+          const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+          const button = (label) => document.querySelector(`.toolbar button[aria-label="${label}"]`);
+          button("Hide agent sidebar").click(); await frame(); await frame();
+          button("Show agent sidebar").click(); await frame(); await wait(40);
+          const coming = window.__panels();
+          button("Hide agent sidebar").click(); await frame();
+          const hidden = window.__panels();
+          button("Show agent sidebar").click(); await frame();
+          const again = window.__panels();
+          await wait(400);
+          return { coming, hidden, again };
+        });
+        report.frames[`${tag}: the Agent list interrupted`] = railCut;
+        ok(`${tag}: hiding the Agent list while it comes in: in the next frame it is hidden, its column gone, and nothing of its move is left`,
+          !!moveOf(railCut.coming.rail?.plays) && !railCut.hidden.rail?.shown && railCut.hidden.railHidden && !(railCut.hidden.rail?.plays ?? []).length,
+          { coming: railCut.coming.rail, hidden: railCut.hidden.rail });
+        const railFresh = moveOf(railCut.again.rail?.plays);
+        ok(`${tag}: and shown again at once, the Agent list comes in afresh with one move (${Math.round(railFresh?.current ?? -1)} ms in)`,
+          !!railFresh && railFresh.current < 100 && railCut.again.rail.plays.length === 1, railCut.again.rail);
+
         // Reduced motion turned on while the Agent list comes in, then off again. As motion-2a-check does,
         // the move is held at 60 ms first, so the check does not race the change: held, it cannot end
         // by itself, and only the app's cancel removes it.
