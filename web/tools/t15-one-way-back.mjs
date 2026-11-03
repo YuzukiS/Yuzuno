@@ -47,7 +47,22 @@ const waysBack = (page) => page.evaluate(() => {
       text: (el.textContent || "").trim().slice(0, 24),
     }));
   const scroll = document.querySelector(".conversation-scroll");
-  return { found, bar: !!document.querySelector(".source-navigation"),
+  // Where the floating one sits: it must ride the composer's edge, not lie
+  // over a line of the reply being read (T-15, Dev 7 audit D1).
+  const pill = document.querySelector(".jump-latest");
+  const over = (() => {
+    if (!pill) return null;
+    const p = pill.getBoundingClientRect();
+    const composer = document.querySelector(".composer")?.getBoundingClientRect();
+    const covered = [...document.querySelectorAll(".conversation-inner [data-item-id] p, .conversation-inner [data-item-id] li")]
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.height > 0 && p.left < r.right && p.right > r.left && p.top < r.bottom && p.bottom > r.top;
+      }).length;
+    return { covered, aboveComposerBy: composer ? Math.round(composer.top - p.bottom) : null,
+      straddles: composer ? p.bottom >= composer.top - 1 : null };
+  })();
+  return { found, over, bar: !!document.querySelector(".source-navigation"),
     atEnd: scroll ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 4 : null,
     top: Math.round(scroll?.scrollTop ?? -1) };
 });
@@ -98,6 +113,9 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
   console.log("scrolled up  ", JSON.stringify(seen));
   check(seen.found.length === 1, `one way back while merely scrolled up (${seen.found.length}: ${seen.found.map((f) => f.where).join(", ") || "none"})`);
   check(seen.found[0]?.where === "floating", "and it is the floating one, since no bar is showing");
+  check(seen.over?.covered === 0, `and it covers no line of the reply (${seen.over?.covered} covered)`);
+  check(seen.over?.straddles === true,
+    `it rides the composer's edge rather than floating above it (gap ${seen.over?.aboveComposerBy}px)`);
   check(seen.atEnd === false, "nothing scrolled the conversation to the end by itself");
   await context.close();
 }

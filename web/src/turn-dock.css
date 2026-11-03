@@ -47,6 +47,17 @@
 .conversation-body > .jump-latest {
   bottom: 12px;
 }
+/* Off the end and not reading history, the one way back rides the top edge
+   of the composer, clear of the right dock -- not over a line of the reply
+   being read, which is where a fixed distance from the bottom put it (T-15).
+   A phone keeps it where it was: that corner belongs to the dock buttons
+   there, and they are what it has to stay clear of. */
+.app:not(.phone) .conversation-body > .jump-latest {
+  left: auto;
+  right: calc(var(--gutter-right) + var(--conversation-scrollbar) + 8px);
+  bottom: 0;
+  transform: translateY(50%);
+}
 .turn-dock {
   position: absolute;
   z-index: 3;
