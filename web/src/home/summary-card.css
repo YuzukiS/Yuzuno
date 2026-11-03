@@ -249,19 +249,26 @@
 }
 /* A chart is drawn to fit its frame (Charts.tsx, CardChart; Lead 2655): its names, legend and both axes take what
    they need and the plot the rest. Where the frame has a fixed height it is one that holds them all with a plot
-   to read between them (152 px at 16 px text; its four lines of names grow with the text, and so does it); on a
-   wide card beside its text, never shorter than that; a large card's is taller. */
+   to read between them: 152 px at 16 px text, and 9 px more for each pixel of text above that, as its four lines
+   of names, the x axis and the y axis's labels all grow with the text (at 24 px the plot still spaces two y labels);
+   on a wide card beside its text, never shorter than that; a large card's is taller. */
 .home-card-frame.is-chart .home-card-frame-body {
   position: relative;
-  height: calc(140px + 4 * var(--font-adjust, 3px));
+  height: calc(125px + 9 * var(--font-adjust, 3px));
 }
 :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .home-card-frame.is-chart .home-card-frame-body {
-  height: calc(140px + 4 * var(--font-adjust, 3px));
+  height: calc(125px + 9 * var(--font-adjust, 3px));
+}
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame.is-chart .home-card-frame-body {
+  min-height: max(200px, calc(125px + 9 * var(--font-adjust, 3px)));
 }
 @container deck (min-width: 560px) {
   :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .has-figure .home-card-frame.is-chart .home-card-frame-body {
     height: auto;
-    min-height: calc(140px + 4 * var(--font-adjust, 3px));
+    min-height: calc(125px + 9 * var(--font-adjust, 3px));
+  }
+  :is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame.is-chart .home-card-frame-body {
+    min-height: max(260px, calc(125px + 9 * var(--font-adjust, 3px)));
   }
 }
 .home-card-chart {
