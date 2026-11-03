@@ -113,7 +113,9 @@ export function SaveStatus({
   }, [outcome, action, attempt]);
   if (failed && !failed.saved)
     return (
-      <div ref={refusal} className="save-status save-status-failed">
+      // Keyed apart from the status below: otherwise React keeps this box's first button as the
+      // status's Restore defaults, and focus on Try again stays on that other control (T-19 ST:A12).
+      <div key="refused" ref={refusal} className="save-status save-status-failed">
         <p role="alert">
           <CircleAlert size={14} aria-hidden="true" />
           <span>{t.notSaved(where, t.reason(failed), unsaved ?? t.unsaved)}</span>
@@ -147,7 +149,7 @@ export function SaveStatus({
     t.none(where)
   );
   return (
-    <div className="save-status" data-state={outcome ? action : stored}>
+    <div key="status" className="save-status" data-state={outcome ? action : stored}>
       <p ref={statusLine} role="status" tabIndex={-1}>{line}</p>
       {restore && <div className="save-status-actions">{restore}</div>}
     </div>
