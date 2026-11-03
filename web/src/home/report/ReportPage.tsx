@@ -98,6 +98,8 @@ export function ReportPage({
   const dataFiles = (shown?.attachments ?? []).filter((file) => file.kind === "data");
   const railed = !!parts && (parts.sources.length > 0 || parts.attachments.length > 0 || dataFiles.length > 0);
   const [replying, setReplying] = useState(false);
+  // Only ever opened by the user here; closed, focus goes back to Reply (T-19 HM:S7).
+  const replyButton = useRef<HTMLButtonElement>(null);
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLElement>(null);
@@ -203,6 +205,7 @@ export function ReportPage({
             <button
               type="button"
               className="quiet-button home-reply-open"
+              ref={replyButton}
               aria-expanded={replying}
               aria-label={home.replyLabel(shown.title)}
               title={home.replyTitle(shown.owner.name)}
@@ -235,7 +238,17 @@ export function ReportPage({
         )}
         {notice}
         {live && shown && replying && (
-          <CardReply section={shown} projectId={link.projectId} workspaceId={workspaceId} agents={agents} onClose={() => setReplying(false)} />
+          <CardReply
+            section={shown}
+            projectId={link.projectId}
+            workspaceId={workspaceId}
+            agents={agents}
+            opened
+            onClose={() => {
+              replyButton.current?.focus();
+              setReplying(false);
+            }}
+          />
         )}
         {error && (
           <p className="inline-error" role="alert">
