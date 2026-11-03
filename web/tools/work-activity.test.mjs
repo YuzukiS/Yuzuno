@@ -11,9 +11,10 @@ test("each kind is counted on its own, never added together", () => {
     item("r1", "run", "done"),
     item("s1", "subAgent", "done"),
   ]);
-  assert.deepEqual(seen.byKind.job, { current: 0, done: 1, exception: 0 });
-  assert.deepEqual(seen.byKind.run, { current: 0, done: 1, exception: 0 });
-  assert.deepEqual(seen.byKind.subAgent, { current: 0, done: 1, exception: 0 });
+  const one = { current: 0, done: 1, exception: 0, unrecognized: 0 };
+  assert.deepEqual(seen.byKind.job, one);
+  assert.deepEqual(seen.byKind.run, one);
+  assert.deepEqual(seen.byKind.subAgent, one);
   // A Job that succeeded, a check that passed and a sub-agent that returned
   // are three facts, so nothing reads "3 succeeded".
   assert.equal(seen.current, 0);
@@ -81,9 +82,14 @@ test("an outcome Core lost is never read as a success", () => {
   assert.equal(jobWork("unknown"), "exception");
 });
 
-test("a status we do not know is left out, not guessed at", () => {
-  assert.equal(jobWork("some-new-status"), "uncounted");
-  assert.equal(subAgentWork(""), "uncounted");
+test("a status from another Core is said, not dropped", () => {
+  // Never silently absent, and never read as a success.
+  assert.equal(jobWork("some-new-status"), "unrecognized");
+  assert.equal(subAgentWork("some-new-state"), "unrecognized");
+  const seen = workActivity([{ id: "j1", kind: "job", state: jobWork("some-new-status") }]);
+  assert.equal(seen.unrecognized, 1);
+  assert.equal(seen.byKind.job.done, 0);
+  assert.equal(seen.any, true);
 });
 
 test("CI counts by what it concluded", () => {
@@ -115,4 +121,39 @@ test("uncounted work stays out of every total", () => {
   assert.equal(seen.byKind.run.done, 0);
   assert.equal(seen.byKind.job.done, 1);
   assert.equal(seen.any, true);
+});
+
+// Core's own vocabulary, walked: a status added to the text tables without a
+// word here fails here, before it reaches anyone. That leaves the
+// unrecognized branch for a Core older or newer than this build, which is
+// the only thing it should ever cover.
+test("every status Core names is classified", async () => {
+  // Read from the table rather than imported: jobs-text.ts imports ./i18n
+  // without an extension, which the type stripper cannot resolve, and the
+  // point here is the list of names, not the words beside them.
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/jobs-text.ts", import.meta.url), "utf8");
+  const table = source.match(/status: \{([\s\S]*?)\} as Record<string, string>/);
+  assert.ok(table, "the status table in jobs-text.ts");
+  const names = [...table[1].matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]);
+  assert.ok(names.length >= 11, `expected Core's statuses, saw ${names.length}`);
+  const unclassified = names.filter((name) => jobWork(name) === "unrecognized");
+  assert.deepEqual(unclassified, [], `classify these in work-activity.ts: ${unclassified.join(", ")}`);
+  // And none of them is accidentally a success.
+  const done = names.filter((name) => jobWork(name) === "done");
+  assert.deepEqual(done, ["succeeded"], "only a Job Core calls succeeded is done");
+});
+
+test("every sub-agent status the harness reports is classified", () => {
+  // claude-subagents.ts ClaudeSubAgentStatus, plus the words the dock marks.
+  const names = ["running", "succeeded", "failed", "cancelled", "unknown", "pending", "paused", "completed", "ended"];
+  const unclassified = names.filter((name) => subAgentWork(name) === "unrecognized");
+  assert.deepEqual(unclassified, [], `classify these: ${unclassified.join(", ")}`);
+});
+
+test("every CI conclusion GitHub gives is classified", () => {
+  const names = ["success", "failure", "cancelled", "timed_out", "action_required", "skipped", "neutral"];
+  const unclassified = names.filter((name) => runWork("completed", name) === "unrecognized");
+  assert.deepEqual(unclassified, [], `classify these: ${unclassified.join(", ")}`);
+  assert.equal(runWork("completed", "stale"), "unrecognized", "a conclusion from another GitHub is said");
 });

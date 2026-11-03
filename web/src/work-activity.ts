@@ -10,7 +10,14 @@
  * is the reason to look.
  */
 export type WorkKind = "job" | "run" | "subAgent";
-export type WorkState = "current" | "done" | "exception";
+/**
+ * `unrecognized` is work this build has no word for -- a Core older or newer
+ * than it. It is counted and shown apart rather than dropped: Work activity
+ * is where someone looks for what needs a look, and a count that reads clean
+ * while something sits unclassified elsewhere is the gap worth avoiding. It
+ * is never folded into done.
+ */
+export type WorkState = "current" | "done" | "exception" | "unrecognized";
 
 export type WorkItem = {
   /** Unique within its kind. The same id twice is the same work. */
@@ -19,18 +26,20 @@ export type WorkItem = {
   state: WorkState;
 };
 
-export type KindCount = { current: number; done: number; exception: number };
+export type KindCount = { current: number; done: number; exception: number; unrecognized: number };
 export type WorkActivity = {
   /** Each kind on its own, for a reader who asked what happened. */
   byKind: Record<WorkKind, KindCount>;
   /** Still going, and gone wrong, across the kinds: what a glance needs. */
   current: number;
   exception: number;
+  /** Work no word here covers, kept visible so it is not lost quietly. */
+  unrecognized: number;
   /** Whether there is anything at all to show an entry for. */
   any: boolean;
 };
 
-const empty = (): KindCount => ({ current: 0, done: 0, exception: 0 });
+const empty = (): KindCount => ({ current: 0, done: 0, exception: 0, unrecognized: 0 });
 
 /**
  * Counts work once per kind and id. Core and the conversation can both
@@ -51,7 +60,9 @@ export function workActivity(items: readonly WorkItem[]): WorkActivity {
     byKind.job[state] + byKind.run[state] + byKind.subAgent[state];
   const current = total("current");
   const exception = total("exception");
-  return { byKind, current, exception, any: current + exception + total("done") > 0 };
+  const unrecognized = total("unrecognized");
+  return { byKind, current, exception, unrecognized,
+    any: current + exception + unrecognized + total("done") > 0 };
 }
 
 /**
@@ -76,10 +87,11 @@ export function jobWork(status: string): Counted {
     case "failed": case "cancelled": case "rejected": case "interrupted": case "unknown":
       return "exception";
     default:
-      // A status this does not know is left out rather than guessed at: it
-      // is still in the Jobs panel, and a guess here would either invent a
-      // success or raise an alarm that may not be one.
-      return "uncounted";
+      // Said as its own thing rather than guessed at or dropped. The test
+      // below walks Core's own table, so a status added there without a word
+      // here fails before anyone sees it; this branch is for a Core of
+      // another age.
+      return "unrecognized";
   }
 }
 
@@ -95,8 +107,10 @@ export function runWork(status: string, conclusion: string | null | undefined): 
     // a number if the line says that word itself.
     case "skipped": case "neutral":
       return "uncounted";
-    default:
+    case null: case undefined: case "":
       return "uncounted";
+    default:
+      return "unrecognized";
   }
 }
 
@@ -111,6 +125,6 @@ export function subAgentWork(status: string): Counted {
     case "failed": case "cancelled": case "unknown":
       return "exception";
     default:
-      return "uncounted";
+      return "unrecognized";
   }
 }
