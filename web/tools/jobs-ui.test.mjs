@@ -809,10 +809,13 @@ test('a chosen job reads as being read until its answer comes; a narrow window b
       await open(p);
       await until(() => p.doc.querySelector('.jobs-browser .job-row'));
       p.doc.querySelector('.jobs-browser .job-row').click();
-      await until(() => p.doc.querySelector('.job-detail')?.getAttribute('aria-busy') === 'true');
+      // Its read is on its way (held): what shows meanwhile.
+      await until(() => p.calls.some(c => c.url === '/api/jobs/job-one'));
+      await wait();
       const box = p.doc.querySelector('.job-detail');
       assert.doesNotMatch(box.textContent, /Select a job/, 'not "unchosen" while it is read');
       assert.match(box.textContent, /Reading this job…/);
+      assert.equal(box.getAttribute('aria-busy'), 'true');
       // The options object is the page's own; compare its values.
       assert.deepEqual(JSON.parse(JSON.stringify(scrolled)), [{ className: 'job-detail', options: { block: 'start', behavior: reduced ? 'auto' : 'smooth' } }]);
       detail.answer();
