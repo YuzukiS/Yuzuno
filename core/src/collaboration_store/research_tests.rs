@@ -527,6 +527,62 @@ fn a_theory_claim_is_delivered_without_any_job() {
     assert_eq!(jobs, 0, "no Job, no seed, and nothing asked for one");
 }
 
+/// `n` bytes of UTF-8 text: three-byte characters, then ASCII for the rest.
+fn text_of(n: usize) -> String {
+    format!("{}{}", "研".repeat(n / 3), "a".repeat(n % 3))
+}
+
+#[test]
+fn a_result_is_bounded_as_stored_with_its_record_summaries_and_a_refusal_writes_nothing() {
+    const BOUND: usize = 32_768;
+    let (_dir, store) = setup();
+    // Forty records with 64-byte ids and 300-byte multibyte titles: their
+    // summaries add far more to a result than their references do.
+    let cited: Vec<i64> = (0..40).map(|n| {
+        seq(&comment(&store, "author", &format!("record-{n}"), "T-1",
+            finding(&format!("r{n:0>63}"), "open", "systems", &"速".repeat(100))).unwrap())
+    }).collect();
+    let dispatched = store.collaboration_call(Some("other"), "task_dispatch", json!({"requestId":"dispatch",
+        "taskId":"T-1","expectedVersion":version_of_task(&store, "T-1"),"toAgentId":"author"})).unwrap();
+    let dispatch = dispatched["message"]["dispatchId"].as_str().unwrap().to_owned();
+    let submit = |key: &str, padding: usize| {
+        let criteria: Vec<Value> = cited.chunks(10).enumerate().map(|(n, records)| json!({"id":format!("c{n}"),
+            "label":"What the acceptance asks","report":"報".repeat(500),"reportedStatus":"unknown","artifacts":[],
+            "records":records.iter().map(|seq| json!({"activitySeq":seq})).collect::<Vec<_>>()})).collect();
+        let outcome = json!({"criteria":criteria,"remaining":text_of(padding),"nextAgentId":"other",
+            "nextStep":"Read the cited records"});
+        let sent = serde_json::to_vec(&outcome).unwrap().len();
+        (sent, store.collaboration_call(Some("author"), "task_submit_result", json!({"requestId":key,"taskId":"T-1",
+            "expectedVersion":version_of_task(&store, "T-1"),"dispatchId":dispatch,"summary":format!("Result {key}"),
+            "outcome":outcome})))
+    };
+    let stored = |answer: &Value| serde_json::to_vec(&answer["task"]["result"]["outcome"]).unwrap().len();
+    // Only the padding changes between submissions, byte for byte, so one
+    // result well inside the bound finds it.
+    let first = submit("first", 30).1.unwrap();
+    let base = stored(&first) - 30;
+    assert!(base > 20_000, "the summaries are most of it: {base}");
+    // One byte past the bound as stored, from an input far inside it.
+    let before = counts(&store);
+    let (sent, refused) = submit("over", BOUND + 1 - base);
+    assert!(sent + 10_000 < BOUND, "the input alone is far inside the bound: {sent}");
+    let refused = error(refused);
+    assert!(refused.contains("exceeds 32768 bytes as stored") && refused.contains("(32769 bytes)"), "{refused}");
+    assert_eq!(counts(&store), before, "no task version, status, result activity, receipt or notification is written");
+    let read = store.collaboration_call(None, "task_result_get", json!({"taskId":"T-1"})).unwrap();
+    assert_eq!(read["currentResultId"], first["task"]["result"]["id"], "the earlier result stays current and readable");
+    // At the bound exactly, the result is kept whole and notified.
+    let kept = submit("at-bound", BOUND - base).1.unwrap();
+    assert_eq!(stored(&kept), BOUND);
+    let outcome = &kept["task"]["result"]["outcome"];
+    let records: usize = outcome["criteria"].as_array().unwrap().iter().map(|c| c["records"].as_array().unwrap().len()).sum();
+    assert_eq!((records, outcome["nextAgent"]["id"].clone()), (40, json!("other")));
+    assert!(kept.get("message").is_some(), "the dispatching Agent is notified: {kept}");
+    assert_eq!(counts(&store), (before.0 + 1, before.1.clone(), before.2 + 1, before.3 + 1, before.4 + 1));
+    // A summary only: a record's text is never copied into the result.
+    assert!(!outcome.to_string().contains("as its author argues it"));
+}
+
 #[test]
 fn a_record_proposes_its_next_check_or_a_stop_and_a_method_does_not() {
     let (_dir, store) = setup();

@@ -408,6 +408,7 @@ try {
     const text = await cited.page.locator(".outcome-drawer").innerText();
     for (const expected of [
       "研究记录",
+      "每条记录引用的是这里显示的摘要，在本结果提交时固定",
       "两者互不推导",
       "活动 12 · 第 1 版 · 作者 Mina",
       "不支持 — 记录作者对支持程度的判断",
