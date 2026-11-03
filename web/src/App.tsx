@@ -202,7 +202,7 @@ import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
 import { useArrivalsIn, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
-import type { HomeReplyOrigin, QuestionSource } from "./types";
+import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
 import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
@@ -603,6 +603,10 @@ export function App() {
   // a copy kept from before, nor a change Core replays when the stream resumes
   // makes an old request play (Lead 3299, 3301).
   const arrivalsSettle = useRef<{ after: number } | null>(null);
+  // Core streamed or announced a change to the open Agent since the stream
+  // last reset: a Turn the next detail adds after the shown ones arrived live
+  // (T-19 CV:T-01).
+  const liveTurn = useRef<{ workspace: string; agent: string } | null>(null);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -628,13 +632,16 @@ export function App() {
         case "agent.item":
         case "agent.context":
           // Only the shown Agent's detail is kept; others are read when opened.
-          if (event.agentId === currentSelected.current) live.sync.push(event);
+          if (event.agentId === currentSelected.current) {
+            if (event.type !== "agent.context") liveTurn.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.push(event);
+          }
           return;
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
           if (event.agentId === currentSelected.current) {
-            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            liveChange.current = liveTurn.current = { workspace: currentWorkspace.current, agent: event.agentId };
             live.sync.refetch();
           }
           return;
@@ -687,8 +694,8 @@ export function App() {
           else refresh();
           return;
         case "reset":
-          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
-          liveChange.current = null;
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01, CV:T-01).
+          liveChange.current = liveTurn.current = null;
           arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
@@ -1116,6 +1123,58 @@ export function App() {
   // same, so a streamed change does not draw every Turn again.
   const inTurnKey = [...sendingInTurn(currentDetail, selected, outgoing)].sort().join("\n");
   const inTurn = useMemo<ReadonlySet<string>>(() => new Set(inTurnKey ? inTurnKey.split("\n") : []), [inTurnKey]);
+  // A Turn that arrives live while its conversation is open fades in, once (T-19 CV:T-01, Lead
+  // 3250): one a detail adds after the Turns shown, both at the latest window, after Core streamed
+  // or announced a change to the Agent. The first detail of a Workspace, Agent or native session,
+  // a window being read, and what a reconnect, poll or reset brings only become what was shown. A
+  // Turn whose message this window showed as a preview, or sending in its Turn, the frame before
+  // does not play: it is that message, confirmed. Matched by its exact ID, never by its text.
+  const turnScope = currentDetail && currentDetail.agent.id === selected
+    ? [workspaceId, selected, nativeSession(currentDetail.agent) ?? ""].join("\n") : null;
+  const turnsSeen = useRef<{ scope: string; latest: boolean; ids: Set<string>; arrived: string[] } | null>(null);
+  const shownMessages = useRef<ReadonlySet<string>>(new Set());
+  if (turnScope && currentDetail) {
+    const seen = turnsSeen.current;
+    const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
+    const ids = currentDetail.turns.map((turn) => turn.id);
+    let last = -1;
+    if (seen?.scope === turnScope) ids.forEach((id, index) => { if (seen.ids.has(id)) last = index; });
+    if (!seen || seen.scope !== turnScope || !seen.latest || !latest || last < 0) {
+      turnsSeen.current = { scope: turnScope, latest, ids: new Set(ids.slice(-500)), arrived: seen?.scope === turnScope ? seen.arrived : [] };
+      if (seen?.scope !== turnScope) liveTurn.current = null;
+    } else if (ids.some((id) => !seen.ids.has(id))) {
+      const fresh = currentDetail.turns.slice(last + 1).filter((turn) => !seen.ids.has(turn.id));
+      const announced = liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+      if (announced && fresh.length) liveTurn.current = null;
+      const handedOver = (turn: NativeTurn) => {
+        const first = turn.items.find((item) => item.type === "userMessage");
+        const id = typeof first?.clientId === "string" ? first.clientId
+          : typeof first?._yuzunoClientMessageId === "string" && inTurn.has(first._yuzunoClientMessageId) ? first._yuzunoClientMessageId : null;
+        if (id && shownMessages.current.has(id)) return true;
+        return !!currentDetail.messageReceipts?.some((receipt) => receipt.binding?.turnId === turn.id
+          && turn.items.some((item) => item.id === receipt.binding!.itemId) && shownMessages.current.has(receipt.input.clientMessageId));
+      };
+      turnsSeen.current = { scope: turnScope, latest, ids: new Set([...seen.ids, ...ids].slice(-500)),
+        arrived: announced ? [...seen.arrived, ...fresh.filter((turn) => !handedOver(turn)).map((turn) => turn.id)].slice(-20) : seen.arrived };
+    }
+  }
+  useArrivalsIn(
+    turnsSeen.current?.scope === turnScope ? turnsSeen.current.arrived.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => document.querySelector<HTMLElement>(`.turn[data-turn-id="${CSS.escape(key.slice(key.lastIndexOf("\n") + 1))}"]`),
+    "small",
+  );
+  // The messages this window shows as on their way, as of this commit: previews, and new Claude
+  // messages sending in their Turn. Read by the next render's Turn arrivals above.
+  useLayoutEffect(() => {
+    const shown = new Set<string>();
+    for (const preview of document.querySelectorAll<HTMLElement>(".outgoing-message[data-client-message-id]"))
+      if (preview.dataset.clientMessageId) shown.add(preview.dataset.clientMessageId);
+    for (const turn of currentDetail?.turns ?? [])
+      for (const item of turn.items)
+        if (typeof item._yuzunoClientMessageId === "string" && inTurn.has(item._yuzunoClientMessageId)
+          && document.querySelector(`[data-item-id="${CSS.escape(item.id)}"]`)) shown.add(item._yuzunoClientMessageId);
+    shownMessages.current = shown;
+  });
   // A message this tab is still sending is on its way, not unconfirmed: Core
   // records its receipt before the harness answers, and a read in between
   // shows it sending (T-120). Only that same message, while its request runs.
