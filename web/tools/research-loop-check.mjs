@@ -186,13 +186,23 @@ async function open(width, height, theme) {
 /** Each piece of text inside `selector`, with its contrast against what is behind it. */
 const contrast = (selector) =>
   page.evaluate((selector) => {
-    const rgb = (text) => (text.match(/[\d.]+/g) || []).map(Number);
+    // Any CSS colour (rgb, color(srgb …) from color-mix, oklch …) as 0–255
+    // RGB and 0–1 alpha, read back from a 1×1 canvas.
+    const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    const rgb = (css) => {
+      pixel.clearRect(0, 0, 1, 1);
+      pixel.fillStyle = "rgba(0, 0, 0, 0)";
+      pixel.fillStyle = css;
+      pixel.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = pixel.getImageData(0, 0, 1, 1).data;
+      return [r, g, b, a / 255];
+    };
     const lum = ([r, g, b]) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
       .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
     const behind = (el) => {
       for (let node = el; node; node = node.parentElement) {
         const color = rgb(getComputedStyle(node).backgroundColor);
-        if (color.length >= 3 && (color.length < 4 || color[3] > 0.95)) return color;
+        if (color[3] > 0.95) return color;
       }
       return [255, 255, 255];
     };
@@ -200,7 +210,9 @@ const contrast = (selector) =>
     const all = selector.split(",").flatMap((part) => [part.trim(), `${part.trim()} *`]).join(", ");
     for (const el of document.querySelectorAll(all)) {
       if (![...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim())) continue;
-      const fg = lum(rgb(getComputedStyle(el).color)), bg = lum(behind(el));
+      // Text with alpha is seen blended over what is behind it.
+      const under = behind(el), [r, g, b, a] = rgb(getComputedStyle(el).color);
+      const fg = lum([r, g, b].map((v, i) => v * a + under[i] * (1 - a))), bg = lum(under);
       rows.push({ what: el.className || el.tagName, text: el.textContent.trim().slice(0, 40), ratio: Math.round(((Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05)) * 100) / 100 });
     }
     return rows;
@@ -245,7 +257,8 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await page.getByRole("button", { name: "Related jobs", exact: true }).first().click();
     const card = page.locator(".job-task-spend");
     await until("the spend card", async () => (await card.count()) && (await card.innerText()).includes("$1.75"));
-    const text = await card.innerText();
+    // As written, not as styled: the card's title is uppercased by CSS.
+    const text = await card.evaluate((el) => el.textContent);
     for (const expected of ["Recorded spend on this task",
       "$1.75 · 1 with an unknown amount · 1 attempt recorded none · 1 still running",
       "12.3 s of CPU over 2 measured attempts · 1 not measured · GPU use is not measured; 1 attempt reserved a GPU",

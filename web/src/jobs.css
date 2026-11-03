@@ -582,16 +582,19 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.job-detail dl {
+.job-detail dl,
+.job-task-spend dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px 18px;
   margin: 0;
 }
-.job-detail dt {
+.job-detail dt,
+.job-task-spend dt {
   color: var(--text-quiet);
 }
-.job-detail dd {
+.job-detail dd,
+.job-task-spend dd {
   margin: 0;
   color: var(--ink);
   overflow-wrap: anywhere;
