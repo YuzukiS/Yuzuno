@@ -863,7 +863,8 @@ p {
 }
 .quiet-button:hover:not(:disabled) {
   background: #f1f3e9;
-  color: #617552;
+  /* As every other palette (appearance.css): ink, readable on the fill. */
+  color: var(--ink);
 }
 .copy-button {
   color: var(--text-secondary);
@@ -1052,7 +1053,7 @@ p {
   color: var(--accent-ink, #786637);
 }
 .turn-activity[data-state="uncertain"] {
-  color: var(--text-secondary, #69775e);
+  color: var(--text-secondary, #646f59);
 }
 .tool-item {
   padding: 3px 0;

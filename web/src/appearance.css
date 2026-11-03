@@ -5,7 +5,8 @@
   --surface-raised: #fcfcf7;
   --surface-soft: #f1f4e9;
   --surface-hover: #e9eddf;
-  --text-secondary: #69775e;
+  /* 4.5:1 on paper and on the toolbar's cream (T-19). */
+  --text-secondary: #646f59;
   --text-quiet: #7e8c71;
   --accent-wash: #f5edcf;
   --accent-ink: #786637;
