@@ -31,7 +31,8 @@
   padding: 0 6px;
   border-radius: 999px;
   background: var(--surface-soft);
-  color: var(--text-secondary);
+  /* On the soft fill, secondary text falls under 4.5:1 in light themes. */
+  color: var(--ink);
   font-size: 0.7rem;
   font-weight: 500;
 }
@@ -104,6 +105,11 @@
 .task-research-source-name {
   font-weight: 550;
   overflow-wrap: anywhere;
+}
+.task-research-source-name a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .task-research-identity,
 .task-research-note,
