@@ -701,17 +701,32 @@ export function App() {
     [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
   const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
-  // The stream broke or opened again (T-19 CV:Q-01, Lead 3299). A short
-  // break can resume without any reset: what Core replays then is not live.
+  // The stream broke, or opened again after breaking (T-19 CV:Q-01; Lead 3299, R1 276d4a1d). A
+  // short break can resume without a reset and with nothing replayed, so opening again also reads
+  // the shown Agent's detail once, after the mark: that read, not one already on its way, settles
+  // the wait. The first opening has nothing to replay and marks nothing.
   const lastConnection = useRef(eventConnection);
+  const reopened = useRef(false);
   if (lastConnection.current !== eventConnection) {
+    const was = lastConnection.current;
     lastConnection.current = eventConnection;
-    liveChange.current = null;
-    arrivalsSettle.current = { after: eventConnection === "open" ? live.sync.reads : Infinity };
+    if (eventConnection !== "open") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity };
+    } else if (was === "reconnecting") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: live.sync.reads };
+      reopened.current = true;
+    }
   }
   useEffect(() => {
-    if (eventConnection === "open" && !previewMode) jobsRefresh.now();
-  }, [eventConnection, previewMode, jobsRefresh]);
+    if (eventConnection !== "open" || previewMode) return;
+    jobsRefresh.now();
+    if (reopened.current) {
+      reopened.current = false;
+      live.sync.refetch({ now: true });
+    }
+  }, [eventConnection, previewMode, jobsRefresh, live.sync]);
   useEffect(() => {
     const refreshJobs = () => jobsRefresh.now();
     // Jobs open as a dialog above Home (whose own Jobs widget sends this),
