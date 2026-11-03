@@ -389,3 +389,140 @@ fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
     let cited = desk_source(&db, "T-1", first).unwrap();
     assert!(cited["latestActivitySeq"].is_null() && cited["version"] == 1, "{cited}");
 }
+
+/// A claim with no method and no source: what a finding or a proof can be.
+fn finding(id: &str, status: &str, field: &str, title: &str) -> Value {
+    json!({"type":"claim","id":id,"title":title,"text":format!("{title}, as its author argues it."),"status":status,
+        "field":field,"conditions":["Small inputs only"],"limits":["One machine"]})
+}
+
+/// A task whose acceptance is fixed when it is registered.
+fn task_with(store: &Store, key: &str, title: &str, acceptance: &str) -> String {
+    let created = store.collaboration_call(None, "task_create",
+        json!({"requestId":key,"title":title,"materials":{"acceptance":acceptance}})).unwrap();
+    created["task"]["id"].as_str().unwrap().to_string()
+}
+
+fn version_of_task(store: &Store, task: &str) -> Value {
+    store.collaboration_call(None, "task_get", json!({"taskId":task})).unwrap()["task"]["version"].clone()
+}
+
+/// A result with one criterion, reported as `status`, citing `records`, at
+/// the task's version `at`.
+fn result_at(store: &Store, key: &str, task: &str, at: Value, status: &str, records: Value) -> Result<Value> {
+    store.collaboration_call(Some("author"), "task_submit_result", json!({"requestId":key,"taskId":task,
+        "expectedVersion":at,"summary":format!("Result {key}"),
+        "outcome":{"criteria":[{"id":"answer","label":"What the acceptance asks","report":"See the cited claim.",
+            "reportedStatus":status,"artifacts":[],"records":records}]}}))
+}
+
+fn result(store: &Store, key: &str, task: &str, status: &str, records: Value) -> Result<Value> {
+    result_at(store, key, task, version_of_task(store, task), status, records)
+}
+
+#[test]
+fn the_same_negative_finding_meets_a_question_and_misses_a_threshold_and_neither_status_is_derived() {
+    let (_dir, store) = setup();
+    let question = task_with(&store, "question", "Does layout B improve the small inputs? (synthetic)",
+        "Answer whether layout B improves the small inputs, with the evidence either way");
+    let threshold = task_with(&store, "threshold", "Ship a faster layout (synthetic)",
+        "Deliver a layout at least 5% faster on the small inputs");
+    let title = "Layout B is not faster on the small inputs";
+    let mut cited = vec![];
+    for task in [&question, &threshold] {
+        let answer = comment(&store, "author", &format!("finding-{task}"), task, finding("not-faster", "unsupported", "systems", title)).unwrap();
+        cited.push(seq(&answer));
+    }
+    // The same finding: one task asked a question, the other a threshold.
+    let asked_at = version_of_task(&store, &question);
+    let met = result_at(&store, "met", &question, asked_at.clone(), "met", json!([{"activitySeq":cited[0]}])).unwrap();
+    let missed = result(&store, "missed", &threshold, "not_met", json!([{"activitySeq":cited[1]}])).unwrap();
+    for (answer, status, acceptance, seq) in [(&met, "met", "Answer whether", cited[0]), (&missed, "not_met", "Deliver a layout", cited[1])] {
+        let stored = &answer["task"]["result"];
+        assert!(stored["acceptanceContext"]["text"].as_str().unwrap().starts_with(acceptance), "{stored}");
+        let criterion = &stored["outcome"]["criteria"][0];
+        assert_eq!(criterion["reportedStatus"], status, "the result author's report stays as given");
+        assert_eq!(criterion["records"], json!([{"activitySeq":seq,"version":1,"at":criterion["records"][0]["at"],
+            "producer":{"kind":"agent","id":"author","name":"Agent author"},
+            "record":{"kind":"research","type":"claim","id":"not-faster","title":title,"status":"unsupported"}}]));
+        assert_eq!(answer["task"]["status"], "review", "a negative finding is delivered, not failed or retried");
+    }
+    // Core derives neither from the other: a supported claim may sit under an
+    // unmet criterion too, and the claim itself is unchanged by any result.
+    let supported = seq(&comment(&store, "author", "supported", &threshold,
+        finding("faster-large", "supported", "systems", "Layout B is faster on the large inputs")).unwrap());
+    let both = result(&store, "both", &threshold, "not_met", json!([{"activitySeq":cited[1]},{"activitySeq":supported}])).unwrap();
+    assert_eq!(both["task"]["result"]["outcome"]["criteria"][0]["reportedStatus"], "not_met");
+    assert_eq!(record(&store, &threshold, cited[1])["research"]["status"], "unsupported");
+
+    // The read says where each cited record stands now, beside the fixed one.
+    let read = store.collaboration_call(None, "task_result_get", json!({"taskId":question})).unwrap();
+    assert_eq!(read["records"], json!([{"criterionId":"answer","activitySeq":cited[0],"state":"readable",
+        "revisedBy":null,"latestActivitySeq":cited[0]}]));
+    assert!(read["note"].as_str().unwrap().contains("neither is derived from the other"));
+    // A retry is the same result; the same key with other records is refused.
+    let again = result_at(&store, "met", &question, asked_at.clone(), "met", json!([{"activitySeq":cited[0]}]));
+    assert_eq!(again.unwrap()["task"]["result"]["id"], met["task"]["result"]["id"]);
+    let other = result_at(&store, "met", &question, asked_at, "met", json!([]));
+    assert!(error(other).starts_with("idempotency_conflict:"));
+}
+
+#[test]
+fn a_criterion_cites_only_this_tasks_research_records_and_a_refusal_writes_nothing() {
+    let (_dir, store) = setup();
+    let own = seq(&comment(&store, "author", "own", "T-1", finding("own", "open", "systems", "Undecided so far")).unwrap());
+    let elsewhere = seq(&comment(&store, "author", "elsewhere", "T-2", finding("elsewhere", "supported", "systems", "Another task's claim")).unwrap());
+    let plain = seq(&store.collaboration_call(Some("author"), "task_comment",
+        json!({"requestId":"plain","taskId":"T-1","body":"Just a note"})).unwrap());
+    let before = counts(&store);
+    for (name, records, expected) in [
+        ("another task's record", json!([{"activitySeq":elsewhere}]), "is not a research record of T-1"),
+        ("a plain comment", json!([{"activitySeq":plain}]), "is not a research record of T-1"),
+        ("no such activity", json!([{"activitySeq":999_999}]), "is not a research record of T-1"),
+        ("not a sequence", json!([{"activitySeq":0}]), "positive activity sequence"),
+        ("twice", json!([{"activitySeq":own},{"activitySeq":own}]), "cites each research record once"),
+        ("a copied identity", json!([{"activitySeq":own,"record":{"status":"supported"}}]), "invalid_input"),
+        ("too many", json!(vec![json!({"activitySeq":own}); 11]), "at most 10 research records"),
+        ("not a list", json!({"activitySeq":own}), "must be an array"),
+    ] {
+        let refused = error(result(&store, name, "T-1", "met", records));
+        assert!(refused.contains(expected), "{name}: {refused}");
+        assert_eq!(counts(&store), before, "{name}: nothing written");
+    }
+}
+
+#[test]
+fn a_result_keeps_the_version_it_cites_and_its_read_says_a_newer_one_exists() {
+    let (_dir, store) = setup();
+    let first = seq(&comment(&store, "author", "v1", "T-1", finding("faster", "conditional", "systems", "Layout B is faster")).unwrap());
+    result(&store, "cites-v1", "T-1", "unknown", json!([{"activitySeq":first}])).unwrap();
+    let mut revised = finding("faster", "unsupported", "systems", "Layout B is not faster");
+    revised["revises"] = json!({"activitySeq":first,"reason":"Fresh processes erased the gain."});
+    let second = seq(&comment(&store, "author", "v2", "T-1", revised).unwrap());
+    let read = store.collaboration_call(None, "task_result_get", json!({"taskId":"T-1"})).unwrap();
+    let cited = &read["result"]["outcome"]["criteria"][0]["records"][0];
+    assert_eq!((cited["activitySeq"].clone(), cited["version"].clone()), (json!(first), json!(1)));
+    assert_eq!((cited["record"]["title"].clone(), cited["record"]["status"].clone()),
+        (json!("Layout B is faster"), json!("conditional")), "the version cited, as it was");
+    assert_eq!(read["records"][0], json!({"criterionId":"answer","activitySeq":first,"state":"readable",
+        "revisedBy":second,"latestActivitySeq":second}));
+}
+
+#[test]
+fn a_theory_claim_is_delivered_without_any_job() {
+    let (_dir, store) = setup();
+    let task = task_with(&store, "bound", "Does the bound hold for every n? (synthetic)",
+        "A proof or a counterexample for the stated bound");
+    let mut proof = finding("bound", "supported", "theory", "The bound holds for every n ≥ 1");
+    proof["conditions"] = json!(["n ≥ 1", "The cost model of section 2"]);
+    proof["limits"] = json!(["Checked by hand; not formalised", "Exhaustive search to n = 12 is no proof for larger n"]);
+    let claim = seq(&comment(&store, "author", "proof", &task, proof).unwrap());
+    let delivered = result(&store, "proof", &task, "met", json!([{"activitySeq":claim}])).unwrap();
+    let criterion = &delivered["task"]["result"]["outcome"]["criteria"][0];
+    assert_eq!(criterion["artifacts"], json!([]));
+    assert_eq!(criterion["records"][0]["record"]["status"], "supported");
+    let key = task_key(&store.db.read().unwrap(), &task).unwrap().0;
+    let jobs: i64 = store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM local_jobs WHERE task_id=?1", params![key], |r| r.get(0)).unwrap();
+    assert_eq!(jobs, 0, "no Job, no seed, and nothing asked for one");
+}

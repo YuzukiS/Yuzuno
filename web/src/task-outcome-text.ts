@@ -104,6 +104,34 @@ export const outcomeText = strings(
     counts: (met: number, total: number) =>
       `Author reports ${met} of ${total} items met`,
     evidenceCount: (n: number) => `${n} artifact references`,
+    // Research records a criterion cites (T-17).
+    records: "Research records",
+    recordsNote:
+      "Each record is cited as it read when this result was submitted. A claim's support is its record author's judgement; this item's status is the result author's report against the acceptance. Neither is derived from the other.",
+    recordType: {
+      method: "Method",
+      claim: "Claim",
+      observation: "Observation",
+      comparison: "Comparison",
+    } as Record<string, string>,
+    recordLine: (seq: number, version: number | null) =>
+      `activity ${seq} · ${version ? `version ${version}` : "version not counted"}`,
+    recordBy: (name: string) => `by ${name}`,
+    support: {
+      supported: "Supported",
+      conditional: "Holds under conditions",
+      unsupported: "Not supported",
+      open: "Open",
+    } as Record<string, string>,
+    supportBy: "the record author's judgement of support",
+    recordCounts: (c: Record<string, number>) =>
+      `${c.included} included · ${c.excluded} excluded · ${c.missing} missing · ${c.not_done} not done`,
+    recordNewer: (seq: number) =>
+      `A newer version is activity ${seq}; this result cites the version above`,
+    recordLatestUnknown: (next: number | null) =>
+      `${next != null ? `Activity ${next} revises it` : "A newer version exists"}; the latest version is unknown. This result cites the version above`,
+    recordMissing: "This record can no longer be read",
+    removeRecord: "Remove research record",
   },
   {
     title: "成果与证据",
@@ -198,5 +226,19 @@ export const outcomeText = strings(
     removeArtifact: "移除产物引用",
     counts: (met, total) => `作者报告 ${met} / ${total} 项已满足`,
     evidenceCount: (n) => `${n} 个产物引用`,
+    records: "研究记录",
+    recordsNote:
+      "每条记录按本结果提交时的样子引用。主张的支持程度是记录作者的判断；这一项的状态是结果作者对照验收的报告。两者互不推导。",
+    recordType: { method: "方法", claim: "主张", observation: "观察", comparison: "比较" },
+    recordLine: (seq, version) => `活动 ${seq} · ${version ? `第 ${version} 版` : "版本数未计出"}`,
+    recordBy: (name) => `作者 ${name}`,
+    support: { supported: "得到支持", conditional: "在条件下成立", unsupported: "不支持", open: "未定" },
+    supportBy: "记录作者对支持程度的判断",
+    recordCounts: (c) => `纳入 ${c.included} · 排除 ${c.excluded} · 缺失 ${c.missing} · 未做 ${c.not_done}`,
+    recordNewer: (seq) => `较新的版本是活动 ${seq}；本结果引用的是上面这一版`,
+    recordLatestUnknown: (next) =>
+      `${next != null ? `活动 ${next} 修订了它` : "已有较新的版本"}；最新版本未确定。本结果引用的是上面这一版`,
+    recordMissing: "这条记录已无法读取",
+    removeRecord: "移除研究记录",
   },
 );

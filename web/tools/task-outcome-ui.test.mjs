@@ -443,3 +443,133 @@ test("the existing result form preserves fixed artifact references and sends onl
     p.close();
   }
 });
+test("a criterion's research records show as cited, their support apart from the item's status, and where each line stands now (T-17)", async () => {
+  const p = await mount();
+  try {
+    const at = "2026-10-01T14:00:00Z";
+    const mina = { kind: "agent", id: "writer", name: "Mina" };
+    const [desktop, mobile] = p.fixture.current.outcome.criteria;
+    desktop.records = [
+      {
+        activitySeq: 14,
+        version: 2,
+        producer: mina,
+        at,
+        record: {
+          kind: "research",
+          type: "comparison",
+          id: "widths",
+          title: "Desktop and phone reading compared",
+          counts: { included: 2, excluded: 1, missing: 0, not_done: 1 },
+        },
+      },
+    ];
+    // A negative finding under an item reported as a gap: neither says the other.
+    mobile.records = [
+      {
+        activitySeq: 12,
+        version: 1,
+        producer: mina,
+        at,
+        record: {
+          kind: "research",
+          type: "claim",
+          id: "touch",
+          title: "Touch targets are large enough at 390 px",
+          status: "unsupported",
+        },
+      },
+    ];
+    const answer = p.fixture.answer;
+    p.fixture.answer = (path, body) => {
+      const data = answer(path, body);
+      if (path.endsWith("/task_result_get") && body.taskId === "T-1")
+        data.records = [
+          { criterionId: "desktop", activitySeq: 14, state: "missing" },
+          {
+            criterionId: "mobile",
+            activitySeq: 12,
+            state: "readable",
+            revisedBy: 15,
+            latestActivitySeq: 15,
+          },
+        ];
+      return data;
+    };
+    await p.openTask("T-1");
+    await p.openOutcome();
+    const drawer = p.doc.querySelector(".outcome-drawer");
+    p.button("Item by item", drawer).click();
+    await until(() => drawer.querySelectorAll(".outcome-record").length === 2, "both records");
+    const [first, second] = drawer.querySelectorAll(".outcome-criterion");
+    for (const criterion of [first, second]) criterion.open = true;
+    const expect = (criterion, texts) => {
+      for (const text of texts)
+        assert.ok(criterion.textContent.includes(text), `${text}: ${criterion.textContent}`);
+    };
+    expect(second, [
+      "Author reports a gap",
+      "Research records",
+      "Neither is derived from the other.",
+      "Claim",
+      "Touch targets are large enough at 390 px",
+      "activity 12 · version 1 · by Mina",
+      "Not supported — the record author's judgement of support",
+      "A newer version is activity 15; this result cites the version above",
+    ]);
+    expect(first, [
+      "Author reports met",
+      "Comparison",
+      "Desktop and phone reading compared",
+      "activity 14 · version 2",
+      "2 included · 1 excluded · 0 missing · 1 not done",
+      "This record can no longer be read",
+    ]);
+    assert.doesNotMatch(drawer.textContent, /verified/i);
+    // The same, in Chinese, without reading anything again.
+    const reads = p.fixture.calls.length;
+    p.w.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
+    await until(() => second.textContent.includes("研究记录"), "Chinese");
+    expect(second, [
+      "作者报告有缺项",
+      "两者互不推导",
+      "主张",
+      "活动 12 · 第 1 版 · 作者 Mina",
+      "不支持 — 记录作者对支持程度的判断",
+      "较新的版本是活动 15；本结果引用的是上面这一版",
+    ]);
+    expect(first, ["比较", "纳入 2 · 排除 1 · 缺失 0 · 未做 1", "这条记录已无法读取"]);
+    assert.equal(p.fixture.calls.length, reads);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+test("the result form keeps a criterion's research records and sends only their activity (T-17)", async () => {
+  const p = await mount();
+  try {
+    p.fixture.current.outcome.criteria[1].records = [
+      {
+        activitySeq: 12,
+        version: 1,
+        producer: { kind: "agent", id: "writer", name: "Mina" },
+        at: "2026-10-01T14:00:00Z",
+        record: { kind: "research", type: "claim", id: "touch", title: "Touch targets are large enough", status: "unsupported" },
+      },
+    ];
+    await p.openTask("T-1");
+    p.button("Update result").click();
+    await until(() => p.doc.querySelector(".outcome-editor"), "editor");
+    assert.match(p.doc.querySelector(".outcome-editor").textContent, /Claim “Touch targets are large enough” · activity 12 · version 1/);
+    const form = p.doc.querySelector(".collab-result form");
+    form.dispatchEvent(new p.w.Event("submit", { bubbles: true, cancelable: true }));
+    await until(() => p.fixture.calls.some((c) => c.path.endsWith("task_submit_result")), "submitted");
+    const { body } = p.fixture.calls.find((c) => c.path.endsWith("task_submit_result"));
+    assert.deepEqual(body.outcome.criteria[1].records, [{ activitySeq: 12 }], "Core fixes the rest");
+    assert.equal(Object.hasOwn(body.outcome.criteria[0], "records"), false, "none cited, none sent");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

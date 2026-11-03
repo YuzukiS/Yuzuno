@@ -4,7 +4,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 const MAX_BYTES: usize = 32_768;
-const NOTE: &str = "Criteria, remaining work and the suggested next Agent are the result author's report. Artifact states compare this result's references with retained Job attempt checks only; no file was read again and current availability is unknown. A recorded match checks identity and structure, not criterion satisfaction, independent verification or acceptance. Task status and result acknowledgment do not establish acceptance.";
+const NOTE: &str = "Criteria, remaining work and the suggested next Agent are the result author's report. Artifact states compare this result's references with retained Job attempt checks only; no file was read again and current availability is unknown. A recorded match checks identity and structure, not criterion satisfaction, independent verification or acceptance. Task status and result acknowledgment do not establish acceptance. A cited research record is fixed as it read when the result was submitted; its status is its own author's scientific judgement, kept apart from the criterion's reported status against the fixed acceptance, and neither is derived from the other.";
 
 pub(super) fn schema() -> Value {
     let text = |max| json!({"type":"string","maxLength":max});
@@ -12,12 +12,15 @@ pub(super) fn schema() -> Value {
         "properties":{"jobId":text(128),"attempt":{"type":"string","format":"uuid"},
             "path":text(4096),"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},
         "required":["jobId","attempt","path","sha256"]});
+    let record = json!({"type":"object","additionalProperties":false,
+        "properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"]});
     json!({"type":"object","additionalProperties":false,
-        "description":"Optional author report, at most 32768 UTF-8 bytes, 20 criteria and 40 artifact references in total. References must match checked artifacts of this task's exact Job attempt. Reported criterion status is not independent verification or acceptance. nextAgentId is a suggestion, never assignment or mail.",
+        "description":"Optional author report, at most 32768 UTF-8 bytes, 20 criteria, 40 artifact references and 40 research records in total. References must match checked artifacts of this task's exact Job attempt. records name this task's own research records (task_comment research) by activity; each is fixed as it reads at submission. Reported criterion status is the result author's judgement against the fixed acceptance, not independent verification or acceptance, and is never derived from a cited claim's status: a negative finding can meet a criterion that asks a question. nextAgentId is a suggestion, never assignment or mail.",
         "properties":{"criteria":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,
             "properties":{"id":text(128),"label":text(300),"report":text(4000),
                 "reportedStatus":{"type":"string","enum":["met","not_met","unknown"]},
-                "artifacts":{"type":"array","maxItems":10,"items":artifact}},
+                "artifacts":{"type":"array","maxItems":10,"items":artifact},
+                "records":{"type":"array","maxItems":10,"items":record}},
             "required":["id","label","report","reportedStatus","artifacts"]}},
             "remaining":text(8000),"nextAgentId":text(128),"nextStep":text(4000)},
         "required":["criteria"]})
@@ -50,10 +53,12 @@ pub(super) fn validate(
     ensure!(criteria.len() <= 20, "invalid_input: at most 20 criteria");
     let mut ids = BTreeSet::new();
     let mut total = 0;
+    let mut cited = 0;
+    let mut fixed_records = Vec::new();
     for criterion in criteria {
         allowed(
             criterion,
-            &["id", "label", "report", "reportedStatus", "artifacts"],
+            &["id", "label", "report", "reportedStatus", "artifacts", "records"],
         )?;
         let id = required_text(criterion, "id", 128)?;
         ensure!(
@@ -79,11 +84,37 @@ pub(super) fn validate(
             allowed(artifact, &["jobId", "attempt", "path", "sha256"])?;
             matched(db, &task.id, &id, artifact)?;
         }
+        let mut fixed = Vec::new();
+        if let Some(records) = criterion.get("records") {
+            let records = records
+                .as_array()
+                .context("invalid_input: criterion.records must be an array")?;
+            cited += records.len();
+            ensure!(
+                records.len() <= 10 && cited <= 40,
+                "invalid_input: at most 10 research records per criterion and 40 per outcome"
+            );
+            let mut seen = BTreeSet::new();
+            for reference in records {
+                let record = research::criterion_record(db, task, reference)?;
+                ensure!(
+                    seen.insert(record["activitySeq"].as_i64()),
+                    "invalid_input: a criterion cites each research record once"
+                );
+                fixed.push(record);
+            }
+        }
+        fixed_records.push(fixed);
     }
     for (key, max) in [("remaining", 8000), ("nextStep", 4000)] {
         optional_text(input, key, max)?;
     }
     let mut value = input.clone();
+    for (n, fixed) in fixed_records.into_iter().enumerate() {
+        if let Some(criterion) = value["criteria"].get_mut(n).filter(|c| c.get("records").is_some()) {
+            criterion["records"] = json!(fixed);
+        }
+    }
     if input.get("nextAgentId").is_some() {
         let id = required_text(input, "nextAgentId", 128)?;
         value["nextAgent"] = serde_json::to_value(agent_actor(store, db, &id)?)?;
@@ -262,12 +293,29 @@ pub(super) fn get(db: &Connection, input: &Value) -> Result<Value> {
             "reportedAt":r["reportedAt"],"reportedBy":r["reportedBy"],"status":r["status"]}));
     }
     let mut artifacts = Vec::new();
+    let mut records = Vec::new();
     for criterion in result["outcome"]["criteria"]
         .as_array()
         .into_iter()
         .flatten()
         .take(20)
     {
+        for seq in criterion["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(10)
+            .filter_map(|reference| reference["activitySeq"].as_i64())
+        {
+            if records.len() < 40 {
+                records.push(research::criterion_record_now(
+                    db,
+                    &task.id,
+                    criterion["id"].as_str().unwrap_or_default(),
+                    seq,
+                )?);
+            }
+        }
         for reference in criterion["artifacts"]
             .as_array()
             .into_iter()
@@ -289,7 +337,7 @@ pub(super) fn get(db: &Connection, input: &Value) -> Result<Value> {
         json!({"taskId":task_number(task.seq),"taskVersion":task.version,
         "currentResultId":task.result.as_ref().map(|r| &r["id"]),"result":result,
         "nextBefore":history.last().map(|r| &r["seq"]),"history":history,"hasMore":has_more,
-        "artifacts":artifacts,"note":NOTE}),
+        "artifacts":artifacts,"records":records,"note":NOTE}),
     )
 }
 

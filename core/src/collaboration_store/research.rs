@@ -24,6 +24,12 @@
 //! record, definition, unit, sample level and value as its author gives them.
 //! A read says which of unit, definition, level and method the included
 //! entries share; Yuzuno never computes a difference.
+//!
+//! A formal result (slice 3) may cite this task's records under a criterion,
+//! each fixed as it read when the result was submitted. A cited claim's status
+//! is its author's scientific judgement; the criterion's reported status is
+//! the result author's against the fixed acceptance, and neither is derived
+//! from the other.
 use super::*;
 use anyhow::anyhow;
 use serde_json::Map;
@@ -592,6 +598,32 @@ pub(crate) fn desk_source(db: &Connection, reference: &str, seq: i64) -> Result<
         out["latestActivitySeq"] = json!(latest);
     }
     Ok(out)
+}
+
+/// A result criterion's research record (T-17): one of this task's own
+/// records by its activity, fixed as it reads now, when the result is
+/// submitted. A later version never changes which version a result cites.
+pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &Value) -> Result<Value> {
+    ensure!(reference.is_object(), "invalid_input: a criterion's research record is an object");
+    allowed(reference, &["activitySeq"])?;
+    let seq = positive(reference, "activitySeq")?;
+    let row = record_in(db, &task.id, seq)?.with_context(|| {
+        format!("invalid_input: activity {seq} is not a research record of {}", task_number(task.seq))
+    })?;
+    let record = cited_record(&row).context("invalid_input: not a research record")?;
+    Ok(json!({"activitySeq":seq,"record":record,"version":version_of(db, &task.id, &row)?,
+        "producer":row["actor"],"at":row["at"]}))
+}
+
+/// Where a criterion's research record stands now: whether it can be read,
+/// and the newest version of its line, beside the version the result cites.
+pub(super) fn criterion_record_now(db: &Connection, task: &str, criterion: &str, seq: i64) -> Result<Value> {
+    if record_in(db, task, seq)?.is_none() {
+        return Ok(json!({"criterionId":criterion,"activitySeq":seq,"state":"missing"}));
+    }
+    let (next, latest) = newer(db, task, seq)?;
+    Ok(json!({"criterionId":criterion,"activitySeq":seq,"state":"readable",
+        "revisedBy":next,"latestActivitySeq":latest}))
 }
 
 #[cfg(test)]
