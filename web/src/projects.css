@@ -63,7 +63,7 @@
   transform-origin: 50% 100%;
   animation: scope-menu-in var(--motion-small) var(--ease-standard);
 }
-/* Rises from the switcher; sinks back into it (120 ms, MENU_OUT_MS). */
+/* Rises from the switcher; sinks back into it (exit-small, MENU_OUT_MS). */
 .scope-menu.is-leaving {
   pointer-events: none;
   animation: scope-menu-out var(--motion-exit-small) var(--ease-exit) both;

@@ -15,7 +15,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
-import { createPortal } from "react-dom";
+import { ToastStack, type ToastText } from "./Toasts";
 import {
   Archive,
   ArchiveRestore,
@@ -198,7 +198,7 @@ import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestion
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
-import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
+import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -377,6 +377,7 @@ export function App() {
   // On a phone the work and turn docks open one at a time over the
   // conversation (PhoneDocks.tsx); closed, they take no width.
   const [phoneDock, setPhoneDock] = useState<PhoneDock>(null);
+  const dockMotion = usePhoneDockMotion(phoneDock, setPhoneDock);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
@@ -425,7 +426,9 @@ export function App() {
   const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(workspaceId, selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");
-  const [notice, setNotice] = useState("");
+  // Set again with the same text, a notice shows again for its full time (T-19).
+  const [notice, setNoticeShown] = useState<ToastText>({ text: "", serial: 0 });
+  const setNotice = useCallback((text: string) => setNoticeShown((was) => ({ text, serial: was.serial + 1 })), []);
   const [readActionsOpen, setReadActionsOpen] = useState(false);
   const [agentScope, setAgentScope] = useState<"active" | "closed">("active");
   const [storedScope, setStoredScope] = useState<ProjectScope>(ALL_PROJECTS);
@@ -447,7 +450,8 @@ export function App() {
   } | null>(null);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   // A menu action that failed for an Agent other than the one shown.
-  const [menuError, setMenuError] = useState("");
+  const [menuError, setMenuErrorShown] = useState<ToastText>({ text: "", serial: 0 });
+  const setMenuError = useCallback((text: string) => setMenuErrorShown((was) => ({ text, serial: was.serial + 1 })), []);
   const [historyReading, setHistoryReading] = useState(false);
   // Where a source was opened from: Home leads back to Home.
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
@@ -1261,13 +1265,13 @@ export function App() {
     };
   }, [selected, homeOpen, readingPositions]);
   useEffect(() => {
-    if (notice) {
+    if (notice.text) {
       const timer = setTimeout(() => setNotice(""), 4000);
       return () => clearTimeout(timer);
     }
   }, [notice]);
   useEffect(() => {
-    if (menuError) {
+    if (menuError.text) {
       const timer = setTimeout(() => setMenuError(""), 8000);
       return () => clearTimeout(timer);
     }
@@ -2900,7 +2904,14 @@ export function App() {
                 </span>
               </div>
             )}
-            <div className="conversation-body" data-phone-dock={phone && phoneDock ? phoneDock : undefined}>
+            <div
+              className="conversation-body"
+              data-phone-dock={phone && dockMotion.shown ? dockMotion.shown : undefined}
+              data-phone-dock-way={phone && dockMotion.way ? dockMotion.way : undefined}
+              onAnimationEnd={(event) => {
+                if (event.animationName === "phone-dock-in" || event.animationName === "phone-dock-out") dockMotion.end();
+              }}
+            >
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
@@ -3142,7 +3153,8 @@ export function App() {
               {phone && (
                 <PhoneDockButtons
                   open={phoneDock}
-                  onOpen={setPhoneDock}
+                  onOpen={dockMotion.choose}
+                  leaving={dockMotion.leaving}
                   turn={readingBy === "inputs" ? readingInputNumber : readingTurnNumber}
                   turns={readingBy === "inputs" ? conversationInputs.total : logicalTurns.length}
                   inputs={readingBy === "inputs"}
@@ -3919,26 +3931,7 @@ export function App() {
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
-      {/* In <body>, beside Radix's dialogs: #root isolates its stacking, so a
-          toast inside it could never show above an open dialog. aria-live also
-          keeps it out of the aria-hidden Radix puts on the rest of the page. */}
-      {createPortal(
-        <div className="toast-stack" aria-live="polite">
-          {notice && (
-            <div className="toast" role="status">
-              <Check size={15} />
-              {notice}
-            </div>
-          )}
-          {menuError && (
-            <div className="toast toast-error" role="alert">
-              <CircleAlert size={15} />
-              {menuError}
-            </div>
-          )}
-        </div>,
-        document.body,
-      )}
+      <ToastStack notice={notice} error={menuError} />
       <HandoffDropStrip />
     </div>
     </HomeReplyLinks.Provider>

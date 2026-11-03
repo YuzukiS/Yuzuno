@@ -1861,7 +1861,8 @@ p {
 .secondary-button {
   background: #f9faf5;
   border: 1px solid #e1e7d8;
-  color: #8c9d78;
+  /* As in the other palettes (appearance.css): 4.5:1 at rest and hovered (T-19). */
+  color: var(--text-secondary);
 }
 .secondary-button:hover:not(:disabled) {
   background: #f0f4e7;
@@ -2099,7 +2100,24 @@ p {
   font-size: calc(11px + var(--font-adjust, 3px));
   color: #7e9664;
   max-width: 90vw;
-  animation: appear 0.15s ease-out;
+  /* Rises 6px into place with the spring: a small object, never an action. */
+  animation: toast-in var(--motion-small) var(--ease-spring);
+}
+/* A toast replaced or timed out (Toasts.tsx): its copy fades and sinks. */
+.toast.toast-leaving {
+  animation: toast-out var(--motion-exit-small) var(--ease-exit) forwards;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    translate: 0 6px;
+  }
 }
 .sr-only {
   position: absolute;

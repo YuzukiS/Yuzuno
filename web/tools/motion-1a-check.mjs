@@ -149,6 +149,37 @@ function measureContrast() {
   return { shadow, reach, rows };
 }
 
+/** A label's contrast at rest, hovered, pressed (left without a click) and keyboard-focused, each made for real. */
+async function readStates(page, tag, palette, theme, kind, selector) {
+  const el = page.locator(selector).filter({ visible: true }).first();
+  if (!(await el.count())) return report.notShown.push(`${tag}: ${palette}/${theme}: no visible ${kind}`);
+  await el.scrollIntoViewIfNeeded();
+  const box = await el.boundingBox();
+  const read = () => el.evaluate(textContrast);
+  await page.mouse.move(2, 2);
+  await el.evaluate((n) => n.blur());
+  await page.waitForTimeout(150);
+  const rest = await read();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(150);
+  const hover = await read();
+  await page.mouse.down();
+  await page.waitForTimeout(150);
+  const pressed = await read();
+  await page.mouse.move(2, 2);
+  await page.mouse.up();
+  await page.keyboard.press("Shift");
+  await el.evaluate((n) => n.focus());
+  await page.waitForTimeout(150);
+  const focus = await read();
+  await el.evaluate((n) => n.blur());
+  report.stateContrast.push({ palette, theme, kind, rest, hover, focus, pressed });
+  const states = { rest, hover, focus, pressed };
+  ok(`${tag}: ${palette}/${theme}: ${kind} reads at 4.5:1 or more at rest, hovered, keyboard-focused and pressed`,
+    hover.hovered && focus.focusVisible && pressed.active && Object.values(states).every((v) => v.ratio >= 4.5),
+    Object.fromEntries(Object.entries(states).map(([k, v]) => [k, v.ratio])));
+}
+
 /** The text contrast of a control in its current state, over the backgrounds under it. */
 function textContrast(el) {
   const probe = document.body.appendChild(document.createElement("i"));
@@ -487,37 +518,20 @@ for (const run of runs) {
         for (const theme of ["light", "dark"]) {
           await page.evaluate(([p, t]) => { document.documentElement.dataset.palette = p; document.documentElement.dataset.theme = t; }, [palette, theme]);
           await page.waitForTimeout(80);
-          for (const [kind, selector] of kinds) {
-            const el = page.locator(selector).filter({ visible: true }).first();
-            if (!(await el.count())) { report.notShown.push(`${tag}: ${palette}/${theme}: no visible ${kind}`); continue; }
-            await el.scrollIntoViewIfNeeded();
-            const box = await el.boundingBox();
-            const read = () => el.evaluate(textContrast);
-            await page.mouse.move(2, 2);
-            await el.evaluate((n) => n.blur());
-            await page.waitForTimeout(150);
-            const rest = await read();
-            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            await page.waitForTimeout(150);
-            const hover = await read();
-            await page.mouse.down();
-            await page.waitForTimeout(150);
-            const pressed = await read();
-            await page.mouse.move(2, 2);
-            await page.mouse.up();
-            await page.keyboard.press("Shift");
-            await el.evaluate((n) => n.focus());
-            await page.waitForTimeout(150);
-            const focus = await read();
-            await el.evaluate((n) => n.blur());
-            const row = { palette, theme, kind, rest, hover, focus, pressed };
-            report.stateContrast.push(row);
-            const states = { rest, hover, focus, pressed };
-            ok(`${tag}: ${palette}/${theme}: ${kind} reads at 4.5:1 or more at rest, hovered, keyboard-focused and pressed`,
-              hover.hovered && focus.focusVisible && pressed.active && Object.values(states).every((v) => v.ratio >= 4.5),
-              Object.fromEntries(Object.entries(states).map(([k, v]) => [k, v.ratio])));
-          }
+          for (const [kind, selector] of kinds) await readStates(page, tag, palette, theme, kind, selector);
         }
+      // A secondary button (Dev 7): the New agent dialog's Cancel, in every palette and theme.
+      await page.locator(".add-agent").first().click();
+      await page.locator(".modal-actions .secondary-button").first().waitFor({ timeout: 3000 });
+      await page.waitForTimeout(300);
+      for (const palette of ["garden", "graphite", "pine", "sunroom", "yuzu"])
+        for (const theme of ["light", "dark"]) {
+          await page.evaluate(([p, t]) => { document.documentElement.dataset.palette = p; document.documentElement.dataset.theme = t; }, [palette, theme]);
+          await page.waitForTimeout(80);
+          await readStates(page, tag, palette, theme, "secondary button (dialog Cancel)", ".modal-actions .secondary-button");
+        }
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
       await page.evaluate(() => { document.documentElement.dataset.palette = "garden"; document.documentElement.dataset.theme = "light"; });
     }
     if (shot("x")) await page.screenshot({ path: join(output, "desktop.png") });
