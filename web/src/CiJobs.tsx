@@ -784,6 +784,8 @@ export function CiJobs({
         behind.current = false;
         shown.current = stateOf(run);
         setError("");
+        // Its jobs and steps are read now, so an earlier failed read is over.
+        setReportRead({ id: run.id, failure: null });
         setReport({
           run,
           error: null,
