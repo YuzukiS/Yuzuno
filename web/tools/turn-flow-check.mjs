@@ -298,10 +298,14 @@ try {
   await page.waitForTimeout(250);
   turn.items.at(-1).status = "completed";
   await refresh();
-  await page
-    .locator("#item-tool-b .tool-result")
-    .filter({ hasText: "returned" })
-    .waitFor({ state: "attached" });
+  // A block the reader closed mounts no rows in a windowed conversation (T-6), so its own summary
+  // says when its tools are done: the spinner stops.
+  await page.waitForFunction(() => {
+    const spinner = document
+      .querySelectorAll('[data-turn-id="live"] .tool-activity')[1]
+      ?.querySelector(":scope > summary .tool-spinner");
+    return !!spinner && !spinner.hasAttribute("data-on");
+  });
   assert.equal(await isOpen(second), false);
   await group.locator(":scope > summary").click();
   await page.waitForTimeout(250);
@@ -324,9 +328,8 @@ try {
     .getByRole("searchbox", { name: "Search loaded messages" })
     .fill("SteeringMarker");
   await page.locator(".conversation-search-result").click();
-  await page
-    .locator('[data-item-id="steering"][data-search-highlight="true"]')
-    .waitFor();
+  // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
+  await page.locator('[data-item-id="steering"].source-highlight').waitFor();
   assert.equal(
     await composerDraft(page.getByRole("textbox", { name: "Message Mori" })),
     "下一条草稿保留",
