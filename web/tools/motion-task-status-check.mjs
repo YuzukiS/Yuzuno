@@ -322,8 +322,9 @@ for (const run of runs) {
       { decided: late?.filter(Boolean).slice(0, 2), back: back?.filter(Boolean).slice(0, 3), focus: onBack });
 
     /** The conversation opened again, watching `selector` from the document's start. With `idle`, focus
-     * is let go once it is open (as when the browser brings the conversation back by itself), before
-     * the read held back for it lands. */
+     * is let go once it is open and the app has put it where it goes on opening (a phone's way back),
+     * as when the browser brings the conversation back by itself, before the read held back for it
+     * lands. */
     const reopen = async (selector, idle = false) => {
       await page.evaluate((selector) => sessionStorage.setItem("__watch", selector), selector);
       await page.reload();
@@ -332,7 +333,10 @@ for (const run of runs) {
         if (run.phone && await page.locator(".phone-back").count()) await page.locator(".phone-back").click();
         await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').first().click();
       }
-      if (idle) await page.evaluate(() => document.activeElement?.blur());
+      if (idle) {
+        await page.waitForTimeout(400);
+        await page.evaluate(() => document.activeElement?.blur());
+      }
       await page.locator(selector).waitFor({ timeout: 10_000 });
       await page.waitForFunction(() => (window.__watched?.length ?? 0) >= 30, null, { timeout: 10_000 });
       return page.evaluate(() => window.__watched);
@@ -353,9 +357,9 @@ for (const run of runs) {
     const sentBefore = (id) => report.decisions.filter((d) => d.run === tag && d.id === id);
     const lostT91 = sentBefore("r4")[0]?.requestId;
 
-    // Opened again: the first read finds T-90 decided. It is held back 800 ms, so it lands with focus on
+    // Opened again: the first read finds T-90 decided. It is held back 1.5 s, so it lands with focus on
     // the page itself, where an outcome that comes in would take it.
-    slowReads.r3 = 800;
+    slowReads.r3 = 1500;
     const restored = record("lost answer, decided on opening", await reopen(`${CARD("T-90")} .task-status-outcome`, true));
     await page.waitForTimeout(600);
     const restoredFocus = await focused();
