@@ -6,7 +6,11 @@
 // a smooth scroll from the return overview, is marked only once that scroll
 // has stopped, keeps its outline until the next press, and loses it then.
 // A source highlight's ring fades once as it arrives. Under reduced motion
-// nothing animates. Focus is compared with the build before this batch
+// nothing animates; a Turn's landing is then a still tint, gone after the
+// settle's time. A jump still on its way when another starts, when the
+// reader wheels or presses, or when Home is left shows nothing; one whose
+// target its own scroller keeps moving (longer than 400 ms) is marked only
+// once that stops, whatever other scroller ends meanwhile. Focus is compared with the build before this batch
 // (--baseline records it). Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1b3-check.mjs [--baseline]
 import assert from "node:assert/strict";
@@ -141,7 +145,7 @@ for (const run of runs) {
     await page.evaluate(() => window.__watch(() => {
       const el = document.querySelector("[data-settle]");
       return { settled: !!el, on: el ? (el.matches("article.turn") ? "turn" : el.dataset.itemId ? "item" : el.tagName) : null,
-        animation: el ? getComputedStyle(el).animationName : null };
+        animation: el ? getComputedStyle(el).animationName : null, tint: el ? getComputedStyle(el).backgroundColor : null };
     }));
     await stops.first().click();
     await page.waitForTimeout(1900);
@@ -149,8 +153,14 @@ for (const run of runs) {
     report.frames[`${tag}: turn jump`] = frames;
     report.focus[`${tag}: a Turn reached from the dock`] = await describe(page);
     const first = frames.find((f) => f.settled);
-    if (reduced) ok(`${tag}: a Turn reached from the dock is not animated under reduced motion`, !frames.some((f) => f.settled && f.animation !== "none"), frames.slice(0, 2));
-    else {
+    if (reduced) {
+      ok(`${tag}: a Turn reached from the dock is not animated under reduced motion`, !frames.some((f) => f.settled && f.animation !== "none"), frames.slice(0, 2));
+      // No animation ends there: the still tint is shown, then taken off after the settle's time.
+      const shownFor = frames.filter((f) => f.settled).at(-1)?.t ?? null;
+      ok(`${tag}: under reduced motion its landing is a still tint from the first frames, gone after the settle's time (last seen at ${shownFor} ms)`,
+        !!first && first.t <= 50 && !/rgba\(0, 0, 0, 0\)|transparent/.test(first.tint || "transparent") && shownFor >= 1000 && shownFor <= 1500 && !frames.at(-1).settled,
+        { first, shownFor, last: frames.at(-1) });
+    } else {
       ok(`${tag}: a Turn reached from the dock is tinted from the first frames (settle-tint)`, !!first && first.t <= 50 && first.animation === "settle-tint", first);
       ok(`${tag}: the tint is gone when it has played`, !frames.at(-1).settled, frames.at(-1));
     }
@@ -191,6 +201,98 @@ for (const run of runs) {
         return { present: !!el, marked: !!el?.hasAttribute("data-home-highlight") };
       });
       ok(`${tag}: its outline stays after the settle and goes at the next press`, kept && after.present && !after.marked, { kept, after });
+
+      // What a jump still on its way does, frame by frame: how many marks there are and where.
+      const watchMarks = (span) => page.evaluate((span) => {
+        window.__frames = [];
+        const t0 = performance.now();
+        const frame = () => {
+          const marks = [...document.querySelectorAll("[data-home-highlight]")];
+          const needs = document.getElementById("home-current-needs");
+          window.__frames.push({ t: Math.round(performance.now() - t0), at: Math.round(performance.now()), marks: marks.length,
+            on: marks.map((el) => el.id || el.className.toString().split(/\s+/)[0]), needsTop: needs ? Math.round(needs.getBoundingClientRect().top * 10) / 10 : null });
+          if (performance.now() - t0 < span) requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      }, span);
+      const clear = async () => {
+        await page.mouse.click(head.x + 8, head.y + head.height / 2);
+        await page.waitForTimeout(150);
+      };
+      const item = page.locator(".home-needs-item").first();
+      // A section from a Needs you item (the reveal effect), then Needs you itself before it lands: one mark, on Needs you.
+      if (await item.count()) {
+        await clear();
+        await watchMarks(1800);
+        await item.click();
+        await tile.click();
+        await page.waitForTimeout(1900);
+        const frames = await page.evaluate(() => window.__frames);
+        report.frames[`${tag}: section then Needs you`] = frames;
+        ok(`${tag}: a section jump then Needs you at once leaves one mark, on Needs you, never two`,
+          frames.every((f) => f.marks <= 1) && frames.at(-1).marks === 1 && frames.at(-1).on[0] === "home-current-needs", { last: frames.at(-1), most: Math.max(...frames.map((f) => f.marks)) });
+      } else report.notShown.push(`${tag}: no Needs you item on the preview's Home`);
+      if (!reduced) {
+        // Needs you while its own scroller keeps moving it for 800 ms (as a long smooth scroll would; not the
+        // reader), and an unrelated scroller ends its scroll 100 ms in: marked only once it stops.
+        await clear();
+        await watchMarks(1800);
+        await tile.click();
+        const moved = await page.evaluate(() => new Promise((done) => {
+          const needs = document.getElementById("home-current-needs");
+          let scroller = needs.parentElement;
+          while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+          scroller ||= document.scrollingElement;
+          const other = document.body.appendChild(Object.assign(document.createElement("div"), { style: "position:fixed;left:0;bottom:0;width:40px;height:40px;overflow:auto" }));
+          other.appendChild(Object.assign(document.createElement("div"), { style: "height:400px" }));
+          let otherEnded = null;
+          other.addEventListener("scrollend", () => { otherEnded = Math.round(performance.now()); });
+          const t0 = performance.now();
+          let direction = 1;
+          const step = () => {
+            const t = performance.now() - t0;
+            if (t > 100 && !other.scrollTop) other.scrollTop = 120;
+            if (t < 800) {
+              if (scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 2) direction = -1;
+              if (scroller.scrollTop <= 1) direction = 1;
+              scroller.scrollTop += 3 * direction;
+              requestAnimationFrame(step);
+            } else {
+              const stoppedAt = Math.round(performance.now());
+              setTimeout(() => { other.remove(); done({ scroller: scroller.className || scroller.tagName, started: Math.round(t0), otherEnded, stoppedAt }); }, 50);
+            }
+          };
+          requestAnimationFrame(step);
+        }));
+        await page.waitForTimeout(1200);
+        const frames = await page.evaluate(() => window.__frames);
+        report.frames[`${tag}: Needs you kept moving`] = { moved, frames };
+        const firstMarked = frames.find((f) => f.marks);
+        // One clock (performance.now) for the frames and the mover.
+        ok(`${tag}: Needs you whose scroller keeps moving it 800 ms is marked only after it stops (${firstMarked ? firstMarked.at - moved.stoppedAt : "no"} ms after), not when another scroller ends (${moved.otherEnded === null ? "never" : moved.otherEnded - moved.started} ms in)`,
+          moved.otherEnded !== null && moved.otherEnded < moved.stoppedAt && !!firstMarked && firstMarked.at >= moved.stoppedAt && frames.at(-1).marks === 1, { moved, firstMarked });
+      }
+      // The reader takes over while it is on its way: a wheel, or a press, and it shows nothing.
+      for (const [how, act] of [["a wheel", () => page.mouse.wheel(0, 120)], ["a press", () => page.mouse.click(head.x + 8, head.y + head.height / 2)]]) {
+        await clear();
+        await watchMarks(1500);
+        await tile.click();
+        await act();
+        await page.waitForTimeout(1600);
+        const frames = await page.evaluate(() => window.__frames);
+        report.frames[`${tag}: Needs you, then ${how}`] = frames;
+        ok(`${tag}: Needs you followed at once by ${how} shows no mark${reduced ? " (under reduced motion it lands at once, and the press takes it off)" : ""}`,
+          reduced ? frames.at(-1).marks === (how === "a press" ? 0 : 1) : frames.every((f) => f.marks === 0), { most: Math.max(...frames.map((f) => f.marks)), last: frames.at(-1) });
+      }
+      // Home left while it is on its way (no press: the Agent row's own click), and come back to: no mark.
+      await clear();
+      await tile.click();
+      await page.evaluate(() => document.querySelector(".agent-row button, .agent-row")?.click());
+      await page.waitForTimeout(600);
+      await home.click();
+      await page.waitForTimeout(800);
+      const left = await page.evaluate(() => document.querySelectorAll("[data-home-highlight]").length);
+      ok(`${tag}: Home left while a jump was on its way shows no mark when it is back`, left === 0, left);
     } else report.notShown.push(`${tag}: no live Needs you tile on the preview's Home`);
   } else report.notShown.push(`${tag}: no Home entry in the toolbar`);
   await context.close();
