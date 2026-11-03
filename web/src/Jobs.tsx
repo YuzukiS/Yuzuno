@@ -465,6 +465,13 @@ export function Jobs({
   // Why this Core gave no budget, e.g. its host cannot run local Jobs.
   const [budgetRefusal, setBudgetRefusal] = useState("");
   const [selected, setSelected] = useState("");
+  // Whether this scope's list has answered yet: before it has, an empty
+  // list is still being read, not a list with no jobs (T-19 JB-04).
+  const [listed, setListed] = useState(false);
+  // A row the reader chose: on a narrow window the job shows under the
+  // list, so it is brought into view (T-19 JB-07).
+  const detailBox = useRef<HTMLDivElement>(null);
+  const reveal = useRef(false);
   const [detail, setDetail] = useState<Job | null>(null);
   const [log, setLog] = useState<Log | null>(null);
   const [error, setError] = useState("");
@@ -527,6 +534,7 @@ export function Jobs({
               before || !old.jobs.length ? next.nextBefore : old.nextBefore,
           };
         });
+        setListed(true);
         if (typeof capacity === "string") {
           setBudget(null);
           setBudgetRefusal(capacity);
@@ -599,7 +607,17 @@ export function Jobs({
   }, [open, disabled, load, revision, source]);
   useEffect(() => {
     setPage({ jobs: [], hasMore: false, nextBefore: null });
+    setListed(false);
   }, [scope]);
+  useEffect(() => {
+    if (!reveal.current) return;
+    reveal.current = false;
+    if (!window.matchMedia?.("(max-width: 720px)").matches) return;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    detailBox.current?.scrollIntoView?.({ block: "start", behavior: still ? "auto" : "smooth" });
+  }, [selected]);
+  // A job chosen whose answer has not come yet is being read, not unchosen.
+  const reading = !!selected && detail?.id !== selected && !error;
   useEffect(() => {
     setDetail(null);
     setLog(null);
@@ -1014,7 +1032,13 @@ export function Jobs({
                         items={page.jobs}
                         place={placeJob}
                         selected={selected}
-                        empty={<p className="jobs-empty">{t.none}</p>}
+                        empty={
+                          listed ? (
+                            <p className="jobs-empty">{t.none}</p>
+                          ) : (
+                            !error && <p className="jobs-empty">{t.reading}</p>
+                          )
+                        }
                         row={(job) => (
                           <JobRow
                             status={stateOf(job, t).mark}
@@ -1031,7 +1055,10 @@ export function Jobs({
                             timeTitle={when(job, t)}
                             moments={queuedAndFinished(job, t)}
                             selected={selected === job.id}
-                            onSelect={() => setSelected(job.id)}
+                            onSelect={() => {
+                              reveal.current = job.id !== selected;
+                              setSelected(job.id);
+                            }}
                             onDragStart={(event) => {
                               event.dataTransfer.effectAllowed = "copy";
                               startHandoffDrag(event, jobHandoff(job));
@@ -1049,7 +1076,11 @@ export function Jobs({
                           </button>
                         )}
                       </StateGroups>
-                      <div className="job-detail">
+                      <div
+                        className="job-detail"
+                        ref={detailBox}
+                        aria-busy={reading || undefined}
+                      >
                         {/* Only the selected job: a reply for the job selected
                             before can land after the selection changed, until
                             the selection's effects have run. */}
@@ -1067,7 +1098,9 @@ export function Jobs({
                             onOpen={setSelected}
                           />
                         ) : (
-                          <p className="jobs-empty">{t.selectOne}</p>
+                          <p className="jobs-empty">
+                            {reading ? t.readingJob : t.selectOne}
+                          </p>
                         )}
                       </div>
                     </div>
