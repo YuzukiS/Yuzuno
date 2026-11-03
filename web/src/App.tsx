@@ -767,6 +767,13 @@ export function App() {
   // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
   useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
   useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // An action's error above the composer fades in as it appears (T-19 SH:X05); the room it takes is
+  // made at once. Another error replacing it while it shows plays nothing; dismissing it stops it.
+  const actionErrorBox = useRef<HTMLDivElement>(null);
+  const actionErrors = useRef({ shown: false, n: 0 });
+  if (actionErrors.current.shown !== !!actionError)
+    actionErrors.current = { shown: !!actionError, n: actionErrors.current.n + (actionError ? 1 : 0) };
+  useSurfaceIn(actionErrorBox, actionErrors.current.n, "small", !!actionError && actionErrors.current.n > 0);
   // On a phone the context panel is a screen of its own: opening it takes focus to its heading
   // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
   useEffect(() => {
@@ -3315,7 +3322,7 @@ export function App() {
                     </div>
                   )}
                   {actionError && (
-                    <div role="alert" className="inline-error">
+                    <div role="alert" className="inline-error" ref={actionErrorBox}>
                       <CircleAlert size={14} />
                       {actionError}
                       <button
