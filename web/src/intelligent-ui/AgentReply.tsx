@@ -6,6 +6,7 @@ import type { NativeItem } from "../types";
 import { parseReply, type ReplySegment, type ResultProblem } from "./message";
 import type { ResultSpec } from "./spec";
 import { resultText } from "./result-text";
+import { reserveFor, type Reserve } from "./result-reserve";
 import { useStrings } from "../i18n";
 import "./result-states.css";
 
@@ -130,17 +131,26 @@ function RawResult({ raw, problem }: { raw?: string; problem?: ResultProblem }) 
 export function ResultPlaceholder({
   what,
   onShown,
+  reserve,
 }: {
   what: keyof ReturnType<typeof resultText>["placeholder"];
   /** Called once it is shown. */
   onShown?: () => void;
+  /** The room its spec's kinds keep, when its spec is known (see result-reserve.ts). */
+  reserve?: Reserve | null;
 }) {
   const t = useStrings(resultText);
   useLayoutEffect(() => {
     onShown?.();
   }, [onShown]);
   return (
-    <div className="result-state result-placeholder" role="status" aria-live="polite">
+    <div
+      className="result-state result-placeholder"
+      role="status"
+      aria-live="polite"
+      data-reserve={reserve?.kinds.join(" ")}
+      style={reserve ? { minHeight: reserve.height } : undefined}
+    >
       <LoaderCircle size={15} className="spin" aria-hidden="true" />
       <span>{t.placeholder[what]}</span>
     </div>
@@ -204,6 +214,9 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
   // renderer still loading) or before (T-19 HM:I5); one drawn at once does not.
   const waited = useRef(arrived);
   if (arrived) waited.current = true;
+  // Its spec is known while the renderer loads: its placeholder keeps room
+  // for what the spec holds (T-19 HM:I5, F3).
+  const reserve = useMemo(() => reserveFor(props.spec), [props.spec]);
   return (
     <ResultBoundary
       key={props.identity + props.raw}
@@ -238,7 +251,7 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
         )
       }
     >
-      <Suspense fallback={<ResultPlaceholder what="result" onShown={() => (waited.current = true)} />}>
+      <Suspense fallback={<ResultPlaceholder what="result" reserve={reserve} onShown={() => (waited.current = true)} />}>
         <LazyResult {...props} arrival={waited} />
       </Suspense>
     </ResultBoundary>
