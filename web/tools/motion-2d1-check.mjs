@@ -6,7 +6,8 @@
 // shows, one a Core reset brings (also when it comes right after an announcement, before the read),
 // one in a new native session, one shown again after a return from another Agent (also straight back,
 // before the other was read), the same list read again, or one made while the stream was down,
-// whether Core replays its announcement when the stream resumes or resets it (Lead 3299), or one
+// whether Core replays its announcement when the stream resumes or resets it (Lead 3299; a resume with
+// nothing to replay reads the conversation once, and the next request fades, R1 276d4a1d), or one
 // announced while Home was over the conversation (Lead 3301); a request announced after each of these
 // fades again. Nothing plays under reduced motion, and reduced motion
 // turned on while it fades stops the fade.
@@ -50,6 +51,8 @@ let moriPending;
 let staged = [];
 // While set, Hana's detail is answered this late: a return to Mori comes before it is read.
 let holdHana = 0;
+// Reads of Mori's detail, to tell that a recovery read happened, once.
+let moriReads = 0;
 // A Codex Agent with a native thread reads its account usage and MCP tools: none known here.
 const usage = {
   revision: 1, status: "unknown", account: null, accountId: null,
@@ -92,6 +95,7 @@ async function serve(route) {
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
     if (holdHana && url.pathname === "/api/agents/b") await new Promise((done) => setTimeout(done, holdHana));
+    if (url.pathname === "/api/agents/a") moriReads++;
     const known = gets()[url.pathname];
     if (known === undefined && !report.unknownGets.includes(url.pathname)) report.unknownGets.push(url.pathname);
     return route.fulfill({ json: known ?? {} });
@@ -158,6 +162,8 @@ function pageHelpers() {
   window.__resumeReplay = reconnect({ type: "resumed" }, { type: "agent.changed", agentId: "a" });
   // Core cannot resume: everything is read again.
   window.__resetReplay = reconnect({ type: "reset", reason: "check" });
+  // Core resumes and nothing was missed: nothing is replayed (R1 276d4a1d).
+  window.__quietResume = reconnect({ type: "resumed" });
   const plays = (el) => el.getAnimations().map((a) => {
     const frames = a.effect?.getKeyframes?.() ?? [];
     return { keys: frames.map((k) => Object.keys(k).filter((p) => !["offset", "easing", "composite", "computedOffset"].includes(p)).sort().join("+")).join("/"),
@@ -224,6 +230,7 @@ for (const run of runs) {
   agents = [agent("a", "Mori"), agent("b", "Hana")];
   moriPending = [listed];
   staged = [];
+  moriReads = 0;
   const heldBefore = report.held.length;
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
@@ -322,6 +329,15 @@ for (const run of runs) {
     onlyShows("after a short break, Core resets the stream instead: the request made meanwhile",
       await bring(request("reset-1", "npm run deps"), "__resetReplay", 1500));
     fadesIn("after that recovery, a request announced live", await bring(request("live-after", "npm run size"), "__announce"));
+    // A short break that resumes with nothing to replay (R1 276d4a1d): the conversation is read once,
+    // and the first request announced after that read fades in.
+    const readsBefore = moriReads;
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(1000);
+    const recoveryReads = moriReads - readsBefore;
+    ok(`${tag}: after a short break the stream resumes with nothing to replay: Mori's conversation is read once (${recoveryReads})`,
+      recoveryReads === 1, recoveryReads);
+    fadesIn("after that quiet recovery, the first request announced live", await bring(request("live-quiet", "npm run quiet"), "__announce"));
 
     // To another Agent and straight back, before that one is read: Mori's next detail is a new baseline,
     // whatever was announced for it before (a request made meanwhile shows with nothing playing).
