@@ -596,12 +596,13 @@ export function App() {
   // new request is announced) since the stream last reset: the next request
   // its detail lists arrived live and may fade in (T-19 CV:Q-01).
   const liveChange = useRef<{ workspace: string; agent: string } | null>(null);
-  // Since a reset, or since the stream broke: until a detail from a read
-  // started after `after` (DetailSync.reads; never while the stream is
-  // down) is shown, nothing arrives live. That detail only becomes what was
-  // shown, so neither a read already on its way nor a change Core replays
-  // when the stream resumes makes an old request play (Lead 3299).
-  const recovery = useRef<{ after: number } | null>(null);
+  // Since a reset, since the stream broke, or since the conversation was
+  // left: until a detail from a read started after `after` (DetailSync.reads;
+  // never while the stream is down) is shown, nothing arrives live. That
+  // detail only becomes what was shown, so neither a read already on its way,
+  // a copy kept from before, nor a change Core replays when the stream resumes
+  // makes an old request play (Lead 3299, 3301).
+  const arrivalsSettle = useRef<{ after: number } | null>(null);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -688,7 +689,7 @@ export function App() {
         case "reset":
           // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
           liveChange.current = null;
-          recovery.current = { after: live.sync.reads };
+          arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
           refresh();
@@ -706,7 +707,7 @@ export function App() {
   if (lastConnection.current !== eventConnection) {
     lastConnection.current = eventConnection;
     liveChange.current = null;
-    recovery.current = { after: eventConnection === "open" ? live.sync.reads : Infinity };
+    arrivalsSettle.current = { after: eventConnection === "open" ? live.sync.reads : Infinity };
   }
   useEffect(() => {
     if (eventConnection === "open" && !previewMode) jobsRefresh.now();
@@ -930,32 +931,42 @@ export function App() {
   // that a detail lists, new in this Workspace, Agent and native session, after Core announced a
   // change to the Agent. The first detail of that scope, and any new request a reconnect, poll or
   // reset brings, only become what was shown; so do a return to the Agent and another session.
-  const pendingScope = currentDetail && currentDetail.agent.id === selected
+  const pendingScope = currentDetail && currentDetail.agent.id === selected && !homeOpen && !listShown
     ? [workspaceId, selected, nativeSession(currentDetail.agent) ?? ""].join("\n") : null;
   const pendingSeen = useRef<{ scope: string; ids: Set<string>; arrived: string[] } | null>(null);
+  // The conversation was left: another Agent or Workspace opened, or Home or
+  // the phone's list over it. Nothing arrives live until a detail read after
+  // this is shown, and that one is a new baseline (Lead 3301).
+  if (!pendingScope && pendingSeen.current) {
+    pendingSeen.current = null;
+    liveChange.current = null;
+    arrivalsSettle.current = { after: Math.max(arrivalsSettle.current?.after ?? 0, live.sync.reads) };
+  }
   // The detail shown came from this read; the first one started after a
-  // reconnect or reset settles it, and what it lists only becomes shown.
+  // reconnect, reset or leaving settles it, and what it lists only becomes
+  // shown. One that is the newest read, none on its way, is current.
   const readNumber = (live.detail && live.sync.readOf.get(live.detail)) ?? 0;
-  const settles = !!recovery.current && readNumber > recovery.current.after;
-  // No detail of the open Agent yet (another was just opened, or this one
-  // again before that one was read): its next detail is a new baseline.
-  if (!pendingScope) pendingSeen.current = null;
+  const newest = !!live.detail && readNumber === live.sync.currentRead && !live.sync.running;
+  let settles = !!arrivalsSettle.current && readNumber > arrivalsSettle.current.after;
   if (pendingScope) {
     const seen = pendingSeen.current;
     if (!seen || seen.scope !== pendingScope) {
       pendingSeen.current = { scope: pendingScope, ids: new Set(pending.map((request) => request.id)), arrived: [] };
       liveChange.current = null;
+      // Back to a conversation whose detail is current (from Home, say): it
+      // is the new baseline now, unless the stream is down.
+      if (newest && arrivalsSettle.current?.after !== Infinity) settles = true;
     } else {
       const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
       if (fresh.length) {
-        const announced = !recovery.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        const announced = !arrivalsSettle.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
         if (announced) liveChange.current = null;
         pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
           arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
       }
     }
   }
-  if (settles) recovery.current = liveChange.current = null;
+  if (settles) arrivalsSettle.current = liveChange.current = null;
   useArrivalsIn(
     pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
     (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
