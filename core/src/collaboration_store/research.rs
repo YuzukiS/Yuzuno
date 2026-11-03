@@ -91,7 +91,7 @@ pub(super) fn schema() -> Value {
     let entries = json!({"type":"array","maxItems":MAX_ENTRIES,"items":entry,
         "description":"Comparisons only: what is compared. Every entry is included, excluded, missing or not_done; all but included need a reason, and missing or not_done carry no value. Values are as their author states them."});
     json!({"type":"object","additionalProperties":false,
-        "description":"Optional research record, at most 32768 UTF-8 bytes, fixed once written. A revision is a new record with the same type and id and revises {activitySeq, reason}; an id already in this task must be revised, not reused. Claims and observations may cite a method record of this task by activitySeq. Materials may be incomplete: say so in limits.",
+        "description":"Optional research record, at most 32768 UTF-8 bytes both as sent and as stored, once its sources, entries and what they share are fixed; fixed once written. A revision is a new record with the same type and id and revises {activitySeq, reason}; an id already in this task must be revised, not reused. Claims and observations may cite a method record of this task by activitySeq. Materials may be incomplete: say so in limits.",
         "properties":{
             "type":{"type":"string","enum":TYPES},
             "id":{"type":"string","pattern":"^[a-z0-9][a-z0-9-]{0,63}$","description":"The record's name in this task, for example timing-protocol."},
@@ -275,6 +275,13 @@ pub(super) fn validate(db: &Connection, task: &SharedTask, input: Option<&Value>
         (_, Some(_)) => bail!("invalid_input: research.entries is for comparisons only"),
         (_, None) => {}
     }
+    // What is stored is bounded, not only what was sent: each source's
+    // identity, each entry's and what the entries share are filled in above.
+    let stored = serde_json::to_vec(&out)?.len();
+    ensure!(
+        stored <= MAX_BYTES,
+        "invalid_input: research exceeds {MAX_BYTES} bytes as stored, once its sources and entries are fixed ({stored} bytes); cite fewer sources or shorten the text"
+    );
     Ok(Some(out))
 }
 
