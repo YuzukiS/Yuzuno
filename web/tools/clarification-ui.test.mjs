@@ -452,3 +452,44 @@ test("answers carried to a Workspace that can't be saved say so in the interface
     page.close();
   }
 });
+
+// T-19 CX-75/76: one receipt, three judgments. From the send on, short of a
+// refusal, the form is locked and shows the answers sent; only `accepted`
+// reads as success; `queued` is sent and waiting; only `uncertain` and
+// `unknown` are unconfirmed, with Check delivery; a send still on its way
+// says it is sending.
+test("a receipt locks the form and shows what was sent; only accepted reads as success, and only uncertain or unknown as unconfirmed", async () => {
+  const page = mount();
+  const values = { directory: "SENT 送出", theme: "dark", checks: ["keyboard"] };
+  const expected = {
+    sending: { label: "Sending answers…", icon: "lucide-loader-circle", notice: null, check: false },
+    queued: { label: "Sent · waiting", icon: "lucide-clock", notice: "Sent · waiting for Mori to confirm.", check: false },
+    accepted: { label: "Answers sent", icon: "lucide-check", notice: "Answers sent to Mori.", check: false },
+    uncertain: { label: "Submit answers", icon: "lucide-arrow-right", notice: "Delivery is unconfirmed. Check the conversation before sending anything again.", check: true },
+    unknown: { label: "Submit answers", icon: "lucide-arrow-right", notice: "Delivery is unconfirmed. Check the conversation before sending anything again.", check: true },
+  };
+  try {
+    for (const [status, want] of Object.entries(expected)) {
+      page.render({ onSubmit: async () => {}, onCheck: () => {}, delivery: { status, values } });
+      await tick();
+      const submit = page.document.querySelector("footer .primary-button");
+      const notice = page.document.querySelector(".clarification-delivery")?.textContent ?? null;
+      assert.equal(submit.textContent, want.label, `${status}: its label`);
+      assert.ok(submit.querySelector(`svg.${want.icon}`), `${status}: its icon (${submit.innerHTML.slice(0, 120)})`);
+      assert.equal(submit.disabled, true, `${status}: locked`);
+      assert.equal(page.document.querySelector("textarea, input[type=text]").value, values.directory, `${status}: the answers sent are shown`);
+      assert.equal(notice, want.notice, `${status}: what it says`);
+      assert.equal(!!page.button("Check delivery"), want.check, `${status}: Check delivery`);
+    }
+    // Refused: open again, with the reason, and nothing reads as sent.
+    page.render({ onSubmit: async () => {}, delivery: { status: "rejected", error: "Native rejected this reply", values } });
+    await tick();
+    const submit = page.document.querySelector("footer .primary-button");
+    assert.equal(submit.textContent, "Submit answers");
+    assert.equal(submit.disabled, false);
+    assert.equal(page.document.querySelector(".clarification-delivery")?.textContent, "Native rejected this reply");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
