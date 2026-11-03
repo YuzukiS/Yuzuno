@@ -259,7 +259,10 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
   });
   await step(`${name}: what holds now is read on request, by keyboard, and says the file itself is not read`, async () => {
     const claimCard = page.locator(".task-research").nth(1);
-    const toggle = claimCard.getByRole("button", { name: "Version and sources now" });
+    // Found by its place, not its name: the name says what it does next ("Hide" once open).
+    const toggle = claimCard.locator(".task-research-toggle");
+    assert.equal(await toggle.innerText(), "Version and sources now");
+    assert.equal(await toggle.getAttribute("aria-expanded"), "false");
     await toggle.focus();
     await page.keyboard.press("Enter");
     await until("the record's state now", async () => (await claimCard.innerText()).includes("Version 1 of this record"));
