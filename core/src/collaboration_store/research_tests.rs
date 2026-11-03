@@ -601,7 +601,6 @@ fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() 
     assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","method":m2}));
 }
 
-<<<<<<< HEAD
 // Three synthetic studies (T-17 slice 4) where an early result turns: each
 // keeps its counterexample in the trail a result cites, so it cannot be
 // read as a general advantage, and a conditional conclusion stays possible.
@@ -740,7 +739,8 @@ fn a_robotics_study_keeps_stopped_and_lost_episodes_and_starts_nothing_on_its_ow
     assert_eq!(summary["shared"]["level"], "episode");
     assert_eq!(jobs(), before, "no Job or run is started to fill the plan: a stop, a proposal and a result start nothing");
     assert_eq!(before, 0);
-=======
+}
+
 #[test]
 fn an_entry_keeps_its_numbers_exactly_as_written_past_two_to_the_fifty_third() {
     let (_dir, store) = setup();
@@ -775,5 +775,4 @@ fn an_entry_keeps_its_numbers_exactly_as_written_past_two_to_the_fifty_third() {
         assert!(refused.contains("is a finite number"), "{n}: {refused}");
     }
     assert_eq!(counts(&store), before);
->>>>>>> 56ceaa8cd68be8954b52121aa467d4302c85033c
 }
