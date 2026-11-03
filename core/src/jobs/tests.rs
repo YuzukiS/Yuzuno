@@ -685,7 +685,7 @@ fn command_contract_bounds_and_tool_schemas_are_explicit() {
     let mut bad = value;
     bad.env.insert("BAD=NAME".into(), "value".into());
     assert!(bad.validate().is_err());
-    assert_eq!(tool_definitions().len(), 14);
+    assert_eq!(tool_definitions().len(), 15);
     assert!(tool_definitions()
         .iter()
         .all(|d| d["inputSchema"]["additionalProperties"] == false));
@@ -698,6 +698,9 @@ fn command_contract_bounds_and_tool_schemas_are_explicit() {
         submit["inputSchema"]["properties"]["exclusive"]["default"],
         false
     );
+    // A task's recorded spend (T-17) is read by task only.
+    let cost = definitions.iter().find(|d| d["name"] == "job_cost").unwrap();
+    assert_eq!(cost["inputSchema"]["required"], json!(["taskId"]));
     let mut request = serde_json::to_value(input("mode")).unwrap();
     request["exclusive"] = json!("yes");
     assert!(serde_json::from_value::<Submit>(request).is_err());

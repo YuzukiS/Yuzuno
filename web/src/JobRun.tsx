@@ -99,6 +99,10 @@ export type TaskSpend = {
   gpu: { attemptsReserving: number; measured: boolean };
   runs: number;
   reusedStages: number;
+  /** Which counts stop at the newest `limit` attempts or runs. */
+  attemptsTruncated?: boolean;
+  runsTruncated?: boolean;
+  limit?: number;
   truncated: boolean;
 };
 
@@ -173,8 +177,10 @@ const text = strings({
   latestUnknown: "; a newer version exists, and the run keeps the version it followed",
   missing: "; this record can no longer be read",
   recordType: { method: "method", claim: "claim", observation: "observation", comparison: "comparison" } as Record<string, string>,
-  explained: (state: string, type: string, title: string, seq: number) =>
-    `${state === "continued" ? "Continued" : "Cancelled"}, as the ${type} “${title}” (activity ${seq}) explains`,
+  explained: (state: string, type: string, title: string, seq: number, version: number | null | undefined) =>
+    `${state === "continued" ? "Continued" : "Cancelled"}, as the ${type} “${title}” (activity ${seq}${version ? `, version ${version}` : ""}) explains`,
+  decisionNewer: (seq: number) => `; a newer version is activity ${seq}, and the decision keeps the version it cited`,
+  decisionLatestUnknown: "; a newer version exists, and the decision keeps the version it cited",
   proposes: { check: "It proposed a next check", stop: "It proposed to stop" } as Record<string, string>,
   // A task's spend across its Jobs (job_cost, T-17).
   spendTitle: "Recorded spend on this task",
@@ -189,7 +195,8 @@ const text = strings({
   attemptsLine: (n: number, runs: number) => `${n} attempt${n === 1 ? "" : "s"}, each counted once, in ${runs} run${runs === 1 ? "" : "s"} and single Jobs`,
   reusedStages: (n: number) => `${n} reused stage${n === 1 ? "" : "s"} ran nothing and ${n === 1 ? "is" : "are"} not counted again`,
   gpuNotMeasured: (n: number) => `GPU use is not measured; ${n} attempt${n === 1 ? "" : "s"} reserved a GPU`,
-  partial: "Only the newest 5000 attempts are added up",
+  partialAttempts: (limit: number) => `partial: only the newest ${limit} attempts are read`,
+  partialRuns: (limit: number) => `runs and reused stages partial: only the newest ${limit} runs are read`,
   spendNote: "A soft total, not a bill or a limit: failed and retried attempts count, unknown is never zero, and nothing resets when the method or the run changes.",
   spendUnreadable: "Core's answer was not a spend summary",
   spendFailed: (error: string) => `Could not read the recorded spend: ${error}`,
@@ -260,8 +267,10 @@ const text = strings({
   latestUnknown: "；已有较新的版本，本运行保留它遵循的版本",
   missing: "；这条记录已无法读取",
   recordType: { method: "方法", claim: "主张", observation: "观察", comparison: "比较" },
-  explained: (state, type, title, seq) =>
-    `${state === "continued" ? "已继续" : "已取消"}，理由见${type}“${title}”（活动 ${seq}）`,
+  explained: (state, type, title, seq, version) =>
+    `${state === "continued" ? "已继续" : "已取消"}，理由见${type}“${title}”（活动 ${seq}${version ? `，第 ${version} 版` : ""}）`,
+  decisionNewer: (seq) => `；较新的版本是活动 ${seq}，本决定保留它引用的版本`,
+  decisionLatestUnknown: "；已有较新的版本，本决定保留它引用的版本",
   proposes: { check: "它提议了下一项检查", stop: "它提议停止" },
   spendTitle: "此任务记录的花费",
   spendUsd: "记录的成本",
@@ -275,7 +284,8 @@ const text = strings({
   attemptsLine: (n, runs) => `${n} 次尝试，每次只计一次，分布在 ${runs} 个运行和单独的 Job 中`,
   reusedStages: (n) => `${n} 个复用的阶段没有运行，不再重复计算`,
   gpuNotMeasured: (n) => `GPU 用量未测量；${n} 次尝试预留了 GPU`,
-  partial: "只合计了最新的 5000 次尝试",
+  partialAttempts: (limit) => `不完整：只读取了最新的 ${limit} 次尝试`,
+  partialRuns: (limit) => `运行数和复用阶段数不完整：只读取了最新的 ${limit} 个运行`,
   spendNote: "这是软性合计，不是账单也不是上限：失败和重试的尝试都计入，未知从不当作零，更换方法或运行也不会清零。",
   spendUnreadable: "Core 的回答不是花费汇总",
   spendFailed: (error) => `无法读取记录的花费：${error}`,
@@ -283,6 +293,15 @@ const text = strings({
 type Text = ReturnType<typeof text>;
 const ended = new Set(["failed", "cancelled", "rejected", "interrupted"]);
 const usd = (value: number) => `$${value.toFixed(value < 1 ? 4 : 2)}`;
+/** Where a cited record's line stands now, said after the version cited. */
+const lineNow = (cited: number, now: LineNow | null | undefined, missing: string, newer: (seq: number) => string, unknown: string) =>
+  now?.state === "missing"
+    ? missing
+    : now && now.latestActivitySeq !== cited
+      ? now.latestActivitySeq != null
+        ? newer(now.latestActivitySeq)
+        : unknown
+      : "";
 
 /** Recorded cost as said, never more certain than it is. */
 export function costText(cost?: Cost | null, language: Language = "en") {
@@ -357,13 +376,7 @@ export function RunCard({
       {run.method && (
         <p className="job-run-method">
           {t.follows(run.method.title || "", run.method.activitySeq, run.method.version)}
-          {run.methodNow?.state === "missing"
-            ? t.missing
-            : run.methodNow && run.methodNow.latestActivitySeq !== run.method.activitySeq
-              ? run.methodNow.latestActivitySeq != null
-                ? t.newer(run.methodNow.latestActivitySeq)
-                : t.latestUnknown
-              : ""}
+          {lineNow(run.method.activitySeq, run.methodNow, t.missing, t.newer, t.latestUnknown)}
         </p>
       )}
       <ol className="job-run-stages" aria-label={t.stages}>
@@ -402,7 +415,9 @@ export function RunCard({
                     t.recordType[stage.analysis.record.record?.type ?? ""] ?? "",
                     stage.analysis.record.record?.title || "",
                     stage.analysis.record.activitySeq,
+                    stage.analysis.record.version,
                   )}
+                  {lineNow(stage.analysis.record.activitySeq, stage.analysis.recordNow, t.missing, t.decisionNewer, t.decisionLatestUnknown)}
                   {stage.analysis.record.next && ` · ${t.proposes[stage.analysis.record.next.action] ?? ""}: ${stage.analysis.record.next.text}`}
                 </small>
               )}
@@ -496,10 +511,15 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
       </JobCard>
     ) : null;
   const { usd: cost, compute, gpu } = spend;
+  // Each subtotal says when it stops at the newest attempts or runs; an
+  // older Core says only that something stopped, read as the attempts.
+  const limit = spend.limit ?? 5000;
+  const attemptsPartial = (spend.attemptsTruncated ?? spend.truncated) && t.partialAttempts(limit);
   const gaps = [
     cost.attemptsWithUnknown > 0 && t.unknownAmount(cost.attemptsWithUnknown),
     cost.attemptsNotRecorded > 0 && t.notRecorded(cost.attemptsNotRecorded),
     cost.attemptsRunning > 0 && t.spendRunning(cost.attemptsRunning),
+    attemptsPartial,
   ].filter(Boolean);
   return (
     <JobCard title={t.spendTitle} className="job-task-spend">
@@ -512,6 +532,7 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
             t.cpu(compute.cpuSeconds.toFixed(1), compute.attemptsMeasured),
             compute.attemptsUnmeasured > 0 && t.unmeasured(compute.attemptsUnmeasured),
             gpu.attemptsReserving > 0 && t.gpuNotMeasured(gpu.attemptsReserving),
+            attemptsPartial,
           ]
             .filter(Boolean)
             .join(" · ")}
@@ -521,7 +542,8 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
           {[
             t.attemptsLine(spend.attempts, spend.runs),
             spend.reusedStages > 0 && t.reusedStages(spend.reusedStages),
-            spend.truncated && t.partial,
+            attemptsPartial,
+            spend.runsTruncated && t.partialRuns(limit),
           ]
             .filter(Boolean)
             .join(" · ")}

@@ -128,3 +128,115 @@ fn a_tasks_recorded_spend_counts_each_attempt_once_and_keeps_unknown_apart() {
     assert_eq!(s.task_cost("T-2").unwrap()["usd"]["knownUsd"], 100.0, "another task's spend stays its own");
     assert!(tool_definitions().iter().any(|tool| tool["name"] == "job_cost"));
 }
+
+/// What the Jobs host makes of a usage file of each shape: its own
+/// `usage_summary`, run on synthetic files. A missing file is no summary.
+fn usage_summaries() -> Value {
+    let dir = tempfile::tempdir().unwrap();
+    let host = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/jobs/host.py");
+    let script = r#"
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('job_host', sys.argv[1])
+host = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(host)
+files = {'missing': None, 'empty': '', 'blank': '  \n\t\n\n', 'zero': '{"usd": 0, "source": "synthetic"}\n',
+         'unknown': '{"source": "synthetic"}\n', 'unreadable': 'not json\n', 'paid': '{"usd": 1.5, "source": "synthetic"}\n'}
+summaries = {}
+for name, text in files.items():
+    folder = Path(sys.argv[2]) / name
+    folder.mkdir()
+    if text is not None:
+        (folder / 'usage.jsonl').write_text(text)
+    summaries[name] = host.usage_summary(folder)
+print(json.dumps(summaries))
+"#;
+    let output = std::process::Command::new("/usr/bin/python3").arg("-c").arg(script).arg(&host).arg(dir.path())
+        .output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn an_empty_usage_file_recorded_no_spend_and_an_entry_of_zero_dollars_is_a_known_zero() {
+    let (_dir, s) = setup();
+    for key in ["two", "three"] {
+        s.collaboration_call(None, "task_create", json!({"requestId":key,"title":"Another study"})).unwrap();
+    }
+    let summaries = usage_summaries();
+    assert_eq!(summaries["missing"], Value::Null);
+    for name in ["empty", "blank"] {
+        assert_eq!((summaries[name]["entries"].clone(), summaries[name]["knownUsd"].as_f64(), summaries[name]["complete"].clone()),
+            (json!(0), Some(0.0), json!(true)), "the host calls a {name} file complete, with no entries");
+    }
+    for name in ["missing", "empty", "blank", "zero", "unknown", "unreadable", "paid"] {
+        attempt(&s, "T-1", name, "succeeded", summaries[name].clone());
+    }
+    // A summary without an entry count says nothing it can be trusted for.
+    attempt(&s, "T-1", "uncounted", "succeeded", json!({"knownUsd":0,"complete":true}));
+    assert_eq!(s.task_cost("T-1").unwrap()["usd"], json!({"knownUsd":1.5,"attemptsReporting":3,"attemptsNotRecorded":3,
+        "attemptsWithUnknown":3,"unknownEntries":1,"invalidLines":1,"attemptsRunning":0,"complete":false}),
+        "missing, empty and blank recorded none; zero, unknown and paid reported; unknown, unreadable and uncounted are unknown");
+    // On their own: an entry of $0 is a complete known $0, an empty file is not.
+    attempt(&s, "T-2", "zero-only", "succeeded", summaries["zero"].clone());
+    attempt(&s, "T-3", "empty-only", "succeeded", summaries["empty"].clone());
+    assert_eq!(s.task_cost("T-2").unwrap()["usd"], json!({"knownUsd":0.0,"attemptsReporting":1,"attemptsNotRecorded":0,
+        "attemptsWithUnknown":0,"unknownEntries":0,"invalidLines":0,"attemptsRunning":0,"complete":true}));
+    assert_eq!(s.task_cost("T-3").unwrap()["usd"], json!({"knownUsd":0.0,"attemptsReporting":0,"attemptsNotRecorded":1,
+        "attemptsWithUnknown":0,"unknownEntries":0,"invalidLines":0,"attemptsRunning":0,"complete":false}));
+}
+
+#[test]
+fn only_an_attempt_admitted_with_its_own_gpu_reservation_counts_as_reserving_one() {
+    let (_dir, s) = setup();
+    let task = crate::collaboration_store::task_key(&s.db.read().unwrap(), "T-1").unwrap().0;
+    let request = json!({"count":1,"memoryMiB":1024,"mode":"exclusive"});
+    let held = json!([{"uuid":"GPU-synthetic","memoryMiB":1024,"mode":"exclusive"}]);
+    // As runs::new_attempt makes a retry: no start, the earlier reservation
+    // still in the copied record until its own admission replaces it.
+    for (id, status, gpu) in [
+        ("queued", "queued", json!({"gpu":request})),
+        ("cancelled-queued", "cancelled", json!({"gpu":request,"cancelRequestedAt":"2026-11-01T00:00:00Z"})),
+        ("retry-waiting", "waiting", json!({"gpu":request,"gpuReservation":held,"retryOf":"admitted","startedAt":null})),
+        ("admitted", "failed", json!({"gpu":request,"gpuReservation":held,"startedAt":"2026-11-01T00:00:00Z"})),
+        ("no-gpu", "succeeded", json!({"startedAt":"2026-11-01T00:00:00Z"})),
+    ] {
+        let mut data = json!({"id":id,"taskId":task,"agentId":"a","attempt":format!("{id}-attempt"),"status":status,
+            "resources":{"cpuMillis":1000,"memoryMiB":64,"swapMiB":0}});
+        data.as_object_mut().unwrap().extend(gpu.as_object().unwrap().clone());
+        s.db.write().unwrap().execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)",
+            params![id, task, status, data.to_string()]).unwrap();
+    }
+    let cost = s.task_cost("T-1").unwrap();
+    assert_eq!(cost["gpu"], json!({"attemptsReserving":1,"measured":false}),
+        "a request, a cancel before admission and a retry's copied reservation are not this attempt's");
+    assert_eq!(cost["attempts"], 5);
+}
+
+#[test]
+fn past_five_thousand_runs_the_spend_says_its_run_counts_are_partial() {
+    let (_dir, s) = setup();
+    attempt(&s, "T-1", "one", "succeeded", json!({"entries":1,"knownUsd":0.5,"unknownEntries":0,"invalidLines":0,
+        "incompleteLines":0,"truncated":false,"sources":[],"complete":true}));
+    let task = crate::collaboration_store::task_key(&s.db.read().unwrap(), "T-1").unwrap().0;
+    let add = |from: usize, to: usize| {
+        let mut db = s.db.write().unwrap();
+        let tx = db.transaction().unwrap();
+        for n in from..to {
+            let id = format!("run-{n}");
+            tx.execute("INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES(?1,?2,'a',?3)",
+                params![id, task, json!({"id":id,"stages":[{"key":"build","reusedFrom":{"jobId":"one"}}]}).to_string()]).unwrap();
+        }
+        tx.commit().unwrap();
+    };
+    let counts = |cost: &Value| (cost["runs"].clone(), cost["reusedStages"].clone(), cost["runsTruncated"].clone(),
+        cost["attemptsTruncated"].clone(), cost["truncated"].clone());
+    add(0, 5000);
+    assert_eq!(counts(&s.task_cost("T-1").unwrap()), (json!(5000), json!(5000), json!(false), json!(false), json!(false)));
+    add(5000, 5001);
+    let past = s.task_cost("T-1").unwrap();
+    assert_eq!(counts(&past), (json!(5000), json!(5000), json!(true), json!(false), json!(true)),
+        "the newest 5000 runs are read, and the read says its run counts are partial");
+    assert_eq!((past["usd"]["complete"].clone(), past["limit"].clone()), (json!(true), json!(5000)),
+        "every attempt was read: only the run counts are partial");
+}
