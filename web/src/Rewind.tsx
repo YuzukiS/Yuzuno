@@ -67,7 +67,7 @@ function RewindDialog({ agent, turn, onDraft, onClose }: { agent: Agent; turn: N
     } finally { pending.current = false; setBusy(false); }
   };
   if (files && nativeUuid) return <RestoreDialog agentId={agent.id} nativeUuid={nativeUuid} onClose={onClose} />;
-  return <Modal open onOpenChange={next => !next && !busy && onClose()} title="Rewind"
+  return <Modal open confirm onOpenChange={next => !next && !busy && onClose()} title="Rewind"
     description="Go back to before this turn. Conversation history and file changes are separate.">
     <div className="rewind-dialog">
       <h3>Conversation</h3>
