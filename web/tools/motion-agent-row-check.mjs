@@ -400,10 +400,12 @@ for (const run of runs) {
   const record2 = (label, value) => { report.frames[`${tag} grouped: ${label}`] = value; return value; };
   const since = (from) => page2.evaluate((from) => window.__frames.slice(from), from);
   const at = () => page2.evaluate(() => window.__now());
-  /** Creates an Agent named `name` from `opener`, and returns its row's frames from the press on. */
+  /** Creates an Agent named `name` from `opener`, and returns its row's frames from the press on.
+   * The dialog opens in the mode it was last left in (an import, after one), so New agent is chosen first. */
   const create = async (opener, name) => {
     await opener.click({ timeout: 10_000 });
     const dialog = page2.locator('[role="dialog"]').last();
+    await dialog.locator(".agent-create-modes").getByRole("button", { name: "New agent", exact: true }).click();
     await dialog.getByLabel("Name", { exact: true }).fill(name);
     const from = await at();
     await dialog.getByRole("button", { name: "Create agent", exact: true }).click();
