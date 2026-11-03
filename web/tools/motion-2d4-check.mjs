@@ -4,9 +4,10 @@
 //   all the while, and takes the pointer from its first frame. Under 48 px it leaves through a copy,
 //   aria-hidden, inert and passed through by the pointer, that fades out over exit-small where it
 //   was. Between, it stays as it was, so a scroll that wavers there does not make it flicker.
-// - Back to latest pressed leaves the same way. Another Agent shown takes it away at once.
+// - Back to latest pressed leaves the same way. Another Agent shown takes it away at once, from the rail
+//   or because the open one went from the Workspace (a snapshot that opens the next Agent itself).
 // - Under reduced motion nothing plays and no copy is left; reduced motion turned on while it comes
-//   in or leaves stops it.
+//   in or leaves stops it, and turned off again within the copy's 400 ms brings nothing back.
 // Writes: only the app's own saves of where an Agent was read; anything else is refused and counted.
 // Served from http://127.0.0.1. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-2d4-check.mjs
@@ -30,6 +31,8 @@ const ok = (name, cond, detail) => {
 const agent = (id, name) => ({ id, name, goal: "", cwd: "/w", model: "m", color: "green", status: "idle", createdAt: "", updatedAt: "",
   unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", harness: "codex", connectionState: "connected" });
 const agents = [agent("a", "Mori"), agent("b", "Hana")];
+// What the Workspace lists; another window can take Mori out of it.
+let listed = agents;
 // Mori's conversation is long enough to be read well away from its end; Hana's is short.
 const turns = (who, count, lines) => Array.from({ length: count }, (_, n) => ({ id: `${who}-t${n}`, status: "completed", items: [
   { id: `${who}-u${n}`, type: "userMessage", content: [{ type: "text", text: `${who} question ${n + 1}` }] },
@@ -38,7 +41,7 @@ const turns = (who, count, lines) => Array.from({ length: count }, (_, n) => ({ 
 const gets = () => ({
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs/live": noLiveJobs, "/api/jobs": noJobs,
   "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
-  "/api/workspace": { workspace: { id: "fixture" }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
+  "/api/workspace": { workspace: { id: "fixture" }, agents: listed, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/w" },
   "/api/agents/a": { agent: agents[0], pending: [], artifacts: [], turns: turns("Mori", 10, 6), messageReceipts: [] },
   "/api/agents/b": { agent: agents[1], pending: [], artifacts: [], turns: turns("Hana", 1, 1), messageReceipts: [] },
@@ -76,10 +79,12 @@ async function serve(route) {
 /** In the page, from the first script on: the event stream (a fresh connection starts with `reset`,
  * as events.rs does); Back to latest and its copy every frame; every animate() on it. */
 function pageHelpers() {
+  const streams = [];
   window.EventSource = class {
     constructor(url) {
       this.url = url;
       this.readyState = 0;
+      streams.push(this);
       setTimeout(() => {
         if (this.readyState === 2) return;
         this.readyState = 1;
@@ -91,6 +96,8 @@ function pageHelpers() {
     addEventListener() {}
     close() { this.readyState = 2; }
   };
+  /** Core says something changed (here, the Workspace's Agents). */
+  window.__send = (event) => streams.findLast((s) => s.readyState === 1)?.onmessage?.({ data: JSON.stringify(event), lastEventId: "2" });
   const plays = (el) => el.getAnimations().map((a) => {
     const frames = a.effect?.getKeyframes?.() ?? [];
     return { name: a.animationName ?? "", duration: a.effect.getTiming().duration, current: a.currentTime,
@@ -174,6 +181,7 @@ const near = (a, b, d) => Math.abs(a - b) <= d;
 for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
+  listed = agents;
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
   const page = await context.newPage();
@@ -316,12 +324,24 @@ for (const run of runs) {
       await page.evaluate(() => window.__toGap(20));
       const heldCopy = await holdingCopy;
       await page.emulateMedia({ reducedMotion: "reduce" });
-      const gone = await sample(250);
+      const gone = await sample(100);
       await page.emulateMedia({ reducedMotion: "no-preference" });
-      record("reduced motion turned on while its copy leaves", { heldCopy, gone: gone.slice(0, 3) });
+      const back = await sample(400);
+      record("reduced motion turned on while its copy leaves", { heldCopy, gone: gone.slice(0, 3), back: back.filter((f) => f.copy).slice(0, 3) });
       ok(`${tag}: reduced motion turned on while the copy leaves (held at 60 ms, opacity ${heldCopy.opacity}): it is gone within a frame of the change`,
         heldCopy.held && heldCopy.opacity < 1 && gone.length > 1 && gone.slice(1).every((f) => !f.pill && (!f.copy || f.copy.display === "none")), gone.slice(0, 3));
+      ok(`${tag}: and turned off again within 400 ms of it leaving, the copy does not come back (${back.filter((f) => f.copy && f.copy.display !== "none").length} frames with it)`,
+        heldCopy.held && back.length > 5 && back.every((f) => !f.pill && (!f.copy || f.copy.display === "none")), back.filter((f) => f.copy).slice(0, 2));
     }
+    // Shown, then Mori goes from the Workspace (another window): the snapshot opens Hana itself, and
+    // `atBottom` is reset only after that. Mori's Back to latest goes with it; no copy comes over Hana.
+    await away();
+    listed = [agents[1]];
+    const removed = record("removed from the Workspace", await sample(1500, "__send", { type: "workspace.changed", scope: "projects" }));
+    const hanaShown = await page.locator('[data-item-id="Hana-r0"]').isVisible().catch(() => false);
+    ok(`${tag}: shown, then Mori removed from the Workspace elsewhere: Hana opens (${hanaShown}), and no copy of Back to latest comes over her conversation (${removed.filter((f) => f.copy).length} frames with one)`,
+      !!removed[0].pill && hanaShown && removed.every((f) => !f.copy), removed.filter((f) => f.copy).slice(0, 2));
+    listed = agents;
     await page.screenshot({ path: join(output, `${tag}-after.png`) });
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));
