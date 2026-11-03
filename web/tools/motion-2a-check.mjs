@@ -1,10 +1,13 @@
 // T-19 slice 2a, surfaces (M6: SH:M10, M11, C01, R27): in Chromium on a production build of the app
 // with a synthetic Workspace that is never written to. Home fades in as it opens (opacity, medium);
 // a conversation fades in as it opens from Home and as another Agent's takes its place (opacity,
-// small). Opacity only, from the first frame: the surface it replaces is gone in that frame, the
-// conversation's rows never move, and its scroll position is the same in the first frame as after
-// the fade. A rapid switch leaves one fade, on the newest. Under reduced motion nothing plays; on
-// a phone the conversation does not fade (its push and pop are M8, later). Chromium is not Safari.
+// small). Opacity only, from the first frame: the surface it replaces is gone in that frame and the
+// conversation's rows never move. Where it is read is placed as before: its rows come a frame
+// after the body, already at the place they are read from, in one step, never scrolled there;
+// with the fade that first frame, rows not yet in, is at opacity 0. A rapid switch leaves one fade,
+// on the newest. Under reduced motion nothing plays; on a phone the conversation does not fade (its
+// push and pop are M8, later). The app saves where an Agent was read as it leaves it (PUT
+// /api/agents/<id>/reading); that is answered, any other write fails the check. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-2a-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -17,7 +20,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/motion-2a");
 await mkdir(output, { recursive: true });
-const report = { checks: [], failures: [], errors: [], writes: [], frames: {} };
+const report = { checks: [], failures: [], errors: [], writes: [], readingSaves: [], frames: {} };
 const ok = (name, cond, detail) => {
   (cond ? report.checks : report.failures).push({ name, detail });
   console.log(`${cond ? "PASS" : "FAIL"} ${name}`);
@@ -46,6 +49,10 @@ async function serve(route) {
   const request = route.request();
   const url = new URL(request.url());
   if (url.pathname.startsWith("/api/")) {
+    if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+      report.readingSaves.push(url.pathname);
+      return route.fulfill({ json: { accepted: true } });
+    }
     if (request.method() !== "GET") {
       report.writes.push(`${request.method()} ${url.pathname}`);
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
@@ -155,8 +162,11 @@ for (const run of runs) {
   else
     ok(`${tag}: from Home the conversation fades in once over small (opacity only, 180 ms), Home gone in the same frame`,
       !!backFirst && !backFirst.home && fadeOf(backFirst.bodyPlays)?.duration === 180 && backFirst.bodyOpacity < 1 && backLast.bodyOpacity === 1 && !backLast.bodyPlays.length, backFirst);
-  ok(`${tag}: its rows never move and where it is read is placed before the first frame (scrollTop ${backFirst?.scrollTop} → ${backLast?.scrollTop})`,
-    !!backFirst && back.filter((f) => f.body).every((f) => f.rowTransform === "none" && f.scrollTop === backLast.scrollTop), back.slice(0, 3));
+  const withRows = back.filter((f) => f.rowTransform !== null);
+  const before = back.filter((f) => f.body && f.rowTransform === null);
+  ok(`${tag}: its rows never move, and come already at the place they are read from, in one step (scrollTop ${withRows[0]?.scrollTop}, after ${before.length} frame(s) without rows${reduced ? "" : ` at opacity ${before.map((f) => f.bodyOpacity).join(", ")}`})`,
+    withRows.length > 0 && withRows.every((f) => f.rowTransform === "none" && f.scrollTop === backLast.scrollTop) &&
+      before.every((f) => f.scrollTop === 0 && (reduced || f.bodyOpacity === 0)), back.slice(0, 3));
 
   // Another Agent's conversation takes its place (SH:C01).
   await page.waitForTimeout(300);
@@ -168,7 +178,9 @@ for (const run of runs) {
     ok(`${tag}: switching Agent fades the new conversation in over small (opacity only), the old one gone in the same frame`,
       !!swapFirst && fadeOf(swapFirst.bodyPlays)?.duration === 180 && swapFirst.bodyOpacity < 1 && swap.every((f) => f.title !== "Hana" || f.t === 0) &&
         swap.at(-1).bodyOpacity === 1, swapFirst);
-  ok(`${tag}: and its rows never move`, swap.filter((f) => f.body).every((f) => f.rowTransform === "none"), swap.slice(0, 2));
+  const swapRows = swap.filter((f) => f.rowTransform !== null);
+  ok(`${tag}: and its rows never move, placed in one step (scrollTop ${swapRows[0]?.scrollTop})`,
+    swapRows.length > 0 && swapRows.every((f) => f.rowTransform === "none" && f.scrollTop === swap.at(-1).scrollTop), swap.slice(0, 2));
 
   // A rapid switch: one fade, on the newest.
   if (!reduced) {
@@ -184,7 +196,7 @@ for (const run of runs) {
   await context.close();
 }
 await browser.close();
-ok("nothing was written", report.writes.length === 0, report.writes);
+ok(`nothing was written but where each Agent was read (PUT .../reading, ${report.readingSaves.length})`, report.writes.length === 0, report.writes);
 report.passed = report.failures.length === 0 && report.errors.length === 0;
 await writeFile(join(output, "motion-2a-check.json"), JSON.stringify(report, null, 2) + "\n");
 console.log(JSON.stringify({ passed: report.passed, checks: report.checks.length, failures: report.failures.length, errors: report.errors }));
