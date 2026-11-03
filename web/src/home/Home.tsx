@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
 import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
@@ -482,13 +482,78 @@ export function Home({
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
   const { layout, pin, unpin } = widgetLayout;
+  // A section pinned here (T-19 HM:W5): what was pressed keeps its place
+  // while the widget column above it grows, and the new widget comes in over
+  // small (opacity, 4 px up) and settles once; under reduced motion it is
+  // there at once. Only a widget this press added does so: not one already
+  // pinned (a pin that changed nothing, or Pin the new section for one pinned
+  // already), not one past the limit, a layout read again or another
+  // window's pin. It is this Workspace's: another one opened drops it.
+  const [pinnedHere, setPinnedHere] = useState<{ workspace: string; id: string; n: number; had: boolean } | null>(null);
+  const pinAnchor = useRef<{ element: HTMLElement; top: number } | null>(null);
+  const pinnedWidget = useRef<HTMLElement | null>(null);
+  const layoutNow = useRef(layout);
+  layoutNow.current = layout;
+  useLayoutEffect(() => {
+    pinnedWidget.current = null;
+    const anchor = pinAnchor.current;
+    pinAnchor.current = null;
+    if (!pinnedHere || pinnedHere.workspace !== workspaceId) return;
+    // Held now, and for two more frames until the reader scrolls, presses a
+    // key or touches: so whatever the browser's own scroll anchoring did or
+    // does, the pressed control ends where it was, and what the reader then
+    // does stands.
+    const view = anchor?.element.isConnected ? anchor.element.closest<HTMLElement>(".home-view") : null;
+    const hold = () => {
+      if (!anchor || !view || !anchor.element.isConnected) return;
+      const moved = anchor.element.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(moved) >= 1) view.scrollTop += moved;
+    };
+    hold();
+    let frame = requestAnimationFrame(() => {
+      hold();
+      frame = requestAnimationFrame(hold);
+    });
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    const yield_ = () => {
+      cancelAnimationFrame(frame);
+      for (const kind of inputs) window.removeEventListener(kind, yield_, true);
+    };
+    for (const kind of inputs) window.addEventListener(kind, yield_, { capture: true, passive: true });
+    const added = !pinnedHere.had && !!layout?.pins.some((p) => pinWidgetId(p) === pinnedHere.id);
+    const widget = added ? [...document.querySelectorAll<HTMLElement>(".home-widget-slot")].find((slot) => slot.dataset.widget === pinnedHere.id) : undefined;
+    pinnedWidget.current = widget ?? null;
+    // The tint paints the widget's own card: the card's background would
+    // hide one painted behind it.
+    const card = widget?.firstElementChild instanceof HTMLElement ? widget.firstElementChild : widget;
+    const settled = card ? settleWhenLanded(card, "data-settle", false, "animation") : null;
+    return () => {
+      yield_();
+      settled?.();
+    };
+    // `layout` is read as this pin committed it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedHere, workspaceId]);
+  useSurfaceIn(pinnedWidget, pinnedHere?.n ?? 0, "small", !!pinnedHere, "translateY(4px)");
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
-    (projectId: string, section: Section) => {
+    (projectId: string, section: Section, pressed?: HTMLElement) => {
       const source = pinSource(data, projectId, section);
-      if (source) pin(projectId, source.projectName, source.section);
+      if (!source) return;
+      // The control the press was on (the Pin button, or Pin the current
+      // version) holds its place, read now, before the pin. It is the one
+      // the press named, not whatever has focus: a click does not focus a
+      // button in every browser (Safari), and focus may be elsewhere.
+      pinAnchor.current = pressed?.closest(".home-view")
+        ? { element: pressed, top: pressed.getBoundingClientRect().top }
+        : null;
+      const id = pinWidgetId({ projectId, key: source.section.key, id: source.section.id! });
+      // Pinned already before this press, as the layout was last drawn.
+      const had = !!layoutNow.current?.pins.some((p) => pinWidgetId(p) === id);
+      pin(projectId, source.projectName, source.section);
+      setPinnedHere((last) => ({ workspace: workspaceId, id, n: (last?.n ?? 0) + 1, had }));
     },
-    [data, pin],
+    [data, pin, workspaceId],
   );
   const pins = useMemo<PinControl | null>(
     () =>
@@ -498,10 +563,10 @@ export function Home({
             isPinned: (projectId: string, section: Section) =>
               layout.pins.some((p) => p.projectId === projectId && p.id === section.id),
             canPin: (projectId: string, section: Section) => !!pinSource(data, projectId, section),
-            toggle: (projectId: string, section: Section) => {
+            toggle: (projectId: string, section: Section, pressed?: HTMLElement) => {
               const pinned = layout.pins.find((p) => p.projectId === projectId && p.id === section.id);
               if (pinned) unpin(pinned);
-              else pinIfAllowed(projectId, section);
+              else pinIfAllowed(projectId, section, pressed);
             },
           },
     [readOnly, layout, unpin, data, pinIfAllowed],
@@ -528,9 +593,9 @@ export function Home({
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
             onPinCurrent={
               source.state === "replaced" && pinSource(data, p.projectId, source.section)
-                ? () => {
+                ? (pressed: HTMLElement) => {
                     unpin(p);
-                    pinIfAllowed(p.projectId, source.section);
+                    pinIfAllowed(p.projectId, source.section, pressed);
                   }
                 : undefined
             }

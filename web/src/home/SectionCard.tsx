@@ -91,7 +91,7 @@ function PinButton({ section, projectId }: { section: Section; projectId: string
       aria-pressed={pinned}
       aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
       title={pinned ? t.unpin : t.pin}
-      onClick={() => pins.toggle(projectId, section)}
+      onClick={(event) => pins.toggle(projectId, section, event.currentTarget)}
     >
       {pinned ? <PinOff size={13} /> : <Pin size={13} />}
     </button>
