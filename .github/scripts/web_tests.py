@@ -21,6 +21,10 @@ import time
 
 WEB = Path(__file__).resolve().parents[2] / 'web'
 STOP = 0
+# Node flags a file needs beyond the shared ones. ui.test.mjs collects garbage
+# after each test: its closed JSDOM windows can be collected, but without that
+# they piled up to the 2048 MiB old-space cap (T-19, run dff87d29).
+FILE_NODE_FLAGS = {'tools/ui.test.mjs': ('--expose-gc',)}
 
 
 def interrupt(signum, _frame):
@@ -61,14 +65,15 @@ def run(files, timeout, logdir):
             if STOP:
                 break
             job = dict(file=file, start=time.monotonic(), log=logdir / f'{index}.log')
-            print(f'START {file} (old-space 2048 MiB)', flush=True)
+            flags = FILE_NODE_FLAGS.get(os.path.normpath(file), ())
+            print(f'START {file} (old-space 2048 MiB{"".join(", " + flag for flag in flags)})', flush=True)
             with job['log'].open('wb') as output:
                 try:
                     # A private group also contains ordinary child processes.
                     # GNU timeout keeps the existing 10-second kill grace.
                     job['process'] = subprocess.Popen(
                         ['timeout', '--kill-after=10', timeout, 'node',
-                         '--max-old-space-size=2048', '--experimental-strip-types', file],
+                         '--max-old-space-size=2048', *flags, '--experimental-strip-types', file],
                         cwd=WEB, stdout=output, stderr=subprocess.STDOUT,
                         start_new_session=True)
                 except OSError as error:

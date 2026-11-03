@@ -97,6 +97,20 @@ while True: time.sleep(1)
         stat=Path('/proc')/(self.web/'child-pid').read_text()/'stat'
         if stat.exists(): self.assertEqual(stat.read_text().rsplit(')',1)[1].split()[0],'Z')
 
+    def test_ui_test_alone_gets_expose_gc(self):
+        # The fake node writes down its arguments instead of running the file.
+        (self.root/'bin'/'node').write_text(f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\nPath(Path(sys.argv[-1]).name+".args").write_text("\\n".join(sys.argv[1:]))\n')
+        ui=self.file('ui.test.mjs', '')
+        other=self.file('other.test.mjs', '')
+        r=self.invoke(ui, other)
+        self.assertEqual(r.returncode, 0, r.stdout+r.stderr)
+        ui_args=(self.web/'ui.test.mjs.args').read_text().split('\n')
+        other_args=(self.web/'other.test.mjs.args').read_text().split('\n')
+        self.assertEqual(ui_args, ['--max-old-space-size=2048', '--expose-gc', '--experimental-strip-types', 'tools/ui.test.mjs'])
+        self.assertEqual(other_args, ['--max-old-space-size=2048', '--experimental-strip-types', 'tools/other.test.mjs'])
+        self.assertIn('START tools/ui.test.mjs (old-space 2048 MiB, --expose-gc)', r.stdout)
+        self.assertIn('START tools/other.test.mjs (old-space 2048 MiB)\n', r.stdout)
+
     def test_explicit_filename_with_spaces_is_one_file(self):
         file=self.file('with space.test.mjs', "print('space file ran')\n")
         r=self.invoke(file)

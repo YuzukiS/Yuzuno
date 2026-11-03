@@ -1,5 +1,5 @@
 import "./jsdom-guard.mjs";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -21,6 +21,14 @@ const bundle = await uiTestBundle(new URL(entry, distUrl));
 // Compile it once and run it in each window's own context, as window.eval did,
 // instead of parsing and compiling the whole bundle again on every mount.
 const bundleScript = new vm.Script(bundle);
+// Each test opens a JSDOM window and runs the whole app in it. Closed, the
+// windows can be collected, but without a collection between tests they piled
+// up to the 2048 MiB old-space cap (T-19, run dff87d29). So every test ends
+// with one. web_tests.py runs this file with --expose-gc; a run without it
+// stops here rather than going on without the collections.
+assert.equal(typeof globalThis.gc, "function",
+  "ui.test.mjs collects garbage after each test: run it with .github/scripts/web-tests.sh, or node --expose-gc");
+afterEach(() => globalThis.gc());
 const pause = () => new Promise((resolve) => setTimeout(resolve, 45));
 async function waitForPreviewState(read, message) {
   for (let attempt = 0; attempt < 60; attempt++) {
