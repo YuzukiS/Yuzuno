@@ -277,7 +277,7 @@ test("a task's Jobs show what it recorded spending: every attempt once, unknown 
     const text = p.doc.querySelector('.job-task-spend').textContent;
     for (const expected of ['Recorded spend on this task',
       '$1.75 · 1 with an unknown amount · 1 attempt recorded none · 1 still running',
-      '12.3 s of CPU over 2 measured attempts · 1 without a CPU measurement · GPU use is not measured; 1 attempt reserved a GPU',
+      '12.3 s of CPU over 2 attempts that measured both CPU and wall time · whether 1 attempt measured CPU is not said · GPU use is not measured; 1 attempt reserved a GPU',
       '4 attempts, each counted once, in 1 run and single Jobs · 1 reused stage ran nothing and is not counted again',
       'unknown is never zero', 'nothing resets when the method or the run changes'])
       assert.ok(text.includes(expected), `${expected}: ${text}`);
@@ -328,6 +328,10 @@ test("a task's CPU time is said over the attempts that measured CPU, whatever th
     'T-202': { cpuSeconds: 0, attemptsWithCpu: 0, attemptsWithoutCpu: 4, workerWallSeconds: 12, attemptsWithWall: 4, attemptsWithoutWall: 0, attemptsMeasured: 0, attemptsUnmeasured: 4 },
     // An explicit zero is a measurement.
     'T-203': { cpuSeconds: 0, attemptsWithCpu: 1, attemptsWithoutCpu: 3, workerWallSeconds: 0, attemptsWithWall: 0, attemptsWithoutWall: 4, attemptsMeasured: 0, attemptsUnmeasured: 4 },
+    // An older Core's answer has the pair counts only: said as pairs, with
+    // nothing inferred about the other attempts' CPU.
+    'T-204': { cpuSeconds: 3, workerWallSeconds: 9, attemptsMeasured: 2, attemptsUnmeasured: 1 },
+    'T-205': { cpuSeconds: 0, workerWallSeconds: 0, attemptsMeasured: 0, attemptsUnmeasured: 3 },
   };
   const p = mount((url, body) => {
     if (url === '/api/collaboration/job_cost') return { ...base, taskId: body.taskId, compute: answers[body.taskId] };
@@ -341,6 +345,8 @@ test("a task's CPU time is said over the attempts that measured CPU, whatever th
       ['T-201', '3.5 s of CPU over 3 measured attempts · 1 without a CPU measurement'],
       ['T-202', 'CPU not measured · 4 without a CPU measurement'],
       ['T-203', '0.0 s of CPU over 1 measured attempt · 3 without a CPU measurement'],
+      ['T-204', '3.0 s of CPU over 2 attempts that measured both CPU and wall time · whether 1 attempt measured CPU is not said'],
+      ['T-205', 'No attempt measured both CPU and wall time · whether 3 attempts measured CPU is not said'],
     ]) {
       p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: task } }));
       await until(() => p.calls.some(c => c.url === '/api/collaboration/job_cost' && c.body.taskId === task) && compute() === expected);

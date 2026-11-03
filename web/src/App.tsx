@@ -15,6 +15,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
+import { settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
 import {
   Archive,
@@ -400,6 +401,20 @@ export function App() {
   // pop (M8), not this.
   const conversationBody = useRef<HTMLDivElement>(null);
   useSurfaceIn(conversationBody, homeOpen ? null : selected, "small", !phone);
+  // On a phone (T-19 M8), what the list opens is pushed in from the right and
+  // Back brings the list in from the left, over medium; the toolbar's brand
+  // and Back swap with a fade over micro. Only a move between the list and
+  // what is open plays them, never a window turning into a phone's, and
+  // never the first screen: nothing has moved before the first one.
+  const phoneMove = useRef({ list: phoneList, n: 0 });
+  if (phoneMove.current.list !== phoneList) phoneMove.current = { list: phoneList, n: phoneMove.current.n + 1 };
+  const moved = phoneMove.current.n > 0;
+  const railBox = useRef<HTMLElement>(null);
+  const mainBox = useRef<HTMLElement>(null);
+  const brandBox = useRef<HTMLDivElement>(null);
+  useSurfaceIn(mainBox, phoneMove.current.n, "medium", phone && moved && !phoneList, "translateX(8px)");
+  useSurfaceIn(railBox, phoneMove.current.n, "medium", phone && moved && phoneList, "translateX(-8px)");
+  useSurfaceIn(brandBox, phoneMove.current.n, "micro", phone && moved);
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
@@ -467,6 +482,8 @@ export function App() {
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
+  // The Turn a jump last landed on, tinted once (T-19).
+  const turnSettled = useRef<(() => void) | null>(null);
   // Whose conversation a jump from its dock was asked in (T-6): one still on
   // its way when the Workspace or the Agent changes is dropped, not taken into
   // the other conversation, where the same Turn id names nothing of its.
@@ -787,6 +804,8 @@ export function App() {
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
   useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
+  // A Turn's landing is the conversation's it was in: another Agent's, or none, ends it (T-19).
+  useEffect(() => () => turnSettled.current?.(), [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
@@ -1314,6 +1333,8 @@ export function App() {
       const target = input || turn;
       target?.scrollIntoView({ behavior: "instant", block: "start" });
       target?.focus({ preventScroll: true });
+      turnSettled.current?.();
+      turnSettled.current = target ? settleWhenLanded(target, "data-settle", false, "animation") : null;
       stickToBottom.current = false;
       jumpItem.current = null;
       setJumpToTurn(null);
@@ -2469,7 +2490,7 @@ export function App() {
         lang={langTag(language)}
         onMouseDown={(event) => moveWindow(frame, event)}
       >
-        <div className="toolbar-brand">
+        <div className="toolbar-brand" ref={brandBox}>
           {phone && !phoneList ? (
             <button
               ref={phoneBack}
@@ -2564,7 +2585,7 @@ export function App() {
         </div>
         {frame && <WindowControls frame={frame} />}
       </header>
-      <aside className="rail" id="agent-sidebar" lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
+      <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
         <div className="rail-top">
           <RailHeading
@@ -2706,7 +2727,7 @@ export function App() {
 
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
-      <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
+      <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
         {(workspaceError || core.browser) && (
           <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
             <WifiOff size={15} />

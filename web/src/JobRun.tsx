@@ -203,6 +203,11 @@ const text = strings({
   cpu: (seconds: string, measured: number) => `${seconds} s of CPU over ${measured} measured attempt${measured === 1 ? "" : "s"}`,
   cpuMissing: (n: number) => `${n} without a CPU measurement`,
   cpuNone: "CPU not measured",
+  // An older Core's answer counts only attempts with both CPU and wall time.
+  cpuPaired: (seconds: string, n: number) =>
+    `${seconds} s of CPU over ${n} attempt${n === 1 ? "" : "s"} that measured both CPU and wall time`,
+  cpuPairedNone: "No attempt measured both CPU and wall time",
+  cpuPairedUnknown: (n: number) => `whether ${n} attempt${n === 1 ? "" : "s"} measured CPU is not said`,
   attempts: "Attempts",
   attemptsLine: (n: number, runs: number) => `${n} attempt${n === 1 ? "" : "s"}, each counted once, in ${runs} run${runs === 1 ? "" : "s"} and single Jobs`,
   reusedStages: (n: number) => `${n} reused stage${n === 1 ? "" : "s"} ran nothing and ${n === 1 ? "is" : "are"} not counted again`,
@@ -293,6 +298,9 @@ const text = strings({
   cpu: (seconds, measured) => `${measured} 次已测量的尝试共用 CPU ${seconds} 秒`,
   cpuMissing: (n) => `${n} 次没有 CPU 计量`,
   cpuNone: "CPU 未测量",
+  cpuPaired: (seconds, n) => `${n} 次同时测得 CPU 和墙钟时间的尝试共用 CPU ${seconds} 秒`,
+  cpuPairedNone: "没有同时测得 CPU 和墙钟时间的尝试",
+  cpuPairedUnknown: (n) => `${n} 次尝试是否测得 CPU 未说明`,
   attempts: "尝试",
   attemptsLine: (n, runs) => `${n} 次尝试，每次只计一次，分布在 ${runs} 个运行和单独的 Job 中`,
   reusedStages: (n) => `${n} 个复用的阶段没有运行，不再重复计算`,
@@ -529,9 +537,18 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
   const limit = spend.limit ?? 5000;
   const attemptsPartial = (spend.attemptsTruncated ?? spend.truncated) && t.partialAttempts(limit);
   // CPU time is said over the attempts that measured CPU, whatever their
-  // wall time; an older Core counts only attempts with both.
-  const withCpu = compute.attemptsWithCpu ?? compute.attemptsMeasured;
-  const withoutCpu = compute.attemptsWithoutCpu ?? compute.attemptsUnmeasured;
+  // wall time. An older Core's answer counts only attempts with both, so it
+  // is said as that, and nothing is inferred about the others' CPU.
+  const cpu =
+    typeof compute.attemptsWithCpu === "number"
+      ? [
+          compute.attemptsWithCpu > 0 ? t.cpu(compute.cpuSeconds.toFixed(1), compute.attemptsWithCpu) : t.cpuNone,
+          (compute.attemptsWithoutCpu ?? 0) > 0 && t.cpuMissing(compute.attemptsWithoutCpu ?? 0),
+        ]
+      : [
+          compute.attemptsMeasured > 0 ? t.cpuPaired(compute.cpuSeconds.toFixed(1), compute.attemptsMeasured) : t.cpuPairedNone,
+          compute.attemptsUnmeasured > 0 && t.cpuPairedUnknown(compute.attemptsUnmeasured),
+        ];
   const gaps = [
     cost.attemptsWithUnknown > 0 && t.unknownAmount(cost.attemptsWithUnknown),
     cost.attemptsNotRecorded > 0 && t.notRecorded(cost.attemptsNotRecorded),
@@ -546,8 +563,7 @@ export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: 
         <dt>{t.compute}</dt>
         <dd>
           {[
-            withCpu > 0 ? t.cpu(compute.cpuSeconds.toFixed(1), withCpu) : t.cpuNone,
-            withoutCpu > 0 && t.cpuMissing(withoutCpu),
+            ...cpu,
             gpu.attemptsReserving > 0 && t.gpuNotMeasured(gpu.attemptsReserving),
             attemptsPartial,
           ]

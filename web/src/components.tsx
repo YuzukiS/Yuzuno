@@ -5,6 +5,7 @@ import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff"
 import { parseMessageLink, parseReportLink, useMessageLinks } from "./deep-link";
 import { usePointFix } from "./point-fix";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { ImageViewer } from "./ImageViewer";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
@@ -1336,6 +1337,14 @@ function CodexPendingCard({
         omitted?: number;
       }
     | undefined;
+  // Which decision is on its way: its button shows the spinner the answer
+  // form has (T-19 CV:Q-02).
+  const [deciding, setDeciding] = useState("");
+  const busy = (decision: string) => sending && deciding === decision;
+  const decide = (decision: string) => {
+    setDeciding(decision);
+    void respond({ decision });
+  };
   const respond = async (response: unknown) => {
     if (disabled || answering.current) return;
     answering.current = true;
@@ -1510,23 +1519,39 @@ function CodexPendingCard({
             <button
               className="primary-button"
               disabled={disabled || sending || !canDecide("accept")}
-              onClick={() => void respond({ decision: "accept" })}
+              aria-busy={busy("accept") || undefined}
+              onClick={() => decide("accept")}
             >
+              {busy("accept") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {t.allowOnce}
             </button>
-            {canDecide("acceptForSession") && <button className="secondary-button" disabled={disabled || sending} onClick={() => void respond({ decision: "acceptForSession" })}>{t.allowSession}</button>}
+            {canDecide("acceptForSession") && (
+              <button
+                className="secondary-button"
+                disabled={disabled || sending}
+                aria-busy={busy("acceptForSession") || undefined}
+                onClick={() => decide("acceptForSession")}
+              >
+                {busy("acceptForSession") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
+                {t.allowSession}
+              </button>
+            )}
             <button
               className="secondary-button"
               disabled={disabled || sending || !canDecide("decline")}
-              onClick={() => void respond({ decision: "decline" })}
+              aria-busy={busy("decline") || undefined}
+              onClick={() => decide("decline")}
             >
+              {busy("decline") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {t.decline}
             </button>
             <button
               className="quiet-button"
               disabled={disabled || sending || !canDecide("cancel")}
-              onClick={() => void respond({ decision: "cancel" })}
+              aria-busy={busy("cancel") || undefined}
+              onClick={() => decide("cancel")}
             >
+              {busy("cancel") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {subAgent ? t.cancelSub : t.cancelTurn}
             </button>
           </div>
@@ -1658,6 +1683,11 @@ export function ArtifactModal({
   const text = loaded ? content.text : "";
   const error = loaded ? content.error : "";
   const loading = !!artifact && artifact.kind !== "image" && !loaded;
+  // An image is read by the viewer itself (T-20); one it could not read says so.
+  const imageSrc = artifact?.kind === "image" ? artifactUrl(agentId, artifact.path) : "";
+  const [unreadable, setUnreadable] = useState("");
+  // Each opening reads it again: an image that failed may be back.
+  useEffect(() => setUnreadable(""), [artifact]);
   const language = useLanguage();
   const t = turnWords(language);
   useEffect(() => {
@@ -1702,6 +1732,7 @@ export function ArtifactModal({
       lang={langTag(language)}
       closeLabel={t.closeDialog}
       wide
+      className={imageSrc ? "image-viewer-modal" : ""}
     >
       {!loading && !error && artifact && artifact.kind !== "image" ? (
         <ArtifactText text={text} path={artifact.path} line={artifact.line} />
@@ -1717,20 +1748,21 @@ export function ArtifactModal({
               {error}
             </p>
           ) : artifact?.kind === "image" ? (
-            <img
-              src={artifactUrl(agentId, artifact.path)}
+            // Mark up on the viewer's bar, as for any other image (T-20).
+            <ImageViewer
+              key={imageSrc}
+              src={imageSrc}
               alt={artifact.name}
+              unreadable={t.imageUnreadable}
+              onError={() => setUnreadable(imageSrc)}
+              actions={onAnnotate && unreadable !== imageSrc && (
+                <button type="button" className="secondary-button" onClick={onAnnotate}>
+                  <SquareDashedMousePointer size={14} aria-hidden="true" />
+                  <span className="image-viewer-action-label">{t.markUp}</span>
+                </button>
+              )}
             />
           ) : null}
-        </div>
-      )}
-      {artifact?.kind === "image" && onAnnotate && (
-        <div className="modal-footer">
-          <span>{t.readOnly}</span>
-          <button type="button" className="secondary-button" onClick={onAnnotate}>
-            <SquareDashedMousePointer size={14} />
-            {t.markUp}
-          </button>
         </div>
       )}
       {text && (

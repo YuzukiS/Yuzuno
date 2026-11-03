@@ -738,6 +738,7 @@
 }
 :root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .source-highlight {
   outline-color: var(--focus, #8a7a43);
+  --source-ring: var(--focus, #8a7a43);
 }
 :root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) ::selection {
   background: var(--accent-wash, #647143);
