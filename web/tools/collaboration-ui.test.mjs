@@ -1460,6 +1460,34 @@ test("a comparison shows every entry, left out or not, with why, and says what t
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
+test("a record whose newest version is unknown never reads as the newest, in English and Chinese (T-17)", async () => {
+  const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional",
+    method: { activitySeq: 3, id: "timing", title: "Timing protocol" } };
+  // Past the length Core follows: the next version is known, the newest and this version's number are not.
+  const answer = { taskId: "T-1", activitySeq: 4, version: null, revisedBy: 9, latestActivitySeq: null, research: claim,
+    method: { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: null, research: methodV1, method: null } };
+  for (const [language, expected] of [
+    ["en", ["This record's version was not counted", "A newer version exists (activity 9 revises this one); which is the newest is unknown",
+      "The method as cited is version 1; whether it has a newer version is unknown"]],
+    ["zh-Hans", ["这条记录的版本数未计出", "已有较新的版本（活动 9 修订了它）；最新的是哪一版未知", "引用的方法是第 1 版；是否有较新的版本未知"]],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(4, claim, "Claim.")], executions: [], hasMore: false },
+      task_research_get: () => answer,
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the claim");
+      toggleOf(card).click();
+      await waitFor(() => expected.every((text) => card.textContent.includes(text)), `${language}: ${expected.join(" / ")}`);
+      assert.doesNotMatch(card.textContent, /This is the newest version|这是最新版本/, "unknown is never newest");
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
   }
 });
 

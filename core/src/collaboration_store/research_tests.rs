@@ -361,4 +361,29 @@ fn a_comparison_entry_says_why_it_was_left_out_and_states_no_value_it_does_not_h
     assert!(error(comment(&store, "author", "entries-on-claim", "T-1",
         json!({"type":"claim","id":"c","title":"T","text":"S","status":"open","entries":[{"id":"a","label":"A","status":"included"}]}))).contains("for comparisons only"));
     assert_eq!(counts(&store), before, "nothing refused is written");
+#[test]
+fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
+    let (_dir, store) = setup();
+    let first = seq(&comment(&store, "author", "v0", "T-1", method("timing", "Version 0.")).unwrap());
+    let mut previous = first;
+    let mut second = 0;
+    // One more revision than a read follows (CHAIN = 200).
+    for n in 1..=(CHAIN as i64 + 1) {
+        let mut next = method("timing", &format!("Version {n}."));
+        next["revises"] = json!({"activitySeq":previous,"reason":format!("Step {n}.")});
+        previous = seq(&comment(&store, "author", &format!("v{n}"), "T-1", next).unwrap());
+        if n == 1 {
+            second = previous;
+        }
+    }
+    let oldest = record(&store, "T-1", first);
+    assert_eq!(oldest["version"], 1);
+    assert_eq!(oldest["revisedBy"], second, "the next version is known");
+    assert!(oldest["latestActivitySeq"].is_null(), "the newest is unknown, never this one: {}", oldest["latestActivitySeq"]);
+    let newest = record(&store, "T-1", previous);
+    assert!(newest["version"].is_null(), "its version is not counted");
+    assert_eq!(newest["latestActivitySeq"], previous, "it knows it is the newest");
+    let db = store.db.read().unwrap();
+    let cited = desk_source(&db, "T-1", first).unwrap();
+    assert!(cited["latestActivitySeq"].is_null() && cited["version"] == 1, "{cited}");
 }
