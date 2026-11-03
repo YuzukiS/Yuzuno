@@ -371,6 +371,12 @@
   font-size: calc(11px + var(--font-adjust, 3px));
   font-weight: 600;
 }
+/* Folding (T-115) put the list in the card's body, which is the row's flex item: it takes the room beside the
+   heading and no more, so the list scrolls inside it and never widens Home on a narrow pane. */
+.home-needs-you > .home-card-body {
+  flex: 1;
+  min-width: 0;
+}
 .home-needs-list {
   display: flex;
   gap: 8px;
