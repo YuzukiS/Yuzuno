@@ -2158,9 +2158,11 @@ p {
   /* `translate`, apart from the transform that places it (or a drawer's). */
   animation: dialog-in var(--motion-medium) var(--ease-standard);
 }
-/* A panel of a fixed height, its content scrolling inside, stays centred in
-   the safe area. Their own rules set any other size. */
-.modal:where(.settings-modal, .jobs-dialog, .service-control-dialog, :has(.collaboration)) {
+/* Kept centred in the safe area: Settings, Jobs and the task board (panels
+   of a fixed height whose content scrolls inside), the Portal's service
+   confirmation, and the image viewer (T-20), nearly the window's height.
+   Their own rules set any other size, the max-height above included. */
+.modal:where(.settings-modal, .jobs-dialog, .service-control-dialog, .image-viewer-modal, :has(.collaboration)) {
   top: calc(50% + (var(--safe-top) - var(--safe-bottom)) / 2);
   transform: translate(-50%, -50%);
   max-height: calc(var(--safe-dvh) - 52px);
