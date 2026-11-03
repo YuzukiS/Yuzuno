@@ -8,6 +8,8 @@
 //   counts overlap). Nothing is reconciled, judged or called verified.
 // - The narrowing version says it narrows; the earlier version, opened, says
 //   how it was revised and still shows its own scope.
+// - The details block and the "Version and sources now" panel keep their own
+//   styles: neither takes the other's.
 // - Words are readable (contrast at least 4.5:1); nothing scrolls sideways.
 // - Reads only, and every read is one this fixture answers on purpose.
 // Production bundle in an isolated browser with an explicit API fixture; no
@@ -240,6 +242,10 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
       for (const part of expected) assert.ok(text.includes(part), `${title}: ${part} in ${text}`);
     }
     assert.ok(!/verified/i.test(await page.locator(".collab-activity").innerText()));
+    // The details read in the record's own colour, not the read panel's.
+    const colours = await card("The bound holds for every n").evaluate((el) =>
+      [".task-research-study", ".task-research-text"].map((selector) => getComputedStyle(el.querySelector(selector)).color));
+    assert.equal(colours[0], colours[1], `the details' colour ${colours[0]} is the record's ${colours[1]}`);
     assert.ok(!report.reads.includes("task_research_get"), "nothing is read to show what was written");
     const measured = await readable(".task-research-study");
     await card("Real-arm episodes").scrollIntoViewIfNeeded();
@@ -259,6 +265,15 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await page.keyboard.press("Enter");
     await until("how it was revised", async () => (await earlier.locator(".task-research-revised").count()) > 0);
     assert.ok((await earlier.locator(".task-research-revised").innerText()).includes("Activity 9 narrows this scope: Machine B reverses it."));
+    // The "Version and sources now" panel keeps its own rules (a block with a
+    // 4px top margin) and none of the details block's: no flex column, no
+    // gap, no bottom margin, and its label at the panel's own size.
+    const panel = await earlier.locator(".task-research-details").evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { display: style.display, rowGap: style.rowGap, marginTop: style.marginTop, marginBottom: style.marginBottom,
+        labelAtPanelSize: getComputedStyle(el.querySelector(".task-research-revised strong")).fontSize === style.fontSize };
+    });
+    assert.deepEqual(panel, { display: "block", rowGap: "normal", marginTop: "4px", marginBottom: "0px", labelAtPanelSize: true });
     const measured = await readable(".task-research-revises, .task-research-revised");
     await earlier.scrollIntoViewIfNeeded();
     await earlier.screenshot({ path: resolve(output, `${name}-revised.png`) });
