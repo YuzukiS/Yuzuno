@@ -338,7 +338,7 @@ export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps })
       error={error}
       unanswered={unanswered}
       mine={mine}
-      acted={acted?.resultId === resultId ? acted.requestId : null}
+      acted={acted && acted.resultId === resultId ? acted.requestId : null}
       busy={busy}
       onDecide={(decision) => void send({ ...decision, requestId: crypto.randomUUID() }, decision.action)}
       onCheck={() => unanswered && void send(unanswered, "check")}
