@@ -433,3 +433,39 @@ fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() 
     assert_eq!((summary["differs"].clone(), summary["unknown"].clone()), (json!([]), json!(["level"])));
     assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","method":m2}));
 }
+
+#[test]
+fn an_entry_keeps_its_numbers_exactly_as_written_past_two_to_the_fifty_third() {
+    let (_dir, store) = setup();
+    // Parsed from JSON text, as a request arrives: integers past 2^53 within
+    // the 64-bit range, a negative one, and ordinary decimals.
+    let research: Value = serde_json::from_str(r#"{"type":"comparison","id":"counts","title":"Event counts","text":"As counted.",
+        "entries":[
+            {"id":"big","label":"Big","status":"included","unit":"events",
+                "value":{"value":9007199254740993,"low":-9007199254740993,"high":18446744073709551615}},
+            {"id":"small","label":"Small","status":"included","unit":"events","value":{"value":-1.25,"low":0.1,"high":2.5e-7}},
+            {"id":"whole","label":"Whole","status":"excluded","reason":"Counted twice.","value":{"value":12}}
+        ]}"#).unwrap();
+    let written = comment(&store, "author", "big", "T-1", research).unwrap();
+    let at = seq(&written);
+    let exact = r#"{"high":18446744073709551615,"low":-9007199254740993,"value":9007199254740993}"#;
+    // As written, as stored, as read back, and as sent: the same digits.
+    assert_eq!(serde_json::to_string(&written["activity"]["research"]["entries"][0]["value"]).unwrap(), exact);
+    let raw: String = store.db.read().unwrap().query_row("SELECT data FROM collaboration_task_activity WHERE seq=?1",
+        params![at], |r| r.get(0)).unwrap();
+    assert!(raw.contains("9007199254740993") && raw.contains("-9007199254740993") && raw.contains("18446744073709551615"), "{raw}");
+    assert!(!raw.contains("9007199254740992"), "never rounded to the nearest double");
+    let read = record(&store, "T-1", at);
+    assert_eq!(serde_json::to_string(&read["research"]["entries"][0]["value"]).unwrap(), exact);
+    assert_eq!(read["research"]["entries"][1]["value"], json!({"value":-1.25,"low":0.1,"high":2.5e-7}));
+    assert_eq!(serde_json::to_string(&read["research"]["entries"][2]["value"]).unwrap(), r#"{"value":12}"#, "an integer stays an integer");
+    // Anything that is not a number is still refused, and nothing is written.
+    let before = counts(&store);
+    for (n, bad) in [json!({"value":"12"}), json!({"value":true}), json!({"value":1,"low":[0]}), json!({"value":1,"high":{"v":2}})].into_iter().enumerate() {
+        let record = json!({"type":"comparison","id":format!("bad-{n}"),"title":"T","text":"S",
+            "entries":[{"id":"a","label":"A","status":"included","value":bad}]});
+        let refused = error(comment(&store, "author", &format!("bad-number-{n}"), "T-1", record));
+        assert!(refused.contains("is a finite number"), "{n}: {refused}");
+    }
+    assert_eq!(counts(&store), before);
+}
