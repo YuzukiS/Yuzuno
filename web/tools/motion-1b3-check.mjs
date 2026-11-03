@@ -21,7 +21,7 @@ assert.notEqual(dist, resolve("dist"));
 const baseline = process.argv.includes("--baseline");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/motion-1b3");
 await mkdir(output, { recursive: true });
-const report = { mode: baseline ? "baseline" : "check", checks: [], failures: [], errors: [], apiCalls: [], notShown: [], focus: {}, frames: {} };
+const report = { mode: baseline ? "baseline" : "check", checks: [], failures: [], errors: [], apiCalls: [], writes: [], notShown: [], focus: {}, frames: {} };
 const ok = (name, cond, detail) => {
   if (baseline) return;
   (cond ? report.checks : report.failures).push({ name, detail });
@@ -31,15 +31,33 @@ const api = {
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs/live": noLiveJobs,
   "/api/jobs": noJobs, "/api/ci": noCiRuns, "/api/reviews": noReviews,
 };
+// The app itself on a synthetic Workspace whose Agent has three Turns, for the dock's jump (the preview's
+// Agents each have one Turn). Never written to.
+const turn = (n) => ({ id: `turn-${n}`, status: "completed", items: [
+  { id: `in-${n}`, type: "userMessage", content: [{ type: "text", text: `Question ${n}: ${"words ".repeat(40)}` }] },
+  { id: `out-${n}`, type: "agentMessage", text: `Answer ${n}. ${"More of the answer. ".repeat(60)}` },
+] });
+const fixtureAgent = { id: "a", name: "Mori", goal: "", cwd: "/w", model: "m", color: "green", status: "idle", createdAt: "", updatedAt: "",
+  unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", harness: "codex", connectionState: "connected" };
+const fixtureApi = {
+  ...api,
+  "/api/workspace": { workspace: { id: "fixture" }, agents: [fixtureAgent], projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
+    runtime: { connected: true }, defaultCwd: "/w" },
+  "/api/agents/a": { agent: fixtureAgent, pending: [], artifacts: [], turns: [turn(1), turn(2), turn(3)] },
+};
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
   ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 
-async function serve(route) {
+async function serve(route, fixture = false) {
   const url = new URL(route.request().url());
   if (url.pathname.startsWith("/api/")) {
-    report.apiCalls.push(`${route.request().method()} ${url.pathname}`);
-    const hit = Object.keys(api).sort((a, b) => b.length - a.length).find((p) => url.pathname === p || url.pathname.startsWith(p + "/"));
-    if (hit && route.request().method() === "GET") return route.fulfill({ json: api[hit] });
+    const method = route.request().method();
+    report.apiCalls.push(`${fixture ? "fixture " : ""}${method} ${url.pathname}`);
+    const table = fixture ? fixtureApi : api;
+    const hit = Object.keys(table).sort((a, b) => b.length - a.length).find((p) => url.pathname === p || url.pathname.startsWith(p + "/"));
+    if (hit && method === "GET") return route.fulfill({ json: table[hit] });
+    if (fixture && method === "GET") return route.fulfill({ json: {} });
+    if (fixture) report.writes.push(`${method} ${url.pathname}`);
     return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
   }
   const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
@@ -82,6 +100,8 @@ report.browser = browser.version();
 const runs = [
   { name: "desktop", viewport: { width: 1280, height: 860 }, reducedMotion: "no-preference" },
   { name: "desktop-reduced", viewport: { width: 1280, height: 860 }, reducedMotion: "reduce" },
+  { name: "app", viewport: { width: 1280, height: 860 }, reducedMotion: "no-preference", fixture: true },
+  { name: "app-reduced", viewport: { width: 1280, height: 860 }, reducedMotion: "reduce", fixture: true },
 ];
 for (const run of runs) {
   const tag = run.name;
@@ -89,9 +109,10 @@ for (const run of runs) {
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion });
   const page = await context.newPage();
   page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
-  await page.route("**/*", serve);
+  await page.route("**/*", (route) => serve(route, !!run.fixture));
   await page.addInitScript(pageHelpers);
-  await page.goto("http://yuzuno-motion.test/?preview=1");
+  if (run.fixture) await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
+  await page.goto(run.fixture ? "http://yuzuno-motion.test/" : "http://yuzuno-motion.test/?preview=1");
   await page.locator(".agent-row").first().waitFor();
   await page.waitForTimeout(400);
 
@@ -133,7 +154,8 @@ for (const run of runs) {
       ok(`${tag}: a Turn reached from the dock is tinted from the first frames (settle-tint)`, !!first && first.t <= 50 && first.animation === "settle-tint", first);
       ok(`${tag}: the tint is gone when it has played`, !frames.at(-1).settled, frames.at(-1));
     }
-  } else report.notShown.push(`${tag}: the preview conversation has no second turn-dock stop`);
+  } else report.notShown.push(`${tag}: the conversation has no second turn-dock stop`);
+  if (run.fixture) { await context.close(); continue; }
 
   // Home's Needs you, from the return overview (a smooth scroll): marked once it stops, kept until a press.
   const home = page.locator(".toolbar-nav .catchup-nav", { hasText: /^Home/ }).first();
@@ -180,6 +202,7 @@ if (process.env.BASELINE_REPORT) {
   for (const [where, after] of Object.entries(report.focus))
     ok(`focus unchanged by this batch: ${where}`, before[where] === after, { before: before[where], after });
 }
+ok("nothing was written to the synthetic Workspace", report.writes.length === 0, report.writes);
 report.passed = report.failures.length === 0 && report.errors.length === 0;
 await writeFile(join(output, "motion-1b3-check.json"), JSON.stringify(report, null, 2) + "\n");
 console.log(JSON.stringify({ mode: report.mode, passed: report.passed, checks: report.checks.length, failures: report.failures.length, errors: report.errors.length, notShown: report.notShown, focus: report.focus }));
