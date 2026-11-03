@@ -196,7 +196,7 @@ def check_web():
     command(["npm", "run", "typecheck"], WEB, env)
     command(["node", "node_modules/vite/bin/vite.js", "build", "--configLoader", "runner"], WEB, env)
     command(["node", "tools/create-preview.mjs"], WEB, env)
-    command(["node", "tools/ui.test.mjs"], WEB, env)
+    command(["node", "--expose-gc", "tools/ui.test.mjs"], WEB, env)
     save(LAB / "web-check.json", {
         "passedAt": now(), "snapshot": load(LAB / "web-snapshot.json")["createdAt"],
         "checks": ["typecheck", "vite build", "create-preview", "ui.test.mjs"],

@@ -51,12 +51,16 @@ async function sourceHash() {
   ];
   return digest(JSON.stringify(await hashes(web, paths)));
 }
-function run(script, args, dist) {
-  const result = spawnSync(process.execPath, [join(web, script), ...args], {
-    cwd: web,
-    stdio: "inherit",
-    env: { ...process.env, YUZUNO_UI_DIST: dist },
-  });
+function run(script, args, dist, flags = []) {
+  const result = spawnSync(
+    process.execPath,
+    [...flags, join(web, script), ...args],
+    {
+      cwd: web,
+      stdio: "inherit",
+      env: { ...process.env, YUZUNO_UI_DIST: dist },
+    },
+  );
   if (result.error) throw result.error;
   if (result.status !== 0)
     throw new Error(`${script} failed; daily UI was not changed.`);
@@ -72,7 +76,8 @@ async function stage() {
     dist,
   );
   run("tools/create-preview.mjs", [], dist);
-  run("tools/ui.test.mjs", [], dist);
+  // It collects garbage after each test, so it needs --expose-gc.
+  run("tools/ui.test.mjs", [], dist, ["--expose-gc"]);
   run("tools/projects-ui.test.mjs", [], dist);
   if (source !== (await sourceHash()))
     throw new Error(
