@@ -780,6 +780,8 @@ export function App() {
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
   useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
+  // A Turn's landing is the conversation's it was in: another Agent's, or none, ends it (T-19).
+  useEffect(() => () => turnSettled.current?.(), [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);

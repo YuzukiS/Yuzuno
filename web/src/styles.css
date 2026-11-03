@@ -833,6 +833,13 @@ p {
     background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 80%, transparent);
   }
 }
+/* Under reduced motion the tint does not fade: it is there, still, while the
+   landing is shown, and settle.ts takes it off after the settle's time. */
+@media (prefers-reduced-motion: reduce) {
+  [data-settle] {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 55%, transparent);
+  }
+}
 .turn:focus-visible {
   outline: 2px solid var(--focus, #789065);
   outline-offset: 4px;
