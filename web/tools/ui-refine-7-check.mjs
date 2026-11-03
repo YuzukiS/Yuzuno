@@ -1,6 +1,7 @@
 // UI refine 7 in a browser, on a production build with every API answered
-// here: Home spans the pane in columns with a widget column (Machines first),
-// arranged per device; the turn dock follows its Settings sliders.
+// here: Home spans the pane in one column, My widgets (Machines first) between
+// Needs you and the projects (T-9), organized per device; the turn dock follows
+// its Settings sliders.
 // Screenshots for review; no Core.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -114,25 +115,33 @@ try {
   await page.locator(".catchup-nav").first().click();
   await page.locator(".home-layout .home-machine:not([aria-busy])").waitFor();
 
-  // Wide: the pane's whole width, projects on the left, widgets on the right.
+  // Wide: the pane's whole width in one column (T-9, e22708c, which replaced the widget column on the
+  // right): Needs you, then My widgets with Machines first across its row, then the projects, as wide as
+  // each other.
   const pane = await box(".home-view");
   const needs = await box(".home-needs-area");
   const main = await box(".home-main");
   const widgets = await box(".home-widget-column");
   assert.ok(pane.width > 1000, `Home spans the pane: ${JSON.stringify(pane)}`);
-  assert.ok(widgets.left >= main.right && widgets.left >= needs.right, `widgets beside: ${JSON.stringify({ needs, main, widgets })}`);
-  assert.ok(Math.abs(widgets.top - needs.top) <= 2, "the widget column starts level with Needs you");
-  // Its heading too: no padding from the panels' own .home-widgets rules.
+  assert.ok(widgets.top >= needs.bottom && main.top >= widgets.bottom, `one column, in order: ${JSON.stringify({ needs, widgets, main })}`);
+  assert.ok([widgets, main].every((b) => Math.abs(b.left - needs.left) <= 1 && Math.abs(b.width - needs.width) <= 1),
+    `each as wide as the others: ${JSON.stringify({ needs, widgets, main })}`);
+  assert.ok(needs.width >= pane.width - 100, `as wide as the pane allows: ${JSON.stringify({ pane, needs })}`);
+  // Its heading at its top: no padding from the panels' own .home-widgets rules.
   const head = await box(".home-widget-column-head");
-  assert.ok(Math.abs(head.top - needs.top) <= 2, `the column heading is level with Needs you: ${JSON.stringify({ head, needs })}`);
-  assert.ok(widgets.width >= 300 && widgets.width <= 400, `widget column width ${widgets.width}`);
-  assert.equal(await page.locator('.home-widget-column [data-widget="machines"] .home-machines').count(), 1);
+  assert.ok(Math.abs(head.top - widgets.top) <= 2, `the widgets' heading at their top: ${JSON.stringify({ head, widgets })}`);
+  const machines = page.locator('.home-widget-column [data-widget="machines"]');
+  assert.equal(await machines.locator(".home-machines").count(), 1);
+  const first = await page.locator(".home-widget-column [data-widget]").first().getAttribute("data-widget");
+  assert.equal(first, "machines", "Machines first");
+  const row = await box('.home-widget-column [data-widget="machines"]');
+  assert.ok(Math.abs(row.left - widgets.left) <= 2 && Math.abs(row.width - widgets.width) <= 2, `Machines across its row: ${JSON.stringify({ row, widgets })}`);
   await shot("home-1440.png");
   await page.setViewportSize({ width: 1920, height: 1000 });
   await page.waitForTimeout(150);
   assert.ok((await box(".home-view")).width > 1400, "still the whole pane when wider");
   await shot("home-1920.png");
-  check("wide Home spans the pane: Needs you and projects on the left, a 300–400 px widget column with Machines on the right", { pane, widgets });
+  check("wide Home spans the pane in one column: Needs you, My widgets with Machines first across its row, then the projects, as wide as each other", { pane, needs, widgets, main });
 
   // Narrow pane: one column, the widgets between Needs you and the projects.
   await page.setViewportSize({ width: 820, height: 1000 });
@@ -148,22 +157,25 @@ try {
   await page.setViewportSize({ width: 1440, height: 900 });
   check("a narrow pane stacks Needs you, the widgets, then the projects, with no sideways scroll at 820 and 390 px");
 
-  // Arranging: hide and show Machines again; the choice is kept on the device.
+  // Organizing, in its own dialog (T-9): hide Machines and show it again; the choice is kept on the device.
   const column = page.locator(".home-widget-column");
-  await column.getByRole("button", { name: "Arrange" }).click();
+  await column.locator(".home-widget-organize").click();
+  const organize = page.getByRole("dialog");
+  await organize.waitFor();
   await shot("home-arrange.png");
-  await column.getByRole("button", { name: "Hide Machines" }).click();
+  await organize.getByRole("button", { name: "Hide Machines" }).click();
   await page.locator(".home-widget-column .home-machines").waitFor({ state: "detached" });
   await shot("home-widget-hidden.png");
-  await column.locator(".home-widget-column-add").getByRole("button", { name: "Machines" }).click();
+  await organize.getByRole("button", { name: "Show Machines" }).click();
   await page.locator(".home-widget-column .home-machines").waitFor();
-  await column.getByRole("button", { name: "Done" }).click();
+  await page.keyboard.press("Escape");
+  await organize.waitFor({ state: "detached" });
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("yuzuno.homeWidgets.ws-7"))), { order: ["machines"], hidden: [], pins: [] });
   await column.getByRole("button", { name: "Manage" }).click();
   await page.getByRole("dialog").getByText("Where your agents run", { exact: false }).waitFor();
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "detached" });
-  check("widgets are arranged in place: Machines hides, comes back, and Manage opens the Machines page");
+  check("widgets are organized in their dialog: Machines hides, comes back, the choice is kept, and Manage opens the Machines page");
 
   // The turn dock follows its Settings.
   await page.getByRole("button", { name: "Open Mori", exact: true }).click();

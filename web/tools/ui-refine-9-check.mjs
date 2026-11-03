@@ -24,7 +24,7 @@ assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/ui-refine-9-browser");
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-ui-refine-9.test";
-const report = { checks: [], failures: [], errors: [], mutations: [], unexpected: [] };
+const report = { checks: [], failures: [], errors: [], mutations: [], unexpected: [], agentReads: [] };
 let page;
 async function step(name, run) {
   try {
@@ -217,6 +217,17 @@ async function open({ theme = "dark", width = 1440, height = 900, motion = "redu
     const path = url.pathname;
     if (method === "POST" && path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
+    // An open conversation's reads, answered as Core answers an Agent with none, counted apart from this
+    // check's writes: its reading place (reading-handoff-api.ts), its inputs (useConversationInputs.ts) and,
+    // for a connected Codex Agent, its MCP services as Codex last reported them (CodexMcpStatus.tsx).
+    const own = path.match(/^\/api\/agents\/([\w-]+)\/(reading|conversation\/inputs|codex\/mcp)$/);
+    if (own && agents.some((a) => a.id === own[1])) {
+      report.agentReads.push(`${method} ${path}`);
+      if (own[2] === "reading" && (method === "GET" || method === "PUT"))
+        return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: 1, accepted: true } : { handoff: null, sourceSeq: 0 } });
+      if (own[2] === "conversation/inputs" && method === "GET") return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
+      if (own[2] === "codex/mcp" && method === "GET") return route.fulfill({ json: { state: "observed", reason: "", generation: 1, servers: [], more: 0 } });
+    }
     if (method !== "GET") {
       report.mutations.push({ method, path });
       if (method === "POST" && /^\/api\/agents\/[^/]+\/review$/.test(path)) return route.fulfill({ json: {} });
@@ -608,15 +619,29 @@ try {
       await page.getByRole("button", { name: "Settings and updates", exact: true }).click();
       const settings = page.locator(".modal.settings-modal");
       await settings.waitFor();
-      assert.deepEqual(await settings.locator(".settings-nav [role=tab]").allInnerTexts(), ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"]);
-      const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
-      await desktop.waitFor();
-      assert.match(await desktop.textContent(), /updated separately/);
-      assert.equal(await desktop.locator("button").count(), 0, "no desktop buttons in a browser");
-      await desktop.scrollIntoViewIfNeeded();
-      await shot(settings, `settings-updates-${theme}.png`);
-      await page.keyboard.press("Escape");
-      await settings.waitFor({ state: "detached" });
+      try {
+        // The eight categories in order, each tab named in full for assistive technology; beside its icon each
+        // shows a short name, hidden from it (T-187: the narrow icon sidebar).
+        const full = ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"];
+        const tabs = settings.getByRole("tab");
+        assert.equal(await tabs.count(), full.length);
+        for (const [index, name] of full.entries())
+          assert.equal(await tabs.nth(index).getAttribute("id"), await settings.getByRole("tab", { name, exact: true }).getAttribute("id"), `tab ${index + 1} is "${name}"`);
+        assert.deepEqual(await settings.locator(".settings-nav [role=tab] .settings-nav-label").allInnerTexts(),
+          ["Appearance", "Notifications", "Agents", "Connections", "Projects", "Jobs", "Data", "Updates"]);
+        const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
+        await desktop.waitFor();
+        assert.match(await desktop.textContent(), /updated separately/);
+        assert.equal(await desktop.locator("button").count(), 0, "no desktop buttons in a browser");
+        await desktop.scrollIntoViewIfNeeded();
+        await shot(settings, `settings-updates-${theme}.png`);
+      } finally {
+        // Closed whatever was found, so no step after this one opens under it.
+        if (await settings.count()) {
+          await page.keyboard.press("Escape");
+          await settings.waitFor({ state: "detached" });
+        }
+      }
     });
 
     await step(`${theme}: the Machines page shows its agents as small tiles, several to a row`, async () => {
