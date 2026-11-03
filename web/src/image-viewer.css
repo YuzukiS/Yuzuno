@@ -1,13 +1,17 @@
 /* The image viewer (T-20): a bar of controls above the stage the image is
    zoomed and moved in, so they never cover it. The dialog takes the
-   window's height, and the stage all the room the heading and bar leave. */
+   window's height, and the stage all the room the heading and bar leave.
+   Where a window is too short even for the stage's least height, the dialog
+   scrolls, so the stage is never cut off: it can always be brought whole
+   into view, and the viewer measures the stage as it is shown. */
 .modal.image-viewer-modal {
   width: min(1180px, calc(var(--safe-vw) - 32px));
   height: calc(var(--safe-dvh) - 32px);
   max-height: none;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
 }
 /* The image's meaning first: its caption, then its file, size and time. */
 .image-viewer-modal .modal-heading h2 {
@@ -21,22 +25,25 @@
   color: var(--text-secondary, #5d6656);
   overflow-wrap: anywhere;
 }
+/* They grow into the room left, and never shrink below the bar and the
+   stage's least height: past that, the dialog scrolls instead. */
 .image-viewer-modal > .image-viewer,
 .image-viewer-modal > .artifact-content {
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 auto;
 }
 .image-viewer-modal > .artifact-content {
   display: flex;
   max-height: none;
-  overflow: hidden;
+  overflow: visible;
+  margin-top: 14px;
+  padding-top: 0;
+  border-top: 0;
 }
 .image-viewer {
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: 100%;
-  min-height: 0;
   margin-top: 14px;
 }
 .artifact-content > .image-viewer {
@@ -169,7 +176,7 @@
 .image-viewer-stage {
   position: relative;
   flex: 1;
-  min-height: 200px;
+  min-height: 140px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -286,6 +293,25 @@
   }
   .image-viewer-track[data-axis="x"] {
     height: 10px;
+  }
+}
+/* A short window (a phone held sideways, a small laptop window): less
+   around the stage, so it keeps as much of the height as it can. */
+@media (max-height: 520px) {
+  .modal.image-viewer-modal {
+    height: calc(var(--safe-dvh) - 16px);
+    padding: 12px 16px;
+  }
+  .image-viewer-modal .modal-heading p {
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .image-viewer,
+  .image-viewer-modal > .artifact-content {
+    margin-top: 8px;
+  }
+  .image-viewer {
+    gap: 6px;
   }
 }
 /* A phone: the whole screen for the image, the bar in one row. The views

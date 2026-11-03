@@ -100,6 +100,8 @@ const images = {
   "receipt-strip.png": png(200, 40000, (y) => solid(200, y < 120 ? [88, 117, 82] : y >= 39880 ? [196, 64, 60] : [250, 250, 246])),
   "photo.png": png(1600, 1000, (y) => solid(1600, [Math.round(120 + (y / 1000) * 80), 150, 170])),
 };
+// The same screenshot under a long caption, for a short window with large text.
+images["settings-note.png"] = images["settings-long.png"];
 const messageImage = `${"c".repeat(64)}.png`;
 
 // ---- the Workspace this page sees ------------------------------------------------
@@ -117,7 +119,8 @@ const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }
 const node = (type, props, children) => (children ? { type, props, children } : { type, props });
 const spec = (top, elements) => ({ root: "body", elements: { body: node("BriefBody", {}, top), ...elements } });
 const snapshot = (name) => ({ name, kind: "image", mime: "image/png", size: images[name]?.length ?? 1000, snapshot: true, mayChange: false, takenAt: taken });
-const captions = { "settings-long.png": "Settings, scrolled to the end", "dashboard-wide.png": "Dashboard", "icon.png": "Icon", "photo.png": "Desk photo", "receipt-strip.png": "Receipt strip", "gone.png": "Old capture" };
+const captions = { "settings-long.png": "Settings, scrolled to the end", "dashboard-wide.png": "Dashboard", "icon.png": "Icon", "photo.png": "Desk photo", "receipt-strip.png": "Receipt strip",
+  "settings-note.png": "Settings after the spacing fix, scrolled from the account section down past notifications, privacy and storage to the very last row, to compare each group's spacing with the design", "gone.png": "Old capture" };
 const sections = [{
   id: 11, key: "shots", kind: "report", title: "Settings screens", version: 3, owner: { agentId: "b", name: "Hana", state: "active" },
   updatedAt: ago(5), updatedTurnId: "t1", refs: {}, seen: null, history: false,
@@ -234,60 +237,65 @@ const windows = [
   { name: "dark", width: 1200, height: 900, theme: "dark", touch: false },
   { name: "phone", width: 390, height: 844, theme: "light", touch: true },
 ];
+/** A page on the production build with every API answered here, as `viewport` sees it. */
+async function openPage(viewport) {
+  const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, hasTouch: viewport.touch, isMobile: viewport.touch, reducedMotion: "reduce" });
+  const page = await context.newPage();
+  await page.addInitScript(({ theme, fontSize }) => {
+    window.EventSource = class { close() {} };
+    localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize, palette: "garden" }));
+    // What the window saw of each wheel: whether something took it first.
+    window.wheels = [];
+    addEventListener("wheel", (event) => wheels.push({ prevented: event.defaultPrevented, ctrl: event.ctrlKey }), { passive: true });
+  }, { theme: viewport.theme ?? "light", fontSize: viewport.fontSize ?? 16 });
+  page.on("pageerror", (error) => report.errors.push(`${viewport.name}: ${error.message}`));
+  const writes = () => report.writes.filter((w) => w.viewport === viewport.name);
+  await page.route("**/*", async (route) => {
+    const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
+    assert.equal(url.hostname, "yuzuno-image-viewer.test");
+    if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+    if (method !== "GET") {
+      report.writes.push({ viewport: viewport.name, method, path });
+      return route.fulfill({ json: {} });
+    }
+    const attachment = /^\/api\/projects\/p1\/brief\/attachments\/shots\/([^/]+)$/.exec(path);
+    if (attachment) {
+      const name = decodeURIComponent(attachment[1]);
+      report.imageReads.push(`${viewport.name} home ${name}?version=${url.searchParams.get("version")}`);
+      return images[name] ? route.fulfill({ body: images[name], contentType: "image/png" }) : route.fulfill({ status: 404, json: { error: "This snapshot is no longer kept." } });
+    }
+    if (path === `/api/agents/a/images/${messageImage}`) {
+      report.imageReads.push(`${viewport.name} message${url.search}`);
+      return route.fulfill({ body: url.searchParams.get("thumb") ? images["icon.png"] : images["settings-long.png"], contentType: "image/png" });
+    }
+    if (path === "/api/artifact") {
+      report.imageReads.push(`${viewport.name} file ${url.searchParams.get("agentId")}:${url.searchParams.get("path")}`);
+      return route.fulfill({ body: images["settings-long.png"], contentType: "image/png" });
+    }
+    const json = {
+      "/api/workspace": { workspace: { id: "ws-image-viewer" }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
+      "/api/agents/a": conversation, "/api/agents/b": { agent: agents[1], pending: [], messageReceipts: [], artifacts: [], turns: [] },
+      "/api/home": home, "/api/machine-load": machineLoad, "/api/agents/a/reading": { handoff: null }, "/api/agents/b/reading": { handoff: null },
+      "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
+      "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+    }[path];
+    if (json) return route.fulfill({ json });
+    if (path.startsWith("/api/")) {
+      report.unexpected.push(path);
+      return route.fulfill({ json: {} });
+    }
+    const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
+    assert.ok(file.startsWith(dist + "/"));
+    await route.fulfill({ body: await readFile(file), contentType: { ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+      ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png" }[extname(file)] });
+  });
+  await page.goto("http://yuzuno-image-viewer.test/");
+  return { context, page, writes };
+}
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 try {
   for (const viewport of windows) {
-    const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, hasTouch: viewport.touch, isMobile: viewport.touch, reducedMotion: "reduce" });
-    const page = await context.newPage();
-    await page.addInitScript((theme) => {
-      window.EventSource = class { close() {} };
-      localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette: "garden" }));
-      // What the window saw of each wheel: whether something took it first.
-      window.wheels = [];
-      addEventListener("wheel", (event) => wheels.push({ prevented: event.defaultPrevented, ctrl: event.ctrlKey }), { passive: true });
-    }, viewport.theme);
-    page.on("pageerror", (error) => report.errors.push(`${viewport.name}: ${error.message}`));
-    const writes = () => report.writes.filter((w) => w.viewport === viewport.name);
-    await page.route("**/*", async (route) => {
-      const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
-      assert.equal(url.hostname, "yuzuno-image-viewer.test");
-      if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
-      if (method !== "GET") {
-        report.writes.push({ viewport: viewport.name, method, path });
-        return route.fulfill({ json: {} });
-      }
-      const attachment = /^\/api\/projects\/p1\/brief\/attachments\/shots\/([^/]+)$/.exec(path);
-      if (attachment) {
-        const name = decodeURIComponent(attachment[1]);
-        report.imageReads.push(`${viewport.name} home ${name}?version=${url.searchParams.get("version")}`);
-        return images[name] ? route.fulfill({ body: images[name], contentType: "image/png" }) : route.fulfill({ status: 404, json: { error: "This snapshot is no longer kept." } });
-      }
-      if (path === `/api/agents/a/images/${messageImage}`) {
-        report.imageReads.push(`${viewport.name} message${url.search}`);
-        return route.fulfill({ body: url.searchParams.get("thumb") ? images["icon.png"] : images["settings-long.png"], contentType: "image/png" });
-      }
-      if (path === "/api/artifact") {
-        report.imageReads.push(`${viewport.name} file ${url.searchParams.get("agentId")}:${url.searchParams.get("path")}`);
-        return route.fulfill({ body: images["settings-long.png"], contentType: "image/png" });
-      }
-      const json = {
-        "/api/workspace": { workspace: { id: "ws-image-viewer" }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
-        "/api/agents/a": conversation, "/api/agents/b": { agent: agents[1], pending: [], messageReceipts: [], artifacts: [], turns: [] },
-        "/api/home": home, "/api/machine-load": machineLoad, "/api/agents/a/reading": { handoff: null }, "/api/agents/b/reading": { handoff: null },
-        "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
-        "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
-      }[path];
-      if (json) return route.fulfill({ json });
-      if (path.startsWith("/api/")) {
-        report.unexpected.push(path);
-        return route.fulfill({ json: {} });
-      }
-      const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
-      assert.ok(file.startsWith(dist + "/"));
-      await route.fulfill({ body: await readFile(file), contentType: { ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
-        ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png" }[extname(file)] });
-    });
-    await page.goto("http://yuzuno-image-viewer.test/");
+    const { context, page, writes } = await openPage(viewport);
     await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click();
     const dialog = page.getByRole("dialog");
     const shot = async (name) => {
@@ -609,6 +617,100 @@ try {
     assert.deepEqual(writes().map((w) => w.path), [], `${viewport.name}: looking wrote nothing`);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     assert.ok(overflow <= 0, `${viewport.name}: no sideways scroll (${overflow})`);
+    await context.close();
+  }
+
+  // ---- short windows (R2): the stage is never cut off ----
+  // A phone held sideways, a small window, and that with large text and a long caption: the stage takes the height
+  // that is left, and where even its least height does not fit, the dialog scrolls instead of cutting it off. Either
+  // way the whole stage can be brought into view, End shows the image's last row there, and both position bars, the
+  // close button and the zoom controls can be reached. The same after the window changes size while open.
+  const visible = (page) => page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    const stage = dialog.querySelector(".image-viewer-stage");
+    // As a person scrolls the dialog to the image.
+    stage.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const box = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height }; };
+    const d = box(dialog);
+    const view = { top: Math.max(0, d.top), bottom: Math.min(innerHeight, d.bottom) };
+    const inView = (r) => r.top >= view.top - 0.5 && r.bottom <= view.bottom + 0.5 && r.left >= -0.5 && r.right <= innerWidth + 0.5;
+    const tracks = [...stage.querySelectorAll(".image-viewer-track")].map((t) => ({ axis: t.dataset.axis, inView: inView(box(t)) }));
+    return { scrolls: dialog.scrollHeight > dialog.clientHeight + 1, stage: box(stage), stageInView: inView(box(stage)), tracks, window: [innerWidth, innerHeight] };
+  });
+  const reachable = (page, selector) => page.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    el.scrollIntoView({ block: "nearest" });
+    const r = el.getBoundingClientRect();
+    return r.top >= -0.5 && r.bottom <= innerHeight + 0.5 && r.height > 0;
+  }, selector);
+  report.short = {};
+  for (const viewport of [
+    { name: "sideways", width: 844, height: 390, touch: true },
+    { name: "short", width: 740, height: 300, touch: false },
+    { name: "short-large", width: 740, height: 300, touch: false, fontSize: 22 },
+  ]) {
+    const { context, page } = await openPage(viewport);
+    const dialog = page.getByRole("dialog");
+    /** The opened viewer, checked in this short window. */
+    const checkShort = async (what) => {
+      let v = await visible(page);
+      assert.ok(v.stage.height >= 100, `${viewport.name} ${what}: the stage is not squeezed away (${v.stage.height})`);
+      assert.ok(v.stageInView, `${viewport.name} ${what}: the whole stage can be brought into view: ${JSON.stringify(v)}`);
+      // End: the last row at the stage's bottom, which is in view.
+      await page.locator('[role="dialog"] .image-viewer-stage').focus();
+      await page.keyboard.press("End");
+      let s = await settled(page);
+      close(s.image.top + s.image.height, s.stage.top + s.stage.height, 1, `${viewport.name} ${what}: End shows the last row`);
+      v = await visible(page);
+      assert.ok(v.stageInView && v.stage.bottom <= v.window[1] + 0.5, `${viewport.name} ${what}: the last row is on screen`);
+      // At actual size it overflows both ways: both bars in view, and a thumb dragged to its end reaches the image's edge.
+      await page.keyboard.press("1");
+      await settled(page);
+      v = await visible(page);
+      assert.deepEqual(v.tracks.map((t) => t.axis).sort(), ["x", "y"], `${viewport.name} ${what}: both bars`);
+      assert.ok(v.tracks.every((t) => t.inView), `${viewport.name} ${what}: both bars in view: ${JSON.stringify(v.tracks)}`);
+      await dragThumb(page, "y", "end");
+      await dragThumb(page, "x", "end");
+      // The close button and the zoom controls can be reached too.
+      assert.ok(await reachable(page, '[role="dialog"] .modal-heading button'), `${viewport.name} ${what}: Close`);
+      assert.ok(await reachable(page, '[role="dialog"] .image-viewer-zoom button:last-child'), `${viewport.name} ${what}: zoom in`);
+      report.short[`${viewport.name} ${what}`] = { dialogScrolls: v.scrolls, stageHeight: Math.round(v.stage.height), window: v.window };
+      return v;
+    };
+    // A conversation's image.
+    await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click();
+    await page.locator(".user-message .input-image-open").first().click();
+    await opened(page);
+    await checkShort("conversation image");
+    await page.screenshot({ path: resolve(output, `${viewport.name}-message-end.png`) });
+    report.screenshots.push(`${viewport.name}-message-end.png`);
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    // An Agent's image file.
+    await page.getByRole("link", { name: "the long capture" }).click();
+    await opened(page, "/api/artifact");
+    await checkShort("Agent file");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    // A Home image under a long caption (with large text here, the dialog may scroll).
+    await page.locator(".toolbar-nav .catchup-nav").first().click();
+    const card = page.locator('.home-section[data-section-key="shots"]');
+    await card.waitFor();
+    const showAll = card.locator("button.brief-attachments-more");
+    if ((await showAll.count()) && (await showAll.getAttribute("aria-expanded")) === "false") await showAll.click();
+    await card.locator('button.brief-image[aria-label="Open image settings-note.png"]').click();
+    await opened(page, "/attachments/shots/settings-note.png?");
+    await checkShort("Home image, long caption");
+    await page.screenshot({ path: resolve(output, `${viewport.name}-home-note-end.png`) });
+    report.screenshots.push(`${viewport.name}-home-note-end.png`);
+    // Still so after the window changes size while open, as a keyboard showing or a rotation does.
+    await page.setViewportSize({ width: viewport.width - 60, height: viewport.height - 40 });
+    await settled(page);
+    await checkShort("Home image, after a resize");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    check(`${viewport.name} ${viewport.width}×${viewport.height}${viewport.fontSize ? ` (text ${viewport.fontSize})` : ""}: a conversation image, an Agent file and a long-captioned Home image (and after a resize) each show their whole stage; End shows the last row; both bars, Close and zoom are reachable`,
+      { cases: Object.fromEntries(Object.entries(report.short).filter(([key]) => key.startsWith(`${viewport.name} `))) });
     await context.close();
   }
 } finally {
