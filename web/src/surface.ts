@@ -22,7 +22,8 @@ function tokenMs(name: string): number {
  * turns on; turning either back does not play it again.
  *
  * `from`, a transform such as "translateX(8px)", also moves the surface in
- * from there (T-19 M8, a phone's push and pop); without it, only opacity.
+ * from there (T-19 M8, a phone's push and pop; M7, a side panel shown again);
+ * without it, only opacity.
  */
 export function useSurfaceIn(
   ref: RefObject<HTMLElement | null>,

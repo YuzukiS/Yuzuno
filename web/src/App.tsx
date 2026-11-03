@@ -747,6 +747,33 @@ export function App() {
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
+  // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
+  // the left on a desktop window, the context panel from the right. Its column changes at once,
+  // as before, and hiding stays instant. Counted where the setting turns on, not where a panel
+  // mounts: arriving at a conversation, or a window turning into a phone's, plays none.
+  const panelOpens = useRef({ rail: railOpen, inspector, phoneInspector, rails: 0, inspectors: 0 });
+  if (panelOpens.current.rail !== railOpen || panelOpens.current.inspector !== inspector || panelOpens.current.phoneInspector !== phoneInspector) {
+    const was = panelOpens.current;
+    panelOpens.current = {
+      rail: railOpen,
+      inspector,
+      phoneInspector,
+      rails: was.rails + (railOpen && !was.rail ? 1 : 0),
+      inspectors: was.inspectors + ((inspector && !was.inspector) || (phoneInspector && !was.phoneInspector) ? 1 : 0),
+    };
+  }
+  const inspectorBox = useRef<HTMLElement>(null);
+  const inspectorTitle = useRef<HTMLSpanElement>(null);
+  useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && panelOpens.current.rails > 0, "translateX(-8px)");
+  useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // On a phone the context panel is a screen of its own: opening it takes focus to its heading
+  // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
+  useEffect(() => {
+    if (phone && phoneInspector && inspectorShown && !inspectorBox.current?.contains(document.activeElement))
+      inspectorTitle.current?.focus({ preventScroll: true });
+    // Only an opening moves focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelOpens.current.inspectors]);
   // An open dock panel closes when something covers the conversation (the
   // Agent list, or the context panel a job opens) or the window widens.
   useEffect(() => {
@@ -3570,11 +3597,11 @@ export function App() {
       </ClarificationHost.Provider>
 
       {inspectorShown && (
-        <aside className="inspector" id="context-panel" lang={langTag(language)}>
+        <aside className="inspector" id="context-panel" ref={inspectorBox} lang={langTag(language)}>
           <PanelResizeHandle side="inspector" size={panelWidths.inspector} />
           <div className="inspector-content">
             <div className="inspector-heading">
-              <span>{shell.atGlance}</span>
+              <span ref={inspectorTitle} tabIndex={-1}>{shell.atGlance}</span>
               <button
                 className="icon-button"
                 aria-label={shell.closePanel}
