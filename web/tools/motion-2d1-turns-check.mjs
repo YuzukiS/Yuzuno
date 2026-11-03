@@ -6,8 +6,10 @@
 // listed when the conversation first shows; for a message this window showed as a preview (Codex) or
 // sending in its Turn (Claude), when it is confirmed; for a Turn a Core reset brings (also right after
 // an announcement, before the read); for an earlier Turn added in front, as an earlier page adds it; in
-// a new native session; after a return from another Agent; or when a Turn is drawn again after being
-// scrolled away. Two messages with the same words and different IDs are two messages. Under reduced
+// a new native session; after a return from another Agent (also straight back, before the other was
+// read); for a Turn made while the stream was down, whether Core replays it when the stream resumes
+// or resets it (Lead 3299, 3301); or when a Turn is drawn again after being scrolled away. A Turn
+// streamed after each recovery fades again. Two messages with the same words and different IDs are two messages. Under reduced
 // motion nothing plays, and reduced motion turned on while a Turn fades stops the fade. Writes: only
 // the app's own saves of where an Agent was read; anything else is refused and counted. Chromium is
 // not Safari.
@@ -52,6 +54,8 @@ let agents, state;
 // /__check/release right before the event, so a read already on its way cannot see one early.
 let staged = [];
 const stage = (change) => staged.push(change);
+// While set, Hana's detail is answered this late: a return to Mori comes before it is read.
+let holdHana = 0;
 const detailOf = (index, id) => ({ agent: agents[index], pending: [], artifacts: [], turns: state[id].turns, messageReceipts: state[id].receipts });
 const gets = () => ({
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs/live": noLiveJobs, "/api/jobs": noJobs,
@@ -80,6 +84,7 @@ async function serve(route) {
       report.writes.push(`${request.method()} ${url.pathname}`);
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
+    if (holdHana && url.pathname === "/api/agents/b") await new Promise((done) => setTimeout(done, holdHana));
     const known = gets()[url.pathname];
     if (known === undefined && !report.unknownGets.includes(url.pathname)) report.unknownGets.push(url.pathname);
     // An Agent's other reads (Claude's runtime and tools among them) are not in this fixture.
@@ -133,6 +138,25 @@ function pageHelpers() {
   // Core cannot resume the stream: everything is read again.
   window.__reset = after({ type: "reset", reason: "check" });
   window.__announceThenReset = after((agentId) => ({ type: "agent.changed", agentId }), { type: "reset", reason: "check" });
+  // A short break, as the browser's own reconnect has it: the same stream errs, opens again 300 ms
+  // later, before any poll could, and says what Core says then. What was staged changed meanwhile.
+  const reconnect = (...events) => async (agentId) => {
+    const stream = streams.findLast((s) => s.readyState === 1);
+    if (!stream) throw new Error("no open stream");
+    stream.readyState = 0;
+    stream.onerror?.({});
+    await new Promise((done) => setTimeout(done, 300));
+    await fetch("/__check/release");
+    stream.readyState = 1;
+    stream.onopen?.({});
+    for (const event of events)
+      stream.onmessage?.({ data: JSON.stringify(typeof event === "function" ? event(agentId) : event), lastEventId: String(++id) });
+  };
+  // Core resumes from the last ID and replays what was missed: here, an Item of the new Turn.
+  window.__resumeReplay = reconnect({ type: "resumed" },
+    (agentId) => ({ type: "agent.item", agentId, rev: ++rev, turnId: window.__streamTurn, item: window.__streamItem }));
+  // Core cannot resume: everything is read again.
+  window.__resetReplay = reconnect({ type: "reset", reason: "check" });
   const plays = (el) => el.getAnimations().map((a) => {
     const frames = a.effect?.getKeyframes?.() ?? [];
     return { keys: frames.map((k) => Object.keys(k).filter((p) => !["offset", "easing", "composite", "computedOffset"].includes(p)).sort().join("+")).join("/"),
@@ -333,6 +357,38 @@ for (const run of runs) {
     const back = await page.evaluate(() => window.__sample(400));
     ok(`${tag}: to another Agent and back, every Turn shows with nothing playing (${(await calls()) - leave} calls)`,
       (await calls()) === leave && still(back), Object.keys(back[0]?.turns ?? {}).length);
+
+    // A short break (Lead 3299): a Turn Core replays as the stream resumes, or one its reset brings,
+    // only shows; a Turn streamed after that recovery fades in again.
+    const nextItem = async (turnId, text) => page.evaluate(([turnId, text]) => {
+      window.__streamTurn = turnId;
+      window.__streamItem = { id: `${turnId}-u`, type: "userMessage", content: [{ type: "text", text }] };
+    }, [turnId, text]);
+    const made = (turnId, text) => add("a", turn(turnId, [user(`${turnId}-u`, text), answer(`${turnId}-r`, "Seen.")]));
+    await nextItem("replayed-1", "Sent while the stream was down");
+    onlyShows("after a short break, the stream resumes and Core replays an Item of a Turn made meanwhile",
+      await bring("a", "replayed-1", made("replayed-1", "Sent while the stream was down"), "__resumeReplay", 1300));
+    onlyShows("after a short break, Core resets the stream instead: the Turn made meanwhile",
+      await bring("a", "reset-1", made("reset-1", "Also meanwhile"), "__resetReplay", 1500));
+    await nextItem("live-after", "After the break");
+    fades("after that recovery, a Turn Core streams", await bring("a", "live-after", made("live-after", "After the break"), "__stream"));
+
+    // To another Agent and straight back, before that one is read: Mori's next detail is a new
+    // baseline, whatever was announced for it before (Lead 3301).
+    await page.evaluate(() => window.__sample(400, "__announce", "a"));
+    stage(made("quick-1", "Made while away"));
+    await page.evaluate(() => fetch("/__check/release"));
+    const quickMark = await calls();
+    holdHana = 1500;
+    await open("Hana");
+    await open("Mori");
+    await page.locator('.turn[data-turn-id="quick-1"]').waitFor();
+    const quick = await page.evaluate(() => window.__sample(600));
+    holdHana = 0;
+    ok(`${tag}: to another Agent and straight back before it was read, a Turn made meanwhile shows with nothing playing (${(await calls()) - quickMark} calls)`,
+      (await calls()) === quickMark && quick.every((f) => f.turns["quick-1"]) && still(quick), quick[0]?.turns["quick-1"]);
+    await nextItem("live-quick", "After the return");
+    fades("after that quick return, a Turn Core streams", await bring("a", "live-quick", made("live-quick", "After the return"), "__stream"));
 
     if (!reduced) {
       // A Turn with controls in it, held at 60 ms: they take the pointer where they will stay, and nothing moves.
