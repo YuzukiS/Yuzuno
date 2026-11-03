@@ -20,12 +20,16 @@ function tokenMs(name: string): number {
  * Only a newer `key` starts a fade. A fade under way stops at once, the
  * surface fully shown, when `enabled` turns off (a phone) or reduced motion
  * turns on; turning either back does not play it again.
+ *
+ * `from`, a transform such as "translateX(8px)", also moves the surface in
+ * from there (T-19 M8, a phone's push and pop); without it, only opacity.
  */
 export function useSurfaceIn(
   ref: RefObject<HTMLElement | null>,
   key: unknown,
-  duration: "small" | "medium",
+  duration: "micro" | "small" | "medium",
   enabled = true,
+  from = "",
 ) {
   const fade = useRef<Animation | null>(null);
   useLayoutEffect(() => {
@@ -35,13 +39,16 @@ export function useSurfaceIn(
     const ms = tokenMs(`--motion-${duration}`);
     if (!ms) return;
     const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
-    const played = element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing });
+    const frames: Keyframe[] = from
+      ? [{ opacity: 0, transform: from }, { opacity: 1, transform: "none" }]
+      : [{ opacity: 0 }, { opacity: 1 }];
+    const played = element.animate(frames, { duration: ms, easing });
     fade.current = played;
     return () => {
       played.cancel();
       if (fade.current === played) fade.current = null;
     };
-    // `ref` is stable; `duration` and `enabled` only say how the next one plays.
+    // `ref` is stable; `duration`, `enabled` and `from` only say how the next one plays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   useLayoutEffect(() => {

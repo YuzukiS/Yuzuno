@@ -6915,3 +6915,36 @@ test("Codex's proposed plan shows as sanitized Markdown, open, and acts on nothi
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
+
+test("the decision on its way shows the spinner the answer form has, on its own button only (T-19 CV:Q-02)", async () => {
+  let release = null;
+  const page = await mount({
+    status: "waiting",
+    pending: [{ id: "decide", agentId: "a", method: "item/commandExecution/requestApproval", createdAt: "",
+      params: { command: "bounded task", availableDecisions: ["accept", "acceptForSession", "decline", "cancel"] } }],
+    beforeLoad: (window) => {
+      const fetch = window.fetch;
+      window.fetch = (url, init) => url.includes("/respond")
+        ? new Promise((resolve) => { release = () => resolve(fetch(url, init)); })
+        : fetch(url, init);
+    },
+  });
+  try {
+    const spinning = () => [...page.document.querySelectorAll(".pending-card button")].filter((b) => b.querySelector(".spin")).map((b) => b.textContent.trim());
+    assert.deepEqual(spinning(), []);
+    button(page, "Decline").click();
+    await pause();
+    assert.equal(typeof release, "function", "the decision was sent");
+    assert.deepEqual(spinning(), ["Decline"], "only the decision on its way spins");
+    assert.equal(button(page, "Decline").getAttribute("aria-busy"), "true");
+    assert.equal(button(page, "Allow once").getAttribute("aria-busy"), null);
+    assert.equal(button(page, "Allow once").disabled, true);
+    release();
+    await pause();
+    await pause();
+    assert.deepEqual(spinning(), []);
+    assert.equal(page.calls.filter((c) => c.url.includes("/respond")).length, 1);
+  } finally {
+    page.close();
+  }
+});

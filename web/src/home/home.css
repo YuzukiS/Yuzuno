@@ -1205,7 +1205,8 @@ ul.home-widget {
 [data-home-highlight] {
   outline: 2px solid var(--home-focus);
   outline-offset: 3px;
-  animation: home-highlight 2.4s ease-out;
+  /* Once the jump has landed (Home.tsx), over settle (T-19); the outline stays until the next press. */
+  animation: home-highlight var(--motion-settle) ease-out;
 }
 @keyframes home-highlight {
   from {
