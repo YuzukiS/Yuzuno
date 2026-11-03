@@ -152,6 +152,9 @@ const deck = () => [
     "The deck adds a column as the pane widens and stacks on a phone.",
     { shot: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Loss by subset" }] } } },
     { lead: "lead", visual: "shot" }) }),
+  // An Ask: it always takes its row, at its own height (Dev 7's v12, 2396), and Organize does not list it.
+  section("pages", 35, 1, { kind: "ask", title: "Rows per export page", body: markdown("The export page will show its table in pages."),
+    ask: { question: "How many rows should one export page show?", reply: { options: [{ id: "50", label: "50 rows" }, { id: "100", label: "100 rows" }], freeText: true }, state: "open" } }),
   section("batches", 32, batchesVersion, { title: "Why batches were dropped", body: summaryBody(
     `All three batches stay under the ${batchesVersion === 1 ? 5 : 6}% stop line; duplicates are the largest cause.`,
     { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ. Dates and amounts were checked against the synthetic ledger alone, regions were not checked at all, and every other cause is counted together under other, so its share says nothing about any one of them." } },
@@ -656,6 +659,11 @@ try {
         assert.equal(place.borderLeft, "1px", `${place.key}: ${place.borderLeft}`);
         if (place.conditions) assert.ok(place.conditions.widths.every((w) => w === "1px") && place.conditions.colors === 1 && place.conditions.radius === "8px", `${place.key}'s conditions: ${JSON.stringify(place.conditions)}`);
       }
+      // The Ask takes its whole row, at its own height.
+      const ask = deckShape.places.find((p) => p.key === "pages");
+      assert.equal(ask.span, deckShape.columns, `the Ask spans its row: ${JSON.stringify(ask)}`);
+      assert.equal(ask.minHeight, "auto");
+      assert.equal(ask.cut, false);
       // The audit's sub-topic says which topic it is in, first in its head.
       assert.equal(deckShape.places.find((p) => p.key === "audit/notes").subOf, "in Audit");
       assert.deepEqual(deckShape.places.filter((p) => p.subOf && p.key !== "audit/notes").map((p) => p.key), []);
@@ -745,6 +753,8 @@ try {
       await toggle("batches").click();
       assert.equal(await toggle("batches").textContent(), "Show fewer conditions");
       await toggleStates("open");
+      await card("batches").scrollIntoViewIfNeeded();
+      await shot(`${name}-conditions-open.png`);
       for (const key of ["audit", "batches"])
         if (measured[`open ${key} aria`]) assert.equal(measured[`open ${key} aria`].expanded, "true", key);
       await shot(`${name}-conditions-open.png`);
@@ -840,28 +850,55 @@ try {
     assert.equal(await page.locator('[role="dialog"] h2').first().innerText(), "Organize Home");
     const row = (key) => dialog.locator(`.home-organize-sizes [data-size-for="${key}"]`);
     const listed = await dialog.locator(".home-organize-sizes [data-size-for]").evaluateAll((rows) => rows.map((li) => li.dataset.sizeFor));
-    assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "audit/notes", "screens", "batches", "uptime"], "every report and status card, in the deck's order");
-    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "Auto · from content: Wide 1×2");
+    assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "audit/notes", "screens", "batches", "uptime"], "every report and status card, in the deck's order; no Ask");
+    assert.equal(await dialog.locator(".home-size-group").innerText(), "ATLAS-NOTES · CARD SIZES");
+    assert.equal(await dialog.locator(".home-size-asks").innerText(), "Asks always take the whole row, so they are not listed.");
+    assert.equal(await row("audit").locator(".home-size-source").innerText(), "Auto · from content: Wide 1×2");
+    // Every choice ends at one right edge; a size's name and cells never part.
+    const rowShape = await dialog.locator(".home-size-list li").evaluateAll((rows) => rows.map((li) => ({
+      right: Math.round(li.querySelector(".home-size-options").getBoundingClientRect().right),
+      unit: li.querySelector(".home-size-unit").getClientRects().length })));
+    assert.equal(new Set(rowShape.map((r) => r.right)).size, 1, JSON.stringify(rowShape));
+    assert.ok(rowShape.every((r) => r.unit === 1), JSON.stringify(rowShape));
     assert.equal(await dialog.locator(".home-size-foot .home-note").innerText(),
       "Saved on this device for this Workspace and project. Your choice wins over the default and survives new versions of the card.");
     const setup = await row("setup").evaluate((li) => ({
       disabled: [...li.querySelectorAll("input")].filter((i) => i.disabled).map((i) => i.value), checked: li.querySelector("input:checked").value,
       reason: li.querySelector(".home-size-reason")?.textContent ?? null, described: !!document.getElementById(li.querySelector("fieldset").getAttribute("aria-describedby")) }));
     assert.deepEqual(setup, { disabled: ["wide", "large"], checked: "auto", reason: "No summary named: there is nothing more to show at a larger size", described: true });
-    const organizeInk = await contrast([".home-organize-sizes :is(h3, h4, .home-note, .home-size-card > span, .home-size-card small, .home-size-reason, .home-size-options label:not(.is-disabled), .home-size-reset)"]);
+    const organizeInk = await contrast([".home-organize-sizes :is(.home-size-group, .home-size-asks, .home-note, .home-size-title, .home-size-source, .home-size-reason, .home-size-options label:not(.is-disabled), .home-size-reset)"]);
     const lowInk = Object.entries(organizeInk).filter(([, v]) => v.ratio < 4.5);
     assert.deepEqual(lowInk, [], JSON.stringify(organizeInk));
     // Large for the audit, by the keyboard: from Auto, three steps on is Large.
     await row("audit").locator('input[value="auto"]').focus();
     for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
     assert.equal(await row("audit").locator("input:checked").getAttribute("value"), "large");
-    assert.equal(await row("audit").locator(".home-size-card small").innerText(), "You set Large 2×2");
+    assert.equal(await row("audit").locator(".home-size-source").innerText(), "You set Large 2×2");
+    // Reset all to Auto, now there is something to reset, at rest and under the pointer: its own ink, not the quiet grey.
+    const reset = dialog.locator(".home-size-reset");
+    const resetInk = { rest: await contrast([".home-organize .home-size-reset"]) };
+    await reset.hover();
+    resetInk.hover = await contrast([".home-organize .home-size-reset"]);
+    await page.mouse.move(0, 0);
+    assert.deepEqual(Object.values(resetInk).flatMap((m) => Object.values(m)).filter((v) => v.ratio < 4.5), [], JSON.stringify(resetInk));
+    const resetBox = await reset.evaluate((b) => ({ wrap: getComputedStyle(b).whiteSpace, lines: Math.round(b.getBoundingClientRect().height) }));
+    assert.equal(resetBox.wrap, "nowrap");
     const ring = await row("audit").locator("input:checked").evaluate((input) => ({ visible: input.matches(":focus-visible"), outline: getComputedStyle(input.parentElement).outlineWidth }));
     assert.ok(ring.visible && parseFloat(ring.outline) >= 2, `the chosen size has a focus ring: ${JSON.stringify(ring)}`);
     await shot("organize-sizes.png");
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
     assert.deepEqual(await sizeOf("audit"), { size: "large", source: "user", rows: "span 2", frame: true });
+    // Large: chips in up to three lines, then opened in place, the card growing.
+    const auditToggle = card("audit").locator(".home-card-conditions-toggle");
+    const largeChips = await card("audit").evaluate((el) => new Set([...el.querySelectorAll(".home-card-condition-chips li:not([hidden])")].map((li) => li.offsetTop)).size);
+    assert.ok(largeChips <= 3, `chips in ${largeChips} lines`);
+    if (await auditToggle.count()) await auditToggle.click();
+    assert.equal(await card("audit").locator(".home-card-condition-chips li[hidden]").count(), 0);
+    assert.equal(await card("audit").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true);
+    await card("audit").scrollIntoViewIfNeeded();
+    await shot("audit-large-conditions-open.png");
+    if (await auditToggle.count()) await auditToggle.click();
     // Small for the batches, from its own More actions, where the size comes first: Auto names the card's own
     // size, and the size the user set says so. A small card draws no table: one line says where it is.
     await card("batches").locator(".home-summary-more > button").click();
@@ -900,9 +937,13 @@ try {
     assert.deepEqual(await sizeOf("audit"), { size: "small", source: "user", rows: "auto", frame: false });
     assert.deepEqual(await card("audit").locator(".home-card-numbers dt").allInnerTexts(), ["Model replies", "Pre-screened"]);
     assert.equal(await card("audit").locator(".home-card-numbers-count").innerText(), "2 of 3 values");
-    // Its conditions still shown whole behind their toggle: a small card cuts none.
+    // Its conditions still shown whole behind their toggle: a small card cuts none; opened, the card grows.
     assert.ok(await card("audit").locator(".home-card-conditions").isVisible());
-    await shot("home-1720-audit-small.png");
+    if (await card("audit").locator(".home-card-conditions-toggle").count()) await card("audit").locator(".home-card-conditions-toggle").click();
+    assert.equal(await card("audit").locator(".home-card-condition-chips li[hidden]").count(), 0);
+    assert.equal(await card("audit").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true);
+    await card("audit").scrollIntoViewIfNeeded();
+    await shot("audit-small-conditions-open.png");
     // The audit written again under its key is another section (Home's id 40): it takes its own size, not the old one.
     auditId = 40;
     try {
@@ -929,6 +970,38 @@ try {
     assert.equal(report.writes.length, writes, "choosing a size writes nothing to Core");
     return { setup, organizeInk };
   });
+
+  for (const [width, height, name] of [[1200, 900, "organize-1200"], [390, 844, "organize-390"]])
+    await step(`Organize Home at ${width}: each card's size and its source, the choices at one edge; on a phone the choice under its source, its four buttons sharing the row (Dev 7's v17)`, async () => {
+      await open(width, height);
+      await toHome();
+      await page.locator(".home-widget-organize").click();
+      const dialog = page.locator(".home-organize");
+      await dialog.locator(".home-organize-sizes").scrollIntoViewIfNeeded();
+      const rows = await dialog.locator(".home-size-list li").evaluateAll((items) => items.map((li) => {
+        const box = (n) => n.getBoundingClientRect();
+        const source = box(li.querySelector(".home-size-source")), options = box(li.querySelector(".home-size-options")), item = box(li);
+        const buttons = [...li.querySelectorAll(".home-size-options label")].map((l) => box(l));
+        return { key: li.dataset.sizeFor, under: options.top >= source.bottom - 1, full: Math.abs(options.width - item.width) <= 1,
+          heights: buttons.map((b) => Math.round(b.height)), widths: buttons.map((b) => Math.round(b.width)), right: Math.round(options.right) };
+      }));
+      const phone = width <= 520;
+      for (const row of rows) {
+        assert.equal(row.under, phone, `the choice under its source only on a phone: ${JSON.stringify(row)}`);
+        if (phone) {
+          assert.equal(row.full, true, JSON.stringify(row));
+          assert.ok(row.heights.every((h) => h >= 44), JSON.stringify(row));
+          assert.ok(Math.max(...row.widths) - Math.min(...row.widths) <= 1, `four equal buttons: ${JSON.stringify(row)}`);
+        }
+      }
+      assert.equal(new Set(rows.map((r) => r.right)).size, 1, JSON.stringify(rows));
+      const sideways = await page.evaluate(() => { const m = document.querySelector(".home-organize"); return m.scrollWidth > m.clientWidth + 1; });
+      assert.equal(sideways, false);
+      await shot(`${name}.png`);
+      await dialog.locator(".home-size-foot").scrollIntoViewIfNeeded();
+      await shot(`${name}-foot.png`);
+      return { rows };
+    });
 
   await step("Machines either side of 720 and 540 px and on a 320 px phone: one row of four, then two by two with the shares, then two by two without; the Jobs one line; nothing sideways", async () => {
     const shape = () => page.evaluate(() => {

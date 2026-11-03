@@ -5,9 +5,11 @@
  * they keep at least 4.5:1 on --paper, --home-surface and --home-soft in
  * every palette, light and dark (garden light is the tightest, about 4.9:1).
  * The plain accents are for dots, icons and borders only. */
-/* Home's colours, shared with a report over it (T-18). */
+/* Home's colours, shared with a report over it and with Organize, which
+   opens outside Home's own element (T-18). */
 .home-view,
-.home-report {
+.home-report,
+.home-organize {
   --home-surface: var(--surface-raised, var(--paper));
   --home-soft: var(--surface-soft, var(--cream));
   --home-ink-2: var(--text-secondary, #5d6858);
@@ -184,13 +186,22 @@
 .home-organize .home-note {
   margin-top: 8px;
 }
-/* Card sizes (T-18): each report and status card by project, its size and
-   why, and the user's choice beside it; on a phone the choice wraps below. */
-.home-organize-sizes h4 {
-  margin: 12px 0 2px;
-  color: var(--home-ink-2);
-  font-size: calc(9.5px + var(--font-adjust, 3px));
+/* Card sizes (T-18, Dev 7's v17): each project's report and status cards
+   under its name, in the deck's order. A row is its title, then its size's
+   source and the choice, every choice ending at one right edge; on a phone
+   the choice takes the row under its source, its four buttons sharing it. */
+.home-organize .home-size-group {
+  margin: 16px 0 2px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.home-size-asks {
+  margin: 0 0 4px;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
 }
 .home-size-list {
   margin: 0;
@@ -198,27 +209,31 @@
   list-style: none;
 }
 .home-size-list li {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 4px 12px;
-  min-height: 40px;
-  padding: 4px 0;
+  padding: 10px 0;
   border-bottom: 1px solid var(--line);
 }
-.home-size-card {
-  display: flex;
-  flex: 1 1 12rem;
-  flex-direction: column;
-  min-width: 0;
+.home-size-title {
+  grid-column: 1 / -1;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
-.home-size-card small {
+.home-size-source {
+  min-width: 0;
   color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
+  font-size: calc(9.5px + var(--font-adjust, 3px));
 }
-/* Each row's card names its choice; the legend is for assistive technology. */
+/* "Small 1×1" is one unit: a long source wraps before it, never inside it. */
+.home-size-unit {
+  white-space: nowrap;
+}
+.home-size-list .home-size-reason {
+  grid-column: 1 / -1;
+}
+/* Each row's title names its choice; the legend is for assistive technology. */
 .home-size-list .home-size-choice legend {
   position: absolute;
   width: 1px;
@@ -227,8 +242,20 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.home-size-list .home-size-choice {
-  padding: 0;
+@media (max-width: 520px) {
+  .home-size-list li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .home-size-list .home-size-options {
+    display: flex;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .home-size-list .home-size-options label {
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: 44px;
+  }
 }
 .home-size-foot {
   display: flex;
@@ -240,6 +267,17 @@
 .home-size-foot .home-note {
   flex: 1 1 16rem;
   margin: 0;
+}
+/* Its own ink: the quiet button's grey reads under 4.5:1 on the dialog (Dev 7, 2435). */
+.quiet-button.home-size-reset {
+  flex: none;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.quiet-button.home-size-reset:hover:not(:disabled),
+.quiet-button.home-size-reset:focus-visible {
+  background: var(--home-soft);
+  color: var(--ink);
 }
 /* The title and its tools share a row while they fit; on a narrow phone
    the tools wrap below it, right-aligned, never past the edge. */

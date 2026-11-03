@@ -18,6 +18,7 @@ export function SizeChoice({
   own,
   allowed,
   variant,
+  describedBy,
   onChange,
 }: {
   name: string;
@@ -28,14 +29,17 @@ export function SizeChoice({
   own: CardSize;
   allowed: readonly CardSize[];
   variant: "menu" | "row";
+  /** In a row, the reason a size is unavailable is said by the row, under it: its id. */
+  describedBy?: string;
   onChange: (size: CardSize | null) => void;
 }) {
   const t = useStrings(cardText);
   const reasonId = useId();
   const limited = CARD_SIZES.some((size) => !allowed.includes(size));
+  const reason = variant === "menu" && limited;
   const options: (CardSize | "auto")[] = ["auto", ...CARD_SIZES];
   return (
-    <fieldset className={`home-size-choice is-${variant}`} aria-describedby={limited ? reasonId : undefined}>
+    <fieldset className={`home-size-choice is-${variant}`} aria-describedby={reason ? reasonId : describedBy}>
       <legend>{legend}</legend>
       <span className="home-size-options">
         {options.map((option) => {
@@ -58,7 +62,7 @@ export function SizeChoice({
           );
         })}
       </span>
-      {limited && (
+      {reason && (
         <span id={reasonId} className="home-size-reason">
           {t.onlySmall}
         </span>

@@ -20,6 +20,7 @@ export function CardSizeList({ projects }: { projects: { id: string; name: strin
   const listed = projects
     .map((project) => ({
       ...project,
+      asks: project.sections.some((section) => section.kind === "ask"),
       cards: groupSections(project.sections)
         .flatMap((group) => [...(group.parent ? [group.parent] : []), ...group.subs])
         .filter((section) => section.kind !== "ask" && sizable(section)),
@@ -27,34 +28,42 @@ export function CardSizeList({ projects }: { projects: { id: string; name: strin
     .filter((project) => project.cards.length > 0);
   return (
     <section className="home-organize-sizes" aria-label={t.cardSizes}>
-      <h3>{t.cardSizes}</h3>
-      <p className="home-note">{t.cardSizesHelp}</p>
       {listed.length ? (
         listed.map((project) => (
           <div key={project.id} className="home-organize-project" data-project={project.id}>
-            <h4>{project.name}</h4>
+            <h3 className="home-size-group">{t.cardSizesOf(project.name)}</h3>
+            {project.asks && <p className="home-size-asks">{t.asksNotListed}</p>}
             <ul className="home-size-list">
               {project.cards.map((section) => {
                 const id = section.id!;
                 const content = cardContent(section);
+                const allowed = allowedSizes(content);
                 const chosen = sizes.chosen(project.id, id);
                 // As the card shows it in this visit to Home.
                 const { size, source, own } = shownSize(section, content, chosen, (computed) => sizes.held(project.id, id, computed));
+                const reasonId = `size-reason-${project.id}-${id}`;
                 return (
                   <li key={section.key} data-size-for={section.key}>
-                    <span className="home-size-card">
-                      <span>{section.title}</span>
-                      <small>{source === "user" ? t.sizeFrom.user(t.sizeLabel(size)) : t.sizeFrom.auto(t.sizeLabel(size))}</small>
-                    </span>
+                    <span className="home-size-title">{section.title}</span>
+                    {/* A size's name and cells never part (Dev 7's v17). */}
+                    <small className="home-size-source">
+                      {source === "user" ? t.youSetPrefix : t.autoPrefix} <span className="home-size-unit">{t.sizeLabel(size)}</span>
+                    </small>
                     <SizeChoice
                       name={`size-${project.id}-${section.key}`}
                       legend={t.sizeOf(section.title)}
                       value={chosen}
                       own={own}
                       variant="row"
-                      allowed={allowedSizes(content)}
+                      allowed={allowed}
+                      describedBy={allowed.length < 3 ? reasonId : undefined}
                       onChange={(next) => sizes.choose(project.id, id, next)}
                     />
+                    {allowed.length < 3 && (
+                      <span id={reasonId} className="home-size-reason">
+                        {t.onlySmall}
+                      </span>
+                    )}
                   </li>
                 );
               })}
