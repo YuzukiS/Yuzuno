@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { DialogExitGhost } from "./DialogExitGhost";
 import {
   ArrowLeft,
   BriefcaseBusiness,
@@ -773,6 +774,8 @@ export function Jobs({
   const shownError = (text: string) =>
     text === en.updatedCore ? t.updatedCore : text === en.envObject ? t.envObject : text === en.unconfirmed ? t.unconfirmed : text;
   const rail = useRef<HTMLDivElement>(null);
+  const overlay = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
   return (
     <Dialog.Root
@@ -782,6 +785,7 @@ export function Jobs({
         if (!value) generation.current++;
       }}
     >
+      <DialogExitGhost open={open} parts={[overlay, box]} />
       <Dialog.Trigger asChild>
         <button
           type="button"
@@ -810,8 +814,9 @@ export function Jobs({
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
-        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content
+          ref={box}
           className="modal jobs-dialog"
           lang={langTag(language)}
           onEscapeKeyDown={(event) => {

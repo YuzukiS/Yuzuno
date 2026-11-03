@@ -114,7 +114,7 @@ export function StateGroups<T extends { id: string }>({
               >
                 <h4 className="job-group-title">
                   {title}
-                  <span>{rows.length}</span>
+                  <span className="job-group-count">{rows.length}</span>
                 </h4>
                 <div className="job-group-rows">
                   {shown.map((item) => (
