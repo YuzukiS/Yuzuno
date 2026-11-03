@@ -24,7 +24,16 @@ STOP = 0
 # Node flags a file needs beyond the shared ones. ui.test.mjs collects garbage
 # after each test: its closed JSDOM windows can be collected, but without that
 # they piled up to the 2048 MiB old-space cap (T-19, run dff87d29).
+# Keys are paths from WEB; an argument gets them for the file it names there.
 FILE_NODE_FLAGS = {'tools/ui.test.mjs': ('--expose-gc',)}
+
+
+def node_flags(file):
+    """The extra flags for the file an argument names from WEB, however it is
+    spelled: tools/…, ./tools/… or an absolute path. Another file of the same
+    name gets none."""
+    target = (WEB / file).resolve()
+    return next((flags for key, flags in FILE_NODE_FLAGS.items() if (WEB / key).resolve() == target), ())
 
 
 def interrupt(signum, _frame):
@@ -65,7 +74,7 @@ def run(files, timeout, logdir):
             if STOP:
                 break
             job = dict(file=file, start=time.monotonic(), log=logdir / f'{index}.log')
-            flags = FILE_NODE_FLAGS.get(os.path.normpath(file), ())
+            flags = node_flags(file)
             print(f'START {file} (old-space 2048 MiB{"".join(", " + flag for flag in flags)})', flush=True)
             with job['log'].open('wb') as output:
                 try:
