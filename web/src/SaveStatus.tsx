@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { Check, CircleAlert, Info, RotateCcw } from "lucide-react";
 import { STORAGE_BLOCKED, type DeviceValueState, type SaveOutcome } from "./device-storage";
 import { strings, useStrings, type Language } from "./i18n";
@@ -79,14 +79,32 @@ export function SaveStatus({
 }) {
   const t = useStrings(text);
   const where = t.scope(scope);
+  // Try again, or Restore defaults, in a refusal that it then answers takes the refusal away with the
+  // button pressed: focus goes to the line that says how it went, or to Restore defaults again, unless
+  // it has gone elsewhere meanwhile (T-19 ST:A12).
+  const after = useRef<"line" | "restore" | null>(null);
+  const refusal = useRef<HTMLDivElement>(null);
+  const statusLine = useRef<HTMLParagraphElement>(null);
+  const restoreButton = useRef<HTMLButtonElement>(null);
   const restore = onRestoreDefaults && (
-    <button type="button" className="quiet-button" onClick={onRestoreDefaults}>
+    <button ref={restoreButton} type="button" className="quiet-button" onClick={() => {
+      if (refusal.current) after.current = "restore";
+      onRestoreDefaults();
+    }}>
       <RotateCcw size={13} aria-hidden="true" />
       {t.restore}
     </button>
   );
   const failed = outcome && !outcome.saved ? outcome : !outcome && stored === "unreadable" ? STORAGE_BLOCKED : null;
-  const refusal = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const to = after.current;
+    after.current = null;
+    if (!to || refusal.current) return;
+    const at = document.activeElement;
+    if (at && at !== document.body) return;
+    const target = (to === "restore" && restoreButton.current) || statusLine.current;
+    target?.focus();
+  });
   // For each write in this visit that was refused, also one refused the same
   // way as the last; not for storage found unreadable on opening. Focus stays
   // where it is.
@@ -102,7 +120,10 @@ export function SaveStatus({
         </p>
         <div className="save-status-actions">
           {onRetry && (
-            <button type="button" className="secondary-button" onClick={onRetry}>
+            <button type="button" className="secondary-button" onClick={() => {
+              after.current = "line";
+              onRetry();
+            }}>
               {t.retry}
             </button>
           )}
@@ -127,7 +148,7 @@ export function SaveStatus({
   );
   return (
     <div className="save-status" data-state={outcome ? action : stored}>
-      <p role="status">{line}</p>
+      <p ref={statusLine} role="status" tabIndex={-1}>{line}</p>
       {restore && <div className="save-status-actions">{restore}</div>}
     </div>
   );

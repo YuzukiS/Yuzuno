@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorText, NetworkError } from "./api";
 import { BackupRetention } from "./BackupRetention";
 import { strings, useLanguage } from "./i18n";
@@ -194,6 +194,8 @@ const text = strings({
   timeOfDay: "Time of day (UTC)",
   dailyFolder: "Folder for daily backups",
   save: "Save",
+  saving: "Saving…",
+  dailySaved: "Saved. Core keeps the daily backup as said above.",
   timeHere: (time: string, local: string) => `${time} UTC is ${local} on this device today.`,
   nextRun: (at: string) => `Next run: ${at}.`,
   autoRemoval: "Automatic removal",
@@ -307,6 +309,8 @@ const text = strings({
   timeOfDay: "每天的时间（UTC）",
   dailyFolder: "每日备份的文件夹",
   save: "保存",
+  saving: "正在保存…",
+  dailySaved: "已保存。Core 会按上面所说进行每日备份。",
   timeHere: (time, local) => `UTC ${time} 是此设备今天的 ${local}。`,
   nextRun: (at) => `下次运行：${at}。`,
   autoRemoval: "自动删除",
@@ -747,22 +751,42 @@ function DailyBackup({ schedule, canChange, onSaved }: {
   const [folder, setFolder] = useState(schedule.folder ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // The last save went through: said until the schedule is changed again (T-19 ST:B8).
+  const [saved, setSaved] = useState(false);
+  const savedLine = useRef<HTMLParagraphElement>(null);
+  const afterSave = useRef<HTMLButtonElement | null>(null);
   const changed = enabled !== schedule.enabled || time !== (schedule.timeUtc || "03:00") || folder !== (schedule.folder ?? "");
-  async function save() {
+  async function save(pressed: HTMLButtonElement) {
     setSaving(true);
     setError("");
+    setSaved(false);
     try {
       const answer = await api<{ schedule: Schedule }>("/workspace/backup/schedule", {
         method: "POST",
         body: JSON.stringify({ enabled, timeUtc: time, folder: folder.trim() || null }),
       });
       onSaved(answer.schedule);
+      afterSave.current = pressed;
+      setSaved(true);
     } catch (e) {
       setError(errorText(e));
     } finally {
       setSaving(false);
     }
   }
+  // Saved, Save has nothing left to save and is off: focus it had, or lost, goes to the line that
+  // says it was saved, unless it has gone elsewhere meanwhile (T-19 ST:B8).
+  useLayoutEffect(() => {
+    const pressed = afterSave.current;
+    afterSave.current = null;
+    if (!saved || !pressed) return;
+    const at = document.activeElement;
+    if (!at || at === document.body || at === pressed) savedLine.current?.focus();
+  }, [saved]);
+  const edited = (change: () => void) => {
+    setSaved(false);
+    change();
+  };
   const run = schedule.lastRun;
   return (
     <div className="settings-group workspace-backup-daily" aria-label={t.daily}>
@@ -779,7 +803,7 @@ function DailyBackup({ schedule, canChange, onSaved }: {
       {canChange && (
         <div className="settings-row workspace-backup-row">
           <label className="workspace-backup-check">
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            <input type="checkbox" checked={enabled} onChange={(e) => edited(() => setEnabled(e.target.checked))} />
             {t.everyDay}
           </label>
           <input
@@ -787,23 +811,28 @@ function DailyBackup({ schedule, canChange, onSaved }: {
             type="time"
             aria-label={t.timeOfDay}
             value={time}
-            onChange={(e) => setTime(e.target.value)}
+            onChange={(e) => edited(() => setTime(e.target.value))}
           />
           <input
             className="settings-input"
             aria-label={t.dailyFolder}
             placeholder="/path/to/backups-folder"
             value={folder}
-            onChange={(e) => setFolder(e.target.value)}
+            onChange={(e) => edited(() => setFolder(e.target.value))}
           />
-          <button type="button" disabled={saving || !changed} onClick={() => void save()}>
-            {t.save}
+          <button type="button" disabled={saving || !changed} onClick={(event) => void save(event.currentTarget)}>
+            {saving ? t.saving : t.save}
           </button>
         </div>
       )}
       {canChange && /^\d\d:\d\d$/.test(time) && (
         <p className="settings-row-help workspace-backup-note">
           {t.timeHere(time, localTime(time))}
+        </p>
+      )}
+      {saved && !changed && (
+        <p ref={savedLine} className="workspace-backup-note" role="status" tabIndex={-1}>
+          {t.dailySaved}
         </p>
       )}
       {schedule.enabled && schedule.nextRunAt && (

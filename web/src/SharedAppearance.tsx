@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NetworkError } from "./api";
 import { importAppearance, useAppearance, type Appearance } from "./appearance";
 import {
@@ -307,6 +307,20 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
     (preview === "follow" ? followButton : previewButton).current?.focus();
     setPreview(false);
   };
+  // Apply and Follow close the preview once they are done: focus goes back to the button that
+  // opened it, as Cancel's does, or to Stop following once following took that button's place,
+  // unless it has gone elsewhere meanwhile (T-19 ST:SA5). After the commit that closes it: until
+  // then that button is off while the preview's work is busy.
+  const refocus = useRef<"apply" | "follow" | null>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const done = refocus.current;
+    if (!done || busy || preview) return;
+    refocus.current = null;
+    const at = document.activeElement;
+    if (at && at !== document.body) return;
+    (done === "apply" ? previewButton : following.revision !== null ? stopButton : followButton).current?.focus();
+  });
   useEffect(() => {
     if (said?.error) line.current?.scrollIntoView?.({ block: "nearest" });
   }, [said]);
@@ -422,6 +436,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
       say(true, { kind: "notApplied", what: "applied", refused: outcome });
       return;
     }
+    refocus.current = "apply";
     setPreview(false);
     say(false, { kind: "applied", count: fields.length });
   }
@@ -444,6 +459,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
       return;
     }
     const kept = startFollowing(read.workspaceId, read.revision);
+    refocus.current = "follow";
     setPreview(false);
     if (!kept.saved) {
       say(true, { kind: "followUnsaved", revision: read.revision, refused: kept });
@@ -557,7 +573,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
                       {t.tryAgain}
                     </button>
                   )}
-                  <button type="button" onClick={() => stopFollowing(read!.workspaceId, "chosen")}>
+                  <button ref={stopButton} type="button" onClick={() => stopFollowing(read!.workspaceId, "chosen")}>
                     {t.stopFollowing}
                   </button>
                 </>
