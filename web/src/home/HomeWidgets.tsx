@@ -9,13 +9,21 @@ import { ArrowDown, ArrowUp, Eye, EyeOff, LayoutGrid, PinOff, SlidersHorizontal 
 import { Modal } from "../components";
 import { useStrings } from "../i18n";
 import { homeText } from "./home-text";
+import type { CardSize } from "./card-preview";
+import { SizeChoice } from "./SizeChoice";
+import { cardText } from "./card-text";
 import type { WidgetLayout } from "./widget-layout";
+
+/** A pinned card's size on the widget column: the user's, else its Agent's (`own`). */
+export type WidgetSize = { shown: CardSize; own: CardSize; chosen: CardSize | null; onChange: (size: CardSize | null) => void };
 
 export type HomeWidget = {
   id: string;
   name: string;
   /** Drawn only while the widget is on show, so a hidden one reads nothing. */
   body: ReactNode;
+  /** A pinned card has one; Machines keeps its place as it is. */
+  size?: WidgetSize;
   /** A pinned section can also be unpinned: hidden, it stays pinned to show again. */
   onUnpin?: () => void;
 };
@@ -43,6 +51,7 @@ export function HomeWidgets({
   onChange?: (next: (current: WidgetLayout) => WidgetLayout) => void;
 }) {
   const t = useStrings(homeText);
+  const c = useStrings(cardText);
   const [organizing, setOrganizing] = useState(false);
   const { shown, hidden } = arrangeWidgets(widgets, layout ?? { order: [], hidden: [], pins: [] });
   function change(order: HomeWidget[], hiddenIds: string[]) {
@@ -98,7 +107,12 @@ export function HomeWidgets({
       {layout && shown.length > 0 && (
         <div className="home-widget-grid">
           {shown.map((widget) => (
-            <div key={widget.id} className="home-widget-slot" data-widget={widget.id}>
+            <div
+              key={widget.id}
+              className={`home-widget-slot${widget.size ? ` size-${widget.size.shown}` : ""}`}
+              data-widget={widget.id}
+              data-widget-size={widget.size?.shown}
+            >
               {widget.body}
             </div>
           ))}
@@ -118,7 +132,25 @@ export function HomeWidgets({
             <ol className="home-organize-list">
               {shown.map((widget, index) => (
                 <li key={widget.id} data-widget={widget.id}>
-                  <span>{widget.name}</span>
+                  <span>
+                    {widget.name}
+                    {/* Where a pinned widget's size comes from; Machines has none to choose. */}
+                    {widget.size && (
+                      <small className="home-size-source">
+                        {widget.size.chosen ? c.youSetPrefix : c.agentPrefix} <span className="home-size-unit">{c.sizeLabel(widget.size.shown)}</span>
+                      </small>
+                    )}
+                  </span>
+                  {widget.size && (
+                    <SizeChoice
+                      name={`size-${widget.id}`}
+                      legend={c.sizeOf(widget.name)}
+                      value={widget.size.chosen}
+                      own={widget.size.own}
+                      variant="row"
+                      onChange={widget.size.onChange}
+                    />
+                  )}
                   <span className="home-organize-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
                     <button
                       type="button"
@@ -158,6 +190,7 @@ export function HomeWidgets({
             <p className="home-note">{t.noneOnShow}</p>
           )}
           <p className="home-note">{t.organizeNote}</p>
+          {shown.some((widget) => widget.size) && <p className="home-note home-widget-sizes-note">{c.widgetSizes}</p>}
           <h3>{t.hiddenWidgets}</h3>
           {hidden.length ? (
             <ul className="home-organize-list">

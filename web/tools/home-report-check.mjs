@@ -77,7 +77,7 @@ const longText = Array.from({ length: 30 }, (_, i) => `Note ${i + 1}: the seeds,
 // The author names the summary (conclusion, conditions, one figure) and the
 // part that starts folded on the root, by the blocks' ids (T-18 contract).
 const evalBody = { root: "body", elements: {
-  body: { type: "BriefBody", props: { summary: { lead: "answer", visual: "curve", conditions: "holds" }, details: ["method"] },
+  body: { type: "BriefBody", props: { summary: { lead: "answer", visual: "curve", conditions: "holds", size: "wide" }, details: ["method"] },
     children: ["answer", "holds", "curve", "evidence", "method", "long", "next", "sources", "shots"] },
   answer: { type: "Markdown", props: { text: "Model B lowers validation loss by 4% on the synthetic set, within the noise of three seeds." } },
   holds: { type: "Checklist", props: { items: [{ id: "def", text: "Scoring definition v2", done: true }, { id: "data", text: "Synthetic data, 100 items per arm", done: true },
@@ -134,24 +134,27 @@ const summaryBody = (lead, extra, summary) => ({ root: "body", elements: {
   lead: { type: "Markdown", props: { text: lead } },
   ...extra,
 } });
-// A newer version of one card, its size the same (2), then its figure another kind (3), for the refresh step;
-// the audit written again under its key, another section (Home's id 40), for the user's sizes.
+// The batches' versions, each as its author writes it (T-18, Lead 2457, 2473): 1 and 2 a table, wide; 3 two Metrics,
+// small; 4 a table again with no size, as a summary kept from before sizes (its figure's: wide). The refresh step
+// reads 2 and 3 while Home stays open; the widget step reads 3 and 4 on a card pinned to the widgets.
 let batchesVersion = 1;
-let auditId = 30;
-const batchesFigure = () => batchesVersion < 3
+// Home's read failing on purpose, for the widget step.
+let homeFails = false;
+const batchesSize = () => (batchesVersion < 3 ? { size: "wide" } : batchesVersion === 3 ? { size: "small" } : {});
+const batchesFigure = () => batchesVersion !== 3
   ? { table: { type: "Table", props: { id: "batches", title: "Drops by batch", columns: ["batch", "dupes", "dates", "amounts", "regions", "other"].map((key) => ({ key, label: key })),
       rows: ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map((id, i) => ({ id, cells: { batch: id, dupes: `${2 + i / 10}%`, dates: "0.4%", amounts: "0.1%", regions: "0.2%", other: "0%" } })) } } }
   : { table: { type: "Metrics", props: { items: [{ label: "Dropped", value: 2.4, unit: "%" }, { label: "Batches", value: 9 }] } } };
 const deck = () => [
-  section("audit", auditId, 2, { title: "Fewer LLM round trips: three-stage static audit", body: summaryBody(
+  section("audit", 30, 2, { title: "Fewer LLM round trips: three-stage static audit", body: summaryBody(
     "Found fixed hand-offs worth trying; not yet shown that most development calls can go to programs.",
     { holds: { type: "Checklist", props: { items: ["Read-only stored records", "Three-stage flow", "304 model replies", "Rule pre-screen", "Item-by-item audit", "One reviewer", "No live traffic", "Synthetic prompts"].map((text, i) => ({ id: `c${i}`, text, done: true })) } },
       funnel: { type: "Metrics", props: { items: [{ label: "Model replies", value: 304 }, { label: "Pre-screened", value: 52 }, { label: "Kept", value: 29 }] } } },
-    { lead: "lead", visual: "funnel", conditions: "holds" }) }),
+    { lead: "lead", visual: "funnel", conditions: "holds", size: "wide" }) }),
   section("screens", 31, 1, { title: "Home layout screenshots", attachments: [evalFiles[1]], body: summaryBody(
     "The deck adds a column as the pane widens and stacks on a phone.",
     { shot: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Loss by subset" }] } } },
-    { lead: "lead", visual: "shot" }) }),
+    { lead: "lead", visual: "shot", size: "large" }) }),
   // An Ask: it always takes its row, at its own height (Dev 7's v12, 2396), and Organize does not list it.
   section("pages", 35, 1, { kind: "ask", title: "Rows per export page", body: markdown("The export page will show its table in pages."),
     ask: { question: "How many rows should one export page show?", reply: { options: [{ id: "50", label: "50 rows" }, { id: "100", label: "100 rows" }], freeText: true }, state: "open" } }),
@@ -159,14 +162,15 @@ const deck = () => [
     `All three batches stay under the ${batchesVersion === 1 ? 5 : 6}% stop line; duplicates are the largest cause.`,
     { why: { type: "Markdown", props: { text: "Only synthetic batches A to C were measured; real imports may differ. Dates and amounts were checked against the synthetic ledger alone, regions were not checked at all, and every other cause is counted together under other, so its share says nothing about any one of them." } },
       ...batchesFigure() },
-    { lead: "lead", visual: "table", conditions: "why" }) }),
-  // Two Metrics values: a small card, its first value large (Dev 7's v12).
+    { lead: "lead", visual: "table", conditions: "why", ...batchesSize() }) }),
+  // A summary kept from before sizes: no size, so its figure's (two Metrics values: small, the first value large).
   section("uptime", 33, 1, { title: "Synthetic service uptime", body: summaryBody(
     "Both synthetic services held their target this week.",
     { nums: { type: "Metrics", props: { items: [{ label: "Uptime", value: 99.2, unit: "%" }, { label: "Incidents", value: 1 }] } } },
     { lead: "lead", visual: "nums" }) }),
-  // A sub-topic of the audit: it says so in its head (Dev 7, 2399).
-  section("audit/notes", 34, 1, { title: "Audit notes", body: summaryBody("The sample is the stored records of one week.", {}, { lead: "lead" }) }),
+  // A sub-topic of the audit: it says so in its head (Dev 7, 2399). Its author makes it wide, though a lead alone
+  // would be small: the author's size, not Home's guess.
+  section("audit/notes", 34, 1, { title: "Audit notes", body: summaryBody("The sample is the stored records of one week.", {}, { lead: "lead", size: "wide" }) }),
 ];
 const sections = () => [...fillers, section("eval", 7, evalVersion, { title: "Synthetic eval: model B vs A", attachments: evalFiles }),
   { ...section("dose-study", 8, 3), title: doseStudy.title, body: doseStudy.body }, ...deck()];
@@ -239,6 +243,7 @@ async function serve(route) {
     report.reads.push(`${path}?${url.searchParams}`);
     return route.fulfill({ json: research(Number(url.searchParams.get("version"))) });
   }
+  if (path === "/api/home" && homeFails) return route.fulfill({ status: 500, json: { error: "synthetic failure" } });
   const json = {
     "/api/workspace": () => ({ workspace: { id: WS }, projects, projectUsage: { p1: { agents: 1, tasks: 0 } }, agents: [agent], runtime: { connected: true }, defaultCwd: "/fixture" }),
     "/api/home": home,
@@ -286,7 +291,9 @@ async function open(width, height, { motion = "reduce", at = "/" } = {}) {
   });
   page.on("pageerror", (error) => report.errors.push(`${width}: pageerror: ${error.message}`));
   // The fixture answers this Agent's Codex account, tools and queued inputs with 404 on purpose.
-  const answered404 = (message) => /\/api\/agents\/a\/(codex\/usage|codex\/mcp|conversation\/inputs)\b/.test(message.location()?.url ?? "");
+  const answered404 = (message) => /\/api\/agents\/a\/(codex\/usage|codex\/mcp|conversation\/inputs)\b/.test(message.location()?.url ?? "")
+    // Home's read made to fail on purpose (the widget step).
+    || (homeFails && /\/api\/home\b/.test(message.location()?.url ?? ""));
   page.on("console", (message) => message.type() === "error" && !answered404(message) && report.errors.push(`${width}: console: ${message.text()}`));
   await page.route("**/*", serve);
   await page.goto(`https://${HOST}${at}`);
@@ -589,7 +596,7 @@ try {
         const column = (brief.clientWidth - gap * (columns - 1)) / columns;
         const places = cards.map((el) => {
           const r = el.getBoundingClientRect(), style = getComputedStyle(el);
-          return { key: el.dataset.sectionKey, size: el.dataset.cardSize ?? null, top: Math.round(r.top), left: Math.round(r.left),
+          return { key: el.dataset.sectionKey, size: el.dataset.cardSize ?? null, source: el.dataset.sizeSource ?? null, top: Math.round(r.top), left: Math.round(r.left),
             width: Math.round(r.width), height: Math.round(r.height), span: Math.round((r.width + gap) / (column + gap)), rows: style.gridRowStart,
             cut: el.scrollHeight > el.clientHeight + 1,
             // A wide card's figure beside its text, or under it; a small card's frame (none) and big numbers.
@@ -638,10 +645,11 @@ try {
       });
       const expected = deckShape.container >= 1248 ? 4 : deckShape.container >= 560 ? 2 : 1;
       assert.equal(deckShape.columns, expected, JSON.stringify(deckShape));
-      // Each card's size from the figure its author named (Lead 2377): none, a lead alone or two Metrics small; a chart,
-      // a table or three Metrics wide; an image large.
-      const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, p.size]));
-      assert.deepEqual(sizes, { setup: "small", data: "small", baseline: "small", eval: "wide", "dose-study": "small", audit: "wide", "audit/notes": "small", screens: "large", batches: "wide", uptime: "small" });
+      // Each card at the size its author named (Lead 2457), the notes wide though a lead alone; a card with no
+      // summary small, and one kept from before sizes (uptime) its figure's (Lead 2473).
+      const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, `${p.size} ${p.source}`]));
+      assert.deepEqual(sizes, { setup: "small content", data: "small content", baseline: "small content", eval: "wide author", "dose-study": "small content",
+        audit: "wide author", "audit/notes": "wide author", screens: "large author", batches: "wide author", uptime: "small content" });
       for (const place of deckShape.places.filter((p) => p.size)) {
         const span = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
         assert.equal(place.span, span, `${place.key} spans ${span}: ${JSON.stringify(place)}`);
@@ -798,7 +806,7 @@ try {
       return { deck: deckShape, readable };
     });
 
-  await step("a newer version of one card moves no card while Home is read: its size the same, or its figure another kind, it keeps its size until the next way to Home; no packing, no jump, no new card (T-18, Lead 2377, 2414)", async () => {
+  await step("a newer version of one card moves no card while Home is read: its size the same, or its author's size another, it keeps its size until the next way to Home; no packing, no jump, no new card (T-18, Lead 2377, 2414, 2457)", async () => {
     await open(1720, 1100);
     await toHome();
     const places = () => page.evaluate(() => [...document.querySelectorAll('[data-home-project="p1"] .home-brief .home-section')].map((el) => {
@@ -815,8 +823,8 @@ try {
       assert.equal(after.find((p) => p.key === "batches").size, "wide");
       const without = (list) => list.map(({ version, ...place }) => place);
       assert.deepEqual(without(after), without(before), JSON.stringify({ before, after }));
-      // Its figure now Metrics with two values, which on its own would make it small: while Home is read, the
-      // card keeps the size it was shown at, and stays the same element (no remount, nothing lost).
+      // Its author now names it small, with two Metrics values: while Home is read, the card keeps the size it
+      // was shown at, and stays the same element (no remount, nothing lost).
       await card("batches").evaluate((el) => { el.dataset.probe = "same"; });
       batchesVersion = 3;
       await until("the version with another figure", async () => (await card("batches").getAttribute("data-section-version")) === "3", 40_000);
@@ -836,171 +844,120 @@ try {
     }
   });
 
-  await step("a card's size as the user chooses it, in Organize and in its More actions: kept on this device for the Workspace, Auto by default, Reset all to Auto (T-18, Lead 2378)", async () => {
+  await step("only a card pinned to the widgets takes the user's size: none on the deck's cards, old choices ignored; a pinned card starts at its Agent's size, keeps the user's through newer versions, never writes it back, and follows the version it shows when given back to the Agent (T-18, Lead 2457, 2473)", async () => {
     await open(1720, 1100);
-    await toHome();
-    const writes = report.writes.length;
-    const sizeOf = (key) => card(key).evaluate((el) => ({ size: el.dataset.cardSize, source: el.dataset.sizeSource, rows: getComputedStyle(el).gridRowStart, frame: !!el.querySelector(".home-card-frame") }));
-    const saved = () => page.evaluate((ws) => JSON.parse(localStorage.getItem(`yuzuno.homeCardSizes.${ws}`) ?? "null"), WS);
-    assert.equal(await saved(), null, "nothing is chosen for the user");
-    // Organize lists each card with its size and why; a card with no summary may only be small, and says why.
-    await page.locator(".home-widget-organize").click();
-    const dialog = page.locator(".home-organize");
-    await dialog.locator(".home-organize-sizes").waitFor();
-    assert.equal(await page.locator('[role="dialog"] h2').first().innerText(), "Organize Home");
-    const row = (key) => dialog.locator(`.home-organize-sizes [data-size-for="${key}"]`);
-    const listed = await dialog.locator(".home-organize-sizes [data-size-for]").evaluateAll((rows) => rows.map((li) => li.dataset.sizeFor));
-    assert.deepEqual(listed, ["setup", "data", "baseline", "eval", "dose-study", "audit", "audit/notes", "screens", "batches", "uptime"], "every report and status card, in the deck's order; no Ask");
-    assert.equal(await dialog.locator(".home-size-group").innerText(), "ATLAS-NOTES · CARD SIZES");
-    assert.equal(await dialog.locator(".home-size-asks").innerText(), "Asks always take the whole row, so they are not listed.");
-    assert.equal(await row("audit").locator(".home-size-source").innerText(), "Auto · from content: Wide 1×2");
-    // Every choice ends at one right edge; a size's name and cells never part.
-    const rowShape = await dialog.locator(".home-size-list li").evaluateAll((rows) => rows.map((li) => ({
-      right: Math.round(li.querySelector(".home-size-options").getBoundingClientRect().right),
-      unit: li.querySelector(".home-size-unit").getClientRects().length })));
-    assert.equal(new Set(rowShape.map((r) => r.right)).size, 1, JSON.stringify(rowShape));
-    assert.ok(rowShape.every((r) => r.unit === 1), JSON.stringify(rowShape));
-    assert.equal(await dialog.locator(".home-size-foot .home-note").innerText(),
-      "Saved on this device for this Workspace and project. Your choice wins over the default and survives new versions of the card.");
-    const setup = await row("setup").evaluate((li) => ({
-      disabled: [...li.querySelectorAll("input")].filter((i) => i.disabled).map((i) => i.value), checked: li.querySelector("input:checked").value,
-      reason: li.querySelector(".home-size-reason")?.textContent ?? null, described: !!document.getElementById(li.querySelector("fieldset").getAttribute("aria-describedby")) }));
-    assert.deepEqual(setup, { disabled: ["wide", "large"], checked: "auto", reason: "No summary named: there is nothing more to show at a larger size", described: true });
-    const organizeInk = await contrast([".home-organize-sizes :is(.home-size-group, .home-size-asks, .home-note, .home-size-title, .home-size-source, .home-size-reason, .home-size-options label:not(.is-disabled), .home-size-reset)"]);
-    const lowInk = Object.entries(organizeInk).filter(([, v]) => v.ratio < 4.5);
-    assert.deepEqual(lowInk, [], JSON.stringify(organizeInk));
-    // Large for the audit, by the keyboard: from Auto, three steps on is Large.
-    await row("audit").locator('input[value="auto"]').focus();
-    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
-    assert.equal(await row("audit").locator("input:checked").getAttribute("value"), "large");
-    assert.equal(await row("audit").locator(".home-size-source").innerText(), "You set Large 2×2");
-    // Reset all to Auto, now there is something to reset, at rest and under the pointer: its own ink, not the quiet grey.
-    const reset = dialog.locator(".home-size-reset");
-    const resetInk = { rest: await contrast([".home-organize .home-size-reset"]) };
-    await reset.hover();
-    resetInk.hover = await contrast([".home-organize .home-size-reset"]);
-    await page.mouse.move(0, 0);
-    assert.deepEqual(Object.values(resetInk).flatMap((m) => Object.values(m)).filter((v) => v.ratio < 4.5), [], JSON.stringify(resetInk));
-    const resetBox = await reset.evaluate((b) => ({ wrap: getComputedStyle(b).whiteSpace, lines: Math.round(b.getBoundingClientRect().height) }));
-    assert.equal(resetBox.wrap, "nowrap");
-    const ring = await row("audit").locator("input:checked").evaluate((input) => ({ visible: input.matches(":focus-visible"), outline: getComputedStyle(input.parentElement).outlineWidth }));
-    assert.ok(ring.visible && parseFloat(ring.outline) >= 2, `the chosen size has a focus ring: ${JSON.stringify(ring)}`);
-    await shot("organize-sizes.png");
-    await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "hidden" });
-    assert.deepEqual(await sizeOf("audit"), { size: "large", source: "user", rows: "span 2", frame: true });
-    // Large: chips in up to three lines, then opened in place, the card growing.
-    const auditToggle = card("audit").locator(".home-card-conditions-toggle");
-    const largeChips = await card("audit").evaluate((el) => new Set([...el.querySelectorAll(".home-card-condition-chips li:not([hidden])")].map((li) => li.offsetTop)).size);
-    assert.ok(largeChips <= 3, `chips in ${largeChips} lines`);
-    if (await auditToggle.count()) await auditToggle.click();
-    assert.equal(await card("audit").locator(".home-card-condition-chips li[hidden]").count(), 0);
-    assert.equal(await card("audit").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true);
-    await card("audit").scrollIntoViewIfNeeded();
-    await shot("audit-large-conditions-open.png");
-    if (await auditToggle.count()) await auditToggle.click();
-    // Small for the batches, from its own More actions, where the size comes first: Auto names the card's own
-    // size, and the size the user set says so. A small card draws no table: one line says where it is.
-    await card("batches").locator(".home-summary-more > button").click();
-    const menu = card("batches").locator(".home-summary-more-list");
-    const menuRows = () => menu.locator(".home-size-options label").evaluateAll((labels) => labels.map((l) => l.innerText.replace(/\s+/g, " ").trim()));
-    assert.equal(await menu.locator(":scope > :first-child legend").innerText(), "SIZE");
-    assert.deepEqual(await menuRows(), ["Auto Wide 1×2", "Small 1×1", "Wide 1×2", "Large 2×2"]);
-    await menu.locator('input[value="small"]').check();
-    assert.deepEqual(await menuRows(), ["Auto Wide 1×2", "Small 1×1 You set", "Wide 1×2", "Large 2×2"]);
-    const menuInk = await contrast([".home-summary-more-list :is(legend, .home-size-options label:not(.is-disabled), .home-size-options small)"]);
-    assert.deepEqual(Object.entries(menuInk).filter(([, v]) => v.ratio < 4.5), [], JSON.stringify(menuInk));
-    await shot("size-menu.png");
-    assert.deepEqual(await sizeOf("batches"), { size: "small", source: "user", rows: "auto", frame: false });
-    assert.equal(await card("batches").locator(".home-card-figure-note").innerText(), "Table · on the report");
-    await page.keyboard.press("Escape");
-    const noteInk = await contrast(['.home-view [data-section-key="batches"] .home-card-figure-note']);
-    assert.deepEqual(Object.entries(noteInk).filter(([, v]) => v.ratio < 4.5), [], JSON.stringify(noteInk));
-    // Still the author's order on screen, and nothing cut.
-    const places = await page.evaluate(() => [...document.querySelectorAll('[data-home-project="p1"] .home-brief .home-section')].map((el) => {
-      const r = el.getBoundingClientRect();
-      return { key: el.dataset.sectionKey, top: Math.round(r.top), left: Math.round(r.left), cut: el.scrollHeight > el.clientHeight + 1 };
-    }));
-    assert.deepEqual([...places].sort((a, b) => a.top - b.top || a.left - b.left).map((p) => p.key), places.map((p) => p.key), JSON.stringify(places));
-    assert.deepEqual(places.filter((p) => p.cut), []);
-    await shot("home-1720-sizes-chosen.png");
-    // Kept on this device, for this Workspace, by project and Home's id of the section: a reload keeps them.
-    assert.deepEqual(await saved(), { "p1:30": "large", "p1:32": "small" });
+    // Choices an earlier build kept for the deck's cards: no longer read, never over the author's size.
+    await page.evaluate((ws) => localStorage.setItem(`yuzuno.homeCardSizes.${ws}`, JSON.stringify({ "p1:30": "large", "p1:32": "small", "p1:31": "small" })), WS);
     await page.reload();
     await toHome();
-    assert.equal((await sizeOf("audit")).size, "large");
-    assert.equal((await sizeOf("batches")).size, "small");
-    // Small for the audit: its first two Metrics values, and how many there are; never a value dropped unsaid.
-    await card("audit").locator(".home-summary-more > button").click();
-    await card("audit").locator('.home-summary-more-list input[value="small"]').check();
+    const writes = report.writes.length;
+    const deckSize = (key) => card(key).evaluate((el) => `${el.dataset.cardSize} ${el.dataset.sizeSource}`);
+    assert.deepEqual([await deckSize("audit"), await deckSize("batches"), await deckSize("screens")], ["wide author", "wide author", "large author"]);
+    // A deck card's More actions offer Pin and Copy report, no size.
+    await card("batches").locator(".home-summary-more > button").click();
+    const more = card("batches").locator(".home-summary-more-list");
+    assert.equal(await more.locator(".home-size-choice").count(), 0);
+    // Pin it: the widget starts at its Agent's size.
+    await more.getByRole("button", { name: /Pin/ }).click();
     await page.keyboard.press("Escape");
-    assert.deepEqual(await sizeOf("audit"), { size: "small", source: "user", rows: "auto", frame: false });
-    assert.deepEqual(await card("audit").locator(".home-card-numbers dt").allInnerTexts(), ["Model replies", "Pre-screened"]);
-    assert.equal(await card("audit").locator(".home-card-numbers-count").innerText(), "2 of 3 values");
-    // Its conditions still shown whole behind their toggle: a small card cuts none; opened, the card grows.
-    assert.ok(await card("audit").locator(".home-card-conditions").isVisible());
-    if (await card("audit").locator(".home-card-conditions-toggle").count()) await card("audit").locator(".home-card-conditions-toggle").click();
-    assert.equal(await card("audit").locator(".home-card-condition-chips li[hidden]").count(), 0);
-    assert.equal(await card("audit").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true);
-    await card("audit").scrollIntoViewIfNeeded();
-    await shot("audit-small-conditions-open.png");
-    // The audit written again under its key is another section (Home's id 40): it takes its own size, not the old one.
-    auditId = 40;
+    const widget = page.locator('.home-widget-slot[data-widget^="pin:p1:32:"]');
+    await widget.waitFor();
+    assert.equal(await widget.getAttribute("data-widget-size"), "wide");
+    // Organize lists it with its source and the choice; Machines has none to choose.
+    await page.locator(".home-widget-organize").click();
+    const dialog = page.locator(".home-organize");
+    const row = dialog.locator('.home-organize-list li[data-widget^="pin:p1:32:"]');
+    await row.waitFor();
+    assert.equal(await row.locator(".home-size-source").innerText(), "Agent's size: Wide 1×2");
+    assert.equal(await dialog.locator('.home-organize-list li[data-widget="machines"] .home-size-choice').count(), 0);
+    assert.deepEqual(await row.locator(".home-size-options label").allInnerTexts(), ["Agent", "Small", "Wide", "Large"]);
+    const inks = await contrast([".home-organize-list :is(.home-size-source, .home-size-options label)", ".home-organize .home-widget-sizes-note"]);
+    assert.deepEqual(Object.entries(inks).filter(([, v]) => v.ratio < 4.5), [], JSON.stringify(inks));
+    // Large, by the keyboard: from Agent, three steps on.
+    await row.locator('input[value="auto"]').focus();
+    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
+    assert.equal(await row.locator("input:checked").getAttribute("value"), "large");
+    assert.equal(await row.locator(".home-size-source").innerText(), "You set Large 2×2");
+    await shot("organize-widget-size.png");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal(await widget.getAttribute("data-widget-size"), "large");
+    // Never written back: the card on the deck keeps its author's size, and nothing is sent to Core.
+    assert.equal(await deckSize("batches"), "wide author");
+    const layout = () => page.evaluate((ws) => JSON.parse(localStorage.getItem(`yuzuno.homeWidgets.${ws}`)), WS);
+    assert.equal((await layout()).pins.find((p) => p.key === "batches").size, "large");
+    assert.equal(report.writes.length, writes, "a widget's size writes nothing to Core");
+    // A newer version whose author names it small: the widget keeps the user's size, and shows that version.
+    batchesVersion = 3;
     try {
       await page.reload();
       await toHome();
-      assert.deepEqual(await sizeOf("audit"), { size: "wide", source: "auto", rows: "auto", frame: true }, "a new section under an old key");
-      assert.equal((await sizeOf("batches")).size, "small", "the others keep theirs");
+      assert.deepEqual([await widget.getAttribute("data-widget-size"), await deckSize("batches")], ["large", "small author"]);
+      assert.ok((await widget.locator(".home-pinned-body dd").count()) > 0, "the Metrics of version 3");
+      // Given back to the Agent from the widget's own menu: the size of the version it shows, the focus kept.
+      const sizeButton = widget.locator(".home-pinned-size > button");
+      await sizeButton.click();
+      const menu = widget.locator(".home-pinned-size-list");
+      assert.deepEqual(await menu.locator(".home-size-options label").evaluateAll((labels) => labels.map((l) => l.innerText.replace(/\s+/g, " ").trim())),
+        ["Agent Small 1×1", "Small 1×1", "Wide 1×2", "Large 2×2 You set"]);
+      await menu.locator('input[value="auto"]').check();
+      assert.equal(await widget.getAttribute("data-widget-size"), "small");
+      assert.equal(await menu.locator('input[value="auto"]').evaluate((input) => input === document.activeElement), true, "the focus stays on the choice");
+      await page.keyboard.press("Escape");
+      assert.equal(await sizeButton.evaluate((b) => b === document.activeElement), true, "Escape gives the focus back to the button");
+      assert.equal((await layout()).pins.find((p) => p.key === "batches").size, undefined);
+      // Its author's size taken off (a summary kept from before sizes, a table again): the widget follows the version it shows.
+      batchesVersion = 4;
+      await page.reload();
+      await toHome();
+      assert.deepEqual([await widget.getAttribute("data-widget-size"), await deckSize("batches")], ["wide", "wide content"]);
+      assert.equal(await widget.locator(".home-pinned-body table").count() > 0, true, "the table of version 4");
+      // Home's next read fails: the widget says it is not current and keeps the size of what it shows.
+      homeFails = true;
+      await sizeButton.focus();
+      await until("the failed read said", async () => (await widget.locator(".home-pinned-note").count()) > 0, 40_000);
+      assert.equal(await widget.getAttribute("data-widget-size"), "wide");
+      assert.equal(await sizeButton.evaluate((b) => b === document.activeElement), true, "the focus stays where it was");
+      await shot("widget-not-current.png");
     } finally {
-      auditId = 30;
+      batchesVersion = 1;
+      homeFails = false;
     }
-    await page.reload();
-    await toHome();
-    // Reset all to Auto: each card its own size again, and nothing kept.
-    await page.locator(".home-widget-organize").click();
-    await dialog.locator(".home-size-reset").click();
-    assert.equal(await dialog.locator(".home-size-reset").isDisabled(), true);
-    await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "hidden" });
-    assert.deepEqual(await sizeOf("audit"), { size: "wide", source: "auto", rows: "auto", frame: true });
-    assert.deepEqual(await sizeOf("batches"), { size: "wide", source: "auto", rows: "auto", frame: true });
-    assert.equal(await saved(), null);
-    // The pinned widget column is not sized here, nor are its pins, order or hidden list touched.
-    assert.equal(await page.evaluate((ws) => localStorage.getItem(`yuzuno.homeWidgets.${ws}`), WS), null);
-    assert.equal(report.writes.length, writes, "choosing a size writes nothing to Core");
-    return { setup, organizeInk };
+    assert.equal(report.writes.length, writes);
+    // The old choices for the deck are still there, unread; the widget layout is this Workspace's alone.
+    assert.ok(await page.evaluate((ws) => localStorage.getItem(`yuzuno.homeCardSizes.${ws}`) !== null, WS));
+    assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("yuzuno.homeWidgets.")).sort()), [`yuzuno.homeWidgets.${WS}`]);
   });
 
   for (const [width, height, name] of [[1200, 900, "organize-1200"], [390, 844, "organize-390"]])
-    await step(`Organize Home at ${width}: each card's size and its source, the choices at one edge; on a phone the choice under its source, its four buttons sharing the row (Dev 7's v17)`, async () => {
+    await step(`Organize my widgets at ${width}: a pinned card's size and its source beside its name; on a phone the choice takes its own row, its four buttons sharing it (T-18)`, async () => {
       await open(width, height);
       await toHome();
+      await card("audit").locator(".home-summary-more > button").click();
+      await card("audit").locator(".home-summary-more-list").getByRole("button", { name: /Pin/ }).click();
+      await page.keyboard.press("Escape");
+      await page.locator('.home-widget-slot[data-widget^="pin:p1:30:"]').waitFor();
       await page.locator(".home-widget-organize").click();
-      const dialog = page.locator(".home-organize");
-      await dialog.locator(".home-organize-sizes").scrollIntoViewIfNeeded();
-      const rows = await dialog.locator(".home-size-list li").evaluateAll((items) => items.map((li) => {
+      const row = page.locator('.home-organize .home-organize-list li[data-widget^="pin:p1:30:"]');
+      await row.waitFor();
+      const shape = await row.evaluate((li) => {
         const box = (n) => n.getBoundingClientRect();
         const source = box(li.querySelector(".home-size-source")), options = box(li.querySelector(".home-size-options")), item = box(li);
         const buttons = [...li.querySelectorAll(".home-size-options label")].map((l) => box(l));
-        return { key: li.dataset.sizeFor, under: options.top >= source.bottom - 1, full: Math.abs(options.width - item.width) <= 1,
-          heights: buttons.map((b) => Math.round(b.height)), widths: buttons.map((b) => Math.round(b.width)), right: Math.round(options.right) };
-      }));
-      const phone = width <= 520;
-      for (const row of rows) {
-        assert.equal(row.under, phone, `the choice under its source only on a phone: ${JSON.stringify(row)}`);
-        if (phone) {
-          assert.equal(row.full, true, JSON.stringify(row));
-          assert.ok(row.heights.every((h) => h >= 44), JSON.stringify(row));
-          assert.ok(Math.max(...row.widths) - Math.min(...row.widths) <= 1, `four equal buttons: ${JSON.stringify(row)}`);
-        }
+        return { under: options.top >= source.bottom - 1, full: Math.abs(options.width - item.width) <= 1,
+          heights: buttons.map((b) => Math.round(b.height)), widths: buttons.map((b) => Math.round(b.width)),
+          unit: li.querySelector(".home-size-unit").getClientRects().length };
+      });
+      assert.equal(shape.unit, 1, JSON.stringify(shape));
+      if (width <= 520) {
+        assert.ok(shape.under && shape.full, JSON.stringify(shape));
+        assert.ok(shape.heights.every((h) => h >= 44), JSON.stringify(shape));
+        assert.ok(Math.max(...shape.widths) - Math.min(...shape.widths) <= 1, `four equal buttons: ${JSON.stringify(shape)}`);
       }
-      assert.equal(new Set(rows.map((r) => r.right)).size, 1, JSON.stringify(rows));
       const sideways = await page.evaluate(() => { const m = document.querySelector(".home-organize"); return m.scrollWidth > m.clientWidth + 1; });
       assert.equal(sideways, false);
       await shot(`${name}.png`);
-      await dialog.locator(".home-size-foot").scrollIntoViewIfNeeded();
-      await shot(`${name}-foot.png`);
-      return { rows };
+      return { shape };
     });
 
   await step("Machines either side of 720 and 540 px and on a 320 px phone: one row of four, then two by two with the shares, then two by two without; the Jobs one line; nothing sideways", async () => {

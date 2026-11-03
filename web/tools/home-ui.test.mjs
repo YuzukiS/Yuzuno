@@ -976,7 +976,7 @@ test("Home is laid out as Needs you, My widgets, then the projects; widgets are 
     await waitFor(() => !p.doc.querySelector('[role="dialog"]'), "the Machines page closes");
     // Organize: a dialog; hidden, a widget is not drawn and reads nothing; the choice is kept.
     p.button("Organize", column).click();
-    await waitFor(() => /Organize Home/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "Organize opens");
+    await waitFor(() => /Organize my widgets/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "Organize opens");
     const dialog = () => p.doc.querySelector('[role="dialog"]');
     assert.match(dialog().textContent, /Changes only how this device shows them\./);
     assert.ok(dialog().querySelector('[aria-label="Move Machines up"]').disabled);

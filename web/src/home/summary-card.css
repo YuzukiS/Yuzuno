@@ -458,15 +458,6 @@
   outline: 2px solid var(--home-focus);
   outline-offset: 1px;
 }
-/* A size the card cannot take: there, unavailable, its reason said below. */
-.home-size-options label.is-disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.home-size-reason {
-  color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
-}
 @media (pointer: coarse) {
   .home-size-options label {
     min-height: 44px;

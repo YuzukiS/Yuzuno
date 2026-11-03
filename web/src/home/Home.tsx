@@ -22,6 +22,7 @@ import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
 import { DeckSizes, useHeldSizes } from "./card-sizes";
+import { cardSize, type CardSize } from "./card-preview";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -474,7 +475,7 @@ export function Home({
   const widgetLayout = useWidgetLayout(workspaceId);
   // The sizes the deck's cards are shown at in this visit (T-18).
   const deckSizes = useHeldSizes(readOnly ? "" : workspaceId, visit);
-  const { layout, pin, unpin } = widgetLayout;
+  const { layout, pin, unpin, resize } = widgetLayout;
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
     (projectId: string, section: Section) => {
@@ -508,14 +509,18 @@ export function Home({
     // The design preview has no pins: its sections are not this workspace's.
     ...(readOnly || !layout ? [] : layout.pins).map((p) => {
       const source = resolvePin(p, data, readFailed);
+      // The widget's size: the user's for it, else its Agent's from the version it shows (T-18, Lead 2457, 2473).
+      const own = source.state === "shown" ? cardSize(source.section) : "small";
       return {
         id: pinWidgetId(p),
         name: source.state === "shown" ? source.section.title : p.title,
+        size: { shown: p.size ?? own, own, chosen: p.size ?? null, onChange: (size: CardSize | null) => resize(p, size) },
         onUnpin: () => unpin(p),
         body: (
           <PinnedSection
             pin={p}
             source={source}
+            size={{ own, chosen: p.size ?? null, onChange: (size) => resize(p, size) }}
             onOpen={() => revealIn(p.projectId, () => document.getElementById(sectionDomId(p.projectId, p.key)))}
             onUnpin={() => unpin(p)}
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}

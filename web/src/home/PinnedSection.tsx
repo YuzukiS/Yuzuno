@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { useLanguage } from "../i18n";
+import { useEffect, useId, useRef, useState } from "react";
+import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
-import { ArrowUpRight, Clock3, Eye, MessageSquareReply, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, Clock3, Eye, MessageSquareReply, NotebookText, Pin as PinIcon, PinOff, Scaling, TriangleAlert } from "lucide-react";
 import type { Agent } from "../types";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { absolute, duration, relative } from "./format";
@@ -9,6 +9,9 @@ import { SectionBody } from "./SectionBody";
 import { pinWidgetId, type Pin, type PinSource } from "./widget-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { homeText } from "./home-text";
+import type { CardSize } from "./card-preview";
+import { cardText } from "./card-text";
+import { SizeChoice } from "./SizeChoice";
 
 /**
  * A Brief section the user pinned to the widget column: the same section
@@ -26,9 +29,12 @@ export function PinnedSection({
   onUnpin,
   onPinCurrent,
   reply,
+  size,
 }: {
   pin: Pin;
   source: PinSource;
+  /** The widget's size: the user's (`chosen`), else its Agent's (`own`); absent in the design preview. */
+  size?: { own: CardSize; chosen: CardSize | null; onChange: (size: CardSize | null) => void };
   onOpen: () => void;
   onUnpin: () => void;
   /** Only when the section now under the key may itself be pinned (not an ask). */
@@ -58,6 +64,7 @@ export function PinnedSection({
           {source.state === "shown" && <FoldButton collapsed={collapsed} onToggle={toggleFold} label={title} controls={body} />}
           <NotebookText size={14} aria-hidden="true" />
           <span>{title}</span>
+          {size && <SizeMenu title={title} widgetId={pinWidgetId(pin)} {...size} />}
         </h2>
         <span className="home-pinned-from">
           {projectName}
@@ -143,5 +150,68 @@ export function PinnedSection({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * The widget's size, in its own small menu (T-18, Lead 2473): Agent (the
+ * card's own size), Small, Wide or Large. Escape closes it and gives focus
+ * back to its button; so does a click outside.
+ */
+function SizeMenu({
+  title,
+  widgetId,
+  own,
+  chosen,
+  onChange,
+}: {
+  title: string;
+  widgetId: string;
+  own: CardSize;
+  chosen: CardSize | null;
+  onChange: (size: CardSize | null) => void;
+}) {
+  const t = useStrings(cardText);
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLSpanElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const listId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const away = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+  return (
+    <span
+      className="home-pinned-size"
+      ref={root}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          trigger.current?.focus();
+        }
+      }}
+    >
+      <button
+        ref={trigger}
+        type="button"
+        className="icon-button"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-label={t.widgetSize(title)}
+        title={t.size}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Scaling size={13} />
+      </button>
+      <span id={listId} className="home-summary-more-list home-pinned-size-list" role="group" aria-label={t.size} hidden={!open}>
+        <SizeChoice name={`${widgetId}-size`} legend={t.size} value={chosen} own={own} variant="menu" onChange={onChange} />
+      </span>
+    </span>
   );
 }
