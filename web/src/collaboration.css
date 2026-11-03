@@ -518,6 +518,16 @@
     opacity: 0;
   }
 }
+/* The list as cards or as rows, taking over from the other as a task opens
+   or has gone (CollaborationBoard.tsx). */
+.collab-list-flip {
+  animation: collab-list-flip var(--motion-small) var(--ease-standard) both;
+}
+@keyframes collab-list-flip {
+  from {
+    opacity: 0;
+  }
+}
 @keyframes collab-detail-switch {
   from {
     opacity: 0;

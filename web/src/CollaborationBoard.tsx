@@ -5,7 +5,7 @@ import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -581,15 +581,20 @@ export function CollaborationBoard({
   const loadingRef = useRef(loading);
   loadingRef.current = loading;
   const loadTasks = useCallback(
-    async (afterSeq?: number) => {
+    async (afterSeq?: number, quiet = false) => {
       // A newer request (other conditions, or a reload) supersedes this one:
       // its response, error and completion are all ignored.
       taskLoad.current.controller?.abort();
       const controller = new AbortController();
       const generation = ++taskLoad.current.generation;
       taskLoad.current.controller = controller;
-      setLoading(true);
-      setError("");
+      // A background reload (a Workspace revision) shows nothing: Refresh
+      // neither spins nor turns off, and an error stays until an answer
+      // replaces it (T-19 CB-04).
+      if (!quiet) {
+        setLoading(true);
+        setError("");
+      }
       try {
         const next = await call<TaskPage>(
           "task_list",
@@ -616,6 +621,7 @@ export function CollaborationBoard({
               },
         );
         if (afterSeq === undefined) setOutdated(false);
+        setError("");
       } catch (error) {
         if (generation === taskLoad.current.generation)
           setError(errorText(error));
@@ -646,7 +652,7 @@ export function CollaborationBoard({
     const loaded = pageRef.current;
     if (!loaded || loadingRef.current) return;
     if ((loaded.pages || 1) <= 1) {
-      void loadTasks();
+      void loadTasks(undefined, true);
       return;
     }
     const generation = taskLoad.current.generation;
@@ -703,7 +709,10 @@ export function CollaborationBoard({
     });
     // With only the first page loaded, Core's own answer replaces the estimate.
     if ((pageRef.current?.pages || 1) <= 1) void loadTasks();
-    setEntry("switch");
+    // A save of the task already open leaves its pane as it is: changing
+    // the entry would play the switch again (T-19 CB-13). A task just
+    // created takes the place of the New task pane.
+    if (creating || selected !== task.id) setEntry("switch");
     stay();
     setCreating(false);
     setSelected(task.id);
@@ -714,6 +723,19 @@ export function CollaborationBoard({
    * keep the same order: what waits on someone first, newest change first. */
   const groups = groupTasks(tasks);
   const listAsRows = detailOpen || leaving;
+  // Cards become rows beside an open task, and come back once it has gone:
+  // the list that takes over fades in, rather than swapping under the
+  // moving column (T-19 CB-09). Set before the paint that shows it.
+  const [listFlip, setListFlip] = useState(false);
+  const listMode = useRef(listAsRows);
+  useLayoutEffect(() => {
+    if (listMode.current === listAsRows) return;
+    listMode.current = listAsRows;
+    setListFlip(true);
+  }, [listAsRows]);
+  const flipEnded = (event: React.AnimationEvent) => {
+    if (event.target === event.currentTarget) setListFlip(false);
+  };
   const taskButton = (task: SharedTask, card: boolean) => {
     const agent = agents.find(
       (agent) => agent.id === task.assigneeAgentId,
@@ -959,7 +981,7 @@ export function CollaborationBoard({
                     </div>
                   )}
                   {listAsRows ? (
-                    <div className="collab-groups">
+                    <div className={`collab-groups${listFlip ? " collab-list-flip" : ""}`} onAnimationEnd={flipEnded}>
                       {groups.map((group) => (
                         <section
                           key={group.status}
@@ -979,7 +1001,7 @@ export function CollaborationBoard({
                       ))}
                     </div>
                   ) : (
-                    <div className="collab-cards">
+                    <div className={`collab-cards${listFlip ? " collab-list-flip" : ""}`} onAnimationEnd={flipEnded}>
                       {groups.flatMap((group) => group.tasks).map((task) => taskButton(task, true))}
                     </div>
                   )}
@@ -1234,16 +1256,22 @@ function TaskPane({
     };
   }, []);
   const load = useCallback(
-    async (afterSeq?: number) => {
+    async (afterSeq?: number, quiet = false) => {
       const generation = ++loadGeneration.current;
-      setLoading(true);
-      setReadError("");
+      // A background reload (each Workspace revision) shows nothing: Refresh
+      // neither spins nor turns off, and an error stays until an answer
+      // replaces it (T-19 TD-01). The latest load ends the spin, whichever.
+      if (!quiet) {
+        setLoading(true);
+        setReadError("");
+      }
       try {
         const next = await call<TaskDetail>("task_get", {
           taskId: id,
           ...(afterSeq === undefined ? {} : { afterSeq }),
           limit: 50,
         });
+        if (generation === loadGeneration.current) setReadError("");
         if (generation === loadGeneration.current)
           setDetail((previous) =>
             afterSeq === undefined
@@ -1270,8 +1298,11 @@ function TaskPane({
     },
     [id],
   );
+  // Its first read is shown; each revision after it is read again quietly.
+  const read = useRef(false);
   useEffect(() => {
-    void load();
+    void load(undefined, read.current);
+    read.current = true;
     return () => {
       loadGeneration.current++;
     };
@@ -1974,16 +2005,21 @@ function Messages({
   const [error, setError] = useState("");
   const generation = useRef(0);
   const load = useCallback(
-    async (afterSeq?: number) => {
+    async (afterSeq?: number, quiet = false) => {
       const request = ++generation.current;
-      setLoading(true);
-      setError("");
+      // As the board's list and a task's detail: a revision's reload shows
+      // nothing, and an error stays until an answer replaces it (T-19 MS-01).
+      if (!quiet) {
+        setLoading(true);
+        setError("");
+      }
       try {
         const next = await call<MessagePage>("peer_read", {
           ...(mailbox ? { agentId: mailbox } : {}),
           ...(afterSeq === undefined ? {} : { afterSeq }),
           limit: 50,
         });
+        if (request === generation.current) setError("");
         if (request === generation.current)
           setPage((previous) =>
             afterSeq === undefined
@@ -2017,7 +2053,7 @@ function Messages({
     };
   }, [load]);
   useEffect(() => {
-    if (revision) void load();
+    if (revision) void load(undefined, true);
   }, [revision, load]);
   return (
     <section
