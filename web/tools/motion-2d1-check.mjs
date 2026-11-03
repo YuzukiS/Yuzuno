@@ -41,9 +41,17 @@ const request = (id, command) => ({ id, agentId: "a", method: "item/commandExecu
   createdAt: new Date().toISOString() });
 const listed = request("listed-1", "npm run lint");
 let moriPending;
+// A Codex Agent with a native thread reads its account usage and MCP tools: none known here.
+const usage = {
+  revision: 1, status: "unknown", account: null, accountId: null,
+  source: { generation: "fixture", label: "Codex", machineId: null, runtimeId: null },
+  checkedAt: null, observedAt: null, ordinaryUsageAllowed: null, error: null, buckets: [],
+};
+const mcp = { state: "observed", reason: "", generation: 1, more: 0, servers: [] };
 const gets = () => ({
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs/live": noLiveJobs, "/api/jobs": noJobs,
-  "/api/ci": noCiRuns, "/api/reviews": noReviews,
+  "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+  "/api/agents/a/codex/usage": usage, "/api/agents/b/codex/usage": usage, "/api/agents/a/codex/mcp": mcp, "/api/agents/b/codex/mcp": mcp,
   "/api/workspace": { workspace: { id: "fixture" }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/w" },
   "/api/agents/a": { agent: agents[0], pending: moriPending, artifacts: [], turns: turns("Mori") },
