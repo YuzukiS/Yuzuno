@@ -41,6 +41,9 @@ const request = (id, command) => ({ id, agentId: "a", method: "item/commandExecu
   createdAt: new Date().toISOString() });
 const listed = request("listed-1", "npm run lint");
 let moriPending;
+// Changes Core makes before it announces them. Staged here, they are applied only when the page asks
+// for /__check/release right before the event, so a read already on its way cannot see one early.
+let staged = [];
 // A Codex Agent with a native thread reads its account usage and MCP tools: none known here.
 const usage = {
   revision: 1, status: "unknown", account: null, accountId: null,
@@ -63,6 +66,10 @@ const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/htm
 async function serve(route) {
   const request = route.request();
   const url = new URL(request.url());
+  if (url.pathname === "/__check/release") {
+    for (const change of staged.splice(0)) change();
+    return route.fulfill({ json: {} });
+  }
   if (url.pathname.startsWith("/api/")) {
     // A decision: held, never answered (as approval-spinner-check does).
     const respond = request.method() === "POST" && /^\/api\/requests\/([^/]+)\/respond$/.exec(url.pathname);
@@ -117,11 +124,16 @@ function pageHelpers() {
     if (!stream) throw new Error("no open stream");
     stream.onmessage?.({ data: JSON.stringify(event), lastEventId: String(++id) });
   };
+  // What the check staged becomes Core's state, and then Core says so.
+  const after = (...events) => async () => {
+    await fetch("/__check/release");
+    for (const event of events) send(event);
+  };
   // Core announces a change to Mori: how a new request is announced (events.rs announce_changed).
-  window.__announce = () => send({ type: "agent.changed", agentId: "a" });
+  window.__announce = after({ type: "agent.changed", agentId: "a" });
   // Core cannot resume the stream: everything is read again.
-  window.__reset = () => send({ type: "reset", reason: "check" });
-  window.__announceThenReset = () => { window.__announce(); window.__reset(); };
+  window.__reset = after({ type: "reset", reason: "check" });
+  window.__announceThenReset = after({ type: "agent.changed", agentId: "a" }, { type: "reset", reason: "check" });
   const plays = (el) => el.getAnimations().map((a) => {
     const frames = a.effect?.getKeyframes?.() ?? [];
     return { keys: frames.map((k) => Object.keys(k).filter((p) => !["offset", "easing", "composite", "computedOffset"].includes(p)).sort().join("+")).join("/"),
@@ -187,6 +199,7 @@ for (const run of runs) {
   const reduced = run.reducedMotion === "reduce";
   agents = [agent("a", "Mori"), agent("b", "Hana")];
   moriPending = [listed];
+  staged = [];
   const heldBefore = report.held.length;
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
@@ -200,7 +213,7 @@ for (const run of runs) {
   const open = (name) => page.locator(`.agent-row .agent-select[aria-label="Open ${name}"]`).first().click();
   /** Frames from the one before `how`, which makes the detail list `add` as well. */
   const bring = async (add, how, span = 900) => {
-    moriPending = [...moriPending, add];
+    staged.push(() => { moriPending = [...moriPending, add]; });
     const before = await calls();
     const frames = await page.evaluate(([span, how]) => window.__sample(span, how), [span, how]);
     const id = `request-${add.id}`;
@@ -253,7 +266,7 @@ for (const run of runs) {
     onlyShows("a request announced and then reset before the read", await bring(request("sync-2", "npm run docs"), "__announceThenReset"));
 
     // Another native session of the same Agent is a new baseline.
-    agents[0].threadId = "th-a-2";
+    staged.push(() => { agents[0].threadId = "th-a-2"; });
     onlyShows("a new native session listed with a new request", await bring(request("session-1", "npm run check"), "__announce"));
 
     // To another Agent and back: the cards there show with nothing playing.
@@ -271,7 +284,7 @@ for (const run of runs) {
     if (!reduced) {
       // Reduced motion turned on while a live request fades in, held at 60 ms; in the new session, after the return.
       const third = request("live-2", "npm run build");
-      moriPending = [...moriPending, third];
+      staged.push(() => { moriPending = [...moriPending, third]; });
       const held = await page.evaluate((id) => window.__hold(id, 60), `request-${third.id}`);
       await page.emulateMedia({ reducedMotion: "reduce" });
       const during = await page.evaluate(() => window.__sample(250));
@@ -289,7 +302,7 @@ for (const run of runs) {
     // Pressed while it comes in: a live request, its fade held at 60 ms (none under reduced
     // motion), and Allow once clicked where it shows. The reply is held, never answered.
     const last = request("live-3", "npm run e2e");
-    moriPending = [...moriPending, last];
+    staged.push(() => { moriPending = [...moriPending, last]; });
     const id = `request-${last.id}`;
     const hold = reduced
       ? await page.evaluate((id) => window.__sample(900, "__announce").then((f) => ({ held: false, shown: f.some((x) => x.cards[id]), plays: f.some((x) => x.cards[id]?.plays.length) })), id)
