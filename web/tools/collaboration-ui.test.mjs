@@ -1853,6 +1853,7 @@ test("a theory record's bound shows as its author wrote it whatever was checked,
     { ...base, id: "formal", title: "Claim in Lean", details: { checked: "formal", bound: "|x| ≤ 2^10" } },
     { ...base, id: "none", title: "Claim not yet looked at", details: { checked: "none", bound: "m ≥ 3" } },
     { ...base, id: "enumerated", title: "Claim enumerated", details: { result: "proof", checked: "enumeration", bound: "n ≤ 12" } },
+    { ...base, id: "unbounded", title: "Claim with no bound", details: { result: "conjecture", checked: "by_hand" } },
   ];
   for (const [language, expected] of [
     ["en", {
@@ -1861,6 +1862,7 @@ test("a theory record's bound shows as its author wrote it whatever was checked,
       "Claim in Lean": ["checked formally", "Bound: |x| ≤ 2^10", "A formal check covers the formal statement"],
       "Claim not yet looked at": ["not checked", "Bound: m ≥ 3"],
       "Claim enumerated": ["Proof · checked by enumeration up to n ≤ 12", "A finite enumeration is no general proof."],
+      "Claim with no bound": ["Conjecture · checked by hand"],
       label: "Bound",
     }],
     ["zh-Hans", {
@@ -1869,6 +1871,7 @@ test("a theory record's bound shows as its author wrote it whatever was checked,
       "Claim in Lean": ["形式化核对", "界限: |x| ≤ 2^10", "形式化核对只覆盖形式化的命题"],
       "Claim not yet looked at": ["未核对", "界限: m ≥ 3"],
       "Claim enumerated": ["证明 · 枚举核对至 n ≤ 12", "有限枚举不是一般性证明。"],
+      "Claim with no bound": ["猜想 · 人工核对"],
       label: "界限",
     }],
   ]) {
@@ -1896,6 +1899,9 @@ test("a theory record's bound shows as its author wrote it whatever was checked,
         const enumerated = shows("Claim enumerated", state);
         assert.equal(enumerated.split("n ≤ 12").length - 1, 1, `${language} ${state}: the bound once in ${enumerated}`);
         assert.ok(!enumerated.includes(`${expected.label}:`), `${language} ${state}: no bound line in ${enumerated}`);
+        // No bound given: no label left empty.
+        const unbounded = shows("Claim with no bound", state);
+        assert.ok(!unbounded.includes(expected.label), `${language} ${state}: no bound label in ${unbounded}`);
         if (state === "collapsed") {
           for (const el of cards) toggleOf(el).click();
           await waitFor(() => cards.every((el) => el.querySelector(".task-research-read")), `${language}: every record read`);
