@@ -1,5 +1,6 @@
 // T-19, a row the reader opens at the end of a followed conversation stays where they pressed it (Lead 3812,
-// B), in Chromium on a production build of the app, with every API answered here (no Core).
+// B), in Chromium on a production build of the app, with no Core: the reads this check knows are answered
+// here; any other gets {} and is listed in the report (unknownGets).
 // The conversation scrolls and is followed: its end is in view. Then:
 // - a tool row near the end is opened by a pointer (desktop) or a tap (phone), by Enter and by Space on its
 //   focused summary: the row stays where it was, however much it grows below;
