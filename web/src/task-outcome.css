@@ -425,6 +425,9 @@
 .outcome-record-support {
   font-size: 0.82rem;
 }
+.outcome-record .outcome-note {
+  margin: 0;
+}
 .outcome-artifact {
   background: var(--surface-soft);
   border: 1px solid var(--line);
