@@ -199,6 +199,7 @@ import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
+import { useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -394,6 +395,11 @@ export function App() {
   // Without a system frame (Windows desktop), the toolbar is the title bar.
   const frame = useCustomFrame();
   const [homeOpen, setHomeOpen] = useState(false);
+  // A conversation fades in as it opens from Home or another Agent's takes its
+  // place (T-19 M6: SH:M11, C01). A phone's list and conversation are push and
+  // pop (M8), not this.
+  const conversationBody = useRef<HTMLDivElement>(null);
+  useSurfaceIn(conversationBody, homeOpen ? null : selected, "small", !phone);
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
@@ -2905,6 +2911,7 @@ export function App() {
               </div>
             )}
             <div
+              ref={conversationBody}
               className="conversation-body"
               data-phone-dock={phone && dockMotion.shown ? dockMotion.shown : undefined}
               data-phone-dock-way={phone && dockMotion.way ? dockMotion.way : undefined}
