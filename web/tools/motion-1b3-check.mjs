@@ -10,7 +10,10 @@
 // settle's time. A jump still on its way when another starts, when the
 // reader wheels or presses, or when Home is left shows nothing; one whose
 // target its own scroller keeps moving (longer than 400 ms) is marked only
-// once that stops, whatever other scroller ends meanwhile. Focus is compared with the build before this batch
+// once that stops, whatever other scroller ends meanwhile. On a phone, with
+// the docks of #471, a Turn reached from the turn dock is the landing with
+// focus on it, the dock gone at once with nothing left marked, and with the
+// landing still shown the dock opens on a tap and stays open. Focus is compared with the build before this batch
 // (--baseline records it). Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1b3-check.mjs [--baseline]
 import assert from "node:assert/strict";
@@ -106,11 +109,14 @@ const runs = [
   { name: "desktop-reduced", viewport: { width: 1280, height: 860 }, reducedMotion: "reduce" },
   { name: "app", viewport: { width: 1280, height: 860 }, reducedMotion: "no-preference", fixture: true },
   { name: "app-reduced", viewport: { width: 1280, height: 860 }, reducedMotion: "reduce", fixture: true },
+  { name: "phone-app", viewport: { width: 390, height: 844 }, reducedMotion: "no-preference", fixture: true, phone: true },
+  { name: "phone-app-reduced", viewport: { width: 390, height: 844 }, reducedMotion: "reduce", fixture: true, phone: true },
 ];
 for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
-  const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion });
+  const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
+    hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
   const page = await context.newPage();
   page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
   await page.route("**/*", (route) => serve(route, !!run.fixture));
@@ -135,6 +141,55 @@ for (const run of runs) {
     const want = { home: "home-highlight", turn: "settle-tint", source: "settle-ring" };
     ok(`${tag}: Home's landing, a Turn's landing and a source's arrival settle once over 1200 ms${reduced ? " (none under reduced motion)" : ""}`,
       Object.entries(want).every(([k, name]) => (reduced ? probes[k].name === "none" : probes[k].name === name && ms(probes[k].duration) === 1200)), probes);
+  }
+
+  // On a phone: the turn dock's panel (#471) jumps to a Turn, and opens again over the landing.
+  if (run.phone) {
+    await page.locator(".agent-row", { hasText: "Mori" }).first().tap().catch(() => {});
+    const toggle = page.locator(".phone-dock-turns");
+    await toggle.waitFor({ timeout: 5000 }).catch(() => {});
+    if (await toggle.isVisible()) {
+      await toggle.tap();
+      await page.waitForTimeout(400);
+      const stops = page.locator(".turn-dock .turn-dock-stop").filter({ visible: true });
+      if ((await stops.count()) > 1) {
+        // In the page: the landing, focus, and the dock's state and marks.
+        await page.evaluate(() => {
+          window.__phoneDock = () => {
+            const body = document.querySelector(".conversation-body");
+            const el = document.querySelector("[data-settle]");
+            return { settled: !!el, on: el ? (el.matches("article.turn") ? "turn" : el.dataset.itemId ? "item" : el.tagName) : null,
+              focusOnTarget: !!el && el === document.activeElement, dock: body?.dataset.phoneDock ?? null, way: body?.dataset.phoneDockWay ?? null,
+              marked: [...(body?.querySelectorAll(":scope > .work-dock, :scope > .turn-dock") || [])].filter((panel) => panel.hasAttribute("inert") || panel.hasAttribute("aria-hidden")).length,
+              animation: el ? getComputedStyle(el).animationName : null, tint: el ? getComputedStyle(el).backgroundColor : null };
+          };
+          window.__watch(window.__phoneDock, 600);
+        });
+        await stops.first().tap();
+        await page.waitForTimeout(700);
+        const frames = await page.evaluate(() => window.__frames);
+        report.frames[`${tag}: phone dock jump`] = frames;
+        report.focus[`${tag}: a Turn reached from the phone's dock`] = await describe(page);
+        const first = frames.find((f) => f.settled);
+        ok(`${tag}: a Turn reached from the phone's turn dock is the landing${reduced ? " (a still tint)" : " (settle-tint)"} with focus on it, and the dock is gone at once with nothing left marked`,
+          !!first && first.t <= 50 && first.focusOnTarget && (reduced ? first.animation === "none" && !/rgba\(0, 0, 0, 0\)|transparent/.test(first.tint || "transparent") : first.animation === "settle-tint") &&
+            frames.every((f) => f.dock === null && f.marked === 0), { first, last: frames.at(-1) });
+        // The landing still shown: a tap on the dock's button opens it, and it stays open.
+        await page.evaluate(() => window.__watch(window.__phoneDock, 600));
+        const shownBefore = await page.evaluate(() => !!document.querySelector("[data-settle]"));
+        await toggle.tap();
+        await page.waitForTimeout(700);
+        const reopened = await page.evaluate(() => window.__frames);
+        report.frames[`${tag}: phone dock over a landing`] = reopened;
+        ok(`${tag}: with a Turn's landing still shown, the dock opens on a tap and stays open (the tap ends the landing)`,
+          shownBefore && reopened.length > 0 && reopened.at(-1).dock === "turns" && reopened.at(-1).marked === 0 && !reopened.at(-1).settled &&
+            reopened.every((f) => f.dock === "turns"), { shownBefore, first: reopened[0], last: reopened.at(-1) });
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(400);
+      } else report.notShown.push(`${tag}: the phone's turn dock has no second stop`);
+    } else report.notShown.push(`${tag}: no turn dock button on the phone`);
+    await context.close();
+    continue;
   }
 
   // A Turn the dock jumps to (instant): tinted from the first frame, gone when the tint ends.
