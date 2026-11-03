@@ -604,9 +604,9 @@ export function App() {
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
   // or a pane that shrinks under a growing composer, keeps the end in view
   // while the conversation follows it, as an update does. A row the reader
-  // has just opened stays where they clicked it.
+  // opens or closes stops the following (onClickCapture), so it stays where
+  // they clicked it, and what it opens below is theirs to scroll to (T-19).
   const followHeld = useRef(false);
-  const readerToggled = useRef(-Infinity);
   const followGrowth = useCallback((inner: HTMLDivElement | null) => {
     if (!inner || typeof ResizeObserver === "undefined") return;
     let last: { height: number; pane: number } | null = null;
@@ -624,13 +624,14 @@ export function App() {
         grown > 0 &&
         gapBefore < 72 &&
         stickToBottom.current &&
-        !followHeld.current &&
-        performance.now() - readerToggled.current > 600
+        !followHeld.current
       )
         el.scrollTop = el.scrollHeight;
-      // Following, but not moved to the end: said once the frame is done
-      // (by then a conversation that has just opened has been put there).
-      else if (stickToBottom.current) requestAnimationFrame(measureLatest);
+      // Not moved to the end: said once the frame is done (by then a
+      // conversation that has just opened has been put there), so Back to
+      // latest shows once the end is out of view, as after a row the reader
+      // opened there.
+      else requestAnimationFrame(measureLatest);
     });
     observer.observe(inner);
     if (inner.parentElement) observer.observe(inner.parentElement);
@@ -3156,7 +3157,10 @@ export function App() {
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                onTouchEnd={readerScrollIntent}
+                // A tap on a disclosure opens or closes it; it is not the reader going to the end.
+                onTouchEnd={(e) => {
+                  if (!(e.target as Element).closest?.("summary")) readerScrollIntent();
+                }}
                 onKeyDownCapture={(e) => {
                   if (
                     e.target instanceof HTMLElement &&
@@ -3165,7 +3169,9 @@ export function App() {
                     )
                   )
                     return;
-                  if (["End", "PageDown", "ArrowDown", " "].includes(e.key))
+                  // Space on a disclosure opens or closes it rather than scrolling.
+                  if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
+                    (e.key === " " && !(e.target as Element).closest?.("summary")))
                     readerScrollIntent();
                   if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
                     live.pinWindow();
@@ -3173,8 +3179,14 @@ export function App() {
                   }
                 }}
                 onClickCapture={(e) => {
-                  if ((e.target as Element).closest?.("summary"))
-                    readerToggled.current = performance.now();
+                  // The reader opens or closes a disclosure (by pointer, key or
+                  // touch, which all click it): they take over from following,
+                  // as a wheel up or Home does, so nothing moves what they
+                  // clicked; their window is kept as it is (T-19).
+                  if ((e.target as Element).closest?.("summary")) {
+                    live.pinWindow();
+                    stickToBottom.current = false;
+                  }
                 }}
                 onPointerDown={(e) => {
                   // Native scrollbar events target the scroll container itself.
