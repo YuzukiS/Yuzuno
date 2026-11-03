@@ -8,7 +8,7 @@
 //   same way, with focus in its text. An Ask already replied when Home opens shows as it is.
 // - Under reduced motion nothing fades; focus moves the same.
 // Writes: only the one Ask reply sent on purpose in each run (POST .../brief/reply); anything else is
-// refused and counted. Served from http://127.0.0.1. Chromium is not Safari.
+// refused and counted, but the linked-repositories list Home reads with POST. Served from http://127.0.0.1. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-home-reply-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -21,7 +21,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/motion-home-reply");
 await mkdir(output, { recursive: true });
-const report = { checks: [], failures: [], errors: [], console: [], unknownGets: [], writes: [], replies: [], frames: {} };
+const report = { checks: [], failures: [], errors: [], console: [], unknownGets: [], writes: [], replies: [], listReads: 0, frames: {} };
 const ok = (name, cond, detail) => {
   (cond ? report.checks : report.failures).push({ name, detail });
   console.log(`${cond ? "PASS" : "FAIL"} ${name}`);
@@ -79,6 +79,11 @@ async function serve(route) {
       const section = sections.find((s) => s.key === sent.key);
       if (section?.ask) section.ask = { ...section.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: sent.text };
       return route.fulfill({ json: { input: { text: sent.text, clientMessageId: sent.clientMessageId }, status: "accepted", turnId: "mori-t2", error: null } });
+    }
+    // The Project's linked repositories, a list read Home asks with POST (home-api.ts).
+    if (request.method() === "POST" && url.pathname === "/api/collaboration/github_repositories") {
+      report.listReads++;
+      return route.fulfill({ json: { repositories: [], links: [] } });
     }
     if (request.method() !== "GET") {
       report.writes.push(`${request.method()} ${url.pathname}`);
@@ -241,7 +246,7 @@ for (const run of runs) {
   await context.close();
 }
 await browser.close();
-ok(`nothing was written but the one Ask reply sent in each run (POST /api/projects/p1/brief/reply, ${report.replies.length})`,
+ok(`nothing was written but the one Ask reply sent in each run (POST /api/projects/p1/brief/reply, ${report.replies.length}; and ${report.listReads} reads of the linked repositories, POST /api/collaboration/github_repositories)`,
   report.writes.length === 0 && report.replies.length === runs.length && report.replies.every((r) => r.key === "plain"), { writes: report.writes, replies: report.replies });
 report.passed = report.failures.length === 0 && report.errors.length === 0;
 await writeFile(join(output, "motion-home-reply-check.json"), JSON.stringify(report, null, 2) + "\n");
