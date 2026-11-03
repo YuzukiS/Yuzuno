@@ -812,11 +812,24 @@ fn settle(_store: &Store, db: &Connection, run: &mut Value) -> Result<bool> {
         let spent = cost(&all);
         let unknown = spent["unknownEntries"].as_i64().unwrap_or(0)
             + spent["invalidLines"].as_i64().unwrap_or(0);
-        // As the run reads it: what no attempt recorded is said, never $0.
-        let none = spent["attemptsNotRecorded"].as_i64().unwrap_or(0);
-        let money = if spent["attemptsReporting"].as_i64().unwrap_or(0) == 0
-            && spent["attemptsWithUnknown"].as_i64().unwrap_or(0) == 0
-        {
+        // As the run reads it: what no attempt recorded is said, never $0, and
+        // every reason its cost is partial is named, as its card and export do.
+        let count = |key: &str| spent[key].as_i64().unwrap_or(0);
+        let attempts = |n: i64, what: &str| format!("{n} attempt{} {what}", if n == 1 { "" } else { "s" });
+        let mut why = Vec::new();
+        if count("attemptsWithUnknown") > 0 {
+            why.push(attempts(count("attemptsWithUnknown"), "with an unknown amount"));
+        }
+        if count("attemptsNotRecorded") > 0 {
+            why.push(attempts(count("attemptsNotRecorded"), "recorded none"));
+        }
+        if spent["truncated"] == true {
+            why.push("a usage file too long to read whole".to_owned());
+        }
+        if count("attemptsRunning") > 0 {
+            why.push(attempts(count("attemptsRunning"), "still running"));
+        }
+        let money = if count("attemptsReporting") == 0 && count("attemptsWithUnknown") == 0 {
             "No usage was recorded.".to_owned()
         } else {
             format!(
@@ -827,10 +840,10 @@ fn settle(_store: &Store, db: &Connection, run: &mut Value) -> Result<bool> {
                 } else {
                     String::new()
                 },
-                if none > 0 {
-                    format!("; {none} attempt{} recorded none", if none == 1 { "" } else { "s" })
-                } else {
+                if why.is_empty() {
                     String::new()
+                } else {
+                    format!(", incomplete: {}", why.join(", "))
                 }
             )
         };
