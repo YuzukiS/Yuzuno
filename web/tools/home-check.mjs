@@ -408,8 +408,10 @@ async function serve(route) {
   }
   if (method !== "GET" && path.startsWith("/api/")) {
     const body = request.postDataJSON();
-    // A read that happens to be a POST: the project's linked repositories.
-    if (path === "/api/collaboration/github_repositories")
+    // A read that happens to be a POST: the project's linked repositories; and, once Repository details
+    // show their links, the same list refreshed from GitHub (GitHubLinks.tsx), counted apart from writes.
+    if (path === "/api/collaboration/github_refresh") report.agentReads.push(`${method} ${path}`);
+    if (path === "/api/collaboration/github_repositories" || path === "/api/collaboration/github_refresh")
       return route.fulfill({
         json: body?.projectId === "p1"
           ? { repositories: [{ id: 1, fullName: "example/yuzuno-next", url: "https://github.com/example/yuzuno-next", syncedAt: iso(-3 * MIN), error: null }], links: [] }
@@ -911,9 +913,15 @@ try {
     await expect("opening team details writes nothing", async () => assert.deepEqual(writes.slice(writesBeforeDetails), []));
     // Folded again, as the rest of this check expects Home.
     for (const pid of ["p1", "p2"]) await teamDetails(pid).locator(":scope > summary").click();
+    // One line per repository (T-18): its name and latest state; Repository details open its activity lists,
+    // where the open PR is, and close again.
     await expect("repositories", async () => {
-      await until("repository activity", () => p1.locator(".home-repos .repo-activity").getByText("Home V1 slice 1").count());
-      assert.match(await p1.locator(".home-repos").innerText(), /example\/yuzuno-next/);
+      const repos = p1.locator(".home-repos");
+      await until("the repository's line", () => repos.getByText("example/yuzuno-next").count());
+      await repos.locator(".home-repos-details").click();
+      await until("repository activity", () => repos.locator(".repo-activity").getByText("Home V1 slice 1").count());
+      await repos.locator(".home-repos-details").click();
+      assert.equal(await repos.locator(".home-repos-details").getAttribute("aria-expanded"), "false");
     });
     await expect("no failed part on Home", async () => assert.equal(await page.locator(".home-view .result-part-error").count(), 0));
     for (const [pid, key] of [["p1", "release"], ["p1", "build"], ["p1", "naming"], ["p1", "refs"], ["p2", "results"], ["p2", "files"], ["p2", "queue"]])

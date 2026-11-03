@@ -14,7 +14,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/ui-refine-7-browser");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], mutations: [], unexpected: [] };
+const report = { checks: [], errors: [], mutations: [], unexpected: [], agentReads: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -81,6 +81,17 @@ try {
     // collaboration API, as a POST that changes nothing.
     if (method === "POST" && path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
+    // Mori's open conversation reads, answered as Core answers an Agent with none, counted apart from this
+    // check's writes: its reading place (reading-handoff-api.ts), its inputs (useConversationInputs.ts) and
+    // its MCP services as Codex last reported them (CodexMcpStatus.tsx).
+    const own = path.match(/^\/api\/agents\/a\/(reading|conversation\/inputs|codex\/mcp)$/);
+    if (own) {
+      report.agentReads.push(`${method} ${path}`);
+      if (own[1] === "reading" && (method === "GET" || method === "PUT"))
+        return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: 1, accepted: true } : { handoff: null, sourceSeq: 0 } });
+      if (own[1] === "conversation/inputs" && method === "GET") return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
+      if (own[1] === "codex/mcp" && method === "GET") return route.fulfill({ json: { state: "observed", reason: "", generation: 1, servers: [], more: 0 } });
+    }
     if (method !== "GET") {
       report.mutations.push({ method, path });
       if (method === "POST" && /^\/api\/agents\/[^/]+\/review$/.test(path)) return route.fulfill({ json: {} });
@@ -94,6 +105,9 @@ try {
       "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
       "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
       "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/reviews": noReviews,
+      // Which Agents wait on CI (T-122): none; and this Workspace's shared Appearance preset: none saved.
+      "/api/ci/live": { agents: {} },
+      "/api/appearance-preset": { workspaceId: "ws-7", revision: 0, kind: "none" },
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
@@ -226,6 +240,7 @@ try {
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.mutations.filter((m) => !/\/review$/.test(m.path)), [], "no writes");
+  assert.deepEqual([...new Set(report.unexpected)], [], "every read answered by the fixture, in Core's shape");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";
