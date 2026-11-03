@@ -59,7 +59,9 @@ export const researchText = strings({
   sourceKind: { data: "Data", paper: "Paper", notes: "Notes", script: "Script", other: "Other" } as Record<string, string>,
   // A source naming a Task research record (T-17).
   taskRecord: (task: string, seq: number) => `Task record ${task} · activity ${seq}`,
-  recordType: { method: "Method", claim: "Claim", observation: "Observation", result: "Result" } as Record<string, string>,
+  recordType: { method: "Method", claim: "Claim", observation: "Observation", comparison: "Comparison", result: "Result" } as Record<string, string>,
+  recordCounts: (counts: Record<string, number>) =>
+    `${counts.included} included, ${counts.excluded} excluded, ${counts.missing} missing, ${counts.not_done} not done`,
   recordBy: (name: string, at: string) => `by ${name}, ${at}`,
   recordVersion: (version: number) => `version ${version}`,
   recordNewer: (seq: number) => `a newer version is activity ${seq}`,
@@ -163,7 +165,8 @@ export const researchText = strings({
   lines: (lines) => `第 ${lines} 行`,
   sourceKind: { data: "数据", paper: "论文", notes: "笔记", script: "脚本", other: "其他" },
   taskRecord: (task, seq) => `任务记录 ${task} · 活动 ${seq}`,
-  recordType: { method: "方法", claim: "主张", observation: "观察", result: "结果" },
+  recordType: { method: "方法", claim: "主张", observation: "观察", comparison: "比较", result: "结果" },
+  recordCounts: (counts) => `纳入 ${counts.included}，排除 ${counts.excluded}，缺失 ${counts.missing}，未做 ${counts.not_done}`,
   recordBy: (name, at) => `${name}，${at}`,
   recordVersion: (version) => `第 ${version} 版`,
   recordNewer: (seq) => `较新的版本是活动 ${seq}`,

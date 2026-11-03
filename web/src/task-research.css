@@ -162,3 +162,61 @@
   align-items: baseline;
   gap: 4px 10px;
 }
+/* A comparison (T-17 slice 2): every entry, left out or not, with why. */
+.task-research-entries {
+  margin: 6px 0;
+}
+.task-research-entries > strong {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.task-research-comparability {
+  margin: 4px 0 6px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.task-research-comparability span {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+.task-research-entries > ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.task-research-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.task-research-entry:first-child {
+  border-top: 0;
+}
+.task-research-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: baseline;
+}
+.task-research-entry-head .task-research-tag {
+  margin-left: 0;
+}
+.task-research-value {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.task-research-entry-source {
+  margin: 2px 0 0;
+  padding: 0 0 0 12px;
+  list-style: none;
+}
+.task-research-entry-source .task-research-source {
+  border-top: 0;
+  padding: 2px 0;
+}

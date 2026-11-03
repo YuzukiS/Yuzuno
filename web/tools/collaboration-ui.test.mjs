@@ -1419,6 +1419,50 @@ test("an update in the same Workspace keeps a note being written (T-17)", async 
   }
 });
 
+test("a comparison shows every entry, left out or not, with why, and says what the included ones share; no difference is computed (T-17)", async () => {
+  const entries = [
+    { id: "processes", label: "Fresh processes", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -1.2, low: -3.5, high: 1.1 } },
+    { id: "again", label: "Fresh processes, second run", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -0.8, low: -2.9, high: 1.3 } },
+    { id: "large", label: "Large inputs", status: "missing", reason: "The large set was not exported." },
+    { id: "second-machine", label: "Second machine", status: "not_done", reason: "No second machine yet." },
+    { id: "warm", label: "Warm cache run", status: "excluded", reason: "The cache was left warm.", value: { value: -9 } },
+  ];
+  const counts = { included: 2, excluded: 1, missing: 1, not_done: 1 };
+  const aligned = { schema: "research/1", type: "comparison", id: "layouts", title: "Layout B vs A, fresh processes", text: "Runtime change.", entries,
+    comparability: { aligned: true, shared: { unit: "%", definition: "median of runs", level: "process", method: 6 }, differs: [], unknown: [], counts } };
+  const mixed = { ...aligned, id: "layouts-mixed", title: "Layout B vs A, two methods",
+    entries: [entries[0], { ...entries[1], unit: "ms", level: undefined, method: { activitySeq: 3, id: "timing", title: "Timing protocol" } }, ...entries.slice(2)],
+    comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["level"], counts } };
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: { task: task(), activities: [recorded(7, aligned, "Compared."), recorded(8, mixed, "Compared again.")], executions: [], hasMore: false },
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "both comparisons");
+    const [first, second] = page.document.querySelectorAll(".task-research");
+    for (const card of [first, second]) {
+      const text = card.textContent;
+      for (const expected of ["Comparison", "Fresh processes", "Included", "Large inputs", "Missing", "The large set was not exported.",
+        "Second machine", "Not done", "No second machine yet.", "Warm cache run", "Excluded", "The cache was left warm.",
+        "2 included · 1 excluded · 1 missing · 1 not done", "Yuzuno computes no difference"])
+        assert.ok(text.includes(expected), `${expected}: ${text}`);
+      assert.equal(card.querySelectorAll(".task-research-entry").length, 5, "nothing left out is dropped");
+      assert.ok(!/−0\.4|0\.4 %|difference of/i.test(text), "no difference between entries is shown");
+    }
+    assert.match(first.textContent, /−1\.2 \[−3\.5, 1\.1\] %/, "a value as its author gave it");
+    assert.match(first.textContent, /The included entries share unit \(%\), definition \(median of runs\), sample level \(process\), method \(method in activity 6\)/);
+    assert.match(second.textContent, /Side by side only: the included entries differ in unit, method; sample level is not given for every entry/);
+    assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "the table is the record as written; nothing is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("past the length Core follows, the first of a line names its next version and its latest as unknown, never as newest or as maybe none; the last is its newest, in English and Chinese (T-17)", async () => {
   const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional",
     method: { activitySeq: 3, id: "timing", title: "Timing protocol" } };
@@ -1598,3 +1642,111 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
   }
 });
 
+
+test("a comparison entry shows each part its author gave and says which part is missing; a field can differ and be missing at once (T-17)", async () => {
+  const entries = [
+    { id: "a", label: "Iterations", status: "included", unit: "ms", level: "process", definition: "median of runs",
+      method: { activitySeq: 3, id: "timing", title: "Timing protocol" }, value: { value: 12, low: 10.5 } },
+    { id: "b", label: "Fresh processes", status: "included", unit: "s", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" } },
+    { id: "c", label: "Second machine", status: "included", definition: "median of runs", value: { value: 11, high: 12.5 } },
+    { id: "d", label: "Large inputs", status: "missing", reason: "The large set was not exported.", unit: "ms" },
+    { id: "e", label: "Warm cache", status: "excluded", reason: "The cache was left warm.", level: "iteration", n: 0 },
+  ];
+  const record = { schema: "research/1", type: "comparison", id: "partial", title: "Layouts, partly reported", text: "As reported.", entries,
+    comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["unit", "level", "method"],
+      counts: { included: 3, excluded: 1, missing: 1, not_done: 0 } } };
+  for (const [language, expected] of [
+    ["en", {
+      a: ["12 [10.5, high not given] ms", "process · median of runs · method in activity 3"],
+      b: ["No value given · unit s", "sample level not given · n = 10 · median of runs · method in activity 6"],
+      c: ["11 [low not given, 12.5]"],
+      d: ["No value given · unit ms"],
+      e: ["iteration · n = 0"],
+      line: "Side by side only: the included entries differ in unit, method; unit, sample level, method are not given for every entry.",
+    }],
+    ["zh-Hans", {
+      a: ["12 [10.5, 上限未给] ms"],
+      b: ["未给数值 · 单位 s", "未给样本层级 · n = 10"],
+      c: ["11 [下限未给, 12.5]"],
+      d: ["未给数值 · 单位 ms"],
+      e: ["iteration · n = 0"],
+      line: "仅并列展示：纳入的条目在单位, 方法上不同；并非每个条目都给出了单位, 样本层级, 方法。",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(9, record, "Compared.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
+      const rows = [...card.querySelectorAll(".task-research-entry")];
+      assert.equal(rows.length, 5, "every entry, whatever its state");
+      for (const [n, id] of ["a", "b", "c", "d", "e"].entries())
+        for (const text of expected[id]) assert.ok(rows[n].textContent.includes(text), `${language} ${id}: ${text} in ${rows[n].textContent}`);
+      assert.ok(card.textContent.includes(expected.line), `${language}: ${card.textContent}`);
+      // Nothing made up: no value where none was given, no zero for a missing bound.
+      for (const n of [1, 3, 4]) assert.doesNotMatch(rows[n].querySelector(".task-research-value")?.textContent ?? "", /\d+ \[/);
+      assert.doesNotMatch(rows[2].textContent, /\[0|, 0\]/);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("value, low, high and n past JavaScript's safe integers read as approximate, with why; 0 and safe integers stay exact (T-17)", async () => {
+  // Parsed from JSON text, as the page receives Core's answer: Core keeps
+  // these exactly, the page has only the nearest double it can hold.
+  const entries = JSON.parse(`[
+    {"id":"edge","label":"Edge","status":"included","unit":"events","level":"process","n":0,"value":{"value":9007199254740991}},
+    {"id":"big","label":"Big","status":"included","unit":"events","n":9007199254740993,
+      "value":{"value":9007199254740993,"low":-9007199254740993,"high":18446744073709551615}},
+    {"id":"pow","label":"Power","status":"included","unit":"events","level":"seed","n":9007199254740992,"value":{"value":9007199254740992}},
+    {"id":"safe","label":"Safe","status":"excluded","reason":"Counted twice.","level":"seed","n":9007199254740991}
+  ]`);
+  const record = { schema: "research/1", type: "comparison", id: "counts", title: "Event counts", text: "As counted.", entries,
+    comparability: { aligned: false, shared: { unit: "events" }, differs: ["level"], unknown: ["level", "definition", "method"],
+      counts: { included: 3, excluded: 1, missing: 0, not_done: 0 } } };
+  for (const [language, note, missingLevel] of [
+    ["en", "≈: past JavaScript's safe integer range, the value shown may have been rounded; Core keeps the value it parsed.", "sample level not given"],
+    ["zh-Hans", "≈：超出 JavaScript 安全整数范围，显示值可能已舍入；Core 保留它解析的数值。", "未给样本层级"],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(9, record, "Counted.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
+      const [edge, big, pow, safe] = card.querySelectorAll(".task-research-entry");
+      const value = (row) => row.querySelector(".task-research-value");
+      const identity = (row) => row.querySelector(".task-research-identity");
+      // The safe boundary and 0 are exact, unmarked.
+      assert.equal(value(edge).textContent, "9007199254740991 events");
+      assert.equal(value(edge).getAttribute("title"), null);
+      assert.equal(identity(edge).textContent, "process · n = 0");
+      assert.equal(identity(edge).getAttribute("title"), null);
+      // Past it: value, both bounds and n are marked, the u64 maximum too.
+      assert.equal(value(big).textContent, "≈9007199254740992 [≈−9007199254740992, ≈18446744073709552000] events");
+      assert.equal(value(big).getAttribute("title"), note);
+      assert.equal(identity(big).textContent, `${missingLevel} · n = ≈9007199254740992`);
+      assert.equal(identity(big).getAttribute("title"), note);
+      // Exactly 2^53 may itself be a rounded value: marked as well.
+      assert.equal(value(pow).textContent, "≈9007199254740992 events");
+      assert.equal(identity(pow).textContent, "seed · n = ≈9007199254740992");
+      assert.equal(identity(pow).getAttribute("title"), note);
+      // A safe n with a sample level, on an excluded entry, is exact.
+      assert.equal(identity(safe).textContent, "seed · n = 9007199254740991");
+      assert.equal(identity(safe).getAttribute("title"), null);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
