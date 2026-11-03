@@ -526,3 +526,33 @@ fn a_theory_claim_is_delivered_without_any_job() {
         .query_row("SELECT COUNT(*) FROM local_jobs WHERE task_id=?1", params![key], |r| r.get(0)).unwrap();
     assert_eq!(jobs, 0, "no Job, no seed, and nothing asked for one");
 }
+
+#[test]
+fn a_record_proposes_its_next_check_or_a_stop_and_a_method_does_not() {
+    let (_dir, store) = setup();
+    let observation = json!({"type":"observation","id":"ranking-flips","title":"Ranking flips with link order",
+        "text":"Reordering the link step reverses which layout is faster.",
+        "next":{"action":"check","text":"Time ten fresh processes with the link order shuffled: a ranking that still flips is the measurement, not the layout."}});
+    let before = counts(&store);
+    let written = comment(&store, "author", "o1", "T-1", observation.clone()).unwrap();
+    assert_eq!(written["activity"]["research"]["next"], observation["next"]);
+    let after = counts(&store);
+    assert_eq!((after.0, after.1, after.4), (before.0, before.1, before.4), "a proposal changes no task and sends no mail");
+    let with = |base: &Value, id: &str, next: Value| {
+        let mut record = base.clone();
+        record["id"] = json!(id);
+        record["next"] = next;
+        record
+    };
+    let before = counts(&store);
+    for (name, research, expected) in [
+        ("a method", with(&method("timing", "Ten fresh processes."), "timing", json!({"action":"stop","text":"Enough."})), "is for claims, observations and comparisons"),
+        ("an invented action", with(&observation, "o2", json!({"action":"retry","text":"Run it again."})), "must be one of check, stop"),
+        ("no reason", with(&observation, "o3", json!({"action":"stop"})), "text"),
+        ("extra fields", with(&observation, "o4", json!({"action":"check","text":"t","run":"now"})), "invalid_input"),
+    ] {
+        let refused = error(comment(&store, "author", name, "T-1", research));
+        assert!(refused.contains(expected), "{name}: {refused}");
+        assert_eq!(counts(&store), before, "{name}: nothing written");
+    }
+}

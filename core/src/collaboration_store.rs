@@ -19,6 +19,8 @@ mod dispatch_materials;
 mod current;
 mod research;
 pub(crate) use research::desk_source as research_desk_source;
+pub(crate) use research::{decision_record as research_decision_record, line_now as research_line_now,
+    run_method as research_run_method};
 mod compact;
 use result_dispatch::TaskDispatch;
 

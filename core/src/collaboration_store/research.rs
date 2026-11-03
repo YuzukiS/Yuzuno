@@ -30,6 +30,11 @@
 //! is its author's scientific judgement; the criterion's reported status is
 //! the result author's against the fixed acceptance, and neither is derived
 //! from the other.
+//!
+//! The research loop (slice 4) runs on the existing Agent and Jobs: a run may
+//! name the method record it follows, an analysis decision may cite the
+//! record that explains it, and a record may say the next check it proposes
+//! or why to stop. A record never starts, retries or stops anything itself.
 use super::*;
 use anyhow::anyhow;
 use serde_json::Map;
@@ -42,6 +47,9 @@ const MAX_ENTRIES: usize = 40;
 const ALIGNED: &[&str] = &["unit", "definition", "level", "method"];
 const FIELDS: &[&str] = &["theory", "systems", "ml", "robotics", "other"];
 const STANDING: &[&str] = &["supported", "conditional", "unsupported", "open"];
+/// What a record proposes next: a check that could tell explanations apart,
+/// or a stop with its reason. A proposal; it runs nothing.
+const NEXT: &[&str] = &["check", "stop"];
 const MAX_SOURCES: usize = 20;
 const MAX_NOTES: usize = 12;
 /// How far a read follows a revision chain; a longer chain reads as unknown.
@@ -87,6 +95,9 @@ pub(super) fn schema() -> Value {
             "definition":text(300),"unit":text(40),"level":text(60),"n":{"type":"integer","minimum":0},
             "value":{"type":"object","additionalProperties":false,"properties":{"value":{"type":"number"},"low":{"type":"number"},"high":{"type":"number"}},"required":["value"]}},
         "required":["id","label","status"]});
+    let next = json!({"type":"object","additionalProperties":false,
+        "description":"Not for methods: what this record proposes next, a check that could tell the explanations apart or a stop and why. A proposal only: nothing runs, retries or stops because of it, and a hardware run stays the user's or the lab's decision.",
+        "properties":{"action":{"type":"string","enum":NEXT},"text":text(2000)},"required":["action","text"]});
     let entries = json!({"type":"array","maxItems":MAX_ENTRIES,"items":entry,
         "description":"Comparisons only: what is compared. Every entry is included, excluded, missing or not_done; all but included need a reason, and missing or not_done carry no value. Values are as their author states them."});
     json!({"type":"object","additionalProperties":false,
@@ -99,6 +110,7 @@ pub(super) fn schema() -> Value {
             "field":{"type":"string","enum":FIELDS},
             "status":{"type":"string","enum":STANDING,"description":"Claims only: the author's judgement of support."},
             "conditions":notes.clone(),"limits":notes,
+            "next":next,
             "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone()},"required":["activitySeq"]},
             "sources":{"type":"array","maxItems":MAX_SOURCES,"items":source.clone()},
             "revises":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone(),"reason":text(2000)},"required":["activitySeq","reason"]},
@@ -175,7 +187,7 @@ pub(super) fn validate(db: &Connection, task: &SharedTask, input: Option<&Value>
     );
     allowed(
         input,
-        &["type", "id", "title", "text", "field", "status", "conditions", "limits", "method", "sources", "revises", "entries"],
+        &["type", "id", "title", "text", "field", "status", "conditions", "limits", "method", "sources", "revises", "entries", "next"],
     )?;
     let kind = choice(input, "type", TYPES)?.context("invalid_input: research.type is required")?;
     let id = required_text(input, "id", 64)?;
@@ -198,6 +210,13 @@ pub(super) fn validate(db: &Connection, task: &SharedTask, input: Option<&Value>
         if let Some(value) = notes(input, field)? {
             out[field] = value;
         }
+    }
+    if let Some(next) = input.get("next").filter(|v| !v.is_null()) {
+        ensure!(kind != "method", "invalid_input: research.next is for claims, observations and comparisons; a method is revised instead");
+        ensure!(next.is_object(), "invalid_input: research.next is an object");
+        allowed(next, &["action", "text"])?;
+        let action = choice(next, "action", NEXT)?.context("invalid_input: research.next.action is check or stop")?;
+        out["next"] = json!({"action":action,"text":required_text(next, "text", 2000)?});
     }
     if let Some(method) = input.get("method").filter(|v| !v.is_null()) {
         ensure!(kind != "method", "invalid_input: a method does not cite a method; revise it instead");
@@ -613,6 +632,45 @@ pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &V
     let record = cited_record(&row).context("invalid_input: not a research record")?;
     Ok(json!({"activitySeq":seq,"record":record,"version":version_of(db, &task.id, &row)?,
         "producer":row["actor"],"at":row["at"]}))
+}
+
+/// The method record a run follows (T-17 slice 4): one of the run's task's
+/// own method records, fixed by its activity. A later method version leaves
+/// the run as it was; only a changed command or input needs a new run.
+pub(super) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value> {
+    let number = task_seq(db, task)?;
+    let row = record_in(db, task, seq)?
+        .filter(|row| row["research"]["type"] == "method")
+        .with_context(|| format!("invalid_input: method: activity {seq} is not a method record of {}", task_number(number)))?;
+    Ok(json!({"activitySeq":seq,"id":row["research"]["id"],"title":row["research"]["title"],
+        "version":version_of(db, task, &row)?}))
+}
+
+/// The research record an analysis decision cites (T-17 slice 4): any record
+/// of the run's task, fixed as it reads when the decision is made.
+pub(super) fn decision_record(db: &Connection, task: &str, seq: i64) -> Result<Value> {
+    let number = task_seq(db, task)?;
+    let row = record_in(db, task, seq)?
+        .with_context(|| format!("invalid_input: record: activity {seq} is not a research record of {}", task_number(number)))?;
+    let mut out = json!({"activitySeq":seq,"record":cited_record(&row),"version":version_of(db, task, &row)?,
+        "producer":row["actor"],"at":row["at"]});
+    if let Some(next) = row["research"].get("next") {
+        out["next"] = next.clone();
+    }
+    Ok(out)
+}
+
+/// Where a record's line stands now, for a run or a decision that cites it.
+pub(super) fn line_now(db: &Connection, task: &str, seq: i64) -> Result<Value> {
+    if record_in(db, task, seq)?.is_none() {
+        return Ok(json!({"state":"missing"}));
+    }
+    let (next, latest) = newer(db, task, seq)?;
+    Ok(json!({"state":"readable","revisedBy":next,"latestActivitySeq":latest}))
+}
+
+fn task_seq(db: &Connection, task: &str) -> Result<i64> {
+    Ok(db.query_row("SELECT seq FROM collaboration_tasks WHERE id=?1", params![task], |r| r.get(0))?)
 }
 
 /// Where a criterion's research record stands now: whether it can be read,
