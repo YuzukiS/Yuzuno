@@ -153,9 +153,9 @@ for (const run of runs) {
         start.top > run.viewport.height && Math.abs(last.top) <= 4, { start, last });
       if (reduced)
         ok(`${tag}: at once under reduced motion (first frame ${frames[0].top} px, ${moving.length} frames between)`,
-          Math.abs(frames[0].top - last.top) <= 4 && moving.length === 0, frames.slice(0, 3));
+          Math.abs(last.top) <= 4 && Math.abs(frames[0].top - last.top) <= 4 && moving.length === 0, frames.slice(0, 3));
       else
-        ok(`${tag}: smoothly otherwise (${moving.length} frames between ${start.top} and ${last.top} px)`, moving.length >= 3, frames.slice(0, 6));
+        ok(`${tag}: smoothly otherwise (${moving.length} frames between ${start.top} and ${last.top} px)`, Math.abs(last.top) <= 4 && moving.length >= 3, frames.slice(0, 6));
     } else {
       ok(`${tag}: a wide window leaves the list and the panel where they were`,
         frames.every((f) => f.pane === start.pane && f.list === start.list), { start, last });
@@ -175,7 +175,7 @@ for (const run of runs) {
       /Reading runs…/.test(ciBefore) && !/No Actions runs observed yet/.test(ciBefore));
     gates.ci.open();
     await page.locator(".ci-jobs .job-row").first().click();
-    await page.locator(".ci-jobs .job-detail", { hasText: "Reading its jobs and steps…" }).waitFor();
+    await page.locator(".ci-jobs .job-detail", { hasText: "Reading its jobs and steps…" }).waitFor({ timeout: 5000 });
     const held = await page.evaluate(() => {
       const box = document.querySelector(".ci-jobs .job-detail");
       const cards = [...box.querySelectorAll(".job-card")].map((c) => c.querySelector(".job-card-heading")?.textContent ?? "");
