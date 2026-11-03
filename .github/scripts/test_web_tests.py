@@ -1,5 +1,6 @@
 """Black-box scheduler checks using tiny processes, not product tests."""
 from pathlib import Path
+import json
 import os
 import shutil
 import signal
@@ -96,6 +97,49 @@ while True: time.sleep(1)
         self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         stat=Path('/proc')/(self.web/'child-pid').read_text()/'stat'
         if stat.exists(): self.assertEqual(stat.read_text().rsplit(')',1)[1].split()[0],'Z')
+
+    def test_ui_test_alone_gets_expose_gc(self):
+        # The fake node writes down its arguments instead of running the file.
+        (self.root/'bin'/'node').write_text(f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\nPath(Path(sys.argv[-1]).name+".args").write_text("\\n".join(sys.argv[1:]))\n')
+        ui=self.file('ui.test.mjs', '')
+        other=self.file('other.test.mjs', '')
+        r=self.invoke(ui, other)
+        self.assertEqual(r.returncode, 0, r.stdout+r.stderr)
+        ui_args=(self.web/'ui.test.mjs.args').read_text().split('\n')
+        other_args=(self.web/'other.test.mjs.args').read_text().split('\n')
+        self.assertEqual(ui_args, ['--max-old-space-size=2048', '--expose-gc', '--experimental-strip-types', 'tools/ui.test.mjs'])
+        self.assertEqual(other_args, ['--max-old-space-size=2048', '--experimental-strip-types', 'tools/other.test.mjs'])
+        self.assertIn('START tools/ui.test.mjs (old-space 2048 MiB, --expose-gc)', r.stdout)
+        self.assertIn('START tools/other.test.mjs (old-space 2048 MiB)\n', r.stdout)
+
+    def test_expose_gc_follows_the_file_however_it_is_named(self):
+        # The fake node writes down each call's arguments, in order.
+        (self.root/'bin'/'node').write_text(f'#!{sys.executable}\nimport json, sys\nwith open("node-calls", "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        ui=self.file('ui.test.mjs', '')
+        other=self.file('other.test.mjs', '')
+        (self.web/'tools'/'nested').mkdir()
+        nested=self.file('nested/ui.test.mjs', '')
+        outside=self.root/'ui.test.mjs'
+        outside.write_text('')
+        def calls():
+            path=self.web/'node-calls'
+            lines=path.read_text().splitlines()
+            path.unlink()
+            return [json.loads(line) for line in lines]
+        def node(file, gc):
+            return ['--max-old-space-size=2048', *(['--expose-gc'] if gc else []), '--experimental-strip-types', file]
+        # Found by the runner itself.
+        r=self.invoke()
+        self.assertEqual(r.returncode, 0, r.stdout+r.stderr)
+        self.assertEqual(calls(), [node('tools/other.test.mjs', False), node('tools/ui.test.mjs', True)])
+        # Named on the command line: the same file however spelled, as given;
+        # files of the same name elsewhere get nothing.
+        named=[(ui, True), ('./'+ui, True), (str(self.web/ui), True), (str(self.web/other), False), (nested, False), (str(outside), False)]
+        r=self.invoke(*(file for file, _ in named))
+        self.assertEqual(r.returncode, 0, r.stdout+r.stderr)
+        self.assertEqual(calls(), [node(file, gc) for file, gc in named])
+        for file, gc in named:
+            self.assertIn(f'START {file} (old-space 2048 MiB{", --expose-gc" if gc else ""})\n', r.stdout)
 
     def test_explicit_filename_with_spaces_is_one_file(self):
         file=self.file('with space.test.mjs', "print('space file ran')\n")
