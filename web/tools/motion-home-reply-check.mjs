@@ -132,15 +132,19 @@ function pageHelpers() {
     };
     requestAnimationFrame(step);
   });
-  window.__frames = (target, frames = 20) => new Promise((done) => {
-    const out = [];
+  // From the document's start (a reload): what `__watch` names, each frame from its first, so a
+  // fade as it mounts is seen however soon Home draws it.
+  const watch = sessionStorage.getItem("__watch");
+  if (watch) {
+    window.__watched = [];
+    let ticks = 0;
     const step = () => {
-      out.push(frame(target));
-      if (out.length >= frames) done(out);
-      else requestAnimationFrame(step);
+      const f = frame(watch);
+      if (f || window.__watched.length) window.__watched.push(f);
+      if (window.__watched.length < 30 && ++ticks < 1800) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
-  });
+  }
 }
 
 /** What came in, from its first frame: a fade over small under normal motion, at once under reduced. */
@@ -177,9 +181,17 @@ for (const run of runs) {
   await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
   await page.addInitScript(pageHelpers);
   const press = (button, target, frames) => page.evaluate(([button, target, frames]) => window.__press(button, target, frames), [button, target, frames]);
-  const frames = (target, n) => page.evaluate(([target, n]) => window.__frames(target, n), [target, n]);
   const focused = () => page.evaluate(() => window.__focused());
   const record = (label, value) => { report.frames[`${tag}: ${label}`] = value; return value; };
+  /** Reloads the page, watching `selector` from the document's start; returns its first 30 frames. */
+  const reloadWatching = async (selector) => {
+    await page.evaluate((selector) => sessionStorage.setItem("__watch", selector), selector);
+    await page.reload();
+    await openHome();
+    await page.locator(selector).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => (window.__watched?.length ?? 0) >= 30, null, { timeout: 10_000 });
+    return page.evaluate(() => window.__watched);
+  };
   const openHome = async () => {
     await page.locator(".toolbar-nav .catchup-nav").first().click();
     await page.locator(NOTES).first().waitFor({ timeout: 10_000 });
@@ -211,12 +223,9 @@ for (const run of runs) {
     await press(`${NOTES} .home-reply-open`, `${NOTES} .home-card-reply`, 12);
     await page.locator(`${NOTES} .home-card-reply textarea`).fill("A draft kept for later.");
     await page.waitForTimeout(300);
-    await page.reload();
-    await openHome();
-    await page.locator(`${NOTES} .home-card-reply`).waitFor({ timeout: 10_000 });
-    const kept = record("kept after a reload", await frames(`${NOTES} .home-card-reply`, 12));
+    const kept = record("kept after a reload", await reloadWatching(`${NOTES} .home-card-reply`));
     const keptFocus = await focused();
-    ok(`${tag}: a reply kept from before, open again after a reload, shows as it is: no fade, and its text does not take focus (${keptFocus?.tag})`,
+    ok(`${tag}: a reply kept from before, open again after a reload, shows as it is: no fade from its first frame, and its text does not take focus (${keptFocus?.tag})`,
       still(kept) && !(keptFocus?.tag === "TEXTAREA" && keptFocus.inCard === "notes"), { kept: kept?.slice(0, 3), focus: keptFocus });
 
     // An Ask answered from this window (HM:A3).
@@ -231,12 +240,9 @@ for (const run of runs) {
     ok(`${tag}: Reply again: the reply comes back, fades in over small (at once under reduced motion), and its text takes focus (${inAgain?.tag})`,
       came(again, reduced) && inAgain?.tag === "TEXTAREA" && inAgain.inCard === "plain", { first: again?.slice(0, 3), focus: inAgain });
     // Home opened again with the Ask replied in Core's record.
-    await page.reload();
-    await openHome();
-    await page.locator(`${PLAIN} .home-ask-replied`).waitFor({ timeout: 10_000 });
-    const loaded = record("replied on opening", await frames(`${PLAIN} .home-ask-replied`, 12));
+    const loaded = record("replied on opening", await reloadWatching(`${PLAIN} .home-ask-replied`));
     const loadedFocus = await focused();
-    ok(`${tag}: an Ask already replied when Home opens shows as it is: no fade, and it takes no focus (${loadedFocus?.className})`,
+    ok(`${tag}: an Ask already replied when Home opens shows as it is: no fade from its first frame, and it takes no focus (${loadedFocus?.className})`,
       still(loaded) && !loadedFocus?.className.includes("home-ask-replied"), { loaded: loaded?.slice(0, 3), focus: loadedFocus });
     await page.screenshot({ path: join(output, `${tag}-after.png`) });
   } catch (error) {
