@@ -933,3 +933,38 @@ test('a run whose jobs and steps could not be read keeps saying so when only the
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+test('a run whose jobs and steps could not be read shows them without its failure once a check with GitHub brings them (T-19 CI-04)', async () => {
+  const after = ciRunning('2026-10-15T01:05:00Z', 'completed');
+  let listed = ciRun;
+  const p = mount((url, body) => {
+    if (url === '/api/ci/refresh' && body) { listed = after.run; return { status: 'checked', checkedAt: after.run.observedAt, retryAt: null, error: null, paused: 0, more: 0, runWatched: true, run: after.run, details: [after.details] }; }
+    if (url.startsWith('/api/ci/')) return { httpStatus: 500, error: 'Steps unavailable for this run' };
+    return url.startsWith('/api/ci?') ? { ...ciPage, runs: [listed] } : page([]);
+  });
+  const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+  const alert = () => p.doc.querySelector('.ci-jobs [role="alert"]')?.textContent || '';
+  const reportReads = () => p.calls.filter(c => c.url.startsWith('/api/ci/') && c.url !== '/api/ci/refresh').length;
+  const listReads = () => p.calls.filter(c => c.url.startsWith('/api/ci?')).length;
+  try {
+    await open(p); button(p, 'GitHub Actions').click();
+    await until(() => p.doc.querySelector('.ci-jobs .job-row'));
+    p.doc.querySelector('.ci-jobs .job-row').click();
+    await until(() => /Steps unavailable/.test(alert()));
+    const lists = listReads();
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => listReads() > lists);
+    await wait(); await wait();
+    assert.match(alert(), /Steps unavailable/, 'the list alone read again leaves the run\'s failure');
+    const reads = reportReads();
+    refreshButton(p).click();
+    await until(() => checkLine(p).startsWith('Checked with GitHub at'));
+    await until(() => p.doc.querySelector('.ci-child-job li .ci-step-state')?.textContent === 'success');
+    await wait(); await wait();
+    assert.doesNotMatch(alert(), /Steps unavailable/, 'the steps the check brought end the run\'s failed read');
+    assert.doesNotMatch(box().textContent, /Reading/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.equal(reportReads(), reads, 'its steps came with the check');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
