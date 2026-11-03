@@ -15,6 +15,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
+import { settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
 import {
   Archive,
@@ -467,6 +468,8 @@ export function App() {
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
+  // The Turn a jump last landed on, tinted once (T-19).
+  const turnSettled = useRef<(() => void) | null>(null);
   // Whose conversation a jump from its dock was asked in (T-6): one still on
   // its way when the Workspace or the Agent changes is dropped, not taken into
   // the other conversation, where the same Turn id names nothing of its.
@@ -787,6 +790,8 @@ export function App() {
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
   useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
+  // A Turn's landing is the conversation's it was in: another Agent's, or none, ends it (T-19).
+  useEffect(() => () => turnSettled.current?.(), [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
@@ -1314,6 +1319,8 @@ export function App() {
       const target = input || turn;
       target?.scrollIntoView({ behavior: "instant", block: "start" });
       target?.focus({ preventScroll: true });
+      turnSettled.current?.();
+      turnSettled.current = target ? settleWhenLanded(target, "data-settle", false, "animation") : null;
       stickToBottom.current = false;
       jumpItem.current = null;
       setJumpToTurn(null);
