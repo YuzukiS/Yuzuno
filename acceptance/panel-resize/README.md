@@ -19,7 +19,7 @@ From `web/`:
 node node_modules/typescript/bin/tsc --noEmit
 node node_modules/vite/bin/vite.js build --outDir /tmp/yuzuno-panel-resize-dist
 YUZUNO_UI_DIST=/tmp/yuzuno-panel-resize-dist node tools/panel-resize-check.mjs
-YUZUNO_UI_DIST=/tmp/yuzuno-panel-resize-dist node --test tools/ui.test.mjs
+YUZUNO_UI_DIST=/tmp/yuzuno-panel-resize-dist node --expose-gc --test tools/ui.test.mjs
 ```
 
 `panel-resize-check.mjs` opens an independent headless Chromium with in-memory
