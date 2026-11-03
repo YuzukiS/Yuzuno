@@ -476,6 +476,12 @@ export function Home({
   const widgetLayout = useWidgetLayout(workspaceId);
   // The sizes the deck's cards are shown at in this visit (T-18).
   const deckSizes = useHeldSizes(readOnly ? "" : workspaceId, visit);
+  // How each pinned card is shown, fixed for the visit by its pin (Lead 2604): as its summary card, or
+  // whole as before. A newer version that adds or drops the summary changes it only at the next visit,
+  // so the widget, its reply and its focus stay; a pin the user sized is always its card.
+  const pinPaths = useRef({ workspaceId, visit, paths: new Map<string, "card" | "full">() });
+  if (pinPaths.current.workspaceId !== workspaceId || pinPaths.current.visit !== visit)
+    pinPaths.current = { workspaceId, visit, paths: new Map() };
   const { layout, pin, unpin, resize, resetSizes } = widgetLayout;
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
@@ -517,7 +523,13 @@ export function Home({
       const onResize = (size: CardSize | null) => resize(p, size);
       // A pinned card with a summary is the same card as in its project, at the size the user gave the widget,
       // else its Agent's, held for the visit (T-18, Lead 2457, 2473; Dev 7's v19). Nothing is written to the card.
-      if (source.state === "shown" && cardContent(source.section).kind === "named") {
+      // Its summary gone in a later version, it says so on the same card (Lead 2604), never the old body.
+      let path = pinPaths.current.paths.get(id);
+      if (source.state === "shown" && !path) {
+        path = p.size || cardContent(source.section).kind === "named" ? "card" : "full";
+        pinPaths.current.paths.set(id, path);
+      }
+      if (source.state === "shown" && (path === "card" || p.size)) {
         const section = source.section;
         const { size, own } = shownSize(section, cardContent(section), p.size ?? null,
           sizable(section) ? (computed) => deckSizes.held(p.projectId, section.id!, computed) : undefined);

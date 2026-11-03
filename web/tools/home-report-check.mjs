@@ -140,6 +140,11 @@ const summaryBody = (lead, extra, summary) => ({ root: "body", elements: {
 let batchesVersion = 1;
 // The batches written again under its key, another section (Home's id 52), for the widget step.
 let batchesId = 32;
+// A pinned card whose summary goes and comes back (Lead 2604): 1 and 3 with a summary, 2 without.
+let pulseVersion = 1;
+const pulseBody = () => pulseVersion === 2
+  ? markdown("The pulse report, written again without a summary.")
+  : summaryBody(`Pulse ${pulseVersion}: the queue is steady.`, {}, { lead: "lead", size: pulseVersion === 1 ? "wide" : "large" });
 // Home's read failing on purpose, for the widget step.
 let homeFails = false;
 const batchesSize = () => (batchesVersion < 3 ? { size: "wide" } : batchesVersion === 3 ? { size: "small" } : {});
@@ -170,6 +175,7 @@ const deck = () => [
     "Both synthetic services held their target this week.",
     { nums: { type: "Metrics", props: { items: [{ label: "Uptime", value: 99.2, unit: "%" }, { label: "Incidents", value: 1 }] } } },
     { lead: "lead", visual: "nums" }) }),
+  section("pulse", 36, pulseVersion, { title: "Queue pulse", body: pulseBody() }),
   // A sub-topic of the audit: it says so in its head (Dev 7, 2399). Its author makes it wide, though a lead alone
   // would be small: the author's size, not Home's guess.
   section("audit/notes", 34, 1, { title: "Audit notes", body: summaryBody("The sample is the stored records of one week.", {}, { lead: "lead", size: "wide" }) }),
@@ -285,6 +291,8 @@ async function open(width, height, { motion = "reduce", at = "/" } = {}) {
   await page.addInitScript(() => {
     window.EventSource = class {
       constructor() {
+        // The last one opened, so a step can say what Core says when a Brief changes.
+        window.__events = this;
         setTimeout(() => this.onopen?.(), 50);
       }
       close() {}
@@ -654,7 +662,7 @@ try {
       // summary small, and one kept from before sizes (uptime) its figure's (Lead 2473).
       const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, `${p.size} ${p.source}`]));
       assert.deepEqual(sizes, { setup: "small content", data: "small content", baseline: "small content", eval: "wide author", "dose-study": "small content",
-        audit: "wide author", "audit/notes": "wide author", screens: "large author", batches: "wide author", uptime: "small content" });
+        audit: "wide author", "audit/notes": "wide author", screens: "large author", batches: "wide author", uptime: "small content", pulse: "wide author" });
       for (const place of deckShape.places.filter((p) => p.size)) {
         const span = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
         assert.equal(place.span, span, `${place.key} spans ${span}: ${JSON.stringify(place)}`);
@@ -1021,6 +1029,79 @@ try {
     // The old choices for the deck are still there, unread; the widget layout is this Workspace's alone.
     assert.ok(await page.evaluate((ws) => localStorage.getItem(`yuzuno.homeCardSizes.${ws}`) !== null, WS));
     assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("yuzuno.homeWidgets.")).sort()), [`yuzuno.homeWidgets.${WS}`]);
+  });
+
+  await step("a pinned card stays the same widget while Home is read: its summary dropped and back, the user's Small, its reply draft and the focus kept; at the next visit a pin with no size and no summary is shown in full, one with the user's size stays its card (T-18, Lead 2604)", async () => {
+    await open(1720, 1100);
+    await toHome();
+    // What Core says when a Brief changes: Home reads again (App: workspace.changed, scope brief).
+    const briefChanged = () => page.evaluate(() => window.__events.onmessage({ data: JSON.stringify({ type: "workspace.changed", scope: "brief" }), lastEventId: "" }));
+    await card("pulse").locator(".home-summary-more > button").click();
+    await card("pulse").locator(".home-summary-more-list").getByRole("button", { name: /^Pin “/ }).click();
+    await page.keyboard.press("Escape");
+    const slot = page.locator('.home-widget-slot[data-widget^="pin:p1:36:"]');
+    const widget = slot.locator(".home-summary-card[data-pin-widget]");
+    await widget.waitFor();
+    // The user's Small, from the widget's own menu.
+    await widget.locator(".home-summary-more > button").click();
+    await widget.locator('.home-summary-more-list input[value="small"]').check();
+    await page.keyboard.press("Escape");
+    assert.equal(await slot.getAttribute("data-widget-size"), "small");
+    // A reply being written in the widget, the focus in it.
+    await widget.locator(".home-reply-open").click();
+    const field = widget.locator(".home-card-reply textarea");
+    await field.fill("Keep the queue at 40.");
+    await field.focus();
+    await widget.evaluate((el) => { el.dataset.probe = "same"; });
+    const state = async () => ({
+      version: await widget.getAttribute("data-section-version"),
+      same: await widget.getAttribute("data-probe"),
+      size: await slot.getAttribute("data-widget-size"),
+      full: await slot.evaluate((el) => el.classList.contains("is-full")),
+      draft: await field.inputValue(),
+      focused: await field.evaluate((el) => el === document.activeElement),
+      unnamed: await widget.locator(".home-summary-unnamed").count(),
+    });
+    try {
+      // Its Agent drops the summary: the same widget, the user's size, the draft and the focus; it says it has none.
+      pulseVersion = 2;
+      await briefChanged();
+      await until("version 2 on the widget", async () => (await widget.getAttribute("data-section-version")) === "2");
+      assert.deepEqual(await state(), { version: "2", same: "same", size: "small", full: false, draft: "Keep the queue at 40.", focused: true, unnamed: 1 });
+      assert.equal(await slot.locator(".home-pinned-body").count(), 0, "never the body in place of the summary");
+      await shot("widget-summary-dropped.png");
+      // And names one again: still the same widget.
+      pulseVersion = 3;
+      await briefChanged();
+      await until("version 3 on the widget", async () => (await widget.getAttribute("data-section-version")) === "3");
+      assert.deepEqual(await state(), { version: "3", same: "same", size: "small", full: false, draft: "Keep the queue at 40.", focused: true, unnamed: 0 });
+      // The next visit: the user's Small kept, its card.
+      await page.reload();
+      await toHome();
+      await widget.waitFor();
+      assert.equal(await slot.getAttribute("data-widget-size"), "small");
+      // Given back to its Agent, and its summary dropped before the next visit: shown in full, as a pin with
+      // no summary always was; the summary back while Home is read keeps it so until the next visit.
+      await widget.locator(".home-summary-more > button").click();
+      await widget.locator('.home-summary-more-list input[value="auto"]').check();
+      await page.keyboard.press("Escape");
+      pulseVersion = 2;
+      await page.reload();
+      await toHome();
+      await slot.locator(".home-pinned").waitFor();
+      assert.equal(await slot.evaluate((el) => el.classList.contains("is-full")), true);
+      await slot.locator(".home-pinned").evaluate((el) => { el.dataset.probe = "same"; });
+      pulseVersion = 3;
+      await briefChanged();
+      await until("version 3 read", async () => (await card("pulse").getAttribute("data-section-version")) === "3");
+      assert.equal(await slot.locator('.home-pinned[data-probe="same"]').count(), 1, "the same widget until the next visit");
+      await page.reload();
+      await toHome();
+      await widget.waitFor();
+      assert.equal(await slot.getAttribute("data-widget-size"), "large", "its card again, at its Agent's size");
+    } finally {
+      pulseVersion = 1;
+    }
   });
 
   for (const [width, height, name] of [[1200, 900, "organize-1200"], [647, 900, "organize-647"], [390, 844, "organize-390"]])
