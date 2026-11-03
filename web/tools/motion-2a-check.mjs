@@ -5,8 +5,10 @@
 // conversation's rows never move. Where it is read is placed as before: its rows come a frame
 // after the body, already at the place they are read from, in one step, never scrolled there;
 // with the fade that first frame, rows not yet in, is at opacity 0. A rapid switch leaves one fade,
-// on the newest. Under reduced motion nothing plays; on a phone the conversation does not fade (its
-// push and pop are M8, later). The rows come in, already placed, while the fade is still faint
+// on the newest. Under reduced motion nothing plays; on a phone neither Home nor the conversation
+// fades (their push and pop are M8, later). A fade under way stops at once, fully shown, when
+// reduced motion turns on or the window becomes a phone's, and turning either back plays nothing
+// until the next way in. The rows come in, already placed, while the fade is still faint
 // (asserted below 0.5), and frames held at 0, 16 ms, 50 % and the end are saved for review. Closing
 // the task board onto another Agent's conversation (SH:D10) fades it in once. The app saves where an Agent was read as it leaves it (PUT
 // /api/agents/<id>/reading); that is answered, any other write fails the check. Chromium is not Safari.
@@ -155,6 +157,16 @@ for (const run of runs) {
     const first = pushed.find((f) => f.body);
     ok(`${tag}: a conversation opened from the phone's list plays no fade on it (M8, later)`,
       !!first && pushed.every((f) => !f.bodyPlays.some((p) => p.keyframes === "opacity/opacity")), first);
+    // Nor does Home, on a phone (Lead 2961).
+    try {
+      await page.waitForTimeout(300);
+      const phoneHome = await step("Home", () => page.locator(".toolbar-nav .catchup-nav:not(.collab-nav)").first().click());
+      const homeShown = phoneHome.find((f) => f.home);
+      ok(`${tag}: Home opened on a phone plays no fade on it (M8, later)`,
+        !!homeShown && phoneHome.every((f) => !f.homePlays.some((p) => p.keyframes === "opacity/opacity")), homeShown);
+    } catch (error) {
+      ok(`${tag}: Home opened on a phone plays no fade on it`, false, String(error).slice(0, 300));
+    }
     await context.close();
     continue;
   }
@@ -261,6 +273,80 @@ for (const run of runs) {
     report.frames[`${tag}: held`] = held;
     ok(`${tag}: held at 0, 16, 90 and 180 ms the conversation shows at ${held.map((h) => h.opacity).join(", ")}, its rows already at scrollTop ${held.at(-1)?.scrollTop} (screenshots ${tag}-fade-*.png)`,
       held.length === 4 && held[0].opacity === 0 && held[3].opacity === 1 && held.every((h) => h.rows && h.scrollTop === held[3].scrollTop), held);
+
+    // A fade under way stops at once, the surface fully shown, when reduced motion turns on or the
+    // window becomes a phone's; turning either back plays nothing (Lead 2961). Each fade is held at
+    // 60 ms first, so it is surely under way when the change comes; every frame from the next one on
+    // must show no fade and opacity 1, and the surface must still be there.
+    const hold = (selector) => page.evaluate((selector) => new Promise((done) => {
+      let tries = 0;
+      const look = () => {
+        const fade = document.querySelector(selector)?.getAnimations().find((a) => a.effect?.getKeyframes?.()[0]?.opacity !== undefined);
+        if (!fade && ++tries > 30) return done({ held: false });
+        if (!fade) return requestAnimationFrame(look);
+        fade.pause();
+        fade.currentTime = 60;
+        requestAnimationFrame(() => done({ held: true, opacity: Number(getComputedStyle(document.querySelector(selector)).opacity) }));
+      };
+      look();
+    }), selector);
+    const sample = (selector, span) => page.evaluate(([selector, span]) => new Promise((done) => {
+      const t0 = performance.now();
+      const seen = [];
+      const frame = () => {
+        const element = document.querySelector(selector);
+        seen.push({ t: Math.round(performance.now() - t0), present: !!element,
+          fades: element ? element.getAnimations().filter((a) => a.effect?.getKeyframes?.()[0]?.opacity !== undefined).length : 0,
+          opacity: element ? Number(getComputedStyle(element).opacity) : null });
+        if (performance.now() - t0 < span) requestAnimationFrame(frame);
+        else done(seen);
+      };
+      requestAnimationFrame(frame);
+    }), [selector, span]);
+    const shown = (list) => list.length > 0 && list.every((f) => f.present && f.fades === 0 && f.opacity === 1);
+    const desktop = run.viewport;
+    const interrupt = async (what, selector, go, change, undo) => {
+      try {
+        await page.waitForTimeout(300);
+        await go();
+        const held = await hold(selector);
+        await change();
+        const during = await sample(selector, 250);
+        await undo();
+        const back = await sample(selector, 300);
+        report.frames[`${tag}: ${what}`] = { held, during, back };
+        ok(`${tag}: ${what}: the fade held at 60 ms (opacity ${held.opacity}) stops at once, fully shown (${during.length} frames)`,
+          held.held && held.opacity < 1 && shown(during), { held, during: during.slice(0, 3) });
+        ok(`${tag}: ${what}, then back: nothing plays again (${back.length} frames)`, shown(back), back.slice(0, 3));
+      } catch (error) {
+        ok(`${tag}: ${what}`, false, String(error).slice(0, 300));
+      }
+    };
+    const goHome = () => page.locator(".toolbar-nav .catchup-nav:not(.collab-nav)").first().click();
+    await interrupt("reduced motion turns on while a conversation fades in", ".conversation-body", () => open("Mori"),
+      () => page.emulateMedia({ reducedMotion: "reduce" }), () => page.emulateMedia({ reducedMotion: "no-preference" }));
+    await interrupt("reduced motion turns on while Home fades in", ".home-view", goHome,
+      () => page.emulateMedia({ reducedMotion: "reduce" }), () => page.emulateMedia({ reducedMotion: "no-preference" }));
+    await interrupt("the window becomes a phone's while a conversation fades in", ".conversation-body", () => open("Hana"),
+      () => page.setViewportSize({ width: 390, height: 844 }), () => page.setViewportSize(desktop));
+    await interrupt("the window becomes a phone's while Home fades in", ".home-view", goHome,
+      () => page.setViewportSize({ width: 390, height: 844 }), () => page.setViewportSize(desktop));
+
+    // After all that, a new way in still fades, once.
+    try {
+      await page.waitForTimeout(300);
+      const again = await step("after the changes, a conversation", () => open("Mori"));
+      const againFirst = again.find((f) => f.body);
+      ok(`${tag}: after them, opening a conversation still fades it in once over small`,
+        !!againFirst && fadeOf(againFirst.bodyPlays)?.duration === 180 && again.at(-1).bodyOpacity === 1 && !again.at(-1).bodyPlays.length, againFirst);
+      await page.waitForTimeout(300);
+      const homeAgain = await step("after the changes, Home", goHome);
+      const homeAgainFirst = homeAgain.find((f) => f.home);
+      ok(`${tag}: and opening Home still fades it in once over medium`,
+        !!homeAgainFirst && fadeOf(homeAgainFirst.homePlays)?.duration === 240 && homeAgain.at(-1).homeOpacity === 1 && !homeAgain.at(-1).homePlays.length, homeAgainFirst);
+    } catch (error) {
+      ok(`${tag}: after the changes, a new way in still fades`, false, String(error).slice(0, 300));
+    }
   }
   await context.close();
 }
