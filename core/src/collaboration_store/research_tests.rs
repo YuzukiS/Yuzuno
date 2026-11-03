@@ -271,3 +271,30 @@ fn a_desk_reads_a_task_record_by_the_same_resolver() {
     assert_eq!(desk_source(&db, "T-1", m1 + 1000).unwrap()["reason"], "activity_not_found");
     assert_eq!(desk_source(&db, "T-404", m1).unwrap()["reason"], "task_not_found");
 }
+
+#[test]
+fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
+    let (_dir, store) = setup();
+    let first = seq(&comment(&store, "author", "v0", "T-1", method("timing", "Version 0.")).unwrap());
+    let mut previous = first;
+    let mut second = 0;
+    // One more revision than a read follows (CHAIN = 200).
+    for n in 1..=(CHAIN as i64 + 1) {
+        let mut next = method("timing", &format!("Version {n}."));
+        next["revises"] = json!({"activitySeq":previous,"reason":format!("Step {n}.")});
+        previous = seq(&comment(&store, "author", &format!("v{n}"), "T-1", next).unwrap());
+        if n == 1 {
+            second = previous;
+        }
+    }
+    let oldest = record(&store, "T-1", first);
+    assert_eq!(oldest["version"], 1);
+    assert_eq!(oldest["revisedBy"], second, "the next version is known");
+    assert!(oldest["latestActivitySeq"].is_null(), "the newest is unknown, never this one: {}", oldest["latestActivitySeq"]);
+    let newest = record(&store, "T-1", previous);
+    assert!(newest["version"].is_null(), "its version is not counted");
+    assert_eq!(newest["latestActivitySeq"], previous, "it knows it is the newest");
+    let db = store.db.read().unwrap();
+    let cited = desk_source(&db, "T-1", first).unwrap();
+    assert!(cited["latestActivitySeq"].is_null() && cited["version"] == 1, "{cited}");
+}

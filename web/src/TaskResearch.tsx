@@ -78,10 +78,15 @@ const text = strings({
   loading: "Reading the record…",
   failed: (reason: string) => `The record couldn't be read: ${reason}`,
   versionOf: (version: number) => `Version ${version} of this record`,
+  versionUnknown: "This record's version was not counted (its line is longer than Yuzuno follows)",
   newest: "This is the newest version",
   newer: (seq: number) => `A newer version is activity ${seq}`,
+  // The newest is unknown, but the next one is known: say both.
+  newerFrom: (seq: number) => `A newer version exists (activity ${seq} revises this one); which is the newest is unknown`,
+  newerUnknown: "Whether there is a newer version is unknown",
   methodVersion: (version: number | null, latest: number | null, seq: number) =>
-    `The method as cited is version ${version ?? "?"}` + (latest && latest !== seq ? `; a newer version is activity ${latest}` : ""),
+    `The method as cited is ${version ? `version ${version}` : "a version not counted"}` +
+    (latest == null ? "; whether it has a newer version is unknown" : latest === seq ? "; that is its newest version" : `; a newer version is activity ${latest}`),
   now: "Now",
   state: {
     recorded_match: "the Job's record still lists this file and hash; the file itself was not read",
@@ -119,10 +124,14 @@ const text = strings({
   loading: "正在读取记录…",
   failed: (reason) => `无法读取这条记录：${reason}`,
   versionOf: (version) => `这条记录的第 ${version} 版`,
+  versionUnknown: "这条记录的版本数未计出（版本链超出 Yuzuno 追溯的长度）",
   newest: "这是最新版本",
   newer: (seq) => `较新的版本是活动 ${seq}`,
+  newerFrom: (seq) => `已有较新的版本（活动 ${seq} 修订了它）；最新的是哪一版未知`,
+  newerUnknown: "是否有较新的版本未知",
   methodVersion: (version, latest, seq) =>
-    `引用的方法是第 ${version ?? "?"} 版` + (latest && latest !== seq ? `；较新的版本是活动 ${latest}` : ""),
+    `引用的方法是${version ? `第 ${version} 版` : "未计出版本数的一版"}` +
+    (latest == null ? "；是否有较新的版本未知" : latest === seq ? "；这是它的最新版本" : `；较新的版本是活动 ${latest}`),
   now: "现在",
   state: {
     recorded_match: "Job 记录仍列出这个文件和哈希；没有读取文件本身",
@@ -325,9 +334,16 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
                 </button>
               </p>
               <p>
-                {view.data.version ? t.versionOf(view.data.version) : null}
+                {view.data.version ? t.versionOf(view.data.version) : t.versionUnknown}
                 {" · "}
-                {view.data.latestActivitySeq && view.data.latestActivitySeq !== seq ? t.newer(view.data.latestActivitySeq) : t.newest}
+                {/* Newest only when the newest is this record; unknown is said, never shown as newest. */}
+                {view.data.latestActivitySeq === seq
+                  ? t.newest
+                  : view.data.latestActivitySeq != null
+                    ? t.newer(view.data.latestActivitySeq)
+                    : view.data.revisedBy != null
+                      ? t.newerFrom(view.data.revisedBy)
+                      : t.newerUnknown}
               </p>
               {view.data.method && (
                 <p>{t.methodVersion(view.data.method.version, view.data.method.latestActivitySeq, view.data.method.activitySeq)}</p>
