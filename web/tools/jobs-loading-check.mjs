@@ -30,7 +30,7 @@ const agent = { id: "a", name: "Mori", goal: "", cwd: "/w", model: "m", color: "
   unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", harness: "codex", connectionState: "connected" };
 const now = new Date().toISOString();
 const resources = { cpuMillis: 500, memoryMiB: 128, swapMiB: 0 };
-// Thirty finished jobs, so on a narrow window the chosen one's details start below the fold.
+// Thirty finished jobs, so on a narrow window the chosen one's details start well below the top.
 const jobs = Array.from({ length: 30 }, (_, n) => ({ id: `job-${n + 1}`, requestId: `r${n + 1}`, name: `Synthetic job ${n + 1}`,
   taskRef: "T-1", agentId: "a", agent: { name: "Mori" }, machine: { name: "Local" }, status: "succeeded", reserved: false, reason: "success",
   resources, reservation: resources, cursor: 100 - n, createdAt: now, startedAt: now, finishedAt: now, argv: ["/usr/bin/true"], cwd: "/w",
@@ -115,7 +115,8 @@ for (const run of runs) {
     ok(`${tag}: before Core answers, the job list says it is being read (${JSON.stringify(before)})`,
       before.includes("Reading jobs…") && !before.includes("No jobs yet."), before);
     gates.list.open();
-    await page.locator(".jobs-browser .job-row").nth(29).waitFor();
+    // Finished rows past the first few fold behind "Show N more"; enough show to push the job down.
+    await page.waitForFunction(() => document.querySelectorAll(".jobs-browser .job-row").length >= 5);
     ok(`${tag}: then the jobs come, and the reading line is gone`, !(await texts(".jobs-browser .jobs-empty")).includes("Reading jobs…"));
 
     // A chosen job, held: where its box is, frame by frame from the click.
@@ -150,7 +151,7 @@ for (const run of runs) {
     if (run.narrow) {
       const moving = frames.filter((f) => f.top !== last.top && f.top !== start.top);
       ok(`${tag}: on a narrow window it comes to the top of the panel (from ${start.top} px to ${last.top} px below the panel's top)`,
-        start.top > run.viewport.height && Math.abs(last.top) <= 4, { start, last });
+        start.top > 400 && Math.abs(last.top) <= 4, { start, last });
       if (reduced)
         ok(`${tag}: at once under reduced motion (first frame ${frames[0].top} px, ${moving.length} frames between)`,
           Math.abs(last.top) <= 4 && Math.abs(frames[0].top - last.top) <= 4 && moving.length === 0, frames.slice(0, 3));

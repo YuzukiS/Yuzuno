@@ -813,7 +813,8 @@ test('a chosen job reads as being read until its answer comes; a narrow window b
       const box = p.doc.querySelector('.job-detail');
       assert.doesNotMatch(box.textContent, /Select a job/, 'not "unchosen" while it is read');
       assert.match(box.textContent, /Reading this job…/);
-      assert.deepEqual(scrolled, [{ className: 'job-detail', options: { block: 'start', behavior: reduced ? 'auto' : 'smooth' } }]);
+      // The options object is the page's own; compare its values.
+      assert.deepEqual(JSON.parse(JSON.stringify(scrolled)), [{ className: 'job-detail', options: { block: 'start', behavior: reduced ? 'auto' : 'smooth' } }]);
       detail.answer();
       await until(() => p.doc.querySelector('.job-log'));
       assert.equal(p.doc.querySelector('.job-detail').getAttribute('aria-busy'), null);
