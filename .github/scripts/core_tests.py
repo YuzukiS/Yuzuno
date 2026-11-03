@@ -14,7 +14,8 @@ directory, and no test binds a fixed port.
 2. Each one lists its tests (`--list --format terse`). Tests named under an
    ALONE prefix go into a process of their own. Of the rest, a binary with at
    least SPLIT tests is split by sorted name, round-robin, into one shard per
-   worker; the others run whole.
+   worker, but never more shards than tests: libtest given `--exact` and no
+   name runs every test. The others run whole.
 3. The ALONE processes run first, one at a time, with nothing else running:
    the data_dir move tests refuse while any `yuzuno-update-helper` runs on
    the host, and other tests (updates, and data_dir's own guard test) start
@@ -105,9 +106,11 @@ def plan(jobs):
             if not names:
                 continue
         if len(names) >= SPLIT and jobs > 1:
-            for shard in range(jobs):
-                part = names[shard::jobs]
-                items.append(dict(label=f'{label} [{shard + 1}/{jobs}]', cwd=cwd, count=len(part),
+            # Each shard is given at least one name: with none, libtest would run the whole binary.
+            shards = min(jobs, len(names))
+            for shard in range(shards):
+                part = names[shard::shards]
+                items.append(dict(label=f'{label} [{shard + 1}/{shards}]', cwd=cwd, count=len(part),
                                   command=[executable, '--test-threads=1', '--exact', *part]))
         elif alone:
             items.append(dict(label=label, cwd=cwd, count=len(names), command=[executable, '--test-threads=1', '--exact', *names]))

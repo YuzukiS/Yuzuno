@@ -22,7 +22,8 @@ if args[:1] == ['--list']:
     print(''.join(name + ': test\\n' for name in spec['tests']), end='')
     sys.exit(spec.get('list_rc', 0))
 assert args[0] == '--test-threads=1', args
-names = args[2:] if args[1:2] == ['--exact'] else list(spec['tests'])
+# As libtest: no name given, --exact or not, runs every test.
+names = (args[2:] if args[1:2] == ['--exact'] else []) or list(spec['tests'])
 log = Path(spec['log'])
 with log.open('a') as stream:
     stream.write(f'start {os.getpid()} {time.time()}\\n')
@@ -83,6 +84,12 @@ class CoreTests(unittest.TestCase):
         self.artifacts = []
         self.env = dict(os.environ, PATH=f'{self.root / "bin"}:' + os.environ['PATH'], CORE_TEST_JOBS='3',
                         GITHUB_ACTIONS='true', GITHUB_STEP_SUMMARY=str(self.root / 'summary'))
+
+    def split_at(self, count):
+        """The runner's SPLIT lowered, so that a few tests make shards."""
+        source = self.runner.read_text()
+        self.assertIn('\nSPLIT = 100\n', source)
+        self.runner.write_text(source.replace('\nSPLIT = 100\n', f'\nSPLIT = {count}\n'))
 
     def script(self, name, body):
         path = self.root / name
@@ -283,6 +290,62 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(p.returncode, 143, out + err)
         self.assertNotIn('l', self.ran(), 'nothing starts beside, or after a cancelled, data_dir run')
         self.assertIn('not started (cancelled)', out)
+
+    def assert_each_once_in_its_own_process(self, tests, processes):
+        """Every test ran once, and no process ran a test another one did."""
+        ran = self.ran()
+        self.assertEqual(sorted(ran), sorted(name for name, what in tests.items() if what == 'ok'))
+        self.assertEqual(len(ran), len(set(ran)), 'no test ran twice')
+        names = [name for process in self.processes() for name in process['names']]
+        self.assertEqual(sorted(names), sorted(tests), 'each test given to one process')
+        self.assertEqual(len(self.processes()), processes)
+
+    def test_more_workers_than_tests_make_no_empty_shard(self):
+        self.split_at(4)
+        tests = {f't{i}': 'ok' for i in range(5)}
+        self.binary('lib', 'core', tests)
+        self.env['CORE_TEST_JOBS'] = '8'
+        r = self.invoke()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('5 tests in 5 processes, 8 at a time', r.stdout)
+        for shard in range(1, 6):
+            self.assertIn(f'lib core [{shard}/5] (1 tests)', r.stdout)
+        self.assert_each_once_in_its_own_process(tests, 5)
+
+    def test_more_workers_than_tests_beside_alone_tests_make_no_empty_shard(self):
+        self.split_at(4)
+        tests = {f't{i}': 'ok' for i in range(5)}
+        tests.update({'data_dir::tests::a': 'ok', 'data_dir::tests::b': 'ok'})
+        self.binary('lib', 'core', tests, sleep=.2)
+        self.env['CORE_TEST_JOBS'] = '8'
+        r = self.invoke()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('7 tests in 6 processes, 8 at a time; first, alone: lib core [alone] (2 tests)', r.stdout)
+        self.assert_each_once_in_its_own_process(tests, 6)
+        processes = self.processes()
+        alone = [p for p in processes if p['names'] and all(n.startswith('data_dir::tests::') for n in p['names'])]
+        self.assertEqual(len(alone), 1)
+        for other in processes:
+            if other is not alone[0]:
+                self.assertGreaterEqual(other['start'], alone[0]['end'], 'nothing runs beside the data_dir tests')
+
+    def test_one_worker_runs_a_large_binary_whole_or_beside_its_alone_tests(self):
+        self.split_at(4)
+        tests = {f't{i}': 'ok' for i in range(5)}
+        self.binary('lib', 'core', tests)
+        self.env['CORE_TEST_JOBS'] = '1'
+        r = self.invoke()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('5 tests in 1 processes, 1 at a time', r.stdout)
+        self.assert_each_once_in_its_own_process(tests, 1)
+        self.log.unlink()
+        self.artifacts.clear()
+        tests['data_dir::tests::a'] = 'ok'
+        self.binary('lib', 'core', tests)
+        r = self.invoke()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('6 tests in 2 processes, 1 at a time; first, alone: lib core [alone] (1 tests)', r.stdout)
+        self.assert_each_once_in_its_own_process(tests, 2)
 
     def test_an_invalid_worker_count_fails(self):
         self.binary('test', 'any', {'a': 'ok'})
