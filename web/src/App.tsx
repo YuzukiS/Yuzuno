@@ -2142,6 +2142,9 @@ export function App() {
     if (!element || nameOpen) return;
     const measure = () => setNameCut(element.scrollWidth > element.clientWidth + 1);
     measure();
+    // Somewhere without one, the first measurement is the only one, as the
+    // conversation's own layout does (ConversationWindow, useAutoRead).
+    if (typeof ResizeObserver === "undefined") return;
     // The controls beside it and the fonts settle over the next frames, and
     // the heading's own box may never change while its text does.
     let frame = requestAnimationFrame(() => {
