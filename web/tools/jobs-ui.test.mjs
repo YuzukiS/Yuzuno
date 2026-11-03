@@ -890,7 +890,8 @@ test('a job whose read failed keeps its failure; choosing another shows that one
     await until(() => row('Second synthetic job'));
     row('中文 training').click();
     await until(() => reads['job-one'].length === 1);
-    reads['job-one'][0].answer(new Error('The first job could not be read'));
+    // As Core answers a failed read: an HTTP error with its reason.
+    reads['job-one'][0].answer({ httpStatus: 500, error: 'The first job could not be read' });
     await until(() => /could not be read/.test(alert()));
     assert.doesNotMatch(box().textContent, /Reading this job/, 'a failed read is not still being read');
     assert.equal(box().getAttribute('aria-busy'), null);
@@ -909,7 +910,7 @@ test('a job whose read failed keeps its failure; choosing another shows that one
 });
 
 test('a run whose jobs and steps could not be read keeps saying so when only the runs list is read again (T-19 CI-04)', async () => {
-  const p = mount(url => url.startsWith('/api/ci/') ? new Error('Steps unavailable for this run') : url.startsWith('/api/ci?') ? ciPage : page([]));
+  const p = mount(url => url.startsWith('/api/ci/') ? { httpStatus: 500, error: 'Steps unavailable for this run' } : url.startsWith('/api/ci?') ? ciPage : page([]));
   const box = () => p.doc.querySelector('.ci-jobs .job-detail');
   const alert = () => p.doc.querySelector('.ci-jobs [role="alert"]')?.textContent || '';
   const reportReads = () => p.calls.filter(c => c.url.startsWith('/api/ci/')).length;
