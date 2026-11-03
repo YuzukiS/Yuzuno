@@ -183,6 +183,7 @@ export function AgentManagement({
       )}
       <Modal
         open={!!mode}
+        confirm={mode === "close" || mode === "delete"}
         onOpenChange={(open) => !open && show(null)}
         title={
           mode === "close"
