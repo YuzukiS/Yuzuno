@@ -566,15 +566,18 @@
   justify-content: space-between;
   gap: 12px;
 }
+/* On a card's mixed background (--jobs-card) the quiet text colour reads
+   below 4.5:1 in some palettes; a card's heading and note, a detail's terms,
+   the footnotes and the empty states take the secondary one (T-19). */
 .job-card-heading strong {
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(7.5px + var(--font-adjust, 3px));
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
 .job-card-heading small {
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(8.5px + var(--font-adjust, 3px));
 }
 .job-card > p {
@@ -589,7 +592,7 @@
   margin: 0;
 }
 .job-detail dt {
-  color: var(--text-quiet);
+  color: var(--text-secondary);
 }
 .job-detail dd {
   margin: 0;
@@ -728,7 +731,7 @@
 .job-footnote,
 .jobs-empty {
   margin: 0;
-  color: var(--text-quiet);
+  color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
   line-height: 1.5;
 }
