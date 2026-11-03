@@ -10,6 +10,11 @@
 //   not only set on an element behind it. The reader's own wheel, key or touch the frame after the
 //   press stands: the rest of the hold does not undo it. Pin the new section, pressed on an old pin
 //   whose new section is pinned already, removes the old pin and plays nothing on the one there.
+// - Lead 3643: a pointer press does not focus the Pin here (Safari's click does not focus a button;
+//   this is Chromium, so a click from the page stands in for it), and focus is elsewhere: on the page,
+//   or on another Home control above the column (the Machines widget's fold). The Pin pressed stays
+//   where it was, and focus stays where it was. Pressed from the keyboard (focused, then Enter), the
+//   same.
 // Writes: none (a pin is kept in this browser); Home's list read of linked repositories is a POST and
 // counted apart; anything else is refused and counted.
 // Served from http://127.0.0.1. Chromium is not Safari.
@@ -108,6 +113,8 @@ async function serve(route) {
 
 const WIDGET = "pin:p1:11:notes";
 const PIN = '.home-main [data-section-key="notes"] .home-pin';
+/** The Machines widget's fold, above any pinned widget in the column. */
+const MACHINES_FOLD = 'button[aria-controls="home-machines-body"]';
 /** In the page, from the first script on, each frame: the pinned widget (whether it plays an entry
  * of its own, not the settle's CSS tint, and whether it is settled) and where the card's Pin is. */
 function pageHelpers([widgetId, pinSelector, planId]) {
@@ -136,16 +143,29 @@ function pageHelpers([widgetId, pinSelector, planId]) {
     if (frames.length < 20_000) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
-  // Pin pressed as a pointer does, on a Pin in view: brought into view first (a pointer can't press
-  // one off the screen), then focus and click. Where it is is read once focus has it.
-  window.__pin = () => {
+  // Pin pressed by a pointer that does not focus it, on a Pin in view (a pointer can't press one off
+  // the screen). Focus is left on the page, or put on `keep` (a selector) first: Home must hold the
+  // control pressed, not whatever has focus, and leave focus where it was.
+  window.__pin = (keep = null) => {
     const button = document.querySelector(pinSelector);
     button.scrollIntoView({ block: "center", behavior: "instant" });
-    button.focus();
+    if (keep) document.querySelector(keep).focus({ preventScroll: true });
+    else document.activeElement?.blur?.();
+    window.__heldFocus = document.activeElement;
     const top = button.getBoundingClientRect().top;
     button.click();
     // The frames read from here on are those after the press.
-    return { top: Math.round(top * 10) / 10, from: frames.length };
+    return { top: Math.round(top * 10) / 10, from: frames.length, focus: window.__heldFocus === document.body ? "page" : keep };
+  };
+  // Whether focus is still where the press found it.
+  window.__focusKept = () => document.activeElement === window.__heldFocus;
+  // The Pin focused, for a press from the keyboard: where it is, and the frame it is pressed from.
+  window.__focusPin = () => {
+    const button = document.querySelector(pinSelector);
+    button.scrollIntoView({ block: "center", behavior: "instant" });
+    button.focus({ preventScroll: true });
+    window.__heldFocus = button;
+    return { top: Math.round(button.getBoundingClientRect().top * 10) / 10, from: frames.length };
   };
   // The Pin pressed, then, the frame after, the reader takes over: a wheel, a key or a touch, and the
   // scroll the browser makes for it (160 px, whichever way there is room).
@@ -229,8 +249,9 @@ for (const run of runs) {
       { settles: widget.filter((f) => f?.settle).length, tinted: widget.find((f) => f?.settle)?.card, rest: widget.filter(Boolean).at(-1)?.card });
     const tops = pinned.frames.map((f) => f.pinTop).filter((t) => t !== null);
     const furthest = tops.reduce((most, t) => Math.max(most, Math.abs(t - top)), 0);
-    ok(`${tag}: a section pinned here: the Pin pressed stays where it was on the screen while the widget column above grows, within 1 px in every frame (moved at most ${furthest} px)`,
-      tops.length > 0 && furthest <= 1, { top, furthest, sample: tops.slice(0, 6) });
+    const kept = await page.evaluate(() => window.__focusKept());
+    ok(`${tag}: a section pinned here by a pointer that does not focus the Pin, focus on the page: the Pin pressed stays where it was on the screen while the widget column above grows, within 1 px in every frame, and focus stays on the page (moved at most ${furthest} px)`,
+      tops.length > 0 && furthest <= 1 && kept, { top, furthest, focusKept: kept, sample: tops.slice(0, 6) });
 
     // Home opened again: the saved layout, read, shows the widget.
     await page.reload();
@@ -240,6 +261,32 @@ for (const run of runs) {
     ok(`${tag}: a pinned widget shown again when Home opens (the saved layout, read): it does not come in or settle`,
       reopened.some(Boolean) && reopened.filter(Boolean).every((f) => f.entries === 0 && !f.settle), { first: reopened.filter(Boolean).slice(0, 2) });
     await page.screenshot({ path: join(output, `${tag}-after.png`) });
+
+    /** Unpins, then pins with `press`; returns how far the Pin moved in the frames after, and whether
+     * focus stayed where the press found it. */
+    const pressedAgain = async (label, press) => {
+      await page.locator(PIN).click();
+      await page.waitForFunction((id) => ![...document.querySelectorAll(".home-widget-slot")].some((el) => el.dataset.widget === id), WIDGET, { timeout: 10_000 });
+      await page.waitForTimeout(400);
+      const { top, from } = await press();
+      await page.waitForFunction((id) => [...document.querySelectorAll(".home-widget-slot")].some((el) => el.dataset.widget === id), WIDGET, { timeout: 10_000 });
+      await page.waitForTimeout(1200);
+      const tops = (await framesSince(from)).map((f) => f.pinTop).filter((t) => t !== null);
+      const moved = tops.reduce((most, t) => Math.max(most, Math.abs(t - top)), 0);
+      return record(label, { top, moved, frames: tops.length, focusKept: await page.evaluate(() => window.__focusKept()) });
+    };
+    // Focus on another Home control, above the widget that comes in: it is not what was pressed.
+    const other = await pressedAgain("focus on another control", () => page.evaluate((keep) => window.__pin(keep), MACHINES_FOLD));
+    ok(`${tag}: a section pinned here by a pointer that does not focus the Pin, focus on another Home control (the Machines widget's fold): the Pin pressed stays where it was within 1 px in every frame, and focus stays on that control (moved at most ${other.moved} px)`,
+      other.frames > 0 && other.moved <= 1 && other.focusKept, other);
+    // From the keyboard: the Pin focused, then Enter.
+    const keyed = await pressedAgain("from the keyboard", async () => {
+      const at = await page.evaluate(() => window.__focusPin());
+      await page.keyboard.press("Enter");
+      return at;
+    });
+    ok(`${tag}: a section pinned here from the keyboard (the Pin focused, then Enter): the Pin stays where it was within 1 px in every frame, and keeps focus (moved at most ${keyed.moved} px)`,
+      keyed.frames > 0 && keyed.moved <= 1 && keyed.focusKept, keyed);
 
     // The reader takes over the frame after the press: the rest of the hold does not undo it.
     for (const [kind, words] of [["wheel", "a wheel"], ["key", "a key"], ["touch", "a touch"]]) {
