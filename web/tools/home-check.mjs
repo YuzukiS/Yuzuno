@@ -945,7 +945,7 @@ try {
   });
 
   const looks = {};
-  await step("9 light and dark at 1440 and 390 px: no horizontal overflow, headers readable (contrast ≥ 4.5, ≥ 11 px, not cut), the needs-you bar inside the viewport", async () => {
+  await step("9 light and dark at 1440 and 390 px: no horizontal overflow, headers readable (contrast ≥ 4.5, ≥ 11 px, not cut), the needs-you bar inside the viewport, its list scrolling inside it to its last item", async () => {
     const problems = [];
     for (const theme of ["light", "dark"]) {
       await setTheme(theme);
@@ -956,7 +956,26 @@ try {
         await sleep(250);
         const shown = await fit();
         const name = `${theme}-${width}`;
-        looks[name] = { ...shown, sides: await sideTabs() };
+        // Needs you keeps its items in its row: the list inside Home, and scrolled to its end, its last item
+        // whole inside the list (it scrolls, rather than widening Home, where they don't all fit).
+        const needsRow = await page.evaluate(() => {
+          const view = document.querySelector(".home-view").getBoundingClientRect();
+          const list = document.querySelector(".home-needs-list");
+          const box = (r) => ({ left: Math.round(r.left), right: Math.round(r.right) });
+          const before = { list: box(list.getBoundingClientRect()), scrollWidth: list.scrollWidth, clientWidth: list.clientWidth };
+          list.scrollLeft = list.scrollWidth;
+          const listBox = list.getBoundingClientRect();
+          const last = list.lastElementChild.getBoundingClientRect();
+          const end = { scrollLeft: Math.round(list.scrollLeft), last: box(last) };
+          list.scrollLeft = 0;
+          return {
+            ...before, ...end, scrolls: before.scrollWidth > before.clientWidth + 1,
+            inside: listBox.left >= view.left - 1 && listBox.right <= view.right + 1,
+            lastReached: last.left >= listBox.left - 1 && last.right <= listBox.right + 1,
+          };
+        });
+        if (!needsRow.inside || !needsRow.lastReached) problems.push(`${name}: Needs you's row ${JSON.stringify(needsRow)}`);
+        looks[name] = { ...shown, sides: await sideTabs(), needsRow };
         if (shown.pageOverflow || shown.viewOverflow || shown.wide.length) problems.push(`${name}: horizontal overflow ${JSON.stringify({ page: shown.pageOverflow, view: shown.viewOverflow, wide: shown.wide })}`);
         if (!shown.needsInside) problems.push(`${name}: needs-you bar outside the viewport`);
         const unreadable = shown.headers.filter((h) => h.contrast < 4.5 || h.size < 11 || h.clipped || h.outside);
@@ -974,7 +993,7 @@ try {
     await ensureHome();
     await scrollHomeTo(null);
     assert.deepEqual(problems, []);
-    return Object.fromEntries(Object.entries(looks).map(([k, v]) => [k, { headers: v.headers.length, minContrast: Math.min(...v.headers.map((h) => h.contrast)), view: v.viewBox }]));
+    return Object.fromEntries(Object.entries(looks).map(([k, v]) => [k, { headers: v.headers.length, minContrast: Math.min(...v.headers.map((h) => h.contrast)), view: v.viewBox, needsRow: v.needsRow }]));
   });
 
   await step("10 no element in Home has a coloured left border wider than 2 px; the main cards' borders are even on both sides", async () => {
