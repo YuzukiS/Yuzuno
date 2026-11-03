@@ -1739,8 +1739,10 @@ test("as a task opens, the rows that take over from the cards fade in, and are d
     await board.openTask();
     const rows = page.document.querySelector(".collab-groups");
     assert.ok(rows?.classList.contains("collab-list-flip"), "the rows that take over fade in");
-    // jsdom has no AnimationEvent, so React listens for the prefixed name there; a browser sends animationend.
-    for (const type of ["animationend", "webkitAnimationEnd"]) rows.dispatchEvent(new page.window.Event(type, { bubbles: true }));
+    // jsdom has no AnimationEvent, so React listens for the prefixed name there (a browser sends
+    // animationend). The plain name would also reach Radix Presence on the dialog, which calls
+    // CSS.escape, absent from jsdom.
+    rows.dispatchEvent(new page.window.Event("webkitAnimationEnd", { bubbles: true }));
     await tick();
     assert.ok(!page.document.querySelector(".collab-groups").classList.contains("collab-list-flip"), "and are done once that ends");
     assert.deepEqual(page.errors, []);
