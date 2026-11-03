@@ -2083,6 +2083,10 @@ p {
      dialog's buttons (a phone's, at the bottom): clicks go through it. */
   pointer-events: none;
 }
+/* Except an action a toast may get one day, which must stay reachable. */
+.toast-stack :is(button, a[href]) {
+  pointer-events: auto;
+}
 .toast {
   display: flex;
   align-items: center;
