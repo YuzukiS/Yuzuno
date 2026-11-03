@@ -160,7 +160,7 @@ function pageHelpers() {
         const found = node.matches(".result-placeholder") ? [node] : [...node.querySelectorAll(".result-placeholder")];
         for (const p of found) placed.push({ at: frames.length, published: !!p.closest(".turn-results"), text: p.textContent.trim() });
       }
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  }).observe(document, { childList: true, subtree: true });
   const step = () => {
     frames.push({
       // The published result, and its placeholder in the Turn's results.
@@ -227,7 +227,8 @@ for (const run of runs) {
   try {
     await page.goto("http://127.0.0.1:4321/");
     await page.locator(".agent-row").first().waitFor({ timeout: 10_000 });
-    if (!(await page.locator(".turn-results").count())) await open("Mori");
+    // A phone keeps the conversation behind the list: open it unless it shows.
+    if (!(await page.locator(".turn-results").first().isVisible())) await open("Mori");
     await bothShown();
     await page.locator(".result-placeholder", { hasText: "Generating interactive result" }).waitFor({ timeout: 10_000 });
     await page.waitForTimeout(500);
