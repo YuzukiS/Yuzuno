@@ -32,23 +32,24 @@ export const SAFETY_NET_MS = 45_000;
  * An open, quiet stream is healthy: business-event silence is not a timeout;
  * only missing heartbeats are.
  *
- * `onDrained` is told, once per connection, when a stream Core resumed has
- * sent everything it replayed: Core sends the replay before any heartbeat
+ * `onReplay` is told when Core resumes a stream (`"resumed"`: what follows is
+ * its replay) and, once per connection, when it has sent everything it
+ * replayed (`"drained"`): Core sends the replay before any heartbeat
  * (core/src/events.rs, Reader::next), so the first heartbeat after `resumed`
  * on the same open connection says so. Not that every live change has
- * arrived; never on a reset (its read is the new start) or another
+ * arrived; never after a reset (its read is the new start) or for another
  * connection, and never from a timer (T-19 CV:Q-01, Lead 3356).
  */
 export function useWorkspaceEvents(
   enabled: boolean,
   onEvent: (event: WorkspaceEvent) => void,
-  onDrained?: () => void,
+  onReplay?: (state: "resumed" | "drained") => void,
 ) {
   const [connection, setConnection] = useState<EventConnection>("connecting");
   const handler = useRef(onEvent);
   handler.current = onEvent;
-  const drained = useRef(onDrained);
-  drained.current = onDrained;
+  const replay = useRef(onReplay);
+  replay.current = onReplay;
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
@@ -123,6 +124,7 @@ export function useWorkspaceEvents(
           clearTimeout(starting);
           starting = undefined;
           resumedHere = event.type === "resumed";
+          if (resumedHere) replay.current?.("resumed");
         }
         if (event.type === "resumed" || event.type === "heartbeat") return;
         emit(event);
@@ -132,7 +134,7 @@ export function useWorkspaceEvents(
         heard();
         if (open && resumedHere) {
           resumedHere = false;
-          drained.current?.();
+          replay.current?.("drained");
         }
       });
       events.onerror = () => {

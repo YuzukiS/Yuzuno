@@ -9,6 +9,9 @@ export interface DetailSyncOptions {
   publish: (detail: AgentDetail | null) => void;
   /** The latest read failure, or null once a read succeeds. */
   error: (error: unknown) => void;
+  /** Streamed changes were applied and nothing shown changed: what waits for
+   * the sync to be idle looks again (T-19 CV:Q-01, Lead 3356). */
+  quiet?: () => void;
   /** Refetches requested within this window share one read. */
   refetchDelayMs?: number;
   /** Streamed changes are rendered at most this often. */
@@ -71,6 +74,7 @@ export class DetailSync {
       refetchDelayMs: 150,
       flushDelayMs: 100,
       retryDelayMs: 5_000,
+      quiet: () => {},
       ...options,
     };
   }
@@ -213,6 +217,7 @@ export class DetailSync {
     const before = this.current;
     const missing = this.apply(events);
     if (this.current !== before) this.show();
+    else this.options.quiet();
     if (missing) this.refetch();
   }
 

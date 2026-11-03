@@ -601,13 +601,19 @@ export function App() {
   // never while the stream is down) is shown, nothing arrives live. That
   // detail only becomes what was shown, so neither a read already on its way,
   // a copy kept from before, nor a change Core replays when the stream resumes
-  // makes an old request play (Lead 3299, 3301). After a stream opened again
-  // (`drain`), only the end of what Core replays (`drained`) or a reset ends
-  // the wait: no read starts for it, and no timer guesses it (Lead 3356).
+  // makes an old request play (Lead 3299, 3301). After Core resumed the stream
+  // (`drain`), only the end of what it replays (`drained`) or a reset ends the
+  // wait: no read starts for it, and no timer guesses it (Lead 3356).
   const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
   // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
   const [, setDrains] = useState(0);
-  const replayDrained = useCallback(() => {
+  // Told in the stream's order, so a reset that follows always wins (R1 276d4a1d; Lead 3356).
+  const onReplay = useCallback((state: "resumed" | "drained") => {
+    if (state === "resumed") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity, drain: true };
+      return;
+    }
     const mark = arrivalsSettle.current;
     if (!mark?.drain) return;
     mark.drained = true;
@@ -710,21 +716,16 @@ export function App() {
     },
     [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
-  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, replayDrained);
-  // The stream broke, or opened again after breaking (T-19 CV:Q-01; Lead 3299, 3356; R1
-  // 276d4a1d). What it replays is not live, and a resumed reconnect reads no conversation, so the
-  // wait lasts until Core says its replay is over (`replayDrained`), or a reset's read. The first
-  // opening has nothing to replay and marks nothing.
+  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
+  // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
+  // Core has resumed it (`onReplay`, then the end of its replay) or reset it (a read after that).
+  // Those two are told in the stream's order; this render only marks the break.
   const lastConnection = useRef(eventConnection);
   if (lastConnection.current !== eventConnection) {
-    const was = lastConnection.current;
     lastConnection.current = eventConnection;
     if (eventConnection !== "open") {
       liveChange.current = null;
       arrivalsSettle.current = { after: Infinity };
-    } else if (was === "reconnecting") {
-      liveChange.current = null;
-      arrivalsSettle.current = { after: Infinity, drain: true };
     }
   }
   useEffect(() => {
