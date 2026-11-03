@@ -590,6 +590,17 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   const unsaved = rejected((p) => { delete p.sources[1].snapshot; });
   assert.equal(unsaved.code, "unsaved_definition");
   assert.match(unsaved.reason, /must point to a file this section keeps/);
+  // A Task method record holds a definition version too (T-17): the record
+  // keeps its own identity, so the section needs no attachment for it.
+  const byRecord = desk((p, copy) => {
+    p.sources[1] = { id: "protocol", label: "Protocol", kind: "notes", task: { taskId: "T-17", activitySeq: 42 } };
+    copy.attachments = copy.attachments.filter((attachment) => attachment.name !== "protocol.md");
+  });
+  assert.ok(checkBriefSection(byRecord));
+  assert.equal(first(desk((p) => { p.sources[1].task = { taskId: "17", activitySeq: 42 }; })).code, "invalid_field", "a task ID is T-n");
+  const both = rejected((p) => { p.sources[1].task = { taskId: "T-17", activitySeq: 42 }; });
+  assert.equal(both.code, "invalid_field");
+  assert.match(both.reason, /names both a snapshot and a Task record/);
   assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
   assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
   assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");

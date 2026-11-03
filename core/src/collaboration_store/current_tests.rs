@@ -265,7 +265,11 @@ fn the_current_path_reads_through_its_indexes() {
         (DISPATCH_ENDS, "collaboration_activity_dispatch_end"), (super::LATEST_REVIEW, "pr_reviews_task"),
         (super::NEWEST_SUBSCRIPTIONS, "ci_subscriptions_task"), (super::SUBSCRIPTION_COUNT, "ci_subscriptions_task"),
         (super::LATEST_REVIEWER_RUN, "pr_reviews_task"), (super::REVIEW_COUNTS, "pr_reviews_task"),
-        (super::LATEST_RUN, "(watch_id=?)"), (super::MESSAGE_STATE, "(id=?)")] {
+        (super::LATEST_RUN, "(watch_id=?)"), (super::MESSAGE_STATE, "(id=?)"),
+        // A research record and its line (T-17): by key, never the history.
+        (super::super::research::ONE_ACTIVITY, "INTEGER PRIMARY KEY"),
+        (super::super::research::RECORD_BY_ID, "collaboration_activity_research_id"),
+        (super::super::research::REVISED_BY, "collaboration_activity_research_revises")] {
         let mut plan = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let unbound = vec![rusqlite::types::Null; plan.parameter_count()];
         let steps: Vec<String> = plan.query_map(rusqlite::params_from_iter(unbound), |r| r.get(3)).unwrap()

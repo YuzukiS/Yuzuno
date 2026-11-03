@@ -17,6 +17,8 @@ mod result_outcome;
 pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
 mod current;
+mod research;
+pub(crate) use research::desk_source as research_desk_source;
 mod compact;
 use result_dispatch::TaskDispatch;
 
@@ -86,6 +88,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         input_json TEXT NOT NULL, response_json TEXT NOT NULL,
         PRIMARY KEY(actor,operation,request_id));")?;
     db.execute_batch(result_ack::SCHEMA)?;
+    db.execute_batch(research::SCHEMA)?;
     // A restart cannot tell whether the Harness accepted an in-flight nudge.
     db.execute(
         "UPDATE collaboration_messages SET delivery_state='uncertain',
@@ -120,7 +123,7 @@ impl Store {
         // Listing and reading change nothing (only an Agent's own peer_read
         // records what it read), so they use a reader's snapshot and never wait
         // for the writer. Everything else is one IMMEDIATE write transaction.
-        let read_only = matches!(operation, "peers_list" | "projects_list" | "task_list" | "task_get" | "task_result_get" | "delivery_get")
+        let read_only = matches!(operation, "peers_list" | "projects_list" | "task_list" | "task_get" | "task_result_get" | "task_research_get" | "delivery_get")
             || (operation == "peer_read" && actor.is_none());
         let reader = if read_only { Some(self.db.read()?) } else { None };
         let mut writer = if read_only { None } else { Some(self.db.write()?) };
@@ -190,6 +193,7 @@ impl Store {
             "task_list" => task_list(&tx, &input)?,
             "task_get" => task_get(&tx, &input)?,
             "task_result_get" => result_outcome::get(&tx, &input)?,
+            "task_research_get" => research::get(&tx, &input)?,
             "task_create" => task_create(self, &tx, &author, &source, &input)?,
             "task_update" => task_update(self, &tx, &author, &source, &input)?,
             "task_claim" => task_claim(&tx, &author, &source, &input)?,
@@ -357,6 +361,7 @@ fn normalize_task_input(db: &Connection, operation: &str, mut input: Value) -> R
         operation,
         "task_get"
             | "task_result_get"
+            | "task_research_get"
             | "task_update"
             | "task_claim"
             | "task_comment"
@@ -373,6 +378,9 @@ fn normalize_task_input(db: &Connection, operation: &str, mut input: Value) -> R
     // old clients and new clients must share their existing receipt.
     if matches!(operation, "peer_send" | "task_dispatch") {
         input["priority"] = json!(message_priority(&input)?);
+    }
+    if operation == "task_comment" {
+        research::normalize(db, &mut input);
     }
     Ok(input)
 }
@@ -425,6 +433,7 @@ fn public_response(db: &Connection, mut output: Value) -> Result<Value> {
     if let Some(value) = output.get_mut("activity") {
         public_task_link(db, value)?;
         dispatch_materials::project_activity(value);
+        research::project(db, value)?;
     }
     if let Some(value) = output.get_mut("message") {
         public_message(db, value)?;
@@ -433,6 +442,7 @@ fn public_response(db: &Connection, mut output: Value) -> Result<Value> {
         for value in values {
             public_task_link(db, value)?;
             dispatch_materials::project_activity(value);
+            research::project(db, value)?;
         }
     }
     if let Some(values) = output.get_mut("messages").and_then(Value::as_array_mut) {
@@ -929,11 +939,16 @@ fn task_comment(
     source: &Value,
     input: &Value,
 ) -> Result<Value> {
-    allowed(input, &["requestId", "taskId", "body"])?;
+    allowed(input, &["requestId", "taskId", "body", "research"])?;
     let task = load_task(db, &required_text(input, "taskId", 128)?)?;
     let body = required_text(input, "body", 16_384)?;
+    let mut extra = json!({"body":body});
+    // A research record (T-17) is a comment too: fixed, and nothing else changes.
+    if let Some(record) = research::validate(db, &task, input.get("research"))? {
+        extra["research"] = record;
+    }
     // Comments are append-only; they never invalidate another editor's version.
-    let event = activity(db, &task.id, "comment", actor, source, json!({"body":body}))?;
+    let event = activity(db, &task.id, "comment", actor, source, extra)?;
     Ok(json!({"task":task,"activity":event}))
 }
 
@@ -1433,7 +1448,8 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
-        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order.", json!({"requestId":request,"taskId":task_reference,"body":string}), &["requestId","taskId","body"]),
+        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":string,"research":research::schema()}), &["requestId","taskId","body"]),
+        definition("task_research_get", "Read one research record of a task by its activitySeq: the record as written, its version among the records with its id and the newest one, the method version it cites, and each source's identity as recorded beside its state now. Job sources compare retained Job records only, no file is read; task sources keep their original producer; external sources are as stated and never checked. A claim's status is its author's judgement, not a verdict or acceptance.", json!({"taskId":task_reference,"activitySeq":{"type":"integer","minimum":1}}), &["taskId","activitySeq"]),
         definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references. Defaults to review; choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
         definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
         definition("task_result_ack", "Record that you have handled a task result Core notified you about, by its exact resultId and dispatchId from that result message. Only the Agent the result notified can acknowledge it; repeats are idempotent. If that notification's wake-up has not been sent yet, Core skips it; one already in flight or delivered is not withdrawn. The message stays in your mailbox and the task is not changed. Reading mail, task_get, setting done or commenting never acknowledges a result.", json!({"requestId":request,"taskId":task_reference,"resultId":{"type":"string","description":"resultId from the result message."},"dispatchId":{"type":"string","description":"dispatchId from the same result message."}}), &["requestId","taskId","resultId","dispatchId"]),

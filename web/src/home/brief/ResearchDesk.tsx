@@ -34,12 +34,18 @@ type Read =
   | { status: "missing" | "not_number"; from: string }
   | { status: "unavailable"; reason?: string; from: string };
 type SourceInfo = {
-  attachment: string;
+  attachment?: string;
   takenAt?: string;
   sha256?: string;
   available: boolean;
   reason?: string;
   stated?: "same" | "different" | "unknown";
+  // A source naming a Task research record (T-17), as its task keeps it.
+  record?: { kind: string; type?: string; title?: string; summary?: string };
+  producer?: { name?: string };
+  at?: string;
+  version?: number | null;
+  latestActivitySeq?: number | null;
 };
 type Resolved = { version: number; values: Record<string, Read>; sources: Record<string, SourceInfo> };
 type Loaded = { key: string; data?: Resolved; error?: string };
@@ -386,6 +392,22 @@ function SourceLine({ source, info, lines }: { source: Source; info?: SourceInfo
           {info.reason === "not_snapshot" ? t.notSnapshot : t.snapshotMissing}
         </span>
       )}
+      {source.task && (
+        <span className="research-snapshot" data-record="" data-unavailable={info && !info.available ? "" : undefined}>
+          {t.taskRecord(source.task.taskId, source.task.activitySeq)}
+          {info?.available && info.record && (
+            <>
+              {" · "}
+              {t.recordType[info.record.type ?? info.record.kind] ?? info.record.kind} “{info.record.title ?? info.record.summary}”
+              {info.version ? <> · {t.recordVersion(info.version)}</> : null}
+              {info.producer?.name && info.at ? <> · {t.recordBy(info.producer.name, formatTime(info.at, time))}</> : null}
+              {info.latestActivitySeq && info.latestActivitySeq !== source.task.activitySeq ? <> · {t.recordNewer(info.latestActivitySeq)}</> : null}
+            </>
+          )}
+          {info && !info.available && <> · {t.recordMissing[info.reason ?? ""] ?? info.reason}</>}
+          {info?.available && <span className="research-note">{t.recordNote}</span>}
+        </span>
+      )}
       {info?.stated && <span className="research-note" data-stated={info.stated}>{t.stated[info.stated]}</span>}
       {(source.location || source.revision) && (
         <span className="research-described">
@@ -445,7 +467,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
     () => desk.plots.some((plot) => plot.rows.some((r) => [r.estimate, ...(r.parts ?? []).map((p) => p.estimate)].some((e) => [e.value, e.low, e.high].some((n) => n !== undefined && typeof n !== "number")))),
     [desk.plots],
   );
-  const wantsSources = desk.sources.some((source) => source.snapshot);
+  const wantsSources = desk.sources.some((source) => source.snapshot || source.task);
   const { data: resolved, error, loading } = useResolved(elementKey, reads || wantsSources);
   const sources = useMemo(() => new Map(desk.sources.map((source) => [source.id, source])), [desk.sources]);
   const plotOf = (rowId: string | undefined) => desk.plots.find((plot) => plot.rows.some((r) => r.id === rowId));

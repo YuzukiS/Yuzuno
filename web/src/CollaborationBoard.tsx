@@ -1,4 +1,5 @@
 import { TaskOutcome, TaskOutcomeEditor } from "./TaskOutcome";
+import { TaskResearch, type ResearchRecord } from "./TaskResearch";
 import { outcomeInput, type OutcomeReport, type OutcomeResult } from "./task-outcome";
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
@@ -90,6 +91,8 @@ interface Activity {
   at: string;
   source?: ExecutionSource | null;
   changes?: Record<string, unknown>;
+  /** A comment that is a research record (T-17). */
+  research?: ResearchRecord;
 }
 interface PeerMessage {
   id: string;
@@ -1867,6 +1870,9 @@ function TaskPane({
                     <Prose text={activity.body} />
                   ) : (
                     <p className="collab-hint">{t.activityKinds[activity.kind]}</p>
+                  )}
+                  {activity.research && (
+                    <TaskResearch taskId={detail.task.id} seq={activity.seq} record={activity.research} />
                   )}
                   {activity.source &&
                     agents.some(

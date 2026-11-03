@@ -1176,6 +1176,71 @@ const activities = [
   { seq: 2, taskId: "T-1", kind: "comment", body: "Bounds look right to me.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:05:00Z" },
 ];
 
+test("a research record shows as its author wrote it with each source's identity, and reads what holds now on request (T-17)", async () => {
+  const record = {
+    schema: "research/1",
+    type: "claim",
+    id: "faster",
+    title: "Layout B is faster on the small inputs",
+    text: "Layout B runs the small inputs about 4% faster than layout A.",
+    status: "conditional",
+    field: "systems",
+    conditions: ["Small inputs only"],
+    limits: ["One machine only"],
+    method: { activitySeq: 3, id: "timing", title: "Timing protocol" },
+    sources: [
+      { kind: "job", label: "Raw timings", jobId: "job-1", attempt: "11111111-1111-4111-8111-111111111111", path: "out/timings.json", sha256: "a".repeat(64), bytes: 40, recorded: "recorded_match" },
+      { kind: "task", taskId: "T-2", activitySeq: 9, record: { kind: "research", type: "observation", id: "ranking", title: "Ranking flips with link order" }, producer: { kind: "agent", id: "dev-5", name: "Dev 5" }, at: "2026-10-12T11:00:00Z" },
+      { kind: "external", label: "Upstream benchmark notes", url: "https://example.org/bench", version: "v3", observedAt: "2026-11-01", coverage: "Small inputs only", checked: false },
+    ],
+  };
+  const researched = { seq: 4, taskId: "T-1", kind: "comment", body: "Claim recorded.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:10:00Z", research: record };
+  const now = ["recorded_match", "readable", "stated"];
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },
+    task_get: { task: task(), activities: [...activities, researched], executions: [], hasMore: false },
+    task_research_get: { taskId: "T-1", activitySeq: 4, version: 2, revisedBy: null, latestActivitySeq: 4,
+      research: { ...record, sources: record.sources.map((source, n) => ({ ...source, now: { state: now[n] } })) },
+      method: { activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: 6, research: { type: "method", id: "timing", title: "Timing protocol", text: "Ten fresh processes." }, method: null } },
+  }));
+  try {
+    page.render();
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card");
+    page.document.querySelector(".collab-task-card").click();
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the research record");
+    const text = () => card.textContent;
+    assert.match(text(), /Claim/);
+    assert.match(text(), /Layout B is faster on the small inputs/, "the title as written");
+    assert.match(text(), /Holds under conditions \(the author's judgement\)/);
+    assert.match(text(), /Made with the method “Timing protocol” as written in activity 3/);
+    assert.match(text(), /Small inputs only/);
+    assert.match(text(), /One machine only/);
+    assert.match(text(), /out\/timings\.json/);
+    assert.match(text(), /Matched this task's recorded Job check when written/);
+    assert.match(text(), /T-2 · activity 9/);
+    assert.match(text(), /by Dev 5/, "the cited record's own producer");
+    assert.match(text(), /As its author stated it; Yuzuno did not check it/);
+    assert.doesNotMatch(text(), /verified/i);
+    assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "nothing is read until asked");
+    const toggle = [...card.querySelectorAll("button")].find((b) => b.textContent === "Version and sources now");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    toggle.click();
+    await waitFor(() => /Version 2 of this record/.test(text()), "the record's version");
+    assert.match(text(), /This is the newest version/);
+    assert.match(text(), /The method as cited is version 1; a newer version is activity 6/);
+    assert.match(text(), /Now: Job record still matches/);
+    assert.match(text(), /Now: Record readable/);
+    assert.match(text(), /Now: Not checked/);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    const reads = page.calls.filter((call) => call.operation === "task_research_get");
+    assert.deepEqual(reads.map((call) => [call.method, call.body]), [["POST", { taskId: "T-1", activitySeq: 4 }]]);
+    assert.ok(!page.calls.some((call) => ["task_comment", "task_update", "task_submit_result"].includes(call.operation)), "reading writes nothing");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("the task list and a task read in Chinese; what was written stays as written (T-189)", async () => {
   const page = mount(quietCore({
     task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },

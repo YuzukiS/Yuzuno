@@ -139,6 +139,36 @@ const radios = (document, label) => [...document.querySelectorAll(`[role="radiog
 const checked = (document, label) => radios(document, label).find((radio) => radio.getAttribute("aria-checked") === "true");
 const radio = (document, label, text) => radios(document, label).find((item) => item.textContent.includes(text));
 
+test("a source naming a Task research record shows as its task keeps it, with no attachment (T-17)", async () => {
+  const put = structuredClone(doseStudy);
+  put.body.elements.desk.props.sources[1] = { id: "protocol", label: "Protocol", kind: "notes", task: { taskId: "T-17", activitySeq: 42 } };
+  put.attachments = put.attachments.filter((attachment) => attachment.name !== "protocol.md");
+  for (const [record, expected] of [
+    [{ taskId: "T-17", activitySeq: 42, available: true, record: { kind: "research", type: "method", id: "recovery", title: "Recovery definition" },
+      producer: { kind: "agent", id: "dev-5", name: "Dev 5" }, at: "2026-10-30T09:00:00Z", version: 2, latestActivitySeq: 57 },
+      ["Task record T-17 · activity 42", "Method “Recovery definition”", "version 2", "by Dev 5", "a newer version is activity 57", "the record's identity, not a check of it"]],
+    [{ taskId: "T-17", activitySeq: 42, available: false, reason: "activity_not_found" }, ["Task record T-17 · activity 42", "The task has no such activity"]],
+  ]) {
+    const page = mount((url) => {
+      const answer = serve(put)(url);
+      if (answer.body?.sources) answer.body.sources.protocol = record;
+      return answer;
+    });
+    try {
+      page.window.renderSection(section(page, put, 3), PROJECT, "ws-1");
+      const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+      await until(() => desk.textContent.includes(expected[1]), `the record: ${expected[1]}`);
+      for (const text of expected) assert.ok(desk.textContent.includes(text), text);
+      assert.ok(!desk.textContent.match(/verified|checked by/i), "nothing is called verified");
+      // Core reads the record; the desk asks only for its own research read.
+      assert.ok(page.requests.every((request) => request.method === "GET" && /\/brief\/research\//.test(request.url)), JSON.stringify(page.requests));
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
 test("two desks of different shapes draw through one component, each number saying where it came from", async () => {
   for (const [put, expect] of [
     [doseStudy, { claim: "High dose shortens recovery", rows: "Recovery time vs placebo (v2): rows", value: "−2.04", interval: "[−3.12, −0.96]" }],
