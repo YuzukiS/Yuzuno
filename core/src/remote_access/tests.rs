@@ -170,7 +170,7 @@ fn free_port_never_gives_one_port_twice_even_when_it_is_offered_again() {
 #[test]
 fn free_port_fails_plainly_when_bind_only_offers_ports_already_given() {
     // A bind no OS has: it offers 7 again while 7 is still held. This ends in a
-    // panic after one try, never a loop for ever.
+    // panic on its second try, never a loop for ever.
     let refused = std::panic::catch_unwind(|| {
         let mut given = std::collections::BTreeSet::from([7]);
         distinct_port(&mut given, || (7, ()))
