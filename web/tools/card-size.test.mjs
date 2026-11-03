@@ -44,37 +44,48 @@ test("a figure the card cannot show is as no figure: small", () => {
   assert.equal(cardSize(section({ lead: "lead", visual: "gone" }, { lead })), "small");
 });
 
-test("the user's size comes first where the card may take it; a card with no summary may only be small", async () => {
-  const { allowedSizes, cardContent, shownSize } = await import("../src/home/card-preview.ts");
-  const chart = section({ lead: "lead", visual: "fig" }, { lead, fig: { type: "LineChart", props: { id: "c", title: "Loss", data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }] } } } });
-  const content = cardContent(chart);
-  assert.deepEqual(allowedSizes(content), ["small", "wide", "large"]);
-  assert.deepEqual(shownSize(chart, content, null), { size: "wide", source: "auto", own: "wide" });
-  assert.deepEqual(shownSize(chart, content, "small"), { size: "small", source: "user", own: "wide" });
-  assert.deepEqual(shownSize(chart, content, "large"), { size: "large", source: "user", own: "wide" });
+test("the author's size is the card's, whatever its figure; a summary kept from before sizes takes its figure's (T-18, Lead 2457, 2473)", async () => {
+  const { cardContent, shownSize, sizeSource } = await import("../src/home/card-preview.ts");
+  const table = { type: "Table", props: { id: "t", columns: [{ key: "a", label: "A" }], rows: [{ id: "r", cells: { a: 1 } }] } };
+  const sized = (size) => section({ lead: "lead", visual: "fig", ...(size ? { size } : {}) }, { lead, fig: table });
+  for (const size of ["small", "wide", "large"]) {
+    const card = sized(size);
+    assert.equal(cardSize(card), size, `the author's ${size}, not the table's wide`);
+    assert.deepEqual(shownSize(card, cardContent(card), null), { size, source: "author", own: size });
+  }
+  const kept = sized(null);
+  assert.equal(sizeSource(cardContent(kept)), "content");
+  assert.deepEqual(shownSize(kept, cardContent(kept), null), { size: "wide", source: "content", own: "wide" });
+  // A size that is not one of the three is no size: the figure's.
+  assert.equal(cardSize(sized("huge")), "wide");
+  // No summary named: small, and nothing for an author's size to fill.
   const unnamed = section(null, { lead });
-  assert.deepEqual(allowedSizes(cardContent(unnamed)), ["small"]);
-  assert.deepEqual(shownSize(unnamed, cardContent(unnamed), "large"), { size: "small", source: "auto", own: "small" });
-  // The size already shown in this visit, held, is what Auto shows, whatever the card's figure is now (Lead 2414).
-  assert.deepEqual(shownSize(chart, content, null, () => "large"), { size: "large", source: "auto", own: "large" });
-  assert.deepEqual(shownSize(chart, content, "small", () => "large"), { size: "small", source: "user", own: "large" });
+  assert.deepEqual(shownSize(unnamed, cardContent(unnamed), null), { size: "small", source: "content", own: "small" });
 });
 
-test("the choices are kept per Workspace, by project and Home's id of the section, never its key; anything else in storage is ignored", async () => {
-  const store = new Map();
-  globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
-  const { readSizeChoices, sizable, sizeKey } = await import("../src/home/card-sizes.ts");
-  // A section written again under the same key has another id, so it is another card (Lead 2414).
+test("on the user's widgets the user's size comes first; the card keeps its own (T-18, Lead 2457)", async () => {
+  const { cardContent, shownSize } = await import("../src/home/card-preview.ts");
+  const card = section({ lead: "lead", size: "wide" }, { lead });
+  assert.deepEqual(shownSize(card, cardContent(card), "large"), { size: "large", source: "user", own: "wide" });
+  assert.deepEqual(shownSize(card, cardContent(card), null), { size: "wide", source: "author", own: "wide" });
+});
+
+test("in one visit to Home a card keeps the size it was first shown at (Lead 2414)", async () => {
+  const { cardContent, shownSize } = await import("../src/home/card-preview.ts");
+  const first = section({ lead: "lead", size: "small" }, { lead }), next = section({ lead: "lead", size: "large" }, { lead });
+  const held = new Map();
+  const hold = (size) => { if (!held.has("p1:7")) held.set("p1:7", size); return held.get("p1:7"); };
+  assert.equal(shownSize(first, cardContent(first), null, hold).size, "small");
+  assert.equal(shownSize(next, cardContent(next), null, hold).size, "small", "the newer version waits for the next visit");
+  held.clear();
+  assert.equal(shownSize(next, cardContent(next), null, hold).size, "large");
+});
+
+test("a card is named by its project and Home's id of the section, never its key", async () => {
+  const { sizable, sizeKey } = await import("../src/home/card-sizes.ts");
+  // A section written again under the same key has another id, so it is another card.
   assert.equal(sizeKey("p1", 7), "p1:7");
   assert.notEqual(sizeKey("p1", 7), sizeKey("p1", 40));
   assert.equal(sizable({ id: 7 }), true);
-  assert.equal(sizable({}), false, "an older Core names no id: nothing to keep a choice by");
-  assert.deepEqual(readSizeChoices("ws-1"), {});
-  store.set("yuzuno.homeCardSizes.ws-1", JSON.stringify({ "p1:7": "large", "p1:8": "huge", "p2:9": 3 }));
-  assert.deepEqual(readSizeChoices("ws-1"), { "p1:7": "large" });
-  assert.deepEqual(readSizeChoices("ws-2"), {}, "another Workspace has its own");
-  store.set("yuzuno.homeCardSizes.ws-3", "not json");
-  assert.deepEqual(readSizeChoices("ws-3"), {});
-  store.set("yuzuno.homeCardSizes.ws-4", JSON.stringify(["large"]));
-  assert.deepEqual(readSizeChoices("ws-4"), {});
+  assert.equal(sizable({}), false, "an older Core names no id");
 });

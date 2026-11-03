@@ -35,15 +35,12 @@ export function HomeWidgets({
   widgets,
   layout,
   onChange,
-  organizeMore,
 }: {
   widgets: HomeWidget[];
   /** null until this workspace's layout is read: nothing is drawn as arranged. */
   layout: WidgetLayout | null;
   /** Absent where the layout can't be changed (the design preview). */
   onChange?: (next: (current: WidgetLayout) => WidgetLayout) => void;
-  /** More of Home to organize on this device, after the widgets: the cards' sizes (T-18). */
-  organizeMore?: ReactNode;
 }) {
   const t = useStrings(homeText);
   const [organizing, setOrganizing] = useState(false);
@@ -181,7 +178,6 @@ export function HomeWidgets({
             <p className="home-note">{t.noneHidden}</p>
           )}
           <p className="home-note">{t.addFromProject}</p>
-          {organizeMore}
           <div className="modal-actions">
             <button type="button" className="primary-button" onClick={() => setOrganizing(false)}>
               {t.reorderDone}

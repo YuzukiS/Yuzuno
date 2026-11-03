@@ -78,6 +78,8 @@ export const BRIEF_LIMITS = {
   },
 } as const;
 const L = BRIEF_LIMITS;
+/** The room a summary's card takes among Home's cards, in rows × columns: 1×1, 1×2, 2×2 (T-18). */
+export const CARD_SIZES = ["small", "wide", "large"] as const;
 
 // Field schemas shared with result_publish.
 const id = componentProps.Table.shape.id;
@@ -279,7 +281,10 @@ export const briefComponentProps = {
   // T-18: what a report opens with on Home and which of its parts start
   // folded, by the ids of the root's own children (checked with the tree).
   BriefBody: z.strictObject({
-    summary: z.strictObject({ lead: id, visual: id.optional(), conditions: id.optional() }).optional(),
+    // size: how much room the author gives the summary's card on Home (T-18,
+    // the user via Lead 2457). Optional in schema 1, so a summary kept from
+    // before still takes every edit; one without it is advised (brief-advice.ts).
+    summary: z.strictObject({ lead: id, visual: id.optional(), conditions: id.optional(), size: z.enum(CARD_SIZES).optional() }).optional(),
     details: z.array(id).min(1).max(L.bodyChildren).optional(),
   }),
   Group: z.strictObject({ title: short.optional(), tone: z.enum(["plain", "accent", "muted"]).optional() }),
@@ -504,6 +509,7 @@ type ProblemCode = keyof typeof BRIEF_PROBLEM_CODES;
 
 /** Advice on a valid report or status section (brief-advice.ts); none refuses anything. */
 export const BRIEF_ADVICE_CODES = {
+  summary_size_missing: "A BriefBody summary with no size: Home can only guess its card's size from its figure.",
   long_markdown: `A Markdown block over ${L.advice.markdownChars} characters, or a section whose Markdown is over ${L.advice.sectionMarkdownChars} characters in all.`,
   summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
   duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
@@ -1330,7 +1336,8 @@ export const BRIEF_EXAMPLES = {
     body: {
       root: "body",
       elements: {
-        body: { type: "BriefBody", props: {}, children: ["summary", "findings", "evidence"] },
+        // The card on Home shows the summary, at the size its author names (T-18).
+        body: { type: "BriefBody", props: { summary: { lead: "summary", size: "small" } }, children: ["summary", "findings", "evidence"] },
         summary: {
           type: "Markdown",
           props: { text: "Round 12 passes **213 of 214** tests and is merged; it is not in a release yet. The failure:\n\n```text\nFAIL brief limits: stale version accepted after restart\n```" },
@@ -1536,7 +1543,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?}: ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],

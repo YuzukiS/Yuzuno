@@ -34,7 +34,7 @@ export type CardFigure =
  *   leave behind the conditions it holds under. Its title and page say the rest.
  */
 export type CardContent =
-  | { kind: "named"; lead: string | null; conditions: string | null; figure: CardFigure | null }
+  | { kind: "named"; lead: string | null; conditions: string | null; figure: CardFigure | null; size: CardSize | null }
   | { kind: "unnamed" };
 
 function tree(section: Section) {
@@ -82,40 +82,41 @@ export function figureOf(section: Section, id: string): CardFigure | null {
  * - `wide`: two columns, one row;
  * - `large`: two columns, two rows.
  *
- * By default (`cardSize`) only the figure the author named decides it, never
- * how long the text is, nor any live value, so a refresh lays out the same.
- * - A figure that needs width (a table, a line or bar chart, Metrics with
- *   more values than a small card holds, a research desk) is wide.
- * - One that needs area (an image, a scatter chart) is large.
- * - No figure, or no summary named, is small; the card grows to fit its
- *   conditions, so no size cuts them.
- * The user's choice, where they made one, comes first (`shownSize`).
+ * The author names it, with the summary (`summary.size`, Lead 2457): a card
+ * is the size its author gave it (`cardSize`). Only a card kept from before
+ * sizes were named has its size from the figure the author named, never how
+ * long the text is, nor any live value, so a refresh lays out the same:
+ * - a figure that needs width (a table, a line or bar chart, Metrics with
+ *   more values than a small card holds, a research desk) is wide;
+ * - one that needs area (an image, a scatter chart) is large;
+ * - no figure, or no summary named, is small.
+ * The card grows to fit its conditions, so no size cuts them. Only a card
+ * pinned to the user's widgets takes the user's size (`shownSize`).
  */
 export type CardSize = "small" | "wide" | "large";
 export const CARD_SIZES: readonly CardSize[] = ["small", "wide", "large"];
 /** Metrics with at most this many values stay small. */
 export const SMALL_METRICS = 2;
 
-/** The sizes a card may take: one with no summary named has nothing more to show than small does. */
-export const allowedSizes = (content: CardContent): readonly CardSize[] =>
-  content.kind === "unnamed" ? ["small"] : CARD_SIZES;
+/** Where a card's own size comes from: its author, or (kept from before sizes were named) its figure. */
+export const sizeSource = (content: CardContent) => (content.kind === "named" && content.size ? "author" : "content");
 
 /**
- * The size a card is shown at, and why: the user's choice where it is one the
- * card may take, else its own (`hold`, where given, keeps the one already
- * shown in this visit). The user's choice comes first; an author's
- * suggestion, should the contract gain one, would come between the two.
+ * The size a card is shown at, and why: on the user's widgets, the user's
+ * choice where they made one; else the card's own (`hold`, where given, keeps
+ * the one already shown in this visit to Home).
  */
 export function shownSize(section: Section, content: CardContent, chosen: CardSize | null | undefined, hold?: (size: CardSize) => CardSize) {
   const computed = cardSize(section, content);
-  // What Auto shows: the card's own size, as held for this visit.
   const own = hold ? hold(computed) : computed;
-  if (chosen && allowedSizes(content).includes(chosen)) return { size: chosen, source: "user" as const, own };
-  return { size: own, source: "auto" as const, own };
+  if (chosen) return { size: chosen, source: "user" as const, own };
+  return { size: own, source: sizeSource(content), own };
 }
 
 export function cardSize(section: Section, content: CardContent = cardContent(section)): CardSize {
-  if (content.kind === "unnamed" || !content.figure) return "small";
+  if (content.kind === "unnamed") return "small";
+  if (content.size) return content.size;
+  if (!content.figure) return "small";
   const figure = content.figure;
   if (figure.kind === "image") return "large";
   if (figure.kind === "block") {
@@ -139,6 +140,7 @@ export function cardContent(section: Section): CardContent {
       lead: lead ? firstParagraph(lead) : null,
       conditions: named.conditions,
       figure: named.visual ? figureOf(section, named.visual) : null,
+      size: named.size,
     };
   }
   return { kind: "unnamed" };

@@ -10,9 +10,8 @@ import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
-import { allowedSizes, cardContent, shownSize, type CardContent, type CardFigure, type CardSize } from "./card-preview";
-import { CardSizes, sizable, type CardSizeControl } from "./card-sizes";
-import { SizeChoice } from "./SizeChoice";
+import { cardContent, shownSize, type CardFigure } from "./card-preview";
+import { DeckSizes, sizable } from "./card-sizes";
 import { cardText } from "./card-text";
 import { unmaintained } from "./card-summary";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -64,12 +63,11 @@ export const SummaryCard = memo(function SummaryCard({
   const openReport = useReportOpen();
   const content = useMemo(() => cardContent(section), [section]);
   const sub = topic !== undefined;
-  // Only a card on the deck has a size; the user may choose it where Core names the section.
-  const sizes = useContext(CardSizes);
-  const sizing = deck && sizes && sizable(section) ? { control: sizes, id: section.id } : null;
-  const { size, source, own } = deck
-    ? shownSize(section, content, sizing?.control.chosen(projectId, sizing.id), sizing ? (computed) => sizing.control.held(projectId, sizing.id, computed) : undefined)
-    : { size: null, source: null, own: null };
+  // Only a card on the deck has a size: its author's, as first shown in this visit.
+  const sizes = useContext(DeckSizes);
+  const { size, source } = deck
+    ? shownSize(section, content, null, sizes && sizable(section) ? (own) => sizes.held(projectId, section.id!, own) : undefined)
+    : { size: null, source: null };
   const changed = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
@@ -155,7 +153,7 @@ export const SummaryCard = memo(function SummaryCard({
               {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
             </button>
           )}
-          <MoreActions section={section} projectId={projectId} readOnly={readOnly} content={content} sizing={sizing && own ? { ...sizing, own } : null} />
+          <MoreActions section={section} projectId={projectId} readOnly={readOnly} />
         </span>
       </header>
       {/* The text, and beside it on a wide card or under it otherwise, the one figure. */}
@@ -220,20 +218,8 @@ export const SummaryCard = memo(function SummaryCard({
   );
 });
 
-/** Pin, Copy report and the card's size, behind "More actions". */
-function MoreActions({
-  section,
-  projectId,
-  readOnly,
-  content,
-  sizing,
-}: {
-  section: Section;
-  projectId: string;
-  readOnly: boolean;
-  content: CardContent;
-  sizing: { control: CardSizeControl; id: number; own: CardSize } | null;
-}) {
+/** Pin and Copy report, behind "More actions". */
+function MoreActions({ section, projectId, readOnly }: { section: Section; projectId: string; readOnly: boolean }) {
   const t = useStrings(cardText);
   const language = useLanguage();
   const time = useTimeDisplay();
@@ -251,7 +237,7 @@ function MoreActions({
   }, [open]);
   const pin = !readOnly;
   const copy = section.kind === "report";
-  if (!pin && !copy && !sizing) return null;
+  if (!pin && !copy) return null;
   return (
     <span
       className="home-summary-more"
@@ -278,18 +264,6 @@ function MoreActions({
         <MoreHorizontal size={14} />
       </button>
       <span id={listId} className="home-summary-more-list" role="group" aria-label={t.more} hidden={!open}>
-        {/* The card's size first, then its other actions (Dev 7's v14). */}
-        {sizing && (
-          <SizeChoice
-            name={`${listId}-size`}
-            legend={t.size}
-            value={sizing.control.chosen(projectId, sizing.id)}
-            own={sizing.own}
-            variant="menu"
-            allowed={allowedSizes(content)}
-            onChange={(size) => sizing.control.choose(projectId, sizing.id, size)}
-          />
-        )}
         {pin && <PinButton section={section} projectId={projectId} />}
         {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
       </span>
