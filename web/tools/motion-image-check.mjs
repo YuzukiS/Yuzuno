@@ -524,11 +524,16 @@ for (const run of runs) {
     const second = all.slice(before);
     const trialFrames = (frames, name) => of(frames, `trials/${name}`);
 
-    const undecodable = trialFrames(all, "undecodable.png");
+    // Version 1's frames: the card's width can still change as Home lays out, so the failed box is
+    // measured against the loading one in the frame just before it.
+    const undecodable = trialFrames(all.slice(0, before), "undecodable.png");
+    const failedAt = undecodable.findIndex((f) => f.box.failed);
+    const [loadingBox, failedBox] = [undecodable[failedAt - 1]?.box, undecodable[failedAt]?.box];
     ok(`${tag}: a picture that loads but whose decode fails says so in its own box, of the size it had while loading, and is never shown`,
-      undecodable.some((f) => !f.box.failed) && undecodable.at(-1)?.box.failed && steady(undecodable, "outer")
+      failedAt > 0 && undecodable.slice(failedAt).every((f) => f.box.failed)
+        && [0, 1].every((i) => Math.abs(loadingBox.outer[i] - failedBox.outer[i]) <= 0.5)
         && undecodable.every((f) => !f.picture || (f.picture.opacity === 0 && !f.picture.entries)),
-      { loading: undecodable.find((f) => !f.box.failed)?.box, last: undecodable.at(-1)?.box,
+      { loading: loadingBox, failed: failedBox, failedFrames: undecodable.length - Math.max(failedAt, 0),
         shown: undecodable.filter((f) => f.picture && (f.picture.opacity > 0 || f.picture.entries)).length });
 
     const cached = trialFrames(second, "cached.png").map((f) => f.picture).filter(Boolean);

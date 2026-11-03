@@ -713,7 +713,10 @@ fn kept_apart(test: &str, name: &str, bytes: fn() -> Vec<u8>) -> Option<(Value, 
     let (said, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let tail: String = err.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
     assert!(out.status.success(), "Core kept {name} asking for no allocation past {ARMED_LIMIT} bytes: {}\n{tail}", out.status);
-    let line = said.lines().find_map(|line| line.strip_prefix(&format!("{APART}="))).expect("what the process kept");
+    // The test harness prints the test's name, then what it says, on one line.
+    let marker = format!("{APART}=");
+    let line = said.lines().find_map(|line| line.split_once(marker.as_str()).map(|(_, said)| said))
+        .unwrap_or_else(|| panic!("what the process kept, in what it said:\n{said}"));
     let report: Value = serde_json::from_str(line).unwrap();
     let largest = usize::try_from(report["largest"].as_u64().unwrap()).unwrap();
     println!("{name}: kept {}, the largest allocation asked for meanwhile {largest} bytes", report["kept"]);
