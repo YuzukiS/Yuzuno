@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
 import { agentHarnessName } from "./machine-checks";
@@ -20,6 +20,7 @@ const text = strings({
   hide: "隐藏",
 });
 import "./outgoing-messages.css";
+import { useSurfaceIn } from "./surface";
 
 // Previews the user hid. Hiding is not delivery: the receipt and the kept
 // draft's message id stay, and nothing is sent again.
@@ -75,14 +76,31 @@ export const OutgoingMessages = memo(function OutgoingMessages({
   for (const message of messages) if (message.agentId === agentId) pending.set(message.receipt.input.clientMessageId, message);
   // A new Claude message still sending that its Turn shows is shown there.
   const inTurn = sendingInTurn(detail, agentId, messages);
-  return [...pending.values()]
+  const previews = [...pending.values()]
     .filter(
       (message) =>
         message.agentId === agentId &&
         !nativeIds.has(message.receipt.input.clientMessageId) &&
         !inTurn.has(message.receipt.input.clientMessageId) &&
         !hidden.includes(message.receipt.input.clientMessageId),
-    )
+    );
+  // A message sent from this window while its Agent is shown comes in: its preview fades in and
+  // rises 4 px over small, once ("your message is on its way", T-19 CV:OM-01). What was listed when
+  // this Agent was shown here, and previews Core lists from elsewhere, are only shown.
+  const sentHere = messages.filter((m) => m.agentId === agentId).map((m) => m.receipt.input.clientMessageId);
+  const seen = useRef<{ agent: string; ids: Set<string> } | null>(null);
+  const comingIn = useRef<string | null>(null);
+  if (seen.current?.agent !== agentId) seen.current = { agent: agentId, ids: new Set(sentHere) };
+  else {
+    const known = seen.current.ids;
+    const fresh = sentHere.filter((id) => !known.has(id));
+    for (const id of fresh) known.add(id);
+    const newest = fresh.filter((id) => previews.some((m) => m.receipt.input.clientMessageId === id)).at(-1);
+    if (newest) comingIn.current = newest;
+  }
+  const comingInBox = useRef<HTMLDivElement>(null);
+  useSurfaceIn(comingInBox, comingIn.current, "small", true, "translateY(4px)");
+  return previews
     .map(({ receipt: local }) => {
       const saved = detail?.messageReceipts?.find(
         (r) => r.input.clientMessageId === local.input.clientMessageId,
@@ -96,6 +114,7 @@ export const OutgoingMessages = memo(function OutgoingMessages({
         <div
           className="user-message outgoing-message"
           key={receipt.input.clientMessageId}
+          ref={receipt.input.clientMessageId === comingIn.current ? comingInBox : undefined}
           data-client-message-id={receipt.input.clientMessageId}
         >
           <div className="message-label" lang={langTag(language)}>
