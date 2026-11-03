@@ -73,6 +73,16 @@ pub(super) fn schema() -> Value {
             "taskId":{"type":"string","description":TASK_ID},"activitySeq":seq.clone(),
             "url":text(2000),"version":text(300),"observedAt":text(64),"coverage":text(1000)},
         "required":["kind"]});
+    // Built apart: one json! for the whole schema runs past the macro's recursion limit.
+    let entry = json!({"type":"object","additionalProperties":false,
+        "properties":{"id":{"type":"string","pattern":"^[a-z0-9][a-z0-9-]{0,63}$"},"label":text(300),
+            "status":{"type":"string","enum":ENTRY_STATES},"reason":text(600),"source":source.clone(),
+            "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone()},"required":["activitySeq"]},
+            "definition":text(300),"unit":text(40),"level":text(60),"n":{"type":"integer","minimum":0},
+            "value":{"type":"object","additionalProperties":false,"properties":{"value":{"type":"number"},"low":{"type":"number"},"high":{"type":"number"}},"required":["value"]}},
+        "required":["id","label","status"]});
+    let entries = json!({"type":"array","maxItems":MAX_ENTRIES,"items":entry,
+        "description":"Comparisons only: what is compared. Every entry is included, excluded, missing or not_done; all but included need a reason, and missing or not_done carry no value. Values are as their author states them."});
     json!({"type":"object","additionalProperties":false,
         "description":"Optional research record, at most 32768 UTF-8 bytes, fixed once written. A revision is a new record with the same type and id and revises {activitySeq, reason}; an id already in this task must be revised, not reused. Claims and observations may cite a method record of this task by activitySeq. Materials may be incomplete: say so in limits.",
         "properties":{
@@ -86,14 +96,7 @@ pub(super) fn schema() -> Value {
             "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone()},"required":["activitySeq"]},
             "sources":{"type":"array","maxItems":MAX_SOURCES,"items":source.clone()},
             "revises":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq.clone(),"reason":text(2000)},"required":["activitySeq","reason"]},
-            "entries":{"type":"array","maxItems":MAX_ENTRIES,"description":"Comparisons only: what is compared. Every entry is included, excluded, missing or not_done; all but included need a reason, and missing or not_done carry no value. Values are as their author states them.",
-                "items":{"type":"object","additionalProperties":false,
-                    "properties":{"id":{"type":"string","pattern":"^[a-z0-9][a-z0-9-]{0,63}$"},"label":text(300),
-                        "status":{"type":"string","enum":ENTRY_STATES},"reason":text(600),"source":source.clone(),
-                        "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":seq},"required":["activitySeq"]},
-                        "definition":text(300),"unit":text(40),"level":text(60),"n":{"type":"integer","minimum":0},
-                        "value":{"type":"object","additionalProperties":false,"properties":{"value":{"type":"number"},"low":{"type":"number"},"high":{"type":"number"}},"required":["value"]}},
-                    "required":["id","label","status"]}}},
+            "entries":entries},
         "required":["type","id","title","text"]})
 }
 
