@@ -149,6 +149,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/services/{id}/close",post(close_service))
         .route("/api/services/{id}/stop",post(stop_managed_service))
         .route("/api/services/{id}/start",post(start_managed_service))
+        .route("/api/services/{id}/recovery",post(recover_managed_service))
         .route("/api/agents/{id}/project",post(set_agent_project))
         .route("/api/codex/sessions/preview",post(preview_session))
         .route("/api/codex/sessions/import",post(import_session))
@@ -292,8 +293,14 @@ struct SessionPreviewInput { thread_id: String }
 async fn preview_session(State(ws): State<Arc<Workspace>>, Json(input): Json<SessionPreviewInput>) -> ApiResult<Json<crate::codex_sessions::SessionPreview>> {
     Ok(Json(ws.preview_codex_session(&input.thread_id).await?))
 }
-async fn import_session(State(ws): State<Arc<Workspace>>, Json(input): Json<crate::codex_sessions::ImportSession>) -> ApiResult<Json<crate::model::Agent>> {
-    Ok(Json(ws.import_codex_session(input).await?))
+/// The Agent, as before, and `importOutcome`: "created" when this import
+/// made it, "existing" when the session already had one. An optional fact
+/// an older client ignores; the Agent keeps no mark of it (T-19 SH:R11).
+async fn import_session(State(ws): State<Arc<Workspace>>, Json(input): Json<crate::codex_sessions::ImportSession>) -> ApiResult<Json<Value>> {
+    let (agent, created) = ws.import_codex_session_outcome(input).await?;
+    let mut answer = serde_json::to_value(agent).map_err(anyhow::Error::from)?;
+    answer["importOutcome"] = json!(if created { "created" } else { "existing" });
+    Ok(Json(answer))
 }
 async fn preview_fork(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<crate::codex_sessions::ForkPreview>> {
     Ok(Json(ws.preview_codex_fork(&id).await?))
@@ -383,7 +390,7 @@ impl BrowserBoundary {
 /// on; no local client sends them. A request with one came through a proxy
 /// pointed at the local port, which is the remote entry's job (T-170), so it
 /// is refused even if that proxy kept a loopback Host.
-const PROXY_HEADERS: [&str; 4] = ["tailscale-user-login", "tailscale-headers-info", "tailscale-funnel-request", "x-forwarded-for"];
+pub(crate) const PROXY_HEADERS: [&str; 4] = ["tailscale-user-login", "tailscale-headers-info", "tailscale-funnel-request", "x-forwarded-for"];
 
 async fn local_browser_boundary(
     State(boundary): State<BrowserBoundary>,
@@ -537,8 +544,10 @@ async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req:
     if let Err(reason) = entry.admit(req.method(), req.headers()) {
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
-    // Pages that change phone access read this to stay read-only here.
+    // Pages that change phone access read this to stay read-only here, and
+    // a preview asked for here is served by the phone previews' entry.
     req.extensions_mut().insert(crate::remote_access::RemoteRequest);
+    req.extensions_mut().insert(entry.clone());
     harden(next.run(req).await)
 }
 
@@ -774,11 +783,16 @@ async fn open_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
 }
 /// A single HTML file, kept as it is now and served working from the
 /// previews' own origin (previews.rs). The page's origin frames it.
-async fn open_preview(State(ws): State<Arc<Workspace>>, headers: axum::http::HeaderMap,
-    Json(source): Json<crate::previews::Source>) -> ApiResult<Json<Value>> {
-    // The browser boundary has already accepted this page's Origin, if any.
-    let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
-    Ok(Json(ws.open_preview(source, origin).await?))
+async fn open_preview(State(ws): State<Arc<Workspace>>, phone: Option<Extension<Arc<RemoteEntry>>>,
+    headers: axum::http::HeaderMap, Json(source): Json<crate::previews::Source>) -> ApiResult<Json<Value>> {
+    // Which entry asks is the route the request was admitted on: the phone
+    // entry's boundary adds itself; nothing the request says chooses it.
+    let asker = match &phone {
+        Some(Extension(entry)) => crate::previews::Asker::Phone(entry),
+        // The browser boundary has already accepted this page's Origin, if any.
+        None => crate::previews::Asker::Local(headers.get(header::ORIGIN).and_then(|o| o.to_str().ok())),
+    };
+    Ok(Json(ws.open_preview(source, asker).await?))
 }
 async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.close_service(&id).await?))
@@ -790,6 +804,11 @@ async fn stop_managed_service(State(ws): State<Arc<Workspace>>, Path(id): Path<S
 async fn start_managed_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
     Json(input): Json<crate::jobs::service_control::Request>) -> ApiResult<Json<Value>> {
     Ok(Json(tokio::spawn(crate::jobs::service_control::control(ws, None, id, "start".into(), input)).await??))
+}
+/// The user's opt-out of a service run's automatic retry (T-14).
+async fn recover_managed_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
+    Json(input): Json<crate::jobs::service_control::Request>) -> ApiResult<Json<Value>> {
+    Ok(Json(tokio::spawn(crate::jobs::service_control::control(ws, None, id, "recovery".into(), input)).await??))
 }
 async fn delete_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     // Its services' open ways end with it (services.rs).

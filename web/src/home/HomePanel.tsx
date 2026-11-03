@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import {
@@ -156,10 +156,39 @@ function Approvals({ projectId, count, children }: { projectId: string; count: n
 function HistoryReply({ section, projectId, workspaceId, agents }: { section: Section; projectId: string; workspaceId: string; agents: Agent[] }) {
   const t = useStrings(homeText);
   const [open, setOpen] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
+  // Reply and the reply take each other's place: focus goes with them (T-19 HM:S7).
+  const [opened, setOpened] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const closing = useRef(false);
+  useLayoutEffect(() => {
+    if (open || !closing.current) return;
+    closing.current = false;
+    button.current?.focus();
+  }, [open]);
   return open ? (
-    <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setOpen(false)} />
+    <CardReply
+      section={section}
+      projectId={projectId}
+      workspaceId={workspaceId}
+      agents={agents}
+      opened={opened}
+      onClose={() => {
+        closing.current = true;
+        setOpen(false);
+      }}
+    />
   ) : (
-    <button type="button" className="quiet-button" aria-label={t.replyLabel(section.title)} title={t.replyTitle(section.owner.name)} onClick={() => setOpen(true)}>
+    <button
+      type="button"
+      className="quiet-button"
+      ref={button}
+      aria-label={t.replyLabel(section.title)}
+      title={t.replyTitle(section.owner.name)}
+      onClick={() => {
+        setOpened(true);
+        setOpen(true);
+      }}
+    >
       <MessageSquareReply size={13} /> {t.reply}
     </button>
   );
@@ -241,6 +270,7 @@ export function HomePanel({
   onNavigate,
   onChanged,
   onSeen,
+  arrival = null,
 }: {
   panel: ProjectPanel;
   /** Position in Project Priority, from 0. */
@@ -256,6 +286,9 @@ export function HomePanel({
   onNavigate: (target: HomeTarget) => void;
   onChanged: () => void;
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
+  /** Where a reply's "Open on Home" landed in this project (T-9): the note
+   * in the card it answered, or above the cards when that card is gone. */
+  arrival?: { key: string; inCard: boolean; note: ReactNode } | null;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -332,6 +365,7 @@ export function HomePanel({
       readOnly={readOnly}
       onSeen={seen}
       onChanged={onChanged}
+      notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
     />
   );
   const viewChanges = (request: PendingRequest) => () =>
@@ -393,6 +427,7 @@ export function HomePanel({
       </header>
       {!collapsed && (
         <div className="home-panel-content" id={`${projectDomId(id)}-content`}>
+          {arrival && !arrival.inCard && arrival.note}
           <div className="home-widgets">
             {panel.pending.length > 0 && (
               <Approvals projectId={id} count={panel.pending.length}>

@@ -30,6 +30,28 @@
   /* The window's width and height inside that area, for dialogs. */
   --safe-vw: calc(100vw - var(--safe-left) - var(--safe-right));
   --safe-dvh: calc(100dvh - var(--safe-top) - var(--safe-bottom));
+  /* Motion (T-19): the only durations and curves components use. Delays,
+     display times and the periods of spinners and pulses are not motion
+     durations and stay as they are. */
+  --motion-micro: 120ms; /* press, hover, chips, chevrons */
+  --motion-small: 180ms; /* menus, popovers, disclosure, small enters */
+  --motion-medium: 240ms; /* panels, dialogs, a page layer arriving */
+  --motion-exit-small: 130ms; /* exits, about 70% of the way in */
+  --motion-exit-medium: 170ms;
+  --motion-settle: 1200ms; /* the one landing or return highlight */
+  /* Text pacing only, for stream-reveal: opacity, never controls or layout. */
+  --motion-reveal: 420ms;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  /* Small controls and small objects only: never a dialog, and never an
+     action that approves, answers or destroys. */
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  /* Pressed in: an inset shadow along the top edge. It leaves the background
+     under the text as it was, so a pressed control's text contrast is its
+     resting contrast on every palette. */
+  --press-shadow: inset 0 1px 3px rgb(0 0 0 / 16%);
+  /* The same on a transparent control; a dark theme differs (appearance.css). */
+  --press-shadow-quiet: inset 0 1px 3px rgb(0 0 0 / 16%);
 }
 * {
   box-sizing: border-box;
@@ -271,6 +293,10 @@ p {
   border-radius: 5px;
   color: #8b937f;
   flex-shrink: 0;
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .icon-button:hover {
   background: #e9ece2;
@@ -325,9 +351,15 @@ p {
   gap: 7px;
   padding: 0 10px;
   border-radius: 7px;
-  color: #7c866c;
+  /* Readable at rest (4.5:1) in every palette; the dark and other palettes set
+     their own colour (appearance.css). */
+  color: var(--text-secondary);
   font-size: calc(11px + var(--font-adjust, 3px));
   white-space: nowrap;
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .catchup-nav > svg:first-child {
   color: #96a77e;
@@ -406,6 +438,11 @@ p {
   overflow: auto;
   min-height: 0;
 }
+/* A row this window added, while its group opens: it comes in once the
+   group is open (T-19 SH:R11). */
+.agent-row[data-joining] {
+  opacity: 0;
+}
 .agent-row {
   position: relative;
   display: block;
@@ -416,8 +453,8 @@ p {
   border-radius: 9px;
   margin-bottom: 7px;
   transition:
-    background 0.16s,
-    border-color 0.16s;
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard);
 }
 .agent-row:hover {
   background: #eeeee5;
@@ -570,6 +607,16 @@ p {
 }
 .add-agent:hover {
   color: #5e7a50;
+}
+/* Hover colours ease rather than snap (T-19): New agent, file rows and the
+   options of a question. */
+.add-agent,
+.artifact-row,
+.answer-option {
+  transition:
+    color var(--motion-micro) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard);
 }
 .add-agent > span {
   margin-left: auto;
@@ -774,6 +821,34 @@ p {
   outline-offset: 5px;
   border-radius: 6px;
   scroll-margin-block: 18px;
+  /* As it arrives a ring fades once (T-19); the outline and tint stay while it is shown. */
+  animation: settle-ring var(--motion-settle) ease-out;
+}
+@keyframes settle-ring {
+  from {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--source-ring, #d9c984) 35%, transparent);
+  }
+}
+/* A Turn or input a jump landed on (App.tsx): a tint that fades once. */
+[data-settle] {
+  animation: settle-tint var(--motion-settle) ease-out;
+}
+@keyframes settle-tint {
+  from {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 80%, transparent);
+  }
+}
+/* Under reduced motion the tint does not fade: it is there, still, while the
+   landing is shown, and settle.ts takes it off after the settle's time. */
+@media (prefers-reduced-motion: reduce) {
+  [data-settle] {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 55%, transparent);
+  }
+}
+.turn:focus-visible {
+  outline: 2px solid var(--focus, #789065);
+  outline-offset: 4px;
+  border-radius: 6px;
 }
 .source-highlight:focus {
   outline: 2px solid #b59a44;
@@ -811,21 +886,25 @@ p {
   gap: 5px;
   padding: 5px 6px;
   border-radius: 4px;
-  color: #8f9881;
+  color: var(--text-secondary);
   font-size: calc(10px + var(--font-adjust, 3px));
   white-space: nowrap;
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .quiet-button:hover:not(:disabled) {
   background: #f1f3e9;
-  color: #617552;
+  /* As every other palette (appearance.css): ink, readable on the fill. */
+  color: var(--ink);
 }
 .copy-button {
-  color: #a3aa96;
+  color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
 .turn-divider .copy-button {
   font-size: calc(8px + var(--font-adjust, 3px));
-  padding-right: 0;
 }
 .message-label {
   display: flex;
@@ -910,7 +989,7 @@ p {
 }
 .execution > summary > svg:first-child,
 .tool-item > summary > svg:first-child {
-  transition: transform 0.15s;
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 .execution[open] > summary > svg:first-child,
 .tool-item[open] > summary > svg:first-child {
@@ -1007,7 +1086,7 @@ p {
   color: var(--accent-ink, #786637);
 }
 .turn-activity[data-state="uncertain"] {
-  color: var(--text-secondary, #69775e);
+  color: var(--text-secondary, #646f59);
 }
 .tool-item {
   padding: 3px 0;
@@ -1223,8 +1302,8 @@ p {
   box-shadow: 0 3px 12px #384e2410;
   cursor: text;
   transition:
-    border-color 0.2s,
-    box-shadow 0.2s;
+    border-color var(--motion-small) var(--ease-standard),
+    box-shadow var(--motion-small) var(--ease-standard);
 }
 /* Focus: a soft glow in the palette's focus colour rises evenly around the
    whole box, rather than a ring around the text area alone. */
@@ -1239,8 +1318,8 @@ p {
   opacity: 0;
   transform: scale(0.98);
   transition:
-    opacity 280ms ease,
-    transform 340ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    opacity var(--motion-medium) var(--ease-standard),
+    transform var(--motion-medium) var(--ease-standard);
   pointer-events: none;
 }
 .composer:focus-within {
@@ -1302,8 +1381,8 @@ p {
   background: transparent;
   color: var(--text-quiet);
   transition:
-    background-color 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
 }
 .composer-tool:hover:not(:disabled, [aria-disabled="true"]) {
   background: color-mix(in srgb, currentColor 10%, transparent);
@@ -1343,7 +1422,7 @@ p {
   gap: 4px;
   white-space: nowrap;
   opacity: 0;
-  transition: opacity 200ms ease;
+  transition: opacity var(--motion-small) var(--ease-standard);
 }
 .composer:focus-within .composer-keys {
   opacity: 1;
@@ -1384,6 +1463,10 @@ p {
   color: #786931;
   border-radius: 7px;
   box-shadow: 0 1px 2px #b09d4512;
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    opacity var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .send-button:hover:not(:disabled) {
   background: #e4be54;
@@ -1793,8 +1876,9 @@ p {
   padding: 10px 15px;
   font-weight: 500;
   transition:
-    background 0.15s,
-    border-color 0.15s;
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
   white-space: nowrap;
 }
 .primary-button {
@@ -1810,11 +1894,110 @@ p {
 .secondary-button {
   background: #f9faf5;
   border: 1px solid #e1e7d8;
-  color: #8c9d78;
+  /* As in the other palettes (appearance.css): 4.5:1 at rest and hovered (T-19). */
+  color: var(--text-secondary);
 }
 .secondary-button:hover:not(:disabled) {
   background: #f0f4e7;
   border-color: #cbd7bc;
+}
+/* A transparent control is pressed in with its own shadow, whichever rule
+   below presses it: in a dark theme, the ring alone (appearance.css). */
+:is(.quiet-button, .icon-button, .catchup-nav, .conversation-action) {
+  --press-shadow: var(--press-shadow-quiet);
+}
+/* Press (T-19): ordinary buttons and chips dip to .97 and spring back, with
+   the pressed-in shadow. Anything that approves, answers or destroys takes the
+   shadow only, so it never moves under the pointer: request cards, answer
+   and decision rows, a dialog's actions, inline confirms, danger buttons,
+   Stop and Interrupt. */
+:is(
+    .primary-button,
+    .secondary-button,
+    .quiet-button,
+    .icon-button,
+    .catchup-nav,
+    .conversation-action,
+    .phone-dock-button,
+    .send-button,
+    .choice-chips .choice-chip
+  ):active:not(:disabled) {
+  transform: scale(0.97);
+  box-shadow: var(--press-shadow);
+}
+:is(
+    .pending-card,
+    .async-question,
+    .clarification,
+    .home-ask-options,
+    .home-project-reply,
+    .task-status-card,
+    .modal-actions,
+    .pasted-text-dialog-actions,
+    .portal-confirm,
+    .storage-confirm,
+    .backup-retention-confirm,
+    .claude-task-stop,
+    .service-lifecycle-actions
+  )
+  :is(button, .choice-chip):active:not(:disabled),
+:is(
+    .danger-button,
+    .quiet-button.danger,
+    .danger-action,
+    .service-stop,
+    .interrupt-button
+  ):active:not(:disabled) {
+  transform: none;
+  box-shadow: var(--press-shadow);
+}
+/* Pressable controls: colours ease over micro, the press scale springs, and
+   the pressed-in shadow comes on at once and leaves over micro. */
+:is(
+    .primary-button,
+    .secondary-button,
+    .quiet-button,
+    .icon-button,
+    .catchup-nav,
+    .conversation-action,
+    .phone-dock-button,
+    .send-button,
+    .choice-chips .choice-chip,
+    .danger-button,
+    .quiet-button.danger,
+    .danger-action,
+    .service-stop,
+    .interrupt-button
+  ) {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
+}
+:is(
+    .primary-button,
+    .secondary-button,
+    .quiet-button,
+    .icon-button,
+    .catchup-nav,
+    .conversation-action,
+    .phone-dock-button,
+    .send-button,
+    .choice-chips .choice-chip,
+    .danger-button,
+    .quiet-button.danger,
+    .danger-action,
+    .service-stop,
+    .interrupt-button
+  ):active:not(:disabled) {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow 0s,
+    transform var(--motion-micro) var(--ease-spring);
 }
 .welcome-create {
   margin-top: 27px;
@@ -1917,12 +2100,28 @@ p {
 .spin {
   animation: spin 1s linear infinite;
 }
-.toast {
+/* The notice and error toasts stack in one column above dialogs and their
+   overlay (T-19), instead of sitting under an open dialog or on each other. */
+.toast-stack {
   position: fixed;
   bottom: calc(44px + var(--safe-bottom));
   left: 50%;
   transform: translateX(-50%);
-  z-index: 20;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 90vw;
+  /* A toast has nothing to click, and above a dialog it may sit on the
+     dialog's buttons (a phone's, at the bottom): clicks go through it. */
+  pointer-events: none;
+}
+/* Except an action a toast may get one day, which must stay reachable. */
+.toast-stack :is(button, a[href]) {
+  pointer-events: auto;
+}
+.toast {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1934,7 +2133,24 @@ p {
   font-size: calc(11px + var(--font-adjust, 3px));
   color: #7e9664;
   max-width: 90vw;
-  animation: appear 0.15s ease-out;
+  /* Rises 6px into place with the spring: a small object, never an action. */
+  animation: toast-in var(--motion-small) var(--ease-spring);
+}
+/* A toast replaced or timed out (Toasts.tsx): its copy fades and sinks. */
+.toast.toast-leaving {
+  animation: toast-out var(--motion-exit-small) var(--ease-exit) forwards;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    translate: 0 6px;
+  }
 }
 .sr-only {
   position: absolute;
@@ -1953,24 +2169,87 @@ p {
   background: #31402d34;
   backdrop-filter: blur(3px);
   z-index: 50;
-  animation: appear 0.15s ease-out;
+  animation: dialog-fade-in var(--motion-medium) var(--ease-standard);
 }
 .modal {
   position: fixed;
   z-index: 51;
-  /* Centred in the safe area, and no larger than it. */
+  /* Centred across the safe area and hung from near its top, no larger than
+     it: what a dialog shows next (a confirm step, a stop mode) moves only its
+     bottom edge (T-19 ST:D4). */
   left: calc(50% + (var(--safe-left) - var(--safe-right)) / 2);
-  top: calc(50% + (var(--safe-top) - var(--safe-bottom)) / 2);
-  transform: translate(-50%, -50%);
+  top: calc(var(--safe-top) + max(8vh, 24px));
+  transform: translateX(-50%);
   width: min(470px, calc(var(--safe-vw) - 32px));
-  max-height: calc(var(--safe-dvh) - 52px);
+  max-height: calc(var(--safe-dvh) - max(8vh, 24px) - 24px);
   overflow: auto;
   background: #fcfcf7;
   border: 1px solid #dce4ce;
   border-radius: 13px;
   box-shadow: 0 20px 90px #24341d2b;
   padding: 25px;
-  animation: appear 0.15s ease-out;
+  /* `translate`, apart from the transform that places it (or a drawer's). */
+  animation: dialog-in var(--motion-medium) var(--ease-standard);
+}
+/* Kept centred in the safe area: Settings, Jobs and the task board (panels
+   of a fixed height whose content scrolls inside), the Portal's service
+   confirmation, and the image viewer (T-20), nearly the window's height.
+   Their own rules set any other size, the max-height above included. */
+.modal:where(.settings-modal, .jobs-dialog, .service-control-dialog, .image-viewer-modal, :has(.collaboration)) {
+  top: calc(50% + (var(--safe-top) - var(--safe-bottom)) / 2);
+  transform: translate(-50%, -50%);
+  max-height: calc(var(--safe-dvh) - 52px);
+}
+/* What approves or destroys never moves under the pointer: it only fades. */
+.modal.modal-confirm {
+  animation-name: dialog-fade-in;
+}
+@keyframes dialog-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+/* A closed dialog's copy, fading out while the page is already back
+   (DialogExitGhost.tsx): it takes no clicks, and is a still picture. */
+.dialog-exit-ghost {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+.dialog-exit-ghost * {
+  pointer-events: none !important;
+}
+.dialog-exit-ghost > .modal-overlay {
+  animation: dialog-fade-out var(--motion-exit-medium) var(--ease-exit) forwards;
+}
+.dialog-exit-ghost > .modal {
+  animation: dialog-out var(--motion-exit-medium) var(--ease-exit) forwards;
+}
+/* As the dialog was just before it closed, whatever entrance it had. */
+.dialog-exit-ghost[data-confirm] > .modal {
+  animation-name: dialog-fade-out;
+}
+.dialog-exit-ghost > .modal * {
+  animation: none !important;
+  transition: none !important;
+}
+@keyframes dialog-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    translate: 0 4px;
+  }
 }
 .modal-heading {
   display: flex;
@@ -2565,6 +2844,36 @@ p {
     opacity: 1;
   }
 }
+/* A step whose work Core reports running (T-19 M14): a lit segment moves
+   along its bar, as on the update steps' current bar (updates.css). Under
+   reduced motion it stands still, and the step's text carries it. */
+.step-moving {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent),
+      transparent
+    )
+    0 0 / 50% 100% no-repeat,
+    color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+  animation: step-moving 1.6s ease-in-out infinite;
+}
+@keyframes step-moving {
+  from {
+    background-position: -100% 0, 0 0;
+  }
+  to {
+    background-position: 200% 0, 0 0;
+  }
+}
+/* The box an inline panel reveals in (surface.ts useRevealIn): it holds the
+   panel's own margins, so only its height moves as the panel opens. */
+.reveal {
+  display: flow-root;
+}
 @media (min-width: 1500px) {
   .app {
     grid-template-columns: var(--rail-width, 260px) minmax(0, 1fr);
@@ -2991,6 +3300,28 @@ p {
     scroll-behavior: auto !important;
     transition: none !important;
   }
+  /* No press scale either; the pressed-in shadow carries it (T-19). */
+  :is(
+      .primary-button,
+      .secondary-button,
+      .quiet-button,
+      .icon-button,
+      .catchup-nav,
+      .conversation-action,
+      .phone-dock-button,
+      .send-button,
+      .choice-chips .choice-chip
+    ):active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* While a theme or palette applies, every colour switches in the same frame
+   instead of some controls fading from the old ones (appearance.ts, T-19). */
+:root[data-theme-applying] *,
+:root[data-theme-applying] *::before,
+:root[data-theme-applying] *::after {
+  transition: none !important;
 }
 
 .status-dot.uncertain {
@@ -3082,7 +3413,7 @@ p {
 /* Words streaming onto the end of a reply fade in (stream-reveal.ts sets each
    word's delay so a fade continues across re-renders). */
 .prose .stream-word {
-  animation: stream-word-in 420ms ease-out both;
+  animation: stream-word-in var(--motion-reveal) ease-out both;
 }
 @keyframes stream-word-in {
   from {

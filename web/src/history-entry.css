@@ -45,7 +45,7 @@
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
   transform: translateY(-2px) rotate(45deg);
-  transition: transform 0.15s ease;
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 .history-entry-about[open] summary::before {
   transform: translateY(1px) rotate(-135deg);

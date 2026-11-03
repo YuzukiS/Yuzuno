@@ -41,11 +41,19 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
         task_id TEXT NOT NULL, agent_id TEXT NOT NULL, data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS local_job_runs_agent ON local_job_runs(agent_id,seq);
+        CREATE INDEX IF NOT EXISTS local_job_runs_task ON local_job_runs(task_id,seq);
         CREATE TABLE IF NOT EXISTS local_job_run_attempts (
         run_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL,
         job_id TEXT UNIQUE NOT NULL, PRIMARY KEY(run_id,stage,attempt));",
     )?;
     Ok(())
+}
+
+/// A research record of the run's task, named by its activity (T-17).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResearchRef {
+    pub activity_seq: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,6 +69,9 @@ pub(super) struct RunSubmit {
     /// A soft limit on recorded cost: no new stage attempt starts beyond it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cost_limit_usd: Option<f64>,
+    /// The task's method record this run follows (T-17), fixed by activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    method: Option<ResearchRef>,
     pub(super) stages: Vec<Stage>,
 }
 
@@ -475,10 +486,15 @@ pub(super) fn attempts(db: &Connection, run: &str) -> Result<BTreeMap<String, Ve
     Ok(all)
 }
 
-/// Known USD recorded by finished attempts. Unknown cost is not zero; it is
-/// reported apart, and calls still in flight are not in it.
+/// Known USD recorded by the run's attempts, read as job_cost reads a task's
+/// (T-17): only a readable entry records spending, an empty or blank usage
+/// file recorded none, and unreadable lines alone, or a summary without an
+/// entry count, are an unknown amount. Unknown cost is not zero; it is
+/// reported apart, and calls still in flight are not in it. knownUsd adds what
+/// each summary says, as before, so the soft cost limit reads the same.
 fn cost(all: &BTreeMap<String, Vec<Value>>) -> Value {
     let (mut known, mut unknown, mut invalid, mut reporting, mut live) = (0.0, 0, 0, 0, 0);
+    let (mut not_recorded, mut unknown_attempts) = (0, 0);
     let mut truncated = false;
     let mut sources = BTreeSet::new();
     for job in all.values().flatten() {
@@ -486,14 +502,27 @@ fn cost(all: &BTreeMap<String, Vec<Value>>) -> Value {
         if job["reserved"] == true {
             live += 1;
         }
-        if !cost.is_object() {
+        let entries = cost["entries"].as_i64();
+        let (unknown_here, bad) = (
+            cost["unknownEntries"].as_i64().unwrap_or(0),
+            cost["invalidLines"].as_i64().unwrap_or(0) + cost["incompleteLines"].as_i64().unwrap_or(0),
+        );
+        let partial = entries.is_none() || unknown_here > 0 || bad > 0 || cost["truncated"] == true || cost["complete"] == false;
+        if !cost.is_object() || (entries == Some(0) && !partial) {
+            if TERMINAL.contains(&job["status"].as_str().unwrap_or_default()) {
+                not_recorded += 1;
+            }
             continue;
         }
-        reporting += 1;
+        if entries.unwrap_or(0) > 0 {
+            reporting += 1;
+        }
+        if partial {
+            unknown_attempts += 1;
+        }
         known += cost["knownUsd"].as_f64().unwrap_or(0.0);
-        unknown += cost["unknownEntries"].as_i64().unwrap_or(0);
-        invalid += cost["invalidLines"].as_i64().unwrap_or(0)
-            + cost["incompleteLines"].as_i64().unwrap_or(0);
+        unknown += unknown_here;
+        invalid += bad;
         truncated |= cost["truncated"] == true;
         for source in cost["sources"].as_array().into_iter().flatten() {
             if let Some(source) = source.as_str() {
@@ -502,10 +531,11 @@ fn cost(all: &BTreeMap<String, Vec<Value>>) -> Value {
         }
     }
     json!({"knownUsd":(known * 1e6).round() / 1e6,"unknownEntries":unknown,"invalidLines":invalid,
-        "truncated":truncated,"attemptsReporting":reporting,"attemptsRunning":live,
+        "truncated":truncated,"attemptsReporting":reporting,"attemptsNotRecorded":not_recorded,
+        "attemptsWithUnknown":unknown_attempts,"attemptsRunning":live,
         "sources":sources.into_iter().take(20).collect::<Vec<_>>(),
-        "complete": unknown == 0 && invalid == 0 && !truncated && live == 0,
-        "scope":"Recorded by each attempt in its own usage file, failed and cancelled attempts included. Not a provider bill: calls in flight or never recorded are missing, and unknown cost is not zero."})
+        "complete": unknown == 0 && invalid == 0 && !truncated && live == 0 && not_recorded == 0 && unknown_attempts == 0,
+        "scope":"Recorded by each attempt in its own usage file, failed and cancelled attempts included. An attempt whose file is missing, empty or blank recorded none, and one with unknown or unreadable entries an unknown amount: both are said apart and never as zero, while an entry of usd 0 is a known $0. Not a provider bill: calls in flight are missing."})
 }
 
 fn limit_reached(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> Option<String> {
@@ -782,16 +812,38 @@ fn settle(_store: &Store, db: &Connection, run: &mut Value) -> Result<bool> {
         let spent = cost(&all);
         let unknown = spent["unknownEntries"].as_i64().unwrap_or(0)
             + spent["invalidLines"].as_i64().unwrap_or(0);
-        let money = if spent["attemptsReporting"].as_i64().unwrap_or(0) == 0 {
+        // As the run reads it: what no attempt recorded is said, never $0, and
+        // every reason its cost is partial is named, as its card and export do.
+        let count = |key: &str| spent[key].as_i64().unwrap_or(0);
+        let attempts = |n: i64, what: &str| format!("{n} attempt{} {what}", if n == 1 { "" } else { "s" });
+        let mut why = Vec::new();
+        if count("attemptsWithUnknown") > 0 {
+            why.push(attempts(count("attemptsWithUnknown"), "with an unknown amount"));
+        }
+        if count("attemptsNotRecorded") > 0 {
+            why.push(attempts(count("attemptsNotRecorded"), "recorded none"));
+        }
+        if spent["truncated"] == true {
+            why.push("a usage file too long to read whole".to_owned());
+        }
+        if count("attemptsRunning") > 0 {
+            why.push(attempts(count("attemptsRunning"), "still running"));
+        }
+        let money = if count("attemptsReporting") == 0 && count("attemptsWithUnknown") == 0 {
             "No usage was recorded.".to_owned()
         } else {
             format!(
-                "Recorded cost ${:.4}{}.",
+                "Recorded cost ${:.4}{}{}.",
                 spent["knownUsd"].as_f64().unwrap_or(0.0),
                 if unknown > 0 {
                     format!(" plus {unknown} entries of unknown cost")
                 } else {
                     String::new()
+                },
+                if why.is_empty() {
+                    String::new()
+                } else {
+                    format!(", incomplete: {}", why.join(", "))
                 }
             )
         };
@@ -1079,6 +1131,17 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
         })
         .collect();
     run["stages"] = json!(stages);
+    // Where each cited research record's line stands now, beside the version
+    // the run or its decision cites (T-17).
+    let task = run["taskId"].as_str().unwrap_or_default().to_owned();
+    if let Some(seq) = run["method"]["activitySeq"].as_i64() {
+        run["methodNow"] = collaboration::research_line_now(db, &task, seq)?;
+    }
+    for stage in run["stages"].as_array_mut().into_iter().flatten() {
+        if let Some(seq) = stage["analysis"]["record"]["activitySeq"].as_i64() {
+            stage["analysis"]["recordNow"] = collaboration::research_line_now(db, &task, seq)?;
+        }
+    }
     run["awaitingAnalysis"] = json!(run["stages"].as_array().into_iter().flatten().any(analysis::waiting));
     run["status"] = json!(status);
     run["cost"] = cost(&all);
@@ -1176,6 +1239,13 @@ impl Store {
         }
         let (author, source) = collaboration::actor_context(self, &tx, actor)?;
         let (task, number) = collaboration::task_key(&tx, &input.task_id)?;
+        // Checked before anything is written: a run follows a method record
+        // of its own task, as that record reads now.
+        let method = input
+            .method
+            .as_ref()
+            .map(|method| collaboration::research_run_method(&tx, &task, method.activity_seq))
+            .transpose()?;
         let mut payload = serde_json::to_value(&input)?;
         payload["taskId"] = json!(task);
         let id = uuid::Uuid::new_v4().to_string();
@@ -1215,10 +1285,13 @@ impl Store {
                 params![id, stage.key, job["id"].as_str()],
             )?;
         }
-        let run = json!({"id":id,"requestId":input.request_id,"taskId":task,"taskRef":format!("T-{number}"),
+        let mut run = json!({"id":id,"requestId":input.request_id,"taskId":task,"taskRef":format!("T-{number}"),
             "agentId":owner["agentId"],"agent":owner["agent"],"requestedBy":author,"source":source,
             "name":input.name,"experiment":input.experiment,"costLimitUsd":input.cost_limit_usd,
             "stages":list,"createdAt":now(),"cancelRequestedAt":null,"notifications":{},"settledAt":null});
+        if let Some(method) = method {
+            run["method"] = method;
+        }
         tx.execute(
             "INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES(?1,?2,?3,?4)",
             params![id, task, run["agentId"].as_str(), run.to_string()],

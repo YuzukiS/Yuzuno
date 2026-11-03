@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
 import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
 import { shellText } from "../shell-text";
-import type { Agent, Project } from "../types";
+import type { Agent, HomeReplyOrigin, Project } from "../types";
+import { reportLinkHref, type MessageLink, type ReportLink } from "../deep-link";
+import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
+import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
+import { usePhone } from "../phone-layout";
+import { useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
@@ -22,6 +27,10 @@ import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
 import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDensityRefusal } from "./home-density";
+import { ReportPage } from "./report/ReportPage";
+import { linkTo } from "./report/report-model";
+import { ReportOpen, type ReportOpener } from "./report/report-open";
+import { settleWhenLanded } from "../settle";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -37,6 +46,25 @@ function displayOrder(data: HomeData, local: string[] | null) {
   const order = (local || data.order).filter((id) => present.has(id));
   const placed = new Set(order);
   return [...order, ...data.projects.map((p) => p.project.id).filter((id) => !placed.has(id))];
+}
+
+/**
+ * A report open over Home (T-18): where Back goes, and its history entry.
+ * `push`: opened here, in an entry of its own, which Back leaves. `replace`:
+ * opened from the address (a link, a reload, the browser's Forward), in the
+ * entry it came in, which closing turns back into Home's.
+ */
+type OpenReport = { link: ReportLink; back: MessageLink | null; from: HTMLElement | null; entry: number; mode: "push" | "replace" };
+const REPORT_STATE = "yuzunoReport";
+const historyState = (): Record<string, unknown> =>
+  history.state && typeof history.state === "object" ? { ...history.state } : {};
+const reportEntryOnTop = (open: OpenReport | null) => !!open && historyState()[REPORT_STATE] === open.entry;
+const here = () => window.location.pathname + window.location.search;
+/** The entry a report was in, as Home's again: no report state, no report link. */
+function leaveReportEntry(open: OpenReport | null) {
+  if (!reportEntryOnTop(open)) return;
+  const { [REPORT_STATE]: _entry, ...rest } = historyState();
+  history.replaceState(Object.keys(rest).length ? rest : null, "", here());
 }
 
 const reducedMotion = () =>
@@ -59,6 +87,10 @@ export function Home({
   onNavigate,
   onChanged,
   onNeedsYou,
+  arrival = null,
+  onBackToReply,
+  report: incomingReport = null,
+  visit = 0,
 }: {
   /** Bumped (debounced) on Agent changes and anything else Home shows. */
   revision: number;
@@ -72,6 +104,17 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
+  /** "Open on Home" on a reply from Home (T-9): the section and version it
+   * answered, and the message to go back to; another opening is another `n`. */
+  arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
+  onBackToReply?: (link: MessageLink) => void;
+  /** A report link opened elsewhere (T-18): the report, the message it was
+   * opened from if any, for Back, and whether it came from the address;
+   * another opening is another `n`. */
+  report?: { link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null;
+  /** Bumped on each explicit way to Home (the toolbar, a notification, a
+   * Home link, a reply's Open on Home): an open report closes (T-18 R3). */
+  visit?: number;
 }) {
   const language = useLanguage();
   const t = homeText(language);
@@ -88,6 +131,11 @@ export function Home({
   // a reply Home can't use, an order not saved, or Core's reason as it came.
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
+  // Home fades in as it opens, over medium (T-19 M6: SH:M10, R27); not on a
+  // phone, where what is open comes in by its own motion (M8, later).
+  const view = useRef<HTMLDivElement>(null);
+  const phone = usePhone();
+  useSurfaceIn(view, "home", "medium", !phone);
   const [errorState, setErrorState] = useState<(HomeError & { workspaceId: string }) | null>(null);
   const error = errorState?.workspaceId === workspaceId ? errorState : null;
   const setError = useCallback((value: HomeError | null) => {
@@ -106,6 +154,9 @@ export function Home({
   const [saving, setSaving] = useState(false);
   // Panels the needs-you row jumped to, shown whole for this visit.
   const [reveal, setReveal] = useState<{ n: number; projects: Record<string, number> }>({ n: 0, projects: {} });
+  // The Needs you area's landing mark, from the return overview (T-19).
+  const needsSettled = useRef<(() => void) | null>(null);
+  useEffect(() => () => needsSettled.current?.(), []);
   const pendingJump = useRef<{ target: () => HTMLElement | null; n: number } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   useEffect(() => {
@@ -211,6 +262,22 @@ export function Home({
     pendingJump.current = { target: () => target() || document.getElementById(projectDomId(projectId)), n };
     setReveal({ n, projects: { ...reveal.projects, [projectId]: n } });
   }
+  // A reply's "Open on Home" (T-9): once Home has read, to the section it
+  // answered while Home shows that very section, else to its project; once
+  // per opening. What has become of that version is said from what Home
+  // reads now, never decided before, and never of another section.
+  const arrived = useRef(0);
+  const replyPanel = arrival && data ? data.projects.find((p) => p.project.id === arrival.origin.projectId) : undefined;
+  const landed = arrival && data ? arrivalOf(arrival.origin, replyPanel) : null;
+  const landedNote = (ask: boolean) =>
+    arrival && landed && (
+      <ReplyArrival
+        arrival={landed}
+        version={arrival.origin.version}
+        ask={ask}
+        onBack={onBackToReply ? () => onBackToReply(arrival.back) : undefined}
+      />
+    );
   function jump(item: NeedsYouItem) {
     const panel = item.projectId ? panels.find((p) => p.project.id === item.projectId) : undefined;
     if (!panel) {
@@ -233,25 +300,168 @@ export function Home({
     pendingJump.current = null;
     const target = jumpTo.target();
     if (!target) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let frame = 0;
-    const clear = () => target.removeAttribute("data-home-highlight");
+    let settled: (() => void) | undefined;
     const show = () => {
       // Only the user's click scrolls Home; new content never does.
-      target.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+      const smooth = !reducedMotion();
+      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
       target.focus({ preventScroll: true });
-      target.setAttribute("data-home-highlight", "");
-      timer = setTimeout(clear, 2400);
+      // Where it landed, once the scroll has (T-19): kept until the next press.
+      settled = settleWhenLanded(target, "data-home-highlight", smooth);
     };
     // A card the user collapsed opens to show what the jump is to (T-115).
     if (unfoldAround(target)) frame = requestAnimationFrame(show);
     else show();
     return () => {
       cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      clear();
+      settled?.();
     };
   }, [reveal]);
+  // A section's report, over Home (T-18). Home stays mounted and laid out
+  // below it, so its scroll place, folds and drafts are as they were. The
+  // report link is in the address while the page is open, so a reload opens
+  // it again; the browser's Back closes it as the page's Back and Escape do,
+  // and focus returns to what opened it. Nothing here marks seen or touches
+  // a draft.
+  const [openedReport, setReport] = useState<OpenReport | null>(null);
+  // A report belongs to the Workspace its link names: from the first frame
+  // after the Workspace changes (Core at this address answering as another),
+  // it is neither drawn nor acted on, and nothing of it reaches the other
+  // Workspace's Home (T-18 R2).
+  const report = openedReport && openedReport.link.workspaceId === workspaceId ? openedReport : null;
+  // While a report is still closing over Home, Home is out of reach: the
+  // arrival lands once the page has gone (T-18 R3).
+  useEffect(() => {
+    if (!arrival || !landed || report || arrived.current === arrival.n) return;
+    arrived.current = arrival.n;
+    const { projectId, key } = arrival.origin;
+    revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrival, data, report]);
+  const shownReport = useRef(report);
+  shownReport.current = report;
+  const reportEntry = useRef(0);
+  const returnTo = useRef<{ from: HTMLElement | null; projectId: string } | null>(null);
+  const afterReport = useRef<(() => void) | null>(null);
+  // Between the browser's Back and its popstate: another Back is not another step.
+  const closing = useRef(false);
+  function openReport(link: ReportLink, back: MessageLink | null, from: HTMLElement | null, mode: "push" | "replace" = "push") {
+    const open = shownReport.current;
+    closing.current = false;
+    const entry = ++reportEntry.current;
+    const state = { ...historyState(), [REPORT_STATE]: entry };
+    const address = reportLinkHref(here(), link);
+    // A report opened from a report (another version, a link in it) takes
+    // its entry and keeps where Back returns to.
+    const over = reportEntryOnTop(open) ? open : null;
+    if (over || mode === "replace") history.replaceState(state, "", address);
+    else history.pushState(state, "", address);
+    setReport({ link, back: over ? over.back : back, from: over ? over.from : from, entry, mode: over ? over.mode : mode });
+  }
+  const openReportNow = useRef(openReport);
+  openReportNow.current = openReport;
+  function finishReport() {
+    const open = shownReport.current;
+    if (!open) return;
+    closing.current = false;
+    setReport(null);
+    const then = afterReport.current;
+    afterReport.current = null;
+    if (then) then();
+    else if (open.back && onBackToReply) onBackToReply(open.back);
+    else returnTo.current = { from: open.from, projectId: open.link.projectId };
+  }
+  const finishReportNow = useRef(finishReport);
+  finishReportNow.current = finishReport;
+  function closeReport(then?: () => void) {
+    if (closing.current) {
+      // The browser's Back is under way: a later explicit way out (Home)
+      // decides where it ends, without asking the browser to go back again.
+      if (then) afterReport.current = then;
+      return;
+    }
+    const open = shownReport.current;
+    afterReport.current = then ?? null;
+    if (open?.mode === "push" && reportEntryOnTop(open)) {
+      closing.current = true;
+      history.back();
+      return;
+    }
+    // Opened from the address: the entry becomes Home's; Back never leaves Yuzuno.
+    leaveReportEntry(open);
+    finishReport();
+  }
+  const closeReportNow = useRef(closeReport);
+  closeReportNow.current = closeReport;
+  useEffect(() => {
+    if (!report) return;
+    const popped = (event: PopStateEvent) => {
+      const state = event.state && typeof event.state === "object" ? (event.state as Record<string, unknown>) : {};
+      if (state[REPORT_STATE] !== report.entry) finishReportNow.current();
+    };
+    window.addEventListener("popstate", popped);
+    return () => window.removeEventListener("popstate", popped);
+  }, [report]);
+  // Leaving Home with a report open leaves its entry as an ordinary one.
+  useEffect(() => () => leaveReportEntry(shownReport.current), []);
+  // Another Workspace's report is closed for good, with its entry, where Back
+  // would go and what it would focus.
+  useEffect(() => {
+    if (!openedReport || openedReport.link.workspaceId === workspaceId) return;
+    leaveReportEntry(openedReport);
+    setReport(null);
+    returnTo.current = null;
+    afterReport.current = null;
+    closing.current = false;
+  }, [openedReport, workspaceId]);
+  // An explicit way to Home: the report closes as its Back closes it (its own
+  // history entry left, or that entry made Home's again), and then goes
+  // nowhere else: not to the message it came from, not back to its card.
+  // Home itself stays mounted, with its drafts, folds and scroll.
+  const visited = useRef(visit);
+  useEffect(() => {
+    if (visited.current === visit) return;
+    visited.current = visit;
+    if (shownReport.current) closeReportNow.current(() => {});
+  }, [visit]);
+  const incoming = useRef(0);
+  useEffect(() => {
+    if (!incomingReport || incoming.current === incomingReport.n) return;
+    incoming.current = incomingReport.n;
+    const active = document.activeElement;
+    openReportNow.current(
+      incomingReport.link,
+      incomingReport.back,
+      active instanceof HTMLElement && active.closest(".home-view") ? active : null,
+      incomingReport.fromAddress ? "replace" : "push",
+    );
+  }, [incomingReport]);
+  // Back on Home: focus where the report was opened from, with a short ring;
+  // its project's heading when that is gone (the card marked seen, say).
+  useEffect(() => {
+    if (report) return;
+    const back = returnTo.current;
+    returnTo.current = null;
+    if (!back) return;
+    const target = back.from?.isConnected
+      ? back.from
+      : document.getElementById(projectDomId(back.projectId))?.querySelector<HTMLElement>(".home-panel-head > button");
+    if (!target) return;
+    if (!back.from?.isConnected) target.scrollIntoView({ block: "center" });
+    target.focus({ preventScroll: true });
+    const card = target.closest<HTMLElement>(".home-section, .home-panel") ?? target;
+    card.setAttribute("data-report-return", "");
+    const timer = setTimeout(() => card.removeAttribute("data-report-return"), 1200);
+    return () => {
+      clearTimeout(timer);
+      card.removeAttribute("data-report-return");
+    };
+  }, [report]);
+  const cardReport = useCallback<ReportOpener>(
+    (projectId, section, from) => openReportNow.current({ workspaceId, ...linkTo(projectId, section) }, null, from),
+    [workspaceId],
+  );
   // The open Agents of each project, the same arrays while they do not change,
   // so section cards are not drawn again for unrelated workspace reads.
   const agentsKey = agents
@@ -272,13 +482,78 @@ export function Home({
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
   const { layout, pin, unpin } = widgetLayout;
+  // A section pinned here (T-19 HM:W5): what was pressed keeps its place
+  // while the widget column above it grows, and the new widget comes in over
+  // small (opacity, 4 px up) and settles once; under reduced motion it is
+  // there at once. Only a widget this press added does so: not one already
+  // pinned (a pin that changed nothing, or Pin the new section for one pinned
+  // already), not one past the limit, a layout read again or another
+  // window's pin. It is this Workspace's: another one opened drops it.
+  const [pinnedHere, setPinnedHere] = useState<{ workspace: string; id: string; n: number; had: boolean } | null>(null);
+  const pinAnchor = useRef<{ element: HTMLElement; top: number } | null>(null);
+  const pinnedWidget = useRef<HTMLElement | null>(null);
+  const layoutNow = useRef(layout);
+  layoutNow.current = layout;
+  useLayoutEffect(() => {
+    pinnedWidget.current = null;
+    const anchor = pinAnchor.current;
+    pinAnchor.current = null;
+    if (!pinnedHere || pinnedHere.workspace !== workspaceId) return;
+    // Held now, and for two more frames until the reader scrolls, presses a
+    // key or touches: so whatever the browser's own scroll anchoring did or
+    // does, the pressed control ends where it was, and what the reader then
+    // does stands.
+    const view = anchor?.element.isConnected ? anchor.element.closest<HTMLElement>(".home-view") : null;
+    const hold = () => {
+      if (!anchor || !view || !anchor.element.isConnected) return;
+      const moved = anchor.element.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(moved) >= 1) view.scrollTop += moved;
+    };
+    hold();
+    let frame = requestAnimationFrame(() => {
+      hold();
+      frame = requestAnimationFrame(hold);
+    });
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    const yield_ = () => {
+      cancelAnimationFrame(frame);
+      for (const kind of inputs) window.removeEventListener(kind, yield_, true);
+    };
+    for (const kind of inputs) window.addEventListener(kind, yield_, { capture: true, passive: true });
+    const added = !pinnedHere.had && !!layout?.pins.some((p) => pinWidgetId(p) === pinnedHere.id);
+    const widget = added ? [...document.querySelectorAll<HTMLElement>(".home-widget-slot")].find((slot) => slot.dataset.widget === pinnedHere.id) : undefined;
+    pinnedWidget.current = widget ?? null;
+    // The tint paints the widget's own card: the card's background would
+    // hide one painted behind it.
+    const card = widget?.firstElementChild instanceof HTMLElement ? widget.firstElementChild : widget;
+    const settled = card ? settleWhenLanded(card, "data-settle", false, "animation") : null;
+    return () => {
+      yield_();
+      settled?.();
+    };
+    // `layout` is read as this pin committed it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedHere, workspaceId]);
+  useSurfaceIn(pinnedWidget, pinnedHere?.n ?? 0, "small", !!pinnedHere, "translateY(4px)");
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
-    (projectId: string, section: Section) => {
+    (projectId: string, section: Section, pressed?: HTMLElement) => {
       const source = pinSource(data, projectId, section);
-      if (source) pin(projectId, source.projectName, source.section);
+      if (!source) return;
+      // The control the press was on (the Pin button, or Pin the current
+      // version) holds its place, read now, before the pin. It is the one
+      // the press named, not whatever has focus: a click does not focus a
+      // button in every browser (Safari), and focus may be elsewhere.
+      pinAnchor.current = pressed?.closest(".home-view")
+        ? { element: pressed, top: pressed.getBoundingClientRect().top }
+        : null;
+      const id = pinWidgetId({ projectId, key: source.section.key, id: source.section.id! });
+      // Pinned already before this press, as the layout was last drawn.
+      const had = !!layoutNow.current?.pins.some((p) => pinWidgetId(p) === id);
+      pin(projectId, source.projectName, source.section);
+      setPinnedHere((last) => ({ workspace: workspaceId, id, n: (last?.n ?? 0) + 1, had }));
     },
-    [data, pin],
+    [data, pin, workspaceId],
   );
   const pins = useMemo<PinControl | null>(
     () =>
@@ -288,10 +563,10 @@ export function Home({
             isPinned: (projectId: string, section: Section) =>
               layout.pins.some((p) => p.projectId === projectId && p.id === section.id),
             canPin: (projectId: string, section: Section) => !!pinSource(data, projectId, section),
-            toggle: (projectId: string, section: Section) => {
+            toggle: (projectId: string, section: Section, pressed?: HTMLElement) => {
               const pinned = layout.pins.find((p) => p.projectId === projectId && p.id === section.id);
               if (pinned) unpin(pinned);
-              else pinIfAllowed(projectId, section);
+              else pinIfAllowed(projectId, section, pressed);
             },
           },
     [readOnly, layout, unpin, data, pinIfAllowed],
@@ -318,9 +593,9 @@ export function Home({
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
             onPinCurrent={
               source.state === "replaced" && pinSource(data, p.projectId, source.section)
-                ? () => {
+                ? (pressed: HTMLElement) => {
                     unpin(p);
-                    pinIfAllowed(p.projectId, source.section);
+                    pinIfAllowed(p.projectId, source.section, pressed);
                   }
                 : undefined
             }
@@ -339,7 +614,15 @@ export function Home({
     <PinsContext.Provider value={pins}>
     <BriefDensity.Provider value={density}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
-    <div className="home-view" lang={langTag(language)} data-density={density}>
+    <ReportOpen.Provider value={cardReport}>
+    <div className="home-stage">
+    <div
+      ref={view}
+      className={`home-view${report ? " is-under-report" : ""}`}
+      lang={langTag(language)}
+      data-density={density}
+      inert={report ? true : undefined}
+    >
       <header className="home-header">
         <h1>
           <House size={18} />
@@ -407,8 +690,12 @@ export function Home({
             onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
             onNeedsYou={() => {
               const target = document.getElementById("home-current-needs");
-              target?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
-              target?.focus({ preventScroll: true });
+              if (!target) return;
+              const smooth = !reducedMotion();
+              target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+              target.focus({ preventScroll: true });
+              needsSettled.current?.();
+              needsSettled.current = settleWhenLanded(target, "data-home-highlight", smooth);
             }}
             onNavigate={onNavigate}
           />
@@ -422,6 +709,7 @@ export function Home({
             onChange={layout ? widgetLayout.change : undefined}
           />
           <div className="home-main">
+            {landed?.kind === "gone" && landedNote(false)}
             {reordering && (
               <p className="home-note home-reorder-note">{t.reorderNote}</p>
             )}
@@ -439,6 +727,18 @@ export function Home({
                     needsYou={needsFor(panel)}
                     readOnly={readOnly}
                     reveal={reveal.projects[panel.project.id] || 0}
+                    arrival={
+                      arrival && landed && panel.project.id === arrival.origin.projectId && arrival.origin.key !== null
+                        ? {
+                            key: arrival.origin.key,
+                            inCard: landed.kind === "changed",
+                            note: landedNote(
+                              (arrival.origin.snapshot?.sectionKind ??
+                                panel.brief.sections.find((s) => s.key === arrival.origin.key)?.kind) === "ask",
+                            ),
+                          }
+                        : null
+                    }
                     reorder={
                       reordering
                         ? {
@@ -459,6 +759,26 @@ export function Home({
         </div>
       )}
     </div>
+    {report && (
+      <ReportPage
+        key={report.entry}
+        link={report.link}
+        back={!!report.back}
+        data={data}
+        readFailed={readFailed}
+        workspaceId={workspaceId}
+        agents={projectAgents(report.link.projectId)}
+        readOnly={readOnly}
+        onBack={() => closeReport()}
+        onOpenVersion={(link) => openReport(link, null, null)}
+        onShowProject={(projectId) => closeReport(() => revealIn(projectId, () => null))}
+        onSeen={seen}
+        readError={error?.kind === "read" || error?.kind === "unavailable" ? error : null}
+        onRetry={reload}
+      />
+    )}
+    </div>
+    </ReportOpen.Provider>
     </HomeReadContext.Provider>
     </BriefDensity.Provider>
     </PinsContext.Provider>

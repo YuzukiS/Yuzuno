@@ -34,6 +34,7 @@ export type LiveRefKind = LiveRef["kind"];
 export type AttachmentsProps = Props<"Attachments">;
 export type SourcesProps = Props<"Sources">;
 export type BriefTableProps = Props<"Table">;
+export type ResearchDeskProps = Props<"ResearchDesk">;
 
 export type BriefElement = {
   type: string;
@@ -60,6 +61,7 @@ export const BRIEF_COMPONENTS = [
   "LiveRefs",
   "Attachments",
   "Sources",
+  "ResearchDesk",
 ] as const satisfies readonly BriefComponent[];
 export const CHART_TYPES = new Set(["LineChart", "BarChart", "ScatterChart"]);
 
@@ -102,6 +104,9 @@ const segment = encodeURIComponent;
 /** For `api()`, which adds `${API_BASE}/api` itself. */
 export const chartPath = (projectId: string, sectionKey: string, elementId: string, version: number) =>
   `/projects/${segment(projectId)}/brief/chart/${segment(sectionKey)}/${segment(elementId)}?version=${version}`;
+/** One research desk's numbers read from its section version's snapshots (T-9). */
+export const researchPath = (projectId: string, sectionKey: string, elementId: string, version: number) =>
+  `/projects/${segment(projectId)}/brief/research/${segment(sectionKey)}/${segment(elementId)}?version=${version}`;
 /** A snapshot's bytes, always from this Core; never an external URL. */
 export const attachmentUrl = (projectId: string, sectionKey: string, name: string, version: number) =>
   `${API_BASE}/api/projects/${segment(projectId)}/brief/attachments/${segment(sectionKey)}/${segment(name)}?version=${version}`;

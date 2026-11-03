@@ -171,6 +171,23 @@ async fn imported_membership_survives_duplicate_import_resume_and_updates() {
 }
 
 #[tokio::test]
+async fn an_import_says_whether_it_made_the_agent_or_the_session_already_had_one() {
+    let lab = Lab::new();
+    let (agent, created) = lab.ws.import_codex_session_outcome(lab.input()).await.unwrap();
+    assert!(created, "the first import makes the Agent");
+    let (again, created) = lab.ws.import_codex_session_outcome(lab.input()).await.unwrap();
+    assert_eq!((again.id.as_str(), created), (agent.id.as_str(), false), "the session already has it");
+    // Two at once: one makes it, the other is given the same Agent.
+    let other = Lab::new();
+    let (a, b) = tokio::join!(other.ws.import_codex_session_outcome(other.input()), other.ws.import_codex_session_outcome(other.input()));
+    let outcomes: Vec<(String, bool)> = [a, b].into_iter().filter_map(Result::ok).map(|(agent, created)| (agent.id, created)).collect();
+    assert_eq!(outcomes.iter().filter(|(_, created)| *created).count(), 1, "{outcomes:?}");
+    assert!(outcomes.windows(2).all(|pair| pair[0].0 == pair[1].0), "{outcomes:?}");
+    assert_eq!(other.ws.store.agents().unwrap().len(), 1);
+    lab.ws.close_agent(&agent.id).await.unwrap();
+}
+
+#[tokio::test]
 async fn invalid_failed_repeated_closed_and_parallel_imports_never_leave_duplicate_agents() {
     let lab=Lab::new();
     assert!(lab.ws.preview_codex_session("/tmp/a; touch bad").await.is_err());

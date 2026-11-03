@@ -6,10 +6,11 @@ import { readFile } from "node:fs/promises";
 import {
   BRIEF_COMPONENT_DESCRIPTIONS, BRIEF_EXAMPLES, BRIEF_GUIDE_PARTS, BRIEF_HARD_RULES, BRIEF_KEY_PATTERN, BRIEF_LIMITS, BRIEF_OUTCOME_HINT,
   BRIEF_PROBLEM_CODES, BRIEF_SCHEMA_VERSION, BRIEF_TOOL_DESCRIPTIONS, BriefError, DESCRIPTION_CAP, briefComponentProps,
-  briefGuide, checkBriefSection, describeBrief, fencedBlockLines,
+  briefGuide, checkBriefSection, describeBrief, fencedBlockLines, researchReads,
 } from "../src/intelligent-ui/brief-contract.ts";
 import { MAX_PROBLEMS, MAX_SPEC_BYTES, ResultError, SIGNATURE_LEGEND } from "../src/intelligent-ui/contract.ts";
 import { clarificationExample } from "../src/intelligent-ui/clarification.ts";
+import { benchmark, doseStudy, layoutStudy } from "./research-fixtures.mjs";
 
 const problems = (value, previousBody) => {
   try {
@@ -52,11 +53,13 @@ const everyComponent = {
     { name: "loss.csv", path: "/home/me/run/loss.csv" },
     { name: "plot.png", path: "/home/me/run/plot.png", caption: "Samples" },
     { name: "design", url: "https://example.com/design" },
+    ...doseStudy.attachments,
   ],
   body: {
     root: "body",
     elements: {
-      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources"] },
+      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk"] },
+      desk: doseStudy.body.elements.desk,
       intro: { type: "Markdown", props: { text: "# Round 12\n\n```sh\nnpm test\n```" } },
       split: { type: "Columns", props: { widths: [3, 1] }, children: ["group", "side"] },
       group: { type: "Group", props: { title: "Detail" }, children: ["check", "plan", "findings", "metrics", "table", "line", "bar", "scatter"] },
@@ -328,6 +331,71 @@ test("references, ids and attachments are checked mechanically", () => {
   assert.equal(problems(several).length, MAX_PROBLEMS);
 });
 
+test("a body may name its summary and the details that start folded, among the root's own blocks (T-18)", () => {
+  const body = (props, extra = {}) => ({
+    key: "eval", kind: "report", title: "Eval",
+    attachments: [{ name: "a.png", path: "/home/me/run/a.png" }, { name: "b.png", path: "/home/me/run/b.png" },
+      { name: "runs.csv", path: "/home/me/run/runs.csv" }, { name: "design", url: "https://example.com/design.png" }],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props, children: ["answer", "holds", "loss", "runs", "shot", "shots", "data", "link", "method", "untitled", "plan"] },
+      answer: { type: "Markdown", props: { text: "B lowers loss by 4%." } },
+      holds: { type: "Checklist", props: { items: [{ id: "d", text: "Definition v2", done: true }] } },
+      loss: { type: "Metrics", props: { items: [{ label: "Loss", value: 0.41 }] } },
+      runs: { type: "Table", props: { id: "runs", title: "Runs", columns: [{ key: "m", label: "Model" }], rows: [] } },
+      shot: { type: "Attachments", props: { items: [{ name: "a.png" }] } },
+      shots: { type: "Attachments", props: { items: [{ name: "a.png" }, { name: "b.png" }] } },
+      data: { type: "Attachments", props: { items: [{ name: "runs.csv" }] } },
+      link: { type: "Attachments", props: { items: [{ name: "design" }] } },
+      method: { type: "Group", props: { title: "Method" }, children: ["method-text"] },
+      "method-text": { type: "Markdown", props: { text: "Three seeds." } },
+      untitled: { type: "Group", props: {}, children: ["note"] },
+      note: { type: "Markdown", props: { text: "A note." } },
+      plan: { type: "Plan", props: { steps: [{ id: "s", text: "Run 13", state: "todo" }] } },
+      ...extra,
+    } },
+  });
+  // Valid: none at all (every body before T-18), a lead alone, conditions without a visual, each figure kind.
+  for (const props of [{}, { summary: { lead: "answer" } }, { summary: { lead: "answer", conditions: "holds" } },
+    { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] }, { summary: { lead: "answer", visual: "runs" } },
+    { summary: { lead: "answer", visual: "shot" } }, { details: ["method"] }])
+    assert.deepEqual(checkBriefSection(body(props)).body.elements.body.props, props, JSON.stringify(props));
+  const refused = (props) => problems(body(props));
+  assert.deepEqual(refused({ summary: { lead: "method-text" } })[0], { code: "summary", path: "body.elements.body.props.summary.lead",
+    reason: 'summary.lead "method-text" is not one of the root\'s own children; name a block directly under the root. (brief_guide content)', guide: "brief_guide content" });
+  const code = (props) => refused(props).map((p) => `${p.code} ${p.path.replace("body.elements.body.props.", "")}`);
+  assert.deepEqual(code({ summary: { lead: "method" } }), ["summary summary.lead"], "a Group is no lead");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "plan" } }), ["summary summary.visual"]);
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "shots" } }), ["summary summary.visual"], "several files are not one figure");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "data" } }), ["summary summary.visual"], "a data file is not a figure");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "link" } }), ["summary summary.visual"], "a link is never shown as an image");
+  // An image as Core classifies it (attachments.rs): by the path's extension when Core knows it, else by the name's.
+  const figure = (file) => body({ summary: { lead: "answer", visual: "one" } }, { one: { type: "Attachments", props: { items: [{ name: file.name }] } } });
+  const withFile = (file) => { const value = figure(file); value.attachments = [...value.attachments, file]; value.body.elements.body.children.push("one"); return value; };
+  for (const file of [{ name: "shot.png", path: "/home/me/capture" }, { name: "shot.png", path: "/home/me/capture.bin" }, { name: "capture", path: "/home/me/SHOT.PNG" },
+    { name: "plot.JPEG", path: "/home/me/plot" }, { name: "s", path: "/home/me/run.d/s.webp" },
+    // A file named ".png" has no extension to Rust: the name decides.
+    { name: "shot.png", path: "/home/me/.png" }])
+    assert.equal(checkBriefSection(withFile(file)).body.elements.body.props.summary.visual, "one", JSON.stringify(file));
+  for (const file of [{ name: "shot.png", path: "/home/me/data.csv" }, { name: "shot.png", path: "/home/me/page.HTML" }, { name: "notes", path: "/home/me/capture" },
+    { name: "shot.png", path: "/home/me/run.d/notes.txt" }, { name: "shot.png", url: "https://example.com/shot.png" }])
+    assert.deepEqual(problems(withFile(file)).map((p) => p.path), ["body.elements.body.props.summary.visual"], JSON.stringify(file));
+  assert.deepEqual(code({ summary: { lead: "answer", conditions: "loss" } }), ["summary summary.conditions"]);
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "answer" } }), ["summary summary.visual"], "each block once");
+  assert.deepEqual(code({ summary: { lead: "answer", visual: "loss", conditions: "missing" } }), ["summary summary.conditions"]);
+  assert.deepEqual(code({ details: ["untitled", "plan", "note", "method", "method"] }),
+    ["details details.0", "details details.1", "details details.2", "details details.4"]);
+  assert.deepEqual(code({ summary: { lead: "answer" }, details: ["answer"] }), ["details details.0"]);
+  // The shape is the schema's: a lead is required, nothing else is taken.
+  assert.equal(refused({ summary: { visual: "loss" } })[0].code, "missing_field");
+  assert.equal(refused({ summary: { lead: "answer", figure: "loss" } })[0].code, "unknown_field");
+  assert.equal(refused({ summary: ["answer"] })[0].code, "invalid_field");
+  assert.equal(refused({ details: [] })[0].code, "invalid_field");
+  const content = briefGuide("content");
+  assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?\}: ids of the root's own blocks/);
+  assert.match(content, /details lists titled Groups of supporting detail .* nothing else folds\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
+  assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
+});
+
 test("registered screenshots need reachable exact-name uses, not prose or source links", () => {
   for (const key of ["tasks-board", "development"]) {
     const change = section("Markdown", { text: "See preview.png" }, {
@@ -486,4 +554,77 @@ test("contract.json carries the brief, generated from this file", async () => {
   assert.deepEqual(Object.keys(committed.brief.guideParts), [...BRIEF_GUIDE_PARTS]);
   assert.equal(committed.brief.guide, briefGuide());
   for (const part of BRIEF_GUIDE_PARTS) assert.equal(committed.brief.guideParts[part], briefGuide(part));
+});
+
+test("a ResearchDesk: two different desks render from one contract, and every reference is checked (T-9)", () => {
+  for (const fixture of [doseStudy, benchmark]) assert.ok(checkBriefSection(fixture), fixture.key);
+  // Only the numbers named by a snapshot are Core's to read.
+  const reads = researchReads(doseStudy.body.elements.desk.props);
+  assert.equal(reads.length, 10);
+  assert.deepEqual(reads[0], { at: "low-v2.value", from: "results.json", pointer: "/v2/low/diff" });
+  assert.ok(!reads.some((read) => read.at.startsWith("low-v1")), "literal numbers are the Agent's own");
+  assert.equal(researchReads(benchmark.body.elements.desk.props).length, 12);
+  assert.equal(benchmark.body.elements.desk.props.plots[0].scale, 100, "a display scale is part of the contract");
+
+  const desk = (change) => {
+    const copy = structuredClone(doseStudy);
+    change(copy.body.elements.desk.props, copy);
+    return copy;
+  };
+  const rejected = (change) => {
+    const found = first(desk(change));
+    assert.equal(found.guide, found.code === "missing_attachment" ? "brief_guide attachments" : "brief_guide research", JSON.stringify(found));
+    return found;
+  };
+  const dupe = rejected((p) => { p.plots[1].rows[0].id = "low-v2"; });
+  assert.equal(dupe.code, "duplicate_id");
+  assert.equal(dupe.path, "body.elements.desk.props.plots.1.rows.0.id");
+  assert.match(dupe.reason, /row and part id "low-v2" is used twice/);
+  assert.equal(rejected((p) => { p.claims[0].primary = "nowhere"; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.claims[0].plots.push("nowhere"); }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.plots[0].rows[0].estimate.cite.source = "nowhere"; }).path, "body.elements.desk.props.plots.0.rows.0.estimate.cite.source");
+  assert.equal(rejected((p) => { p.plots[0].rows[0].estimate.definition.version = 3; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.claims[0].statements[0].basis = ["nowhere"]; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.claims[0].dependsOn = [{ id: "recovery", version: 9 }]; }).code, "missing_reference");
+  assert.equal(rejected((p) => { p.plans[0].inputs[0].source = "nowhere"; }).code, "missing_reference");
+  const unsaved = rejected((p) => { delete p.sources[1].snapshot; });
+  assert.equal(unsaved.code, "unsaved_definition");
+  assert.match(unsaved.reason, /must point to a file this section keeps/);
+  // A Task method record holds a definition version too (T-17): the record
+  // keeps its own identity, so the section needs no attachment for it.
+  // (the CS layout study: each definition version cites its own method record).
+  assert.ok(checkBriefSection(layoutStudy));
+  assert.deepEqual(researchReads(layoutStudy.body.elements.desk.props), [], "nothing is read from a file");
+  assert.equal(first(desk((p) => { p.sources[1].task = { taskId: "17", activitySeq: 42 }; })).code, "invalid_field", "a task ID is T-n");
+  const both = rejected((p) => { p.sources[1].task = { taskId: "T-17", activitySeq: 42 }; });
+  assert.equal(both.code, "invalid_field");
+  assert.match(both.reason, /names both a snapshot and a Task record/);
+  assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
+  assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
+  assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
+  // Numbers come only from this section's JSON attachments.
+  const unregistered = rejected((p) => { p.plots[0].rows[0].estimate.value.from = "other.json"; });
+  assert.equal(unregistered.code, "missing_attachment");
+  assert.equal(unregistered.path, "body.elements.desk.props.plots.0.rows.0.estimate.value.from");
+  const csv = rejected((p, copy) => {
+    copy.attachments.push({ name: "table.csv", path: "/home/me/study/table.csv" });
+    p.plots[0].rows[0].estimate.value.from = "table.csv";
+  });
+  assert.equal(csv.code, "research_attachment");
+  assert.equal(first(desk((p) => { p.plots[0].rows[0].estimate.value.pointer = "v2/low"; })).code, "invalid_field", "a pointer starts with /");
+  // A plan's links count as LiveRefs of the section.
+  const links = desk((p, copy) => {
+    p.plans[0].links = [{ kind: "task", id: "T-1" }];
+    copy.body.elements.body.children.push("refs");
+    copy.body.elements.refs = { type: "LiveRefs", props: { items: items(50, (i) => ({ kind: "task", id: `T-${i + 2}` })) } };
+  });
+  assert.equal(first(links).code, "too_many_refs");
+  // A desk's files count as used; a file nothing reads is still flagged.
+  const unused = desk((p, copy) => { copy.attachments.push({ name: "spare.json", path: "/home/me/study/spare.json" }); });
+  assert.equal(first(unused).code, "unused_attachment");
+  // The guide has a part of its own, and content points to it.
+  assert.ok(BRIEF_GUIDE_PARTS.includes("research"));
+  assert.match(briefGuide("research"), /A Job that succeeded is not a result that holds/);
+  assert.match(briefGuide("research"), /Neither is a check of the research/);
+  assert.match(briefGuide("content"), /- ResearchDesk: see research\./);
 });

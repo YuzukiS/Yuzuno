@@ -64,3 +64,5 @@
   .settings-center .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 6px; margin-top: 6px; }
 }
 
+/* A category's entries ease their hover and selection colours (T-19). */
+.settings-entries button { transition: color var(--motion-micro) var(--ease-standard), background-color var(--motion-micro) var(--ease-standard); }

@@ -137,6 +137,7 @@ export function RestoreDialog({
   return (
     <Modal
       open
+      confirm
       onOpenChange={(next) => !next && busy !== "restore" && onClose()}
       title="Restore files"
       description="Puts back the files Claude changed after this message, from Claude Code’s own checkpoint. The conversation stays as it is. Nothing changes until you confirm."

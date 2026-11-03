@@ -564,7 +564,9 @@ mod tests {
             let old = legacy(tmp.path());
             let database = ino(&old.join(DATABASE));
             let mut stop = |name: &str| -> Result<()> { if name == at { bail!("stopped at {name}") } Ok(()) };
-            assert!(move_legacy(tmp.path(), None, &mut stop).is_err(), "{at}");
+            let interrupted = move_legacy(tmp.path(), None, &mut stop).unwrap_err();
+            // Stopped where asked: a refusal by the host (another process's update helper) is not this.
+            assert!(interrupted.chain().any(|cause| cause.to_string() == format!("stopped at {at}")), "{at}: {interrupted:#}");
             // Whatever it left, Core finds the one Workspace there is.
             let chosen = resolve(tmp.path()).unwrap();
             assert_eq!(ino(&chosen.path.join(DATABASE)), database, "{at}: {chosen:?}");

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CircleStop, Link2, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
 import { agentMenuItems, agentMenuLabel, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import { langTag, strings, useLanguage } from "./i18n";
+import { animates } from "./motion";
 import type { Agent } from "./types";
 import "./agent-actions.css";
 
@@ -59,6 +60,16 @@ const icons: Record<AgentMenuAction, typeof RotateCw> = {
   manage: Settings2,
 };
 
+/** Exit-small (styles.css --motion-exit-small): the way out it is kept for. */
+const MENU_OUT_MS = 130;
+
+/** Where the menu comes from: the corner nearest the point it opened at, and
+    4px towards it, from above when it opened upwards. */
+function fromPoint(menu: OpenMenu, at: MenuPoint) {
+  const above = at.y < menu.at.y;
+  return { transformOrigin: `${menu.align === "end" ? "right" : "left"} ${above ? "bottom" : "top"}`, "--menu-rise": above ? "4px" : "-4px" } as React.CSSProperties;
+}
+
 /**
  * An Agent's actions (T-184): a visible "…" button, and the same menu at a
  * pointer for a right-click or a long-press (`openAt`). The menu follows the
@@ -90,8 +101,13 @@ export function AgentActionsMenu({
   const t = menuText(language);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const [placed, setPlaced] = useState<MenuPoint | null>(null);
+  // A menu closed by Escape, a press or a choice stays on screen for its short
+  // way out, inert and hidden from assistive technology (T-19).
+  const [leaving, setLeaving] = useState<{ menu: OpenMenu; at: MenuPoint } | null>(null);
   const current = useRef<OpenMenu | null>(null);
   current.current = menu;
+  const shownAt = useRef<MenuPoint | null>(null);
+  shownAt.current = placed;
   const trigger = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -99,21 +115,31 @@ export function AgentActionsMenu({
   const open = useCallback(
     (at: MenuPoint, align: OpenMenu["align"], returnTo: HTMLElement | null, focus: OpenMenu["focus"] = "first") => {
       setPlaced(null);
+      setLeaving(null);
       setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing, disconnect: !!handlers.disconnect, link: !!handlers.copyLink }), at, align, returnTo, focus });
     },
     [agent, missingTurns, handlers.endMissing, handlers.disconnect, handlers.copyLink],
   );
-  const close = useCallback((refocus: boolean) => {
+  // `animate` false for a close the user did not ask for here (Tab, a scroll or
+  // resize that moved its button, another Agent): those go at once.
+  const close = useCallback((refocus: boolean, animate = true) => {
     const was = current.current;
+    const at = shownAt.current;
     setMenu(null);
     setPlaced(null);
+    setLeaving(animate && was && at && animates() ? { menu: was, at } : null);
     if (refocus) was?.returnTo?.focus();
   }, []);
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = window.setTimeout(() => setLeaving(null), MENU_OUT_MS + 100);
+    return () => window.clearTimeout(timer);
+  }, [leaving]);
   useImperativeHandle(ref, () => ({ openAt: (point, returnTo) => open(point, "start", returnTo) }), [open]);
 
   // Never act on another Agent than the one it was opened on.
   useEffect(() => {
-    if (current.current && current.current.id !== agent.id) close(false);
+    if (current.current && current.current.id !== agent.id) close(false, false);
   }, [agent.id, close]);
 
   // Kept inside the window once its size is known.
@@ -149,7 +175,7 @@ export function AgentActionsMenu({
       const target = event.target;
       if (target instanceof Node && list.current?.contains(target)) return;
       const anchor = trigger.current;
-      if (!(target instanceof Node) || !anchor || target.contains(anchor)) close(false);
+      if (!(target instanceof Node) || !anchor || target.contains(anchor)) close(false, false);
     };
     document.addEventListener("pointerdown", outside, true);
     window.addEventListener("resize", dismiss);
@@ -185,7 +211,7 @@ export function AgentActionsMenu({
         close(true);
         return;
       case "Tab":
-        close(false);
+        close(false, false);
         return;
       default:
         return;
@@ -250,6 +276,30 @@ export function AgentActionsMenu({
       >
         <MoreHorizontal size={16} />
       </button>
+      {leaving &&
+        !menu &&
+        createPortal(
+          <div
+            className="agent-actions-menu is-leaving"
+            aria-hidden="true"
+            inert
+            style={{ left: leaving.at.x, top: leaving.at.y, ...fromPoint(leaving.menu, leaving.at) }}
+            onAnimationEnd={(event) => {
+              if (event.animationName === "agent-menu-out") setLeaving(null);
+            }}
+          >
+            {leaving.menu.items.map((item) => {
+              const Icon = icons[item.action];
+              return (
+                <button key={item.action} type="button" tabIndex={-1} className="agent-actions-item" disabled={item.disabled}>
+                  <Icon size={15} aria-hidden="true" />
+                  {agentMenuLabel(item.action, item.disabled, language)}
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
       {menu &&
         createPortal(
           <div
@@ -261,7 +311,7 @@ export function AgentActionsMenu({
             lang={langTag(language)}
             className="agent-actions-menu"
             data-placed={!!placed}
-            style={{ left: placed?.x ?? 0, top: placed?.y ?? 0 }}
+            style={{ left: placed?.x ?? 0, top: placed?.y ?? 0, ...(placed ? fromPoint(menu, placed) : {}) }}
             onKeyDown={onMenuKeyDown}
             onContextMenu={(event) => {
               event.preventDefault();

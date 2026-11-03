@@ -26,7 +26,9 @@ mod resource_tests;
 mod remote_tests;
 mod runs;
 pub(crate) mod store;
+mod task_cost;
 pub(crate) mod service_control;
+mod service_recovery;
 #[cfg(test)]
 mod pause_tests;
 #[cfg(test)]
@@ -472,6 +474,11 @@ struct GpuAdmission {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunReference {
     run_id: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskReference {
+    task_id: String,
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1120,6 +1127,10 @@ pub async fn call(
             let q: RunReference = serde_json::from_value(input)?;
             ws.stored(move |s| s.run(&q.run_id)).await
         }
+        "job_cost" => {
+            let q: TaskReference = serde_json::from_value(input)?;
+            ws.stored(move |s| s.task_cost(&q.task_id)).await
+        }
         "job_run_list" => {
             let q: RunList = serde_json::from_value(input)?;
             ws.stored(move |s| {
@@ -1504,12 +1515,17 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             json!({"requestId":string,"taskId":task_reference,"name":string,
                 "experiment":{"type":"string","description":"Optional label grouping runs of one experiment."},
                 "costLimitUsd":{"type":"number","exclusiveMinimum":0},
+                "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"],
+                    "description":"The task's method record (task_comment research, type method) this run follows, by its activity. A later method version leaves the run as it was; only a changed command or input needs a new run."},
                 "stages":{"type":"array","minItems":1,"maxItems":16,"description":"In dependency order: a stage may need only earlier stages.","items":{"type":"object","properties":stage,"required":stage_required,"additionalProperties":false}}}),
             vec!["requestId","taskId","name","stages"]),
         make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero.", run_id.clone(), vec!["runId"]),
         make("job_provenance", "Export where a result came from, as Core recorded it: one Job (jobId) or every attempt of a run (runId). Returns manifest (versioned JSON, schema yuzuno.provenance) and report (short Markdown from the same manifest). Each attempt keeps its own outcome, exit, target machine and executor, Git and frozen-input digests, labels showing which attempts share a command and identity, declared/held/measured resources, artifacts with SHA-256 and where they stay, and whether early output was overwritten; each item is verified, declared, notRecorded or unknown. Restates records only: reads no working file again and asks no machine, so it is not a claim that the result can be reproduced. Leaves out argv and env values and Core's digests of them, absolute paths, logs, chat and file contents; show the user the report before sharing it.", json!({"jobId":string,"runId":string}), vec![]),
         make("job_run_list", "List runs with their status, stages and recorded cost, newest first, 20 per page; follow nextBefore as before while hasMore. Unlike job_list it does not default to your own Agent: without filters it lists every Agent's runs, so pass agentId, taskId or experiment to narrow it.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer","description":"nextBefore from the previous page; keep the same filters."},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
-        make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000}}), vec!["requestId","runId","stage","gateId","attemptId","decision"]),
+        make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000},
+            "record":{"type":"object","additionalProperties":false,"properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"],
+                "description":"A research record of the run's task (task_comment research) that explains this decision; it may propose the next check or a stop. Kept as a citation summary fixed now (type, id, title, status or counts, version, author, time and its proposed next step), not a copy of its text, method or sources; it authorizes nothing more."}}), vec!["requestId","runId","stage","gateId","attemptId","decision"]),
+        make("job_cost", task_cost::DESCRIPTION, json!({"taskId":task_reference}), vec!["taskId"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
         make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),

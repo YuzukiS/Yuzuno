@@ -20,6 +20,9 @@ pub(crate) struct Decision {
     pub decision: Choice,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The research record of the run's task that explains this decision (T-17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<ResearchRef>,
 }
 
 impl Decision {
@@ -153,6 +156,15 @@ impl Store {
             "stale_analysis_gate: read job_run_get and decide the current gate and attempt"
         );
         ensure!(waiting(&stage), "This analysis gate already has a decision");
+        // The record that explains the decision is one of this run's task's
+        // own, kept as a citation summary fixed now; it decides nothing by itself.
+        let record = input
+            .record
+            .as_ref()
+            .map(|record| {
+                collaboration::research_decision_record(&tx, run["taskId"].as_str().unwrap_or_default(), record.activity_seq)
+            })
+            .transpose()?;
         let job = get(&tx, gate["jobId"].as_str().context("Missing gate job")?)?;
         ensure!(
             job["attempt"] == input.attempt_id
@@ -180,6 +192,9 @@ impl Store {
         gate["source"] = source;
         gate["requestId"] = json!(input.request_id);
         gate["reason"] = json!(input.reason);
+        if let Some(record) = record {
+            gate["record"] = record;
+        }
         if input.continues() {
             run["idleAt"] = Value::Null;
             save_run(&tx, &run)?;

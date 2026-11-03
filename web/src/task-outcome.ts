@@ -6,12 +6,29 @@ export type ArtifactReference = {
   path: string;
   sha256: string;
 };
+/** One of the task's research records a criterion cites (T-17), fixed as it
+ * read when the result was submitted. */
+export type OutcomeRecord = {
+  activitySeq: number;
+  record?: {
+    kind?: string;
+    type?: string;
+    id?: string;
+    title?: string;
+    status?: string;
+    counts?: Record<"included" | "excluded" | "missing" | "not_done", number>;
+  } | null;
+  version?: number | null;
+  producer?: OutcomePerson | null;
+  at?: string | null;
+};
 export type ReportedCriterion = {
   id: string;
   label: string;
   report: string;
   reportedStatus: "met" | "not_met" | "unknown";
   artifacts?: ArtifactReference[];
+  records?: OutcomeRecord[];
 };
 export type OutcomeReport = {
   criteria: ReportedCriterion[];
@@ -68,6 +85,14 @@ export type OutcomeArtifact = ArtifactReference & {
   downloadable?: boolean;
   machineName?: string | null;
 };
+/** Where a cited record's line stands now, beside the version the result cites. */
+export type OutcomeRecordNow = {
+  criterionId: string;
+  activitySeq: number;
+  state: "readable" | "missing";
+  revisedBy?: number | null;
+  latestActivitySeq?: number | null;
+};
 export type OutcomePage = {
   taskId: string;
   taskVersion: number;
@@ -77,6 +102,7 @@ export type OutcomePage = {
   hasMore: boolean;
   nextBefore: number | null;
   artifacts: OutcomeArtifact[];
+  records?: OutcomeRecordNow[];
   note?: string;
 };
 
@@ -116,6 +142,10 @@ export function outcomeInput(report?: OutcomeReport | null) {
       report: c.report,
       reportedStatus: c.reportedStatus,
       artifacts: c.artifacts || [],
+      // A cited record is named by its activity; Core fixes the rest.
+      ...(c.records?.length
+        ? { records: c.records.map((r) => ({ activitySeq: r.activitySeq })) }
+        : {}),
     })),
     ...(report.remaining == null ? {} : { remaining: report.remaining }),
     ...(report.nextAgentId == null ? {} : { nextAgentId: report.nextAgentId }),

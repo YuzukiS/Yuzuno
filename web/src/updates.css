@@ -49,8 +49,8 @@
   text-align: left;
   white-space: nowrap;
   transition:
-    background-color 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
 }
 .settings-nav [role="tab"] svg {
   flex: none;
@@ -307,7 +307,7 @@
   display: none;
 }
 .updates-notes > summary svg {
-  transition: rotate 160ms ease;
+  transition: rotate var(--motion-micro) var(--ease-standard);
 }
 .updates-notes[open] > summary svg {
   rotate: 90deg;
@@ -520,15 +520,7 @@
     )
     0 0 / 50% 100% no-repeat,
     color-mix(in srgb, var(--accent-ink) 30%, var(--line));
-  animation: update-step-moving 1.6s ease-in-out infinite;
-}
-@keyframes update-step-moving {
-  from {
-    background-position: -100% 0, 0 0;
-  }
-  to {
-    background-position: 200% 0, 0 0;
-  }
+  animation: step-moving 1.6s ease-in-out infinite;
 }
 /* The facts behind the answer, for when they matter. */
 .update-details > summary {
@@ -546,7 +538,7 @@
   display: none;
 }
 .update-details > summary svg {
-  transition: rotate 160ms ease;
+  transition: rotate var(--motion-micro) var(--ease-standard);
 }
 .update-details[open] > summary svg {
   rotate: 90deg;

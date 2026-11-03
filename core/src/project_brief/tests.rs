@@ -1,5 +1,5 @@
 use super::{
-    attachments, home, presentation, sections,
+    attachments, home, presentation, research, sections,
     update::{self, Checker},
     *,
 };
@@ -127,6 +127,41 @@ fn section<'a>(brief: &'a Value, key: &str) -> &'a Value {
 
 fn rows(ws: &Workspace, sql: &str) -> i64 {
     ws.store.db.read().unwrap().query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// A Home reply's receipt origin without its snapshot and section identity,
+/// and the snapshot (T-9).
+fn sent_from(ws: &Workspace, agent: &str, id: &str) -> (Value, Value) {
+    let mut origin = ws.store.receipt(agent, id).unwrap().expect("a receipt").origin.expect("an origin");
+    origin.as_object_mut().unwrap().remove("sectionId");
+    let home = origin.as_object_mut().unwrap().remove("home").unwrap_or(Value::Null);
+    (origin, home)
+}
+
+/// The section a Home reply's receipt names by its identity on Home (T-9).
+fn section_id(ws: &Workspace, agent: &str, id: &str) -> Value {
+    ws.store.receipt(agent, id).unwrap().expect("a receipt").origin.expect("an origin")["sectionId"].clone()
+}
+
+/// The live section under `key`, by its identity on Home.
+fn identity(ws: &Workspace, project: &str, key: &str) -> i64 {
+    sections::live_key(&ws.store.db.read().unwrap(), project, key).unwrap().expect("a live section").identity
+}
+
+/// A Home reply's snapshot as Core writes it: these fields, the rest null.
+fn snapshot(fields: Value) -> Value {
+    let mut all = json!({"format":1,"projectName":"Code","sectionKind":null,"title":null,"question":null,"options":null,
+        "choice":null,"text":null,"form":null});
+    for (key, value) in fields.as_object().unwrap() {
+        assert!(all.get(key).is_some(), "{key} is not a snapshot field");
+        all[key] = value.clone();
+    }
+    all
+}
+
+/// The options `put` gives an ask.
+fn two_ways() -> Value {
+    json!([{"id":"left","label":"Left"},{"id":"right","label":"Right"}])
 }
 
 #[tokio::test]
@@ -797,7 +832,7 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
         text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()) };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -816,7 +851,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
     let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None };
+        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None, form: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -867,15 +902,19 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     assert_eq!(seen_marks.get("news").map(|(version, _)| *version), Some(2));
     assert_eq!(seen_marks.len(), 1);
     // A reply's receipt says it came from Home, from which section and
-    // version (T-6), a card's and an ask's alike, delivered or not.
-    let origin = |id: &str| ws.store.receipt("b", id).unwrap().expect("a receipt").origin;
-    assert_eq!(origin("r5"), Some(json!({"kind":"home","projectId":project,"key":"news","version":2})));
+    // version of which Workspace (T-6), a card's and an ask's alike,
+    // delivered or not, and keeps what the user saw there (T-9).
+    let origin = |id: &str| sent_from(&ws, "b", id);
+    assert_eq!(origin("r5"), (json!({"kind":"home","projectId":project,"key":"news","version":2,"workspaceId":workspace}),
+        snapshot(json!({"sectionKind":"report","title":"About news","text":"Thanks"}))));
     let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
         client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()) };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None };
     let _ = home::reply(&ws, project.clone(), answer).await;
-    assert_eq!(origin("r7"), Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,
-        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "")})));
+    assert_eq!(origin("r7"), (json!({"kind":"home","projectId":project,"key":"decide","version":1,
+        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "", None)}),
+        snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
+            "choice":{"id":"left","label":"Left"}}))));
 }
 
 // T-9: a reply to an ask is bound to the Workspace, Project, key and version
@@ -890,7 +929,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |version: Option<i64>, choice: Option<&str>, text: &str, id: &str| home::ReplyInput {
         key: Some("decide".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()) };
+        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()), form: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -924,7 +963,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     // A reply to version 1 already sent under m1: its retry returns it and marks version 1.
     let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
-            "reply":home::reply_digest(Some("left"), "Go")})),
+            "reply":home::reply_digest(Some("left"), "Go", None)})),
         input: crate::model::MessageInput { client_message_id: "m1".into(), text: message.clone(), text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     let kept = sent.clone();
@@ -957,8 +996,10 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     // A free-text reply to version 2 (a form's answers are text too) is
     // recorded with its version, Workspace and words.
     let _ = home::reply(&ws, project.clone(), reply(Some(2), None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", "m3")).await;
-    assert_eq!(receipt("m3").expect("a receipt").origin, Some(json!({"kind":"home","projectId":project,"key":"decide","version":2,
-        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left")})));
+    assert_eq!(sent_from(&ws, "b", "m3"), (json!({"kind":"home","projectId":project,"key":"decide","version":2,
+        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", None)}),
+        snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way now?","options":two_ways(),
+            "text":"Answers to \u{201c}Form\u{201d}:\n- Way: left"}))));
     // A choice the version doesn't offer.
     let unknown = home::reply(&ws, project.clone(), reply(Some(2), Some("up"), "", "m4")).await.unwrap_err();
     assert!(unknown.to_string().starts_with("choice_not_found"), "{unknown}");
@@ -973,6 +1014,226 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     report.key = Some("news".into());
     refused(home::reply(&ws, project.clone(), report).await.unwrap_err(), "ask_changed");
     assert!(["m5", "m6", "m7"].iter().all(|id| receipt(id).is_none()), "nothing was recorded for them");
+}
+
+// T-9: a Home reply's receipt keeps the reply as the user saw it, beside
+// where it came from: the Project, the section's kind, title and question,
+// the options it offered, the choice, the user's whole words, and a form's
+// answers by label as that version's form offered them. A retry keeps the
+// first, after the ask changed too. A form that is not that version's, or a
+// text that does not end with its answers, sends nothing; nor does another
+// Workspace's Home. Read back, a reply shows so only from Core's receipt,
+// never from text that reads like one.
+#[tokio::test]
+async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
+    let (_dir, ws, project) = lab();
+    let mut setup = put("setup", "ask");
+    setup["ask"]["reply"] = json!({"freeText":true,"form":{"id":"prefs","title":"Preview setup","fields":[
+        {"id":"dir","type":"text","label":"Working directory","required":true},
+        {"id":"theme","type":"single","label":"Theme","required":true,"options":[{"id":"light","label":"Light"},{"id":"dark","label":"Dark"}]},
+        {"id":"checks","type":"multi","label":"Checks","required":false,"options":[{"id":"keys","label":"Keyboard"},{"id":"wide","label":"Wide text"}]}]}});
+    accept(&ws, "a", input("s1", 0, vec![setup, put("decide", "ask"), put("news", "report")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let ask = |key: &str, choice: Option<&str>, text: &str, form: Option<&Value>, id: &str| home::ReplyInput {
+        key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: choice.map(str::to_owned),
+        version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
+        form: form.map(|form| serde_json::from_value(form.clone()).unwrap()) };
+    let card = |text: &str, id: &str| {
+        let mut card = ask("news", None, text, None, id);
+        (card.version, card.title, card.ask_version, card.workspace_id) = (Some(1), Some("About news".into()), None, None);
+        card
+    };
+    let refused = |error: anyhow::Error, code: &str| {
+        assert!(error.to_string().starts_with(code), "{error}");
+        assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    };
+    let receipt = |id: &str| ws.store.receipt("b", id).unwrap();
+    // What Home sends of a form (AskReply.tsx, formText): readable lines, then the ids in the form's order.
+    let form = json!({"formId":"prefs","answers":{"dir":"/home/me/project","theme":"dark","checks":["wide","keys"]}});
+    let text = "Answers to \u{201c}Preview setup\u{201d}:\n- Working directory: /home/me/project\n- Theme: Dark\n\
+        - Checks: Wide text, Keyboard\n\n{\"formId\":\"prefs\",\"answers\":{\"dir\":\"/home/me/project\",\"theme\":\"dark\",\"checks\":[\"wide\",\"keys\"]}}"
+        .to_owned();
+
+    // Not this version's form, its fields, its options, nor the text's answers.
+    let changed = |path: &[&str], value: Value| {
+        let mut form = form.clone();
+        let (last, parents) = path.split_last().unwrap();
+        let at = parents.iter().fold(&mut form, |at, key| &mut at[*key]);
+        if value.is_null() { at.as_object_mut().unwrap().remove(*last); } else { at[*last] = value; }
+        form
+    };
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["formId"], json!("other"))), "f0")).await.unwrap_err(),
+        "form_not_found");
+    for wrong in [changed(&["answers", "checks"], Value::Null), changed(&["answers", "more"], json!("x")),
+        changed(&["answers", "theme"], json!("blue")), changed(&["answers", "theme"], json!(["dark"])),
+        changed(&["answers", "checks"], json!(["wide", "wide"])), changed(&["answers", "dir"], json!("  "))] {
+        refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&wrong), "f0")).await.unwrap_err(), "form_answers");
+    }
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["answers", "theme"], json!("light"))), "f0"))
+        .await.unwrap_err(), "form_mismatch");
+    // A text whose lines say other answers than its ids, and the form's: not these answers.
+    let says_light = text.replace("- Theme: Dark", "- Theme: Light");
+    refused(home::reply(&ws, project.clone(), ask("setup", None, &says_light, Some(&form), "f0")).await.unwrap_err(), "form_mismatch");
+    // Not with a choice, to a card, from a Home that does not say the version, or from another Workspace's.
+    assert!(home::reply(&ws, project.clone(), ask("decide", Some("left"), &text, Some(&form), "f0")).await.is_err());
+    let mut to_card = card("Hi", "f0");
+    to_card.form = ask("setup", None, "", Some(&form), "f0").form;
+    assert!(home::reply(&ws, project.clone(), to_card).await.is_err());
+    let mut unversioned = ask("news", None, "Hi", Some(&form), "f0");
+    (unversioned.ask_version, unversioned.workspace_id) = (None, None);
+    assert!(home::reply(&ws, project.clone(), unversioned).await.is_err());
+    let mut elsewhere = ask("setup", None, &text, Some(&form), "f0");
+    elsewhere.workspace_id = Some("another-workspace".into());
+    refused(home::reply(&ws, project.clone(), elsewhere).await.unwrap_err(), "workspace_changed");
+    assert!(receipt("f0").is_none(), "nothing was recorded for them");
+
+    // The form's answers by label (its text is Home's composition of them),
+    // and the text the Agent gets as Home wrote it.
+    let _ = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&form), "f1")).await;
+    let (origin, kept) = sent_from(&ws, "b", "f1");
+    let setup_id = identity(&ws, &project, "setup");
+    assert_eq!(section_id(&ws, "b", "f1"), json!(setup_id), "the receipt names the section answered");
+    let digest = home::reply_digest(None, &text, Some(&serde_json::from_value(form.clone()).unwrap()));
+    assert_ne!(digest, home::reply_digest(None, &text, None));
+    assert_eq!(origin, json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,"reply":digest}));
+    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
+        "form":{"id":"prefs","title":"Preview setup","fields":[
+            {"id":"dir","label":"Working directory","type":"text","answer":"/home/me/project"},
+            {"id":"theme","label":"Theme","type":"single","answer":"Dark"},
+            {"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"]}]}})));
+    let message = receipt("f1").unwrap().input.text;
+    assert!(message.contains(&format!("\n{text}\n")), "{message}");
+    // Its retry is that message; the same words with other answers are not.
+    let other = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&changed(&["answers", "theme"], json!("light"))), "f1"))
+        .await.unwrap_err();
+    assert!(other.to_string().contains("already used for another message"), "{other}");
+    // The ask asked again: the retry keeps the version it answered, never the current one.
+    let mut again = put("setup", "ask");
+    again["ask"]["question"] = json!("Which way now?");
+    accept(&ws, "a", input("s2", 1, vec![again])).await;
+    let _ = home::reply(&ws, project.clone(), ask("setup", None, &text, Some(&form), "f1")).await;
+    assert_eq!(sent_from(&ws, "b", "f1"), (origin.clone(), kept.clone()));
+
+    // A choice with words, a card's and a project's reply: the user's whole
+    // words, however long, never the quote Core composes around them.
+    let _ = home::reply(&ws, project.clone(), ask("decide", Some("right"), " Because it is shorter ", None, "q1")).await;
+    assert_eq!(sent_from(&ws, "b", "q1").1, snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?",
+        "options":two_ways(),"choice":{"id":"right","label":"Right"},"text":"Because it is shorter"})));
+    let long = format!("{}end", "word ".repeat(3000));
+    let _ = home::reply(&ws, project.clone(), card(&long, "c1")).await;
+    assert_eq!(sent_from(&ws, "b", "c1"), (json!({"kind":"home","projectId":project,"key":"news","version":1,"workspaceId":workspace}),
+        snapshot(json!({"sectionKind":"report","title":"About news","text":long}))));
+    let mut plain = ask("news", None, " Thanks ", None, "p1");
+    (plain.key, plain.ask_version, plain.workspace_id) = (None, None, None);
+    let _ = home::reply(&ws, project.clone(), plain).await;
+    assert_eq!(sent_from(&ws, "b", "p1"), (json!({"kind":"home","projectId":project,"key":null,"version":null,"workspaceId":workspace}),
+        snapshot(json!({"text":"Thanks"}))));
+
+    // Read back: from Core's receipt by client id. The same text typed in the
+    // composer, or a body that names a snapshot itself, shows none.
+    let typed = crate::model::MessageReceipt { binding: None, skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
+        turn_id: Some("t1".into()), error: None, input: crate::model::MessageInput { client_message_id: "typed".into(), text: message.clone(),
+            text_blocks: None, images: vec![], expected_turn_id: None, question: None, clarification: None } };
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(typed)).unwrap();
+    let said = |id: &str, client: &str| json!({"id":id,"type":"userMessage","clientId":client,"content":[{"type":"text","text":message}]});
+    let mut forged = said("i5", "nobody");
+    forged["_yuzunoHome"] = json!({"projectId":project,"snapshot":kept});
+    let mut turns = vec![json!({"id":"t1","items":[said("i1", "f1"), said("i2", "c1"), said("i3", "p1"), said("i4", "typed"), forged]})];
+    crate::input_origin::annotate(&ws.store.db.read().unwrap(), "b", &mut turns).unwrap();
+    let shown = |i: usize| (turns[0]["items"][i]["_yuzunoInput"].clone(), turns[0]["items"][i]["_yuzunoHome"].clone());
+    let from = |key: Value, version: Value, section: Option<i64>, snapshot: Value| {
+        let mut home = json!({"projectId":project,"key":key,"version":version,"workspaceId":workspace,"snapshot":snapshot});
+        if let Some(section) = section { home["sectionId"] = section.into(); }
+        (json!("home"), home)
+    };
+    assert_eq!(shown(0), from(json!("setup"), json!(1), Some(setup_id), kept));
+    assert_eq!(shown(1), from(json!("news"), json!(1), Some(identity(&ws, &project, "news")), sent_from(&ws, "b", "c1").1));
+    assert_eq!(shown(2), from(Value::Null, Value::Null, None, snapshot(json!({"text":"Thanks"}))));
+    assert_eq!(section_id(&ws, "b", "p1"), Value::Null, "a reply to the whole Brief names no section");
+    assert_eq!(shown(3), (json!("you"), Value::Null));
+    assert_eq!(shown(4), (json!("unconfirmed"), Value::Null));
+}
+
+// T-9: what Home sends for a form, as web/tools/ask-version-ui.test.mjs
+// proves the real AskReply sends it for this form, is taken as it is and
+// kept by label: long Chinese words whole, quotes and a backslash as typed,
+// optional answers left empty, several options in the order chosen. Any
+// other text with the same answers sends nothing; a Home that sends no
+// answers beside its text is kept as that text.
+#[tokio::test]
+async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothing() {
+    let fixture: Value = serde_json::from_str(include_str!("../../../web/tools/fixtures/home-form-reply.json")).unwrap();
+    let (_dir, ws, project) = lab();
+    let mut setup = put("setup", "ask");
+    setup["ask"]["reply"] = json!({"form":fixture["form"]});
+    accept(&ws, "a", input("s1", 0, vec![setup])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let sent = fixture["sent"]["text"].as_str().unwrap();
+    let reply = |text: &str, id: &str, answers: bool| home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.into(),
+        client_message_id: id.into(), choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
+        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()) };
+    for (id, other) in [("x1", format!("{sent}\n")), ("x2", sent.replacen("\u{6df1}\u{8272}", "\u{6d45}\u{8272}", 1)),
+        ("x3", sent.replacen("(no answer)", "", 1)), ("x4", sent.replacen("\u{5bbd}\u{5b57}, \u{952e}\u{76d8}", "\u{952e}\u{76d8}, \u{5bbd}\u{5b57}", 1))] {
+        assert_ne!(other, sent, "{id}");
+        let error = home::reply(&ws, project.clone(), reply(&other, id, true)).await.unwrap_err();
+        assert!(error.to_string().starts_with("form_mismatch") && error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "{id}: {error}");
+        assert!(ws.store.receipt("b", id).unwrap().is_none(), "{id}");
+    }
+    let _ = home::reply(&ws, project.clone(), reply(sent, "f1", true)).await;
+    let (origin, kept) = sent_from(&ws, "b", "f1");
+    assert_eq!((origin["key"].clone(), origin["version"].clone()), (json!("setup"), json!(1)));
+    assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],"form":fixture["kept"]})));
+    assert!(ws.store.receipt("b", "f1").unwrap().unwrap().input.text.contains(&format!("\n{sent}\n")));
+    // An older Home, without the answers beside the text: its text, whole, and no form.
+    let _ = home::reply(&ws, project.clone(), reply(sent, "o1", false)).await;
+    assert_eq!(sent_from(&ws, "b", "o1").1, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
+        "text":sent})));
+}
+
+// T-9: a reply's receipt names the section it answered by its identity on
+// Home, which is what tells that section's fate from another's later under
+// the same key. Asked again and resolved, an ask keeps its identity; a card
+// removed and its key written anew is another section, with later versions.
+// Home shows each history entry with its identity and why it ended.
+#[tokio::test]
+async fn a_reply_names_its_section_so_home_tells_it_from_a_later_one_under_its_key() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("k1", 0, vec![put("plan", "report"), put("decide", "ask")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let (plan, decide) = (identity(&ws, &project, "plan"), identity(&ws, &project, "decide"));
+    assert_ne!(plan, decide);
+    let card = home::ReplyInput { key: Some("plan".into()), agent_id: "b".into(), text: "Looks right".into(), client_message_id: "r1".into(),
+        choice: None, version: Some(1), title: Some("About plan".into()), ask_version: None, workspace_id: None, form: None };
+    let _ = home::reply(&ws, project.clone(), card).await;
+    let ask = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(), client_message_id: "r2".into(),
+        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None };
+    let _ = home::reply(&ws, project.clone(), ask).await;
+    assert_eq!((section_id(&ws, "b", "r1"), section_id(&ws, "b", "r2")), (json!(plan), json!(decide)));
+    // The ask asked again, then resolved; the card removed, its key written as an ask, which is resolved.
+    let mut again = put("decide", "ask");
+    again["ask"]["question"] = json!("Which way now?");
+    accept(&ws, "a", input("k2", 1, vec![again, op("remove", "plan")])).await;
+    assert_eq!(identity(&ws, &project, "decide"), decide, "asked again, the same section");
+    accept(&ws, "a", input("k3", 2, vec![op("resolve", "decide"), put("plan", "ask")])).await;
+    let later = identity(&ws, &project, "plan");
+    assert_ne!(later, plan, "a key written anew is another section");
+    accept(&ws, "a", input("k4", 3, vec![op("resolve", "plan")])).await;
+    let read = home::build(&ws.store).unwrap();
+    let history: Vec<(String, i64, i64, String)> = read["projects"][0]["brief"]["history"].as_array().unwrap().iter()
+        .map(|s| (s["key"].as_str().unwrap().into(), s["id"].as_i64().unwrap(), s["version"].as_i64().unwrap(), s["historyReason"].as_str().unwrap().into()))
+        .collect();
+    let entry = |key: &str, id: i64| history.iter().find(|(k, i, _, _)| k == key && *i == id).cloned();
+    let (_, _, decided, why) = entry("decide", decide).expect("the ask answered, in History");
+    assert_eq!(why, "resolved");
+    assert!(decided > 1, "resolving moved it past the version answered: {history:?}");
+    let (_, _, removed, why) = entry("plan", plan).expect("the card answered, in History");
+    assert_eq!(why, "removed");
+    let (_, _, resolved, why) = entry("plan", later).expect("the later ask under its key, in History");
+    assert_eq!(why, "resolved");
+    // Removing keeps the version answered; the key's later section continues past it.
+    assert_eq!(removed, 1, "{history:?}");
+    assert!(resolved > removed, "versions keep rising under a key: {history:?}");
+    assert!(read["projects"][0]["brief"]["sections"].as_array().unwrap().iter().all(|s| s["key"] != "plan" && s["key"] != "decide"));
 }
 
 #[test]
@@ -1811,4 +2072,144 @@ async fn the_users_presentation_preference_reaches_editors_until_the_default_rem
     let count: i64 = ws.store.db.read().unwrap()
         .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key='home.presentation'", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0, "the default is no row at all");
+}
+
+/// A desk whose definition is a Task method record (T-17): no attachment,
+/// read by the same resolver as the task's own view.
+fn task_desk(cited: i64) -> Value {
+    json!({"op":"put","key":"study","kind":"report","title":"Layout study (synthetic)",
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"B is faster","statement":"About 4% on the small inputs.",
+                    "status":"conditional","dependsOn":[{"id":"timing","version":1}]}],
+                "plots":[],
+                "sources":[{"id":"method","label":"Timing protocol","kind":"notes","task":{"taskId":"T-1","activitySeq":cited}}],
+                "definitions":[{"id":"timing","title":"Timing","versions":[{"version":1,"text":"Ten fresh processes.","cite":{"source":"method"}}]}]}}}}})
+}
+
+#[tokio::test]
+async fn a_research_desk_may_hold_its_method_as_a_task_record() {
+    let (_dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Layout study (synthetic)"})).unwrap();
+    let record = |key: &str, research: Value| ws.store.collaboration_call(Some("b"), "task_comment",
+        json!({"requestId":key,"taskId":"T-1","body":"Synthetic","research":research})).unwrap()["activity"]["seq"].as_i64().unwrap();
+    let m1 = record("m1", json!({"type":"method","id":"timing","title":"Timing protocol","text":"Ten fresh processes."}));
+    let c1 = record("c1", json!({"type":"claim","id":"faster","title":"B is faster","text":"About 4% on small inputs.",
+        "status":"conditional","method":{"activitySeq":m1}}));
+
+    // The definition cites the record: accepted with no attachment at all.
+    let accepted = update::update(&ws, &checker, "a", input("d1", 0, vec![task_desk(m1)])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+    let cache = attachments::dir(&ws.data_dir);
+    let desk = research::desk(&ws.store, &cache, &project, "study", "desk", None).unwrap().ok().unwrap();
+    let source = &desk["sources"]["method"];
+    assert_eq!((source["available"].clone(), source["taskId"].clone(), source["activitySeq"].clone()), (json!(true), json!("T-1"), json!(m1)));
+    assert_eq!((source["record"]["type"].clone(), source["producer"]["id"].clone(), source["version"].clone()), (json!("method"), json!("b"), json!(1)));
+    assert!(source.get("path").is_none() && source.get("attachment").is_none(), "nothing of the Brief's files");
+
+    // Only a method record holds a definition; another record keeps the version.
+    let claim = update::update(&ws, &checker, "a", input("d2", 1, vec![task_desk(c1)])).await.unwrap().unwrap_err();
+    assert_eq!(claim["problems"][0]["code"], "unsaved_definition", "{claim}");
+    let m2 = record("m2", json!({"type":"method","id":"timing","title":"Timing protocol","text":"Twenty fresh processes.",
+        "revises":{"activitySeq":m1,"reason":"Ten was too few for the noise seen."}}));
+    let moved = update::update(&ws, &checker, "a", input("d3", 1, vec![task_desk(m2)])).await.unwrap().unwrap_err();
+    assert_eq!(moved["problems"][0]["code"], "definition_changed", "a version keeps the record it cited: {moved}");
+
+    // Removing the section removes nothing from the task.
+    assert!(update::update(&ws, &checker, "a", input("d4", 1, vec![op("remove", "study")])).await.unwrap().is_ok());
+    let kept = ws.store.collaboration_call(Some("a"), "task_research_get", json!({"taskId":"T-1","activitySeq":m1})).unwrap();
+    assert_eq!((kept["research"]["text"].clone(), kept["latestActivitySeq"].clone()), (json!("Ten fresh processes."), json!(m2)));
+}
+
+/// A small synthetic ResearchDesk section (T-9) reading `results.json` and
+/// citing `defs.md`, both files in `dir`; `definition` is version 1's text.
+fn research_section(dir: &std::path::Path, definition: &str, stated: &str) -> Value {
+    json!({"op":"put","key":"study","kind":"report","title":"Study (synthetic)",
+        "attachments":[{"name":"results.json","path":dir.join("results.json")},{"name":"defs.md","path":dir.join("defs.md")}],
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"Arm beats control","statement":"The arm is ahead by about one point.",
+                    "status":"conditional","primary":"r1","plots":["p1"],"dependsOn":[{"id":"d","version":1}]}],
+                "plots":[{"id":"p1","title":"Arm − control","digits":2,"rows":[{"id":"r1","label":"Arm",
+                    "estimate":{"value":{"from":"results.json","pointer":"/m"},"low":{"from":"results.json","pointer":"/lo"},
+                        "high":{"from":"results.json","pointer":"/hi"},"definition":{"id":"d","version":1},"cite":{"source":"res"}},
+                    "parts":[{"id":"r1a","label":"Arm alone","estimate":{"value":{"from":"results.json","pointer":"/missing"}}},
+                        {"id":"r1b","label":"Label","estimate":{"value":{"from":"results.json","pointer":"/label"}}}]}]}],
+                "sources":[{"id":"res","label":"Results","kind":"data","snapshot":"results.json","sha256":stated},
+                    {"id":"defs","label":"Definitions","kind":"notes","snapshot":"defs.md","sha256":"0".repeat(64)}],
+                "definitions":[{"id":"d","title":"Outcome","versions":[{"version":1,"text":definition,"cite":{"source":"defs","lines":"1"}}]}],
+                "plans":[{"id":"pl","title":"Re-read","question":"Does it hold for the older group?","state":"candidate",
+                    "compute":"cpu","links":[{"kind":"task","id":"T-404"}]}]}}}}})
+}
+
+#[tokio::test]
+async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_version() {
+    use sha2::{Digest, Sha256};
+    let (dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let results = br#"{"m":1.25,"lo":0.5,"hi":2.0,"label":"x"}"#;
+    std::fs::write(dir.path().join("results.json"), results).unwrap();
+    std::fs::write(dir.path().join("defs.md"), "Outcome: symptom-free for 72 hours.\n").unwrap();
+    let sha = format!("{:x}", Sha256::digest(results));
+    let put = research_section(dir.path(), "Symptom-free for 72 hours.", &sha);
+    let accepted = update::update(&ws, &checker, "a", input("r1", 0, vec![put.clone()])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    // Each number as read from the snapshot, and what Core knows of each source.
+    let cache = attachments::dir(&ws.data_dir);
+    let read = |element: &str, version: Option<i64>| research::desk(&ws.store, &cache, &project, "study", element, version).unwrap();
+    let desk = read("desk", None).ok().unwrap();
+    assert_eq!(desk["values"]["r1.value"], json!({"status":"read","value":1.25,"from":"results.json"}));
+    assert_eq!(desk["values"]["r1.high"]["value"], json!(2.0));
+    assert_eq!(desk["values"]["r1a.value"]["status"], "missing");
+    assert_eq!(desk["values"]["r1b.value"]["status"], "not_number");
+    let source = &desk["sources"]["res"];
+    assert_eq!((source["sha256"].as_str(), source["available"].clone(), source["stated"].clone()), (Some(sha.as_str()), json!(true), json!("same")));
+    assert!(source["takenAt"].is_string(), "the snapshot's registration time");
+    assert!(source.get("path").is_none(), "no host path is served");
+    assert_eq!(desk["sources"]["defs"]["stated"], "different", "file identity only");
+    // A plan's links are read live, like LiveRefs.
+    assert_eq!(section(&brief(&ws, "a"), "study")["refs"]["task:T-404"]["found"], json!(false));
+
+    // The file changes on disk: the desk still shows its snapshot.
+    std::fs::write(dir.path().join("results.json"), br#"{"m":9.9}"#).unwrap();
+    assert_eq!(read("desk", None).ok().unwrap()["values"]["r1.value"]["value"], json!(1.25));
+
+    // A definition version keeps its content: a put or an edit changing it
+    // is refused by Core, whatever the validator said.
+    std::fs::write(dir.path().join("results.json"), results).unwrap();
+    let changed = research_section(dir.path(), "Symptom-free for 48 hours.", &sha);
+    let rejected = update::update(&ws, &checker, "a", input("r2", 1, vec![changed])).await.unwrap().unwrap_err();
+    assert_eq!(rejected["problems"][0]["code"], "definition_changed", "{rejected}");
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].body.elements.desk.props.definitions.0.versions.0");
+    assert_eq!(rejected["problems"][0]["guide"], "brief_guide research");
+    let mut edited_desk = put["body"]["elements"]["desk"].clone();
+    edited_desk["props"]["definitions"][0]["versions"][0]["text"] = json!("Symptom-free for 48 hours.");
+    let rejected = update::update(&ws, &checker, "a", input("r3", 1, vec![edit("study", json!({"desk":edited_desk}))])).await.unwrap().unwrap_err();
+    assert_eq!(rejected["problems"][0]["code"], "definition_changed", "{rejected}");
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].elements.desk.props.definitions.0.versions.0");
+    // A new version is the way to change it; version 1 stays as it was.
+    let mut added = put.clone();
+    added["body"]["elements"]["desk"]["props"]["definitions"][0]["versions"].as_array_mut().unwrap()
+        .push(json!({"version":2,"text":"Symptom-free for 96 hours.","cite":{"source":"defs","lines":"1"},"change":"Longer window."}));
+    let accepted = update::update(&ws, &checker, "a", input("r4", 1, vec![added])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    // A definition must cite a file Core keeps: one missing on disk is only a
+    // reference, and only Core sees that.
+    std::fs::remove_file(dir.path().join("defs.md")).unwrap();
+    let rejected = update::update(&ws, &checker, "a", input("r5", 2, vec![put.clone()])).await.unwrap().unwrap_err();
+    assert_eq!(rejected["problems"][0]["code"], "unsaved_definition", "{rejected}");
+    assert_eq!(rejected["problems"][0]["path"], "changes[0].body.elements.desk.props.definitions.0.versions.0.cite");
+
+    // Reads stay inside the section version, the element and the Project:
+    // a version since replaced is not read, and never falls back to the live one.
+    assert_eq!(read("desk", Some(2)).ok().unwrap()["version"], 2);
+    assert_eq!(read("desk", Some(1)).err().unwrap().code, "section_not_found");
+    assert_eq!(read("body", None).err().unwrap().code, "element_not_found");
+    let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
+    assert_eq!(other.code, "section_not_found");
 }

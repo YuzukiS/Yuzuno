@@ -28,6 +28,7 @@ pub(super) fn routes() -> Router<Arc<Workspace>> {
         .route("/api/projects/{id}/brief/reply", post(reply))
         .route("/api/projects/{id}/brief/attachments/{section}/{name}", get(attachment))
         .route("/api/projects/{id}/brief/chart/{section}/{element}", get(chart))
+        .route("/api/projects/{id}/brief/research/{section}/{element}", get(research))
         .route("/api/brief-cache/clear", post(clear))
 }
 
@@ -194,6 +195,21 @@ async fn chart(
     let found = ws.stored(move |store| attachments::chart(store, &cache, &id, &section, &element, query.version)).await?;
     Ok(match found {
         Ok(series) => Json(series).into_response(),
+        Err(missing) => missing.into_response(),
+    })
+}
+
+/// One research desk of one section version: the numbers it reads from the
+/// section's JSON snapshots and what Core knows of each source's snapshot.
+async fn research(
+    State(ws): State<Arc<Workspace>>,
+    Path((id, section, element)): Path<(String, String, String)>,
+    Query(query): Query<Version>,
+) -> ApiResult<Response> {
+    let cache = attachments::dir(&ws.data_dir);
+    let found = ws.stored(move |store| super::research::desk(store, &cache, &id, &section, &element, query.version)).await?;
+    Ok(match found {
+        Ok(desk) => Json(desk).into_response(),
         Err(missing) => missing.into_response(),
     })
 }

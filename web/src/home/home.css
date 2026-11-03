@@ -5,7 +5,9 @@
  * they keep at least 4.5:1 on --paper, --home-surface and --home-soft in
  * every palette, light and dark (garden light is the tightest, about 4.9:1).
  * The plain accents are for dots, icons and borders only. */
-.home-view {
+/* Home's colours, shared with a report over it (T-18). */
+.home-view,
+.home-report {
   --home-surface: var(--surface-raised, var(--paper));
   --home-soft: var(--surface-soft, var(--cream));
   --home-ink-2: var(--text-secondary, #5d6858);
@@ -15,6 +17,8 @@
   --home-error: var(--error-ink, var(--coral));
   --home-error-ink: color-mix(in srgb, var(--home-error) 60%, var(--ink));
   --home-new: color-mix(in srgb, var(--accent-ink, var(--green)) 85%, var(--ink));
+}
+.home-view {
   overflow: auto;
   /* Scroll anchoring keeps what is being read in place when content above
      it changes size (the browser default; stated here on purpose). */
@@ -105,6 +109,13 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--home-surface);
+}
+/* A section pinned here settles on its own card (T-19 HM:W5); under reduced
+ * motion the still tint is the card's, as its background would cover it. */
+@media (prefers-reduced-motion: reduce) {
+  .home-pinned[data-settle] {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 55%, var(--home-surface));
+  }
 }
 .home-pinned-head {
   display: flex;
@@ -922,6 +933,27 @@ ul.home-widget {
 .home-card-summary .brief-markdown > * {
   margin: 0;
 }
+/* A named conclusion's conditions, with it on the folded card (T-18). */
+.home-card-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--home-attention);
+  border-radius: 0 8px 8px 0;
+  background: var(--home-soft);
+}
+.home-card-conditions-label {
+  flex: none;
+  font-weight: 600;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-card-conditions > .brief-body {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
 .home-card-glance .home-section-time {
   margin-top: 2px;
 }
@@ -1167,7 +1199,8 @@ ul.home-widget {
 }
 
 /* Focus and the needs-you jump */
-.home-view :is(button, a, summary, select, textarea):focus-visible {
+.home-view :is(button, a, summary, select, textarea):focus-visible,
+.home-report :is(button, a, summary, select, textarea):focus-visible {
   outline: 2px solid var(--home-focus);
   outline-offset: 2px;
 }
@@ -1179,7 +1212,8 @@ ul.home-widget {
 [data-home-highlight] {
   outline: 2px solid var(--home-focus);
   outline-offset: 3px;
-  animation: home-highlight 2.4s ease-out;
+  /* Once the jump has landed (Home.tsx), over settle (T-19); the outline stays until the next press. */
+  animation: home-highlight var(--motion-settle) ease-out;
 }
 @keyframes home-highlight {
   from {

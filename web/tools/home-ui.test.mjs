@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { composerText } from "./composer-driver.mjs";
+import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
 // Home (T-85) against an in-memory Core: the built app, a fetch fixture, no
 // real Core, Agents or GitHub.
@@ -117,7 +118,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], workspaceAgents = agents } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], workspaceAgents = agents, research = null } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -167,6 +168,11 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
       return respond({ order: request.body.projectIds });
     }
     if (/\/api\/projects\/[^/]+\/brief\/seen$/.test(url)) return respond({ ok: true });
+    // A research desk's numbers (T-9), as the test answers them; none by default.
+    if (/\/api\/projects\/[^/]+\/brief\/research\//.test(url)) {
+      const answer = research ? await research(url) : { status: 404, body: { error: "section_not_found" } };
+      return respond(answer.body, answer.status ?? 200);
+    }
     if (/\/api\/projects\/[^/]+\/brief\/reply$/.test(url)) {
       if (state.failReplies > 0) {
         state.failReplies--;
@@ -1662,8 +1668,9 @@ test("a Home image opens in the app, and Mark up adds it with its card to the au
     const preview = () => p.doc.querySelector('[role="dialog"]');
     shots.querySelector("button.brief-image").click();
     await waitFor(preview, "the preview opens");
-    assert.equal(preview().querySelector("h2").textContent, "screen.png");
-    assert.match(preview().textContent, /Login screen · Snapshot/);
+    // Its caption is the title, its file after (T-20).
+    assert.equal(preview().querySelector("h2").textContent, "Login screen");
+    assert.match(preview().textContent, /screen\.png · Snapshot/);
     assert.match(preview().querySelector(".input-image-dialog img").getAttribute("src"), /\/api\/projects\/p-app\/brief\/attachments\/shots\/screen\.png\?version=4$/);
     const writes = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories"));
     assert.deepEqual(writes().map((c) => c.url), [], "looking writes nothing");
@@ -1861,7 +1868,10 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
   try {
     assert.equal(askField(late).value, "", "nothing is shown before the Workspace is known");
     late.releaseWorkspace();
-    await waitFor(() => askField(late).value === "Kept for this Workspace.", "its own draft shows once it is read");
+    // Home reads itself again for the Workspace now known, and its panels are
+    // not drawn until that read lands: not there yet is "not yet", not an error.
+    await waitFor(() => card(late, "p-app", "release")?.querySelector(".home-ask-reply textarea")?.value === "Kept for this Workspace.",
+      "its own draft shows once it is read");
     assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to version 3/);
     assert.equal(card(late, "p-app", "release").querySelector(".home-reply-target select").value, "b", "with the recipient the user chose, not the owner");
   } finally {
@@ -2006,6 +2016,483 @@ test("T-9 a task change Core announces reads Home again, once for a burst; other
     await waitFor(() => reads() > before, "a task change reads Home again");
     await pause(2_500);
     assert.equal(reads(), before + 1, `one read for the burst: ${reads() - before}`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-9: a report copies as Markdown written from its stored body. A synthetic
+// report with every kind of part, folded on the page.
+const copyReport = () => {
+  const runs = Array.from({ length: 30 }, (_, i) => ({ id: `r${i + 1}`, cells: { run: `r${i + 1}`, result: i === 1 ? "slow\nbut ok" : i === 2 ? "R&amp;D ok" : "ok" }, ...(i === 0 ? { sourceIds: ["s1"] } : {}) }));
+  const steps = ["Read the spec", "Write the copy", "Test it", "Review", "Fix", "Merge", "Release", "Check"].map((text, i) => ({ id: `p${i}`, text, state: i < 2 ? "done" : i === 2 ? "doing" : "todo" }));
+  return section("research", "report", "Research notes", 3, owner("a", "Mori"), {
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: {}, children: ["summary", "plan", "evidence", "refs", "files", "sources"] },
+        summary: { type: "Group", props: { title: "Where it stands", tone: "accent" }, children: ["text", "metrics"] },
+        text: { type: "Markdown", props: { text: "The **retry** fix holds.\n\n- one\n- two" } },
+        metrics: { type: "Metrics", props: { items: [{ label: "Pass rate", value: 0.93, unit: "%", previous: 0.91, detail: "last 3 runs" }] } },
+        plan: { type: "Plan", props: { title: "Steps", steps } },
+        evidence: { type: "Columns", props: {}, children: ["left", "right"] },
+        left: { type: "Group", props: {}, children: ["table"] },
+        right: { type: "Group", props: {}, children: ["chart"] },
+        table: { type: "Table", props: { id: "runs", title: "Runs", columns: [{ key: "run", label: "Run" }, { key: "result", label: "Result | note" }], rows: runs } },
+        chart: { type: "LineChart", props: { id: "loss", title: "Loss", x: { label: "Step" }, y: { label: "Loss", unit: "nats" }, series: [{ name: "train", points: [[0, 2.5], [1, 1.9], [2, 1.2]] }] } },
+        refs: { type: "LiveRefs", props: { layout: "list", items: [{ kind: "task", id: "T-9", note: "copy slice" }, { kind: "pr", id: "acme/app#12" }] } },
+        files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Desktop view" }, { name: "spec", caption: "Spec" }] } },
+        sources: { type: "Sources", props: { items: [{ id: "s1", label: "Run log", href: "https://example.test/run/1" }, { id: "s2", label: "Notes file", href: "/w/app/notes.md" },
+          { id: "s3", label: "Raw [v2] notes", href: "https://example.test/a)b?x=(1)" }, { id: "s4", label: "R&amp;D query", href: "https://example.test/?q=&amp;x=1" }] } },
+      },
+    },
+    attachments: [
+      { name: "shot.png", kind: "image", mime: "image/png", size: 1200, snapshot: true, mayChange: false, takenAt: at(5), caption: "Desktop view" },
+      { name: "spec", kind: "link", mime: "text/html", size: 0, snapshot: false, mayChange: true, takenAt: at(5), url: "https://example.test/spec" },
+    ],
+    // Core couldn't read the pull request this time: not the same as missing.
+    refs: { "task:T-9": { kind: "task", id: "T-9", found: true, title: "Home", state: "doing" },
+      "pr:acme/app#12": { kind: "pr", id: "acme/app#12", found: false, unavailable: true } },
+  });
+};
+const copiedReport = [
+  "# Research notes",
+  "## Where it stands",
+  "The **retry** fix holds.\n\n- one\n- two",
+  "- **Pass rate**: 0.93 % (previously 0.91 %) — last 3 runs",
+  "## Steps",
+  ["Read the spec — Done", "Write the copy — Done", "Test it — Doing", "Review — To do", "Fix — To do", "Merge — To do", "Release — To do", "Check — To do"].map((line, i) => `${i + 1}. ${line}`).join("\n"),
+  "## Runs",
+  ["| Run | Result \\| note | Sources |", "| --- | --- | --- |",
+    // "&amp;" written in a cell stays those five characters once rendered.
+    ...Array.from({ length: 30 }, (_, i) => `| r${i + 1} | ${i === 1 ? "slow but ok" : i === 2 ? "R\\&amp;D ok" : "ok"} | ${i === 0 ? "Run log" : ""} |`)].join("\n"),
+  "## Loss",
+  "Chart · x: Step · y: Loss (nats)\n- train: 3 points; x 0–2; y 1.2–2.5; last 1.2",
+  "## References",
+  "- Task T-9: Home · doing — copy slice\n- Pull request acme/app\\#12: couldn't read",
+  "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](<https://example.test/spec>)",
+  "## Sources",
+  // A link keeps its whole address, parentheses included, and its label's brackets.
+  "- [Run log](<https://example.test/run/1>)\n- Notes file: /w/app/notes.md\n- [Raw \\[v2\\] notes](<https://example.test/a)b?x=(1)>)" +
+    "\n- [R\\&amp;D query](<https://example.test/?q=&amp;amp;x=1>)",
+].join("\n\n") + "\n";
+const withReport = () => {
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(copyReport());
+  return home;
+};
+const clipboard = (p, write) => Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: write === null ? undefined : { writeText: write } });
+
+test("T-9 a report copies in one click as Markdown from its body: folded parts, every row and step, charts, images and sources; no controls", async () => {
+  const p = await mount({ home: withReport() });
+  try {
+    await waitFor(() => card(p, "p-app", "research"), "the report");
+    const report = card(p, "p-app", "research");
+    // Folded on the page: the copy still has every part.
+    report.querySelector(".home-section-head button[aria-controls]").click();
+    await waitFor(() => report.classList.contains("is-collapsed"), "folded");
+    const copied = [];
+    clipboard(p, async (text) => { copied.push(text); });
+    p.button("Copy report", report).click();
+    // Written within the click itself, as Safari requires.
+    assert.equal(copied.length, 1, "the clipboard write starts in the click");
+    await waitFor(() => p.button("Copied", report), "said copied");
+    assert.equal(copied[0], copiedReport);
+    assert.doesNotMatch(copied[0], /Copy report|Show all|Show \d+ more|Reply|Pin|Mark seen|\/api\/|token/i, "no control words or request addresses");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a refused or missing clipboard is said as such, never as copied; only reports offer the copy", async () => {
+  const p = await mount({ home: withReport() });
+  try {
+    await waitFor(() => card(p, "p-app", "research"), "the report");
+    const report = card(p, "p-app", "research");
+    clipboard(p, async () => { throw new p.w.DOMException("Write permission denied.", "NotAllowedError"); });
+    p.button("Copy report", report).click();
+    await waitFor(() => p.button("Copy unavailable", report), "the refusal said");
+    assert.equal(p.button("Copy unavailable", report).title, "Clipboard unavailable. Select the text to copy.");
+    assert.equal(p.button("Copied", report), undefined);
+    await waitFor(() => p.button("Copy report", report), "ready again", 4);
+    clipboard(p, null);
+    p.button("Copy report", report).click();
+    await waitFor(() => p.button("Copy unavailable", report), "no clipboard said");
+    // An Ask and a status card have no copy.
+    assert.equal(p.button("Copy report", card(p, "p-app", "release")), undefined, "not on an Ask");
+    assert.equal(p.button("Copy report", card(p, "p-res", "metrics")), undefined, "not on a status");
+    assert.ok(p.button("Copy report", card(p, "p-app", "notes")), "on another report");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-9: a report with a research desk (Dev 2's synthetic dose study) copies
+// Core's numbers read for the version on screen, written within the click.
+const pointerIn = (document, at) => at.split("/").slice(1).reduce((value, step) => (value && typeof value === "object" ? value[step] : undefined), document);
+/** Core's research read for the dose study's desk at `version`, as Core answers it. */
+const deskRead = (version) => {
+  const desk = doseStudy.body.elements.desk.props;
+  const values = {};
+  for (const plot of desk.plots)
+    for (const row of plot.rows)
+      for (const owner of [row, ...(row.parts ?? [])])
+        for (const field of ["value", "low", "high"]) {
+          const number = owner.estimate[field];
+          if (!number || typeof number === "number") continue;
+          values[`${owner.id}.${field}`] = { status: "read", value: pointerIn(fixtureFiles[number.from], number.pointer), from: number.from };
+        }
+  const sources = Object.fromEntries(desk.sources.filter((source) => source.snapshot)
+    .map((source) => [source.id, { attachment: source.snapshot, takenAt: "2026-10-31T08:00:00Z", size: 100, sha256: "a".repeat(64), available: true }]));
+  return { key: "dose-study", version, elementId: "desk", values, sources };
+};
+const withDesk = () => {
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(section("dose-study", "report", doseStudy.title, 4, owner("a", "Mori"), {
+    body: doseStudy.body,
+    attachments: ["results.json", "protocol.md", "paper.tex"].map((name) => ({ name, kind: name.endsWith(".json") ? "data" : "text", mime: "text/plain", size: 100, snapshot: true, mayChange: false, takenAt: at(5) })),
+  }));
+  return home;
+};
+const foldCard = async (p, report) => {
+  report.querySelector(".home-section-head button[aria-controls]").click();
+  await waitFor(() => report.classList.contains("is-collapsed"), "folded");
+};
+
+test("T-9 a report's research desk copies Core's numbers for the version shown, through a write that starts in the click", async () => {
+  const reads = [];
+  const p = await mount({ home: withDesk(), research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const report = card(p, "p-app", "dose-study");
+    await foldCard(p, report);
+    // As Safari needs it: a ClipboardItem whose text is still loading, written in the click.
+    const items = [];
+    p.w.ClipboardItem = class { constructor(parts) { this.parts = parts; } };
+    Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: {
+      write: async (list) => { items.push(...list); }, writeText: async () => { throw new Error("writeText would wait for the read"); } } });
+    const before = reads.length;
+    p.button("Copy report", report).click();
+    assert.equal(items.length, 1, "the clipboard write starts in the click");
+    const text = await (await items[0].parts["text/plain"]).text();
+    await waitFor(() => p.button("Copied", report), "said copied");
+    const copyReads = reads.slice(before);
+    assert.ok(copyReads.length >= 1 && copyReads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(copyReads));
+    assert.match(text, /^# Dose study \(synthetic\)\n/);
+    assert.match(text, /Does the higher dose shorten recovery\?|High dose shortens recovery/);
+    // The high dose's difference is read from the snapshot (-2.04), and says so; v1's -2.6 is the Agent's own.
+    assert.match(text, /-2\.04/);
+    assert.match(text, /snapshot results\.json/);
+    assert.match(text, /-2\.60?\b/);
+    assert.doesNotMatch(text, /not read/, "every snapshot number was read");
+    // The whole desk, folded on the page: claims, both plots, sources, definitions and next steps.
+    for (const part of ["Claims", "May say", "May not say", "Recovery time vs placebo (v2)", "Analysis output", "Definitions", "Next steps"])
+      assert.ok(text.includes(part), `the copy has ${part}`);
+    assert.doesNotMatch(text, /\/api\/|token|Copy report|Loading/i);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a research desk whose numbers Core can't give for that version copies them as not read, in the UI language", async () => {
+  let answer = { status: 500, body: { error: "snapshot unreadable" } };
+  const p = await mount({ home: withDesk(), storage: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) }, research: () => answer });
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const report = card(p, "p-app", "dose-study");
+    await foldCard(p, report);
+    const copied = [];
+    Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { copied.push(value); } } });
+    const copy = async () => {
+      const count = copied.length;
+      p.button("复制报告", report).click();
+      await waitFor(() => copied.length > count && p.button("已复制", report), "copied");
+      await waitFor(() => p.button("复制报告", report), "ready again", 4);
+      return copied.at(-1);
+    };
+    // Core failed to read: the copy still goes out, its snapshot numbers not read.
+    const failed = await copy();
+    assert.match(failed, /^# Dose study \(synthetic\)\n/);
+    assert.match(failed, /主张/);
+    assert.match(failed, /未读取/);
+    assert.doesNotMatch(failed, /-2\.04/, "no number Core didn't read");
+    assert.match(failed, /-2\.60?\b/, "the Agent's own numbers stay");
+    // An answer for another version (the section has moved on) is not this report's.
+    answer = { body: deskRead(5) };
+    const other = await copy();
+    assert.match(other, /未读取/);
+    assert.doesNotMatch(other, /-2\.04/, "a newer version's number is never copied into this one");
+    // The version shown, read: the numbers come with their snapshot.
+    answer = { body: deskRead(4) };
+    const read = await copy();
+    assert.match(read, /-2\.04/);
+    assert.match(read, /快照 results\.json/);
+    for (const part of ["主张", "可以说", "不能说", "Recovery time vs placebo (v2)", "Analysis output", "分析定义", "候选下一步"])
+      assert.ok(read.includes(part), `the copy has ${part}`);
+    assert.doesNotMatch(read, /未读取/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// Every field the page shows as written, each with characters Markdown would
+// read as emphasis, code, a link, markup, a list, a table pipe or a
+// heading's closing "#".
+const plainFields = {
+  title: "**Title** _x_", group: "~~old~~ `code`", check: "**required**", dash: "- not a list", numbered: "1. not a list",
+  step: "~~enabled~~ <unknown>", source: "a_b_c", finding: "<unknown> **bold** `tick` [x](y)",
+  metric: "*rate*", value: "5|6", unit: "<u>", previous: "~~4~~", detail: "`d`",
+  column: "[col](x)", cell: "**a**", slash: "back\\slash", entity: "R&amp;D", dollars: "$5 and $6", tableTitle: "Release #",
+  refLabel: "**ref**", note: "<b>n</b>", caption: "~~cap~~", loose: "- loose", path: "/w/_draft_/data.csv",
+  sourceLabel: "**src**", sourceDash: "- src", sourcePath: "/w/_wip_/notes.md",
+  chart: "_chart_", axis: "x*y", series: "`s`", first: "1. first", alpha: "**alpha**", beta: "`beta`",
+};
+const plainReport = () => {
+  const f = plainFields;
+  return section("plain", "report", f.title, 2, owner("a", "Mori"), {
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["group", "md", "math"] },
+      group: { type: "Group", props: { title: f.group }, children: ["checks", "plan", "findings", "metrics", "table", "refs", "files", "sources", "chart", "bars"] },
+      checks: { type: "Checklist", props: { items: [{ id: "a", text: f.check, done: true }, { id: "b", text: f.dash, done: false }, { id: "c", text: f.numbered, done: false }] } },
+      plan: { type: "Plan", props: { steps: [{ id: "p", text: f.step, state: "doing" }] } },
+      findings: { type: "Findings", props: { items: [{ id: "f", source: f.source, severity: "high", text: f.finding }] } },
+      metrics: { type: "Metrics", props: { items: [{ label: f.metric, value: f.value, unit: f.unit, previous: f.previous, detail: f.detail }] } },
+      table: { type: "Table", props: { id: "t", title: f.tableTitle, columns: [{ key: "k", label: f.column }], rows: [f.cell, f.slash, f.entity, f.dollars].map((k, i) => ({ id: `r${i}`, cells: { k } })) } },
+      refs: { type: "LiveRefs", props: { items: [{ kind: "task", id: "T-1", label: f.refLabel, note: f.note }] } },
+      files: { type: "Attachments", props: { items: [{ name: "kept.png", caption: f.caption }, { name: f.loose }, { name: "data.csv" }] } },
+      sources: { type: "Sources", props: { items: [{ id: "s", label: f.sourceLabel, href: "https://example.test/s" }, { id: "p", label: f.sourceDash, href: f.sourcePath }] } },
+      chart: { type: "LineChart", props: { id: "c", title: f.chart, x: { label: f.axis }, y: { label: "y" }, series: [{ name: f.series, points: [[0, 1], [1, 2]] }] } },
+      bars: { type: "BarChart", props: { id: "b", title: "Bars", x: { label: "kind" }, y: { label: "n" }, series: [{ name: f.first, points: [[f.alpha, 1], [f.beta, 2]] }] } },
+      md: { type: "Markdown", props: { text: "A **bold** word and `code`." } },
+      math: { type: "Math", props: { tex: "x^2 + y_1", display: false } },
+    } },
+    attachments: [{ name: "kept.png", kind: "image", mime: "image/png", size: 10, snapshot: true, mayChange: false, takenAt: at(5) },
+      { name: "data.csv", kind: "file", mime: "text/csv", size: 10, snapshot: false, mayChange: true, takenAt: at(5), path: f.path }],
+    refs: { "task:T-1": { kind: "task", id: "T-1", found: true, title: "Task one", state: "doing" } },
+  });
+};
+
+test("T-9 a report's plain fields read back as written once the copy is rendered; a Markdown block keeps its formatting", async () => {
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(plainReport());
+  let p = await mount({ home });
+  const copied = [];
+  try {
+    await waitFor(() => card(p, "p-app", "plain"), "the report");
+    clipboard(p, async (text) => { copied.push(text); });
+    p.button("Copy report", card(p, "p-app", "plain")).click();
+    await waitFor(() => copied.length === 1, "copied");
+    assert.ok(copied[0].includes("$x^2 + y_1$"), "Math stays its TeX");
+  } finally {
+    p.close();
+  }
+  // The copy, pasted as a Markdown block, rendered by Home's own Markdown.
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied[0]) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown"), "the pasted copy");
+    const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
+    const visible = rendered.textContent.replace(/\s+/g, " ");
+    const lost = Object.entries(plainFields).filter(([, text]) => !visible.includes(text)).map(([field]) => field);
+    assert.deepEqual(lost, [], `every plain field reads back as its characters; lost: ${lost.join(", ")}`);
+    assert.ok([...rendered.querySelectorAll("strong")].some((el) => el.textContent === "bold"), "the Markdown block's bold");
+    assert.ok([...rendered.querySelectorAll("code")].some((el) => el.textContent === "code"), "the Markdown block's code");
+    assert.equal(rendered.querySelectorAll("del, a[href='y']").length, 0, "no strike or link made from a plain field");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// Markdown blocks as Home shows each one on its own: indented code keeps its
+// indentation, and a fence or raw HTML block a block leaves open ends with
+// it, not taking in the parts after. Closed fences, short and long, stay as
+// they are. Each case is its own report, copied on its own.
+const mdBlock = (text) => ({ type: "Markdown", props: { text } });
+/** A block whose full, collapsed and shortcut links use its own [s], titled. */
+const refBlock = (text, href) => mdBlock(`Full [${text}][s], collapsed [s][], shortcut [s].\n\n[s]: ${href} "Title ${text}"`);
+const anchorsOf = (el) => [...el.querySelectorAll("a")].map((a) => `${a.textContent} ${a.getAttribute("href")} ${a.getAttribute("title")}`);
+const linksOf = (text, href) => [`${text} ${href} Title ${text}`, `s ${href} Title ${text}`, `s ${href} Title ${text}`];
+const plainRef = (el) => [...el.querySelectorAll("p")].some((p) => p.textContent === "Undefined [s] stays text." && !p.querySelector("a"));
+const cellTable = (text) => ({ type: "Table", props: { id: text.replace(/\W+/g, "-"), columns: [{ key: "k", label: "Key" }], rows: [{ id: "r", cells: { k: text } }] } });
+const markdownCases = {
+  closed: { long: mdBlock("````\n```\nnot a closer\n````"), afterLong: mdBlock("after the long fence"), short: mdBlock("```\nclosed\n```"),
+    afterShort: mdBlock("after the short fence; `inline` code") },
+  indented: { checks: { type: "Checklist", props: { items: [{ id: "c", text: "ship it", done: false }] } }, code: mdBlock("    const x = 1;\n    const y = 2;"), after: cellTable("after indented") },
+  // A fence written inside indented code is code, not a fence to close.
+  indentedFence: { code: mdBlock("    ```\n    not a fence"), after: cellTable("after indented fence") },
+  backticks: { open: mdBlock("Setup:\n\n```js\nlet open = true;"), plan: { type: "Plan", props: { steps: [{ id: "p", text: "plan step after the fence", state: "todo" }] } } },
+  tildes: { open: mdBlock("~~~~\ncode with ``` inside\n~~~\nstill code"), after: cellTable("after tildes") },
+  longOpen: { open: mdBlock("````md\n```\nan example fence\n```"), after: cellTable("after long open") },
+  // A fence open inside a list item ends with the list; nothing is added.
+  listFence: { open: mdBlock("- item\n\n  ```\n  code in a list"), after: cellTable("after list fence") },
+  pre: { open: mdBlock("<pre>\nraw block"), after: cellTable("after pre") },
+  // Raw HTML cut off mid-tag, a tag name with nothing after it, and an
+  // unclosed <div>: each ends with its block on the page.
+  preAttr: { open: mdBlock('<pre title="\nraw in attribute'), after: cellTable("after pre attr") },
+  textarea: { open: mdBlock("<textarea"), plan: { type: "Plan", props: { steps: [{ id: "p", text: "plan step after textarea", state: "todo" }] } } },
+  div: { open: mdBlock("<div>\nboxed text"), after: cellTable("after div") },
+  lists: { zero: mdBlock("1. zero"), one: mdBlock("1. one") },
+  // Each block's link references are its own, as on the page: the same label
+  // defined in two blocks, in either order, and one block using it undefined.
+  refs: { a: refBlock("one", "https://a.test/"), b: refBlock("two", "https://b.test/"), plain: mdBlock("Undefined [s] stays text.") },
+  refsSwapped: { plain: mdBlock("Undefined [s] stays text."), b: refBlock("two", "https://b.test/"), a: refBlock("one", "https://a.test/") },
+};
+/** What the page itself shows for each raw HTML case's Markdown block. */
+const pageShows = { preAttr: "", textarea: "<textarea", div: "boxed text" };
+const markdownCase = (name) => section(`md-${name}`, "report", `Case ${name}`, 1, owner("a", "Mori"), {
+  body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: Object.keys(markdownCases[name]) }, ...markdownCases[name] } },
+});
+/** What the pasted copy of each case must show, as the page shows it. */
+const markdownChecks = {
+  closed: (el, code) => code.length === 2 && code[0] === "```\nnot a closer\n" && code[1] === "closed\n"
+    && ["after the long fence", "after the short fence; inline code"].every((text) => [...el.querySelectorAll("p")].some((p) => p.textContent === text))
+    && [...el.querySelectorAll("p > code")].some((c) => c.textContent === "inline"),
+  indented: (el, code, pres) => code.includes("const x = 1;\nconst y = 2;\n") && pres.every((pre) => !pre.closest("li"))
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after indented"),
+  backticks: (el, code) => code.length === 1 && code[0] === "let open = true;\n"
+    && [...el.querySelectorAll("ol > li")].some((li) => li.textContent.includes("plan step after the fence")),
+  indentedFence: (el, code) => code.length === 1 && code[0] === "```\nnot a fence\n"
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after indented fence"),
+  tildes: (el, code) => code.length === 1 && code[0] === "code with ``` inside\n~~~\nstill code\n"
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after tildes"),
+  longOpen: (el, code) => code.length === 1 && code[0] === "```\nan example fence\n```\n"
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after long open"),
+  listFence: (el, code, pres) => code.length === 1 && code[0] === "code in a list\n" && !!pres[0].closest("li")
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after list fence"),
+  pre: (el, code) => code.length === 1 && code[0].trim() === "raw block" && [...el.querySelectorAll("td")].some((td) => td.textContent === "after pre"),
+  preAttr: (el, code) => code.length === 0 && !el.textContent.includes("raw in attribute")
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after pre attr"),
+  textarea: (el) => !el.querySelector("textarea") && [...el.querySelectorAll("p")].some((p) => p.textContent === "<textarea")
+    && [...el.querySelectorAll("ol > li")].some((li) => li.textContent.includes("plan step after textarea")),
+  div: (el) => [...el.querySelectorAll("div")].some((div) => div.textContent.trim() === "boxed text")
+    && [...el.querySelectorAll("td")].some((td) => td.textContent === "after div" && td.closest("div") === el),
+  refs: (el) => plainRef(el) && JSON.stringify(anchorsOf(el)) === JSON.stringify([...linksOf("one", "https://a.test/"), ...linksOf("two", "https://b.test/")]),
+  refsSwapped: (el) => plainRef(el) && JSON.stringify(anchorsOf(el)) === JSON.stringify([...linksOf("two", "https://b.test/"), ...linksOf("one", "https://a.test/")]),
+  // Two lists, each numbered from 1 as on the page.
+  lists: (el) => [...el.querySelectorAll("ol")].length === 2 && [...el.querySelectorAll("ol")].every((ol) => !ol.hasAttribute("start") && ol.children.length === 1),
+};
+
+test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and a fence or raw HTML block left open ends with its block", async () => {
+  const names = Object.keys(markdownCases);
+  const home = homeFixture();
+  home.projects[0].brief.sections.push(...names.map(markdownCase));
+  let p = await mount({ home });
+  const copies = {};
+  try {
+    await waitFor(() => names.every((name) => card(p, "p-app", `md-${name}`)), "the reports");
+    for (const [name, text] of Object.entries(pageShows))
+      assert.equal(card(p, "p-app", `md-${name}`).querySelector(".brief-markdown").textContent.trim(), text, `the page shows ${name} as written`);
+    for (const name of names) {
+      const copied = [];
+      clipboard(p, async (text) => { copied.push(text); });
+      p.button("Copy report", card(p, "p-app", `md-${name}`)).click();
+      await waitFor(() => copied.length === 1, `copied ${name}`);
+      copies[name] = copied[0];
+    }
+  } finally {
+    p.close();
+  }
+  // Each copy pasted as its own Markdown block, rendered by Home's own Markdown.
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), {
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: names }, ...Object.fromEntries(names.map((name) => [name, mdBlock(copies[name])])) } },
+  }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelectorAll(".brief-markdown").length === names.length, "the pasted copies");
+    const rendered = [...card(p, "p-app", "pasted").querySelectorAll(".brief-markdown")];
+    const failed = names.filter((name, i) => {
+      const pres = [...rendered[i].querySelectorAll("pre")];
+      return !markdownChecks[name](rendered[i], pres.map((pre) => pre.textContent), pres);
+    });
+    assert.deepEqual(failed, [], `every case reads back as the page shows it; failed: ${failed.join(", ")}`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a fence a Markdown block leaves open before a research desk ends with its block: the desk's claims, numbers and sources copy outside code", async () => {
+  const home = withDesk();
+  const report = home.projects[0].brief.sections.at(-1);
+  report.body = { root: "body", elements: { ...doseStudy.body.elements,
+    body: { type: "BriefBody", props: {}, children: ["intro", "desk"] }, intro: mdBlock("Raw notes:\n\n```text\nraw log line") } };
+  const reads = [];
+  let p = await mount({ home, research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  let copied;
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const texts = [];
+    clipboard(p, async (text) => { texts.push(text); });
+    const before = reads.length;
+    p.button("Copy report", card(p, "p-app", "dose-study")).click();
+    await waitFor(() => texts.length === 1, "copied");
+    copied = texts[0];
+    const copyReads = reads.slice(before);
+    assert.ok(copyReads.length >= 1 && copyReads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(copyReads));
+  } finally {
+    p.close();
+  }
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown"), "the pasted copy");
+    const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
+    const code = [...rendered.querySelectorAll("pre")].map((pre) => pre.textContent);
+    assert.deepEqual(code, ["raw log line\n"], "only the notes' own line is code");
+    const headings = [...rendered.querySelectorAll("h4")].map((h) => h.textContent);
+    for (const part of ["Claims", "Sources"]) assert.ok(headings.includes(part), `the desk's ${part} outside code; got ${JSON.stringify(headings)}`);
+    const cells = [...rendered.querySelectorAll("td")].map((td) => td.textContent);
+    assert.ok(cells.includes("-2.04") && cells.includes("snapshot results.json"), `the read number in the desk's table; got ${JSON.stringify(cells)}`);
+    assert.ok([...rendered.querySelectorAll("li")].some((li) => li.textContent.startsWith("Analysis output")), "the desk's source as a list item");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("T-9 a copied research desk keeps each row's and part's own source and definition, read for the version shown", async () => {
+  const home = withDesk();
+  const report = home.projects[0].brief.sections.at(-1);
+  report.body = structuredClone(doseStudy.body);
+  const high = report.body.elements.desk.props.plots[0].rows.find((row) => row.id === "high-v2");
+  high.parts[0].estimate.cite = { source: "protocol", lines: "50-52" };
+  high.parts[0].estimate.definition = { id: "recovery", version: 1 };
+  const reads = [];
+  let p = await mount({ home, research: (url) => { reads.push(url); return { body: deskRead(4) }; } });
+  let copied;
+  try {
+    await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
+    const texts = [];
+    clipboard(p, async (text) => { texts.push(text); });
+    p.button("Copy report", card(p, "p-app", "dose-study")).click();
+    await waitFor(() => texts.length === 1, "copied");
+    copied = texts[0];
+    assert.ok(reads.length >= 1 && reads.every((url) => url.endsWith("/api/projects/p-app/brief/research/dose-study/desk?version=4")), JSON.stringify(reads));
+  } finally {
+    p.close();
+  }
+  const pasted = homeFixture();
+  pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
+  p = await mount({ home: pasted });
+  try {
+    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown table"), "the pasted copy");
+    // The first table is the current plot's.
+    const table = card(p, "p-app", "pasted").querySelector(".brief-markdown table");
+    const basisOf = (label) => [...table.querySelectorAll("tr")].find((tr) => tr.cells[0]?.textContent === label)?.cells[4]?.textContent;
+    assert.equal(table.rows[0].cells[4]?.textContent, "Source · definition");
+    assert.equal(basisOf("High dose"), "Analysis output · Recovery v2", "the row's own");
+    assert.equal(basisOf("High dose · High dose"), "Protocol, lines 50-52 · Recovery v1", "the part's own, not its row's");
+    assert.equal(basisOf("High dose · Placebo"), "no source of its own · no definition of its own", "a part naming none takes none from its row");
+    assert.equal(table.querySelectorAll("a").length, 0);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

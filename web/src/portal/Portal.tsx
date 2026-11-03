@@ -5,6 +5,7 @@ import { api, errorText, post } from "../api";
 import { langTag, strings, useLanguage, useStrings } from "../i18n";
 import { openJobs } from "../Jobs";
 import type { OpenedService, ProjectService } from "../ProjectServices";
+import { useSurfaceIn } from "../surface";
 import { savedPortalWidth, savePortalWidth } from "./portal-preference";
 import {
   closePortal,
@@ -12,6 +13,7 @@ import {
   mintPreview,
   onPortalMount,
   openOutside,
+  phonePreviewsOff,
   reaches,
   usePortal,
   type Minted,
@@ -35,6 +37,8 @@ const text = strings({
   preparing: "Preparing the preview…",
   unreachableHere: "This computer doesn't reach Core's preview port. It opens on the Core host itself, or on a computer whose tunnel to Core forwards Core's service ports too.",
   unreachableRemote: "Isolated previews don't open through this connection: Core's preview port isn't reachable from here. They open on the Core host, or on a computer with a tunnel to Core.",
+  unreachablePhone: (origin: string) => `This device doesn't reach Core's previews at ${origin}. Check Previews on the phone in Settings → Phone access, on the computer that runs Core.`,
+  phoneOff: "Isolated previews open through the phone entry once Previews on the phone is turned on, in Settings → Phone access on the computer that runs Core.",
   failed: (reason: string) => `This file can't be previewed: ${reason}`,
   movedOn: "The page loaded something else, so it is no longer shown here.",
   backToSnapshot: "Back to the snapshot",
@@ -85,6 +89,8 @@ const text = strings({
   preparing: "正在准备预览…",
   unreachableHere: "这台电脑访问不到 Core 的预览端口。在 Core 主机上可以直接打开；从另一台电脑打开时，它通往 Core 的隧道也要转发 Core 的服务端口。",
   unreachableRemote: "通过此连接无法打开隔离预览：从这里访问不到 Core 的预览端口。请在 Core 主机上，或在有通往 Core 隧道的电脑上打开。",
+  unreachablePhone: (origin) => `这台设备访问不到 Core 的预览地址 ${origin}。请在运行 Core 的电脑上，到 设置 → 手机访问 检查“手机上的预览”。`,
+  phoneOff: "开启“手机上的预览”后，隔离预览才能通过手机入口打开：在运行 Core 的电脑上，设置 → 手机访问。",
   failed: (reason) => `这个文件无法预览：${reason}`,
   movedOn: "页面加载了别的内容，这里不再显示。",
   backToSnapshot: "回到快照",
@@ -311,6 +317,13 @@ function PortalHost() {
   useEffect(() => {
     if (shown) panel.current?.querySelector<HTMLElement>(".portal-title")?.focus({ preventScroll: true });
   }, [shown?.key]);
+  // Opened beside the chat, the page comes in from the right over medium (T-19 M7, WK:PT-01), in
+  // the column the grid gave it above: its transform and opacity move nothing in the chat, so
+  // keepInPlace holds the reading as before. Over the chat, nothing plays; closing stays instant.
+  const opens = useRef({ open: false, n: 0 });
+  const open = !!(shown && shape);
+  if (opens.current.open !== open) opens.current = { open, n: opens.current.n + (open ? 1 : 0) };
+  useSurfaceIn(panel, opens.current.n, "medium", open && shape?.mode === "side", "translateX(8px)");
   if (!shown || !shape) return null;
   const full = shape.mode === "full";
   const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -391,7 +404,11 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
   const [reloads, setReloads] = useState(0);
   const [loads, setLoads] = useState(0);
   const [minted, setMinted] = useState<
-    { state: "preparing" } | { state: "ready"; at: Minted } | { state: "unreachable" } | { state: "failed"; reason: string }
+    | { state: "preparing" }
+    | { state: "ready"; at: Minted }
+    | { state: "unreachable"; at: Minted }
+    | { state: "phoneOff" }
+    | { state: "failed"; reason: string }
   >({ state: "preparing" });
   const [service, setService] = useState<ProjectService | null>(target.kind === "service" ? target.service : null);
   const [disconnected, setDisconnected] = useState(false);
@@ -421,9 +438,9 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
       try {
         const at = await mintPreview(target.source);
         const proven = await reaches(at.proof.url, at.proof.answer);
-        if (current) setMinted(proven ? { state: "ready", at } : { state: "unreachable" });
+        if (current) setMinted(proven ? { state: "ready", at } : { state: "unreachable", at });
       } catch (error) {
-        if (current) setMinted({ state: "failed", reason: errorText(error) });
+        if (current) setMinted(phonePreviewsOff(error) ? { state: "phoneOff" } : { state: "failed", reason: errorText(error) });
       }
     })();
     return () => {
@@ -454,10 +471,27 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [target, readService]);
+  // Where focus goes when what had it here is gone and nothing else is there
+  // to take it: the page's title, which every view of the Portal shows.
+  const titleBox = useRef<HTMLSpanElement>(null);
+  const focusTitle = useCallback(() => titleBox.current?.focus({ preventScroll: true }), []);
+  // Disconnected from here (T-19 WK:PT-11): the note takes the page's place
+  // and fades in and, focus having gone with Disconnect, takes it. Where the
+  // run isn't live, its state stands there instead and the title takes focus.
+  const disconnectedNote = useRef<HTMLDivElement>(null);
+  const [disconnects, setDisconnects] = useState(0);
+  useSurfaceIn(disconnectedNote, disconnects, "small", disconnects > 0);
+  useLayoutEffect(() => {
+    if (!disconnects || (document.activeElement && document.activeElement !== document.body)) return;
+    if (disconnectedNote.current) disconnectedNote.current.focus({ preventScroll: true });
+    else focusTitle();
+  }, [disconnects, focusTitle]);
   const disconnect = async () => {
     if (target.kind !== "service") return;
     await post(`/services/${encodeURIComponent(target.service.id)}/close`);
-    if (alive.current) setDisconnected(true);
+    if (!alive.current) return;
+    setDisconnected(true);
+    setDisconnects((n) => n + 1);
   };
   // Opens the service's way again and checks it from this browser, as the
   // services list does; it never starts anything.
@@ -522,7 +556,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
             {target.kind === "snapshot" ? <FileCode2 size={16} /> : <Globe size={16} />}
           </span>
         )}
-        <span className="portal-title" tabIndex={-1}>
+        <span className="portal-title" tabIndex={-1} ref={titleBox}>
           <strong>{title}</strong>
           <small>{subtitle}</small>
         </span>
@@ -580,14 +614,22 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           ) : minted.state === "preparing" ? (
             <p className="portal-state" role="status"><LoaderCircle size={16} className="spin" /> {t.preparing}</p>
           ) : minted.state === "unreachable" ? (
-            <p className="portal-state" role="alert">{loopbackPage() ? t.unreachableHere : t.unreachableRemote}</p>
+            <p className="portal-state" role="alert">
+              {/* An https address is the phone previews' entry (T-5); http is Core's preview port. */}
+              {minted.at.url.startsWith("https://")
+                ? t.unreachablePhone(new URL(minted.at.url).origin)
+                : loopbackPage() ? t.unreachableHere : t.unreachableRemote}
+            </p>
+          ) : minted.state === "phoneOff" ? (
+            <p className="portal-state" role="alert">{t.phoneOff}</p>
           ) : (
             <p className="portal-state" role="alert">{t.failed(minted.reason)}</p>
           )
         ) : idle ? (
           <ServiceIdle kind={idle} />
         ) : disconnected || unchecked ? (
-          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}>
+          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}
+            ref={disconnectedNote} tabIndex={disconnected ? -1 : undefined}>
             {disconnected ? <p>{t.disconnected}</p> : <ServiceIdle kind="check" />}
             {managed && (
               <button type="button" className="primary-button" disabled={proof?.state === "checking"} onClick={() => {
@@ -627,7 +669,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           readFailed={readFailed} onRefresh={readService} onDisconnect={disconnect} onCheckPreview={checkPreview} />
       ) : target.kind === "service" && service && (
         // An older Core, or a service no Yuzuno Job runs.
-        <ServiceJob service={service} disconnected={disconnected} onDisconnect={disconnect} />
+        <ServiceJob service={service} disconnected={disconnected} onDisconnect={disconnect} onFocusLost={focusTitle} />
       )}
     </>
   );
@@ -639,6 +681,7 @@ function ServiceIdle({ kind }: { kind: NonNullable<ReturnType<typeof serviceIdle
   const [title, note] = {
     stopped: [t.idleStopped, t.idleStoppedNote], expired: [t.idleExpired, t.idleExpiredNote], ended: [t.idleEnded, t.idleEndedNote],
     stopping: [t.idleStopping, t.idleStoppingNote], queued: [t.idleQueued, t.idleQueuedNote], unknown: [t.idleUnknown, t.idleUnknownNote],
+    retryWaiting: [t.idleRetryWaiting, t.idleRetryWaitingNote], retryStarting: [t.idleRetryStarting, t.idleRetryStartingNote],
     check: [t.idleCheck, t.idleCheckNote],
   }[kind];
   const body = <><strong>{title}</strong><p>{note}</p></>;
@@ -649,13 +692,50 @@ type JobLog = { text: string };
 
 /** The service's way and, when a Yuzuno Job serves it, that Job: running,
  * reachable and healthy are three facts, never one guessed from another. */
-function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectService; disconnected: boolean; onDisconnect: () => Promise<void> }) {
+function ServiceJob({ service, disconnected, onDisconnect, onFocusLost }: {
+  service: ProjectService;
+  disconnected: boolean;
+  onDisconnect: () => Promise<void>;
+  /** Focus had nowhere to go here: the Portal gives it a place. */
+  onFocusLost: () => void;
+}) {
   const t = text(useLanguage());
   const [drawer, setDrawer] = useState<"logs" | null>(null);
   const [log, setLog] = useState("");
   // The Job the confirmation was opened for: a newer one read meanwhile is
   // never stopped by it.
   const [confirming, setConfirming] = useState<string | null>(null);
+  // The confirmation fades in below the actions over small, opacity only, at
+  // its own height, and takes focus (T-19 WK:PT-11). Gone while focus is in
+  // it, focus goes back to Stop Job… after Keep it, or else (Stop Job… gone
+  // too, the Job no longer read, or the Job stopped) to the Portal's title.
+  const confirmBox = useRef<HTMLDivElement | null>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  const kept = useRef(false);
+  const focusWasIn = useRef(false);
+  // Read as it is removed, while what it held is still in the page.
+  const confirmRef = useCallback((element: HTMLDivElement | null) => {
+    confirmBox.current = element;
+    if (!element) return;
+    return () => {
+      confirmBox.current = null;
+      focusWasIn.current = element.contains(document.activeElement);
+    };
+  }, []);
+  useSurfaceIn(confirmBox, confirming, "small", confirming !== null);
+  useLayoutEffect(() => {
+    if (confirming) confirmBox.current?.focus({ preventScroll: true });
+  }, [confirming]);
+  useLayoutEffect(() => {
+    if (!focusWasIn.current) return;
+    focusWasIn.current = false;
+    const keptIt = kept.current;
+    kept.current = false;
+    // Focus the user moved elsewhere stays there.
+    if (document.activeElement && document.activeElement !== document.body) return;
+    if (keptIt && stopButton.current) stopButton.current.focus();
+    else onFocusLost();
+  });
   const [error, setError] = useState("");
   const job = service.job;
   const c = service.connection;
@@ -729,20 +809,23 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
             </button>
             <button type="button" className="quiet-button" onClick={() => openJobs({ jobId: job.jobId })}>{t.inJobs}</button>
             {job.canStop && confirming === null && (
-              <button type="button" className="danger-button portal-stop" onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
+              <button type="button" className="danger-button portal-stop" ref={stopButton} onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
             )}
           </>
         )}
         {!job && job !== undefined && <span className="portal-muted">{t.neverStops}</span>}
       </div>
       {confirming !== null && job && (
-        <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm}>
+        <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm} ref={confirmRef} tabIndex={-1}>
           <p>{job.jobId === confirming ? t.stopNote : t.stopChanged}</p>
           <button type="button" className="danger-button" disabled={job.jobId !== confirming} onClick={act(async () => {
             await post(`/jobs/${encodeURIComponent(confirming)}/cancel`);
             setConfirming(null);
           })}>{t.stopConfirm}</button>
-          <button type="button" className="quiet-button" onClick={() => setConfirming(null)}>{t.stopCancel}</button>
+          <button type="button" className="quiet-button" onClick={() => {
+            kept.current = true;
+            setConfirming(null);
+          }}>{t.stopCancel}</button>
         </div>
       )}
       {drawer === "logs" && <pre className="portal-logs">{log}</pre>}

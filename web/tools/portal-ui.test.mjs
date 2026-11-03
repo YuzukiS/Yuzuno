@@ -168,6 +168,59 @@ test("without a proven port, or when Core refuses the file, no page is framed an
   assert.ok(!refused.requests.some((r) => r.url === PROOF), "nothing is proven for a refused file");
 });
 
+test("through the phone entry (T-5): previews off say where to turn them on; on, their own address is proven before it is framed, and closing leaves an opened tab alone", async (t) => {
+  const off = mount({ respond: (r) => (r.url.endsWith("/api/previews")
+    ? { status: 400, body: { error: "preview_unavailable_remote: previews are not served through the phone entry; turn on phone previews in Settings → Phone access, on the computer that runs Core" } }
+    : undefined) });
+  t.after(off.close);
+  off.window.renderChoice(snapshot);
+  off.click(off.document.querySelector(".open-choice-split .primary-button"));
+  await until(() => off.panel()?.querySelector('[role="alert"]'), "why previews don't open");
+  assert.match(off.panel().textContent, /open through the phone entry once Previews on the phone is turned on, in Settings → Phone access/);
+  assert.equal(off.frame(), null);
+  assert.ok(!off.requests.some((r) => r.url.includes("/.well-known/")), "nothing is proven");
+  // Asked for in the browser: no tab; the Portal says why.
+  const offBrowser = mount({ respond: (r) => (r.url.endsWith("/api/previews") ? { status: 400, body: { error: "preview_unavailable_remote: off" } } : undefined) });
+  t.after(offBrowser.close);
+  offBrowser.window.portal.saveOpenWith("browser");
+  offBrowser.window.renderChoice(snapshot);
+  offBrowser.click(offBrowser.document.querySelector(".open-choice-split .primary-button"));
+  await until(() => offBrowser.panel()?.querySelector('[role="alert"]'), "the Portal's explanation");
+  assert.deepEqual(offBrowser.opened, [], "no broken tab");
+  assert.match(offBrowser.panel().textContent, /Previews on the phone is turned on/);
+
+  // On: the previews' own entry, another HTTPS port of the same name.
+  const ENTRY = "https://pc.tail0.ts.net:8445";
+  const phone = { ...minted, port: 8445, url: `${ENTRY}/v/tok`, proof: { challenge: "ch", answer: "ans", url: `${ENTRY}/.well-known/yuzuno-preview/ch` } };
+  const on = mount({ respond: (r) => (r.url === phone.proof.url ? { text: "ans" } : r.url.endsWith("/api/previews") ? { body: phone } : undefined) });
+  t.after(on.close);
+  on.window.renderChoice(snapshot);
+  on.click(on.document.querySelector(".open-choice-split .primary-button"));
+  const frame = await until(on.frame, "the snapshot framed from the previews' entry");
+  assert.deepEqual(on.requests.slice(0, 2).map((r) => [r.method, r.url]), [["POST", "/api/previews"], ["GET", phone.proof.url]]);
+  assert.equal(frame.getAttribute("src"), phone.url);
+  assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
+  // Opened in the browser too, then the Portal closed: the page is unmounted,
+  // and nothing is asked of Core that would end the opened tab.
+  on.click(on.button("Open in browser", on.panel()));
+  assert.deepEqual(on.opened.map(([url]) => url), [phone.url]);
+  const asked = on.requests.length;
+  on.click(on.button("Close preview"));
+  await until(() => !on.panel(), "the panel closed");
+  assert.equal(on.frame(), null);
+  assert.deepEqual(on.requests.slice(asked), [], "closing asks Core nothing");
+
+  // Not reached from this device: says which address.
+  const unreached = mount({ respond: (r) => (r.url === phone.proof.url ? { text: "other" } : r.url.endsWith("/api/previews") ? { body: phone } : undefined) });
+  t.after(unreached.close);
+  unreached.window.renderChoice(snapshot);
+  unreached.click(unreached.document.querySelector(".open-choice-split .primary-button"));
+  await until(() => unreached.panel()?.querySelector('[role="alert"]'), "the explanation");
+  assert.equal(unreached.frame(), null);
+  assert.match(unreached.panel().textContent, /doesn't reach Core's previews at https:\/\/pc\.tail0\.ts\.net:8445\. Check Previews on the phone/);
+  assert.deepEqual([...off.errors, ...on.errors, ...unreached.errors], []);
+});
+
 test("the device's default is the main button and the other way is there for this once", async (t) => {
   const page = mount();
   t.after(page.close);

@@ -73,3 +73,33 @@
 .portal-idle p:last-child { margin-bottom: 0; }
 .portal-idle .primary-button { display: inline-flex; align-items: center; gap: 6px; }
 .portal-idle .inline-error { margin-top: 10px; }
+/* Bounded recovery (T-14): the window's lines, its opt-out, its details and
+   the Start option. Same panel, no new layout. */
+.service-lifecycle-deadline em { display: block; font-style: normal; font-size: 0.63rem; line-height: 1.5; color: var(--text-secondary,var(--muted)); margin-top: 2px; }
+.service-recovery-intent { flex-wrap: wrap; align-items: flex-start; }
+.service-recovery-intent>svg { margin-top: 2px; }
+.service-recovery-intent>p { flex: 1 1 220px; min-width: 0; margin: 0; line-height: 1.55; }
+.service-recovery-intent>p>span { display: block; overflow-wrap: anywhere; }
+.service-recovery-off { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; margin-left: auto; }
+.service-recovery-off small { font-size: 0.63rem; color: var(--text-secondary,var(--muted)); }
+.service-recovery-off-button { font: inherit; font-size: 0.7rem; color: var(--success-ink,var(--green)); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 4px 0; min-height: 28px; cursor: pointer; white-space: nowrap; }
+.service-recovery-off-button:disabled { color: var(--muted); cursor: default; }
+.service-attempts { list-style: none; margin: 0 0 8px; padding: 0; }
+.service-attempts li { display: grid; grid-template-columns: max-content max-content minmax(0,1fr) max-content; gap: 4px 12px; padding: 6px 12px; border-bottom: 1px dashed var(--line); }
+.service-attempts li:last-child { border-bottom: 0; }
+.service-attempts code { overflow-wrap: anywhere; }
+.service-recovery-rule { color: var(--text-secondary,var(--muted)); line-height: 1.6; margin: 0 0 6px; }
+.service-recovery-option { display: flex; gap: 9px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: 10px; margin: 0 0 14px; cursor: pointer; }
+.service-recovery-option input { margin-top: 3px; accent-color: var(--accent-ink); }
+.service-recovery-option strong { display: block; font-size: 0.8rem; font-weight: 600; }
+.service-recovery-option small { display: block; font-size: 0.72rem; line-height: 1.6; color: var(--text-secondary,var(--muted)); margin-top: 3px; }
+.service-stop-recovery { font-size: 0.76rem; line-height: 1.7; padding: 10px 12px; margin: 0 0 12px; border-radius: 9px; background: var(--accent-wash); }
+.service-stop-refused { margin: 0 0 14px; }
+@media(max-width:1000px) {
+  .service-lifecycle-deadline>span { flex-wrap: wrap; }
+  .service-lifecycle-deadline em { flex-basis: 100%; margin-top: 0; }
+}
+@media(max-width:720px) {
+  .service-recovery-off { flex-basis: 100%; align-items: flex-start; margin-left: 20px; }
+  .service-attempts li { grid-template-columns: max-content minmax(0,1fr); }
+}

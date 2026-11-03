@@ -93,9 +93,9 @@
       opacity: 0;
       overflow: clip;
       transition:
-        block-size 220ms cubic-bezier(0.4, 0, 0.2, 1),
-        opacity 160ms ease,
-        content-visibility 220ms allow-discrete;
+        block-size var(--motion-exit-medium) var(--ease-exit),
+        opacity var(--motion-exit-medium) var(--ease-exit),
+        content-visibility var(--motion-exit-medium) allow-discrete;
     }
     /* Opening unfolds like an arriving row (tool-motion.ts); the text
        settles in just behind the moving edge. */
@@ -104,9 +104,9 @@
       block-size: auto;
       opacity: 1;
       transition:
-        block-size 300ms cubic-bezier(0.2, 0.8, 0.2, 1),
-        opacity 240ms ease 60ms,
-        content-visibility 300ms allow-discrete;
+        block-size var(--motion-medium) var(--ease-standard),
+        opacity var(--motion-medium) var(--ease-standard) 60ms,
+        content-visibility var(--motion-medium) allow-discrete;
     }
   }
 }
@@ -119,18 +119,18 @@ details[data-source-jump][open]::details-content {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  /* The chevron springs open and eases shut. */
+  /* The chevron turns open and eases shut; a rotation never overshoots. */
   :is(.execution, .tool-item)[open] > summary > svg:first-child {
-    transition: transform 320ms cubic-bezier(0.34, 1.5, 0.64, 1);
+    transition: transform var(--motion-micro) var(--ease-standard);
   }
   :is(.execution, .tool-item):not([open]) > summary > svg:first-child {
-    transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform var(--motion-exit-small) var(--ease-exit);
   }
 }
 
 .execution > summary,
 .tool-item > summary {
-  transition: background-color 160ms ease;
+  transition: background-color var(--motion-micro) var(--ease-standard);
 }
 :is(.execution, .tool-item) > summary:hover {
   background-color: color-mix(in srgb, currentColor 6%, transparent);
@@ -176,8 +176,8 @@ details[data-source-jump][open]::details-content {
   opacity: 0;
   scale: 0.6;
   transition:
-    opacity 200ms ease,
-    scale 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    opacity var(--motion-small) var(--ease-standard),
+    scale var(--motion-medium) var(--ease-standard);
 }
 .tool-spinner[data-on] {
   opacity: 1;

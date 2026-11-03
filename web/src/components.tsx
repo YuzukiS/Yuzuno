@@ -2,9 +2,10 @@ import { MessageContent } from "./MessageContent";
 import { RewindButton } from "./Rewind";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff";
-import { parseMessageLink, useMessageLinks } from "./deep-link";
+import { parseMessageLink, parseReportLink, useMessageLinks } from "./deep-link";
 import { usePointFix } from "./point-fix";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { ImageViewer } from "./ImageViewer";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
@@ -12,6 +13,7 @@ import { messageSkills } from "./skill-refs";
 import { SkillChips } from "./SkillChips";
 import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { DialogExitGhost } from "./DialogExitGhost";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
@@ -64,6 +66,8 @@ import { TurnFiles } from "./portal/TurnFiles";
 import { OpenChoice } from "./portal/OpenChoice";
 import { htmlFile } from "./portal/html-file";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
+import { copyText } from "./clipboard";
+import { HomeReply, homeReplyOf } from "./home-reply/HomeReply";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
 import { callFacts, callWords, toolOverview } from "./tool-call";
@@ -167,6 +171,7 @@ export function Modal({
   onCloseAutoFocus,
   lang,
   closeLabel = "Close dialog",
+  confirm = false,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -180,13 +185,27 @@ export function Modal({
   /** The language of its title and close button, when not the page's. */
   lang?: string;
   closeLabel?: string;
+  /** Its main action approves or destroys something: the box only fades, so
+      that action never moves under the pointer (T-19). */
+  confirm?: boolean;
 }) {
+  const overlay = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  // Its entrance as it opened, kept until it has gone: a change while open
+  // (Agent actions → Delete) would restart it, and one as it closes (the
+  // confirmation's mode cleared) would change its animation, which Radix
+  // waits for as an exit before it lets go of focus and the page. Its copy
+  // fades or moves as the dialog was just before it closed.
+  const [entrance, setEntrance] = useState({ open, confirm });
+  if (entrance.open !== open) setEntrance({ open, confirm: open ? confirm : entrance.confirm });
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <DialogExitGhost open={open} confirm={confirm} parts={[overlay, box]} />
       <Dialog.Portal>
-        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content
-          className={`modal ${wide ? "modal-wide" : ""} ${className}`.trim()}
+          ref={box}
+          className={`modal ${wide ? "modal-wide" : ""} ${entrance.confirm ? "modal-confirm" : ""} ${className}`.trim()}
           onCloseAutoFocus={onCloseAutoFocus}
           lang={lang}
         >
@@ -206,18 +225,6 @@ export function Modal({
       </Dialog.Portal>
     </Dialog.Root>
   );
-}
-/** Writes text that may still be loading. The clipboard write starts during
- * the click, so browsers that require a user gesture still accept it. */
-async function copyText(text: string | Promise<string>) {
-  if (typeof text === "string") return navigator.clipboard.writeText(text);
-  if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write)
-    return navigator.clipboard.write([
-      new ClipboardItem({
-        "text/plain": text.then((value) => new Blob([value], { type: "text/plain" })),
-      }),
-    ]);
-  return navigator.clipboard.writeText(await text);
 }
 export function CopyButton({
   text,
@@ -284,6 +291,16 @@ function CopyLinkButton({ agent, turnId, itemId }: { agent: Agent; turnId: strin
   const t = useStrings(turnWords);
   return href ? <CopyButton text={href} label={t.copyLink} /> : null;
 }
+/** The message an element is in, by its Turn and Item: where a link it holds returns to. */
+function messageOf(element: Element): { turnId: string; itemId?: string } | undefined {
+  const turnId = element.closest<HTMLElement>("[data-turn-id]")?.dataset.turnId;
+  if (!turnId) return undefined;
+  // An anchor inside a message (a sub-agent, a plan step) is not the message.
+  let item = element.closest<HTMLElement>("[data-item-id]");
+  for (let outer = item?.parentElement?.closest<HTMLElement>("[data-item-id]"); outer; outer = outer.parentElement?.closest<HTMLElement>("[data-item-id]"))
+    item = outer;
+  return { turnId, itemId: item?.dataset.itemId };
+}
 export function Prose({
   text,
   onFile,
@@ -326,6 +343,13 @@ export function Prose({
         if (message) {
           e.preventDefault();
           links.open(message);
+          return;
+        }
+        // So does a link to a Home report (T-18), with Back to this message.
+        const report = links && parseReportLink(href);
+        if (report) {
+          e.preventDefault();
+          links.openReport(report, messageOf(link));
           return;
         }
         if (/^(https?:|mailto:)/i.test(href)) {
@@ -472,6 +496,8 @@ function TruncationNotice({ view }: { view: FullItemView }) {
  * Markdown/structured item recreating thousands of DOM nodes on expansion. */
 function HistoryPreview({ item, agentId, turnId }: { item: NativeItem; agentId: string; turnId: string }) {
   const [open, setOpen] = useState(false);
+  const overlay = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const [original, setOriginal] = useState<NativeItem | null>(null);
   const [error, setError] = useState("");
   const language = useLanguage();
@@ -488,9 +514,10 @@ function HistoryPreview({ item, agentId, turnId }: { item: NativeItem; agentId: 
     <p>{t.largeItem}</p>
     <pre>{item.text || t.openOriginal}</pre>
     <Dialog.Root open={open} onOpenChange={setOpen}>
+      <DialogExitGhost open={open} parts={[overlay, box]} />
       <Dialog.Trigger asChild><button className="inline-link">{t.viewOriginal}</button></Dialog.Trigger>
-      <Dialog.Portal><Dialog.Overlay className="modal-overlay" />
-        <Dialog.Content className="modal history-original-dialog" lang={langTag(language)}>
+      <Dialog.Portal><Dialog.Overlay ref={overlay} className="modal-overlay" />
+        <Dialog.Content ref={box} className="modal history-original-dialog" lang={langTag(language)}>
           <div className="modal-heading"><Dialog.Title>{t.fullOriginal}</Dialog.Title>
             <Dialog.Close aria-label={t.closeOriginal} className="icon-button"><X size={18} /></Dialog.Close></div>
           <Dialog.Description>{t.originalDescription}</Dialog.Description>
@@ -893,6 +920,10 @@ export function Turn({
   };
   const userBody = (item: NativeItem) => {
     const text = userText(item);
+    // A reply from Home, as Core's receipt names it (T-9); never from its text.
+    const home = homeReplyOf(item);
+    if (home)
+      return <div className="user-text user-home-reply"><HomeReply origin={home} item={item} agentId={agent.id} turnId={turn.id} /></div>;
     const answer = formAnswer(text, receiptOf(item));
     return answer ? (
       <div className="user-text user-form-answer"><SentFormAnswer agentId={agent.id} answer={answer} text={text} /></div>
@@ -1306,6 +1337,14 @@ function CodexPendingCard({
         omitted?: number;
       }
     | undefined;
+  // Which decision is on its way: its button shows the spinner the answer
+  // form has (T-19 CV:Q-02).
+  const [deciding, setDeciding] = useState("");
+  const busy = (decision: string) => sending && deciding === decision;
+  const decide = (decision: string) => {
+    setDeciding(decision);
+    void respond({ decision });
+  };
   const respond = async (response: unknown) => {
     if (disabled || answering.current) return;
     answering.current = true;
@@ -1480,23 +1519,39 @@ function CodexPendingCard({
             <button
               className="primary-button"
               disabled={disabled || sending || !canDecide("accept")}
-              onClick={() => void respond({ decision: "accept" })}
+              aria-busy={busy("accept") || undefined}
+              onClick={() => decide("accept")}
             >
+              {busy("accept") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {t.allowOnce}
             </button>
-            {canDecide("acceptForSession") && <button className="secondary-button" disabled={disabled || sending} onClick={() => void respond({ decision: "acceptForSession" })}>{t.allowSession}</button>}
+            {canDecide("acceptForSession") && (
+              <button
+                className="secondary-button"
+                disabled={disabled || sending}
+                aria-busy={busy("acceptForSession") || undefined}
+                onClick={() => decide("acceptForSession")}
+              >
+                {busy("acceptForSession") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
+                {t.allowSession}
+              </button>
+            )}
             <button
               className="secondary-button"
               disabled={disabled || sending || !canDecide("decline")}
-              onClick={() => void respond({ decision: "decline" })}
+              aria-busy={busy("decline") || undefined}
+              onClick={() => decide("decline")}
             >
+              {busy("decline") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {t.decline}
             </button>
             <button
               className="quiet-button"
               disabled={disabled || sending || !canDecide("cancel")}
-              onClick={() => void respond({ decision: "cancel" })}
+              aria-busy={busy("cancel") || undefined}
+              onClick={() => decide("cancel")}
             >
+              {busy("cancel") && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
               {subAgent ? t.cancelSub : t.cancelTurn}
             </button>
           </div>
@@ -1628,6 +1683,11 @@ export function ArtifactModal({
   const text = loaded ? content.text : "";
   const error = loaded ? content.error : "";
   const loading = !!artifact && artifact.kind !== "image" && !loaded;
+  // An image is read by the viewer itself (T-20); one it could not read says so.
+  const imageSrc = artifact?.kind === "image" ? artifactUrl(agentId, artifact.path) : "";
+  const [unreadable, setUnreadable] = useState("");
+  // Each opening reads it again: an image that failed may be back.
+  useEffect(() => setUnreadable(""), [artifact]);
   const language = useLanguage();
   const t = turnWords(language);
   useEffect(() => {
@@ -1672,6 +1732,7 @@ export function ArtifactModal({
       lang={langTag(language)}
       closeLabel={t.closeDialog}
       wide
+      className={imageSrc ? "image-viewer-modal" : ""}
     >
       {!loading && !error && artifact && artifact.kind !== "image" ? (
         <ArtifactText text={text} path={artifact.path} line={artifact.line} />
@@ -1687,20 +1748,21 @@ export function ArtifactModal({
               {error}
             </p>
           ) : artifact?.kind === "image" ? (
-            <img
-              src={artifactUrl(agentId, artifact.path)}
+            // Mark up on the viewer's bar, as for any other image (T-20).
+            <ImageViewer
+              key={imageSrc}
+              src={imageSrc}
               alt={artifact.name}
+              unreadable={t.imageUnreadable}
+              onError={() => setUnreadable(imageSrc)}
+              actions={onAnnotate && unreadable !== imageSrc && (
+                <button type="button" className="secondary-button" onClick={onAnnotate}>
+                  <SquareDashedMousePointer size={14} aria-hidden="true" />
+                  <span className="image-viewer-action-label">{t.markUp}</span>
+                </button>
+              )}
             />
           ) : null}
-        </div>
-      )}
-      {artifact?.kind === "image" && onAnnotate && (
-        <div className="modal-footer">
-          <span>{t.readOnly}</span>
-          <button type="button" className="secondary-button" onClick={onAnnotate}>
-            <SquareDashedMousePointer size={14} />
-            {t.markUp}
-          </button>
         </div>
       )}
       {text && (

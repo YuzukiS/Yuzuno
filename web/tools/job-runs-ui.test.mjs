@@ -86,6 +86,40 @@ test('a waiting stage is live, says what it waits for, and names its stage and a
   } finally { p.close(); }
 });
 
+test("a run's cost and an attempt's say what recorded none, and a known $0 stays $0 (T-17)", async () => {
+  // A run's total as Core now gives it, and an attempt's own usage summary
+  // as the host writes it, read in a fresh panel each.
+  const shownFor = async (total, attemptCost) => {
+    const current = { ...run, cost: total };
+    const detail = { ...failed, result: { ...failed.result, cost: attemptCost } };
+    const p = mount(url => url === '/api/jobs/job-2' ? detail : url === '/api/jobs/runs/run-1' ? current : page([waiting, failed]));
+    const shown = () => [p.doc.querySelector('.job-run dd')?.textContent,
+      [...p.doc.querySelectorAll('.job-detail dd')].find(d => d.previousElementSibling?.textContent === 'Recorded cost')?.textContent];
+    try {
+      await open(p);
+      await until(() => row(p, '· api'));
+      row(p, '· api').click();
+      await until(() => shown()[0] && shown()[1]);
+      assert.deepEqual(p.errors, []);
+      return [...shown(), p.doc.querySelector('.job-run').textContent];
+    } finally { p.close(); }
+  };
+  const summary = (entries) => ({ entries, knownUsd: 0, unknownEntries: 0, invalidLines: 0, incompleteLines: 0, truncated: false, complete: true });
+  // Some attempts reported, some recorded none, some an unknown amount; this
+  // attempt's file was empty.
+  const [mixed, empty, card] = await shownFor({ knownUsd: 1.5, unknownEntries: 1, invalidLines: 1, attemptsReporting: 3, attemptsNotRecorded: 3,
+    attemptsWithUnknown: 3, attemptsRunning: 0, truncated: false, complete: false }, summary(0));
+  assert.equal(mixed, '$1.50 · plus 2 of unknown cost · 3 with an unknown amount · 3 attempts recorded none · soft limit $12.00');
+  assert.equal(empty, 'None recorded');
+  assert.match(card, /an attempt that recorded none is said apart/);
+  // None of the run's attempts reported: none recorded, not $0. This
+  // attempt's entry says $0: a known $0.
+  const [none, zero] = await shownFor({ knownUsd: 0, unknownEntries: 0, invalidLines: 0, attemptsReporting: 0, attemptsNotRecorded: 2,
+    attemptsWithUnknown: 0, attemptsRunning: 0, truncated: false, complete: false }, summary(1));
+  assert.equal(none, 'None recorded · soft limit $12.00');
+  assert.equal(zero, '$0.0000');
+});
+
 test('a failed attempt shows its run, verified and rejected artifacts and recorded cost, and retries the stage once', async () => {
   let current = run;
   const p = mount((url, body) => {
@@ -196,6 +230,174 @@ test('an all-reused run with no new Jobs remains reachable and can be cancelled 
       requestId: 'analysis:fresh-gate:cancel', stage: 'reuse', gateId: 'fresh-gate', attemptId: 'old-attempt', decision: 'cancel',
     });
     await until(() => !p.doc.querySelector('[aria-label="Runs awaiting analysis"]'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a run names the method record it follows, and a decided gate the record that explains it (T-17)', async () => {
+  const completed = { ...failed, status: 'succeeded', reason: 'success', run: { id: 'method-run', stage: 'api', attempt: 2 } };
+  const current = { ...run, id: 'method-run', status: 'cancelled', cancelRequestedAt: 'now',
+    method: { activitySeq: 3, id: 'timing', title: 'Timing protocol', version: 1 },
+    methodNow: { state: 'readable', revisedBy: 6, latestActivitySeq: 6 },
+    stages: [{ key: 'api', needs: [], status: 'succeeded', attempts: [{ id: completed.id, status: 'succeeded', run: { attempt: 2 } }],
+      analysis: { id: 'gate-1', state: 'cancelled', jobId: completed.id, attemptId: 'attempt-2', execution: 'succeeded',
+        record: { activitySeq: 9, version: 1, record: { type: 'observation', id: 'ranking-flips', title: 'Ranking flips with link order' },
+          next: { action: 'stop', text: 'Time fresh processes before any further stage.' } },
+        recordNow: { state: 'readable', revisedBy: null, latestActivitySeq: 9 } } }] };
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    if (url === '/api/jobs/job-2') return completed;
+    if (url === '/api/jobs/runs/method-run') return current;
+    return page([completed]);
+  });
+  try {
+    await open(p);
+    await until(() => row(p, '· api'));
+    row(p, '· api').click();
+    await until(() => p.doc.querySelector('.job-run-method'));
+    const card = p.doc.querySelector('.job-run').textContent;
+    assert.match(card, /Follows the method “Timing protocol”, activity 3, version 1; a newer version is activity 6, and the run keeps the version it followed/);
+    assert.match(card, /Cancelled, as the observation “Ranking flips with link order” \(activity 9, version 1\) explains · It proposed to stop: Time fresh processes before any further stage\./);
+    assert.equal(p.calls.filter(c => c.url.includes('/decide')).length, 0, 'reading a decision decides nothing');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a decided gate keeps the version it cited and says where that record stands now, deciding nothing (T-17)', async () => {
+  const completed = { ...failed, status: 'succeeded', reason: 'success', run: { id: 'gates-run', stage: 'a', attempt: 1 } };
+  const decided = (key, state, now) => ({ key, needs: [], status: 'succeeded', attempts: [{ id: completed.id, status: 'succeeded', run: { attempt: 1 } }],
+    analysis: { id: `gate-${key}`, state, jobId: completed.id, attemptId: `attempt-${key}`, execution: 'succeeded',
+      record: { activitySeq: 9, version: 2, record: { type: 'claim', id: 'faster', title: 'Layout B is faster' } }, recordNow: now } });
+  const current = { ...run, id: 'gates-run', status: 'succeeded', cancelRequestedAt: null, stages: [
+    decided('a', 'continued', { state: 'readable', revisedBy: 12, latestActivitySeq: 12 }),
+    decided('b', 'continued', { state: 'missing' }),
+    decided('c', 'cancelled', { state: 'readable', revisedBy: 10, latestActivitySeq: null }),
+  ] };
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    if (url === '/api/jobs/job-2') return completed;
+    if (url === '/api/jobs/runs/gates-run') return current;
+    return page([completed]);
+  });
+  try {
+    await open(p);
+    await until(() => row(p, '· a'));
+    row(p, '· a').click();
+    await until(() => p.doc.querySelectorAll('.job-run-explained').length === 3);
+    const [newer, missing, unknown] = [...p.doc.querySelectorAll('.job-run-explained')].map(n => n.textContent);
+    assert.equal(newer, 'Continued, as the claim “Layout B is faster” (activity 9, version 2) explains; a newer version is activity 12, and the decision keeps the version it cited');
+    assert.equal(missing, 'Continued, as the claim “Layout B is faster” (activity 9, version 2) explains; this record can no longer be read');
+    assert.equal(unknown, 'Cancelled, as the claim “Layout B is faster” (activity 9, version 2) explains; a newer version exists, and the decision keeps the version it cited');
+    assert.equal(p.calls.filter(c => /\/(decide|retry|cancel)$/.test(c.url)).length, 0, 'reading where a record stands decides nothing');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("a task's Jobs show what it recorded spending: every attempt once, unknown apart, nothing limited (T-17)", async () => {
+  const spend = { taskId: 'T-105', attempts: 4, byStatus: { cancelled: 1, failed: 1, running: 1, succeeded: 1 },
+    usd: { knownUsd: 1.75, attemptsReporting: 2, attemptsNotRecorded: 1, attemptsWithUnknown: 1, unknownEntries: 1, invalidLines: 0, attemptsRunning: 1, complete: false },
+    compute: { cpuSeconds: 12.34, workerWallSeconds: 20, attemptsMeasured: 2, attemptsUnmeasured: 1 },
+    gpu: { attemptsReserving: 1, measured: false }, runs: 1, reusedStages: 1, truncated: false };
+  const p = mount((url, body) => {
+    if (url === '/api/collaboration/job_cost') return body.taskId === 'T-105' ? spend : { error: 'unexpected task' };
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    return page([]);
+  });
+  try {
+    await open(p);
+    assert.equal(p.doc.querySelector('.job-task-spend'), null, 'only for one task');
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: 'T-105' } }));
+    await until(() => p.doc.querySelector('.job-task-spend dd'));
+    const text = p.doc.querySelector('.job-task-spend').textContent;
+    for (const expected of ['Recorded spend on this task',
+      '$1.75 · 1 with an unknown amount · 1 attempt recorded none · 1 still running',
+      '12.3 s of CPU over 2 attempts that measured both CPU and wall time · whether 1 attempt measured CPU is not said · GPU use is not measured; 1 attempt reserved a GPU',
+      '4 attempts, each counted once, in 1 run and single Jobs · 1 reused stage ran nothing and is not counted again',
+      'unknown is never zero', 'nothing resets when the method or the run changes'])
+      assert.ok(text.includes(expected), `${expected}: ${text}`);
+    assert.deepEqual(p.calls.find(c => c.url === '/api/collaboration/job_cost').body, { taskId: 'T-105' });
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("a task's spend says which of its counts stop at the newest attempts or runs (T-17)", async () => {
+  const base = { taskId: 'T-105', attempts: 5000, byStatus: { succeeded: 5000 },
+    usd: { knownUsd: 2, attemptsReporting: 5000, attemptsNotRecorded: 0, attemptsWithUnknown: 0, unknownEntries: 0, invalidLines: 0, attemptsRunning: 0, complete: true },
+    compute: { cpuSeconds: 10, workerWallSeconds: 20, attemptsMeasured: 5000, attemptsUnmeasured: 0 },
+    gpu: { attemptsReserving: 0, measured: false }, runs: 5000, reusedStages: 5000, limit: 5000 };
+  let answer = { ...base, attemptsTruncated: false, runsTruncated: true, truncated: true };
+  const p = mount((url) => {
+    if (url === '/api/collaboration/job_cost') return answer;
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    return page([]);
+  });
+  const lines = () => [...p.doc.querySelectorAll('.job-task-spend dd')].map(n => n.textContent);
+  try {
+    await open(p);
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: 'T-105' } }));
+    await until(() => p.doc.querySelector('.job-task-spend dd'));
+    let [cost, compute, attempts] = lines();
+    assert.equal(cost, '$2.00', 'every attempt was read: the cost is whole');
+    assert.ok(!compute.includes('partial'), compute);
+    assert.ok(attempts.endsWith(' · runs and reused stages partial: only the newest 5000 runs are read'), attempts);
+    // Past the newest attempts, the cost, compute and attempt counts say so.
+    answer = { ...base, usd: { ...base.usd, complete: false }, attemptsTruncated: true, runsTruncated: false, truncated: true };
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: 'T-106' } }));
+    await until(() => lines()[0]?.includes('partial'));
+    [cost, compute, attempts] = lines();
+    for (const line of [cost, compute, attempts])
+      assert.ok(line.includes('partial: only the newest 5000 attempts are read'), line);
+    assert.ok(!attempts.includes('runs are read'), attempts);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("a task's CPU time is said over the attempts that measured CPU, whatever their wall time (T-17)", async () => {
+  const base = { taskId: 'T-105', attempts: 4, byStatus: { succeeded: 4 },
+    usd: { knownUsd: 1, attemptsReporting: 4, attemptsNotRecorded: 0, attemptsWithUnknown: 0, unknownEntries: 0, invalidLines: 0, attemptsRunning: 0, complete: true },
+    gpu: { attemptsReserving: 0, measured: false }, runs: 0, reusedStages: 0, truncated: false };
+  const answers = {
+    // Three measured CPU, one of them without a wall time: not two.
+    'T-201': { cpuSeconds: 3.5, attemptsWithCpu: 3, attemptsWithoutCpu: 1, workerWallSeconds: 9, attemptsWithWall: 3, attemptsWithoutWall: 1, attemptsMeasured: 2, attemptsUnmeasured: 2 },
+    'T-202': { cpuSeconds: 0, attemptsWithCpu: 0, attemptsWithoutCpu: 4, workerWallSeconds: 12, attemptsWithWall: 4, attemptsWithoutWall: 0, attemptsMeasured: 0, attemptsUnmeasured: 4 },
+    // An explicit zero is a measurement.
+    'T-203': { cpuSeconds: 0, attemptsWithCpu: 1, attemptsWithoutCpu: 3, workerWallSeconds: 0, attemptsWithWall: 0, attemptsWithoutWall: 4, attemptsMeasured: 0, attemptsUnmeasured: 4 },
+    // An older Core's answer has the pair counts only: said as pairs, with
+    // nothing inferred about the other attempts' CPU.
+    'T-204': { cpuSeconds: 3, workerWallSeconds: 9, attemptsMeasured: 2, attemptsUnmeasured: 1 },
+    'T-205': { cpuSeconds: 0, workerWallSeconds: 0, attemptsMeasured: 0, attemptsUnmeasured: 3 },
+  };
+  const p = mount((url, body) => {
+    if (url === '/api/collaboration/job_cost') return { ...base, taskId: body.taskId, compute: answers[body.taskId] };
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    return page([]);
+  });
+  const compute = () => p.doc.querySelectorAll('.job-task-spend dd')[1]?.textContent;
+  try {
+    await open(p);
+    for (const [task, expected] of [
+      ['T-201', '3.5 s of CPU over 3 measured attempts · 1 without a CPU measurement'],
+      ['T-202', 'CPU not measured · 4 without a CPU measurement'],
+      ['T-203', '0.0 s of CPU over 1 measured attempt · 3 without a CPU measurement'],
+      ['T-204', '3.0 s of CPU over 2 attempts that measured both CPU and wall time · whether 1 attempt measured CPU is not said'],
+      ['T-205', 'No attempt measured both CPU and wall time · whether 3 attempts measured CPU is not said'],
+    ]) {
+      p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: task } }));
+      await until(() => p.calls.some(c => c.url === '/api/collaboration/job_cost' && c.body.taskId === task) && compute() === expected);
+      assert.equal(compute(), expected, task);
+    }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("an answer that is not a spend summary is said, and the task's panel stays (T-17)", async () => {
+  const p = mount(url => url.startsWith('/api/jobs/runs?') ? { runs: [], hasMore: false } : page([]));
+  try {
+    await open(p);
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: 'T-105' } }));
+    await until(() => p.doc.querySelector('.job-task-spend'));
+    assert.match(p.doc.querySelector('.job-task-spend').textContent, /Could not read the recorded spend: Core's answer was not a spend summary/);
+    assert.equal(p.doc.querySelector('.job-task-scope').textContent, 'Task T-105', 'the panel around it stays');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

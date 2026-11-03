@@ -64,11 +64,19 @@ export function FoldButton({
 
 /**
  * Unfolds the collapsed cards that hold `target`, and its own, by their fold
- * buttons, so a jump to it (Needs you, Open in…) shows it rather than a
- * header; those cards stay expanded. Whether any was unfolded: the target is
- * drawn on the next frame.
+ * buttons, so a jump to it (Needs you, Open in…, a reply's Open on Home)
+ * shows it rather than a header; those cards stay expanded. A closed
+ * `<details>` that holds it, as a project's team details hold the sections
+ * kept out of view, opens too: its content is drawn already. Whether any
+ * card was unfolded: the target is drawn on the next frame.
  */
 export function unfoldAround(target: HTMLElement) {
+  for (
+    let details = target.parentElement?.closest<HTMLDetailsElement>("details:not([open])");
+    details;
+    details = details.parentElement?.closest<HTMLDetailsElement>("details:not([open])")
+  )
+    details.open = true;
   const hidden: HTMLElement[] = [];
   const own = target.querySelector<HTMLElement>(":scope > .home-card-body[hidden]");
   if (own) hidden.push(own);

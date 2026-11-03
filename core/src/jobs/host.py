@@ -29,6 +29,13 @@ SEGMENT = 1024 * 1024
 # TasksMax counts threads as well as processes. Keep a finite per-job bound
 # with room for Chromium's renderer/utility threads under the existing budgets.
 TASKS_MAX = 512
+# A service's automatic retry (T-14) shares its run's absolute end time
+# (deadlineAtUnix). With less than this left it is not started at all: the end
+# would stop it within seconds.
+MIN_REMAINING_SECONDS = 60
+# Outcomes classify() confirms from the unit itself; the only ones an end-time
+# marker may explain.
+ENDED_BY_UNIT = ('succeeded', 'failed', 'cancelled', 'rejected')
 # Declared artifacts: larger files are identified by size and modification
 # time only; JSON is parsed whole only up to its own, smaller bound.
 HASH_LIMIT = 1024 * 1024 * 1024
@@ -721,6 +728,21 @@ def capabilities():
             'controllers': controllers, 'python': sys.version.split()[0]}
 
 def worker(spec, folder):
+    """The unit's main process: this wrapper, not yet the command. A failure of
+    the wrapper before the command was created is recorded with its stage
+    (not-launched.json), so it is never read as the command's own exit. Once
+    Popen has returned, the command may be running: nothing then says it was
+    not started."""
+    stage = {'at': 'prepare'}
+    try:
+        return launch(spec, folder, stage)
+    except Exception as error:
+        if stage['at'] != 'started':
+            atomic(folder / 'not-launched.json', {'attempt': spec['attempt'], 'stage': stage['at'], 'at': time.time(),
+                                                   'reason': f'{type(error).__name__}: {error}'[:500]})
+        raise
+
+def launch(spec, folder, stage):
     resource = spec['resources']
     relative = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
     group = Path('/sys/fs/cgroup') / relative.lstrip('/')
@@ -743,6 +765,7 @@ def worker(spec, folder):
     atomic(folder / 'started.json', proof)
     if read(folder / 'cancel.json'):
         return 125
+    stage['at'] = 'inputs'
     current = snapshot(spec)
     if current != spec['snapshot']:
         atomic(folder / 'input-changed.json', {'reason': guard_reason(spec, current)})
@@ -756,6 +779,7 @@ def worker(spec, folder):
     if changed:
         atomic(folder / 'input-changed.json', {'reason': changed})
         return 78
+    stage['at'] = 'prepare'
     if forward:
         base = checkpoint_dir(spec)
         try:
@@ -767,13 +791,26 @@ def worker(spec, folder):
         except OSError as error:
             atomic(folder / 'input-changed.json', {'reason': f'{base} cannot be created for checkpoints: {error.strerror or error}'})
             return 78
+    # The shared end, again just before exec: activation and the checks above
+    # count against it, so what supervise() saw may no longer remain.
+    if run_time(spec) is None:
+        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'attempt': spec['attempt'], 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+        atomic(folder / 'input-changed.json', {'reason': NOT_STARTED_NEAR_END})
+        return 78
     # Clear ambient manager/Core credentials. The submission stores this exact
     # env; Core adds only this attempt's identity and report files.
     total = 0
     log = None
     try:
-        child = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env={**spec['env'], **attempt_env(spec, folder)},
+        env = {**spec['env'], **attempt_env(spec, folder)}
+        stage['at'] = 'process'
+        child = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env=env,
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stage['at'] = 'started'
+        # This attempt's own command, apart from the wrapper (T-14): only its
+        # recorded exit is ever treated as the command's crash.
+        command_record = {'attempt': spec['attempt'], 'pid': child.pid, 'startedAt': time.time()}
+        atomic(folder / 'command.json', command_record)
         if forward:
             forward.started(child)
         while True:
@@ -797,6 +834,7 @@ def worker(spec, folder):
                 log.write(part)
                 total += len(part)
         code = forward.wait(child) if forward else child.wait()
+        atomic(folder / 'command.json', {**command_record, 'exitCode': code, 'endedAt': time.time()})
     finally:
         if log:
             os.fsync(log.fileno())
@@ -853,6 +891,18 @@ def reports(spec, folder):
                 'reportProblem': f'The attempt\'s reports could not be read: {error}'[:300]}
 
 def result(spec, folder, status, evidence, reason=None):
+    # A service retry's end-time marker (T-14) is written before the stop or
+    # refusal it explains, so it goes with whichever confirmed outcome is
+    # recorded first: the collector's or Core's reconciliation's. Only this
+    # attempt's marker, and never on an unknown or interrupted outcome: the
+    # marker explains an ending, it does not make one.
+    # The command's own start and exit (command.json) and a wrapper failure
+    # before it (not-launched.json) go with it the same way.
+    for key, name in (('deadline', 'deadline.json'), ('command', 'command.json'), ('notLaunched', 'not-launched.json')):
+        record = read(folder / name) if status in ENDED_BY_UNIT else None
+        if (record and record.get('attempt') == spec['attempt']
+                and isinstance(evidence, dict) and not evidence.get(key)):
+            evidence = {**evidence, key: record}
     value = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'status': status, 'reason': reason, 'finishedAtUnix': time.time(),
              'started': read(folder / 'started.json'), 'evidence': evidence,
@@ -1082,6 +1132,25 @@ def cancel(spec, folder):
         return result(spec, folder, 'cancelled', {'before': before, 'after': after, 'groupsEmpty': groups, 'thawedToStop': thawed}, 'Cancellation confirmed: launcher and worker groups have exited. Earlier outcome may be unknown.')
     return result(spec, folder, 'unknown', {'before': before, 'after': after, 'thawedToStop': thawed}, 'Cancellation could not confirm empty process groups')
 
+NOT_STARTED_NEAR_END = ('Not started: less than 60 s remain before the end time this service run shares '
+                        'with its automatic retries; no process was created')
+
+def run_time(spec, now=None):
+    """The unit's run time, in whole seconds. Without deadlineAtUnix it is the
+    Job's own timeout. With it, that timeout is cut to what remains before the
+    shared end, or None when too little remains to start."""
+    end = spec.get('deadlineAtUnix')
+    if end is None:
+        return spec['timeoutSeconds']
+    remaining = end - (time.time() if now is None else now)
+    if remaining < MIN_REMAINING_SECONDS:
+        return None
+    return max(1, min(spec['timeoutSeconds'], math.ceil(remaining)))
+
+def past_end(spec, now=None):
+    end = spec.get('deadlineAtUnix')
+    return end is not None and (time.time() if now is None else now) >= end
+
 def supervise(spec, folder):
     # Unique transient unit plus a durable start intent: no automatic process retry.
     if read(folder / 'launch.json'):
@@ -1091,12 +1160,19 @@ def supervise(spec, folder):
                                   'controlGroup': Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]})
     if read(folder / 'cancel.json'):
         return result(spec, folder, 'cancelled', {'workerStarted': False}, 'Cancelled before worker launch')
+    runtime = run_time(spec)
+    if runtime is None:
+        atomic(folder / 'deadline.json', {'kind': 'notStarted', 'attempt': spec['attempt'], 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+        return result(spec, folder, 'rejected', {'workerStarted': False, 'deadline': read(folder / 'deadline.json')},
+                      NOT_STARTED_NEAR_END)
     resource = spec['resources']
     args = ['systemd-run', '--user', '--quiet', '--unit=' + spec['unit'], '--service-type=exec',
             '-p', 'Description=Yuzuno job ' + spec['attempt'],
             '--expand-environment=no', '-p', 'RemainAfterExit=yes', '-p', 'Restart=no',
             '-p', 'KillMode=control-group', '-p', 'OOMPolicy=kill', '-p', 'TimeoutStopSec=3s',
-            '-p', 'RuntimeMaxSec=' + str(spec['timeoutSeconds']) + 's',
+            # A backstop only: the run's own end is enforced below, because
+            # activation after this cut is not counted against it.
+            '-p', 'RuntimeMaxSec=' + str(runtime) + 's',
             '-p', 'MemoryMax=' + str(resource['memoryMiB']) + 'M',
             '-p', 'MemorySwapMax=' + str(resource['swapMiB']) + 'M',
             '-p', 'CPUQuota=' + str(resource['cpuMillis'] / 10) + '%', '-p', 'TasksMax=' + str(TASKS_MAX),
@@ -1104,7 +1180,7 @@ def supervise(spec, folder):
             '--', sys.executable, str(Path(__file__).resolve()), 'worker', str(folder / 'spec.json')]
     launch = command(args, check=False)
     launch_evidence = {'returnCode': launch.returncode, 'stderr': launch.stderr[:1000]}
-    deadline = time.monotonic() + spec['timeoutSeconds'] + 20
+    deadline = time.monotonic() + runtime + 20
     last = {}
     pids = None
     while time.monotonic() < deadline:
@@ -1112,13 +1188,27 @@ def supervise(spec, folder):
         pids = pids_evidence(spec, folder, last, pids)
         status = classify(spec, folder, last)
         if status:
-            outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids},
+            outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
+                                                    'deadline': read(folder / 'deadline.json')},
                              terminal_reason(spec, folder, status, last, pids))
             command(['systemctl', '--user', 'stop', spec['unit']], check=False)
             command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
             return outcome
         if launch.returncode or (last.get('ActiveState') == 'failed' and not read(folder / 'started.json')):
             return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No verified worker start receipt; reconcile before retry')
+        # The run's absolute end, checked every poll. It is recorded before the
+        # signal, so the outcome reads as the end time whatever exit status
+        # follows. The unit is signalled, not stopped: it stays loaded
+        # (RemainAfterExit) so classify still sees how it ended. SIGKILL
+        # follows after TimeoutStopSec's 3 s.
+        if past_end(spec):
+            stop = read(folder / 'deadline.json')
+            if not stop:
+                atomic(folder / 'deadline.json', {'kind': 'stop', 'attempt': spec['attempt'], 'at': time.time(), 'deadlineAtUnix': spec['deadlineAtUnix']})
+                command(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGTERM', spec['unit']], check=False)
+            elif stop.get('kind') == 'stop' and not stop.get('killedAt') and time.time() - stop['at'] >= 3:
+                atomic(folder / 'deadline.json', {**stop, 'killedAt': time.time()})
+                command(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGKILL', spec['unit']], check=False)
         time.sleep(.5)
     return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No conclusive terminal evidence before collector deadline')
 
@@ -1137,7 +1227,12 @@ def reconcile(spec, folder):
     proof = read(folder / 'started.json')
     # A frozen worker still reads active/running; its cgroup tells paused apart.
     paused = freezer(proof) if proof and proof.get('invocationId') == state.get('InvocationID') else None
-    return {'status': 'unresolved', 'systemd': state, 'supervisor': show(spec['supervisorUnit']), 'started': proof, 'freezer': paused}
+    # Whether this attempt's command itself has been created yet (T-14): the
+    # worker's own start receipt comes before its input checks and Popen.
+    command = read(folder / 'command.json')
+    command = command if command and command.get('attempt') == spec['attempt'] else None
+    return {'status': 'unresolved', 'systemd': state, 'supervisor': show(spec['supervisorUnit']), 'started': proof,
+            'freezer': paused, 'command': command}
 
 def main():
     mode = sys.argv[1]

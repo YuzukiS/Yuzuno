@@ -47,17 +47,22 @@ impl Lab {
         std::fs::write(self.dir.path().join("work").join(name), bytes).unwrap();
     }
     async fn open(&self, path: &str, origin: Option<&str>) -> Result<Value> {
-        self.ws.open_preview(Source::Artifact { agent_id: "a".into(), path: path.into() }, origin).await
+        self.ws.open_preview(Source::Artifact { agent_id: "a".into(), path: path.into() }, Asker::Local(origin)).await
     }
 }
 
 /// One request on the previews' port as a browser would send it: status,
 /// head and body.
 async fn ask(port: u16, method: &str, path: &str, host: Option<&str>, origin: Option<&str>) -> (u16, String, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let host = host.map(str::to_owned).unwrap_or_else(|| format!("127.0.0.1:{port}"));
     let origin = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
-    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Connection: close\r\n\r\n").as_bytes()).await.unwrap();
+    ask_with(port, method, path, &format!("Host: {host}\r\n{origin}")).await
+}
+
+/// The same with the request's header lines as given (each ending in CRLF).
+async fn ask_with(port: u16, method: &str, path: &str, headers: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(format!("{method} {path} HTTP/1.1\r\n{headers}Connection: close\r\n\r\n").as_bytes()).await.unwrap();
     let mut text = String::new();
     let _ = timeout(Duration::from_secs(3), stream.read_to_string(&mut text)).await;
     let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
@@ -185,7 +190,7 @@ async fn only_one_html_file_of_this_agent_up_to_the_limit_is_previewed() {
     std::fs::write(lab.dir.path().join("outside.html"), PAGE).unwrap();
     assert!(lab.open("../outside.html", Some(CORE)).await.is_err(), "outside the Agent's working directory");
     assert!(lab.open("missing.html", Some(CORE)).await.is_err());
-    assert!(lab.ws.open_preview(Source::Artifact { agent_id: "nobody".into(), path: "proto.html".into() }, None).await.is_err());
+    assert!(lab.ws.open_preview(Source::Artifact { agent_id: "nobody".into(), path: "proto.html".into() }, Asker::Local(None)).await.is_err());
     // The page names its sources in camelCase.
     assert!(serde_json::from_value::<Source>(json!({"kind":"artifact","agentId":"a","path":"p.html"})).is_ok());
     assert!(serde_json::from_value::<Source>(json!({"kind":"briefAttachment","projectId":"p","section":"s","name":"n.html","version":2})).is_ok());
@@ -211,4 +216,95 @@ async fn the_oldest_snapshots_go_first_and_kept_bytes_stay_bounded() {
     }
     let kept = lab.ws.previews.kept.lock().unwrap();
     assert!(kept.bytes() <= MAX_KEPT_BYTES && kept.snapshots.len() <= MAX_KEPT, "{} bytes in {}", kept.bytes(), kept.snapshots.len());
+}
+
+#[tokio::test]
+async fn the_port_never_serves_through_a_proxy_or_a_doubled_name() {
+    let lab = lab();
+    lab.write("proto.html", PAGE.as_bytes());
+    let view = lab.open("proto.html", Some(CORE)).await.unwrap();
+    let port = view["port"].as_u64().unwrap() as u16;
+    let page = path_of(&view["url"]);
+    let host = format!("Host: 127.0.0.1:{port}\r\n");
+    assert_eq!(ask_with(port, "GET", &page, &host).await.0, 200);
+    // A proxy pointed at P (Serve, say) adds one of these; a phone uses the previews' own entry.
+    for proxied in ["Tailscale-User-Login: owner@github", "Tailscale-Headers-Info: x", "Tailscale-Funnel-Request: ?1", "X-Forwarded-For: 100.64.0.2"] {
+        let (status, _, body) = ask_with(port, "GET", &page, &format!("{host}{proxied}\r\n")).await;
+        assert_eq!(status, 403, "{proxied}");
+        assert!(body.contains("Proxied request") && !body.contains("button"), "{proxied}: {body}");
+    }
+    // Two names, one of them this port's: not a request for this port.
+    assert_eq!(ask_with(port, "GET", &page, &format!("{host}Host: rebound.example:{port}\r\n")).await.0, 421);
+    assert_eq!(ask_with(port, "GET", &page, &format!("{host}{host}")).await.0, 421);
+    // The proof: two Origins are none of them.
+    let challenge = format!("{PROOF_PATH}{}", view["proof"]["challenge"].as_str().unwrap());
+    let doubled = format!("{host}Origin: {CORE}\r\nOrigin: {CORE}\r\n");
+    assert_eq!(ask_with(port, "GET", &challenge, &doubled).await.0, 404);
+    assert_eq!(ask(port, "GET", &challenge, None, Some(CORE)).await.0, 200, "still unused");
+}
+
+#[tokio::test]
+async fn a_snapshot_taken_for_the_phone_entry_never_opens_on_this_port() {
+    let lab = lab();
+    lab.write("proto.html", PAGE.as_bytes());
+    let view = lab.open("proto.html", Some(CORE)).await.unwrap();
+    let port = view["port"].as_u64().unwrap() as u16;
+    // As the phone previews' entry would have minted it (remote_access's tests mint it so).
+    let door = Door { host: "pc.tail0.ts.net:8445".into(), origin: "https://pc.tail0.ts.net:8444".into(), login: "owner@github".into() };
+    {
+        let mut kept = lab.ws.previews.kept.lock().unwrap();
+        kept.snapshots.insert("phone".into(), Snapshot {
+            bytes: Arc::new(PAGE.as_bytes().to_vec()), ancestor: Some(door.origin.clone()), until: Instant::now() + LIFETIME, via: Via::Phone(door.clone()),
+        });
+        kept.proofs.insert("phone".into(), Proof {
+            answer: "a".into(), origin: Some(door.origin.clone()), until: Instant::now() + PROOF_TTL, used: false, via: Via::Phone(door.clone()),
+        });
+    }
+    assert_eq!(ask(port, "GET", "/v/phone", None, None).await.0, 404);
+    assert_eq!(ask(port, "GET", &format!("{PROOF_PATH}phone"), None, Some(&door.origin)).await.0, 404);
+    // This port's own snapshot still opens.
+    assert_eq!(ask(port, "GET", &path_of(&view["url"]), None, None).await.0, 200);
+}
+
+/// Bytes sent as they are, in one write: status, head and body of the answer.
+async fn send(port: u16, bytes: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(bytes.as_bytes()).await.unwrap();
+    let mut text = String::new();
+    let _ = timeout(Duration::from_secs(3), stream.read_to_string(&mut text)).await;
+    let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    (status, head.to_owned(), body.to_owned())
+}
+
+#[test]
+fn headers_are_the_lines_before_the_blank_line_and_nothing_after() {
+    let head = "GET /v/x HTTP/1.1\r\nHost: 127.0.0.1:1\r\nTailscale-User-Login: a\r\n\r\nTailscale-User-Login: b\r\nHost: other\r\n";
+    assert_eq!(values(head, "tailscale-user-login"), ["a"]);
+    assert_eq!(values(head, "host"), ["127.0.0.1:1"]);
+    assert!(values("GET / HTTP/1.1\r\n\r\nOrigin: http://x\r\n", "origin").is_empty());
+    // A name with spaces around it is no header's.
+    assert!(values("GET / HTTP/1.1\r\n Host: x\r\nHost : y\r\n\r\n", "host").is_empty());
+    // Doubled real headers stay doubled.
+    assert_eq!(values("GET / HTTP/1.1\r\nHost: a\r\nhost: b\r\n\r\n", "host"), ["a", "b"]);
+}
+
+#[tokio::test]
+async fn what_follows_the_head_is_never_read_as_its_headers() {
+    let lab = lab();
+    lab.write("proto.html", PAGE.as_bytes());
+    let view = lab.open("proto.html", Some(CORE)).await.unwrap();
+    let port = view["port"].as_u64().unwrap() as u16;
+    let page = path_of(&view["url"]);
+    let host = format!("Host: 127.0.0.1:{port}\r\n");
+    // A body whose lines look like headers: the page as it is.
+    let body = "Tailscale-User-Login: owner@github\r\nX-Forwarded-For: 100.64.0.2\r\nHost: other\r\n";
+    let (status, _, got) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())).await;
+    assert_eq!((status, got.as_str()), (200, PAGE));
+    // A second request in the same write: only the first is answered, by its own headers.
+    let (status, _, got) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}\r\nGET {page} HTTP/1.1\r\nTailscale-User-Login: x\r\n\r\n")).await;
+    assert_eq!((status, got.as_str()), (200, PAGE));
+    // A head over the limit gets no answer at all.
+    let (status, head, _) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}X-Pad: {}\r\n\r\n", "a".repeat(HEAD_LIMIT))).await;
+    assert_eq!(status, 0, "{head}");
 }

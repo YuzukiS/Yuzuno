@@ -342,7 +342,7 @@ pub(super) async fn observe(data: &Path, job: &Value) -> Result<Option<Value>> {
         && state["systemd"]["SubState"] == "running"
     {
         return Ok(Some(
-            json!({"jobId":job["id"],"attempt":job["attempt"],"status":"running","reason":"Running with verified cgroup limits","started":proof,"evidence":state["systemd"],"freezer":state["freezer"]}),
+            json!({"jobId":job["id"],"attempt":job["attempt"],"status":"running","reason":"Running with verified cgroup limits","started":proof,"evidence":state["systemd"],"freezer":state["freezer"],"command":state["command"]}),
         ));
     }
     if state["supervisor"]["ActiveState"] == "active" {

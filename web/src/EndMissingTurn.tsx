@@ -94,6 +94,7 @@ export function EndMissingTurnDialog({
   return (
     <Modal
       open={open}
+      confirm
       onOpenChange={(next) => !busy && onOpenChange(next)}
       title={t.title(count)}
       description={t.description}

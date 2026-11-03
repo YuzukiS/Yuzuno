@@ -1,3 +1,4 @@
+import { flushSync } from "react-dom";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { SkillChips } from "./SkillChips";
 import { MAX_DRAFT_SKILLS } from "./composer-draft";
@@ -15,6 +16,8 @@ import {
   useState,
   type ComponentProps,
 } from "react";
+import { settleWhenLanded } from "./settle";
+import { ToastStack, type ToastText } from "./Toasts";
 import {
   Archive,
   ArchiveRestore,
@@ -95,7 +98,7 @@ import { useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi } from "./deep-link";
+import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { ageText, markOfferHandled, offerable, restoredOffset, type Handoff } from "./reading-handoff";
 import { publishReading, readHandoff } from "./reading-handoff-api";
@@ -197,9 +200,12 @@ import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestion
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
-import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
+import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
+import { useArrivalsIn, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
-import type { QuestionSource } from "./types";
+import type { HomeReplyOrigin, QuestionSource } from "./types";
+import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
+import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
@@ -259,6 +265,8 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
+const JOIN_WAIT = 90;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -345,6 +353,69 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // An Agent row this window just added (T-19 SH:R11): one it created, or
+  // forked, or one Core says this import made; never one a read of the
+  // Workspace brings, nor one an import found already there. Once the row is
+  // shown, it is brought into view at once, comes in over small (opacity,
+  // 4 px up) and settles once; under reduced motion it is there at once and
+  // settles. It is this Workspace's, this choice's and this action's only:
+  // - its group folded, opening because the new Agent is chosen: the row is
+  //   kept hidden until the group has opened, then comes in, so it is seen
+  //   coming in once (at most JOIN_WAIT frames; past that it shows still);
+  // - listed already when the answer came (a read after Core said the
+  //   Workspace changed got there first): it was shown then, so it does not
+  //   come in again; it is brought into view and settles;
+  // - not shown at all (a search it does not match, a phone's conversation
+  //   in front of the list, the list hidden): nothing plays, now or later;
+  // - another Agent chosen, or another Workspace, before it shows: dropped.
+  const [joined, setJoined] = useState<{ workspace: string; id: string; n: number; enter: boolean } | null>(null);
+  const joinedRow = useRef<HTMLElement | null>(null);
+  const [entered, setEntered] = useState(0);
+  useLayoutEffect(() => {
+    if (!joined) return;
+    let frame = 0;
+    let waited = 0;
+    let row: HTMLElement | undefined;
+    let settled: (() => void) | null = null;
+    const hide = (hidden: boolean) => row?.toggleAttribute("data-joining", hidden);
+    const land = (later: boolean) => {
+      row = [...document.querySelectorAll<HTMLElement>(".agent-list .agent-row")].find((shown) => shown.dataset.agentId === joined.id);
+      const still = joined.workspace === currentWorkspace.current && currentSelected.current === joined.id;
+      if (!still || !row || !row.getClientRects().length) return hide(false);
+      const body = row.closest<HTMLElement>(".project-group-body");
+      const opening = !!row.closest(".project-group.is-folded") ||
+        (!!body && (Number(getComputedStyle(body).opacity) < 1 || body.getAnimations().some((a) => a.playState === "running")));
+      if (opening) {
+        if (++waited > JOIN_WAIT) return hide(false);
+        hide(joined.enter);
+        frame = requestAnimationFrame(() => land(true));
+        return;
+      }
+      row.scrollIntoView?.({ block: "nearest", behavior: "instant" });
+      joinedRow.current = row;
+      // Its entrance starts before this frame is painted, so the row is
+      // never seen between hidden and coming in.
+      if (joined.enter) {
+        if (later) flushSync(() => setEntered((n) => n + 1));
+        else setEntered((n) => n + 1);
+      }
+      hide(false);
+      settled = settleWhenLanded(row, "data-settle", false, "animation");
+    };
+    land(false);
+    return () => {
+      cancelAnimationFrame(frame);
+      hide(false);
+      settled?.();
+    };
+  }, [joined]);
+  useSurfaceIn(joinedRow, entered, "small", entered > 0, "translateY(4px)");
+  /** `id` is the Agent this window's create, fork or import has just made. */
+  const markJoined = (id: string) => {
+    const workspace = currentWorkspace.current;
+    const enter = !workspaceRef.current?.agents.some((listed) => listed.id === id);
+    setJoined((last) => ({ workspace, id, n: (last?.n ?? 0) + 1, enter }));
+  };
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
@@ -374,6 +445,7 @@ export function App() {
   // On a phone the work and turn docks open one at a time over the
   // conversation (PhoneDocks.tsx); closed, they take no width.
   const [phoneDock, setPhoneDock] = useState<PhoneDock>(null);
+  const dockMotion = usePhoneDockMotion(phoneDock, setPhoneDock);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
@@ -393,6 +465,47 @@ export function App() {
   // Without a system frame (Windows desktop), the toolbar is the title bar.
   const frame = useCustomFrame();
   const [homeOpen, setHomeOpen] = useState(false);
+  // A conversation fades in as it opens from Home or another Agent's takes its
+  // place (T-19 M6: SH:M11, C01). A phone's list and conversation are push and
+  // pop (M8), not this.
+  const conversationBody = useRef<HTMLDivElement>(null);
+  useSurfaceIn(conversationBody, homeOpen ? null : selected, "small", !phone);
+  // On a phone (T-19 M8), what the list opens is pushed in from the right and
+  // Back brings the list in from the left, over medium; the toolbar's brand
+  // and Back swap with a fade over micro. Only a move between the list and
+  // what is open plays them, never a window turning into a phone's, and
+  // never the first screen: nothing has moved before the first one.
+  const phoneMove = useRef({ list: phoneList, n: 0 });
+  if (phoneMove.current.list !== phoneList) phoneMove.current = { list: phoneList, n: phoneMove.current.n + 1 };
+  const moved = phoneMove.current.n > 0;
+  const railBox = useRef<HTMLElement>(null);
+  const mainBox = useRef<HTMLElement>(null);
+  const brandBox = useRef<HTMLDivElement>(null);
+  useSurfaceIn(mainBox, phoneMove.current.n, "medium", phone && moved && !phoneList, "translateX(8px)");
+  useSurfaceIn(railBox, phoneMove.current.n, "medium", phone && moved && phoneList, "translateX(-8px)");
+  useSurfaceIn(brandBox, phoneMove.current.n, "micro", phone && moved);
+  /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
+   * and the message to go back to; another opening is another `n`. */
+  const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
+  /** A report link opened from outside Home (T-18), the message it was
+   * clicked in, for Back, and whether it came from the address; another
+   * opening is another `n`. */
+  const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null>(null);
+  /** Each explicit way to Home (T-18 R3): Home closes a report open over it. */
+  const [homeVisit, setHomeVisit] = useState(0);
+  /** Each report opening, numbered once and only upward: Home, mounted all
+   * along, tells a new opening from one it has handled by this number, even
+   * after a way to Home has dropped the last report (T-18 R3). */
+  const reportOpenings = useRef(0);
+  /** Home, by the user's own way there: the toolbar, a notification, a Home
+   * link, a reply's Open on Home, the way back from a jump. A report open over
+   * Home closes, and none opened before comes back. */
+  function goHome() {
+    setHomeReport(null);
+    setHomeVisit((n) => n + 1);
+    setHomeOpen(true);
+    setPhoneList(false);
+  }
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
@@ -403,7 +516,9 @@ export function App() {
   const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(workspaceId, selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");
-  const [notice, setNotice] = useState("");
+  // Set again with the same text, a notice shows again for its full time (T-19).
+  const [notice, setNoticeShown] = useState<ToastText>({ text: "", serial: 0 });
+  const setNotice = useCallback((text: string) => setNoticeShown((was) => ({ text, serial: was.serial + 1 })), []);
   const [readActionsOpen, setReadActionsOpen] = useState(false);
   const [agentScope, setAgentScope] = useState<"active" | "closed">("active");
   const [storedScope, setStoredScope] = useState<ProjectScope>(ALL_PROJECTS);
@@ -425,7 +540,8 @@ export function App() {
   } | null>(null);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   // A menu action that failed for an Agent other than the one shown.
-  const [menuError, setMenuError] = useState("");
+  const [menuError, setMenuErrorShown] = useState<ToastText>({ text: "", serial: 0 });
+  const setMenuError = useCallback((text: string) => setMenuErrorShown((was) => ({ text, serial: was.serial + 1 })), []);
   const [historyReading, setHistoryReading] = useState(false);
   // Where a source was opened from: Home leads back to Home.
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
@@ -435,6 +551,8 @@ export function App() {
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
+  // The Turn a jump last landed on, tinted once (T-19).
+  const turnSettled = useRef<(() => void) | null>(null);
   // Whose conversation a jump from its dock was asked in (T-6): one still on
   // its way when the Workspace or the Agent changes is dropped, not taken into
   // the other conversation, where the same Turn id names nothing of its.
@@ -457,7 +575,9 @@ export function App() {
   // What the source strip says about a place that is gone, worded on show (T-189).
   const [sourceNotice, setSourceNotice] = useState<((t: ShellWords) => string) | null>(null);
   // A message link waiting for the Workspace to load.
-  const [incomingLink, setIncomingLink] = useState<AppLink | null>(null);
+  // `fromAddress`: a report link read from the address (T-18), whose page
+  // takes that history entry rather than adding one.
+  const [incomingLink, setIncomingLink] = useState<(AppLink & { fromAddress?: boolean }) | null>(null);
   // Where the shown conversation was last being read, kept when it is left.
   const reading = useRef<{ agentId: string; position: ReadingPosition } | null>(null);
   const readingFrame = useRef(0);
@@ -598,6 +718,33 @@ export function App() {
   // The Agent whose conversation is on screen now, for a reply that comes later.
   const shownConversation = useRef<string | null>(null);
   shownConversation.current = homeOpen || listShown ? null : selected;
+  // Core announced a change to the open Agent (`agent.changed`, which is how a
+  // new request is announced) since the stream last reset: the next request
+  // its detail lists arrived live and may fade in (T-19 CV:Q-01).
+  const liveChange = useRef<{ workspace: string; agent: string } | null>(null);
+  // Since a reset, since the stream broke, or since the conversation was
+  // left: until a detail from a read started after `after` (DetailSync.reads;
+  // never while the stream is down) is shown, nothing arrives live. That
+  // detail only becomes what was shown, so neither a read already on its way,
+  // a copy kept from before, nor a change Core replays when the stream resumes
+  // makes an old request play (Lead 3299, 3301). After Core resumed the stream
+  // (`drain`), only the end of what it replays (`drained`) or a reset ends the
+  // wait: no read starts for it, and no timer guesses it (Lead 3356).
+  const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
+  // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
+  const [, setDrains] = useState(0);
+  // Told in the stream's order, so a reset that follows always wins (R1 276d4a1d; Lead 3356).
+  const onReplay = useCallback((state: "resumed" | "drained") => {
+    if (state === "resumed") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity, drain: true };
+      return;
+    }
+    const mark = arrivalsSettle.current;
+    if (!mark?.drain) return;
+    mark.drained = true;
+    setDrains((n) => n + 1);
+  }, []);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -628,7 +775,10 @@ export function App() {
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
-          if (event.agentId === currentSelected.current) live.sync.refetch();
+          if (event.agentId === currentSelected.current) {
+            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.refetch();
+          }
           return;
         case "agent.progress": {
           // Its Items went out already; only its rail entry changes.
@@ -679,6 +829,9 @@ export function App() {
           else refresh();
           return;
         case "reset":
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
+          liveChange.current = null;
+          arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
           refresh();
@@ -689,7 +842,18 @@ export function App() {
     },
     [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
-  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
+  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
+  // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
+  // Core has resumed it (`onReplay`, then the end of its replay) or reset it (a read after that).
+  // Those two are told in the stream's order; this render only marks the break.
+  const lastConnection = useRef(eventConnection);
+  if (lastConnection.current !== eventConnection) {
+    lastConnection.current = eventConnection;
+    if (eventConnection !== "open") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity };
+    }
+  }
   useEffect(() => {
     if (eventConnection === "open" && !previewMode) jobsRefresh.now();
   }, [eventConnection, previewMode, jobsRefresh]);
@@ -753,6 +917,34 @@ export function App() {
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
+  // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
+  // the left on a desktop window, the context panel from the right. Its column changes at once,
+  // as before, and hiding stays instant. Counted where the setting turns on, not where a panel
+  // mounts: arriving at a conversation, or a window turning into a phone's, plays none.
+  const panelOpens = useRef({ rail: railOpen, inspector, phoneInspector, rails: 0, inspectors: 0 });
+  if (panelOpens.current.rail !== railOpen || panelOpens.current.inspector !== inspector || panelOpens.current.phoneInspector !== phoneInspector) {
+    const was = panelOpens.current;
+    panelOpens.current = {
+      rail: railOpen,
+      inspector,
+      phoneInspector,
+      rails: was.rails + (railOpen && !was.rail ? 1 : 0),
+      inspectors: was.inspectors + ((inspector && !was.inspector) || (phoneInspector && !was.phoneInspector) ? 1 : 0),
+    };
+  }
+  const inspectorBox = useRef<HTMLElement>(null);
+  const inspectorTitle = useRef<HTMLSpanElement>(null);
+  // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
+  useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
+  useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // On a phone the context panel is a screen of its own: opening it takes focus to its heading
+  // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
+  useEffect(() => {
+    if (phone && phoneInspector && inspectorShown && !inspectorBox.current?.contains(document.activeElement))
+      inspectorTitle.current?.focus({ preventScroll: true });
+    // Only an opening moves focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelOpens.current.inspectors]);
   // An open dock panel closes when something covers the conversation (the
   // Agent list, or the context panel a job opens) or the window widens.
   useEffect(() => {
@@ -810,6 +1002,8 @@ export function App() {
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
   useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
+  // A Turn's landing is the conversation's it was in: another Agent's, or none, ends it (T-19).
+  useEffect(() => () => turnSettled.current?.(), [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
@@ -906,6 +1100,58 @@ export function App() {
   const time = useTimeDisplay();
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
+  // A request that arrives live while its conversation is open fades in, once (T-19 CV:Q-01): one
+  // that a detail lists, new in this Workspace, Agent and native session, after Core announced a
+  // change to the Agent. The first detail of that scope, and any new request a reconnect, poll or
+  // reset brings, only become what was shown; so do a return to the Agent and another session.
+  const pendingScope = currentDetail && currentDetail.agent.id === selected && !homeOpen && !listShown
+    ? [workspaceId, selected, nativeSession(currentDetail.agent) ?? ""].join("\n") : null;
+  const pendingSeen = useRef<{ scope: string; ids: Set<string>; arrived: string[] } | null>(null);
+  // The conversation was left: another Agent or Workspace opened, or Home or
+  // the phone's list over it. Nothing arrives live until a detail read after
+  // this is shown, and that one is a new baseline (Lead 3301).
+  if (!pendingScope && pendingSeen.current) {
+    const was = arrivalsSettle.current;
+    pendingSeen.current = null;
+    liveChange.current = null;
+    arrivalsSettle.current = { ...was, after: Math.max(was?.after ?? 0, live.sync.reads) };
+  }
+  // The detail shown came from this read; the first one started after a
+  // reset or leaving settles it, and what it lists only becomes shown. It is
+  // current when it is the newest read and the sync has nothing failed,
+  // running, queued, due or waiting to be applied.
+  const readNumber = (live.detail && live.sync.readOf.get(live.detail)) ?? 0;
+  const sync = live.sync;
+  const current = !!live.detail && readNumber === sync.currentRead && !sync.running && !sync.queued && !sync.failed
+    && sync.refetchTimer === undefined && sync.retryTimer === undefined && sync.flushTimer === undefined && !sync.queue.length;
+  // After a stream opened again, only once its replay is over: if a read was on its way then, when
+  // it and any after it are done.
+  const mark = arrivalsSettle.current;
+  let settles = !!mark && (mark.drain ? !!mark.drained && current && !!pendingScope : readNumber > mark.after);
+  if (pendingScope) {
+    const seen = pendingSeen.current;
+    if (!seen || seen.scope !== pendingScope) {
+      pendingSeen.current = { scope: pendingScope, ids: new Set(pending.map((request) => request.id)), arrived: [] };
+      liveChange.current = null;
+      // Back to a conversation whose detail is current (from Home, say): it is the new baseline
+      // now, unless the stream is down or its replay not over (the case above).
+      if (current && !mark?.drain && mark?.after !== Infinity) settles = true;
+    } else {
+      const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
+      if (fresh.length) {
+        const announced = !arrivalsSettle.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        if (announced) liveChange.current = null;
+        pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
+          arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
+      }
+    }
+  }
+  if (settles) arrivalsSettle.current = liveChange.current = null;
+  useArrivalsIn(
+    pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
+    (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
+    "small",
+  );
   // Browser drafts of answers to native questions (T-170) last only while
   // Core still lists their request for this Agent.
   const requestDraftScope = previewMode || !workspaceId ? null : workspaceId;
@@ -1071,10 +1317,8 @@ export function App() {
       if (notice.backup.workspaceId !== workspaceId) return;
       setSettingsAt({ editor: "backup", nonce: Date.now() });
       setUpdatesOpen(true);
-    } else if (notice.home) {
-      setHomeOpen(true);
-      setPhoneList(false);
-    } else if (notice.agentId) selectAgent(notice.agentId);
+    } else if (notice.home) goHome();
+    else if (notice.agentId) selectAgent(notice.agentId);
   }, backupRun);
   // Settings closed, however (its own close, or a card that opens another
   // dialog): a notification's request is used up, not repeated next time.
@@ -1193,11 +1437,18 @@ export function App() {
   useEffect(() => { pruneResultViewCache(); }, []);
   // A message or Agent link in the address (T-166, T-184): read once, then
   // removed, so a reload returns to where the user is reading, not the link.
+  // A report link (T-18) is where the user is reading: it stays while its
+  // page is open, and a reload, or the browser's Forward to it, opens it
+  // again in that same history entry.
   useEffect(() => {
     if (previewMode) return;
     const take = () => {
       const link = parseAppLink(window.location.href);
       if (!link) return;
+      if (link.kind === "report") {
+        setIncomingLink({ ...link, fromAddress: true });
+        return;
+      }
       history.replaceState(history.state, "", window.location.pathname + window.location.search);
       setIncomingLink(link);
     };
@@ -1224,7 +1475,10 @@ export function App() {
     if (!incomingLink || !workspace) return;
     setIncomingLink(null);
     initialReading.current = true;
-    openAppLink(incomingLink);
+    if (incomingLink.kind === "report") {
+      const { kind: _kind, fromAddress, ...link } = incomingLink;
+      openReportLink(link, undefined, fromAddress);
+    } else openAppLink(incomingLink);
   }, [incomingLink, workspace]);
   // Another browser's place in the open conversation (T-170): offered, never
   // applied by itself. Read when it opens or the page shows again; an answer
@@ -1286,13 +1540,13 @@ export function App() {
     };
   }, [selected, homeOpen, readingPositions]);
   useEffect(() => {
-    if (notice) {
+    if (notice.text) {
       const timer = setTimeout(() => setNotice(""), 4000);
       return () => clearTimeout(timer);
     }
   }, [notice]);
   useEffect(() => {
-    if (menuError) {
+    if (menuError.text) {
       const timer = setTimeout(() => setMenuError(""), 8000);
       return () => clearTimeout(timer);
     }
@@ -1329,6 +1583,8 @@ export function App() {
       const target = input || turn;
       target?.scrollIntoView({ behavior: "instant", block: "start" });
       target?.focus({ preventScroll: true });
+      turnSettled.current?.();
+      turnSettled.current = target ? settleWhenLanded(target, "data-settle", false, "animation") : null;
       stickToBottom.current = false;
       jumpItem.current = null;
       setJumpToTurn(null);
@@ -1797,21 +2053,62 @@ export function App() {
       setNotice(shell.linkOtherHome);
       return;
     }
+    goHome();
+  }
+  /** Opens the report a link names (T-18) over Home; from a message, Back
+   * returns to it. Another Workspace's report is said, and nothing opens. */
+  function openReportLink(link: ReportLink, from?: { turnId: string; itemId?: string }, fromAddress = false) {
+    if (!workspace) { setIncomingLink({ kind: "report", ...link, fromAddress }); return; }
+    if (link.workspaceId !== workspaceId) {
+      // The address keeps no link this Workspace can open.
+      if (fromAddress) history.replaceState(history.state, "", window.location.pathname + window.location.search);
+      setNotice(reportText(language).otherWorkspace);
+      return;
+    }
+    const reading = from && !homeOpen ? currentDetail?.agent : undefined;
+    const back = reading && from ? { workspaceId, agentId: reading.id, turnId: from.turnId, itemId: from.itemId, threadId: reading.threadId } : null;
+    setHomeReport({ link, back, fromAddress, n: ++reportOpenings.current });
     setHomeOpen(true);
     setPhoneList(false);
   }
   function openAppLink(link: AppLink) {
     if (link.kind === "agent") openAgentLink(link);
     else if (link.kind === "home") openHomeLink(link);
+    else if (link.kind === "report") openReportLink(link);
     else openMessageLink(link);
   }
   const openLink = useRef(openMessageLink);
   openLink.current = openMessageLink;
+  const openReport = useRef(openReportLink);
+  openReport.current = openReportLink;
+  /** "Open on Home" on a reply from Home (T-9): Home, at the section and
+   * version it answered, where Home says what has become of it. A reply
+   * from another Workspace's Home opens nothing here. */
+  const openHomeReply = useRef<HomeReplyLinksApi["open"]>(() => {});
+  openHomeReply.current = (origin, from) => {
+    if (origin.workspaceId && origin.workspaceId !== workspaceId) {
+      setNotice(homeReplyText(language).otherWorkspace);
+      return;
+    }
+    const owner = workspace?.agents.find((a) => a.id === from.agentId);
+    setHomeArrival((last) => ({ origin, back: { workspaceId, ...from, threadId: owner?.threadId }, n: (last?.n ?? 0) + 1 }));
+    goHome();
+  };
+  const homeReplyLinks = useMemo<HomeReplyLinksApi>(() => ({ open: (origin, from) => openHomeReply.current(origin, from) }), []);
+  // Leaving Home ends the arrival: opening it again some other way is not one.
+  useEffect(() => {
+    if (!homeOpen) {
+      setHomeArrival(null);
+      setHomeReport(null);
+    }
+  }, [homeOpen]);
   const messageLinks = useMemo<MessageLinkApi>(() => ({
     href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
       ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
       : null,
     open: (link) => openLink.current(link),
+    reportHref: (link) => linkBase && workspaceId && !previewMode ? reportLinkHref(linkBase, { workspaceId, ...link }) : null,
+    openReport: (link, from) => openReport.current(link, from),
   }), [linkBase, workspaceId]);
   /** Notes where the shown conversation is being read (T-166). */
   function noteReading(latest: boolean) {
@@ -1834,8 +2131,6 @@ export function App() {
       if (position) reading.current = { agentId: shown, position };
     });
   }
-  // Search offers to open a message or an Agent link; a Home link is what a
-  // notification opens, not something to paste.
   // A name too long for the header is opened by pressing it, since the rail
   // may have had to cut it too and a title only answers a pointer (T-15).
   const nameRef = useRef<HTMLHeadingElement>(null);
@@ -1866,6 +2161,8 @@ export function App() {
   const source = catchupSource?.agentId === selected ? catchupSource : null;
   const historyWindow = !!currentDetail?.conversation?.hasAfter;
   const readingBar = !!source || historyWindow;
+  // Search offers to open a message, Agent or report link; a Home link is
+  // what a notification opens, not something to paste.
   const pastedLink = searchOpen ? parseAppLink(search) : null;
   const searchLink = pastedLink?.kind === "home" ? null : pastedLink;
   function openSearchLink() {
@@ -2447,6 +2744,7 @@ export function App() {
     <HandoffContext.Provider value={handoffApi}>
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
+    <HomeReplyLinks.Provider value={previewMode || !workspaceId ? null : homeReplyLinks}>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen || phone ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
       style={panelWidths.style}
@@ -2472,7 +2770,7 @@ export function App() {
         lang={langTag(language)}
         onMouseDown={(event) => moveWindow(frame, event)}
       >
-        <div className="toolbar-brand">
+        <div className="toolbar-brand" ref={brandBox}>
           {phone && !phoneList ? (
             <button
               ref={phoneBack}
@@ -2513,10 +2811,7 @@ export function App() {
               className={`catchup-nav ${homeOpen ? "selected" : ""}`}
               aria-current={homeOpen ? "page" : undefined}
               title={needsYou > 0 ? shell.homeWaiting(needsYou) : shell.home}
-              onClick={() => {
-                setHomeOpen(true);
-                setPhoneList(false);
-              }}
+              onClick={goHome}
             >
               <House size={15} />
               <span className="toolbar-nav-label">{shell.home}</span>
@@ -2570,7 +2865,7 @@ export function App() {
         </div>
         {frame && <WindowControls frame={frame} />}
       </header>
-      <aside className="rail" id="agent-sidebar" lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
+      <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
         <div className="rail-top">
           <RailHeading
@@ -2618,7 +2913,7 @@ export function App() {
           {searchLink && (
             <button className="quiet-button open-message-link" onClick={openSearchLink}>
               <Link2 size={13} />
-              {searchLink.kind === "agent" ? shell.openLinkedAgent : shell.openLinkedMessage}
+              {searchLink.kind === "agent" ? shell.openLinkedAgent : searchLink.kind === "report" ? shell.openLinkedReport : shell.openLinkedMessage}
             </button>
           )}
         </div>
@@ -2686,10 +2981,7 @@ export function App() {
         {outsidePending > 0 && (
           <button
             className="elsewhere-notice"
-            onClick={() => {
-              setHomeOpen(true);
-              setPhoneList(false);
-            }}
+            onClick={goHome}
             title={shell.elsewhereTitle}
           >
             <Bell size={14} />
@@ -2715,7 +3007,7 @@ export function App() {
 
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
-      <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
+      <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
         {(workspaceError || core.browser) && (
           <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
             <WifiOff size={15} />
@@ -2766,6 +3058,10 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
+            arrival={homeArrival}
+            onBackToReply={(link) => openMessageLink(link)}
+            report={homeReport}
+            visit={homeVisit}
           />
         ) : agent ? (
           <>
@@ -2920,7 +3216,7 @@ export function App() {
                   className="quiet-button"
                   onClick={() =>
                     source && sourceOrigin === "home"
-                      ? setHomeOpen(true)
+                      ? goHome()
                       : backToLatest()
                   }
                 >
@@ -2941,7 +3237,15 @@ export function App() {
                 )}
               </div>
             )}
-            <div className="conversation-body" data-phone-dock={phone && phoneDock ? phoneDock : undefined}>
+            <div
+              ref={conversationBody}
+              className="conversation-body"
+              data-phone-dock={phone && dockMotion.shown ? dockMotion.shown : undefined}
+              data-phone-dock-way={phone && dockMotion.way ? dockMotion.way : undefined}
+              onAnimationEnd={(event) => {
+                if (event.animationName === "phone-dock-in" || event.animationName === "phone-dock-out") dockMotion.end();
+              }}
+            >
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
@@ -3185,7 +3489,8 @@ export function App() {
               {phone && (
                 <PhoneDockButtons
                   open={phoneDock}
-                  onOpen={setPhoneDock}
+                  onOpen={dockMotion.choose}
+                  leaving={dockMotion.leaving}
                   turn={readingBy === "inputs" ? readingInputNumber : readingTurnNumber}
                   turns={readingBy === "inputs" ? conversationInputs.total : logicalTurns.length}
                   inputs={readingBy === "inputs"}
@@ -3573,11 +3878,11 @@ export function App() {
       </ClarificationHost.Provider>
 
       {inspectorShown && (
-        <aside className="inspector" id="context-panel" lang={langTag(language)}>
+        <aside className="inspector" id="context-panel" ref={inspectorBox} lang={langTag(language)}>
           <PanelResizeHandle side="inspector" size={panelWidths.inspector} />
           <div className="inspector-content">
             <div className="inspector-heading">
-              <span>{shell.atGlance}</span>
+              <span ref={inspectorTitle} tabIndex={-1}>{shell.atGlance}</span>
               <button
                 className="icon-button"
                 aria-label={shell.closePanel}
@@ -3678,7 +3983,9 @@ export function App() {
                   onClick={() => {
                     scroll.current?.scrollTo({
                       top: scroll.current.scrollHeight,
-                      behavior: "smooth",
+                      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+                        ? "auto"
+                        : "smooth",
                     });
                     stickToBottom.current = true;
                   }}
@@ -3732,6 +4039,7 @@ export function App() {
         projects={projects}
         scope={scope}
         focus={taskFocus}
+        workspaceId={previewMode ? "" : workspaceId}
       />
       {agent && !isClaude && !isOpenCode && (
         <CodexGoalDialog
@@ -3841,6 +4149,7 @@ export function App() {
           onForked={(outcome) => {
             const fork = outcome.agent!;
             const sourceId = agent.id;
+            markJoined(fork.id);
             // Draft protection: the unsent text is copied, never sent.
             copyDraft(sourceId, fork.id);
             setWorkspace((w) =>
@@ -3879,7 +4188,9 @@ export function App() {
         disabled={previewMode}
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}
-        onCreated={(a, source) => {
+        onCreated={(a, source, added) => {
+          // A create always makes its Agent; an import says whether it did.
+          if (added ?? !source) markJoined(a.id);
           setWorkspace((w) =>
             w
               ? {
@@ -3960,20 +4271,10 @@ export function App() {
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={15} />
-          {notice}
-        </div>
-      )}
-      {menuError && (
-        <div className="toast toast-error" role="alert">
-          <CircleAlert size={15} />
-          {menuError}
-        </div>
-      )}
+      <ToastStack notice={notice} error={menuError} />
       <HandoffDropStrip />
     </div>
+    </HomeReplyLinks.Provider>
     </MessageLinks.Provider>
     </PointFixOpen.Provider>
     </HandoffContext.Provider>

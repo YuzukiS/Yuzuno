@@ -70,6 +70,12 @@ export const BRIEF_LIMITS = {
   // (Unicode code points) and references, never a limit; Core sends at most
   // `items` with one answer.
   advice: { markdownChars: 1200, sectionMarkdownChars: 3000, refs: 12, items: 3 },
+  // One ResearchDesk (T-9): its objects, and the numbers Core reads from
+  // snapshots for one read of it.
+  research: {
+    claims: 12, plots: 8, rows: 40, parts: 4, sources: 40, definitions: 12, versions: 6, revisions: 12, plans: 6,
+    items: 16, links: 4, values: 400, textChars: 1200, pointerChars: 200,
+  },
 } as const;
 const L = BRIEF_LIMITS;
 
@@ -114,8 +120,177 @@ function chartProps<X extends z.ZodType>(x: X) {
 const metricValue = z.union([z.number().finite(), short]);
 const tableShape = componentProps.Table.shape;
 
+// ResearchDesk (T-9). A number is the Agent's own (a literal) or one Core
+// reads from a JSON snapshot of this section, {from, pointer}; Core says
+// which, and never calls either a check of the research.
+const R = L.research;
+const researchText = z.string().trim().min(1).max(R.textChars);
+const researchList = <T extends z.ZodType>(item: T) => z.array(item).max(R.items).optional();
+const jsonPointer = z
+  .string()
+  .max(R.pointerChars)
+  .regex(/^(\/([^~/]|~[01])*)+$/, "Use a JSON Pointer into the attachment, e.g. /E/avg4/mean or /rows/0/value.");
+const researchNumber = z.union([z.number().finite(), z.strictObject({ from: attachmentName, pointer: jsonPointer })]);
+const lines = z.string().regex(/^[1-9]\d{0,5}(-[1-9]\d{0,5})?$/, "Use a line or a range, e.g. 187 or 187-191.");
+const citation = z.strictObject({ source: id, lines: lines.optional() });
+const definitionVersion = z.number().int().min(1).max(99);
+const definitionRef = z.strictObject({ id, version: definitionVersion });
+const estimate = z.strictObject({
+  value: researchNumber,
+  low: researchNumber.optional(),
+  high: researchNumber.optional(),
+  definition: definitionRef.optional(),
+  cite: citation.optional(),
+});
+const researchDeskProps = z.strictObject({
+  schema: z.literal("research/1"),
+  title: short.optional(),
+  claims: z
+    .array(
+      z.strictObject({
+        id,
+        title: short,
+        statement: researchText,
+        // The author's own reading, shown as theirs.
+        status: z.enum(["supported", "conditional", "unsupported", "open"]),
+        primary: id.optional(),
+        plots: z.array(id).max(R.plots).optional(),
+        paper: researchList(z.strictObject({ label: short, cite: citation })),
+        conditions: researchList(z.strictObject({ id, text: line })),
+        statements: researchList(
+          z.strictObject({
+            id,
+            stance: z.enum(["can", "cannot"]),
+            kind: z.enum(["criterion", "interpretation", "exploratory"]),
+            text: researchText,
+            basis: z.array(id).max(R.items).optional(),
+          }),
+        ),
+        dependsOn: z.array(definitionRef).max(R.items).optional(),
+      }),
+    )
+    .min(1)
+    .max(R.claims),
+  plots: z
+    .array(
+      z.strictObject({
+        id,
+        title: short,
+        unit: unit.optional(),
+        digits: z.number().int().min(0).max(6).optional(),
+        // Shown as value × scale (e.g. 100 for a fraction shown in points);
+        // the value as the file has it is shown too.
+        scale: z.number().finite().positive().optional(),
+        interval: short.optional(),
+        reference: z.strictObject({ value: z.number().finite(), label: short }).optional(),
+        diffLabel: short.optional(),
+        partsLabel: short.optional(),
+        rows: z
+          .array(
+            z.strictObject({
+              id,
+              label: short,
+              group: short.optional(),
+              compare: id.optional(),
+              estimate,
+              parts: z.array(z.strictObject({ id, label: short, estimate })).min(1).max(R.parts).optional(),
+              note: researchText.optional(),
+            }),
+          )
+          .min(1)
+          .max(R.rows),
+      }),
+    )
+    .max(R.plots),
+  sources: z
+    .array(
+      z.strictObject({
+        id,
+        label: short,
+        kind: z.enum(["data", "paper", "notes", "script", "other"]),
+        // A file of this section's attachments; Core reads only these.
+        snapshot: attachmentName.optional(),
+        // Or a Task research record (T-17), read by Core through the task's own
+        // resolver: its identity was fixed when it was written, so it needs no
+        // attachment here.
+        task: z
+          .strictObject({
+            taskId: z.string().regex(/^T-[1-9][0-9]{0,9}$/, "Use the task ID, for example T-17."),
+            activitySeq: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+          })
+          .optional(),
+        // The Agent's description of where it came from; never read.
+        location: z.string().trim().min(1).max(400).optional(),
+        revision: z.string().regex(/^[0-9a-f]{7,64}$/, "Use a commit hash.").optional(),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/, "Use a lowercase hex SHA-256.").optional(),
+      }),
+    )
+    .max(R.sources),
+  definitions: z
+    .array(
+      z.strictObject({
+        id,
+        title: short,
+        versions: z
+          .array(
+            z.strictObject({
+              version: definitionVersion,
+              text: researchText,
+              frozenAt: time.optional(),
+              cite: citation,
+              change: researchText.optional(),
+            }),
+          )
+          .min(1)
+          .max(R.versions),
+      }),
+    )
+    .max(R.definitions)
+    .optional(),
+  revisions: z
+    .array(
+      z.strictObject({
+        id,
+        claim: id,
+        target: short,
+        definition: z.strictObject({ id, from: definitionVersion, to: definitionVersion }),
+        basis: z.enum(["declared", "author"]),
+        draft: researchText,
+      }),
+    )
+    .max(R.revisions)
+    .optional(),
+  plans: z
+    .array(
+      z.strictObject({
+        id,
+        title: short,
+        question: researchText,
+        state: z.enum(["candidate", "approved", "done"]),
+        inputs: researchList(z.strictObject({ label: short, source: id.optional() })),
+        params: researchList(z.strictObject({ name: short, value: short })),
+        compute: z.enum(["none", "cpu", "gpu"]),
+        budget: short.optional(),
+        outputs: researchList(short),
+        notProduced: researchList(short),
+        links: z
+          .array(z.strictObject({ kind: z.enum(["task", "job"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
+          .max(R.links)
+          .optional(),
+        note: researchText.optional(),
+      }),
+    )
+    .max(R.plans)
+    .optional(),
+});
+
 export const briefComponentProps = {
-  BriefBody: z.strictObject({}),
+  // T-18: what a report opens with on Home and which of its parts start
+  // folded, by the ids of the root's own children (checked with the tree).
+  BriefBody: z.strictObject({
+    summary: z.strictObject({ lead: id, visual: id.optional(), conditions: id.optional() }).optional(),
+    details: z.array(id).min(1).max(L.bodyChildren).optional(),
+  }),
   Group: z.strictObject({ title: short.optional(), tone: z.enum(["plain", "accent", "muted"]).optional() }),
   Columns: z.strictObject({ widths: z.array(z.number().int().min(1).max(4)).min(2).max(L.columns).optional() }),
   Markdown: z.strictObject({ text: z.string().min(1).max(L.bodyBytes) }),
@@ -191,15 +366,18 @@ export const briefComponentProps = {
       .max(L.attachments),
   }),
   Sources: componentProps.Sources,
+  ResearchDesk: researchDeskProps,
 };
 export type BriefComponent = keyof typeof briefComponentProps;
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
 const CHARTS = ["LineChart", "BarChart", "ScatterChart"] as const;
+/** What a summary's figure may be (T-18); Attachments with exactly one image file. */
+const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Table", "ResearchDesk", "Attachments"]);
 const isChart = (type: string): type is (typeof CHARTS)[number] => (CHARTS as readonly string[]).includes(type);
 
 /** What each component is for; brief_guide and the renderer's catalog use these. */
 export const BRIEF_COMPONENT_DESCRIPTIONS = {
-  BriefBody: "The root of every section body; no props, children only.",
+  BriefBody: "The root of every section body. summary and details name some of its own children by id; see Layout below.",
   Group: "A group of components with an optional title. tone accent or muted tints its background, e.g. for a summary across the top.",
   Columns: "Lays out its children side by side, each child one column (usually a Group). widths gives their relative widths, e.g. [2, 1]; equal without it. A narrow window stacks the columns in the order given.",
   Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. Raw HTML is not supported.",
@@ -215,11 +393,12 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
   Attachments: "Shows this section's attachments by name with optional captions.",
   Sources: "Explicit HTTPS or local file references; Table rows cite them by id in sourceIds.",
+  ResearchDesk: "A research question as claims with intervals, the conditions and limits of what may be said, the sources and definitions each number rests on, and candidate next steps; see research.",
 } as const satisfies Record<BriefComponent, string>;
 
 const leaves = [
   "Markdown", "Math", "Checklist", "Plan", "Findings", "Metrics", "Table",
-  "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources",
+  "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources", "ResearchDesk",
 ] as const satisfies readonly Exclude<BriefComponent, "BriefBody" | "Group" | "Columns">[];
 const element = z.discriminatedUnion("type", [
   z.strictObject({
@@ -311,6 +490,8 @@ export const BRIEF_PROBLEM_CODES = {
   missing_component: "A child names a missing element.",
   extra_root: "More than one BriefBody.",
   unused_component: "An element not reachable from the root.",
+  summary: "A BriefBody summary whose lead, visual or conditions is not one of the root's own children of the right type, or names a block twice.",
+  details: "A BriefBody details entry that is not a titled Group among the root's own children, is named twice or is part of the summary.",
   columns_widths: "Columns widths that do not match its children.",
   duplicate_id: "Two items, rows, columns, series or components share an id.",
   row_mismatch: "A Table row's cells do not match its columns.",
@@ -322,6 +503,11 @@ export const BRIEF_PROBLEM_CODES = {
   chart_attachment: "A chart attachment that is not a CSV, JSON or JSONL file with a path.",
   attachment_location: "An attachment without exactly one of path or url, or with a path that is not absolute or a url that is not https.",
   duplicate_attachment: "Two attachments share a name.",
+  missing_reference: "A ResearchDesk id that names no claim, plot, row, part, source, definition version or plan of that desk.",
+  research_attachment: "A ResearchDesk number read from an attachment that is not a JSON file with a path.",
+  unsaved_definition: "A ResearchDesk definition version citing a source with neither a snapshot nor a Task method record.",
+  definition_order: "A ResearchDesk revision whose definition versions do not go from older to newer.",
+  too_many_values: `A ResearchDesk reading over ${L.research.values} numbers from attachments.`,
 } as const;
 type ProblemCode = keyof typeof BRIEF_PROBLEM_CODES;
 
@@ -333,7 +519,7 @@ export const BRIEF_ADVICE_CODES = {
   many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
 } as const;
 
-export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "attachments", "limits", "errors", "examples"] as const;
+export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "research", "attachments", "limits", "errors", "examples"] as const;
 export type BriefGuidePart = (typeof BRIEF_GUIDE_PARTS)[number];
 
 /**
@@ -388,6 +574,7 @@ function partOf(input: unknown, path: Path): BriefGuidePart {
   if (top !== "body") return "sections";
   const type = elementAt(input, path)?.type;
   if (type && isChart(type)) return "charts";
+  if (type === "ResearchDesk") return "research";
   return type === "Attachments" ? "attachments" : "content";
 }
 
@@ -520,6 +707,24 @@ export function fencedBlockLines(markdown: string): number[] {
 }
 
 const DATA_FILE = /\.(csv|json|jsonl)$/i;
+/** The extensions Core knows (attachments.rs, classify), and those it shows as images. */
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"]);
+const KNOWN_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, "csv", "tsv", "json", "jsonl", "ndjson", "pdf", "md", "markdown",
+  "txt", "log", "out", "err", "yaml", "yml", "toml", "ini", "cfg", "conf", "xml", "html", "htm", "py", "rs", "ts", "tsx", "js",
+  "mjs", "sh", "c", "h", "cpp", "go", "java", "rb", "sql", "diff", "patch"]);
+/** A file name's extension as Rust's Path::extension reads it on Core's host: after the last dot of the last component, none for ".name". */
+function extension(at: string): string | null {
+  const trimmed = at.replace(/\/+$/, "");
+  const name = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : null;
+}
+/** Whether Core keeps an attachment as an image: by its path's extension when Core knows it, else by its name's; a link never. */
+function isImage(file: { name: string; path?: string }) {
+  if (file.path === undefined) return false;
+  const known = [extension(file.path), extension(file.name)].find((ext): ext is string => ext !== null && KNOWN_EXTENSIONS.has(ext));
+  return known !== undefined && IMAGE_EXTENSIONS.has(known);
+}
 const ABSOLUTE = /^(\/|[A-Za-z]:[\\/])/;
 
 /** The section with display defaults filled in, and without its op. */
@@ -549,6 +754,176 @@ function prepared(input: unknown): unknown {
  * Core context for a block edit with unchanged attachment registrations;
  * it is never read from the envelope or used for a put.
  */
+export type ResearchDesk = z.infer<typeof researchDeskProps>;
+type Attachment = NonNullable<BriefSection["attachments"]>[number];
+type ResearchNumber = z.infer<typeof researchNumber>;
+type Estimate = z.infer<typeof estimate>;
+
+/**
+ * Every number of a desk Core reads from an attachment, with where it sits
+ * (`${row or part id}.value|low|high`); Core's research read resolves these.
+ */
+export function researchReads(props: ResearchDesk): { at: string; from: string; pointer: string }[] {
+  const reads: { at: string; from: string; pointer: string }[] = [];
+  const add = (owner: string, found: Estimate) => {
+    for (const field of ["value", "low", "high"] as const) {
+      const number: ResearchNumber | undefined = found[field];
+      if (number !== undefined && typeof number !== "number") reads.push({ at: `${owner}.${field}`, from: number.from, pointer: number.pointer });
+    }
+  };
+  for (const plot of props.plots)
+    for (const row of plot.rows) {
+      add(row.id, row.estimate);
+      for (const part of row.parts ?? []) add(part.id, part.estimate);
+    }
+  return reads;
+}
+
+/** The files a desk uses: its sources' snapshots and the files its numbers are read from. */
+function researchFiles(props: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  for (const source of Array.isArray(props.sources) ? props.sources : [])
+    if (object(source) && typeof source.snapshot === "string") names.push(source.snapshot);
+  const numbers = (found: unknown) => {
+    if (object(found))
+      for (const field of ["value", "low", "high"])
+        if (object(found[field]) && typeof (found[field] as Record<string, unknown>).from === "string")
+          names.push((found[field] as Record<string, unknown>).from as string);
+  };
+  for (const plot of Array.isArray(props.plots) ? props.plots : [])
+    for (const row of object(plot) && Array.isArray(plot.rows) ? plot.rows : []) {
+      if (!object(row)) continue;
+      numbers(row.estimate);
+      for (const part of Array.isArray(row.parts) ? row.parts : []) if (object(part)) numbers(part.estimate);
+    }
+  return names;
+}
+
+/**
+ * One desk's ids and references: run by Core with every brief_update, like
+ * the rest of checkBriefSection. Returns how many LiveRefs its plans link.
+ */
+function checkResearch(
+  key: string,
+  props: ResearchDesk,
+  at: string,
+  add: (found: BriefProblem) => void,
+  needsFile: (name: string, path: string) => Attachment | undefined,
+): number {
+  const bad = (code: ProblemCode, path: string, reason: string) => add(problem(code, path, reason, "research"));
+  const desk = `ResearchDesk "${key}"`;
+  const once = (seen: Set<string>, value: string, path: string, what: string) => {
+    if (seen.has(value)) bad("duplicate_id", path, `${desk} ${what} id "${value}" is used twice; ids are unique within the desk.`);
+    seen.add(value);
+  };
+  const claims = new Set<string>();
+  const plots = new Set<string>();
+  const points = new Set<string>();
+  const rows = new Set<string>();
+  const sources = new Map<string, ResearchDesk["sources"][number]>();
+  const versions = new Map<string, Set<number>>();
+  props.sources.forEach((source, index) => {
+    if (sources.has(source.id)) bad("duplicate_id", `${at}.sources.${index}.id`, `${desk} source id "${source.id}" is used twice; ids are unique within the desk.`);
+    sources.set(source.id, source);
+    if (source.snapshot !== undefined) needsFile(source.snapshot, `${at}.sources.${index}.snapshot`);
+    if (source.snapshot !== undefined && source.task !== undefined)
+      bad("invalid_field", `${at}.sources.${index}.task`, `${desk} source "${source.id}" names both a snapshot and a Task record; a source names one of them.`);
+  });
+  const cites = (cite: { source: string } | undefined, path: string) => {
+    if (cite && !sources.has(cite.source))
+      bad("missing_reference", `${path}.source`, `${desk} cites source "${cite.source}", which its sources do not list.`);
+  };
+  (props.definitions ?? []).forEach((definition, index) => {
+    const path = `${at}.definitions.${index}`;
+    if (versions.has(definition.id)) bad("duplicate_id", `${path}.id`, `${desk} definition id "${definition.id}" is used twice; ids are unique within the desk.`);
+    const numbers = new Set<number>();
+    definition.versions.forEach((version, v) => {
+      if (numbers.has(version.version))
+        bad("duplicate_id", `${path}.versions.${v}.version`, `${desk} definition "${definition.id}" has version ${version.version} twice; add a new version number for a changed definition.`);
+      numbers.add(version.version);
+      const cited = sources.get(version.cite.source);
+      if (!cited) cites(version.cite, `${path}.versions.${v}.cite`);
+      else if (cited.snapshot === undefined && cited.task === undefined)
+        bad("unsaved_definition", `${path}.versions.${v}.cite`, `${desk} definition "${definition.id}" version ${version.version} cites source "${cited.id}", which has neither a snapshot nor a Task record: a definition version must point to a file this section keeps (sources[].snapshot naming an attachment) or a Task method record (sources[].task).`);
+    });
+    versions.set(definition.id, numbers);
+  });
+  const knows = (ref: { id: string; version: number }, path: string) => {
+    if (!versions.get(ref.id)?.has(ref.version))
+      bad("missing_reference", path, `${desk} names definition "${ref.id}" version ${ref.version}, which its definitions do not have.`);
+  };
+  let reads = 0;
+  const number = (found: ResearchNumber | undefined, path: string) => {
+    if (found === undefined || typeof found === "number") return;
+    reads++;
+    const file = needsFile(found.from, `${path}.from`);
+    if (file && (file.path === undefined || !/\.json$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads numbers from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+  };
+  const checkEstimate = (found: Estimate, path: string) => {
+    for (const field of ["value", "low", "high"] as const) number(found[field], `${path}.${field}`);
+    if (found.definition) knows(found.definition, `${path}.definition`);
+    cites(found.cite, `${path}.cite`);
+  };
+  props.plots.forEach((plot, p) => {
+    const path = `${at}.plots.${p}`;
+    once(plots, plot.id, `${path}.id`, "plot");
+    plot.rows.forEach((row, r) => {
+      const rowPath = `${path}.rows.${r}`;
+      once(points, row.id, `${rowPath}.id`, "row and part");
+      rows.add(row.id);
+      checkEstimate(row.estimate, `${rowPath}.estimate`);
+      (row.parts ?? []).forEach((part, q) => {
+        once(points, part.id, `${rowPath}.parts.${q}.id`, "row and part");
+        checkEstimate(part.estimate, `${rowPath}.parts.${q}.estimate`);
+      });
+    });
+  });
+  if (reads > R.values)
+    bad("too_many_values", `${at}.plots`, `${desk} reads ${reads} numbers from attachments; the limit is ${R.values}. Keep the rows the claims need.`);
+  props.claims.forEach((claim, c) => {
+    const path = `${at}.claims.${c}`;
+    once(claims, claim.id, `${path}.id`, "claim");
+    if (claim.primary !== undefined && !rows.has(claim.primary))
+      bad("missing_reference", `${path}.primary`, `${desk} claim "${claim.id}" primary "${claim.primary}" is not a row of its plots.`);
+    for (const plot of claim.plots ?? [])
+      if (!plots.has(plot)) bad("missing_reference", `${path}.plots`, `${desk} claim "${claim.id}" names plot "${plot}", which the desk does not have.`);
+    (claim.paper ?? []).forEach((place, index) => cites(place.cite, `${path}.paper.${index}.cite`));
+    const own = new Set<string>();
+    (claim.conditions ?? []).forEach((condition, index) => once(own, condition.id, `${path}.conditions.${index}.id`, `claim "${claim.id}" condition`));
+    (claim.statements ?? []).forEach((statement, index) => {
+      once(own, statement.id, `${path}.statements.${index}.id`, `claim "${claim.id}" statement`);
+      for (const basis of statement.basis ?? [])
+        if (!points.has(basis) && !sources.has(basis))
+          bad("missing_reference", `${path}.statements.${index}.basis`, `${desk} statement "${statement.id}" rests on "${basis}", which is no row, part or source of the desk.`);
+    });
+    (claim.dependsOn ?? []).forEach((ref, index) => knows(ref, `${path}.dependsOn.${index}`));
+  });
+  const revisions = new Set<string>();
+  (props.revisions ?? []).forEach((revision, index) => {
+    const path = `${at}.revisions.${index}`;
+    once(revisions, revision.id, `${path}.id`, "revision");
+    if (!claims.has(revision.claim))
+      bad("missing_reference", `${path}.claim`, `${desk} revision "${revision.id}" is for claim "${revision.claim}", which the desk does not have.`);
+    knows({ id: revision.definition.id, version: revision.definition.from }, `${path}.definition.from`);
+    knows({ id: revision.definition.id, version: revision.definition.to }, `${path}.definition.to`);
+    if (revision.definition.from >= revision.definition.to)
+      bad("definition_order", `${path}.definition`, `${desk} revision "${revision.id}" goes from version ${revision.definition.from} to ${revision.definition.to}; from is the older version.`);
+  });
+  const plans = new Set<string>();
+  let links = 0;
+  (props.plans ?? []).forEach((plan, index) => {
+    const path = `${at}.plans.${index}`;
+    once(plans, plan.id, `${path}.id`, "plan");
+    (plan.inputs ?? []).forEach((input, i) => {
+      if (input.source !== undefined && !sources.has(input.source))
+        bad("missing_reference", `${path}.inputs.${i}.source`, `${desk} plan "${plan.id}" input names source "${input.source}", which its sources do not list.`);
+    });
+    links += plan.links?.length ?? 0;
+  });
+  return links;
+}
+
 export function checkBriefSection(envelope: unknown, previousBody?: unknown): BriefSection {
   const input = prepared(envelope);
   const problems: BriefProblem[] = [];
@@ -641,6 +1016,48 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
     add(problem("unused_component", "body.elements", `${unused.length === 1 ? `Element ${names} is` : `Elements ${names} are`} not reachable from the root; add ${unused.length === 1 ? "it" : "them"} as a child or remove ${unused.length === 1 ? "it" : "them"}.`, "content"));
     throw fail();
   }
+  // What a report opens with on Home and which parts start folded (T-18):
+  // blocks of the root itself, each shown once.
+  const rootProps = (spec.elements[spec.root].props ?? {}) as Props<"BriefBody">;
+  const top = spec.elements[spec.root].children ?? [];
+  const typeOf = (key: string) => spec.elements[key]?.type;
+  const at = `body.elements.${spec.root}.props`;
+  const named = rootProps.summary;
+  const slots = named ? (["lead", "visual", "conditions"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
+  const SLOT_RULE = {
+    lead: ["a Markdown", (key: string) => typeOf(key) === "Markdown"],
+    visual: ["a chart, Metrics, Table, ResearchDesk, or Attachments with one image file", (key: string) => {
+      if (!SUMMARY_FIGURES.has(typeOf(key) ?? "")) return false;
+      if (typeOf(key) !== "Attachments") return true;
+      // One figure: a single image file, never a link, a table of data or a page.
+      const items = (spec.elements[key].props as Props<"Attachments">).items;
+      const file = items.length === 1 ? files.get(items[0].name) : undefined;
+      return file !== undefined && isImage(file);
+    }],
+    conditions: ["a Markdown or Checklist", (key: string) => typeOf(key) === "Markdown" || typeOf(key) === "Checklist"],
+  } as const;
+  slots.forEach(([slot, key], index) => {
+    const path = `${at}.summary.${slot}`;
+    const [what, fits] = SLOT_RULE[slot];
+    if (!top.includes(key))
+      add(problem("summary", path, `summary.${slot} "${key}" is not one of the root's own children; name a block directly under the root.`, "content"));
+    else if (slots.findIndex(([, other]) => other === key) < index)
+      add(problem("summary", path, `summary.${slot} "${key}" is already named in summary; each block is shown once.`, "content"));
+    else if (!fits(key))
+      add(problem("summary", path, `summary.${slot} is ${what}; "${key}" is ${typeOf(key) === "Attachments" ? "Attachments that is not one image file" : `a ${typeOf(key)}`}.`, "content"));
+  });
+  (rootProps.details ?? []).forEach((key, index) => {
+    const path = `${at}.details.${index}`;
+    const node = spec.elements[key];
+    if (!top.includes(key))
+      add(problem("details", path, `details names "${key}", not one of the root's own children; name a titled Group directly under the root.`, "content"));
+    else if (node.type !== "Group" || !(node.props as Props<"Group">).title)
+      add(problem("details", path, `details names "${key}", ${node.type === "Group" ? "a Group without a title" : `a ${node.type}`}; only a titled Group folds, under its title.`, "content"));
+    else if (rootProps.details!.indexOf(key) < index)
+      add(problem("details", path, `details names "${key}" twice.`, "content"));
+    else if (slots.some(([, other]) => other === key))
+      add(problem("details", path, `details names "${key}", which summary shows; a summary block never folds.`, "content"));
+  });
 
   // Each block: limits, unique ids and references.
   const groups = new Set<string>();
@@ -651,12 +1068,15 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
     const dupe = ids.find((value, index) => ids.indexOf(value) !== index);
     if (dupe !== undefined) add(problem("duplicate_id", path, `${what} "${dupe}" is used twice; ids must be unique.`, "content"));
   };
-  const needsFile = (name: string, path: string, chart: boolean) => {
+  const needsFile = (name: string, path: string, chart: boolean): Attachment | undefined => {
     const file = files.get(name);
-    if (!file)
-      return add(problem("missing_attachment", path, `"${name}" is not in this section's attachments; add {name: "${name}", path} to attachments.`, "attachments"));
+    if (!file) {
+      add(problem("missing_attachment", path, `"${name}" is not in this section's attachments; add {name: "${name}", path} to attachments.`, "attachments"));
+      return undefined;
+    }
     if (chart && (file.path === undefined || !DATA_FILE.test(file.path)))
       add(problem("chart_attachment", path, `Charts read data files only: attachment "${name}" needs a path ending in .csv, .json or .jsonl.`, "charts"));
+    return file;
   };
   for (const [key, node] of entries) {
     const at = `body.elements.${key}.props`;
@@ -677,6 +1097,10 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
         break;
       case "LiveRefs":
         refs += (node.props as Props<"LiveRefs">).items.length;
+        break;
+      case "ResearchDesk":
+        // Its plans' links are LiveRefs too, read live like theirs.
+        refs += checkResearch(key, node.props as Props<"ResearchDesk">, at, add, (name, path) => needsFile(name, path, false));
         break;
       case "Columns": {
         const widths = (node.props as Props<"Columns">).widths;
@@ -774,6 +1198,7 @@ function attachmentReferences(body: unknown): Set<string> {
           if (object(item) && typeof item.name === "string") names.add(item.name);
       } else if (typeof node.type === "string" && isChart(node.type) && object(node.props.data)
         && typeof node.props.data.attachment === "string") names.add(node.props.data.attachment);
+      else if (node.type === "ResearchDesk") for (const name of researchFiles(node.props)) names.add(name);
     }
     if (["BriefBody", "Group", "Columns"].includes(String(node.type)) && Array.isArray(node.children))
       for (const child of node.children) if (typeof child === "string") pending.push(child);
@@ -1115,12 +1540,14 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   ],
   content: [
     `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?}. root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group and Columns have children. ${SIGNATURE_LEGEND} Components:`,
-    ...(Object.keys(briefComponentProps) as BriefComponent[]).filter((type) => !isChart(type)).map(componentLine),
+    ...(Object.keys(briefComponentProps) as BriefComponent[]).filter((type) => !isChart(type) && type !== "ResearchDesk").map(componentLine),
     `- ${CHARTS.join(", ")}: see charts.`,
+    `- ResearchDesk: see research.`,
     `Table and chart ids, row ids, item ids and column keys are unique. Sources hrefs are http(s) URLs or local file paths (optionally :line); Table rows cite them by id in sourceIds.`,
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?}: ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
@@ -1130,6 +1557,16 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- series: inline points [[x, y], ...], at most ${L.chartPoints} points across all series. LineChart and BarChart x is a number or a short label; ScatterChart x is a number; y is a number.`,
     `- data: {attachment, x, series:[{name, column}]}. attachment names one of this section's attachments whose path ends in .csv, .json or .jsonl (CSV with a header row, a JSON array of objects, or one JSON object per line). x and each column name a CSV header or JSON key. Yuzuno reads the snapshot taken when you wrote the section and downsamples each series to at most ${L.chartPointsPerSeriesFromData} points.`,
     `At most ${L.chartSeries} series per chart. Use data for anything over ${L.chartPoints} points.`,
+  ],
+  research: [
+    componentLine("ResearchDesk"),
+    `One block for a research question: what each claim may and may not say, the numbers and intervals it rests on, under which conditions, from which sources and under which definition, and what could be done next. The reader selects a claim, a row or one of its parts; the block keeps that selection across your later versions while the ids stay. Use your own ids and keep them across versions.`,
+    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
+    `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section. A source may instead name a Task research record, task: {taskId, activitySeq}, one you or another Agent wrote with task_comment research: it is shown as the task keeps it (its type, title, producer and version) and needs no attachment; that is the record's identity, not a check of it. Removing the section leaves the record on its task.`,
+    `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file) or a source naming a Task method record. A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
+    `Claims: status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
+    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks or Jobs, shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
+    `Limits: ${R.claims} claims, ${R.plots} plots, ${R.rows} rows per plot, ${R.parts} parts per row, ${R.sources} sources, ${R.definitions} definitions with ${R.versions} versions each, ${R.revisions} revisions, ${R.plans} plans, ${R.items} entries per list, ${R.textChars} characters per text.`,
   ],
   attachments: [
     formatComponentGuide("attachments", z.array(attachmentSchema).max(L.attachments), "Files and links of this section."),
@@ -1158,7 +1595,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
-    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), and changes that break owner, topic or open-ask rules.`,
+    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
     `Each is one change for brief_update changes.`,

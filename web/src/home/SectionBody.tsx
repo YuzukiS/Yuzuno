@@ -9,10 +9,13 @@ export function SectionBody({
   section,
   projectId,
   changes,
+  only,
 }: {
   section: Section;
   projectId: string;
   changes?: BlockChanges | null;
+  /** Only these top-level blocks (T-18), as BriefSectionBody says. */
+  only?: readonly string[];
 }) {
   const navigate = useHomeNavigation();
   const openAgent = useCallback((agentId: string) => navigate({ kind: "agent", agentId }), [navigate]);
@@ -25,6 +28,7 @@ export function SectionBody({
       section={section}
       projectId={projectId}
       changes={changes}
+      only={only}
       onOpenAgent={openAgent}
       onOpenMachine={openMachine}
     />

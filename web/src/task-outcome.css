@@ -396,6 +396,38 @@
   margin: 18px 0 10px;
   font-size: 0.8rem;
 }
+/* Research records a criterion cites (T-17): as cited, with where each
+   line stands now. */
+.outcome-records {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.outcome-record {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.outcome-record:first-child {
+  border-top: 0;
+}
+.outcome-record-type {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.outcome-record-support {
+  font-size: 0.82rem;
+}
+.outcome-record .outcome-note {
+  margin: 0;
+}
 .outcome-artifact {
   background: var(--surface-soft);
   border: 1px solid var(--line);
@@ -576,4 +608,11 @@
   .outcome-overview > div {
     grid-template-columns: 76px minmax(0, 1fr);
   }
+}
+
+/* The result drawer's tabs ease their indicator and colour (T-19). */
+.outcome-tabs button {
+  transition:
+    color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard);
 }

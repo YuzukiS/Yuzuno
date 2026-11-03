@@ -16,7 +16,11 @@
 //! second one waits for none, it is refused while another runs. Only the
 //! Serve entry Core created, or adopted because it was exactly the wanted
 //! one, is ever changed, and only while it is still exactly that.
+//!
+//! Phone previews (T-5) are a second such entry, of their own, beside this
+//! one: see `preview`.
 mod host;
+mod preview;
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +40,7 @@ use std::{path::{Path, PathBuf}, sync::{Arc, Mutex, OnceLock}, time::Duration};
 use tokio::sync::watch;
 
 pub(crate) use host::Host;
+pub(crate) use preview::door as preview_door;
 
 pub const DEFAULT_SERVE_PORT: u16 = 8444;
 pub const DEFAULT_LOCAL_PORT: u16 = 4318;
@@ -105,9 +110,10 @@ pub(crate) struct ApplyRequest {
     local_port: Option<u16>,
 }
 
+/// One recorded change, of phone access or (with its own request) of phone previews.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Operation {
+struct Operation<R = ApplyRequest> {
     id: String,
     request_id: String,
     kind: String,
@@ -122,7 +128,7 @@ struct Operation {
     finished_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    request: ApplyRequest,
+    request: R,
 }
 
 struct Running {
@@ -152,6 +158,8 @@ pub(crate) struct State {
     startup_error: OnceLock<String>,
     observed: Mutex<Value>,
     host: Mutex<Option<Host>>,
+    /// Phone previews' listener (T-5); see `preview`.
+    preview: preview::State,
     #[cfg(test)]
     pub(super) test_host: OnceLock<Host>,
 }
@@ -217,23 +225,28 @@ pub struct Startup {
     listen: Option<(Entry, &'static str)>,
     environment: Option<Entry>,
     error: Option<String>,
+    /// Phone previews, from their own record: never the phone entry's concern.
+    preview: (Option<(preview::Ports, String)>, Option<String>),
 }
 
 pub struct Bound {
     listener: Option<(tokio::net::TcpListener, Entry, &'static str)>,
     environment: Option<Entry>,
     error: Option<String>,
+    preview: (Option<(tokio::net::TcpListener, preview::Ports, String)>, Option<String>),
 }
 
 pub fn startup(data: &Path, environment: Option<(u16, RemoteEntry)>) -> Startup {
     let environment = environment.map(|(port, entry)| Entry { port, origin: entry.origin().to_owned(), login: entry.login().to_owned() });
+    let preview = preview::startup(data);
     match read(&data.join(FILE)) {
-        Ok(Saved { effective: Some(applied), .. }) => Startup { listen: applied.listen.map(|e| (e, "settings")), environment, error: None },
-        Ok(_) => Startup { listen: environment.clone().map(|e| (e, "environment")), environment, error: None },
+        Ok(Saved { effective: Some(applied), .. }) => Startup { listen: applied.listen.map(|e| (e, "settings")), environment, error: None, preview },
+        Ok(_) => Startup { listen: environment.clone().map(|e| (e, "environment")), environment, error: None, preview },
         Err(error) => Startup {
             listen: None,
             environment,
             error: Some(format!("Phone access was not started: {error:#}. Apply it again from Settings.")),
+            preview,
         },
     }
 }
@@ -242,21 +255,24 @@ impl Startup {
     /// Bind the listener before the Workspace opens. A YUZUNO_REMOTE_PORT
     /// that cannot be bound stops Core, as it always did; a port Settings
     /// chose only leaves phone access off, with the reason on the page.
+    /// Phone previews' port is bound after it, never on its port, and never
+    /// stops Core.
     pub async fn bind(self) -> Result<Bound> {
-        let Some((entry, source)) = self.listen else {
-            return Ok(Bound { listener: None, environment: self.environment, error: self.error });
+        let phone = self.listen.as_ref().map(|(entry, _)| entry.port);
+        let (listener, error) = match self.listen {
+            None => (None, self.error),
+            Some((entry, source)) => match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, entry.port)).await {
+                Ok(listener) => (Some((listener, entry, source)), None),
+                Err(error) if source == "environment" => {
+                    return Err(anyhow::Error::new(error).context("Cannot bind the remote entry's loopback port (YUZUNO_REMOTE_PORT)"));
+                }
+                Err(error) => (None, Some(format!(
+                    "Phone access could not listen on 127.0.0.1:{}: {error}. Apply it again from Settings, or choose another port.", entry.port
+                ))),
+            },
         };
-        match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, entry.port)).await {
-            Ok(listener) => Ok(Bound { listener: Some((listener, entry, source)), environment: self.environment, error: None }),
-            Err(error) if source == "environment" => {
-                Err(anyhow::Error::new(error).context("Cannot bind the remote entry's loopback port (YUZUNO_REMOTE_PORT)"))
-            }
-            Err(error) => Ok(Bound {
-                listener: None,
-                environment: self.environment,
-                error: Some(format!("Phone access could not listen on 127.0.0.1:{}: {error}. Apply it again from Settings, or choose another port.", entry.port)),
-            }),
-        }
+        let preview = preview::bind_startup(self.preview.0, self.preview.1, phone).await;
+        Ok(Bound { listener, environment: self.environment, error, preview })
     }
 }
 
@@ -293,6 +309,7 @@ pub fn run(ws: &Arc<Workspace>, bound: Bound, assets: PathBuf, updates: Option<A
             Err(error) => eprintln!("Remote entry not started: {error:#}"),
         }
     }
+    preview::run(ws, bound.preview.0, bound.preview.1);
 }
 
 // ---- the listener -------------------------------------------------------
@@ -612,6 +629,7 @@ async fn view(ws: &Arc<Workspace>, can_change: bool) -> Result<Value> {
         "defaults": {"servePort": DEFAULT_SERVE_PORT, "localPort": DEFAULT_LOCAL_PORT},
         "canChange": can_change,
         "readOnlyReason": (!can_change).then_some("Phone access is changed from Yuzuno on the computer that runs Core, not through the phone entry."),
+        "preview": preview::view(ws),
     }))
 }
 
@@ -728,6 +746,11 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     let local_port = op.request.local_port.unwrap_or(DEFAULT_LOCAL_PORT);
     anyhow::ensure!(serve_port != 0 && local_port != 0, "Ports must be 1–65535");
     anyhow::ensure!(local_port != context.core_port, "The local port must differ from Core's own port {}", context.core_port);
+    // Previews' ports, even while they could not start: a phone entry there would take them at the next start.
+    for kept in preview::kept(ws) {
+        anyhow::ensure!(local_port != kept.local_port, "Port {local_port} is kept for phone previews; choose another local port, or turn phone previews off first");
+        anyhow::ensure!(serve_port != kept.serve_port, "Serve port {serve_port} is kept for phone previews; choose another Serve port, or turn phone previews off first");
+    }
     let origin = if serve_port == 443 { format!("https://{dns}") } else { format!("https://{dns}:{serve_port}") };
     RemoteEntry::new(&origin, &login)?;
     let entry = Entry { port: local_port, origin: origin.clone(), login: login.clone() };
@@ -920,16 +943,20 @@ async fn disable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result
         saved.owned = keep_owned.clone();
         Ok(())
     })?;
+    // Previews go through the phone entry, so they go off with it.
+    let previews = preview::follow_off(ws, host, &op.request_id).await;
     op.step = "done".into();
-    if uncertain {
+    let state = if uncertain {
         op.error = Some("Phone access is off in Core; whether Serve still lists its port is unknown. Disable again to check".into());
-        return Ok("uncertain");
-    }
-    if keep_owned.is_some() {
+        "uncertain"
+    } else if keep_owned.is_some() {
         op.error = Some(op.notes.join("; "));
-        return Ok("failed");
-    }
-    Ok("succeeded")
+        "failed"
+    } else {
+        "succeeded"
+    };
+    op.notes.extend(previews);
+    Ok(state)
 }
 
 // ---- HTTP ---------------------------------------------------------------
@@ -949,6 +976,9 @@ async fn post_check(AppState(ws): AppState<Arc<Workspace>>, request: Request) ->
     let saved = read(&path(&ws)).unwrap_or_default();
     let result = check(&ws, &host, current(&ws), planned(&saved)).await;
     observe(&ws, &result);
+    let name = (result["tailscale"]["state"] == "running").then(|| result["tailscale"]["dnsName"].as_str()).flatten();
+    let previews = preview::check(&ws, &host, name, preview::planned(&ws)).await;
+    preview::observe(&ws, &previews);
     changed(&ws);
     Ok(Json(view(&ws, can_change).await?))
 }
@@ -968,9 +998,12 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/remote-access", get(get_view))
         .route("/api/remote-access/check", post(post_check))
         .route("/api/remote-access/operations/{id}", get(get_operation))
+        .route("/api/remote-access/preview/operations/{id}", get(preview::get_change))
 }
 
 /// Changing routes: on Core's own port only, so a phone cannot lock itself out.
 pub(crate) fn changes() -> Router<Arc<Workspace>> {
-    Router::new().route("/api/remote-access/apply", post(post_apply))
+    Router::new()
+        .route("/api/remote-access/apply", post(post_apply))
+        .route("/api/remote-access/preview", post(preview::post_change))
 }

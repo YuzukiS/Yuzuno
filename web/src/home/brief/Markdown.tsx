@@ -1,26 +1,15 @@
 import { useMemo } from "react";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
-import { parseMessageLink, useMessageLinks } from "../../deep-link";
+import { parseMessageLink, parseReportLink, useMessageLinks } from "../../deep-link";
+import { briefMarkdownHtml } from "./markdown-html";
 
 /**
- * GitHub-flavoured Markdown written by an Agent, sanitized the way the
- * conversation's Prose is: no images (an Agent never makes the page load an
- * external one), forms, buttons, frames or styles. Fenced code and log
- * excerpts keep their lines and scroll inside a bounded block.
+ * GitHub-flavoured Markdown written by an Agent, sanitized as
+ * briefMarkdownHtml says. Fenced code and log excerpts keep their lines and
+ * scroll inside a bounded block.
  */
 export function BriefMarkdown({ text }: { text: string }) {
-  const html = useMemo(
-    () => ({
-      __html: DOMPurify.sanitize(marked.parse(text, { async: false, gfm: true }), {
-        USE_PROFILES: { html: true },
-        FORBID_TAGS: ["img", "form", "input", "button", "iframe", "style"],
-        FORBID_ATTR: ["style"],
-      }),
-    }),
-    [text],
-  );
+  const html = useMemo(() => ({ __html: briefMarkdownHtml(text) }), [text]);
   const links = useMessageLinks();
   return (
     <div
@@ -34,6 +23,13 @@ export function BriefMarkdown({ text }: { text: string }) {
         if (message) {
           event.preventDefault();
           links.open(message);
+          return;
+        }
+        // A link to a report opens it over Home (T-18).
+        const report = links && parseReportLink(link.getAttribute("href") || "");
+        if (report) {
+          event.preventDefault();
+          links.openReport(report);
           return;
         }
         // Web links open outside Home; anything else (a relative or file

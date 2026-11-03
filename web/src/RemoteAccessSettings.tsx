@@ -18,6 +18,7 @@ import {
   type RemoteAccessOperation,
   type RemoteAccessView,
 } from "./remote-access";
+import { RemoteAccessPreviews } from "./RemoteAccessPreviews";
 import "./remote-access.css";
 
 /** The advanced fields as typed: empty means Core's default. */
@@ -292,13 +293,18 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
     setFields((old) => old ?? fieldsOf(pending.current?.draft.enabled ? pending.current.draft : undefined, next));
   }, [workspaceId]);
 
+  /** Reads the view again, and says whether it did: a failed read is shown,
+   * never thrown. */
   const refresh = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal): Promise<boolean> => {
       try {
         const next = await api<RemoteAccessView>("/remote-access", { signal });
-        if (!signal?.aborted) accept(next);
+        if (signal?.aborted) return false;
+        accept(next);
+        return true;
       } catch (e) {
         if (!signal?.aborted) setLoadError(errorText(e));
+        return false;
       }
     },
     [accept],
@@ -553,6 +559,7 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   {operationSteps.map((step, index) => (
                     <li key={step} data-state={index < stepIndex ? "done" : index === stepIndex ? "running" : "pending"}>
                       {labels.operation[step]}
+                      {index === stepIndex && <span className="step-moving" aria-hidden="true" />}
                     </li>
                   ))}
                 </ol>
@@ -662,6 +669,15 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
             <p className="updates-error" role="alert" ref={errorLine}>
               {saidText(error, language)}
             </p>
+          )}
+          {supported && view.preview && (
+            <RemoteAccessPreviews
+              preview={view.preview}
+              canChange={view.canChange}
+              workspaceId={workspaceId}
+              phoneBusy={busy || sending}
+              refresh={refresh}
+            />
           )}
         </>
       )}

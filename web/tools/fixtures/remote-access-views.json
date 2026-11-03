@@ -1,5 +1,5 @@
 {
-  "_about": "T-185 example GET /api/remote-access views for the frontend (Dev 5, contract in T-185 comment 6798; field 'startupError' added: a startup that could not serve the applied entry). Synthetic names only. Added by Dev 3 for the contract test (Dev 5 8683): 'qr' in appliedVerified is a placeholder 25-module pattern with three finder patterns, not a scannable code; 'readOnlyReason' in remoteEntryReadOnly.",
+  "_about": "T-185 example GET /api/remote-access views for the frontend (Dev 5, contract in T-185 comment 6798; field 'startupError' added: a startup that could not serve the applied entry). Synthetic names only. Added by Dev 3 for the contract test (Dev 5 8683): 'qr' in appliedVerified is a placeholder 25-module pattern with three finder patterns, not a scannable code; 'readOnlyReason' in remoteEntryReadOnly. T-5 (Dev 3): 'preview' in appliedVerified is phone previews turned on and verified; 'previewConflict' is a previews view alone (not a whole one) before they are turned on, with their Serve port taken.",
   "unsupported": {
     "support": {"state": "unsupported", "reason": "This Core runs on Linux, not WSL. Phone access from Settings supports one setup for now: Core in WSL with Tailscale for Windows on the same PC. Any other host, a Tailscale inside WSL included, is not configured from here.",
       "coreHost": {"kind": "linux", "name": "lab-host", "networking": "unknown"}, "tailscaleHost": {"kind": "none"}},
@@ -37,7 +37,20 @@
     "verification": {"ok": true, "at": "2026-10-24T17:31:03Z", "steps": [{"id": "host", "state": "ok", "detail": "…"}, {"id": "tailscale", "state": "ok", "detail": "…"}, {"id": "https", "state": "ok", "detail": "…"}, {"id": "listener", "state": "ok", "detail": "…"}, {"id": "hop", "state": "ok", "detail": "…"}, {"id": "serve", "state": "ok", "detail": "…"}, {"id": "endToEnd", "state": "ok", "detail": "…"}]},
     "operation": {"id": "0f6c…", "requestId": "page-1", "kind": "apply", "state": "succeeded", "step": "done", "startedAt": "2026-10-24T17:31:00Z", "finishedAt": "2026-10-24T17:31:03Z", "url": "https://pc.tail0.ts.net:8444",
       "request": {"requestId": "page-1", "enabled": true, "login": null, "servePort": null, "localPort": null}},
-    "url": "https://pc.tail0.ts.net:8444", "qr": {"size": 25, "rows": ["1111111100101010011111111", "1000001010100101011000001", "1011101001010100101011101", "1011101101001010101011101", "1011101010101001011011101", "1000001010010101001000001", "1111111101010010101111111", "1001010100101010010101001", "0101001010100101010010101", "0010101001010100101010010", "1010010101001010100101010", "0101010010101001010100101", "0100101010010101001010100", "1010100101010010101001010", "1001010100101010010101001", "0101001010100101010010101", "0010101001010100101010010", "1010010101001010100101010", "1111111010101001010100101", "1000001010010101001010100", "1011101101010010101001010", "1011101100101010010101001", "1011101010100101010010101", "1000001001010100101010010", "1111111101001010100101010"]}, "startupError": null, "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true
+    "url": "https://pc.tail0.ts.net:8444", "qr": {"size": 25, "rows": ["1111111100101010011111111", "1000001010100101011000001", "1011101001010100101011101", "1011101101001010101011101", "1011101010101001011011101", "1000001010010101001000001", "1111111101010010101111111", "1001010100101010010101001", "0101001010100101010010101", "0010101001010100101010010", "1010010101001010100101010", "0101010010101001010100101", "0100101010010101001010100", "1010100101010010101001010", "1001010100101010010101001", "0101001010100101010010101", "0010101001010100101010010", "1010010101001010100101010", "1111111010101001010100101", "1000001010010101001010100", "1011101101010010101001010", "1011101100101010010101001", "1011101010100101010010101", "1000001001010100101010010", "1111111101001010100101010"]}, "startupError": null, "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true,
+    "preview": {
+      "saved": {"enabled": true, "servePort": 8445, "localPort": 4319, "savedAt": "2026-10-24T17:32:00Z", "applied": true},
+      "listening": {"port": 4319, "servePort": 8445, "since": "2026-10-24T17:32:01Z"},
+      "serve": {"state": "ours", "port": 8445, "target": "http://127.0.0.1:4319", "detail": "https://pc.tail0.ts.net:8445 serves http://127.0.0.1:4319", "observedAt": "2026-10-24T17:32:02Z"},
+      "verification": {"ok": true, "at": "2026-10-24T17:32:03Z", "steps": [
+        {"id": "listener", "state": "ok", "detail": "Core answers on 127.0.0.1:4319 and refuses a request without the allowed Tailscale login"},
+        {"id": "hop", "state": "ok", "detail": "Windows reaches Core's phone previews on 127.0.0.1:4319"},
+        {"id": "serve", "state": "ok", "detail": "https://pc.tail0.ts.net:8445 serves http://127.0.0.1:4319"},
+        {"id": "endToEnd", "state": "ok", "detail": "https://pc.tail0.ts.net:8445 reached Core's phone previews through Serve as this PC's Tailscale login"}]},
+      "operation": {"id": "5b2e…", "requestId": "page-p1", "kind": "apply", "state": "succeeded", "step": "done", "startedAt": "2026-10-24T17:32:00Z", "finishedAt": "2026-10-24T17:32:03Z", "url": "https://pc.tail0.ts.net:8445",
+        "request": {"requestId": "page-p1", "enabled": true, "servePort": null, "localPort": null}},
+      "url": "https://pc.tail0.ts.net:8445", "startupError": null, "defaults": {"servePort": 8445, "localPort": 4319}, "available": true
+    }
   },
   "rolledBackAtServe": {
     "_note": "Saved 8445 is not applied; the previous entry on 8444 still applies and url stays the previous one.",
@@ -61,6 +74,18 @@
       {"id": "hop", "state": "failed", "detail": "Windows could not reach Core on 127.0.0.1:4318 (…); WSL networking is nat"}, {"id": "serve", "state": "ok", "detail": "…"}, {"id": "endToEnd", "state": "skipped", "detail": "Needs the Serve entry and the Windows hop"}]}
   },
   "remoteEntryReadOnly": {"_note": "Same view through the phone entry: canChange false; POST /api/remote-access/apply is not served there.", "canChange": false, "readOnlyReason": "This page is open through the phone entry. Change phone access from Yuzuno on the computer, so this phone cannot lock itself out."},
+  "previewConflict": {
+    "_note": "Phone access is on; previews are not. Check found their Serve port taken by another entry.",
+    "saved": null, "listening": null,
+    "serve": {"state": "conflict", "port": 8445, "target": "http://127.0.0.1:4319", "detail": "Port 8445 is already used by another Serve configuration (https://pc.tail0.ts.net:8445/ → http://127.0.0.1:9999); it is left as it is", "observedAt": "2026-10-24T17:35:00Z"},
+    "verification": {"ok": false, "at": "2026-10-24T17:35:00Z", "steps": [
+      {"id": "listener", "state": "failed", "detail": "Core is not listening for phone previews"},
+      {"id": "hop", "state": "skipped", "detail": "Needs Core listening"},
+      {"id": "serve", "state": "failed", "detail": "Port 8445 is already used by another Serve configuration (https://pc.tail0.ts.net:8445/ → http://127.0.0.1:9999); it is left as it is"},
+      {"id": "endToEnd", "state": "skipped", "detail": "Needs the Serve entry and the Windows hop"}]},
+    "operation": null, "url": null, "startupError": null, "defaults": {"servePort": 8445, "localPort": 4319}, "available": true
+  },
+  "previewSteps": ["listener", "hop", "serve", "endToEnd"],
   "operationStates": ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted"],
   "operationSteps": ["validate", "save", "listen", "serve", "verify", "done"],
   "serveStates": ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"],

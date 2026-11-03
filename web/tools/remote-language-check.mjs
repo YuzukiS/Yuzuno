@@ -114,27 +114,33 @@ async function elsewhere(language, box, heading) {
   await page.waitForTimeout(300);
   return report.reads.slice(before);
 }
+// Phone access's own parts: Previews on the phone (T-5), below it, reuse
+// its classes and are not what this check is about.
+const own = (selector) => `${selector}:not(.remote-access-previews *)`;
 const remote = (reads) => reads.filter((read) => read.includes("/api/remote-access") || !read.startsWith("GET "));
 const count = (read) => report.reads.filter((r) => r === read).length;
-const state = (box) => box.evaluate((el) => ({
-  lang: el.getAttribute("lang"),
-  heading: el.querySelector("h3").textContent,
-  badge: el.querySelector(".settings-current").textContent,
-  hosts: [...el.querySelectorAll(".remote-access-hosts div")].map((d) => [d.querySelector("dt").textContent, d.querySelector("dd").textContent]),
-  notes: [...el.querySelectorAll(".remote-access-note")].map((p) => p.textContent),
-  lines: [...el.querySelectorAll(".remote-access-states li")].map((li) => [li.dataset.tone, ...[...li.children].map((s) => s.textContent)]),
-  stepsOpen: el.querySelector(".remote-access-verification").open,
-  steps: [...el.querySelectorAll(".remote-access-verification li")].map((li) => li.textContent),
-  href: el.querySelector(".remote-access-result a").getAttribute("href"),
-  qr: [el.querySelector(".remote-access-qr").getAttribute("aria-label"), el.querySelector(".remote-access-qr path").getAttribute("d")],
-  alerts: [...el.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
-  coreNotes: [...el.querySelectorAll(".remote-access-notes li")].map((li) => li.textContent),
-  advancedOpen: el.querySelector(".remote-access-advanced").open,
-  inputs: [...el.querySelectorAll(".remote-access-advanced input")].map((i) => i.value),
-  preview: el.querySelector(".remote-access-preview")?.textContent ?? null,
-  buttons: [...el.querySelectorAll(".remote-access-actions button")].map((b) => [b.textContent, b.disabled]),
-  pending: localStorage.getItem("yuzuno.remoteAccess.pending:ws-remote-language"),
-}));
+const state = (box) => box.evaluate((el) => {
+  const own = (selector) => `${selector}:not(.remote-access-previews *)`;
+  return {
+    lang: el.getAttribute("lang"),
+    heading: el.querySelector(own("h3")).textContent,
+    badge: el.querySelector(own(".settings-current")).textContent,
+    hosts: [...el.querySelectorAll(own(".remote-access-hosts div"))].map((d) => [d.querySelector("dt").textContent, d.querySelector("dd").textContent]),
+    notes: [...el.querySelectorAll(own(".remote-access-note"))].map((p) => p.textContent),
+    lines: [...el.querySelectorAll(own(".remote-access-states li"))].map((li) => [li.dataset.tone, ...[...li.children].map((s) => s.textContent)]),
+    stepsOpen: el.querySelector(own(".remote-access-verification")).open,
+    steps: [...el.querySelectorAll(own(".remote-access-verification li"))].map((li) => li.textContent),
+    href: el.querySelector(own(".remote-access-result a")).getAttribute("href"),
+    qr: [el.querySelector(own(".remote-access-qr")).getAttribute("aria-label"), el.querySelector(own(".remote-access-qr path")).getAttribute("d")],
+    alerts: [...el.querySelectorAll(own('[role="alert"]'))].map((a) => a.textContent),
+    coreNotes: [...el.querySelectorAll(own(".remote-access-notes li"))].map((li) => li.textContent),
+    advancedOpen: el.querySelector(own(".remote-access-advanced")).open,
+    inputs: [...el.querySelectorAll(own(".remote-access-advanced input"))].map((i) => i.value),
+    preview: el.querySelector(own(".remote-access-preview"))?.textContent ?? null,
+    buttons: [...el.querySelectorAll(own(".remote-access-actions button"))].map((b) => [b.textContent, b.disabled]),
+    pending: localStorage.getItem("yuzuno.remoteAccess.pending:ws-remote-language"),
+  };
+});
 
 try {
   await page.goto(`https://${HOST}/`);
@@ -143,17 +149,17 @@ try {
 
   // ---- In English: checked, a port typed, a refusal, the steps open.
   let box = await openEditor("phone", "Phone & remote access", "remote");
-  await box.locator(".remote-access-states").waitFor({ timeout: 10_000 });
+  await box.locator(own(".remote-access-states")).waitFor({ timeout: 10_000 });
   await box.getByRole("button", { name: "Check", exact: true }).click();
-  await box.locator(".remote-access-actions .primary-button:not([disabled])").waitFor({ timeout: 10_000 });
-  await box.locator(".remote-access-advanced summary").click();
-  await box.locator(".remote-access-advanced input").nth(0).fill("9443");
-  const preview = await box.locator(".remote-access-preview").textContent();
+  await box.locator(own(".remote-access-actions .primary-button:not([disabled])")).waitFor({ timeout: 10_000 });
+  await box.locator(own(".remote-access-advanced summary")).click();
+  await box.locator(own(".remote-access-advanced input")).nth(0).fill("9443");
+  const preview = await box.locator(own(".remote-access-preview")).textContent();
   assert.equal(preview, "Your phone will open https://pc.tail0.ts.net:9443");
-  await box.locator(".remote-access-advanced input").nth(1).fill("70000");
+  await box.locator(own(".remote-access-advanced input")).nth(1).fill("70000");
   await box.getByRole("button", { name: "Save and apply" }).click();
   await box.locator('[role="alert"]', { hasText: "must be a port" }).waitFor({ timeout: 10_000 });
-  await box.locator(".remote-access-verification summary").click();
+  await box.locator(own(".remote-access-verification summary")).click();
   const en = await state(box);
   assert.deepEqual([en.lang, en.heading, en.badge], ["en", "Phone access", "Not verified"]);
   assert.deepEqual(en.lines[3], ["warn", "Verification", `Failed at “From Windows to Core”: ${HOP}`]);

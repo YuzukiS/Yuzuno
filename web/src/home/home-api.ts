@@ -30,6 +30,10 @@ export type HomeReplyInput = {
    * `version`, which is a card's. */
   askVersion?: number;
   workspaceId?: string;
+  /** A form's answers (T-9), beside `text`, which must say exactly them
+   * (AskReply's formText): Core checks both against that version's form and
+   * keeps the answers by label, or sends nothing. */
+  form?: { formId: string; answers: Record<string, string | string[]> };
 };
 
 export type LinkedRepositories = {
@@ -132,7 +136,7 @@ export async function sendReply(
   projectId: string,
   reply: {
     key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string;
-    askVersion?: number; workspaceId?: string; shown?: string;
+    askVersion?: number; workspaceId?: string; form?: HomeReplyInput["form"]; shown?: string;
   },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
@@ -145,7 +149,8 @@ export async function sendReply(
     (kept.version ?? null) === (reply.version ?? null) &&
     (kept.title ?? null) === (reply.title ?? null) &&
     (kept.askVersion ?? null) === (reply.askVersion ?? null) &&
-    (kept.workspaceId ?? null) === (reply.workspaceId ?? null);
+    (kept.workspaceId ?? null) === (reply.workspaceId ?? null) &&
+    JSON.stringify(kept.form ?? null) === JSON.stringify(reply.form ?? null);
   const input: Outbound = same
     ? kept
     : {
@@ -155,6 +160,7 @@ export async function sendReply(
         ...(reply.choice ? { choice: reply.choice } : {}),
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
         ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
+        ...(reply.form ? { form: reply.form } : {}),
         shown: reply.shown ?? reply.text,
         sentAt: new Date().toISOString(),
       };
