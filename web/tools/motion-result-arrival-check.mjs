@@ -10,6 +10,10 @@
 //   no placeholder stands in for them (none painted, and none put in the page, which a MutationObserver
 //   from the document's start records) and nothing fades.
 // - Under reduced motion nothing fades.
+// - Lead 3593 (F3): the result in the reply holds a table; while the renderer loads, its spec is known
+//   and its placeholder keeps the table's room (not one line, at most the cap) in every frame it
+//   shows. Where no spec is known yet (the published result before its first read, the block still
+//   being written), the placeholder stays the compact one. Nothing animates a height.
 // Writes: only the app's own saves of where an Agent was read; anything else is refused and counted.
 // Served from http://127.0.0.1. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-result-arrival-check.mjs
@@ -37,6 +41,18 @@ const spec = (title, text) => JSON.stringify({ root: "result", elements: {
   body: { type: "Text", props: { text } },
 } });
 const block = (title, text) => `Here is the summary.\n\n\`\`\`yuzuno-ui\n${spec(title, text)}\n\`\`\`\n`;
+// The reply's result also holds a table.
+const tabled = (title, text) => {
+  const value = JSON.parse(spec(title, text));
+  value.elements.result.children.push("changes");
+  value.elements.changes = { type: "Table", props: { id: "changes", title: "Changes", columns: [{ key: "area", label: "Area" }, { key: "state", label: "State" }],
+    rows: [{ id: "search", cells: { area: "Search", state: "Faster" } }, { id: "export", cells: { area: "Export", state: "Waits for review" } }] } };
+  return `Here is the summary.\n\n\`\`\`yuzuno-ui\n${JSON.stringify(value)}\n\`\`\`\n`;
+};
+// The room a placeholder keeps for a table (result-reserve.ts), at most the cap; a compact one is one line.
+const TABLE_ROOM = 180;
+const ROOM_CAP = 360;
+const COMPACT = 64;
 // A block still being written: the fence is not closed yet.
 const unfinished = `Here is the table.\n\n\`\`\`yuzuno-ui\n{"root": "result", "elements": {`;
 const user = (id, text) => ({ id, type: "userMessage", content: [{ type: "text", text }] });
@@ -45,7 +61,7 @@ let state;
 const fresh = () => ({
   streamed: false,
   turns: () => [
-    { id: "t1", status: "completed", items: [user("u1", "What changed this week?"), answer("m1", block("Weekly notes", "Search, export and sign-in."))],
+    { id: "t1", status: "completed", items: [user("u1", "What changed this week?"), answer("m1", tabled("Weekly notes", "Search, export and sign-in."))],
       _yuzunoResults: [{ id: "r1", chainId: "c1", version: 1, createdAt: "2026-11-03T09:00:00Z" }] },
     { id: "t2", status: "inProgress", items: [user("u2", "And the table?"),
       answer("m2", state.streamed ? block("Changes", "Three rows.") : unfinished)] },
@@ -146,6 +162,16 @@ function pageHelpers() {
       duration: animations[0]?.effect?.getComputedTiming().duration ?? null };
   };
   const placeholder = (scope, words) => [...document.querySelectorAll(`${scope} .result-placeholder`)].some((p) => p.textContent.includes(words));
+  // A placeholder's box: its height, and whether anything animates or transitions it.
+  const box = (p) => {
+    if (!p) return null;
+    const style = getComputedStyle(p);
+    const transitions = style.transitionProperty.split(",").map((v) => v.trim());
+    const timed = style.transitionDuration.split(",").some((v) => parseFloat(v) > 0);
+    return { height: Math.round(p.getBoundingClientRect().height * 10) / 10, animations: p.getAnimations().length,
+      heightTransition: timed && transitions.some((v) => ["all", "height", "min-height", "max-height"].includes(v)) };
+  };
+  const find = (test) => [...document.querySelectorAll(".result-placeholder")].find(test) ?? null;
   const frames = [];
   window.__frames = frames;
   window.__now = () => frames.length;
@@ -172,6 +198,10 @@ function pageHelpers() {
       // The block streamed in the running Turn, and its placeholder while it is written.
       streamed: frame(document.querySelector('.interactive-result[data-result-id=\'["a","t2","m2"]\']')),
       streamedWaits: placeholder("", "Generating interactive result"),
+      // Each placeholder's box: the reply's renderer one, the published one, the streamed one.
+      replyBox: box(find((p) => !p.closest(".turn-results") && p.textContent.includes("Loading interactive result"))),
+      publishedBox: box(find((p) => !!p.closest(".turn-results"))),
+      streamedBox: box(find((p) => p.textContent.includes("Generating interactive result"))),
     });
     if (frames.length < 20_000) requestAnimationFrame(step);
   };
@@ -239,13 +269,25 @@ for (const run of runs) {
       published.waited && came(published.shown, reduced), { waited: published.waited, first: published.shown.slice(0, 3), last: published.shown.at(-1) });
     ok(`${tag}: a result in a reply drawn while the renderer loads: its placeholder shows, then the result takes its place and fades in over small; under reduced motion it is there at once`,
       reply.waited && came(reply.shown, reduced), { waited: reply.waited, first: reply.shown.slice(0, 3), last: reply.shown.at(-1) });
+    // F3: the room each placeholder keeps.
+    const replyBoxes = opening.map((f) => f.replyBox).filter(Boolean);
+    ok(`${tag}: a result in a reply whose renderer is still loading keeps room for the table its spec holds: its placeholder is at least ${TABLE_ROOM} px high and at most ${ROOM_CAP} px in every frame it shows, and nothing animates its height`,
+      replyBoxes.length > 0 && replyBoxes.every((b) => b.height >= TABLE_ROOM - 0.5 && b.height <= ROOM_CAP + 0.5 && !b.animations && !b.heightTransition),
+      { frames: replyBoxes.length, heights: [...new Set(replyBoxes.map((b) => b.height))].slice(0, 6) });
+    const publishedBoxes = opening.map((f) => f.publishedBox).filter(Boolean);
 
     // The block in the running Turn is now whole: Core streams its Item.
     const before = await page.evaluate(() => window.__now());
     await page.evaluate((item) => window.__stream(item), answer("m2", block("Changes", "Three rows.")));
     await page.locator('.interactive-result[data-result-id=\'["a","t2","m2"]\']').waitFor({ timeout: 10_000 });
     await page.waitForTimeout(500);
-    const streamed = record("streamed", after(await framesSince(before), "streamed"));
+    const streamedFrames = await framesSince(before);
+    const streamed = record("streamed", after(streamedFrames, "streamed"));
+    const streamedBoxes = [...opening, ...streamedFrames].map((f) => f.streamedBox).filter(Boolean);
+    ok(`${tag}: where no spec is known yet (the published result before its first read, the block still being written), its placeholder stays the compact one, at most ${COMPACT} px high, and nothing animates its height`,
+      publishedBoxes.length > 0 && streamedBoxes.length > 0 &&
+        [...publishedBoxes, ...streamedBoxes].every((b) => b.height <= COMPACT && !b.animations && !b.heightTransition),
+      { published: [...new Set(publishedBoxes.map((b) => b.height))].slice(0, 6), streamed: [...new Set(streamedBoxes.map((b) => b.height))].slice(0, 6) });
     ok(`${tag}: a result streamed in a running Turn: its placeholder stands while the block is written, then the result takes its place and fades in over small; under reduced motion it is there at once`,
       streamed.waited && came(streamed.shown, reduced), { waited: streamed.waited, first: streamed.shown.slice(0, 3), last: streamed.shown.at(-1) });
 
