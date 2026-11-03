@@ -3,7 +3,8 @@
 // opens comes in from the right (opacity 0 → 1, translateX(8px) → none, medium) and Back brings
 // the list in from the left (translateX(-8px), medium); the one it leaves is gone in the same frame.
 // The toolbar's brand and Back swap with a fade (micro). A quick Back after an open leaves one move,
-// on the newest. A window turning into a phone's and back plays nothing; neither does a desktop
+// on the newest. The first screen plays none of them, sampled from its first frame. A window turning
+// into a phone's and back plays nothing; neither does a desktop
 // window, nor reduced motion. The conversation's rows keep their place. Writes: only the app's own
 // save of where an Agent was read. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-2b-check.mjs
@@ -86,6 +87,22 @@ function pageHelpers() {
     title: document.querySelector(".conversation-heading h1")?.textContent ?? null,
     scrollTop: Math.round(document.querySelector(".conversation-scroll")?.scrollTop ?? -1),
   });
+  // Every animate() call on the rail, the main panel or the toolbar's brand, from the first script
+  // on, and the first screen frame by frame for 1.5 s (Lead 3046: nothing may play before a move).
+  window.__calls = [];
+  const animate = Element.prototype.animate;
+  Element.prototype.animate = function (keyframes, options) {
+    const which = this.matches?.(".rail") ? "rail" : this.matches?.(".main-panel") ? "main" : this.matches?.(".toolbar-brand") ? "brand" : null;
+    if (which) window.__calls.push({ t: Math.round(performance.now()), which });
+    return animate.call(this, keyframes, options);
+  };
+  window.__boot = [];
+  const t0 = performance.now();
+  const sample = () => {
+    window.__boot.push({ t: Math.round(performance.now() - t0), ...window.__phone() });
+    if (performance.now() - t0 < 1500) requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
   window.__watch = (span = 400) => {
     window.__frames = [];
     addEventListener("click", () => {
@@ -131,7 +148,15 @@ for (const run of runs) {
   try {
     await page.goto("http://yuzuno-motion.test/");
     await page.locator(".agent-row").first().waitFor();
-    await page.waitForTimeout(400);
+    // The first screen: from the first frame, before anything is touched.
+    await page.waitForFunction(() => window.__boot.length > 0 && window.__boot.at(-1).t >= 1450);
+    const boot = await page.evaluate(() => ({ frames: window.__boot, calls: window.__calls.slice() }));
+    report.frames[`${tag}: first screen`] = boot;
+    const shownFrames = boot.frames.filter((f) => (run.phone ? f.rail?.shown : f.main?.shown));
+    ok(`${tag}: the first screen plays no push, pop or swap (${boot.frames.length} frames from the first, ${shownFrames.length} with it shown; ${boot.calls.length} animate() calls on the rail, main panel or brand)`,
+      shownFrames.length > 0 && boot.calls.length === 0 &&
+        boot.frames.every((f) => !moveOf(f.main?.plays ?? []) && !moveOf(f.rail?.plays ?? []) && !fadeOf(f.brand?.plays ?? [])),
+      { calls: boot.calls, first: shownFrames[0] });
     const start = await page.evaluate(() => window.__phone());
     if (!run.phone) {
       const desk = await step("open an Agent", () => open("Mori"));
