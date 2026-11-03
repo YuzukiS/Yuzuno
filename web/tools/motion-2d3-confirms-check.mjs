@@ -138,7 +138,9 @@ function pageHelpers() {
     b.click();
     requestAnimationFrame(() => {
       const el = document.querySelector(panel);
-      const reveal = el?.getAnimations()[0];
+      // The reveal plays on the box the panel is in, where it has one.
+      const box = el?.parentElement?.classList.contains("reveal") ? el.parentElement : el;
+      const reveal = box?.getAnimations()[0];
       if (!reveal) return done({ held: false, frame: frame(panel) });
       reveal.pause();
       reveal.currentTime = 60;
