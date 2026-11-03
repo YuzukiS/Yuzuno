@@ -1710,23 +1710,21 @@ export function ArtifactModal({
                 {t.imageUnreadable}
               </p>
             ) : (
+              // Mark up on the viewer's bar, as for any other image (T-20).
               <ImageViewer
                 key={imageSrc}
                 src={imageSrc}
                 alt={artifact.name}
                 onError={() => setUnreadable(imageSrc)}
+                actions={onAnnotate && (
+                  <button type="button" className="secondary-button" onClick={onAnnotate}>
+                    <SquareDashedMousePointer size={14} aria-hidden="true" />
+                    <span className="image-viewer-action-label">{t.markUp}</span>
+                  </button>
+                )}
               />
             )
           ) : null}
-        </div>
-      )}
-      {artifact?.kind === "image" && onAnnotate && unreadable !== imageSrc && (
-        <div className="modal-footer">
-          <span>{t.readOnly}</span>
-          <button type="button" className="secondary-button" onClick={onAnnotate}>
-            <SquareDashedMousePointer size={14} />
-            {t.markUp}
-          </button>
         </div>
       )}
       {text && (

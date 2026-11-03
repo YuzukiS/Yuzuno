@@ -21,6 +21,7 @@ const text = strings({
   unavailable: "This saved image is unavailable. The original file may have been removed from this Core.",
   markUpButton: "Mark up",
   closeDialog: "Close dialog",
+  pixels: (width: number, height: number) => `${width} × ${height} px`,
 }, {
   open: (n, name) => `打开图片 ${n}：${name}`,
   image: (n) => `图片 ${n}`,
@@ -32,6 +33,7 @@ const text = strings({
   unavailable: "这张已保存的图片不可用，原文件可能已从此 Core 中移除。",
   markUpButton: "标注",
   closeDialog: "关闭对话框",
+  pixels: (width, height) => `${width} × ${height} 像素`,
 });
 export function ImageAttachments({
   images,
@@ -120,11 +122,16 @@ export function ImageAttachments({
  * Point & Fix when it is offered: the preview a conversation's images open
  * (T-31), and Home's Brief images too (T-177). Only the original image is
  * read; it loads when opened, and closing it drops the read.
+ *
+ * What the image shows comes first: its caption is the dialog's title, when
+ * it has one. The file's name, its size in pixels once read, and the rest
+ * of `description` follow on one line.
  */
 export function ImagePreview({
   open,
   src,
   name,
+  caption,
   description,
   unavailable,
   onClose,
@@ -133,6 +140,7 @@ export function ImagePreview({
   open: boolean;
   src: string;
   name: string;
+  caption?: string;
   description?: string;
   /** What to say when the image cannot be read. */
   unavailable: string;
@@ -140,12 +148,15 @@ export function ImagePreview({
   onAnnotate?: () => void;
 }) {
   const [failed, setFailed] = useState("");
+  const [size, setSize] = useState<{ src: string; width: number; height: number } | null>(null);
   const language = useLanguage();
   const t = text(language);
   // Each opening reads the image again: one that failed may be back.
   useEffect(() => {
     if (open) setFailed("");
   }, [open, src]);
+  const pixels = size?.src === src ? t.pixels(size.width, size.height) : "";
+  const details = [caption ? name : "", pixels, description ?? ""].filter(Boolean).join(" · ");
   // The preview has no trigger of its own, so closing it puts focus back on
   // what opened it: the thumbnail or Open (T-177). Taken before the dialog
   // moves focus into itself.
@@ -159,8 +170,8 @@ export function ImagePreview({
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      title={name}
-      description={description}
+      title={caption || name}
+      description={details || undefined}
       lang={langTag(language)}
       closeLabel={t.closeDialog}
       wide
@@ -180,12 +191,13 @@ export function ImagePreview({
         <ImageViewer
           key={src}
           src={src}
-          alt={name}
+          alt={caption || name}
           onError={() => setFailed(src)}
+          onSize={(next) => setSize({ src, ...next })}
           actions={onAnnotate && (
             <button type="button" className="secondary-button input-image-annotate" onClick={onAnnotate}>
-              <SquareDashedMousePointer size={14} />
-              {t.markUpButton}
+              <SquareDashedMousePointer size={14} aria-hidden="true" />
+              <span className="image-viewer-action-label">{t.markUpButton}</span>
             </button>
           )}
         />

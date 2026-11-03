@@ -363,7 +363,9 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
       open={!!shown}
       src={shown?.url ?? ""}
       name={attachment.name}
-      description={t.imageSnapshot(label ?? "", formatTime(shown?.takenAt ?? attachment.takenAt, time))}
+      // Its caption is the title; the file, its size and when it was taken follow (T-20).
+      caption={label || undefined}
+      description={t.imageSnapshot("", formatTime(shown?.takenAt ?? attachment.takenAt, time))}
       unavailable={t.imageUnavailable}
       onClose={() => setShown(null)}
       onAnnotate={markUp && shown ? () => {
