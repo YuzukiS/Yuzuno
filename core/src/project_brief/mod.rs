@@ -20,6 +20,8 @@ pub(crate) use attachments::{collect_garbage as collect_attachment_garbage, held
 mod editors;
 mod home;
 mod http;
+/// A kept image's size from its header alone, within a budget (T-19 HM:B14).
+mod image_header;
 mod presentation;
 mod refs;
 mod research;

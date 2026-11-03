@@ -316,16 +316,21 @@ function Path({ path }: { path: string }) {
  * never changes the image being looked at or marked (T-177). */
 type Shown = { url: string; version: number; takenAt: string; title: string; ownerId: string };
 
+/** The longest side Core gives a kept image a size for. */
+const IMAGE_SIDE = 65_535;
+
 /** The size Core read from a kept image's bytes (T-19 HM:B14): both sides
- * whole numbers from 1, or none (an older card, a format Core reads no size
- * of, a file only referenced). */
+ * whole numbers from 1 to IMAGE_SIDE, or none (an older card, a format Core
+ * reads no size of, a file only referenced, a size no Core gives), so the
+ * box is the stable one for an unknown size. */
 function shapeOf({ width, height }: SectionAttachment) {
-  const side = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value > 0;
+  const side = (value: unknown): value is number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= IMAGE_SIDE;
   return side(width) && side(height) ? { width, height } : null;
 }
 
-/** Snapshots this window has shown, so one shown again (Show all, Home
- * opened again) is there at once rather than coming in a second time. */
+/** Snapshots this window has shown, decoded, so one shown again (Show all,
+ * Home opened again) is there at once rather than coming in a second time. */
 const shownHere = new Set<string>();
 
 /**
@@ -338,9 +343,20 @@ const shownHere = new Set<string>();
  * that snapshot; under reduced motion it is there at once. Nothing else moves:
  * its caption, details, focus and scroll are left as they are.
  *
- * What a load or a decode says is taken only for what it was started for:
- * this Workspace, project, section, version and snapshot. One that settles
- * after the card has moved on changes nothing.
+ * Two identities (Lead 3619):
+ * - The snapshot: this Workspace, project, section (its key, and its id where
+ *   Core gives one, so a section written again under the same key is
+ *   another), and the file kept (its name, when it was taken, its size and
+ *   type). A newer version of the card that keeps it (a caption changed) is
+ *   the same snapshot: it stays shown and plays nothing.
+ * - This read: the snapshot, the card's version and the address read. What
+ *   a load or a decode says is taken only for the read it was started for;
+ *   one that settles after the card has moved on changes nothing.
+ *
+ * Only a decode that succeeds shows the picture and marks the snapshot shown
+ * here. One that fails says so in the same box, as a load that fails does.
+ * A picture already complete when drawn is shown at once only for a snapshot
+ * this window has shown decoded; any other waits for its decode the same way.
  */
 function KeptImage({ attachment, url, label, onOpen }: {
   attachment: SectionAttachment;
@@ -351,38 +367,50 @@ function KeptImage({ attachment, url, label, onOpen }: {
   const t = useStrings(briefText);
   const workspaceId = useContext(CardFoldWorkspace);
   const { projectId, section } = useBrief();
-  const snapshot = [workspaceId, projectId, section.key, attachment.name, attachment.takenAt].join("\n");
-  const identity = `${snapshot}\n${section.version}`;
-  const current = useRef(identity);
-  current.current = identity;
+  const snapshot = [workspaceId, projectId, section.key, section.id ?? "", attachment.name, attachment.takenAt,
+    attachment.size, attachment.mime].join("\n");
+  const read = `${snapshot}\n${section.version}\n${url}`;
+  const current = useRef(read);
+  current.current = read;
   // The snapshot whose picture is shown: a newer version of the card with
   // the same snapshot keeps it shown while that version's address loads.
   const [shown, setShown] = useState<string | null>(null);
-  // What could not be loaded, so a newer version or snapshot tries again.
+  // The read that could not be loaded or decoded, so a newer one tries again.
   const [failed, setFailed] = useState<string | null>(null);
   const [arrivals, setArrivals] = useState(0);
   const picture = useRef<HTMLImageElement>(null);
   useSurfaceIn(picture, arrivals, "small", arrivals > 0);
-  const show = (from: string, img: HTMLImageElement) => {
-    if (current.current !== from || !img.isConnected) return;
-    setShown(snapshot);
-    if (shownHere.has(snapshot)) return;
-    shownHere.add(snapshot);
-    setArrivals((n) => n + 1);
+  /** Shows the picture once `from`'s decode succeeds, or says it failed. */
+  const settle = (from: string, img: HTMLImageElement) => {
+    const decoded = img.decode ? img.decode() : Promise.resolve();
+    decoded.then(
+      () => {
+        if (current.current !== from || !img.isConnected) return;
+        setShown(snapshot);
+        if (shownHere.has(snapshot)) return;
+        shownHere.add(snapshot);
+        setArrivals((n) => n + 1);
+      },
+      () => {
+        if (current.current === from && img.isConnected) setFailed(from);
+      },
+    );
   };
-  // One this window already holds is there before the first paint.
+  // One this window has shown decoded is there before the first paint; any
+  // other already complete waits for its decode as a load does.
   useLayoutEffect(() => {
     const img = picture.current;
     if (!img?.complete || !img.naturalWidth) return;
-    shownHere.add(snapshot);
-    setShown(snapshot);
+    if (shownHere.has(snapshot)) setShown(snapshot);
+    else settle(read, img);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot]);
   const shape = shapeOf(attachment);
   const box = {
     "data-shape": shape ? "known" : "unknown",
     style: shape ? ({ "--image-width": shape.width, "--image-height": shape.height } as CSSProperties) : undefined,
   };
-  if (failed === identity)
+  if (failed === read)
     return (
       <div className="brief-image" data-failed {...box}>
         <p className="brief-image-failed" role="status">
@@ -393,7 +421,7 @@ function KeptImage({ attachment, url, label, onOpen }: {
     );
   return (
     <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={onOpen} {...box}>
-      {/* A new snapshot under the same name loads again. */}
+      {/* A new snapshot loads again, in a picture of its own. */}
       <img
         key={snapshot}
         ref={picture}
@@ -402,13 +430,9 @@ function KeptImage({ attachment, url, label, onOpen }: {
         loading="lazy"
         decoding="async"
         data-loading={shown === snapshot ? undefined : ""}
-        onLoad={(event) => {
-          const from = identity;
-          const img = event.currentTarget;
-          (img.decode ? img.decode() : Promise.resolve()).catch(() => undefined).then(() => show(from, img));
-        }}
+        onLoad={(event) => settle(read, event.currentTarget)}
         onError={() => {
-          const from = identity;
+          const from = read;
           if (current.current === from) setFailed(from);
         }}
       />
