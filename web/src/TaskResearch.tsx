@@ -122,7 +122,7 @@ const text = strings({
           : `Activity ${seq} revises it and leaves this scope as written`,
   // What each kind of study keeps apart (slice 5): as given, never judged.
   result: { proof: "Proof", counterexample: "Counterexample", conjecture: "Conjecture", partial: "Partial result" } as Record<string, string>,
-  checked: (how: string, bound?: string) =>
+  checkedHow: (how: string, bound?: string) =>
     ({ by_hand: "checked by hand", formal: "checked formally", enumeration: `checked by enumeration up to ${bound}`, none: "not checked" } as Record<string, string>)[how] ?? how,
   enumerationNote: "A finite enumeration is no general proof.",
   formalNote: "A formal check covers the formal statement; whether it answers the question is the author's judgement.",
@@ -215,7 +215,7 @@ const text = strings({
         : scope === "unchecked" ? `活动 ${seq} 修订了它；这一适用范围是否仍成立尚未核对`
           : `活动 ${seq} 修订了它，这一适用范围保持原样`,
   result: { proof: "证明", counterexample: "反例", conjecture: "猜想", partial: "部分结果" },
-  checked: (how, bound) =>
+  checkedHow: (how, bound) =>
     ({ by_hand: "人工核对", formal: "形式化核对", enumeration: `枚举核对至 ${bound}`, none: "未核对" } as Record<string, string>)[how] ?? how,
   enumerationNote: "有限枚举不是一般性证明。",
   formalNote: "形式化核对只覆盖形式化的命题；它是否回答了原问题是作者的判断。",
@@ -298,7 +298,7 @@ function Details({ field, details }: { field: string; details: Record<string, st
   let body: ReactNode = null;
   if (field === "theory") {
     const result = typeof details.result === "string" ? t.result[details.result] ?? details.result : undefined;
-    const checked = typeof details.checked === "string" ? t.checked(details.checked, details.bound as string | undefined) : undefined;
+    const checked = typeof details.checked === "string" ? t.checkedHow(details.checked, details.bound as string | undefined) : undefined;
     body = (
       <>
         {(result || checked) && <span>{[result, checked].filter(Boolean).join(" · ")}</span>}
