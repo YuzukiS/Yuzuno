@@ -698,11 +698,13 @@ try {
       const onScreen = [...deckShape.places].sort((a, b) => a.top - b.top || a.left - b.left).map((p) => p.key);
       assert.deepEqual(onScreen, deckShape.places.map((p) => p.key), JSON.stringify(deckShape.places));
       // Frames by size (Dev 7's v12): wide 140 px stacked, as tall as the body (140 or more) beside the text;
-      // large 200 px stacked, 260 or more on two columns or four.
+      // large 200 px stacked, 260 or more on two columns or four. A chart's (eval's) is never under 152 px, which
+      // holds its names, legend and axes with a plot between them (Lead 2655; home-card-chart-check).
       for (const [key, value] of Object.entries(deckShape.frames)) {
         const height = Math.round(value);
+        const least = key === "eval" ? 152 : 140;
         if (key === "screens") assert.ok(deckShape.columns > 1 ? height >= 260 : height === 200, `a large card's figure: ${height}`);
-        else assert.ok(deckShape.columns > 1 ? height >= 140 : height === 140, `${key}'s frame: ${height} ${JSON.stringify(deckShape.frames)}`);
+        else assert.ok(deckShape.columns > 1 ? height >= least : height === least, `${key}'s frame: ${height} ${JSON.stringify(deckShape.frames)}`);
       }
       assert.ok(deckShape.chipLines <= 3 && deckShape.hidden !== 1, JSON.stringify(deckShape));
       if (deckShape.hidden > 0) assert.equal(deckShape.more, `+${deckShape.hidden} more conditions`);

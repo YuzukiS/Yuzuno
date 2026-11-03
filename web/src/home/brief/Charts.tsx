@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTimeDisplay } from "../../time-preferences";
 import {
   Bar,
@@ -32,7 +32,8 @@ import {
   type Series,
 } from "./brief-catalog";
 
-type Kind = "line" | "bar" | "scatter";
+export type ChartKind = "line" | "bar" | "scatter";
+type Kind = ChartKind;
 /** The plot's own height: fixed, so data arriving never moves the blocks around it. */
 export const CHART_HEIGHT = 260;
 /** A trend's height in a short card (low density): the line, its ends, no axis. */
@@ -432,3 +433,178 @@ type Placed = ChartProps & { elementKey?: string };
 export const BriefLineChart = (props: Placed) => <BriefChart kind="line" props={props} />;
 export const BriefBarChart = (props: Placed) => <BriefChart kind="bar" props={props} />;
 export const BriefScatterChart = (props: Placed) => <BriefChart kind="scatter" props={props} />;
+
+/**
+ * The plot of a card's chart: both axes with their ticks, and nothing to
+ * hover or focus. `labelPx` is its tick labels' size, which follows the
+ * user's text size: the x axis is as tall as its labels need.
+ */
+function CardPlot({ kind, series, labelPx }: { kind: Kind; series: Series[]; labelPx: number }) {
+  const numeric = series.every((item) => item.points.every(([x]) => typeof x === "number"));
+  const merged = useMemo(() => mergeRows(series, kind === "line" && numeric), [series, kind, numeric]);
+  const grid = <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" vertical={false} />;
+  const tickStyle = { fill: "var(--home-ink-2, var(--muted))", fontSize: labelPx };
+  const margin = { top: 6, right: 8, bottom: 0, left: 0 };
+  // Below the axis line: the tick's own 6 px and 2 px of space, then the label.
+  const x = { tick: tickStyle, tickFormatter: tick, height: Math.ceil(labelPx + 10), minTickGap: 12 };
+  // Three values on the side; a bar's from zero, as on the page.
+  const y = { type: "number" as const, width: 40, tick: tickStyle, tickFormatter: tick, axisLine: false, tickLine: false, tickCount: 3 };
+  if (kind === "scatter")
+    return (
+      <ScatterChart margin={margin} accessibilityLayer={false}>
+        {grid}
+        <XAxis type="number" dataKey="x" domain={["auto", "auto"]} {...x} />
+        <YAxis dataKey="y" domain={["auto", "auto"]} {...y} />
+        <ZAxis range={[20, 20]} />
+        {series.map((item, index) => (
+          <Scatter
+            key={index}
+            data={item.points
+              .filter((point): point is [number, number] => typeof point[0] === "number" && typeof point[1] === "number")
+              .map(([x, y]) => ({ x, y }))}
+            fill={color(index)}
+            shape={series.length > 3 ? SHAPES[index % SHAPES.length] : "circle"}
+            isAnimationActive={false}
+          />
+        ))}
+      </ScatterChart>
+    );
+  if (kind === "bar")
+    return (
+      <BarChart data={merged.rows} margin={margin} accessibilityLayer={false} barCategoryGap="20%">
+        {grid}
+        <XAxis type="category" dataKey="x" tickLine={false} {...x} />
+        <YAxis {...y} />
+        {series.map((item, index) => (
+          <Bar
+            key={index}
+            dataKey={`s${index}`}
+            fill={color(index)}
+            fillOpacity={index >= SLOTS ? 0.55 : 1}
+            radius={[3, 3, 0, 0]}
+            maxBarSize={20}
+            isAnimationActive={false}
+          />
+        ))}
+      </BarChart>
+    );
+  // A trend's range is the data's own, so a change shows; its axis says where it starts.
+  return (
+    <LineChart data={merged.rows} margin={margin} accessibilityLayer={false}>
+      {grid}
+      {numeric ? (
+        <XAxis type="number" dataKey="x" domain={["dataMin", "dataMax"]} {...x} />
+      ) : (
+        <XAxis type="category" dataKey="x" {...x} />
+      )}
+      <YAxis domain={["auto", "auto"]} {...y} />
+      {series.map((item, index) => (
+        <Line
+          key={index}
+          type="linear"
+          dataKey={`s${index}`}
+          stroke={color(index)}
+          strokeWidth={1.75}
+          strokeDasharray={index >= SLOTS ? "6 4" : undefined}
+          dot={false}
+          activeDot={false}
+          connectNulls={merged.gaps}
+          isAnimationActive={false}
+        />
+      ))}
+    </LineChart>
+  );
+}
+
+/** An axis's name with its unit: the name may be cut short, its unit never. */
+function AxisName({ axis, side }: { axis: Axis; side: "x" | "y" }) {
+  return (
+    <span className={`home-card-chart-axis is-${side}`}>
+      <span>{axis.label}</span>
+      {axis.unit && <span>({axis.unit})</span>}
+    </span>
+  );
+}
+
+/**
+ * A chart as a card's figure on Home (T-18, Lead 2655): its plot with both
+ * axes, their names and units, and a legend for every series it draws,
+ * fitted to the frame its card gives it, whatever that frame's height. It is
+ * a picture of the chart: no tooltip, no data table, nothing to focus; the
+ * report page has the whole chart. A legend that can't name every series in
+ * its lines draws only the series it names, and says how many there are.
+ * The names and the legend are there before attachment data arrives, so the
+ * plot has the same room loading as drawn.
+ */
+export function CardChart({ kind, props, elementKey, legendLines }: { kind: Kind; props: ChartProps; elementKey: string; legendLines: number }) {
+  const t = useStrings(briefText);
+  const { series, error, loading } = useSeries(props, elementKey);
+  const names = useMemo(() => (props.series ?? props.data?.series ?? []).map((item) => item.name), [props.series, props.data]);
+  const root = useRef<HTMLDivElement>(null);
+  const legend = useRef<HTMLUListElement>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const node = root.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    setWidth(node.clientWidth);
+    const observer = new ResizeObserver(() => setWidth(node.clientWidth));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  // How many series the legend names and the plot draws: all of them, at
+  // each width, unless its lines can't hold them; then one fewer, until they
+  // do. One name that still can't share a line with the count is cut short.
+  const [fit, setFit] = useState({ width, names, named: names.length, squeezed: false });
+  const current = fit.width === width && fit.names === names;
+  const named = current ? fit.named : names.length;
+  const squeezed = current && fit.squeezed;
+  useLayoutEffect(() => {
+    const list = legend.current;
+    if (!list || squeezed) return;
+    const lines = new Set([...list.children].map((item) => (item as HTMLElement).offsetTop)).size;
+    if (lines > legendLines) setFit({ width, names, named: Math.max(1, named - 1), squeezed: named <= 1 });
+  });
+  // Its tick labels a step smaller than its names, as its CSS draws them (summary-card.css).
+  const [labelPx, setLabelPx] = useState(10);
+  useLayoutEffect(() => {
+    const size = root.current ? parseFloat(getComputedStyle(root.current).fontSize) - 1.5 : NaN;
+    if (size > 0 && size !== labelPx) setLabelPx(size);
+  });
+  const drawn = useMemo(() => series.slice(0, named), [series, named]);
+  const points = drawn.reduce((sum, item) => sum + item.points.length, 0);
+  const state = error ? t.chartError("reason" in error ? error.reason : t[error.word]) : loading && !points ? t.loadingChart : !points ? t.noPoints : null;
+  return (
+    <div ref={root} className="home-card-chart" data-chart={kind}>
+      {props.title && <p className="home-card-chart-title">{props.title}</p>}
+      {names.length > 1 && (
+        <ul ref={legend} className={`brief-legend home-card-chart-legend${squeezed ? " is-squeezed" : ""}`} aria-label={t.series}>
+          {names.slice(0, named).map((name, index) => (
+            <li key={index} data-series={index}>
+              <i
+                data-slot={(index % SLOTS) + 1}
+                data-repeat={index >= SLOTS || undefined}
+                data-shape={kind === "scatter" && names.length > 3 ? SHAPES[index % SHAPES.length] : undefined}
+                aria-hidden="true"
+              />
+              <span>{name}</span>
+            </li>
+          ))}
+          {named < names.length && <li className="is-count">{t.seriesShown(named, names.length)}</li>}
+        </ul>
+      )}
+      <AxisName axis={props.y} side="y" />
+      <div className="home-card-chart-plot">
+        {state ? (
+          <p className="home-card-chart-state" role="status">
+            <span>{state}</span>
+          </p>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <CardPlot kind={kind} series={drawn} labelPx={labelPx} />
+          </ResponsiveContainer>
+        )}
+      </div>
+      <AxisName axis={props.x} side="x" />
+    </div>
+  );
+}

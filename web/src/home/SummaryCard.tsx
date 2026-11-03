@@ -5,7 +5,9 @@ import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
-import { attachmentUrl } from "./brief/brief-catalog";
+import { attachmentUrl, type ChartProps } from "./brief/brief-catalog";
+import { BriefContext } from "./brief/BriefContext";
+import { CardChart, type ChartKind } from "./brief/Charts";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { BriefMarkdown } from "./brief/Markdown";
@@ -387,6 +389,15 @@ function figureKindOf(section: Section, figure: CardFigure, names: Record<string
   return names[type] ?? type;
 }
 
+const CHARTS: Record<string, ChartKind> = { LineChart: "line", BarChart: "bar", ScatterChart: "scatter" };
+/** A chart figure's kind and its block's props; null for any other figure. */
+function chartOf(section: Section, figure: CardFigure) {
+  if (figure.kind !== "block") return null;
+  const node = (section.body as { elements?: Record<string, { type?: string; props?: Partial<ChartProps> }> }).elements?.[figure.id];
+  const kind = CHARTS[node?.type ?? ""];
+  return kind && node?.props?.x && node.props.y ? { kind, props: node.props as ChartProps } : null;
+}
+
 /** A Metrics figure's values, for a small card; null for any other figure. */
 function metricsOf(section: Section, figure: CardFigure): Metric[] | null {
   if (figure.kind !== "block") return null;
@@ -424,18 +435,26 @@ function BigNumbers({ items }: { items: Metric[] }) {
  * The card's one figure, bounded, in a fixed frame; it is no control and
  * opens nothing. A large card shows more of what the figure has (Dev 7,
  * 2547): a table's first 8 rows and 6 columns, up to 6 Metrics values in a
- * grid; anything shorter than the frame sits in its middle.
+ * grid; anything shorter than the frame sits in its middle. A chart is drawn
+ * to fit the frame, its axes and legend with it (CardChart, Lead 2655); the
+ * report page has the whole chart.
  */
 function FigureFrame({ section, projectId, figure, large }: { section: Section; projectId: string; figure: CardFigure; large: boolean }) {
   const t = useStrings(cardText);
   const shape = large ? LARGE_TABLE_PREVIEW : TABLE_PREVIEW;
   const table = figure.kind === "table" ? { columns: figure.columns.slice(0, shape.columns), rows: figure.rows.slice(0, shape.rows) } : null;
   const metrics = large ? metricsOf(section, figure) : null;
+  const chart = chartOf(section, figure);
+  const brief = useMemo(() => ({ projectId, section }), [projectId, section]);
   return (
-    <figure className={`home-card-frame kind-${figure.kind}`}>
+    <figure className={`home-card-frame kind-${figure.kind}${chart ? " is-chart" : ""}`}>
       <div className="home-card-frame-body" inert>
         {metrics ? (
           <MetricsGrid items={metrics} />
+        ) : chart ? (
+          <BriefContext.Provider value={brief}>
+            <CardChart kind={chart.kind} props={chart.props} elementKey={figure.id} legendLines={large ? 2 : 1} />
+          </BriefContext.Provider>
         ) : figure.kind === "block" ? (
           <BriefDensity.Provider value="low">
             <SectionBody section={section} projectId={projectId} only={[figure.id]} />
