@@ -159,7 +159,7 @@ test("T-20 a photo opens whole; the wheel zooms at the pointer and is taken from
   assert.equal(p.stageEl().hasAttribute("data-animate"), true, "a button's change glides");
   const before = p.transform();
   p.pointer("pointerdown", 500, 300);
-  assert.ok(p.stageEl().hasAttribute("data-dragging"));
+  await until(() => p.stageEl().hasAttribute("data-dragging"), "the drag starts");
   p.pointer("pointermove", 400, 250);
   await until(() => p.transform() !== before, "the drag moves it");
   p.pointer("pointermove", 99999, 99999);

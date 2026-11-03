@@ -286,7 +286,8 @@ try {
     if (!viewport.touch) {
       // The wheel zooms at the pointer; neither the page nor anything behind scrolls or zooms.
       const before = await scrolls(page);
-      const at = { x: s.stage.left + s.stage.width * 0.3, y: s.stage.top + s.stage.height * 0.4 };
+      // Whole pixels: Chromium puts the pointer on one, and the anchor is where it is.
+      const at = { x: Math.round(s.stage.left + s.stage.width * 0.3), y: Math.round(s.stage.top + s.stage.height * 0.4) };
       const point = under(s, at);
       await page.mouse.move(at.x, at.y);
       for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -120);
@@ -356,7 +357,7 @@ try {
       await dialog.getByRole("button", { name: "Fit width" }).click();
       d = await settled(page);
       close(d.image.width, d.stage.width, 1, "Fit width");
-      const at2 = { x: d.stage.left + d.stage.width * 0.7, y: d.stage.top + d.stage.height * 0.5 };
+      const at2 = { x: Math.round(d.stage.left + d.stage.width * 0.7), y: Math.round(d.stage.top + d.stage.height * 0.5) };
       const p2 = under(d, at2);
       await page.mouse.dblclick(at2.x, at2.y);
       d = await settled(page);
