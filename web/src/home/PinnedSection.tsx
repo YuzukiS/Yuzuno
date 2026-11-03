@@ -32,7 +32,8 @@ export function PinnedSection({
   onOpen: () => void;
   onUnpin: () => void;
   /** Only when the section now under the key may itself be pinned (not an ask). */
-  onPinCurrent?: () => void;
+  /** `pressed` is the button pressed, which keeps its place (T-19 HM:W5). */
+  onPinCurrent?: (pressed: HTMLElement) => void;
   /** Where replies can be sent from (not the design preview): the workspace and the project's open Agents. */
   reply?: { workspaceId: string; agents: Agent[] };
 }) {
@@ -148,7 +149,7 @@ export function PinnedSection({
           </p>
           <span className="home-pinned-actions">
             {onPinCurrent && (
-              <button type="button" className="quiet-button" onClick={onPinCurrent}>
+              <button type="button" className="quiet-button" onClick={(event) => onPinCurrent(event.currentTarget)}>
                 <PinIcon size={13} /> {t.pinNew}
               </button>
             )}
