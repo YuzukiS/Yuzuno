@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Copy, LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
 import { useStrings } from "../i18n";
+import { useSurfaceIn } from "../surface";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
 import { dropPendingReply, outboxKey, pendingReply, sendReply } from "./home-api";
@@ -117,6 +118,7 @@ export function CardReply({
   projectId,
   workspaceId,
   agents,
+  opened = false,
   onClose,
 }: {
   /** The card as this place shows it: live, or a report in History. */
@@ -125,6 +127,9 @@ export function CardReply({
   workspaceId: string;
   /** The Project's open Agents. */
   agents: Agent[];
+  /** The user has opened it here (T-19 HM:S7): it fades in and its text takes
+   * focus, brought into view. A reply kept from before shows as it is. */
+  opened?: boolean;
   /** Absent where the reply is the place's whole content (kept replies). */
   onClose?: () => void;
 }) {
@@ -148,6 +153,17 @@ export function CardReply({
       },
     });
   });
+  const root = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLTextAreaElement>(null);
+  const shown = !!draft;
+  useSurfaceIn(root, shown, "small", opened);
+  useLayoutEffect(() => {
+    if (!shown || !opened) return;
+    root.current?.scrollIntoView?.({ block: "nearest" });
+    field.current?.focus({ preventScroll: true });
+    // Only as it comes in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown]);
   if (!draft) return null;
   // On the reply as it is now: another place, or a change not drawn yet, may
   // have moved it on since this render.
@@ -188,7 +204,7 @@ export function CardReply({
     }
   }
   return (
-    <div className="home-card-reply" role="group" aria-label={t.replyLabel(draft.title)}>
+    <div className="home-card-reply" role="group" aria-label={t.replyLabel(draft.title)} ref={root}>
       <div className="home-card-reply-head">
         <MessageSquareReply size={13} aria-hidden="true" />
         <span>
@@ -240,6 +256,7 @@ export function CardReply({
         }}
       >
         <textarea
+          ref={field}
           aria-label={t.replyField(draft.title)}
           value={draft.text}
           rows={2}

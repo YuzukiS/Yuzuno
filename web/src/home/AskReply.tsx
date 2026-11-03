@@ -1,7 +1,8 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle, MessageSquareReply, RotateCcw, Send, Trash2 } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
 import { useLanguage, useStrings } from "../i18n";
+import { useSurfaceIn } from "../surface";
 import type { Agent, MessageReceipt } from "../types";
 import { Clarification } from "../intelligent-ui/ClarificationForm";
 import {
@@ -381,6 +382,11 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   // A reply that went again as an unconfirmed one, and Core found it
   // delivered before: that earlier version of the ask, not this one.
   const [sentBefore, setSentBefore] = useState<number | null>(null);
+  // This window's replies Core has, and its Reply agains, counted (T-19 HM:A3).
+  const [delivered, setDelivered] = useState(0);
+  const [reopened, setReopened] = useState(0);
+  const repliedBlock = useRef<HTMLDivElement>(null);
+  const replyUi = useRef<HTMLDivElement>(null);
   // Shown as replied from Core's record, or from this window's delivery until
   // Core's next read. Only the owner resolves it.
   const replied =
@@ -401,6 +407,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     setSentVersion(version);
     setSentText(shown);
     setAgain(false);
+    setDelivered((n) => n + 1);
     return value;
   };
   // What an unconfirmed reply said, as it went: what this window showed as
@@ -424,6 +431,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     setSentVersion(version);
     setSentText(previewOf(was));
     setAgain(false);
+    setDelivered((n) => n + 1);
     // Delivered to an earlier version of the ask: this one is still open.
     if (version !== null && version !== section.version) setSentBefore(version);
     // The draft that reply was sent from goes with it; one written since is
@@ -441,11 +449,32 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     setSentBefore(null);
     setDiscarded(true);
   };
+  // This window's reply, once Core has it: what was said takes the reply's
+  // place, fades in and, focus having gone with the button pressed, takes it.
+  // Reply again brings the reply back the same way, focus in it. A reply
+  // shown as it was read, or from another window, does neither (T-19 HM:A3).
+  useSurfaceIn(repliedBlock, delivered, "small", delivered > 0);
+  useSurfaceIn(replyUi, reopened, "small", reopened > 0);
+  useLayoutEffect(() => {
+    if (!delivered || !replied) return;
+    if (!document.activeElement || document.activeElement === document.body) repliedBlock.current?.focus({ preventScroll: true });
+    // Only as this window's reply arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delivered]);
+  useLayoutEffect(() => {
+    if (!reopened || replied) return;
+    const ui = replyUi.current;
+    const first = ui?.querySelector<HTMLElement>("textarea:not([disabled])")
+      ?? ui?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled])");
+    first?.focus({ preventScroll: true });
+    // Only as Reply again brings it back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reopened]);
   // A pick sends only its id: Core quotes the label, and text would repeat it.
   const pick = (id: string, label: string) => void deliver("", id, label, section.version).catch(() => {});
   if (replied)
     return (
-      <div className="home-ask-replied" role="status">
+      <div className="home-ask-replied" role="status" ref={repliedBlock} tabIndex={-1}>
         <MessageSquareReply size={14} />
         <div>
           <strong>{t.repliedWaiting(ask.state === "replied" ? section.owner.name : targetName)}</strong>
@@ -456,7 +485,14 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           {!!draft?.text.trim() && <p className="home-note">{t.askDraftAfterReply}</p>}
         </div>
         {!context.readOnly && (
-          <button type="button" className="quiet-button" onClick={() => setAgain(true)}>
+          <button
+            type="button"
+            className="quiet-button"
+            onClick={() => {
+              setReopened((n) => n + 1);
+              setAgain(true);
+            }}
+          >
             {t.replyAgain}
           </button>
         )}
@@ -464,6 +500,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     );
   return (
     <div
+      ref={replyUi}
       className="home-ask-reply"
       onChangeCapture={(event) => formChanged(event.target)}
       onClickCapture={(event) => {
