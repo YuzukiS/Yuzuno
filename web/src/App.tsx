@@ -200,7 +200,7 @@ import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
-import { useSurfaceIn } from "./surface";
+import { useArrivalsIn, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -902,6 +902,23 @@ export function App() {
   const time = useTimeDisplay();
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
+  // A request that arrives while its conversation is open fades in (T-19 CV:Q-01). Those Core
+  // listed when the conversation first showed here, or lists again on a refresh, do not; nor does
+  // another Agent's, or one listed again after a return to this Agent.
+  const pendingSeen = useRef<{ agent: string; ids: Set<string>; arrived: string[] } | null>(null);
+  if (currentDetail && currentDetail.agent.id === selected) {
+    const seen = pendingSeen.current;
+    if (!seen || seen.agent !== selected) pendingSeen.current = { agent: selected, ids: new Set(pending.map((request) => request.id)), arrived: [] };
+    else {
+      const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
+      if (fresh.length) pendingSeen.current = { agent: selected, ids: new Set([...seen.ids, ...fresh]), arrived: [...seen.arrived, ...fresh].slice(-20) };
+    }
+  }
+  useArrivalsIn(
+    pendingSeen.current?.agent === selected ? pendingSeen.current.arrived.map((id) => `${selected}\n${id}`) : [],
+    (key) => document.getElementById(`request-${key.slice(key.indexOf("\n") + 1)}`),
+    "small",
+  );
   // Browser drafts of answers to native questions (T-170) last only while
   // Core still lists their request for this Agent.
   const requestDraftScope = previewMode || !workspaceId ? null : workspaceId;
