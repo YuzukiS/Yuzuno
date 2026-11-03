@@ -136,7 +136,9 @@ export function ResultPlaceholder({
   onShown?: () => void;
 }) {
   const t = useStrings(resultText);
-  useLayoutEffect(() => onShown?.(), [onShown]);
+  useLayoutEffect(() => {
+    onShown?.();
+  }, [onShown]);
   return (
     <div className="result-state result-placeholder" role="status" aria-live="polite">
       <LoaderCircle size={15} className="spin" aria-hidden="true" />
