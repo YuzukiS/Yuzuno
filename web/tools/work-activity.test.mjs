@@ -157,3 +157,35 @@ test("every CI conclusion GitHub gives is classified", () => {
   assert.deepEqual(unclassified, [], `classify these: ${unclassified.join(", ")}`);
   assert.equal(runWork("completed", "stale"), "unrecognized", "a conclusion from another GitHub is said");
 });
+
+const { byAttention } = await import("../src/work-activity.ts");
+
+test("a resumable stop is an exception, but not ahead of a real failure", () => {
+  const held = { id: "j1", kind: "job", state: "exception", resumable: true };
+  const brokenRun = { id: "r1", kind: "run", state: "exception" };
+  const order = byAttention([held, brokenRun]).map((i) => i.id);
+  assert.deepEqual(order, ["r1", "j1"], "the failed CI run is looked at first");
+  // It is still counted among the exceptions, not hidden or made a fourth kind.
+  const seen = workActivity([held, brokenRun]);
+  assert.equal(seen.exception, 2);
+  assert.equal(seen.byKind.job.exception, 1);
+});
+
+test("what needs a look comes before what is merely going on", () => {
+  const items = [
+    { id: "a", kind: "job", state: "done" },
+    { id: "b", kind: "job", state: "current" },
+    { id: "c", kind: "run", state: "exception" },
+    { id: "d", kind: "job", state: "unrecognized" },
+  ];
+  assert.deepEqual(byAttention(items).map((i) => i.id), ["c", "b", "d", "a"]);
+});
+
+test("work of equal standing keeps the order it came in", () => {
+  const items = [
+    { id: "1", kind: "job", state: "current" },
+    { id: "2", kind: "job", state: "current" },
+    { id: "3", kind: "job", state: "current" },
+  ];
+  assert.deepEqual(byAttention(items).map((i) => i.id), ["1", "2", "3"]);
+});

@@ -24,6 +24,12 @@ export type WorkItem = {
   id: string;
   kind: WorkKind;
   state: WorkState;
+  /**
+   * Stopped where it can be taken up again -- a Job held at a checkpoint.
+   * It is an exception because it needs a decision, not because anything
+   * went wrong, so it is worded apart and never called failed.
+   */
+  resumable?: boolean;
 };
 
 export type KindCount = { current: number; done: number; exception: number; unrecognized: number };
@@ -127,4 +133,27 @@ export function subAgentWork(status: string): Counted {
     default:
       return "unrecognized";
   }
+}
+
+/**
+ * What to look at first among the exceptions. Something that failed outright
+ * comes before something only waiting to be taken up again: a Job held at a
+ * checkpoint is a reason to look, but not ahead of a CI run that failed.
+ *
+ * Sorts exceptions first, then what is still going, then work with no word
+ * here, then what ended well.
+ */
+const rank = (item: WorkItem): number => {
+  if (item.state === "exception") return item.resumable ? 1 : 0;
+  if (item.state === "current") return 2;
+  if (item.state === "unrecognized") return 3;
+  return 4;
+};
+
+/** A stable order: equal ranks stay as they came. */
+export function byAttention(items: readonly WorkItem[]): WorkItem[] {
+  return items
+    .map((item, order) => ({ item, order }))
+    .sort((a, b) => rank(a.item) - rank(b.item) || a.order - b.order)
+    .map(({ item }) => item);
 }
