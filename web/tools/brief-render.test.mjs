@@ -29,13 +29,16 @@ import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root,
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
 import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
+import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
 // With a density, as Home draws its cards (T-9); without one, as anywhere else.
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
-window.unmountSection=()=>flushSync(()=>root.render(null));`,
+window.unmountSection=()=>flushSync(()=>root.render(null));
+// A report as its summary card on Home (T-18), read only: its figure in its frame.
+window.renderCard=(section,projectId)=>flushSync(()=>root.render(<SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}}/>));`,
   );
   const result = await build({
     root,
@@ -564,6 +567,76 @@ test("live references show Core's current state and open with what it knows", as
     { name: "yuzuno:open-job", detail: { source: "reviews", taskId: "T-85", reviewId: "rev-3" } },
   ]);
   assert.equal(page.requests.filter((r) => r.method !== "GET").length, 0);
+});
+
+// T-18 (Lead 2752): a chart draws only the data read for the very version
+// shown. Its names, units and series come with each version: an earlier
+// version's points under a newer version's axis would be another chart.
+test("a chart, whole or on its card, waits for its own version's data: never the older points under newer names, and a late answer for an older version is dropped", async (t) => {
+  const held = new Map();
+  const answer = (version, body) => held.get(`${base}/chart/timing/t?version=${version}`)({ body });
+  const page = mount((url) => (url.includes("/chart/") ? new Promise((resolve) => held.set(url, resolve)) : { status: 404, body: { error: "not found" } }));
+  t.after(page.close);
+  const { document } = page;
+  // Each version names its own unit and series; Core reads each version's own points.
+  const version = (n, unit, name) => readSection(page, {
+    op: "put", key: "timing", kind: "report", title: "Step time",
+    attachments: [{ name: "timing.csv", path: "/runs/timing.csv" }],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "t", size: "wide" } }, children: ["lead", "t"] },
+      lead: { type: "Markdown", props: { text: "Steps got faster." } },
+      t: { type: "LineChart", props: { id: "t", title: "Step time", x: { label: "Step" }, y: { label: "Time", unit },
+        data: { attachment: "timing.csv", x: "step", series: [{ name, column: "t" }] } } },
+    } },
+  }, { version: n, attachments: [attachment("timing.csv", "data", "text/csv")] });
+  const points = (name, values) => ({ series: [{ name, points: values.map((y, i) => [i + 1, y]) }], downsampled: false, sourcePoints: values.length });
+  const asked = (n) => until(() => held.has(`${base}/chart/timing/t?version=${n}`), `version ${n} asked for`);
+  // The y axis's name as each place writes it: one line on the page, name and unit apart on the card.
+  for (const [place, render, state, axis, seconds] of [
+    ["the report's chart", (s) => page.window.renderSection(s, PROJECT), ".brief-chart-state", ".brief-chart-axis.is-y", "Time (s)"],
+    ["its card", (s) => page.window.renderCard(s, PROJECT), ".home-card-chart-state", ".home-card-chart-axis.is-y", "Time(s)"],
+  ]) {
+    held.clear();
+    const shown = () => ({ state: document.querySelector(state)?.textContent.trim() ?? null, axis: document.querySelector(axis).textContent });
+    // Version 3, in milliseconds, read and drawn.
+    render(version(3, "ms", "Run 3"));
+    await asked(3);
+    answer(3, points("Run 3", [120, 130]));
+    await until(() => shown().state === null, `${place}: version 3 drawn`);
+    if (place === "the report's chart") {
+      const table = document.querySelector("details.brief-chart-data");
+      table.open = true;
+      await until(() => /120/.test(table.querySelector("tbody")?.textContent ?? ""), "version 3's table");
+    }
+    // Version 4, in seconds, its answer held: it waits, with version 4's names; version 3's points are not drawn.
+    render(version(4, "s", "Run 4"));
+    await asked(4);
+    await tick(60);
+    assert.deepEqual(shown(), { state: "Loading chart data…", axis: seconds }, `${place}: waits for version 4`);
+    assert.ok(!/120|130/.test(document.querySelector("#root").textContent), `${place}: no value of version 3 under version 4`);
+    answer(4, points("Run 4", [0.12, 0.13]));
+    await until(() => shown().state === null, `${place}: version 4 drawn`);
+    if (place === "the report's chart")
+      await until(() => document.querySelector("details.brief-chart-data tbody")?.textContent.includes("0.12"), "version 4's table");
+    // Version 5 asked, then version 6 shown before 5's answer: 5's answer, late, is dropped.
+    render(version(5, "ms", "Run 5"));
+    await asked(5);
+    render(version(6, "s", "Run 6"));
+    await asked(6);
+    answer(5, points("Run 5", [999]));
+    await tick(60);
+    assert.equal(shown().state, "Loading chart data…", `${place}: version 5's late answer is not drawn`);
+    assert.ok(!/999|0\.12/.test(document.querySelector("#root").textContent), `${place}: no value of version 4 or 5 under version 6`);
+    answer(6, points("Run 6", [0.1]));
+    await until(() => shown().state === null, `${place}: version 6 drawn`);
+    if (place === "the report's chart") {
+      await until(() => document.querySelector("details.brief-chart-data tbody")?.textContent.includes("0.1"), "version 6's table");
+      assert.deepEqual([...document.querySelectorAll("details.brief-chart-data thead th")].map((th) => th.textContent), ["Step", "Run 6"]);
+      assert.ok(!/999/.test(document.querySelector("details.brief-chart-data").textContent));
+    }
+    page.window.unmountSection();
+  }
+  assert.deepEqual(page.errors, []);
 });
 
 test("a history entry reads its own version's snapshots and chart data, not the live section's", async (t) => {

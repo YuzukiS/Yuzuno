@@ -2,7 +2,7 @@
 // production bundle with an explicit API fixture (synthetic sections, no
 // Core, daily window or real Agent). Line, bar and scatter charts on wide and
 // large cards, on the deck and pinned to the widgets at the user's sizes, at
-// 1720, 1200, 647 and 390 px and with larger text: each is drawn to fit its
+// 1720, 1200, 647 and 390 px and with larger text (20 and 24 px): each is drawn to fit its
 // frame, its plot with both axes and their ticks inside it, the axes' names
 // with their units whole, a legend for every series it draws (and how many
 // there are when its lines can't name them all); no tooltip, data table or
@@ -97,9 +97,13 @@ const sections = [
     title: "Median wall time of each synthetic benchmark stage, both builds", x: { label: "Synthetic benchmark stage" }, y: { label: "Median wall time", unit: "seconds" },
     series: [{ name: "Build 1", points: [["fetch", 12], ["index", 48], ["query", 21], ["merge", 9], ["report", 4]] },
       { name: "Build 2", points: [["fetch", 11], ["index", 44], ["query", 19], ["merge", 10], ["report", 4]] }] } }, "large")),
+  // Large negative values: the y axis's longest labels ("-200M"), which must not be cut on its left (Lead 2752).
+  section("swing", 46, "Quarterly net flow", body("Net flow turned positive in Q3.", { type: "BarChart", props: { id: "swing",
+    title: "Net flow by quarter", x: { label: "Quarter" }, y: { label: "Net flow", unit: "USD" },
+    series: [{ name: "Net flow", points: [["Q1", -200_000_000], ["Q2", -45_500_000], ["Q3", 150_000_000], ["Q4", 12_345_678]] }] } }, "wide")),
 ];
-const CHARTS = { trend: "line", stages: "bar", sizes: "scatter", pool: "line", bench: "bar" };
-const SERIES = { trend: 2, stages: 3, sizes: 2, pool: 12, bench: 2 };
+const CHARTS = { trend: "line", stages: "bar", sizes: "scatter", pool: "line", bench: "bar", swing: "bar" };
+const SERIES = { trend: 2, stages: 3, sizes: 2, pool: 12, bench: 2, swing: 1 };
 // The user's widgets: the bars at Large, the scatter at Wide, the trend following its Agent (wide).
 const pins = [["stages", 42, "large"], ["sizes", 43, "wide"], ["trend", 41, null]].map(([key, id, size]) => ({
   projectId: "p1", key, id, title: sections.find((s) => s.key === key).title, projectName: "atlas-notes", ...(size ? { size } : {}) }));
@@ -318,7 +322,7 @@ try {
       const deck = await charts("deck");
       const widgets = await charts("widgets");
       assert.deepEqual(deck.map((c) => [c.key, c.size, c.source]), [["trend", "wide", "author"], ["stages", "wide", "author"], ["sizes", "large", "author"],
-        ["pool", "wide", "author"], ["bench", "large", "author"]]);
+        ["pool", "wide", "author"], ["bench", "large", "author"], ["swing", "wide", "author"]]);
       assert.deepEqual(widgets.map((c) => [c.key, c.size, c.source]), [["stages", "large", "user"], ["sizes", "wide", "user"], ["trend", "wide", "author"]]);
       for (const found of deck) assertBounded(found, `${width} deck`);
       for (const found of widgets) assertBounded(found, `${width} widget`);
@@ -326,16 +330,21 @@ try {
       return { deck, widgets };
     });
 
-  await step("390 with larger text (20 px): still bounded, the plot readable", async () => {
-    await open(390, 844, { fontSize: 20 });
-    await until("every chart drawn", async () => (await charts("deck")).every((c) => c.svg));
-    const deck = await charts("deck");
-    const widgets = await charts("widgets");
-    for (const found of deck) assertBounded(found, "390/20px deck");
-    for (const found of widgets) assertBounded(found, "390/20px widget");
-    await cardShots("390-text-20");
-    return { deck, widgets };
-  });
+  // Larger text, up to the largest Settings offers (24 px): every tick label inside its plot, the y axis's longest,
+  // "-200M", whole on its left.
+  for (const [width, height, fontSize] of [[390, 844, 20], [390, 844, 24], [1200, 900, 24]])
+    await step(`${width} with ${fontSize} px text: still bounded, the plot readable, the y axis as wide as its labels`, async () => {
+      await open(width, height, { fontSize });
+      await until("every chart drawn", async () => (await charts("deck")).every((c) => c.svg));
+      const deck = await charts("deck");
+      const widgets = await charts("widgets");
+      for (const found of deck) assertBounded(found, `${width}/${fontSize}px deck`);
+      for (const found of widgets) assertBounded(found, `${width}/${fontSize}px widget`);
+      const swing = deck.find((c) => c.key === "swing");
+      assert.ok(swing.yTicks.some((t) => /^[-−]\d/.test(t.text)), `the negative labels drawn: ${JSON.stringify(swing.yTicks)}`);
+      await cardShots(`${width}-text-${fontSize}`);
+      return { deck, widgets };
+    });
 
   await step("1200: the chart's names, legend and ticks at 4.5:1 or more in every palette and theme", async () => {
     await open(1200, 900);

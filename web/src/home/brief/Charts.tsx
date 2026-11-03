@@ -89,13 +89,17 @@ type Problem = { reason: string } | { word: "chartUnreadable" | "chartNoData" | 
 type Loaded = { key: string; data?: ChartData; error?: Problem };
 /**
  * Inline series as they are; attachment data read from Core once per
- * section version. While a newer version loads, the previous data stays up,
- * so the plot never collapses into a placeholder and back.
+ * section version. Only the data read for the very chart shown is drawn
+ * (T-18, Lead 2752): while another version, section or element loads, the
+ * chart says it is loading, in a box of the same size, and never shows the
+ * earlier points under the new names, units and series; an answer that
+ * comes late for an earlier one is dropped.
  */
 function useSeries(props: ChartProps, elementKey: string | undefined) {
   const { projectId, section } = useBrief();
   const path = props.data && elementKey ? chartPath(projectId, section.key, elementKey, section.version) : null;
-  const key = path;
+  // The data's identity: its project, section key and version, and element (the path), and Core's id for the section.
+  const key = path && `${path}#${section.id ?? ""}`;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   useEffect(() => {
     if (!key || !path) return;
@@ -116,10 +120,9 @@ function useSeries(props: ChartProps, elementKey: string | undefined) {
   if (!props.data) return { series: [], data: null, error: { word: "chartNoData" } as Problem, loading: false };
   if (!path) return { series: [], data: null, error: { word: "chartNotFound" } as Problem, loading: false };
   const current = loaded?.key === key ? loaded : null;
-  const data = current?.data ?? (current ? undefined : loaded?.data);
   return {
-    series: data?.series ?? [],
-    data: data ?? null,
+    series: current?.data?.series ?? [],
+    data: current?.data ?? null,
     error: current?.error ?? null,
     loading: !current,
   };
@@ -447,8 +450,9 @@ function CardPlot({ kind, series, labelPx }: { kind: Kind; series: Series[]; lab
   const margin = { top: 6, right: 8, bottom: 0, left: 0 };
   // Below the axis line: the tick's own 6 px and 2 px of space, then the label.
   const x = { tick: tickStyle, tickFormatter: tick, height: Math.ceil(labelPx + 10), minTickGap: 12 };
-  // Three values on the side; a bar's from zero, as on the page.
-  const y = { type: "number" as const, width: 40, tick: tickStyle, tickFormatter: tick, axisLine: false, tickLine: false, tickCount: 3 };
+  // Three values on the side; a bar's from zero, as on the page. The axis is as wide as its widest label, as drawn
+  // at the user's text size (Recharts measures them), so "-200M" at 24 px is not cut on the left (Lead 2752).
+  const y = { type: "number" as const, width: "auto" as const, tick: tickStyle, tickFormatter: tick, axisLine: false, tickLine: false, tickCount: 3 };
   if (kind === "scatter")
     return (
       <ScatterChart margin={margin} accessibilityLayer={false}>
