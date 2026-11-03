@@ -15,6 +15,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
+import { settleWhenLanded } from "./settle";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -457,6 +458,8 @@ export function App() {
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
+  // The Turn a jump last landed on, tinted once (T-19).
+  const turnSettled = useRef<(() => void) | null>(null);
   // Whose conversation a jump from its dock was asked in (T-6): one still on
   // its way when the Workspace or the Agent changes is dropped, not taken into
   // the other conversation, where the same Turn id names nothing of its.
@@ -1304,6 +1307,8 @@ export function App() {
       const target = input || turn;
       target?.scrollIntoView({ behavior: "instant", block: "start" });
       target?.focus({ preventScroll: true });
+      turnSettled.current?.();
+      turnSettled.current = target ? settleWhenLanded(target, "data-settle", false, "animation") : null;
       stickToBottom.current = false;
       jumpItem.current = null;
       setJumpToTurn(null);

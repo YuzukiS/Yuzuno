@@ -816,6 +816,27 @@ p {
   outline-offset: 5px;
   border-radius: 6px;
   scroll-margin-block: 18px;
+  /* As it arrives a ring fades once (T-19); the outline and tint stay while it is shown. */
+  animation: settle-ring var(--motion-settle) ease-out;
+}
+@keyframes settle-ring {
+  from {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--source-ring, #d9c984) 35%, transparent);
+  }
+}
+/* A Turn or input a jump landed on (App.tsx): a tint that fades once. */
+[data-settle] {
+  animation: settle-tint var(--motion-settle) ease-out;
+}
+@keyframes settle-tint {
+  from {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 80%, transparent);
+  }
+}
+.turn:focus-visible {
+  outline: 2px solid var(--focus, #789065);
+  outline-offset: 4px;
+  border-radius: 6px;
 }
 .source-highlight:focus {
   outline: 2px solid #b59a44;
