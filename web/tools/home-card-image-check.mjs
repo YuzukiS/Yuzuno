@@ -109,6 +109,12 @@ const home = () => ({ generatedAt: new Date().toISOString(), order: ["p1"], need
   errors: [], pending: [], jobs: [], brief: { version: 5, sections: sections(), history: [] }, unseen: 4, missing: [] }] });
 const machineLoad = () => ({ at: new Date().toISOString(), cpu: { cores: 8, totalPct: 10, jobsPct: 0, agentsPct: null, otherPct: null },
   memory: { totalMiB: 16384, usedMiB: 4000, availableMiB: 12384, jobsMiB: 0, agentsMiB: null }, gpus: [], jobs: [] });
+const usage = {
+  revision: 1, status: "ready", account: { type: "chatgpt", label: "Fixture account", planType: "plus" }, accountId: "acct-fixture",
+  source: { generation: "1", label: "Core host", machineId: null, runtimeId: null }, checkedAt: iso(0), observedAt: iso(0), ordinaryUsageAllowed: true, error: null,
+  buckets: [{ limitId: "codex", limitName: "Codex", planType: "plus", observedAt: iso(0), credits: null,
+    primary: { usedPercent: 30, windowDurationMins: 300, resetsAt: Math.floor(now / 1000) + 3600, observedAt: iso(0) }, secondary: null }],
+};
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".woff2": "font/woff2", ".woff": "font/woff",
   ".ttf": "font/ttf", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json" };
 
@@ -121,14 +127,16 @@ async function serve(route) {
   }
   const path = url.pathname;
   const method = request.method();
-  // The open Agent's reads, answered as Core answers an Agent with none, counted apart from writes.
-  const own = path.match(/^\/api\/agents\/a\/(reading|conversation\/inputs|codex\/mcp)$/);
+  // The open Agent's reads, answered as Core answers an Agent with none, counted apart from writes; its Codex plan
+  // usage as Core reports it (CodexPlanUsage.tsx).
+  const own = path.match(/^\/api\/agents\/a\/(reading|conversation\/inputs|codex\/mcp|codex\/usage)$/);
   if (own) {
     report.agentReads.push(`${method} ${path}`);
     if (own[1] === "reading" && (method === "GET" || method === "PUT"))
       return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: 1, accepted: true } : { handoff: null, sourceSeq: 0 } });
     if (own[1] === "conversation/inputs" && method === "GET") return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
     if (own[1] === "codex/mcp" && method === "GET") return route.fulfill({ json: { state: "observed", reason: "", generation: 1, servers: [], more: 0 } });
+    if (own[1] === "codex/usage" && method === "GET") return route.fulfill({ json: usage });
   }
   if (method !== "GET" && path.startsWith("/api/")) {
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
