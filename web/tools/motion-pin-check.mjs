@@ -119,11 +119,13 @@ function pageHelpers([widgetId, pinSelector]) {
     if (frames.length < 20_000) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
-  // Pin pressed as a pointer does: focus, then click.
+  // Pin pressed as a pointer does, on a Pin in view: brought into view first (a pointer can't press
+  // one off the screen), then focus and click. Where it is is read once focus has it.
   window.__pin = () => {
     const button = document.querySelector(pinSelector);
-    const top = button.getBoundingClientRect().top;
+    button.scrollIntoView({ block: "center", behavior: "instant" });
     button.focus();
+    const top = button.getBoundingClientRect().top;
     button.click();
     return Math.round(top * 10) / 10;
   };
