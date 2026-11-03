@@ -351,7 +351,9 @@ p {
   gap: 7px;
   padding: 0 10px;
   border-radius: 7px;
-  color: #7c866c;
+  /* Readable at rest (4.5:1) in every palette; the dark and other palettes set
+     their own colour (appearance.css). */
+  color: var(--text-secondary);
   font-size: calc(11px + var(--font-adjust, 3px));
   white-space: nowrap;
   transition:
@@ -851,7 +853,7 @@ p {
   gap: 5px;
   padding: 5px 6px;
   border-radius: 4px;
-  color: #8f9881;
+  color: var(--text-secondary);
   font-size: calc(10px + var(--font-adjust, 3px));
   white-space: nowrap;
   transition:
@@ -864,7 +866,7 @@ p {
   color: #617552;
 }
 .copy-button {
-  color: #a3aa96;
+  color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
 .turn-divider .copy-button {

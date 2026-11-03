@@ -6,7 +6,7 @@
   align-items: flex-start;
 }
 .send-to-agent-button {
-  color: #a3aa96;
+  color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
 .send-to-agent-menu {
