@@ -2839,6 +2839,11 @@ p {
     opacity: 1;
   }
 }
+/* The box an inline panel reveals in (surface.ts useRevealIn): it holds the
+   panel's own margins, so only its height moves as the panel opens. */
+.reveal {
+  display: flow-root;
+}
 @media (min-width: 1500px) {
   .app {
     grid-template-columns: var(--rail-width, 260px) minmax(0, 1fr);

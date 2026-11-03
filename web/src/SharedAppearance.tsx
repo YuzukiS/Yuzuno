@@ -571,32 +571,36 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
           </p>
         )}
         {preview === "follow" && read?.kind === "preset" && (
-          <div className="appearance-file-preview" role="group" aria-label={t.followPreview} ref={panel}>
-            <p>{t.followPreviewText(read.revision, savedText(t, read.savedAt))}</p>
-            <PresetChoices appearance={appearance} contents={read.contents} chosen={[]} onChosen={() => {}} fixed />
-            {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
-            <div className="appearance-file-buttons">
-              <button type="button" disabled={!!busy} onClick={() => void follow()}>
-                {busy === "follow" ? t.followingBusy : changes ? t.followApply(changes) : t.followNothing}
-              </button>
-              <button type="button" disabled={!!busy} onClick={cancel}>
-                {t.cancel}
-              </button>
+          <div className="reveal" ref={panel}>
+            <div className="appearance-file-preview" role="group" aria-label={t.followPreview}>
+              <p>{t.followPreviewText(read.revision, savedText(t, read.savedAt))}</p>
+              <PresetChoices appearance={appearance} contents={read.contents} chosen={[]} onChosen={() => {}} fixed />
+              {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
+              <div className="appearance-file-buttons">
+                <button type="button" disabled={!!busy} onClick={() => void follow()}>
+                  {busy === "follow" ? t.followingBusy : changes ? t.followApply(changes) : t.followNothing}
+                </button>
+                <button type="button" disabled={!!busy} onClick={cancel}>
+                  {t.cancel}
+                </button>
+              </div>
             </div>
           </div>
         )}
         {preview === "apply" && read?.kind === "preset" && (
-          <div className="appearance-file-preview" role="group" aria-label={t.presetPreview} ref={panel}>
-            <p>{t.applyPreviewText(read.revision, savedText(t, read.savedAt))}</p>
-            <PresetChoices appearance={appearance} contents={read.contents} chosen={chosen} onChosen={setChosen} />
-            {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
-            <div className="appearance-file-buttons">
-              <button type="button" disabled={!selected.length || !!busy} onClick={() => void apply()}>
-                {busy === "apply" ? t.applying : selected.length ? t.applySelected(selected.length) : t.nothingToApply}
-              </button>
-              <button type="button" disabled={!!busy} onClick={cancel}>
-                {t.cancel}
-              </button>
+          <div className="reveal" ref={panel}>
+            <div className="appearance-file-preview" role="group" aria-label={t.presetPreview}>
+              <p>{t.applyPreviewText(read.revision, savedText(t, read.savedAt))}</p>
+              <PresetChoices appearance={appearance} contents={read.contents} chosen={chosen} onChosen={setChosen} />
+              {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
+              <div className="appearance-file-buttons">
+                <button type="button" disabled={!selected.length || !!busy} onClick={() => void apply()}>
+                  {busy === "apply" ? t.applying : selected.length ? t.applySelected(selected.length) : t.nothingToApply}
+                </button>
+                <button type="button" disabled={!!busy} onClick={cancel}>
+                  {t.cancel}
+                </button>
+              </div>
             </div>
           </div>
         )}

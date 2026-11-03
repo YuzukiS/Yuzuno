@@ -123,12 +123,15 @@ export function useArrivalsIn(
 
 /**
  * An inline panel the user opened (a confirm, a preview) reveals (T-19 M9):
- * as it mounts it opens from nothing to its height and fades in over small,
- * pushing what is below down; it is brought into view first (nearest, at
- * once) if it would not be. A newer `key` reveals the panel shown then; a
- * falsy one, or no panel, reveals nothing. What it holds is clipped only
- * while it opens. Under reduced motion, or without the Web Animations API,
- * it is there at once; reduced motion turned on meanwhile shows it whole.
+ * as it mounts, the box it is in opens from nothing to its height and fades
+ * in over small, pushing what is below down; it is brought into view first
+ * (nearest, at once) if it would not be. `ref` is that box, a `.reveal` with
+ * the panel inside: only its height and opacity move, and the panel keeps
+ * its own padding and margins, so nothing in it moves as it opens. A newer
+ * `key` reveals the panel shown then; a falsy one, or no panel, reveals
+ * nothing. What it holds is clipped only while it opens. Under reduced
+ * motion, or without the Web Animations API, it is there at once; reduced
+ * motion turned on meanwhile shows it whole.
  */
 export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
   const reveal = useRef<Animation | null>(null);
@@ -140,10 +143,8 @@ export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
     const ms = tokenMs("--motion-small");
     if (!ms) return;
     const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
-    const style = getComputedStyle(element);
-    const open = { height: `${element.getBoundingClientRect().height}px`, paddingTop: style.paddingTop, paddingBottom: style.paddingBottom,
-      marginTop: style.marginTop, marginBottom: style.marginBottom, opacity: 1 };
-    const shut = { height: "0px", paddingTop: "0px", paddingBottom: "0px", marginTop: "0px", marginBottom: "0px", opacity: 0 };
+    const open = { height: `${element.getBoundingClientRect().height}px`, opacity: 1 };
+    const shut = { height: "0px", opacity: 0 };
     const overflow = element.style.overflow;
     element.style.overflow = "hidden";
     const played = element.animate([shut, open], { duration: ms, easing });
