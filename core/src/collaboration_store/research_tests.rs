@@ -662,3 +662,79 @@ fn an_entry_keeps_its_numbers_exactly_as_written_past_two_to_the_fifty_third() {
     }
     assert_eq!(counts(&store), before);
 }
+
+/// A claim of `task` with a 64-byte id and a 300-byte multibyte title: a
+/// task source that cites it fixes all of that, its producer and its time.
+fn long_claim(store: &Store, task: &str, n: usize) -> i64 {
+    seq(&comment(store, "author", &format!("long-{n}"), task,
+        finding(&format!("c{n:0>63}"), "open", "systems", &"長".repeat(100))).unwrap())
+}
+
+/// The research a comment stored, as serialized.
+fn stored_bytes(answer: &Value) -> usize {
+    serde_json::to_vec(&answer["activity"]["research"]).unwrap().len()
+}
+
+#[test]
+fn a_record_is_bounded_as_stored_with_its_sources_and_entries_fixed_and_a_refusal_writes_nothing() {
+    const BOUND: usize = 32_768;
+    let (_dir, store) = setup();
+    // Cited from T-2, so T-1's activities are only the records under test.
+    let cited: Vec<i64> = (0..40).map(|n| long_claim(&store, "T-2", n)).collect();
+    let source = |seq: &i64| json!({"kind":"task","taskId":"T-2","activitySeq":seq});
+    // Both paths that fix a source: a record's own sources, and the sources
+    // of a comparison's entries, with what the entries share. Only the text
+    // changes between records of one path, byte for byte; ids keep a length.
+    let notes = json!(vec![text_of(600); 12]);
+    let with_sources = |id: &str, padding: usize| {
+        let mut claim = finding(id, "open", "systems", "Layout B is faster on the small inputs");
+        claim["text"] = json!(text_of(padding));
+        claim["conditions"] = notes.clone();
+        claim["limits"] = notes.clone();
+        claim["sources"] = json!(cited[..20].iter().map(source).collect::<Vec<_>>());
+        claim
+    };
+    let with_entries = |id: &str, padding: usize| {
+        json!({"type":"comparison","id":id,"title":"Layouts compared","field":"systems","text":text_of(padding),
+            "entries":cited.iter().enumerate().map(|(n, seq)| json!({"id":format!("e{n:0>2}"),"label":"Entry",
+                "status":"included","unit":"ms","source":source(seq)})).collect::<Vec<_>>()})
+    };
+    let paths: [(&str, &dyn Fn(&str, usize) -> Value); 2] = [("sources", &with_sources), ("entries", &with_entries)];
+    let mut kept = Value::Null;
+    for (path, build) in paths {
+        let probe = build(&format!("{path}-p"), 30);
+        let first = comment(&store, "author", &format!("{path}-probe"), "T-1", probe.clone()).unwrap();
+        let grown = stored_bytes(&first) - serde_json::to_vec(&probe).unwrap().len();
+        assert!(grown > 10_000, "{path}: fixing the sources adds {grown} bytes");
+        let base = stored_bytes(&first) - 30;
+        // One byte past the bound as stored, from what was sent inside it.
+        let before = counts(&store);
+        let over = build(&format!("{path}-o"), BOUND + 1 - base);
+        let sent = serde_json::to_vec(&over).unwrap().len();
+        assert!(sent < BOUND, "{path}: what was sent is inside the bound: {sent}");
+        let refused = error(comment(&store, "author", &format!("{path}-over"), "T-1", over));
+        assert!(refused.contains("exceeds 32768 bytes as stored") && refused.contains("(32769 bytes)"), "{path}: {refused}");
+        assert_eq!(counts(&store), before, "{path}: no activity, receipt, task version, status or mail is written");
+        // At the bound exactly, it is written once; a retry is the same comment.
+        let input = build(&format!("{path}-a"), BOUND - base);
+        let at = comment(&store, "author", &format!("{path}-at"), "T-1", input.clone()).unwrap();
+        assert_eq!(stored_bytes(&at), BOUND, "{path}");
+        let written = counts(&store);
+        assert_eq!((written.0, written.2, written.3, written.4), (before.0, before.2 + 1, before.3 + 1, before.4),
+            "{path}: one activity and one receipt; the task's version is unchanged by a comment");
+        let again = comment(&store, "author", &format!("{path}-at"), "T-1", input).unwrap();
+        assert_eq!((seq(&again), counts(&store)), (seq(&at), written), "{path}: a retry writes nothing more");
+        kept = at["activity"]["research"].clone();
+    }
+    // A record stored before this bound, past it, reads as it was stored.
+    let mut old = kept;
+    old["id"] = json!("entries-x");
+    old["text"] = json!(text_of(8000));
+    assert!(serde_json::to_vec(&old).unwrap().len() > BOUND);
+    let (task, _) = task_key(&store.db.read().unwrap(), "T-1").unwrap();
+    let actor = TaskActor { kind: "agent".into(), id: "author".into(), name: "Agent author".into() };
+    let event = activity(&store.db.write().unwrap(), &task, "comment", &actor, &json!({}),
+        json!({"body":"Stored before the bound","research":old})).unwrap();
+    let read = record(&store, "T-1", event["seq"].as_i64().unwrap());
+    assert_eq!((read["research"]["id"].clone(), read["research"]["text"].clone()), (json!("entries-x"), json!(text_of(8000))));
+}
