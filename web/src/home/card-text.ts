@@ -32,8 +32,8 @@ export const cardText = strings({
   sizeOf: (title: string) => `Size of “${title}”`,
   resetSizes: "Reset all to Auto",
   valuesShown: (shown: number, total: number) => `${shown} of ${total} values`,
-  figureKind: { LineChart: "Line chart", BarChart: "Bar chart", ScatterChart: "Scatter chart", Metrics: "Metrics", table: "Table", image: "Image", desk: "Research desk" },
-  figureOnPage: (kind: string, status: boolean) => `${kind} · on the ${status ? "status" : "report"}`,
+  figureKind: { LineChart: "Line chart", BarChart: "Bar chart", ScatterChart: "Scatter chart", Metrics: "Metrics", table: "Table", image: "Image", desk: "ResearchDesk" },
+  figureOnPage: (kind: string, status: boolean) => `${kind} · on the ${status ? "status page" : "report"}`,
 }, {
   openReport: "打开报告",
   openStatus: "打开状态",

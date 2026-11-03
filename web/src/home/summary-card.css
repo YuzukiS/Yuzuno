@@ -337,8 +337,9 @@
   justify-content: flex-start;
   color: var(--text-secondary);
 }
-/* Metrics on a small card (Dev 7's v12): the first value large under its
-   label, the second smaller beside it; a number stays with its unit. */
+/* Metrics on a small card (Dev 7's v12, 2437): the first value large under
+   its label, the second smaller beside it, or under it where the two do not
+   fit; never smaller type or an ellipsis, and a number stays with its unit. */
 .home-card-numbers {
   display: flex;
   flex-wrap: wrap;
@@ -371,10 +372,11 @@
   color: var(--text-secondary);
   font-size: calc(9.5px + var(--font-adjust, 3px));
 }
+/* Plain words, not a control (Dev 7, 2437). */
 .home-card-numbers-count {
   margin: 4px 0 0;
   color: var(--text-secondary);
-  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-size: calc(9.5px + var(--font-adjust, 3px));
 }
 
 /* A card's size: Auto, Small, Wide or Large (Dev 7's v14, v15). In More
