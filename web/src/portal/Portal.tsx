@@ -5,7 +5,7 @@ import { api, errorText, post } from "../api";
 import { langTag, strings, useLanguage, useStrings } from "../i18n";
 import { openJobs } from "../Jobs";
 import type { OpenedService, ProjectService } from "../ProjectServices";
-import { useSurfaceIn } from "../surface";
+import { useRevealIn, useSurfaceIn } from "../surface";
 import { savedPortalWidth, savePortalWidth } from "./portal-preference";
 import {
   closePortal,
@@ -446,10 +446,20 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [target, readService]);
+  // Disconnected from here (T-19 WK:PT-11): the note takes the page's place
+  // and fades in and, focus having gone with Disconnect, takes it.
+  const disconnectedNote = useRef<HTMLDivElement>(null);
+  const [disconnects, setDisconnects] = useState(0);
+  useSurfaceIn(disconnectedNote, disconnects, "small", disconnects > 0);
+  useLayoutEffect(() => {
+    if (disconnects && (!document.activeElement || document.activeElement === document.body)) disconnectedNote.current?.focus({ preventScroll: true });
+  }, [disconnects]);
   const disconnect = async () => {
     if (target.kind !== "service") return;
     await post(`/services/${encodeURIComponent(target.service.id)}/close`);
-    if (alive.current) setDisconnected(true);
+    if (!alive.current) return;
+    setDisconnected(true);
+    setDisconnects((n) => n + 1);
   };
   // Opens the service's way again and checks it from this browser, as the
   // services list does; it never starts anything.
@@ -586,7 +596,8 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
         ) : idle ? (
           <ServiceIdle kind={idle} />
         ) : disconnected || unchecked ? (
-          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}>
+          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}
+            ref={disconnectedNote} tabIndex={disconnected ? -1 : undefined}>
             {disconnected ? <p>{t.disconnected}</p> : <ServiceIdle kind="check" />}
             {managed && (
               <button type="button" className="primary-button" disabled={proof?.state === "checking"} onClick={() => {
@@ -656,6 +667,18 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
   // The Job the confirmation was opened for: a newer one read meanwhile is
   // never stopped by it.
   const [confirming, setConfirming] = useState<string | null>(null);
+  // The confirmation opens below the actions and takes focus; Cancel gives it
+  // back to Stop Job… (T-19 WK:PT-11).
+  const revealBox = useRef<HTMLDivElement>(null);
+  const confirmBox = useRef<HTMLDivElement>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  const cancelled = useRef(false);
+  useRevealIn(revealBox, confirming);
+  useLayoutEffect(() => {
+    if (confirming) confirmBox.current?.focus({ preventScroll: true });
+    else if (cancelled.current) stopButton.current?.focus();
+    cancelled.current = false;
+  }, [confirming]);
   const [error, setError] = useState("");
   const job = service.job;
   const c = service.connection;
@@ -729,20 +752,25 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
             </button>
             <button type="button" className="quiet-button" onClick={() => openJobs({ jobId: job.jobId })}>{t.inJobs}</button>
             {job.canStop && confirming === null && (
-              <button type="button" className="danger-button portal-stop" onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
+              <button type="button" className="danger-button portal-stop" ref={stopButton} onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
             )}
           </>
         )}
         {!job && job !== undefined && <span className="portal-muted">{t.neverStops}</span>}
       </div>
       {confirming !== null && job && (
-        <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm}>
-          <p>{job.jobId === confirming ? t.stopNote : t.stopChanged}</p>
-          <button type="button" className="danger-button" disabled={job.jobId !== confirming} onClick={act(async () => {
-            await post(`/jobs/${encodeURIComponent(confirming)}/cancel`);
-            setConfirming(null);
-          })}>{t.stopConfirm}</button>
-          <button type="button" className="quiet-button" onClick={() => setConfirming(null)}>{t.stopCancel}</button>
+        <div className="reveal" ref={revealBox}>
+          <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm} ref={confirmBox} tabIndex={-1}>
+            <p>{job.jobId === confirming ? t.stopNote : t.stopChanged}</p>
+            <button type="button" className="danger-button" disabled={job.jobId !== confirming} onClick={act(async () => {
+              await post(`/jobs/${encodeURIComponent(confirming)}/cancel`);
+              setConfirming(null);
+            })}>{t.stopConfirm}</button>
+            <button type="button" className="quiet-button" onClick={() => {
+              cancelled.current = true;
+              setConfirming(null);
+            }}>{t.stopCancel}</button>
+          </div>
         </div>
       )}
       {drawer === "logs" && <pre className="portal-logs">{log}</pre>}
