@@ -312,6 +312,7 @@ export const PendingQuestions = memo(
         )}
         <Modal
           open={!!active}
+          confirm
           onOpenChange={(open) => !open && setSelected(null)}
           title="Answer a question"
           description="Your answer draft stays with this question."

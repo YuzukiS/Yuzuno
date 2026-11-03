@@ -157,7 +157,7 @@ export function CodexTerminalsDialog({ agent, mode, open, onOpenChange }: {
   const terminals = listing?.state === "listed" ? listing.terminals : [];
   const canStop = mode === "stop" && listing?.state === "listed" && !stopping && !loading;
   return (
-    <Modal open={open} onOpenChange={onOpenChange} wide className="codex-changes codex-terminals"
+    <Modal open={open} confirm={mode === "stop"} onOpenChange={onOpenChange} wide className="codex-changes codex-terminals"
       title={mode === "stop" ? "Stop background terminals" : "Background terminals"}
       description={`Commands Codex keeps running in this conversation · ${agent.name}`}>
       <div className="changes-body">

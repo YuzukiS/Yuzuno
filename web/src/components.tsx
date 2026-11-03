@@ -12,6 +12,7 @@ import { messageSkills } from "./skill-refs";
 import { SkillChips } from "./SkillChips";
 import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { DialogExitGhost } from "./DialogExitGhost";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
@@ -169,6 +170,7 @@ export function Modal({
   onCloseAutoFocus,
   lang,
   closeLabel = "Close dialog",
+  confirm = false,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -182,13 +184,27 @@ export function Modal({
   /** The language of its title and close button, when not the page's. */
   lang?: string;
   closeLabel?: string;
+  /** Its main action approves or destroys something: the box only fades, so
+      that action never moves under the pointer (T-19). */
+  confirm?: boolean;
 }) {
+  const overlay = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  // Its entrance as it opened, kept until it has gone: a change while open
+  // (Agent actions → Delete) would restart it, and one as it closes (the
+  // confirmation's mode cleared) would change its animation, which Radix
+  // waits for as an exit before it lets go of focus and the page. Its copy
+  // fades or moves as the dialog was just before it closed.
+  const [entrance, setEntrance] = useState({ open, confirm });
+  if (entrance.open !== open) setEntrance({ open, confirm: open ? confirm : entrance.confirm });
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <DialogExitGhost open={open} confirm={confirm} parts={[overlay, box]} />
       <Dialog.Portal>
-        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content
-          className={`modal ${wide ? "modal-wide" : ""} ${className}`.trim()}
+          ref={box}
+          className={`modal ${wide ? "modal-wide" : ""} ${entrance.confirm ? "modal-confirm" : ""} ${className}`.trim()}
           onCloseAutoFocus={onCloseAutoFocus}
           lang={lang}
         >
@@ -479,6 +495,8 @@ function TruncationNotice({ view }: { view: FullItemView }) {
  * Markdown/structured item recreating thousands of DOM nodes on expansion. */
 function HistoryPreview({ item, agentId, turnId }: { item: NativeItem; agentId: string; turnId: string }) {
   const [open, setOpen] = useState(false);
+  const overlay = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const [original, setOriginal] = useState<NativeItem | null>(null);
   const [error, setError] = useState("");
   const language = useLanguage();
@@ -495,9 +513,10 @@ function HistoryPreview({ item, agentId, turnId }: { item: NativeItem; agentId: 
     <p>{t.largeItem}</p>
     <pre>{item.text || t.openOriginal}</pre>
     <Dialog.Root open={open} onOpenChange={setOpen}>
+      <DialogExitGhost open={open} parts={[overlay, box]} />
       <Dialog.Trigger asChild><button className="inline-link">{t.viewOriginal}</button></Dialog.Trigger>
-      <Dialog.Portal><Dialog.Overlay className="modal-overlay" />
-        <Dialog.Content className="modal history-original-dialog" lang={langTag(language)}>
+      <Dialog.Portal><Dialog.Overlay ref={overlay} className="modal-overlay" />
+        <Dialog.Content ref={box} className="modal history-original-dialog" lang={langTag(language)}>
           <div className="modal-heading"><Dialog.Title>{t.fullOriginal}</Dialog.Title>
             <Dialog.Close aria-label={t.closeOriginal} className="icon-button"><X size={18} /></Dialog.Close></div>
           <Dialog.Description>{t.originalDescription}</Dialog.Description>

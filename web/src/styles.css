@@ -2136,7 +2136,7 @@ p {
   background: #31402d34;
   backdrop-filter: blur(3px);
   z-index: 50;
-  animation: appear 0.15s ease-out;
+  animation: dialog-fade-in var(--motion-medium) var(--ease-standard);
 }
 .modal {
   position: fixed;
@@ -2153,7 +2153,59 @@ p {
   border-radius: 13px;
   box-shadow: 0 20px 90px #24341d2b;
   padding: 25px;
-  animation: appear 0.15s ease-out;
+  /* `translate`, apart from the transform that centres it (or a drawer's). */
+  animation: dialog-in var(--motion-medium) var(--ease-standard);
+}
+/* What approves or destroys never moves under the pointer: it only fades. */
+.modal.modal-confirm {
+  animation-name: dialog-fade-in;
+}
+@keyframes dialog-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+/* A closed dialog's copy, fading out while the page is already back
+   (DialogExitGhost.tsx): it takes no clicks, and is a still picture. */
+.dialog-exit-ghost {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+.dialog-exit-ghost * {
+  pointer-events: none !important;
+}
+.dialog-exit-ghost > .modal-overlay {
+  animation: dialog-fade-out var(--motion-exit-medium) var(--ease-exit) forwards;
+}
+.dialog-exit-ghost > .modal {
+  animation: dialog-out var(--motion-exit-medium) var(--ease-exit) forwards;
+}
+/* As the dialog was just before it closed, whatever entrance it had. */
+.dialog-exit-ghost[data-confirm] > .modal {
+  animation-name: dialog-fade-out;
+}
+.dialog-exit-ghost > .modal * {
+  animation: none !important;
+  transition: none !important;
+}
+@keyframes dialog-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    translate: 0 4px;
+  }
 }
 .modal-heading {
   display: flex;

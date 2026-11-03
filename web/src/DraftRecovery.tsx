@@ -39,6 +39,7 @@ export function DraftRecovery({ onDiscard }: { onDiscard: () => boolean }) {
       </button>
       <Modal
         open={open}
+        confirm
         onOpenChange={setOpen}
         title={t.title}
         description={t.description}
