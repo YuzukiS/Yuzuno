@@ -10,6 +10,8 @@ import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
+import { usePhone } from "../phone-layout";
+import { useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
@@ -128,6 +130,11 @@ export function Home({
   // a reply Home can't use, an order not saved, or Core's reason as it came.
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
+  // Home fades in as it opens, over medium (T-19 M6: SH:M10, R27); not on a
+  // phone, where what is open comes in by its own motion (M8, later).
+  const view = useRef<HTMLDivElement>(null);
+  const phone = usePhone();
+  useSurfaceIn(view, "home", "medium", !phone);
   const [errorState, setErrorState] = useState<(HomeError & { workspaceId: string }) | null>(null);
   const error = errorState?.workspaceId === workspaceId ? errorState : null;
   const setError = useCallback((value: HomeError | null) => {
@@ -542,6 +549,7 @@ export function Home({
     <ReportOpen.Provider value={cardReport}>
     <div className="home-stage">
     <div
+      ref={view}
       className={`home-view${report ? " is-under-report" : ""}`}
       lang={langTag(language)}
       data-density={density}
