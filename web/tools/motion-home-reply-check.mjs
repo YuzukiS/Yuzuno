@@ -1,7 +1,8 @@
 // T-19, Home replies (M9/M14 + F2: HM:S7, HM:A3), in Chromium on a production build of the app with
 // a synthetic Workspace and every API answered here (no Core, no Agent).
 // - A report card's Reply, pressed: the reply fades in over small and its text takes focus. Closed
-//   with its ✕ or with Escape, focus is back on Reply. A reply kept from before, shown again after a
+//   with its ✕ or with Escape, focus is back on Reply. Pinned, the card's Reply is in the body it
+//   folds: closed with the card folded, focus goes to the card's fold button, and it stays folded. A reply kept from before, shown again after a
 //   reload, shows as it is: no fade, and focus stays where it was.
 // - An Ask answered from this window: once Core has the reply, what was said takes the reply's place,
 //   fades in and takes focus (the button pressed has gone). Reply again brings the reply back the
@@ -40,9 +41,9 @@ const body = (text) => ({ root: "body", elements: {
   text: { type: "Markdown", props: { text } },
 } });
 const template = () => [
-  { key: "notes", kind: "report", title: "Weekly notes", version: 3, owner, updatedAt: iso(-30 * MIN), updatedTurnId: null,
+  { id: 11, key: "notes", kind: "report", title: "Weekly notes", version: 3, owner, updatedAt: iso(-30 * MIN), updatedTurnId: null,
     attachments: [], refs: {}, seen: null, history: false, body: body("The import is faster; the export waits for review.") },
-  { key: "plain", kind: "ask", title: "Anything to add?", version: 2, owner, updatedAt: iso(-20 * MIN), updatedTurnId: null,
+  { id: 12, key: "plain", kind: "ask", title: "Anything to add?", version: 2, owner, updatedAt: iso(-20 * MIN), updatedTurnId: null,
     attachments: [], refs: {}, seen: null, history: false, body: body("Anything else before we ship?"),
     ask: { question: "Anything else before we ship?", state: "open", reply: { freeText: true } } },
 ];
@@ -117,7 +118,8 @@ function pageHelpers() {
   window.__focused = () => {
     const el = document.activeElement;
     return el ? { tag: el.tagName, text: el.textContent.trim().slice(0, 40), label: el.getAttribute("aria-label"),
-      className: typeof el.className === "string" ? el.className : "", inCard: el.closest("[data-section-key]")?.dataset.sectionKey ?? null } : null;
+      className: typeof el.className === "string" ? el.className : "", inCard: el.closest("[data-section-key]")?.dataset.sectionKey ?? null,
+      inPinned: !!el.closest(".home-pinned"), shown: el.checkVisibility?.() ?? null } : null;
   };
   window.__press = (button, target, frames = 40) => new Promise((done) => {
     const b = document.querySelector(button);
@@ -168,6 +170,7 @@ const runs = [
 ];
 const NOTES = '[data-section-key="notes"]';
 const PLAIN = '[data-section-key="plain"]';
+const PIN = ".home-pinned";
 for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
@@ -217,6 +220,38 @@ for (const run of runs) {
     const afterEscape = await focused();
     ok(`${tag}: the reply closed with Escape in its text: focus is back on Reply (${afterEscape?.text})`,
       !(await page.locator(`${NOTES} .home-card-reply`).count()) && afterEscape?.className.includes("home-reply-open"), afterEscape);
+    // A pinned card's reply (Lead 3455): its Reply is in the body the card folds, the reply below it.
+    await page.getByRole("button", { name: "Pin “Weekly notes” to My widgets" }).first().click();
+    await page.locator(PIN).waitFor({ timeout: 5000 });
+    await page.locator(`${PIN} .home-pinned-foot button[aria-expanded]`).click();
+    await page.locator(`${PIN} .home-card-reply`).waitFor({ timeout: 5000 });
+    await page.locator(`${PIN} .home-card-reply-head .icon-button`).click();
+    await page.waitForTimeout(150);
+    const pinOpen = await focused();
+    ok(`${tag}: a pinned card's reply closed with its ✕ while the card is open: focus is back on that card's Reply (${pinOpen?.label})`,
+      !(await page.locator(`${PIN} .home-card-reply`).count()) && pinOpen?.inPinned && pinOpen.label === "Reply to “Weekly notes”" && pinOpen.shown === true, pinOpen);
+    const foldedClose = async (how) => {
+      if (await page.locator(`${PIN}.is-collapsed`).count()) await page.locator(`${PIN} .home-pinned-head .home-fold`).click();
+      await page.locator(`${PIN} .home-pinned-foot button[aria-expanded]`).click();
+      await page.locator(`${PIN} .home-card-reply`).waitFor({ timeout: 5000 });
+      await page.locator(`${PIN} .home-pinned-head .home-fold`).click();
+      await page.locator(`${PIN}.is-collapsed`).waitFor({ timeout: 5000 });
+      if (how === "Escape") {
+        await page.locator(`${PIN} .home-card-reply textarea`).click();
+        await page.keyboard.press("Escape");
+      } else await page.locator(`${PIN} .home-card-reply-head .icon-button`).click();
+      await page.waitForTimeout(150);
+      return { focus: await focused(), folded: (await page.locator(`${PIN}.is-collapsed`).count()) === 1, open: await page.locator(`${PIN} .home-card-reply`).count() };
+    };
+    for (const how of ["Escape", "✕"]) {
+      const after = await foldedClose(how);
+      ok(`${tag}: a pinned card folded while its reply is open, the reply closed with ${how === "Escape" ? "Escape" : "its ✕"}: focus goes to the card's fold button, which is shown, and the card stays folded (${after.focus?.className})`,
+        after.open === 0 && after.folded && after.focus?.inPinned && after.focus.className.includes("home-fold") && after.focus.shown === true, after);
+    }
+    if (await page.locator(`${PIN}.is-collapsed`).count()) await page.locator(`${PIN} .home-pinned-head .home-fold`).click();
+    await page.getByRole("button", { name: "Unpin “Weekly notes” from My widgets" }).first().click();
+    await page.locator(PIN).waitFor({ state: "detached", timeout: 5000 });
+
     // A draft kept from before: after a reload the reply is open again, as it was. (Where Escape
     // did not close it, its ✕ does first.)
     if (await page.locator(`${NOTES} .home-card-reply`).count()) await page.locator(`${NOTES} .home-card-reply-head .icon-button`).click();
