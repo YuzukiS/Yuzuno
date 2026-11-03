@@ -1698,18 +1698,22 @@ test("a comparison entry shows each part its author gave and says which part is 
   }
 });
 
-test("an integer past 2^53 reads as approximate on this page, never as exact; others as given (T-17)", async () => {
-  const entries = [
-    // JSON.parse gives this page 9007199254740992 for Core's 9007199254740993.
-    { id: "big", label: "Big", status: "included", unit: "events", value: JSON.parse('{"value":9007199254740993,"low":-9007199254740993}') },
-    { id: "small", label: "Small", status: "included", unit: "events", value: { value: -1.25, high: 12 } },
-  ];
+test("value, low, high and n past JavaScript's safe integers read as approximate, with why; 0 and safe integers stay exact (T-17)", async () => {
+  // Parsed from JSON text, as the page receives Core's answer: Core keeps
+  // these exactly, the page has only the nearest double it can hold.
+  const entries = JSON.parse(`[
+    {"id":"edge","label":"Edge","status":"included","unit":"events","level":"process","n":0,"value":{"value":9007199254740991}},
+    {"id":"big","label":"Big","status":"included","unit":"events","n":9007199254740993,
+      "value":{"value":9007199254740993,"low":-9007199254740993,"high":18446744073709551615}},
+    {"id":"pow","label":"Power","status":"included","unit":"events","level":"seed","n":9007199254740992,"value":{"value":9007199254740992}},
+    {"id":"safe","label":"Safe","status":"excluded","reason":"Counted twice.","level":"seed","n":9007199254740991}
+  ]`);
   const record = { schema: "research/1", type: "comparison", id: "counts", title: "Event counts", text: "As counted.", entries,
-    comparability: { aligned: false, shared: { unit: "events" }, differs: [], unknown: ["definition", "level", "method"],
-      counts: { included: 2, excluded: 0, missing: 0, not_done: 0 } } };
-  for (const [language, note] of [
-    ["en", "≈: this page cannot show integers past 2^53 exactly; Core keeps the value as written."],
-    ["zh-Hans", "≈：本页面无法精确显示超过 2^53 的整数；Core 按原样保存该数值。"],
+    comparability: { aligned: false, shared: { unit: "events" }, differs: ["level"], unknown: ["level", "definition", "method"],
+      counts: { included: 3, excluded: 1, missing: 0, not_done: 0 } } };
+  for (const [language, note, missingLevel] of [
+    ["en", "≈: past JavaScript's safe integer range, the value shown may have been rounded; Core keeps the value it parsed.", "sample level not given"],
+    ["zh-Hans", "≈：超出 JavaScript 安全整数范围，显示值可能已舍入；Core 保留它解析的数值。", "未给样本层级"],
   ]) {
     const page = mount(quietCore({
       task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
@@ -1720,12 +1724,26 @@ test("an integer past 2^53 reads as approximate on this page, never as exact; ot
       page.render({ workspaceId: "ws-1" });
       await openTask(page);
       const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
-      const [big, small] = card.querySelectorAll(".task-research-value");
-      const high = language === "en" ? "high not given" : "上限未给";
-      assert.equal(big.textContent, `≈9007199254740992 [≈−9007199254740992, ${high}] events`);
-      assert.equal(big.getAttribute("title"), note);
-      assert.equal(small.textContent, `−1.25 [${language === "en" ? "low not given" : "下限未给"}, 12] events`);
-      assert.equal(small.getAttribute("title"), null, "an exact number is not marked");
+      const [edge, big, pow, safe] = card.querySelectorAll(".task-research-entry");
+      const value = (row) => row.querySelector(".task-research-value");
+      const identity = (row) => row.querySelector(".task-research-identity");
+      // The safe boundary and 0 are exact, unmarked.
+      assert.equal(value(edge).textContent, "9007199254740991 events");
+      assert.equal(value(edge).getAttribute("title"), null);
+      assert.equal(identity(edge).textContent, "process · n = 0");
+      assert.equal(identity(edge).getAttribute("title"), null);
+      // Past it: value, both bounds and n are marked, the u64 maximum too.
+      assert.equal(value(big).textContent, "≈9007199254740992 [≈−9007199254740992, ≈18446744073709552000] events");
+      assert.equal(value(big).getAttribute("title"), note);
+      assert.equal(identity(big).textContent, `${missingLevel} · n = ≈9007199254740992`);
+      assert.equal(identity(big).getAttribute("title"), note);
+      // Exactly 2^53 may itself be a rounded value: marked as well.
+      assert.equal(value(pow).textContent, "≈9007199254740992 events");
+      assert.equal(identity(pow).textContent, "seed · n = ≈9007199254740992");
+      assert.equal(identity(pow).getAttribute("title"), note);
+      // A safe n with a sample level, on an excluded entry, is exact.
+      assert.equal(identity(safe).textContent, "seed · n = 9007199254740991");
+      assert.equal(identity(safe).getAttribute("title"), null);
       assert.deepEqual(page.errors, []);
     } finally {
       page.close();
