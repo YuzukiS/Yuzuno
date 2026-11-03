@@ -199,3 +199,20 @@
     gap: 10px;
   }
 }
+
+/* Hover and selection colours ease rather than snap (T-19). */
+.agent-scope button,
+.agent-action-card {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}
+.danger-button {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard);
+}
+.danger-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--management-danger-bg) 86%, #000);
+}

@@ -64,8 +64,9 @@
   line-height: 1;
   white-space: nowrap;
   transition:
-    background 120ms,
-    color 120ms;
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
 }
 .conversation-action svg {
   flex-shrink: 0;

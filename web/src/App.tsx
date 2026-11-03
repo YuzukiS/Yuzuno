@@ -15,6 +15,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   ArchiveRestore,
@@ -3634,7 +3635,9 @@ export function App() {
                   onClick={() => {
                     scroll.current?.scrollTo({
                       top: scroll.current.scrollHeight,
-                      behavior: "smooth",
+                      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+                        ? "auto"
+                        : "smooth",
                     });
                     stickToBottom.current = true;
                   }}
@@ -3916,17 +3919,25 @@ export function App() {
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={15} />
-          {notice}
-        </div>
-      )}
-      {menuError && (
-        <div className="toast toast-error" role="alert">
-          <CircleAlert size={15} />
-          {menuError}
-        </div>
+      {/* In <body>, beside Radix's dialogs: #root isolates its stacking, so a
+          toast inside it could never show above an open dialog. aria-live also
+          keeps it out of the aria-hidden Radix puts on the rest of the page. */}
+      {createPortal(
+        <div className="toast-stack" aria-live="polite">
+          {notice && (
+            <div className="toast" role="status">
+              <Check size={15} />
+              {notice}
+            </div>
+          )}
+          {menuError && (
+            <div className="toast toast-error" role="alert">
+              <CircleAlert size={15} />
+              {menuError}
+            </div>
+          )}
+        </div>,
+        document.body,
       )}
       <HandoffDropStrip />
     </div>

@@ -61,12 +61,12 @@
   background: var(--surface-raised);
   box-shadow: 0 14px 34px #1f2a1f1f;
   transform-origin: 50% 100%;
-  animation: scope-menu-in 170ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: scope-menu-in var(--motion-small) var(--ease-standard);
 }
 /* Rises from the switcher; sinks back into it (120 ms, MENU_OUT_MS). */
 .scope-menu.is-leaving {
   pointer-events: none;
-  animation: scope-menu-out 120ms ease-in both;
+  animation: scope-menu-out var(--motion-exit-small) var(--ease-exit) both;
 }
 @keyframes scope-menu-in {
   from {
@@ -519,4 +519,15 @@
   .elsewhere-notice span {
     display: none;
   }
+}
+
+/* The scope trigger, its options and the projects list ease their hover and
+   selection colours (T-19). */
+.workspace-scope,
+.scope-option,
+.scope-menu-actions button,
+.project-list-item {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard);
 }
