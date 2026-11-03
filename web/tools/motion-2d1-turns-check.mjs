@@ -101,8 +101,9 @@ async function serve(route) {
   }
 }
 
-/** In the page, from the first script on: the event stream, spoken for Core by this check (each
- * connection opens and says it resumed); the Turns every frame; every animate() on a Turn. */
+/** In the page, from the first script on: the event stream, spoken for Core by this check (a fresh
+ * connection starts with `reset`, one from a last ID with `resumed`, as events.rs does); the Turns
+ * every frame; every animate() on a Turn. */
 function pageHelpers() {
   let id = 0, rev = 100;
   const streams = [];
@@ -115,11 +116,17 @@ function pageHelpers() {
         if (this.readyState === 2) return;
         this.readyState = 1;
         this.onopen?.({});
-        this.onmessage?.({ data: JSON.stringify({ type: "resumed" }), lastEventId: String(++id) });
+        const start = url.includes("lastEventId") ? { type: "resumed" } : { type: "reset", reason: "new" };
+        this.onmessage?.({ data: JSON.stringify(start), lastEventId: String(++id) });
       }, 0);
     }
-    addEventListener() {}
+    addEventListener(type, listener) { ((this.listeners ??= {})[type] ??= []).push(listener); }
     close() { this.readyState = 2; }
+  };
+  // Core's named heartbeat on the open stream; after `resumed` the first one ends its replay.
+  window.__heartbeat = () => {
+    const stream = streams.findLast((s) => s.readyState === 1);
+    for (const listener of stream?.listeners?.heartbeat ?? []) listener({ type: "heartbeat" });
   };
   const send = (event) => {
     const stream = streams.findLast((s) => s.readyState === 1);
@@ -157,6 +164,8 @@ function pageHelpers() {
     (agentId) => ({ type: "agent.item", agentId, rev: ++rev, turnId: window.__streamTurn, item: window.__streamItem }));
   // Core cannot resume: everything is read again.
   window.__resetReplay = reconnect({ type: "reset", reason: "check" });
+  // Core resumes and nothing was missed: nothing is replayed (#504 R1 276d4a1d).
+  window.__quietResume = reconnect({ type: "resumed" });
   const plays = (el) => el.getAnimations().map((a) => {
     const frames = a.effect?.getKeyframes?.() ?? [];
     return { keys: frames.map((k) => Object.keys(k).filter((p) => !["offset", "easing", "composite", "computedOffset"].includes(p)).sort().join("+")).join("/"),
@@ -177,12 +186,15 @@ function pageHelpers() {
   window.__sample = (span, how, agentId) => new Promise((done) => {
     const t0 = performance.now();
     const seen = [];
+    const record = () => seen.push({ t: Math.round(performance.now() - t0), reduced: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      turns: window.__turns(), previews: window.__previews() });
     const frame = () => {
-      seen.push({ t: Math.round(performance.now() - t0), reduced: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        turns: window.__turns(), previews: window.__previews() });
+      record();
       if (performance.now() - t0 < span) requestAnimationFrame(frame);
       else done(seen);
     };
+    // The first record is taken before `how` runs: what it brings can come within one frame.
+    record();
     requestAnimationFrame(frame);
     if (how) window[how](agentId);
   });
@@ -372,6 +384,17 @@ for (const run of runs) {
       await bring("a", "reset-1", made("reset-1", "Also meanwhile"), "__resetReplay", 1500));
     await nextItem("live-after", "After the break");
     fades("after that recovery, a Turn Core streams", await bring("a", "live-after", made("live-after", "After the break"), "__stream"));
+    // A resumed stream's replay ends at its first heartbeat (Lead 3356): a Turn streamed before it
+    // only shows, and one streamed after it fades in.
+    await page.evaluate(() => window.__quietResume("a"));
+    await page.waitForTimeout(300);
+    await nextItem("pre-beat", "Before the heartbeat");
+    onlyShows("before a resumed stream's first heartbeat, a Turn Core streams",
+      await bring("a", "pre-beat", made("pre-beat", "Before the heartbeat"), "__stream"));
+    await page.evaluate(() => window.__heartbeat());
+    await page.waitForTimeout(150);
+    await nextItem("post-beat", "After the heartbeat");
+    fades("after that heartbeat, a Turn Core streams", await bring("a", "post-beat", made("post-beat", "After the heartbeat"), "__stream"));
 
     // To another Agent and straight back, before that one is read: Mori's next detail is a new
     // baseline, whatever was announced for it before (Lead 3301).
