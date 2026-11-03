@@ -1352,6 +1352,73 @@ test("a read answering late, after the board turned to another Workspace, is dro
   }
 });
 
+test("turning to another Workspace with the same task number opens that Workspace's task: nothing of the old one shows, its late answers are dropped, the board stays (T-17)", async () => {
+  // Only the Workspace changes: the same selected T-1, the same revision.
+  let workspace = "ws-1";
+  const laterPage = deferred();
+  const other = deferred();
+  const note = (seq, body) => ({ seq, taskId: "T-1", kind: "comment", body, actor: mina, at: "2026-10-12T12:10:00Z" });
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: (body) => {
+      if (body.afterSeq !== undefined) return laterPage.promise;
+      if (workspace === "ws-1")
+        return { task: task({ title: "The first Workspace's task" }), activities: [note(5, "A ws-1 note.")], executions: [], hasMore: true, nextAfterSeq: 5 };
+      return other.promise;
+    },
+  }));
+  const pane = () => page.document.querySelector(".collab-detail");
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => /A ws-1 note\./.test(pane()?.textContent ?? ""), "the first Workspace's task");
+    const board = page.document.querySelector(".collab-task-layout");
+    button(page, "More updates").click();
+    await tick();
+    workspace = "ws-2";
+    page.render({ workspaceId: "ws-2" });
+    await waitFor(() => /Opening task/.test(pane()?.textContent ?? ""), "the other Workspace's task opening");
+    assert.doesNotMatch(pane().textContent, /first Workspace|A ws-1 note/, "nothing of the old task while the new one opens");
+    // The old Workspace's page of history answers late: dropped.
+    laterPage.resolve({ task: task({ title: "The first Workspace's task" }), activities: [note(3, "An older ws-1 note.")], executions: [], hasMore: false });
+    await tick();
+    assert.doesNotMatch(pane().textContent, /ws-1/);
+    other.resolve({ task: task({ title: "The second Workspace's task" }), activities: [note(5, "A ws-2 note.")], executions: [], hasMore: false });
+    await waitFor(() => /A ws-2 note\./.test(pane()?.textContent ?? ""), "the second Workspace's task");
+    assert.doesNotMatch(pane().textContent, /ws-1|first Workspace/);
+    assert.match(pane().textContent, /The second Workspace's task/);
+    assert.equal(page.document.querySelector(".collab-task-layout"), board, "the board itself was not mounted again");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("an update in the same Workspace keeps a note being written (T-17)", async () => {
+  let reads = 0;
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => {
+      reads += 1;
+      return { task: task(), activities: [], executions: [], hasMore: false };
+    },
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => field(page, "Add a note"), "the note field");
+    await value(page, field(page, "Add a note"), "A note half written");
+    const before = reads;
+    page.render({ workspaceId: "ws-1", revision: 1 });
+    await waitFor(() => reads > before, "the task read again");
+    await tick();
+    assert.equal(field(page, "Add a note").value, "A note half written");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("the task list and a task read in Chinese; what was written stays as written (T-189)", async () => {
   const page = mount(quietCore({
     task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },

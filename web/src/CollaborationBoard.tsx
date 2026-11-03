@@ -1015,7 +1015,11 @@ export function CollaborationBoard({
             ) : (
               selected && (
                 <TaskPane
-                  key={selected}
+                  // One pane per Workspace and task (T-17): its read, its
+                  // generations and its drafts belong to that task. The same
+                  // task ID in another Workspace is another task, so turning
+                  // to it starts a new pane; the board itself stays.
+                  key={`${workspaceId}\n${selected}`}
                   id={selected}
                   workspaceId={workspaceId}
                   agents={agents}
@@ -1219,6 +1223,16 @@ function TaskPane({
   const [managing, setManaging] = useState(false);
   const mutation = useMutation();
   const loadGeneration = useRef(0);
+  // An answer arriving after this pane closed (another task or Workspace)
+  // reports nothing to the board.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      loadGeneration.current++;
+    };
+  }, []);
   const load = useCallback(
     async (afterSeq?: number) => {
       const generation = ++loadGeneration.current;
@@ -1265,6 +1279,7 @@ function TaskPane({
   const task = detail?.task;
   const owner = agents.find((agent) => agent.id === task?.assigneeAgentId);
   const changed = (next: SharedTask) => {
+    if (!alive.current) return;
     setDetail((previous) =>
       previous ? { ...previous, task: next } : previous,
     );
