@@ -393,8 +393,9 @@ test("a Brief image opens in the app's preview, not a browser tab; without Point
   picture.focus();
   picture.click();
   await until(dialog, "the preview opens");
-  assert.equal(dialog().querySelector("h2").textContent, "shot.png");
-  assert.match(dialog().textContent, /Login screen · Snapshot /);
+  // What it shows first: its caption is the title, its file after (T-20).
+  assert.equal(dialog().querySelector("h2").textContent, "Login screen");
+  assert.match(dialog().textContent, /shot\.png · Snapshot /);
   assert.equal(dialog().querySelector(".input-image-dialog img").getAttribute("src"), `${base}/attachments/shots/shot.png?version=3`);
   assert.ok(![...dialog().querySelectorAll("button")].some((b) => b.textContent.includes("Mark up")), "no Mark up without Point & Fix");
   dialog().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

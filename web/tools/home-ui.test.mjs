@@ -1867,8 +1867,9 @@ test("a Home image opens in the app, and Mark up adds it with its card to the au
     const preview = () => p.doc.querySelector('[role="dialog"]');
     shots.querySelector("button.brief-image").click();
     await waitFor(preview, "the preview opens");
-    assert.equal(preview().querySelector("h2").textContent, "screen.png");
-    assert.match(preview().textContent, /Login screen · Snapshot/);
+    // Its caption is the title, its file after (T-20).
+    assert.equal(preview().querySelector("h2").textContent, "Login screen");
+    assert.match(preview().textContent, /screen\.png · Snapshot/);
     assert.match(preview().querySelector(".input-image-dialog img").getAttribute("src"), /\/api\/projects\/p-app\/brief\/attachments\/shots\/screen\.png\?version=4$/);
     const writes = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories"));
     assert.deepEqual(writes().map((c) => c.url), [], "looking writes nothing");

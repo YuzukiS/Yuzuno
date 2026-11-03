@@ -212,6 +212,15 @@ const researchDeskProps = z.strictObject({
         kind: z.enum(["data", "paper", "notes", "script", "other"]),
         // A file of this section's attachments; Core reads only these.
         snapshot: attachmentName.optional(),
+        // Or a Task research record (T-17), read by Core through the task's own
+        // resolver: its identity was fixed when it was written, so it needs no
+        // attachment here.
+        task: z
+          .strictObject({
+            taskId: z.string().regex(/^T-[1-9][0-9]{0,9}$/, "Use the task ID, for example T-17."),
+            activitySeq: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+          })
+          .optional(),
         // The Agent's description of where it came from; never read.
         location: z.string().trim().min(1).max(400).optional(),
         revision: z.string().regex(/^[0-9a-f]{7,64}$/, "Use a commit hash.").optional(),
@@ -501,7 +510,7 @@ export const BRIEF_PROBLEM_CODES = {
   duplicate_attachment: "Two attachments share a name.",
   missing_reference: "A ResearchDesk id that names no claim, plot, row, part, source, definition version or plan of that desk.",
   research_attachment: "A ResearchDesk number read from an attachment that is not a JSON file with a path.",
-  unsaved_definition: "A ResearchDesk definition version citing a source without a snapshot.",
+  unsaved_definition: "A ResearchDesk definition version citing a source with neither a snapshot nor a Task method record.",
   definition_order: "A ResearchDesk revision whose definition versions do not go from older to newer.",
   too_many_values: `A ResearchDesk reading over ${L.research.values} numbers from attachments.`,
 } as const;
@@ -823,6 +832,8 @@ function checkResearch(
     if (sources.has(source.id)) bad("duplicate_id", `${at}.sources.${index}.id`, `${desk} source id "${source.id}" is used twice; ids are unique within the desk.`);
     sources.set(source.id, source);
     if (source.snapshot !== undefined) needsFile(source.snapshot, `${at}.sources.${index}.snapshot`);
+    if (source.snapshot !== undefined && source.task !== undefined)
+      bad("invalid_field", `${at}.sources.${index}.task`, `${desk} source "${source.id}" names both a snapshot and a Task record; a source names one of them.`);
   });
   const cites = (cite: { source: string } | undefined, path: string) => {
     if (cite && !sources.has(cite.source))
@@ -838,8 +849,8 @@ function checkResearch(
       numbers.add(version.version);
       const cited = sources.get(version.cite.source);
       if (!cited) cites(version.cite, `${path}.versions.${v}.cite`);
-      else if (cited.snapshot === undefined)
-        bad("unsaved_definition", `${path}.versions.${v}.cite`, `${desk} definition "${definition.id}" version ${version.version} cites source "${cited.id}", which has no snapshot: a definition version must point to a file this section keeps (sources[].snapshot naming an attachment).`);
+      else if (cited.snapshot === undefined && cited.task === undefined)
+        bad("unsaved_definition", `${path}.versions.${v}.cite`, `${desk} definition "${definition.id}" version ${version.version} cites source "${cited.id}", which has neither a snapshot nor a Task record: a definition version must point to a file this section keeps (sources[].snapshot naming an attachment) or a Task method record (sources[].task).`);
     });
     versions.set(definition.id, numbers);
   });
@@ -1558,8 +1569,8 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     componentLine("ResearchDesk"),
     `One block for a research question: what each claim may and may not say, the numbers and intervals it rests on, under which conditions, from which sources and under which definition, and what could be done next. The reader selects a claim, a row or one of its parts; the block keeps that selection across your later versions while the ids stay. Use your own ids and keep them across versions.`,
     `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
-    `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section.`,
-    `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file). A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
+    `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section. A source may instead name a Task research record, task: {taskId, activitySeq}, one you or another Agent wrote with task_comment research: it is shown as the task keeps it (its type, title, producer and version) and needs no attachment; that is the record's identity, not a check of it. Removing the section leaves the record on its task.`,
+    `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file) or a source naming a Task method record. A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
     `Claims: status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
     `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks or Jobs, shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
     `Limits: ${R.claims} claims, ${R.plots} plots, ${R.rows} rows per plot, ${R.parts} parts per row, ${R.sources} sources, ${R.definitions} definitions with ${R.versions} versions each, ${R.revisions} revisions, ${R.plans} plans, ${R.items} entries per list, ${R.textChars} characters per text.`,
@@ -1591,7 +1602,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
-    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file, and changes that break owner, topic or open-ask rules.`,
+    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
     `Each is one change for brief_update changes.`,

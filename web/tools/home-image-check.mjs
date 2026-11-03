@@ -187,8 +187,9 @@ try {
     await page.keyboard.press("Enter");
     await dialog.waitFor();
     await page.waitForFunction(() => getComputedStyle(document.querySelector('[role="dialog"]')).opacity === "1");
-    assert.equal(await dialog.locator("h2").innerText(), "screen-before.png");
-    assert.match(await dialog.innerText(), /Before · Snapshot/);
+    // Its caption is the title; its file, size in pixels and time after (T-20).
+    assert.equal(await dialog.locator("h2").innerText(), "Before");
+    await page.waitForFunction(() => /screen-before\.png · 640 × 400 px · Snapshot/.test(document.querySelector('[role="dialog"]').innerText));
     await shown(page, dialog.locator(".input-image-dialog img"));
     const fits = await dialog.locator(".input-image-dialog img").evaluate((img) => {
       const box = img.getBoundingClientRect(), frame = img.closest('[role="dialog"]').getBoundingClientRect();
@@ -215,7 +216,7 @@ try {
     await after.locator("details.brief-image-info > summary").click();
     await after.locator("button.brief-attachment-open").click();
     await dialog.waitFor();
-    assert.equal(await dialog.locator("h2").innerText(), "screen-after.png");
+    assert.equal(await dialog.locator("h2").innerText(), "After");
     await dialog.getByRole("button", { name: "Mark up" }).click();
     const fix = page.locator(".point-fix-dialog");
     await fix.locator(".point-fix-image svg").waitFor();
@@ -249,7 +250,7 @@ try {
     if (await opened.isVisible()) await closeReport();
     await card("decide").locator("button.brief-image").click();
     await dialog.waitFor();
-    assert.equal(await dialog.locator("h2").innerText(), "mock.png");
+    assert.equal(await dialog.locator("h2").innerText(), "Proposed layout");
     await dialog.getByRole("button", { name: "Mark up" }).click();
     await fix.locator(".point-fix-image svg").waitFor();
     assert.equal(await fix.locator(".point-fix-target select").inputValue(), "a", "the Ask's author is offered first");
@@ -293,7 +294,7 @@ try {
     const pinned = page.locator(".home-pinned");
     await pinned.locator("button.brief-image").first().click();
     await dialog.waitFor();
-    assert.equal(await dialog.locator("h2").innerText(), "screen-before.png");
+    assert.equal(await dialog.locator("h2").innerText(), "Before");
     assert.equal(await dialog.getByRole("button", { name: "Mark up" }).count(), 1);
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });

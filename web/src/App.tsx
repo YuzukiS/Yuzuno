@@ -15,7 +15,8 @@ import {
   useState,
   type ComponentProps,
 } from "react";
-import { createPortal } from "react-dom";
+import { settleWhenLanded } from "./settle";
+import { ToastStack, type ToastText } from "./Toasts";
 import {
   Archive,
   ArchiveRestore,
@@ -198,7 +199,8 @@ import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestion
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
-import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
+import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
+import { useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -377,6 +379,7 @@ export function App() {
   // On a phone the work and turn docks open one at a time over the
   // conversation (PhoneDocks.tsx); closed, they take no width.
   const [phoneDock, setPhoneDock] = useState<PhoneDock>(null);
+  const dockMotion = usePhoneDockMotion(phoneDock, setPhoneDock);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
@@ -393,6 +396,25 @@ export function App() {
   // Without a system frame (Windows desktop), the toolbar is the title bar.
   const frame = useCustomFrame();
   const [homeOpen, setHomeOpen] = useState(false);
+  // A conversation fades in as it opens from Home or another Agent's takes its
+  // place (T-19 M6: SH:M11, C01). A phone's list and conversation are push and
+  // pop (M8), not this.
+  const conversationBody = useRef<HTMLDivElement>(null);
+  useSurfaceIn(conversationBody, homeOpen ? null : selected, "small", !phone);
+  // On a phone (T-19 M8), what the list opens is pushed in from the right and
+  // Back brings the list in from the left, over medium; the toolbar's brand
+  // and Back swap with a fade over micro. Only a move between the list and
+  // what is open plays them, never a window turning into a phone's, and
+  // never the first screen: nothing has moved before the first one.
+  const phoneMove = useRef({ list: phoneList, n: 0 });
+  if (phoneMove.current.list !== phoneList) phoneMove.current = { list: phoneList, n: phoneMove.current.n + 1 };
+  const moved = phoneMove.current.n > 0;
+  const railBox = useRef<HTMLElement>(null);
+  const mainBox = useRef<HTMLElement>(null);
+  const brandBox = useRef<HTMLDivElement>(null);
+  useSurfaceIn(mainBox, phoneMove.current.n, "medium", phone && moved && !phoneList, "translateX(8px)");
+  useSurfaceIn(railBox, phoneMove.current.n, "medium", phone && moved && phoneList, "translateX(-8px)");
+  useSurfaceIn(brandBox, phoneMove.current.n, "micro", phone && moved);
   /** The reply from Home a conversation's "Open on Home" opened Home for (T-9),
    * and the message to go back to; another opening is another `n`. */
   const [homeArrival, setHomeArrival] = useState<{ origin: HomeReplyOrigin; back: MessageLink; n: number } | null>(null);
@@ -425,7 +447,9 @@ export function App() {
   const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(workspaceId, selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");
-  const [notice, setNotice] = useState("");
+  // Set again with the same text, a notice shows again for its full time (T-19).
+  const [notice, setNoticeShown] = useState<ToastText>({ text: "", serial: 0 });
+  const setNotice = useCallback((text: string) => setNoticeShown((was) => ({ text, serial: was.serial + 1 })), []);
   const [readActionsOpen, setReadActionsOpen] = useState(false);
   const [agentScope, setAgentScope] = useState<"active" | "closed">("active");
   const [storedScope, setStoredScope] = useState<ProjectScope>(ALL_PROJECTS);
@@ -447,7 +471,8 @@ export function App() {
   } | null>(null);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   // A menu action that failed for an Agent other than the one shown.
-  const [menuError, setMenuError] = useState("");
+  const [menuError, setMenuErrorShown] = useState<ToastText>({ text: "", serial: 0 });
+  const setMenuError = useCallback((text: string) => setMenuErrorShown((was) => ({ text, serial: was.serial + 1 })), []);
   const [historyReading, setHistoryReading] = useState(false);
   // Where a source was opened from: Home leads back to Home.
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
@@ -457,6 +482,8 @@ export function App() {
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
+  // The Turn a jump last landed on, tinted once (T-19).
+  const turnSettled = useRef<(() => void) | null>(null);
   // Whose conversation a jump from its dock was asked in (T-6): one still on
   // its way when the Workspace or the Agent changes is dropped, not taken into
   // the other conversation, where the same Turn id names nothing of its.
@@ -777,6 +804,8 @@ export function App() {
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
   useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
+  // A Turn's landing is the conversation's it was in: another Agent's, or none, ends it (T-19).
+  useEffect(() => () => turnSettled.current?.(), [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
@@ -1261,13 +1290,13 @@ export function App() {
     };
   }, [selected, homeOpen, readingPositions]);
   useEffect(() => {
-    if (notice) {
+    if (notice.text) {
       const timer = setTimeout(() => setNotice(""), 4000);
       return () => clearTimeout(timer);
     }
   }, [notice]);
   useEffect(() => {
-    if (menuError) {
+    if (menuError.text) {
       const timer = setTimeout(() => setMenuError(""), 8000);
       return () => clearTimeout(timer);
     }
@@ -1304,6 +1333,8 @@ export function App() {
       const target = input || turn;
       target?.scrollIntoView({ behavior: "instant", block: "start" });
       target?.focus({ preventScroll: true });
+      turnSettled.current?.();
+      turnSettled.current = target ? settleWhenLanded(target, "data-settle", false, "animation") : null;
       stickToBottom.current = false;
       jumpItem.current = null;
       setJumpToTurn(null);
@@ -2459,7 +2490,7 @@ export function App() {
         lang={langTag(language)}
         onMouseDown={(event) => moveWindow(frame, event)}
       >
-        <div className="toolbar-brand">
+        <div className="toolbar-brand" ref={brandBox}>
           {phone && !phoneList ? (
             <button
               ref={phoneBack}
@@ -2554,7 +2585,7 @@ export function App() {
         </div>
         {frame && <WindowControls frame={frame} />}
       </header>
-      <aside className="rail" id="agent-sidebar" lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
+      <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
         <div className="rail-top">
           <RailHeading
@@ -2696,7 +2727,7 @@ export function App() {
 
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
-      <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
+      <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
         {(workspaceError || core.browser) && (
           <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
             <WifiOff size={15} />
@@ -2900,7 +2931,15 @@ export function App() {
                 </span>
               </div>
             )}
-            <div className="conversation-body" data-phone-dock={phone && phoneDock ? phoneDock : undefined}>
+            <div
+              ref={conversationBody}
+              className="conversation-body"
+              data-phone-dock={phone && dockMotion.shown ? dockMotion.shown : undefined}
+              data-phone-dock-way={phone && dockMotion.way ? dockMotion.way : undefined}
+              onAnimationEnd={(event) => {
+                if (event.animationName === "phone-dock-in" || event.animationName === "phone-dock-out") dockMotion.end();
+              }}
+            >
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
@@ -3142,7 +3181,8 @@ export function App() {
               {phone && (
                 <PhoneDockButtons
                   open={phoneDock}
-                  onOpen={setPhoneDock}
+                  onOpen={dockMotion.choose}
+                  leaving={dockMotion.leaving}
                   turn={readingBy === "inputs" ? readingInputNumber : readingTurnNumber}
                   turns={readingBy === "inputs" ? conversationInputs.total : logicalTurns.length}
                   inputs={readingBy === "inputs"}
@@ -3691,6 +3731,7 @@ export function App() {
         projects={projects}
         scope={scope}
         focus={taskFocus}
+        workspaceId={previewMode ? "" : workspaceId}
       />
       {agent && !isClaude && !isOpenCode && (
         <CodexGoalDialog
@@ -3919,26 +3960,7 @@ export function App() {
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
-      {/* In <body>, beside Radix's dialogs: #root isolates its stacking, so a
-          toast inside it could never show above an open dialog. aria-live also
-          keeps it out of the aria-hidden Radix puts on the rest of the page. */}
-      {createPortal(
-        <div className="toast-stack" aria-live="polite">
-          {notice && (
-            <div className="toast" role="status">
-              <Check size={15} />
-              {notice}
-            </div>
-          )}
-          {menuError && (
-            <div className="toast toast-error" role="alert">
-              <CircleAlert size={15} />
-              {menuError}
-            </div>
-          )}
-        </div>,
-        document.body,
-      )}
+      <ToastStack notice={notice} error={menuError} />
       <HandoffDropStrip />
     </div>
     </HomeReplyLinks.Provider>

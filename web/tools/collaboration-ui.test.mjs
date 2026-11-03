@@ -1176,6 +1176,337 @@ const activities = [
   { seq: 2, taskId: "T-1", kind: "comment", body: "Bounds look right to me.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:05:00Z" },
 ];
 
+test("a research record shows as its author wrote it with each source's identity, and reads what holds now on request (T-17)", async () => {
+  const record = {
+    schema: "research/1",
+    type: "claim",
+    id: "faster",
+    title: "Layout B is faster on the small inputs",
+    text: "Layout B runs the small inputs about 4% faster than layout A.",
+    status: "conditional",
+    field: "systems",
+    conditions: ["Small inputs only"],
+    limits: ["One machine only"],
+    method: { activitySeq: 3, id: "timing", title: "Timing protocol" },
+    sources: [
+      { kind: "job", label: "Raw timings", jobId: "job-1", attempt: "11111111-1111-4111-8111-111111111111", path: "out/timings.json", sha256: "a".repeat(64), bytes: 40, recorded: "recorded_match" },
+      { kind: "task", taskId: "T-2", activitySeq: 9, record: { kind: "research", type: "observation", id: "ranking", title: "Ranking flips with link order" }, producer: { kind: "agent", id: "dev-5", name: "Dev 5" }, at: "2026-10-12T11:00:00Z" },
+      { kind: "external", label: "Upstream benchmark notes", url: "https://example.org/bench", version: "v3", observedAt: "2026-11-01", coverage: "Small inputs only", checked: false },
+    ],
+  };
+  const researched = { seq: 4, taskId: "T-1", kind: "comment", body: "Claim recorded.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:10:00Z", research: record };
+  const now = ["recorded_match", "readable", "stated"];
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },
+    task_get: { task: task(), activities: [...activities, researched], executions: [], hasMore: false },
+    task_research_get: { taskId: "T-1", activitySeq: 4, version: 2, revisedBy: null, latestActivitySeq: 4,
+      research: { ...record, sources: record.sources.map((source, n) => ({ ...source, now: { state: now[n] } })) },
+      method: { activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: 6, research: { type: "method", id: "timing", title: "Timing protocol", text: "Ten fresh processes." }, method: null } },
+  }));
+  try {
+    page.render();
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card");
+    page.document.querySelector(".collab-task-card").click();
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the research record");
+    const text = () => card.textContent;
+    assert.match(text(), /Claim/);
+    assert.match(text(), /Layout B is faster on the small inputs/, "the title as written");
+    assert.match(text(), /Holds under conditions \(the author's judgement\)/);
+    assert.match(text(), /Made with the method “Timing protocol” as written in activity 3/);
+    assert.match(text(), /Small inputs only/);
+    assert.match(text(), /One machine only/);
+    assert.match(text(), /out\/timings\.json/);
+    assert.match(text(), /Matched this task's recorded Job check when written/);
+    assert.match(text(), /T-2 · activity 9/);
+    assert.match(text(), /by Dev 5/, "the cited record's own producer");
+    assert.match(text(), /As its author stated it; Yuzuno did not check it/);
+    assert.doesNotMatch(text(), /verified/i);
+    assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "nothing is read until asked");
+    const toggle = [...card.querySelectorAll("button")].find((b) => b.textContent === "Version and sources now");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    toggle.click();
+    await waitFor(() => /Version 2 of this record/.test(text()), "the record's version");
+    assert.match(text(), /This is the newest version/);
+    assert.match(text(), /The method as cited is version 1; a newer version is activity 6/);
+    assert.match(text(), /Now: the Job's record still lists this file and hash; the file itself was not read/);
+    assert.match(text(), /Now: Record readable/);
+    assert.match(text(), /Now: Not checked/);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    const reads = page.calls.filter((call) => call.operation === "task_research_get");
+    assert.deepEqual(reads.map((call) => [call.method, call.body]), [["POST", { taskId: "T-1", activitySeq: 4 }]]);
+    assert.ok(!page.calls.some((call) => ["task_comment", "task_update", "task_submit_result"].includes(call.operation)), "reading writes nothing");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+/** A research method record (T-17) and Core's read of it. */
+const methodV1 = { schema: "research/1", type: "method", id: "timing", title: "Timing protocol", text: "Ten iterations in one process." };
+const methodV2 = { ...methodV1, text: "Ten fresh processes.", revises: { activitySeq: 3, reason: "Iterations share caches." } };
+const mina = { kind: "agent", id: "dev-2", name: "Dev 2" };
+const recorded = (seq, research, body) => ({ seq, taskId: "T-1", kind: "comment", body, actor: mina, at: "2026-10-12T12:10:00Z", research });
+const readOf = (seq, research, version, latest) => ({ taskId: "T-1", activitySeq: seq, version, revisedBy: latest === seq ? null : latest, latestActivitySeq: latest, research, method: null });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
+const toggleOf = (card) => card.querySelector(".task-research-toggle");
+const openTask = async (page) => {
+  await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card");
+  page.document.querySelector(".collab-task-card").click();
+};
+
+test("a research record is read again at every opening: a revision added since shows (T-17)", async () => {
+  let activities2 = [recorded(3, methodV1, "Method v1.")];
+  let answer = readOf(3, methodV1, 1, 3);
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => ({ task: task(), activities: activities2, executions: [], hasMore: false }),
+    task_research_get: () => answer,
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the method");
+    toggleOf(card).click();
+    await waitFor(() => /This is the newest version/.test(card.textContent), "the first read");
+    assert.match(card.textContent, /Read /, "when it was read");
+    toggleOf(card).click();
+    // A revision is a comment: the task's version does not change, the history does.
+    activities2 = [recorded(3, methodV1, "Method v1."), recorded(6, methodV2, "Method v2.")];
+    answer = readOf(3, methodV1, 1, 6);
+    page.render({ workspaceId: "ws-1", revision: 1 });
+    await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "the revision in the history");
+    const first = page.document.querySelector(".task-research");
+    toggleOf(first).click();
+    await waitFor(() => /A newer version is activity 6/.test(first.textContent), "the second read");
+    assert.doesNotMatch(first.textContent, /This is the newest version/);
+    assert.equal(page.calls.filter((call) => call.operation === "task_research_get").length, 2, "one read per opening");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("Check again reads the record again: a Job record gone shows so, the recorded identity stays (T-17)", async () => {
+  const source = { kind: "job", label: "Raw timings", jobId: "job-1", attempt: "11111111-1111-4111-8111-111111111111", path: "out/timings.json", sha256: "a".repeat(64), recorded: "recorded_match" };
+  const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional", sources: [source] };
+  let state = "recorded_match";
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: { task: task(), activities: [recorded(4, claim, "Claim.")], executions: [], hasMore: false },
+    task_research_get: () => ({ ...readOf(4, { ...claim, sources: [{ ...source, now: { state, file: "not_read" } }] }, 1, 4) }),
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the claim");
+    toggleOf(card).click();
+    await waitFor(() => /Now: the Job's record still lists this file and hash/.test(card.textContent), "the first read");
+    state = "job_missing";
+    [...card.querySelectorAll("button")].find((b) => b.textContent === "Check again").click();
+    await waitFor(() => /Now: Job record no longer kept/.test(card.textContent), "the read after the Job record went");
+    assert.match(card.textContent, /out\/timings\.json/, "the recorded identity stays");
+    assert.match(card.textContent, /Matched this task's recorded Job check when written/);
+    assert.equal(page.calls.filter((call) => call.operation === "task_research_get").length, 2);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a read answering late, after the board turned to another Workspace, is dropped (T-17)", async () => {
+  // Activity numbers are unique within one Workspace's store, so the same
+  // number naming another record happens only across Workspaces.
+  const ours = { schema: "research/1", type: "claim", id: "ours", title: "Our claim", text: "In ws-1.", status: "open" };
+  const theirs = { ...ours, id: "theirs", title: "Another Workspace's claim", text: "In ws-2." };
+  const late = deferred();
+  let workspace = "ws-1";
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => ({ task: task(), activities: [recorded(4, workspace === "ws-1" ? ours : theirs, "Claim.")], executions: [], hasMore: false }),
+    task_research_get: () => (workspace === "ws-1" ? late.promise : readOf(4, theirs, 1, 4)),
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "our claim");
+    toggleOf(card).click();
+    await waitFor(() => /Reading the record/.test(card.textContent), "the read under way");
+    workspace = "ws-2";
+    page.render({ workspaceId: "ws-2", revision: 1 });
+    await waitFor(() => /Another Workspace's claim/.test(page.document.querySelector(".task-research")?.textContent ?? ""), "the other Workspace's record");
+    const now = page.document.querySelector(".task-research");
+    assert.equal(toggleOf(now).getAttribute("aria-expanded"), "false", "closed: the open read was for another record");
+    late.resolve(readOf(4, ours, 7, 4));
+    await tick(30);
+    assert.doesNotMatch(page.document.body.textContent, /Version 7 of this record/, "the late answer is not shown");
+    toggleOf(now).click();
+    await waitFor(() => /Version 1 of this record/.test(now.textContent), "its own read");
+    assert.doesNotMatch(now.textContent, /Version 7/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("turning to another Workspace with the same task number opens that Workspace's task: nothing of the old one shows, its late answers are dropped, the board stays (T-17)", async () => {
+  // Only the Workspace changes: the same selected T-1, the same revision.
+  let workspace = "ws-1";
+  const laterPage = deferred();
+  const other = deferred();
+  const note = (seq, body) => ({ seq, taskId: "T-1", kind: "comment", body, actor: mina, at: "2026-10-12T12:10:00Z" });
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: (body) => {
+      if (body.afterSeq !== undefined) return laterPage.promise;
+      if (workspace === "ws-1")
+        return { task: task({ title: "The first Workspace's task" }), activities: [note(5, "A ws-1 note.")], executions: [], hasMore: true, nextAfterSeq: 5 };
+      return other.promise;
+    },
+  }));
+  const pane = () => page.document.querySelector(".collab-detail");
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => /A ws-1 note\./.test(pane()?.textContent ?? ""), "the first Workspace's task");
+    const board = page.document.querySelector(".collab-task-layout");
+    button(page, "More updates").click();
+    await tick();
+    workspace = "ws-2";
+    page.render({ workspaceId: "ws-2" });
+    await waitFor(() => /Opening task/.test(pane()?.textContent ?? ""), "the other Workspace's task opening");
+    assert.doesNotMatch(pane().textContent, /first Workspace|A ws-1 note/, "nothing of the old task while the new one opens");
+    // The old Workspace's page of history answers late: dropped.
+    laterPage.resolve({ task: task({ title: "The first Workspace's task" }), activities: [note(3, "An older ws-1 note.")], executions: [], hasMore: false });
+    await tick();
+    assert.doesNotMatch(pane().textContent, /ws-1/);
+    other.resolve({ task: task({ title: "The second Workspace's task" }), activities: [note(5, "A ws-2 note.")], executions: [], hasMore: false });
+    await waitFor(() => /A ws-2 note\./.test(pane()?.textContent ?? ""), "the second Workspace's task");
+    assert.doesNotMatch(pane().textContent, /ws-1|first Workspace/);
+    assert.match(pane().textContent, /The second Workspace's task/);
+    assert.equal(page.document.querySelector(".collab-task-layout"), board, "the board itself was not mounted again");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("an update in the same Workspace keeps a note being written (T-17)", async () => {
+  let reads = 0;
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => {
+      reads += 1;
+      return { task: task(), activities: [], executions: [], hasMore: false };
+    },
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => field(page, "Add a note"), "the note field");
+    await value(page, field(page, "Add a note"), "A note half written");
+    const before = reads;
+    page.render({ workspaceId: "ws-1", revision: 1 });
+    await waitFor(() => reads > before, "the task read again");
+    await tick();
+    assert.equal(field(page, "Add a note").value, "A note half written");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a comparison shows every entry, left out or not, with why, and says what the included ones share; no difference is computed (T-17)", async () => {
+  const entries = [
+    { id: "processes", label: "Fresh processes", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -1.2, low: -3.5, high: 1.1 } },
+    { id: "again", label: "Fresh processes, second run", status: "included", unit: "%", level: "process", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" }, value: { value: -0.8, low: -2.9, high: 1.3 } },
+    { id: "large", label: "Large inputs", status: "missing", reason: "The large set was not exported." },
+    { id: "second-machine", label: "Second machine", status: "not_done", reason: "No second machine yet." },
+    { id: "warm", label: "Warm cache run", status: "excluded", reason: "The cache was left warm.", value: { value: -9 } },
+  ];
+  const counts = { included: 2, excluded: 1, missing: 1, not_done: 1 };
+  const aligned = { schema: "research/1", type: "comparison", id: "layouts", title: "Layout B vs A, fresh processes", text: "Runtime change.", entries,
+    comparability: { aligned: true, shared: { unit: "%", definition: "median of runs", level: "process", method: 6 }, differs: [], unknown: [], counts } };
+  const mixed = { ...aligned, id: "layouts-mixed", title: "Layout B vs A, two methods",
+    entries: [entries[0], { ...entries[1], unit: "ms", level: undefined, method: { activitySeq: 3, id: "timing", title: "Timing protocol" } }, ...entries.slice(2)],
+    comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["level"], counts } };
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: { task: task(), activities: [recorded(7, aligned, "Compared."), recorded(8, mixed, "Compared again.")], executions: [], hasMore: false },
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "both comparisons");
+    const [first, second] = page.document.querySelectorAll(".task-research");
+    for (const card of [first, second]) {
+      const text = card.textContent;
+      for (const expected of ["Comparison", "Fresh processes", "Included", "Large inputs", "Missing", "The large set was not exported.",
+        "Second machine", "Not done", "No second machine yet.", "Warm cache run", "Excluded", "The cache was left warm.",
+        "2 included · 1 excluded · 1 missing · 1 not done", "Yuzuno computes no difference"])
+        assert.ok(text.includes(expected), `${expected}: ${text}`);
+      assert.equal(card.querySelectorAll(".task-research-entry").length, 5, "nothing left out is dropped");
+      assert.ok(!/−0\.4|0\.4 %|difference of/i.test(text), "no difference between entries is shown");
+    }
+    assert.match(first.textContent, /−1\.2 \[−3\.5, 1\.1\] %/, "a value as its author gave it");
+    assert.match(first.textContent, /The included entries share unit \(%\), definition \(median of runs\), sample level \(process\), method \(method in activity 6\)/);
+    assert.match(second.textContent, /Side by side only: the included entries differ in unit, method; sample level is not given for every entry/);
+    assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "the table is the record as written; nothing is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("past the length Core follows, the first of a line names its next version and its latest as unknown, never as newest or as maybe none; the last is its newest, in English and Chinese (T-17)", async () => {
+  const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional",
+    method: { activitySeq: 3, id: "timing", title: "Timing protocol" } };
+  const last = { ...claim, text: "About 3%.", revises: { activitySeq: 208, reason: "Step 201." } };
+  // As Core reads a line of 202 (the first and 201 revisions): the first is
+  // version 1 with its next version known and its latest not; the last is its
+  // own latest with its version not counted. The cited method's line is long too.
+  const method = { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: null, research: methodV1, method: null };
+  const answers = {
+    4: { taskId: "T-1", activitySeq: 4, version: 1, revisedBy: 5, latestActivitySeq: null, research: claim, method },
+    209: { taskId: "T-1", activitySeq: 209, version: null, revisedBy: null, latestActivitySeq: 209, research: last, method },
+  };
+  for (const [language, first, newest] of [
+    ["en", ["Version 1 of this record", "Activity 5 revises this one; the latest version is unknown",
+      "The method as cited is version 1; activity 6 revises it, and its latest version is unknown"],
+      ["This record's version was not counted", "This is the newest version"]],
+    ["zh-Hans", ["这条记录的第 1 版", "活动 5 修订了它；最新版本未确定", "引用的方法是第 1 版；活动 6 修订了它，最新版本未确定"],
+      ["这条记录的版本数未计出", "这是最新版本"]],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(4, claim, "Claim."), recorded(209, last, "Claim, step 201.")], executions: [], hasMore: false },
+      task_research_get: (body) => answers[body.activitySeq],
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "both records");
+      const [one, two] = page.document.querySelectorAll(".task-research");
+      toggleOf(one).click();
+      toggleOf(two).click();
+      await waitFor(() => first.every((text) => one.textContent.includes(text)), `${language}: ${first.join(" / ")}`);
+      await waitFor(() => newest.every((text) => two.textContent.includes(text)), `${language}: ${newest.join(" / ")}`);
+      assert.doesNotMatch(one.textContent, /This is the newest version|这是最新版本/, "unknown is never newest");
+      // A newer version is known to exist: never worded as if there might be none.
+      for (const card of [one, two]) assert.doesNotMatch(card.textContent, /whether|是否/);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
 test("the task list and a task read in Chinese; what was written stays as written (T-189)", async () => {
   const page = mount(quietCore({
     task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },
@@ -1311,3 +1642,111 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
   }
 });
 
+
+test("a comparison entry shows each part its author gave and says which part is missing; a field can differ and be missing at once (T-17)", async () => {
+  const entries = [
+    { id: "a", label: "Iterations", status: "included", unit: "ms", level: "process", definition: "median of runs",
+      method: { activitySeq: 3, id: "timing", title: "Timing protocol" }, value: { value: 12, low: 10.5 } },
+    { id: "b", label: "Fresh processes", status: "included", unit: "s", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" } },
+    { id: "c", label: "Second machine", status: "included", definition: "median of runs", value: { value: 11, high: 12.5 } },
+    { id: "d", label: "Large inputs", status: "missing", reason: "The large set was not exported.", unit: "ms" },
+    { id: "e", label: "Warm cache", status: "excluded", reason: "The cache was left warm.", level: "iteration", n: 0 },
+  ];
+  const record = { schema: "research/1", type: "comparison", id: "partial", title: "Layouts, partly reported", text: "As reported.", entries,
+    comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["unit", "level", "method"],
+      counts: { included: 3, excluded: 1, missing: 1, not_done: 0 } } };
+  for (const [language, expected] of [
+    ["en", {
+      a: ["12 [10.5, high not given] ms", "process · median of runs · method in activity 3"],
+      b: ["No value given · unit s", "sample level not given · n = 10 · median of runs · method in activity 6"],
+      c: ["11 [low not given, 12.5]"],
+      d: ["No value given · unit ms"],
+      e: ["iteration · n = 0"],
+      line: "Side by side only: the included entries differ in unit, method; unit, sample level, method are not given for every entry.",
+    }],
+    ["zh-Hans", {
+      a: ["12 [10.5, 上限未给] ms"],
+      b: ["未给数值 · 单位 s", "未给样本层级 · n = 10"],
+      c: ["11 [下限未给, 12.5]"],
+      d: ["未给数值 · 单位 ms"],
+      e: ["iteration · n = 0"],
+      line: "仅并列展示：纳入的条目在单位, 方法上不同；并非每个条目都给出了单位, 样本层级, 方法。",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(9, record, "Compared.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
+      const rows = [...card.querySelectorAll(".task-research-entry")];
+      assert.equal(rows.length, 5, "every entry, whatever its state");
+      for (const [n, id] of ["a", "b", "c", "d", "e"].entries())
+        for (const text of expected[id]) assert.ok(rows[n].textContent.includes(text), `${language} ${id}: ${text} in ${rows[n].textContent}`);
+      assert.ok(card.textContent.includes(expected.line), `${language}: ${card.textContent}`);
+      // Nothing made up: no value where none was given, no zero for a missing bound.
+      for (const n of [1, 3, 4]) assert.doesNotMatch(rows[n].querySelector(".task-research-value")?.textContent ?? "", /\d+ \[/);
+      assert.doesNotMatch(rows[2].textContent, /\[0|, 0\]/);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("value, low, high and n past JavaScript's safe integers read as approximate, with why; 0 and safe integers stay exact (T-17)", async () => {
+  // Parsed from JSON text, as the page receives Core's answer: Core keeps
+  // these exactly, the page has only the nearest double it can hold.
+  const entries = JSON.parse(`[
+    {"id":"edge","label":"Edge","status":"included","unit":"events","level":"process","n":0,"value":{"value":9007199254740991}},
+    {"id":"big","label":"Big","status":"included","unit":"events","n":9007199254740993,
+      "value":{"value":9007199254740993,"low":-9007199254740993,"high":18446744073709551615}},
+    {"id":"pow","label":"Power","status":"included","unit":"events","level":"seed","n":9007199254740992,"value":{"value":9007199254740992}},
+    {"id":"safe","label":"Safe","status":"excluded","reason":"Counted twice.","level":"seed","n":9007199254740991}
+  ]`);
+  const record = { schema: "research/1", type: "comparison", id: "counts", title: "Event counts", text: "As counted.", entries,
+    comparability: { aligned: false, shared: { unit: "events" }, differs: ["level"], unknown: ["level", "definition", "method"],
+      counts: { included: 3, excluded: 1, missing: 0, not_done: 0 } } };
+  for (const [language, note, missingLevel] of [
+    ["en", "≈: past JavaScript's safe integer range, the value shown may have been rounded; Core keeps the value it parsed.", "sample level not given"],
+    ["zh-Hans", "≈：超出 JavaScript 安全整数范围，显示值可能已舍入；Core 保留它解析的数值。", "未给样本层级"],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(9, record, "Counted.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
+      const [edge, big, pow, safe] = card.querySelectorAll(".task-research-entry");
+      const value = (row) => row.querySelector(".task-research-value");
+      const identity = (row) => row.querySelector(".task-research-identity");
+      // The safe boundary and 0 are exact, unmarked.
+      assert.equal(value(edge).textContent, "9007199254740991 events");
+      assert.equal(value(edge).getAttribute("title"), null);
+      assert.equal(identity(edge).textContent, "process · n = 0");
+      assert.equal(identity(edge).getAttribute("title"), null);
+      // Past it: value, both bounds and n are marked, the u64 maximum too.
+      assert.equal(value(big).textContent, "≈9007199254740992 [≈−9007199254740992, ≈18446744073709552000] events");
+      assert.equal(value(big).getAttribute("title"), note);
+      assert.equal(identity(big).textContent, `${missingLevel} · n = ≈9007199254740992`);
+      assert.equal(identity(big).getAttribute("title"), note);
+      // Exactly 2^53 may itself be a rounded value: marked as well.
+      assert.equal(value(pow).textContent, "≈9007199254740992 events");
+      assert.equal(identity(pow).textContent, "seed · n = ≈9007199254740992");
+      assert.equal(identity(pow).getAttribute("title"), note);
+      // A safe n with a sample level, on an excluded entry, is exact.
+      assert.equal(identity(safe).textContent, "seed · n = 9007199254740991");
+      assert.equal(identity(safe).getAttribute("title"), null);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});

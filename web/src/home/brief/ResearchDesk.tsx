@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, errorText } from "../../api";
 import { useStrings } from "../../i18n";
 import { useTimeDisplay } from "../../time-preferences";
@@ -34,15 +34,21 @@ type Read =
   | { status: "missing" | "not_number"; from: string }
   | { status: "unavailable"; reason?: string; from: string };
 type SourceInfo = {
-  attachment: string;
+  attachment?: string;
   takenAt?: string;
   sha256?: string;
   available: boolean;
   reason?: string;
   stated?: "same" | "different" | "unknown";
+  // A source naming a Task research record (T-17), as its task keeps it.
+  record?: { kind: string; type?: string; title?: string; summary?: string; counts?: Record<string, number> };
+  producer?: { name?: string };
+  at?: string;
+  version?: number | null;
+  latestActivitySeq?: number | null;
 };
 type Resolved = { version: number; values: Record<string, Read>; sources: Record<string, SourceInfo> };
-type Loaded = { key: string; data?: Resolved; error?: string };
+type Loaded = { key: string; data?: Resolved; error?: string; readAt?: string };
 type Origin = "read" | "provided" | "missing" | "not_number" | "unavailable" | "loading";
 /** A number as shown: its value when there is one (as the file or the Agent has it), and where it came from. */
 type Shown = { value: number | null; origin: Origin; from?: string };
@@ -60,31 +66,73 @@ function resolvedOf(value: unknown): Resolved | null {
  * The desk's numbers read by Core, once per section version. Only the read of
  * the version on screen is shown: while a newer version loads, its numbers show
  * as loading, never the previous version's as read from a snapshot.
+ *
+ * A read belongs to one desk (element) of one section version in one
+ * Workspace. A Task record a source names can change without the section
+ * changing (a newer version of a method, a record no longer readable, T-17),
+ * so the reader can check the sources again: that read replaces only the
+ * sources' state now, never the numbers or anything the author fixed, and
+ * says when it read or why it could not. An answer for another desk, or older
+ * than the newest read, is dropped.
  */
 function useResolved(elementKey: string | undefined, wanted: boolean) {
   const { projectId, section } = useBrief();
+  const workspaceId = useContext(CardFoldWorkspace);
   const path = wanted && elementKey ? researchPath(projectId, section.key, elementKey, section.version) : null;
+  const identity = path ? `${workspaceId}\n${section.id ?? section.key}\n${path}` : null;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [again, setAgain] = useState<{ key: string; checking: boolean; error?: string } | null>(null);
+  const reading = useRef<{ generation: number; controller: AbortController | null }>({ generation: 0, controller: null });
+  const read = useCallback(
+    (sourcesOnly: boolean) => {
+      if (!path || !identity) return;
+      reading.current.generation += 1;
+      reading.current.controller?.abort();
+      const generation = reading.current.generation;
+      const controller = new AbortController();
+      reading.current.controller = controller;
+      const mine = () => reading.current.generation === generation && !controller.signal.aborted;
+      if (sourcesOnly) setAgain({ key: identity, checking: true });
+      api<unknown>(path, { signal: controller.signal }).then(
+        (value) => {
+          if (!mine()) return;
+          const data = resolvedOf(value);
+          const readAt = new Date().toISOString();
+          if (!sourcesOnly) return setLoaded(data ? { key: identity, data, readAt } : { key: identity, error: "unreadable" });
+          if (!data) return setAgain({ key: identity, checking: false, error: "unreadable" });
+          setLoaded((previous) =>
+            previous?.key === identity && previous.data
+              ? { ...previous, data: { ...previous.data, sources: data.sources }, readAt }
+              : { key: identity, data, readAt },
+          );
+          setAgain({ key: identity, checking: false });
+        },
+        (error) => {
+          if (!mine()) return;
+          if (sourcesOnly) setAgain({ key: identity, checking: false, error: errorText(error) });
+          else setLoaded({ key: identity, error: errorText(error) });
+        },
+      );
+    },
+    [path, identity],
+  );
   useEffect(() => {
-    if (!path) return;
-    const controller = new AbortController();
-    api<unknown>(path, { signal: controller.signal }).then(
-      (value) => {
-        if (controller.signal.aborted) return;
-        const data = resolvedOf(value);
-        setLoaded(data ? { key: path, data } : { key: path, error: "unreadable" });
-      },
-      (error) => {
-        if (!controller.signal.aborted) setLoaded({ key: path, error: errorText(error) });
-      },
-    );
-    return () => controller.abort();
-  }, [path]);
-  const current = loaded?.key === path ? loaded : null;
+    read(false);
+    return () => {
+      reading.current.generation += 1;
+      reading.current.controller?.abort();
+    };
+  }, [read]);
+  const current = loaded?.key === identity ? loaded : null;
+  const checking = again?.key === identity ? again : null;
   return {
     data: current?.data ?? null,
     error: current?.error ?? null,
     loading: !!path && !current,
+    readAt: current?.readAt ?? null,
+    checkAgain: () => read(true),
+    checking: !!checking?.checking,
+    checkError: checking?.error ?? null,
   };
 }
 
@@ -386,6 +434,33 @@ function SourceLine({ source, info, lines }: { source: Source; info?: SourceInfo
           {info.reason === "not_snapshot" ? t.notSnapshot : t.snapshotMissing}
         </span>
       )}
+      {source.task && (
+        <span className="research-snapshot" data-record="" data-unavailable={info && !info.available ? "" : undefined}>
+          {t.taskRecord(source.task.taskId, source.task.activitySeq)}
+          {info?.available && info.record && (
+            <>
+              {" · "}
+              {t.recordType[info.record.type ?? info.record.kind] ?? info.record.kind} “{info.record.title ?? info.record.summary}”
+              {info.record.counts ? <> · {t.recordCounts(info.record.counts)}</> : null}
+              {/* A research record has a line of versions; a result has none. */}
+              {info.record.kind === "research" && <> · {info.version ? t.recordVersion(info.version) : t.recordVersionUnknown}</>}
+              {info.producer?.name && info.at ? <> · {t.recordBy(info.producer.name, formatTime(info.at, time))}</> : null}
+              {info.record.kind === "research" && (
+                <>
+                  {" · "}
+                  {info.latestActivitySeq == null
+                    ? t.recordNewerUnknown
+                    : info.latestActivitySeq === source.task.activitySeq
+                      ? t.recordNewest
+                      : t.recordNewer(info.latestActivitySeq)}
+                </>
+              )}
+            </>
+          )}
+          {info && !info.available && <> · {t.recordMissing[info.reason ?? ""] ?? info.reason}</>}
+          {info?.available && <span className="research-note">{t.recordNote}</span>}
+        </span>
+      )}
       {info?.stated && <span className="research-note" data-stated={info.stated}>{t.stated[info.stated]}</span>}
       {(source.location || source.revision) && (
         <span className="research-described">
@@ -445,8 +520,9 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
     () => desk.plots.some((plot) => plot.rows.some((r) => [r.estimate, ...(r.parts ?? []).map((p) => p.estimate)].some((e) => [e.value, e.low, e.high].some((n) => n !== undefined && typeof n !== "number")))),
     [desk.plots],
   );
-  const wantsSources = desk.sources.some((source) => source.snapshot);
-  const { data: resolved, error, loading } = useResolved(elementKey, reads || wantsSources);
+  const wantsSources = desk.sources.some((source) => source.snapshot || source.task);
+  const { data: resolved, error, loading, readAt, checkAgain, checking, checkError } = useResolved(elementKey, reads || wantsSources);
+  const namesRecords = desk.sources.some((source) => source.task);
   const sources = useMemo(() => new Map(desk.sources.map((source) => [source.id, source])), [desk.sources]);
   const plotOf = (rowId: string | undefined) => desk.plots.find((plot) => plot.rows.some((r) => r.id === rowId));
   const rowById = (id: string) => desk.plots.flatMap((plot) => plot.rows).find((r) => r.id === id);
@@ -838,6 +914,15 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
         <ul className="research-sources">
           {desk.sources.map((source) => <SourceLine key={source.id} source={source} info={sourceInfo(source.id)} />)}
         </ul>
+        {namesRecords && resolved && (
+          <p className="research-recheck" role="status">
+            {readAt && <span>{t.recordsRead(formatTime(readAt, time))}</span>}
+            {checkError && <span data-failed="">{t.recheckFailed(checkError)}</span>}
+            <button type="button" className="text-button" onClick={checkAgain} disabled={checking}>
+              {checking ? t.checking : t.checkAgain}
+            </button>
+          </p>
+        )}
       </section>
     </aside>
   );

@@ -28,6 +28,8 @@ import {
   resultVersion,
   type OutcomeArtifact,
   type OutcomePage,
+  type OutcomeRecord,
+  type OutcomeRecordNow,
   type OutcomePerson,
   type OutcomeResult,
   type OutcomeReport,
@@ -124,6 +126,30 @@ export function TaskOutcomeEditor({
               onChange={(e) => update(criterion.id, { report: e.target.value })}
             />
           </label>
+          {!!criterion.records?.length && (
+            <div className="outcome-editor-artifacts">
+              {criterion.records.map((cited, n) => (
+                <div key={cited.activitySeq}>
+                  <span>
+                    {t.recordType[cited.record?.type ?? ""] ?? t.records} “
+                    {cited.record?.title}” ·{" "}
+                    {t.recordLine(cited.activitySeq, cited.version ?? null)}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() =>
+                      update(criterion.id, {
+                        records: criterion.records!.filter((_, i) => i !== n),
+                      })
+                    }
+                  >
+                    {t.removeRecord}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {!!criterion.artifacts?.length && (
             <div className="outcome-editor-artifacts">
               <p className="outcome-note">{t.keepReport}</p>
@@ -357,6 +383,53 @@ function Artifact({
         <p className="outcome-note">{t.bytesNotChecked}</p>
       </details>
     </article>
+  );
+}
+
+/** A research record a criterion cites, as it read when the result was
+ * submitted, and where its line stands now. Its support is the record
+ * author's; the criterion's status is the result author's. */
+function CitedRecord({
+  cited,
+  now,
+  t,
+}: {
+  cited: OutcomeRecord;
+  now?: OutcomeRecordNow;
+  t: Text;
+}) {
+  const record = cited.record;
+  return (
+    <li className="outcome-record">
+      <span className="outcome-record-type">
+        {t.recordType[record?.type ?? ""] ?? t.records}
+      </span>
+      <strong>{record?.title}</strong>
+      <span className="outcome-note">
+        {t.recordLine(cited.activitySeq, cited.version ?? null)}
+        {cited.producer?.name ? ` · ${t.recordBy(cited.producer.name)}` : ""}
+      </span>
+      {record?.status && (
+        <span className="outcome-record-support">
+          {t.support[record.status] ?? record.status} — {t.supportBy}
+        </span>
+      )}
+      {record?.counts && (
+        <span className="outcome-note">{t.recordCounts(record.counts)}</span>
+      )}
+      {now?.state === "missing" ? (
+        <span className="outcome-note">{t.recordMissing}</span>
+      ) : (
+        now &&
+        now.latestActivitySeq !== cited.activitySeq && (
+          <span className="outcome-note">
+            {now.latestActivitySeq != null
+              ? t.recordNewer(now.latestActivitySeq)
+              : t.recordLatestUnknown(now.revisedBy ?? null)}
+          </span>
+        )
+      )}
+    </li>
   );
 }
 
@@ -849,6 +922,26 @@ export function TaskOutcome({
                               {resultVersion(selected) || t.unknownVersion}
                             </p>
                             <Prose text={criterion.report} />
+                            {!!criterion.records?.length && (
+                              <>
+                                <h5>{t.records}</h5>
+                                <p className="outcome-note">{t.recordsNote}</p>
+                                <ul className="outcome-records">
+                                  {criterion.records.map((cited) => (
+                                    <CitedRecord
+                                      key={cited.activitySeq}
+                                      cited={cited}
+                                      now={page.records?.find(
+                                        (r) =>
+                                          r.criterionId === criterion.id &&
+                                          r.activitySeq === cited.activitySeq,
+                                      )}
+                                      t={t}
+                                    />
+                                  ))}
+                                </ul>
+                              </>
+                            )}
                             <h5>{t.artifacts}</h5>
                             {artifacts.length ? (
                               artifacts.map((a) => (

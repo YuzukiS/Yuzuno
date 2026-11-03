@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { benchmark, doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+import { benchmark, doseStudy, fixtureFiles, layoutStudy, layoutStudyRecords } from "./research-fixtures.mjs";
 
 // T-9: a research desk as Home draws it. The real BriefSectionBody in JSDOM,
 // with two synthetic desks of different shapes first accepted by the real
@@ -138,6 +138,145 @@ function serve(put, overrides = {}) {
 const radios = (document, label) => [...document.querySelectorAll(`[role="radiogroup"][aria-label="${label}"] [role="radio"]`)];
 const checked = (document, label) => radios(document, label).find((radio) => radio.getAttribute("aria-checked") === "true");
 const radio = (document, label, text) => radios(document, label).find((item) => item.textContent.includes(text));
+
+test("a definition's versions show the Task method records they cite, each its own, with no attachment (T-17)", async () => {
+  const records = layoutStudyRecords();
+  for (const [sources, expected] of [
+    [records, [
+      "Task record T-1 · activity 3", "Method “Timing protocol” · version 1", "a newer version is activity 6",
+      "Task record T-1 · activity 6", "Method “Timing protocol” · version 2", "by Mina", "the record's identity, not a check of it",
+    ]],
+    [{ ...records, "timing-v2": { taskId: "T-1", activitySeq: 6, available: false, reason: "activity_not_found" } },
+      ["Task record T-1 · activity 3", "Task record T-1 · activity 6", "The task has no such activity"]],
+  ]) {
+    const page = mount((url) => {
+      const match = url.match(/\/brief\/research\/([^/]+)\/desk\?version=(\d+)$/);
+      return match && decodeURIComponent(match[1]) === layoutStudy.key
+        ? { body: { key: layoutStudy.key, version: Number(match[2]), elementId: "desk", values: {}, sources } }
+        : { status: 404, body: { error: "not here" } };
+    });
+    try {
+      page.window.renderSection(section(page, layoutStudy, 3), PROJECT, "ws-1");
+      const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+      radio(page.document, "Views of this desk", "Definitions").click();
+      // The record's line is drawn before Core's read answers: wait for every part of it.
+      await until(() => expected.every((text) => desk.textContent.includes(text)), `the records: ${expected.join(" / ")}`);
+      for (const text of expected) assert.ok(desk.textContent.includes(text), text);
+      // Version 1 still names its own record, after version 2 replaced it.
+      const versions = [...desk.querySelectorAll(".research-versions > li")].map((item) => item.textContent);
+      assert.ok(versions.some((item) => item.includes("Ten iterations in one process.") && item.includes("activity 3")), versions.join(" | "));
+      assert.ok(versions.some((item) => item.includes("Ten fresh processes") && item.includes("activity 6")), versions.join(" | "));
+      assert.ok(!desk.textContent.match(/verified|checked by/i), "nothing is called verified");
+      assert.ok(page.requests.every((request) => request.method === "GET" && /\/brief\/research\//.test(request.url)), JSON.stringify(page.requests));
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("a source naming a Task comparison shows its entry counts (T-17)", async () => {
+  const put = structuredClone(layoutStudy);
+  put.body.elements.desk.props.sources.push({ id: "compared", label: "Layout comparison", kind: "data", task: { taskId: "T-1", activitySeq: 9 } });
+  put.body.elements.desk.props.claims[0].paper = [{ label: "Compared runs", cite: { source: "compared" } }];
+  const sources = { ...layoutStudyRecords(), compared: { taskId: "T-1", activitySeq: 9, available: true,
+    record: { kind: "research", type: "comparison", id: "layouts", title: "Layout B vs A", counts: { included: 2, excluded: 1, missing: 1, not_done: 1 } },
+    producer: { kind: "agent", id: "mina", name: "Mina" }, at: "2026-11-02T09:00:00Z", version: 1, latestActivitySeq: 9 } };
+  const page = mount((url) => /\/brief\/research\//.test(url)
+    ? { body: { key: put.key, version: 3, elementId: "desk", values: {}, sources } }
+    : { status: 404, body: { error: "not here" } });
+  try {
+    page.window.renderSection(section(page, put, 3), PROJECT, "ws-1");
+    const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+    await until(() => desk.textContent.includes("2 included, 1 excluded, 1 missing, 1 not done"), "the comparison's counts");
+    assert.ok(desk.textContent.includes("Task record T-1 · activity 9"));
+    assert.ok(desk.textContent.includes("Comparison “Layout B vs A”"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+/** A desk read of layoutStudy with these sources, answered at once or by `answer`. */
+const layoutRead = (sources) => ({ body: { key: layoutStudy.key, version: 3, elementId: "desk", values: {}, sources } });
+
+test("a Task record source says newest only when it is: newer, unknown, and nothing for a result (T-17)", async () => {
+  const records = layoutStudyRecords();
+  const put = structuredClone(layoutStudy);
+  put.body.elements.desk.props.sources.push({ id: "result", label: "Delivered result", kind: "data", task: { taskId: "T-2", activitySeq: 11 } });
+  put.body.elements.desk.props.claims[0].paper = [{ label: "Result", cite: { source: "result" } }];
+  const sources = {
+    "timing-v1": { ...records["timing-v1"], latestActivitySeq: null },
+    "timing-v2": records["timing-v2"],
+    result: { taskId: "T-2", activitySeq: 11, available: true, record: { kind: "result", resultId: "r-1", summary: "Layout B shipped" },
+      producer: { kind: "agent", id: "iris", name: "Iris" }, at: "2026-11-02T09:00:00Z" },
+  };
+  for (const [language, expected, absent] of [
+    ["en", ["activity 3 · Method “Timing protocol” · version 1", "a newer version exists; the latest version is unknown", "activity 6 · Method “Timing protocol” · version 2", "the newest version", "Result “Layout B shipped”"],
+      /Result “Layout B shipped” · version|Layout B shipped” · by Iris, [^·]*· (the newest|a newer)|whether there is a newer/],
+    ["zh-Hans", ["已有较新的版本；最新版本未确定", "这是最新版本"], /结果“Layout B shipped” · 第|是否有较新/],
+  ]) {
+    const page = mount((url) => (/\/brief\/research\//.test(url) ? layoutRead(sources) : { status: 404, body: { error: "not here" } }));
+    try {
+      if (language !== "en") page.window.chooseLanguage(language);
+      page.window.renderSection(section(page, put, 3), PROJECT, "ws-1");
+      const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+      await until(() => expected.every((text) => desk.textContent.includes(text)), `${language}: ${expected.join(" / ")}`);
+      assert.ok(!absent.test(desk.textContent), `${language}: a result has no line of versions`);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("Check again reads a desk's Task records anew without a new section version; the view, the selection and the fixed records stay (T-17)", async () => {
+  const records = layoutStudyRecords();
+  let answer = { ...records, "timing-v1": { ...records["timing-v1"], latestActivitySeq: 3 } };
+  let late = null;
+  const page = mount((url) => {
+    if (!/\/brief\/research\//.test(url)) return { status: 404, body: { error: "not here" } };
+    if (late) return late.promise;
+    if (answer === "fail") return { status: 500, body: { error: "Core is restarting" } };
+    return layoutRead(answer);
+  });
+  try {
+    page.window.renderSection(section(page, layoutStudy, 3), PROJECT, "ws-1");
+    const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
+    radio(page.document, "Views of this desk", "Definitions").click();
+    await until(() => desk.textContent.includes("Task records read"), "the first read and when it was");
+    assert.ok(desk.textContent.includes("the newest version"));
+    const again = () => [...desk.querySelectorAll("button")].find((b) => b.textContent === "Check again");
+    // A newer method version was added on the task: the section did not change.
+    answer = records;
+    again().click();
+    await until(() => desk.textContent.includes("a newer version is activity 6"), "the state after checking again");
+    const versions = [...desk.querySelectorAll(".research-versions > li")].map((item) => item.textContent);
+    assert.ok(versions.some((item) => item.includes("Ten iterations in one process.") && item.includes("activity 3")), "version 1 still names activity 3");
+    assert.equal(checked(page.document, "Views of this desk").textContent, "Definitions", "the view stays");
+    // A failed read says so and keeps what was last read.
+    answer = "fail";
+    again().click();
+    await until(() => desk.textContent.includes("They couldn't be read again"), "the failure");
+    assert.ok(desk.textContent.includes("a newer version is activity 6"), "the last read stays");
+    // A read still on its way when the desk turns to another Workspace is dropped.
+    let resolveLate;
+    late = { promise: new Promise((done) => { resolveLate = done; }) };
+    again().click();
+    await until(() => desk.textContent.includes("Checking…"), "the read under way");
+    late = null;
+    answer = { ...records, "timing-v2": { taskId: "T-1", activitySeq: 6, available: false, reason: "activity_not_found" } };
+    page.window.renderSection(section(page, layoutStudy, 3), PROJECT, "ws-2");
+    await until(() => page.document.querySelector(".research-desk")?.textContent.includes("The task has no such activity"), "the other Workspace's read");
+    resolveLate(layoutRead({ ...records, "timing-v2": { ...records["timing-v2"], record: { ...records["timing-v2"].record, title: "Late ws-1 title" } } }));
+    await tick(40);
+    assert.ok(!page.document.querySelector(".research-desk").textContent.includes("Late ws-1 title"), "the late answer is dropped");
+    assert.ok(page.requests.every((request) => request.method === "GET"), JSON.stringify(page.requests));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
 
 test("two desks of different shapes draw through one component, each number saying where it came from", async () => {
   for (const [put, expect] of [

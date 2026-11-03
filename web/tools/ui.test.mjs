@@ -5757,24 +5757,36 @@ test("CI rail refreshes on Jobs, collaboration closure and reconnect, without re
   const page=await mount({status:"working",liveCI:()=>ci});
   const runtime=id=>page.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)?.textContent;
   const reads=()=>page.calls.filter(c=>c.url.endsWith("/api/ci/live")).length;
+  const stream=()=>page.eventSources.at(-1);
+  // Core answers an opened stream with `resumed` first. Without it the
+  // START_WAIT_MS fallback resets and rightly re-reads the conversation.
+  const opens=()=>{stream().onopen?.();stream().onmessage?.({data:JSON.stringify({type:"resumed"})});};
+  // A wait that fails says what the rail, the CI reads and the stream were (T-19, #469's CI run 41554732615).
+  const waitFor=async(read,message)=>{
+    try{await until(read,message);}
+    catch{assert.fail(`${message}: ${JSON.stringify({ciReads:reads(),ciAnswer:ci,rail:{a:runtime("a"),b:runtime("b")},
+      reconnectingBanner:!!page.document.querySelector(".event-connection-banner"),streams:page.eventSources.length})}`);}
+  };
   try {
-    await until(()=>runtime("b")==="Waiting · CI","idle CI visible");
+    opens();
+    await waitFor(()=>runtime("b")==="Waiting · CI","idle CI visible");
     assert.equal(runtime("a"),"Working");
     const before=page.calls.filter(c=>/\/api\/agents\/[^/]+$/.test(c.url)).length;
     ci={agents:{}};
-    page.eventSources.at(-1).onmessage?.({data:JSON.stringify({type:"workspace.changed",scope:"jobs"})});
-    await until(()=>runtime("b")==="Ready","completion event clears waiting");
+    stream().onmessage?.({data:JSON.stringify({type:"workspace.changed",scope:"jobs"})});
+    await waitFor(()=>runtime("b")==="Ready","completion event clears waiting");
     assert.equal(page.calls.filter(c=>/\/api\/agents\/[^/]+$/.test(c.url)).length,before,"CI event does not refetch conversation");
     ci={agents:{b:{running:0,discovering:1,check:0}}};
-    // Core answers a reopened stream with `resumed` first. Without it the
-    // START_WAIT_MS fallback resets and rightly re-reads the conversation,
-    // racing the assertion below on a slow runner.
-    const n=reads();page.eventSources.at(-1).onopen?.();
-    page.eventSources.at(-1).onmessage?.({data:JSON.stringify({type:"resumed"})});
-    await until(()=>reads()>n&&runtime("b")==="Waiting · CI","reconnect refreshes counts");
+    // A real reconnect: the open stream fails, the shell says it is reconnecting, then it opens again.
+    stream().onerror?.();
+    await waitFor(()=>page.document.querySelector(".event-connection-banner"),"the stream's failure is shown");
+    const n=reads();
+    opens();
+    await waitFor(()=>reads()>n,"reconnect reads CI again");
+    await waitFor(()=>runtime("b")==="Waiting · CI","reconnect refreshes counts");
     ci={agents:{}};
-    page.eventSources.at(-1).onmessage?.({data:JSON.stringify({type:"workspace.changed",scope:"collaboration"})});
-    await until(()=>runtime("b")==="Ready","task done or delivery stop clears waiting immediately");
+    stream().onmessage?.({data:JSON.stringify({type:"workspace.changed",scope:"collaboration"})});
+    await waitFor(()=>runtime("b")==="Ready","task done or delivery stop clears waiting immediately");
     assert.equal(page.calls.filter(c=>/\/api\/agents\/[^/]+$/.test(c.url)).length,before,"collaboration closure does not refetch conversation");
     assert.ok(page.calls.every(c=>!c.url.includes("/api/ci/refresh")),"no GitHub refresh");
   }finally{page.close();}
@@ -6902,4 +6914,37 @@ test("Codex's proposed plan shows as sanitized Markdown, open, and acts on nothi
     assert.deepEqual(posts(page), []);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+test("the decision on its way shows the spinner the answer form has, on its own button only (T-19 CV:Q-02)", async () => {
+  let release = null;
+  const page = await mount({
+    status: "waiting",
+    pending: [{ id: "decide", agentId: "a", method: "item/commandExecution/requestApproval", createdAt: "",
+      params: { command: "bounded task", availableDecisions: ["accept", "acceptForSession", "decline", "cancel"] } }],
+    beforeLoad: (window) => {
+      const fetch = window.fetch;
+      window.fetch = (url, init) => url.includes("/respond")
+        ? new Promise((resolve) => { release = () => resolve(fetch(url, init)); })
+        : fetch(url, init);
+    },
+  });
+  try {
+    const spinning = () => [...page.document.querySelectorAll(".pending-card button")].filter((b) => b.querySelector(".spin")).map((b) => b.textContent.trim());
+    assert.deepEqual(spinning(), []);
+    button(page, "Decline").click();
+    await pause();
+    assert.equal(typeof release, "function", "the decision was sent");
+    assert.deepEqual(spinning(), ["Decline"], "only the decision on its way spins");
+    assert.equal(button(page, "Decline").getAttribute("aria-busy"), "true");
+    assert.equal(button(page, "Allow once").getAttribute("aria-busy"), null);
+    assert.equal(button(page, "Allow once").disabled, true);
+    release();
+    await pause();
+    await pause();
+    assert.deepEqual(spinning(), []);
+    assert.equal(page.calls.filter((c) => c.url.includes("/respond")).length, 1);
+  } finally {
+    page.close();
+  }
 });

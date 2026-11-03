@@ -10,7 +10,7 @@ import {
 } from "../src/intelligent-ui/brief-contract.ts";
 import { MAX_PROBLEMS, MAX_SPEC_BYTES, ResultError, SIGNATURE_LEGEND } from "../src/intelligent-ui/contract.ts";
 import { clarificationExample } from "../src/intelligent-ui/clarification.ts";
-import { benchmark, doseStudy } from "./research-fixtures.mjs";
+import { benchmark, doseStudy, layoutStudy } from "./research-fixtures.mjs";
 
 const problems = (value, previousBody) => {
   try {
@@ -599,6 +599,15 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   const unsaved = rejected((p) => { delete p.sources[1].snapshot; });
   assert.equal(unsaved.code, "unsaved_definition");
   assert.match(unsaved.reason, /must point to a file this section keeps/);
+  // A Task method record holds a definition version too (T-17): the record
+  // keeps its own identity, so the section needs no attachment for it.
+  // (the CS layout study: each definition version cites its own method record).
+  assert.ok(checkBriefSection(layoutStudy));
+  assert.deepEqual(researchReads(layoutStudy.body.elements.desk.props), [], "nothing is read from a file");
+  assert.equal(first(desk((p) => { p.sources[1].task = { taskId: "17", activitySeq: 42 }; })).code, "invalid_field", "a task ID is T-n");
+  const both = rejected((p) => { p.sources[1].task = { taskId: "T-17", activitySeq: 42 }; });
+  assert.equal(both.code, "invalid_field");
+  assert.match(both.reason, /names both a snapshot and a Task record/);
   assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
   assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
   assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
