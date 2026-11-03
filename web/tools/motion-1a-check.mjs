@@ -288,6 +288,25 @@ for (const run of runs) {
       });
       ok(`${tag}: with a dialog open, the toasts stay a live region that is not aria-hidden`, live.live === "polite" && !live.hidden, live);
       if (shot("x")) await page.screenshot({ path: join(output, "toast-over-dialog.png") });
+      // The Portal full screen, as Portal.tsx sets it (its root attribute and a
+      // full panel in <body>; the preview has no Portal): the dialog rises above
+      // the panel, and the toast above both.
+      const full = await page.evaluate(() => {
+        document.documentElement.dataset.portal = "full";
+        const panel = Object.assign(document.createElement("div"), { className: "portal-panel is-full" });
+        panel.id = "t19-portal-stand-in";
+        document.body.append(panel);
+        const toast = document.querySelector(".toast");
+        const r = toast.getBoundingClientRect();
+        const z = (selector) => Number(getComputedStyle(document.querySelector(selector)).zIndex);
+        const result = { onTop: toast.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)),
+          panel: z("#t19-portal-stand-in"), overlay: z(".modal-overlay"), dialog: z(".modal"), toasts: z(".toast-stack") };
+        panel.remove();
+        delete document.documentElement.dataset.portal;
+        return result;
+      });
+      ok(`${tag}: with the Portal full screen, a toast stays above the Portal and its dialog`,
+        full.onTop && full.toasts > full.dialog && full.dialog > full.panel, full);
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
     } else report.notShown.push(`${tag}: Send to Agent → Hana was not available in the preview`);
