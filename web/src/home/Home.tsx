@@ -30,6 +30,7 @@ import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDens
 import { ReportPage } from "./report/ReportPage";
 import { linkTo } from "./report/report-model";
 import { ReportOpen, type ReportOpener } from "./report/report-open";
+import { settleWhenLanded } from "../settle";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -153,6 +154,9 @@ export function Home({
   const [saving, setSaving] = useState(false);
   // Panels the needs-you row jumped to, shown whole for this visit.
   const [reveal, setReveal] = useState<{ n: number; projects: Record<string, number> }>({ n: 0, projects: {} });
+  // The Needs you area's landing mark, from the return overview (T-19).
+  const needsSettled = useRef<(() => void) | null>(null);
+  useEffect(() => () => needsSettled.current?.(), []);
   const pendingJump = useRef<{ target: () => HTMLElement | null; n: number } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   useEffect(() => {
@@ -296,23 +300,22 @@ export function Home({
     pendingJump.current = null;
     const target = jumpTo.target();
     if (!target) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let frame = 0;
-    const clear = () => target.removeAttribute("data-home-highlight");
+    let settled: (() => void) | undefined;
     const show = () => {
       // Only the user's click scrolls Home; new content never does.
-      target.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+      const smooth = !reducedMotion();
+      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
       target.focus({ preventScroll: true });
-      target.setAttribute("data-home-highlight", "");
-      timer = setTimeout(clear, 2400);
+      // Where it landed, once the scroll has (T-19): kept until the next press.
+      settled = settleWhenLanded(target, "data-home-highlight", smooth);
     };
     // A card the user collapsed opens to show what the jump is to (T-115).
     if (unfoldAround(target)) frame = requestAnimationFrame(show);
     else show();
     return () => {
       cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      clear();
+      settled?.();
     };
   }, [reveal]);
   // A section's report, over Home (T-18). Home stays mounted and laid out
@@ -622,8 +625,12 @@ export function Home({
             onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
             onNeedsYou={() => {
               const target = document.getElementById("home-current-needs");
-              target?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
-              target?.focus({ preventScroll: true });
+              if (!target) return;
+              const smooth = !reducedMotion();
+              target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+              target.focus({ preventScroll: true });
+              needsSettled.current?.();
+              needsSettled.current = settleWhenLanded(target, "data-home-highlight", smooth);
             }}
             onNavigate={onNavigate}
           />
