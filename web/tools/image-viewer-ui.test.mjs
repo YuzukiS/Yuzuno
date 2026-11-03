@@ -414,3 +414,29 @@ test("T-20 touch: a real double-tap toggles; a drag, a pinch, a cancel or a thir
   assert.equal(p.stageEl().hasAttribute("data-dragging"), false, "every finger is up");
   assert.deepEqual(p.errors, []);
 });
+
+test("T-20 touch: a finger lifted far from where it went down, with no move between, is no tap", async (t) => {
+  const p = mount();
+  t.after(p.close);
+  p.window.showPreview({ open: true, src: "/tall.png", name: "tall.png" });
+  await until(p.image, "the viewer opens");
+  p.load(1000, 3000);
+  await until(() => p.output() === "100%", "opened");
+  const touch = (type, x, y, id) => p.pointer(type, x, y, id, "touch");
+  // Down here, up 200 px away, then at once a tap where it went down: no double-tap.
+  touch("pointerdown", 500, 350, 1);
+  touch("pointerup", 500, 150, 1);
+  touch("pointerdown", 501, 351, 2);
+  touch("pointerup", 501, 351, 2);
+  await tick(60);
+  assert.equal(p.output(), "100%", "a lift far away is no tap");
+  assert.deepEqual(p.pressed(), ["Fit width"]);
+  // Two real taps still make a double-tap.
+  await tick(350);
+  for (const id of [3, 4]) {
+    touch("pointerdown", 500, 350, id);
+    touch("pointerup", 503, 352, id);
+  }
+  await until(() => p.pressed()[0] === "Fit", "a real double-tap still toggles");
+  assert.deepEqual(p.errors, []);
+});

@@ -286,8 +286,11 @@ export function ImageViewer({
     if (!pointers.current.size) setDragging(false);
     const down = tap.current;
     tap.current = null;
-    // Only a finger lifted (not cancelled) where it went down is a tap.
-    if (event.type !== "pointerup" || down?.id !== event.pointerId) return void (lastTap.current = null);
+    // Only a finger lifted (not cancelled) where it went down is a tap: the
+    // lift's own place counts too, as a last move may come only with it.
+    const up = local(event);
+    if (event.type !== "pointerup" || down?.id !== event.pointerId || Math.hypot(up.x - down.at.x, up.y - down.at.y) > 10)
+      return void (lastTap.current = null);
     const before = lastTap.current;
     if (before && event.timeStamp - before.time < 300 && Math.hypot(down.at.x - before.at.x, down.at.y - before.at.y) < 24) {
       lastTap.current = null;
