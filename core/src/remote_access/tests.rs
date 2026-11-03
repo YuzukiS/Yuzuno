@@ -161,16 +161,21 @@ fn free_port_never_gives_one_port_twice_even_when_it_is_offered_again() {
     assert_eq!(distinct_port(&mut given, &mut bind), 40323);
     assert_eq!(live.get(), 0, "every held repeat released");
     assert!(next.next().is_none(), "asked exactly as often as needed");
-    // A bind that only ever offers given ports fails plainly, never loops for ever.
+    // And for real: every port free_port hands out in this process is its own.
+    let ports: Vec<u16> = (0..64).map(|_| free_port()).collect();
+    let distinct: std::collections::BTreeSet<u16> = ports.iter().copied().collect();
+    assert_eq!(distinct.len(), ports.len(), "{ports:?}");
+}
+
+#[test]
+fn free_port_fails_plainly_when_bind_only_offers_ports_already_given() {
+    // A bind no OS has: it offers 7 again while 7 is still held. This ends in a
+    // panic after one try, never a loop for ever.
     let refused = std::panic::catch_unwind(|| {
         let mut given = std::collections::BTreeSet::from([7]);
         distinct_port(&mut given, || (7, ()))
     });
     assert!(refused.is_err());
-    // And for real: every port free_port hands out in this process is its own.
-    let ports: Vec<u16> = (0..64).map(|_| free_port()).collect();
-    let distinct: std::collections::BTreeSet<u16> = ports.iter().copied().collect();
-    assert_eq!(distinct.len(), ports.len(), "{ports:?}");
 }
 
 async fn get(port: u16, path: &str, login: Option<&str>, host: &str) -> (u16, String) {
