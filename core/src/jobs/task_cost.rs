@@ -11,10 +11,11 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-/// The most attempts one read adds up; past it the sums say they are partial.
+/// The most attempts, and the most runs, one read adds up; past either the
+/// read says which of its counts are partial.
 const LIMIT: usize = 5000;
 const FINISHED: &[&str] = &["succeeded", "failed", "cancelled", "interrupted", "rejected"];
-pub(super) const DESCRIPTION: &str = "Read what a task's Jobs have recorded spending, every attempt counted once: failed, cancelled and retried attempts included, reused stages not again (they run nothing). usd adds up each attempt's own usage file; an attempt that recorded none, or recorded an unknown amount, is counted apart and never as zero. compute adds up measured CPU time and worker wall time; remote and unmeasured attempts are counted apart. GPU use is not measured: only attempts that reserved a GPU are counted. A soft rollup, not a provider bill or a limit: a new method or run resets nothing, and admission, timeouts and a run's costLimitUsd apply as before.";
+pub(super) const DESCRIPTION: &str = "Read what a task's Jobs have recorded spending, every attempt counted once: failed, cancelled and retried attempts included, reused stages not again (they run nothing). usd adds up each attempt's own usage file. An attempt whose file is missing, empty or blank recorded none; one with unknown or unreadable entries recorded an unknown amount; both are counted apart and never as zero, while an entry with usd 0 is a known $0. compute adds up measured CPU time and worker wall time; remote and unmeasured attempts are counted apart. GPU use is not measured: only attempts admitted with a GPU reservation of their own are counted, not a request still queued, a cancel before admission or a retry still carrying an earlier attempt's reservation. At most the newest 5000 attempts and 5000 runs are read: attemptsTruncated and runsTruncated say which counts are partial. A soft rollup, not a provider bill or a limit: a new method or run resets nothing, and admission, timeouts and a run's costLimitUsd apply as before.";
 
 impl Store {
     pub(super) fn task_cost(&self, reference: &str) -> Result<Value> {
@@ -37,22 +38,34 @@ impl Store {
             if !finished {
                 live += 1;
             }
-            if job["gpu"].is_object() || job["gpuReservation"].is_array() {
+            // Admission sets an attempt's start and its own reservation
+            // together; a retry is created without a start, whatever its
+            // earlier attempt's record still carries.
+            if !job["startedAt"].is_null() && job["gpuReservation"].as_array().is_some_and(|held| !held.is_empty()) {
                 gpu += 1;
             }
+            // Only a readable entry records spending: an empty or blank file
+            // recorded none, and unreadable lines alone an unknown amount. A
+            // summary without an entry count is read as unknown, not as $0.
             let cost = &job["result"]["cost"];
-            if cost.is_object() {
-                reporting += 1;
+            let entries = cost["entries"].as_i64();
+            let unknown = cost["unknownEntries"].as_i64().unwrap_or(0);
+            let bad = cost["invalidLines"].as_i64().unwrap_or(0) + cost["incompleteLines"].as_i64().unwrap_or(0);
+            let partial = entries.is_none() || unknown > 0 || bad > 0 || cost["truncated"] == true || cost["complete"] == false;
+            if !cost.is_object() || (entries == Some(0) && !partial) {
+                if finished {
+                    not_recorded += 1;
+                }
+            } else {
+                if entries.unwrap_or(0) > 0 {
+                    reporting += 1;
+                }
                 known += cost["knownUsd"].as_f64().unwrap_or(0.0);
-                let unknown = cost["unknownEntries"].as_i64().unwrap_or(0);
-                let bad = cost["invalidLines"].as_i64().unwrap_or(0) + cost["incompleteLines"].as_i64().unwrap_or(0);
                 unknown_entries += unknown;
                 invalid += bad;
-                if unknown > 0 || bad > 0 || cost["truncated"] == true || cost["complete"] == false {
+                if partial {
                     unknown_attempts += 1;
                 }
-            } else if finished {
-                not_recorded += 1;
             }
             if finished {
                 let summary = resource_summary::attempt(&job);
@@ -68,10 +81,11 @@ impl Store {
         }
         let runs = db
             .prepare("SELECT data FROM local_job_runs WHERE task_id=?1 ORDER BY seq DESC LIMIT ?2")?
-            .query_map(params![task, LIMIT as i64], |r| r.get::<_, String>(0))?
+            .query_map(params![task, LIMIT as i64 + 1], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let runs_truncated = runs.len() > LIMIT;
         let mut reused = 0;
-        for raw in &runs {
+        for raw in runs.iter().take(LIMIT) {
             let run: Value = serde_json::from_str(raw)?;
             reused += run["stages"].as_array().into_iter().flatten().filter(|s| s["reusedFrom"].is_object()).count();
         }
@@ -84,6 +98,8 @@ impl Store {
             "compute":{"cpuSeconds":round(cpu, 1e3),"workerWallSeconds":round(wall, 1e3),
                 "attemptsMeasured":measured,"attemptsUnmeasured":unmeasured},
             "gpu":{"attemptsReserving":gpu,"measured":false},
-            "runs":runs.len(),"reusedStages":reused,"truncated":truncated,"scope":DESCRIPTION}))
+            "runs":runs.len().min(LIMIT),"reusedStages":reused,"limit":LIMIT,
+            "attemptsTruncated":truncated,"runsTruncated":runs_truncated,"truncated":truncated || runs_truncated,
+            "scope":DESCRIPTION}))
     }
 }

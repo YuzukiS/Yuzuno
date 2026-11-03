@@ -6,7 +6,8 @@
 // - The spend card says known cost with the unknown, unrecorded and running
 //   attempts apart, and that it limits nothing.
 // - The run card says the method version it followed and that a newer one
-//   exists; the decided gate says which record explains it.
+//   exists; the decided gate says which record version explains it, and
+//   that a newer one exists too.
 // - Words are readable (contrast at least 4.5:1); nothing scrolls sideways.
 // - Reads only, and every read is one this fixture answers on purpose.
 // Production bundle in an isolated browser with an explicit API fixture; no
@@ -69,7 +70,8 @@ const activities = [
   { seq: 6, taskId: "T-1", kind: "comment", body: "Method v2.", actor: mina, at, research: methodV2 },
 ];
 // One stage of a run that followed method version 1 and was cancelled at its
-// gate, as the observation explains; the method has a newer version since.
+// gate, as the observation explains; the method and the observation have
+// newer versions since, and the run and the gate keep the ones they cited.
 const resources = { cpuMillis: 1000, memoryMiB: 512, swapMiB: 0 };
 const job = { id: "job-1", name: "Layout timing · time", taskRef: "T-1", agentId: "mina", agent: { name: "Mina" }, machine: { name: "Core host" },
   resources, reservation: { cpuMillis: 1100, memoryMiB: 576, swapMiB: 0 }, cwd: "/fixture", env: {}, argv: ["/usr/bin/true"], requestId: "r",
@@ -83,7 +85,7 @@ const run = { id: "run-1", name: "Layout timing", experiment: "layouts", status:
   stages: [{ key: "time", status: "succeeded", needs: [], retry: null, reusedFrom: null, attempts: [{ id: "job-1", status: "succeeded", reason: null, run: { attempt: 1 } }],
     analysis: { id: "gate-1", state: "cancelled", jobId: "job-1", attemptId: "attempt-1", execution: "succeeded",
       record: { activitySeq: 5, version: 1, record: { type: "observation", id: "ranking-flips", title: "Ranking flips with link order" }, next: observation.next },
-      recordNow: { state: "readable", revisedBy: null, latestActivitySeq: 5 } } }] };
+      recordNow: { state: "readable", revisedBy: 7, latestActivitySeq: 7 } } }] };
 const spend = { taskId: "T-1", attempts: 4, byStatus: { cancelled: 1, failed: 1, running: 1, succeeded: 1 },
   usd: { knownUsd: 1.75, attemptsReporting: 2, attemptsNotRecorded: 1, attemptsWithUnknown: 1, unknownEntries: 1, invalidLines: 0, attemptsRunning: 1, complete: false },
   compute: { cpuSeconds: 12.34, workerWallSeconds: 20, attemptsMeasured: 2, attemptsUnmeasured: 1 },
@@ -281,7 +283,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await until("the run card", async () => (await card.count()) && (await page.locator(".job-run-method").count()));
     const text = await card.innerText();
     for (const expected of ["Follows the method “Timing protocol”, activity 3, version 1; a newer version is activity 6, and the run keeps the version it followed",
-      "Cancelled, as the observation “Ranking flips with link order” (activity 5) explains · It proposed a next check: Time fresh processes"])
+      "Cancelled, as the observation “Ranking flips with link order” (activity 5, version 1) explains; a newer version is activity 7, and the decision keeps the version it cited · It proposed a next check: Time fresh processes"])
       assert.ok(text.includes(expected), `${expected}: ${text}`);
     assert.ok(!/verified/i.test(await page.locator(".job-run-method, .job-run-explained").allInnerTexts().then((all) => all.join(" "))));
     await card.scrollIntoViewIfNeeded();
