@@ -6026,6 +6026,21 @@ test("a Codex Agent's /compact asks Codex itself to compact and is never sent as
   } finally { page.close(); }
 });
 
+test("an OpenCode Agent's /compact asks OpenCode itself to compact and is never sent as a message (T-10)", async () => {
+  const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789", connectionState: "connected" } });
+  try {
+    const composer = await sendDraft(page, "/compact");
+    assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
+    assert.equal(composerText(composer), "", "the handled command leaves the draft");
+    assert.match(page.document.body.textContent, /OpenCode began compacting this conversation, a model run/);
+    await sendDraft(page, "/compact keep the API notes");
+    assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
+    assert.equal(composerText(composer), "/compact keep the API notes");
+    assert.match(page.document.body.textContent, /OpenCode's own compaction takes no instructions/);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("when Codex refuses /compact, the reason shows and the draft is kept", async () => {
   const page = await mount({
     harness: "codex",
