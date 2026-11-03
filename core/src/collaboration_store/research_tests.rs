@@ -390,6 +390,199 @@ fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
     assert!(cited["latestActivitySeq"].is_null() && cited["version"] == 1, "{cited}");
 }
 
+/// A claim with no method and no source: what a finding or a proof can be.
+fn finding(id: &str, status: &str, field: &str, title: &str) -> Value {
+    json!({"type":"claim","id":id,"title":title,"text":format!("{title}, as its author argues it."),"status":status,
+        "field":field,"conditions":["Small inputs only"],"limits":["One machine"]})
+}
+
+/// A task whose acceptance is fixed when it is registered.
+fn task_with(store: &Store, key: &str, title: &str, acceptance: &str) -> String {
+    let created = store.collaboration_call(None, "task_create",
+        json!({"requestId":key,"title":title,"materials":{"acceptance":acceptance}})).unwrap();
+    created["task"]["id"].as_str().unwrap().to_string()
+}
+
+fn version_of_task(store: &Store, task: &str) -> Value {
+    store.collaboration_call(None, "task_get", json!({"taskId":task})).unwrap()["task"]["version"].clone()
+}
+
+/// A result with one criterion, reported as `status`, citing `records`, at
+/// the task's version `at`.
+fn result_at(store: &Store, key: &str, task: &str, at: Value, status: &str, records: Value) -> Result<Value> {
+    store.collaboration_call(Some("author"), "task_submit_result", json!({"requestId":key,"taskId":task,
+        "expectedVersion":at,"summary":format!("Result {key}"),
+        "outcome":{"criteria":[{"id":"answer","label":"What the acceptance asks","report":"See the cited claim.",
+            "reportedStatus":status,"artifacts":[],"records":records}]}}))
+}
+
+fn result(store: &Store, key: &str, task: &str, status: &str, records: Value) -> Result<Value> {
+    result_at(store, key, task, version_of_task(store, task), status, records)
+}
+
+#[test]
+fn the_same_negative_finding_meets_a_question_and_misses_a_threshold_and_neither_status_is_derived() {
+    let (_dir, store) = setup();
+    let question = task_with(&store, "question", "Does layout B improve the small inputs? (synthetic)",
+        "Answer whether layout B improves the small inputs, with the evidence either way");
+    let threshold = task_with(&store, "threshold", "Ship a faster layout (synthetic)",
+        "Deliver a layout at least 5% faster on the small inputs");
+    let title = "Layout B is not faster on the small inputs";
+    let mut cited = vec![];
+    for task in [&question, &threshold] {
+        let answer = comment(&store, "author", &format!("finding-{task}"), task, finding("not-faster", "unsupported", "systems", title)).unwrap();
+        cited.push(seq(&answer));
+    }
+    // The same finding: one task asked a question, the other a threshold.
+    let asked_at = version_of_task(&store, &question);
+    let met = result_at(&store, "met", &question, asked_at.clone(), "met", json!([{"activitySeq":cited[0]}])).unwrap();
+    let missed = result(&store, "missed", &threshold, "not_met", json!([{"activitySeq":cited[1]}])).unwrap();
+    for (answer, status, acceptance, seq) in [(&met, "met", "Answer whether", cited[0]), (&missed, "not_met", "Deliver a layout", cited[1])] {
+        let stored = &answer["task"]["result"];
+        assert!(stored["acceptanceContext"]["text"].as_str().unwrap().starts_with(acceptance), "{stored}");
+        let criterion = &stored["outcome"]["criteria"][0];
+        assert_eq!(criterion["reportedStatus"], status, "the result author's report stays as given");
+        assert_eq!(criterion["records"], json!([{"activitySeq":seq,"version":1,"at":criterion["records"][0]["at"],
+            "producer":{"kind":"agent","id":"author","name":"Agent author"},
+            "record":{"kind":"research","type":"claim","id":"not-faster","title":title,"status":"unsupported"}}]));
+        assert_eq!(answer["task"]["status"], "review", "a negative finding is delivered, not failed or retried");
+    }
+    // Core derives neither from the other: a supported claim may sit under an
+    // unmet criterion too, and the claim itself is unchanged by any result.
+    let supported = seq(&comment(&store, "author", "supported", &threshold,
+        finding("faster-large", "supported", "systems", "Layout B is faster on the large inputs")).unwrap());
+    let both = result(&store, "both", &threshold, "not_met", json!([{"activitySeq":cited[1]},{"activitySeq":supported}])).unwrap();
+    assert_eq!(both["task"]["result"]["outcome"]["criteria"][0]["reportedStatus"], "not_met");
+    assert_eq!(record(&store, &threshold, cited[1])["research"]["status"], "unsupported");
+
+    // The read says where each cited record stands now, beside the fixed one.
+    let read = store.collaboration_call(None, "task_result_get", json!({"taskId":question})).unwrap();
+    assert_eq!(read["records"], json!([{"criterionId":"answer","activitySeq":cited[0],"state":"readable",
+        "revisedBy":null,"latestActivitySeq":cited[0]}]));
+    assert!(read["note"].as_str().unwrap().contains("neither is derived from the other"));
+    // A retry is the same result; the same key with other records is refused.
+    let again = result_at(&store, "met", &question, asked_at.clone(), "met", json!([{"activitySeq":cited[0]}]));
+    assert_eq!(again.unwrap()["task"]["result"]["id"], met["task"]["result"]["id"]);
+    let other = result_at(&store, "met", &question, asked_at, "met", json!([]));
+    assert!(error(other).starts_with("idempotency_conflict:"));
+}
+
+#[test]
+fn a_criterion_cites_only_this_tasks_research_records_and_a_refusal_writes_nothing() {
+    let (_dir, store) = setup();
+    let own = seq(&comment(&store, "author", "own", "T-1", finding("own", "open", "systems", "Undecided so far")).unwrap());
+    let elsewhere = seq(&comment(&store, "author", "elsewhere", "T-2", finding("elsewhere", "supported", "systems", "Another task's claim")).unwrap());
+    let plain = seq(&store.collaboration_call(Some("author"), "task_comment",
+        json!({"requestId":"plain","taskId":"T-1","body":"Just a note"})).unwrap());
+    let before = counts(&store);
+    for (name, records, expected) in [
+        ("another task's record", json!([{"activitySeq":elsewhere}]), "is not a research record of T-1"),
+        ("a plain comment", json!([{"activitySeq":plain}]), "is not a research record of T-1"),
+        ("no such activity", json!([{"activitySeq":999_999}]), "is not a research record of T-1"),
+        ("not a sequence", json!([{"activitySeq":0}]), "positive activity sequence"),
+        ("twice", json!([{"activitySeq":own},{"activitySeq":own}]), "cites each research record once"),
+        ("a copied identity", json!([{"activitySeq":own,"record":{"status":"supported"}}]), "invalid_input"),
+        ("too many", json!(vec![json!({"activitySeq":own}); 11]), "at most 10 research records"),
+        ("not a list", json!({"activitySeq":own}), "must be an array"),
+    ] {
+        let refused = error(result(&store, name, "T-1", "met", records));
+        assert!(refused.contains(expected), "{name}: {refused}");
+        assert_eq!(counts(&store), before, "{name}: nothing written");
+    }
+}
+
+#[test]
+fn a_result_keeps_the_version_it_cites_and_its_read_says_a_newer_one_exists() {
+    let (_dir, store) = setup();
+    let first = seq(&comment(&store, "author", "v1", "T-1", finding("faster", "conditional", "systems", "Layout B is faster")).unwrap());
+    result(&store, "cites-v1", "T-1", "unknown", json!([{"activitySeq":first}])).unwrap();
+    let mut revised = finding("faster", "unsupported", "systems", "Layout B is not faster");
+    revised["revises"] = json!({"activitySeq":first,"reason":"Fresh processes erased the gain."});
+    let second = seq(&comment(&store, "author", "v2", "T-1", revised).unwrap());
+    let read = store.collaboration_call(None, "task_result_get", json!({"taskId":"T-1"})).unwrap();
+    let cited = &read["result"]["outcome"]["criteria"][0]["records"][0];
+    assert_eq!((cited["activitySeq"].clone(), cited["version"].clone()), (json!(first), json!(1)));
+    assert_eq!((cited["record"]["title"].clone(), cited["record"]["status"].clone()),
+        (json!("Layout B is faster"), json!("conditional")), "the version cited, as it was");
+    assert_eq!(read["records"][0], json!({"criterionId":"answer","activitySeq":first,"state":"readable",
+        "revisedBy":second,"latestActivitySeq":second}));
+}
+
+#[test]
+fn a_theory_claim_is_delivered_without_any_job() {
+    let (_dir, store) = setup();
+    let task = task_with(&store, "bound", "Does the bound hold for every n? (synthetic)",
+        "A proof or a counterexample for the stated bound");
+    let mut proof = finding("bound", "supported", "theory", "The bound holds for every n ≥ 1");
+    proof["conditions"] = json!(["n ≥ 1", "The cost model of section 2"]);
+    proof["limits"] = json!(["Checked by hand; not formalised", "Exhaustive search to n = 12 is no proof for larger n"]);
+    let claim = seq(&comment(&store, "author", "proof", &task, proof).unwrap());
+    let delivered = result(&store, "proof", &task, "met", json!([{"activitySeq":claim}])).unwrap();
+    let criterion = &delivered["task"]["result"]["outcome"]["criteria"][0];
+    assert_eq!(criterion["artifacts"], json!([]));
+    assert_eq!(criterion["records"][0]["record"]["status"], "supported");
+    let key = task_key(&store.db.read().unwrap(), &task).unwrap().0;
+    let jobs: i64 = store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM local_jobs WHERE task_id=?1", params![key], |r| r.get(0)).unwrap();
+    assert_eq!(jobs, 0, "no Job, no seed, and nothing asked for one");
+}
+
+/// `n` bytes of UTF-8 text: three-byte characters, then ASCII for the rest.
+fn text_of(n: usize) -> String {
+    format!("{}{}", "研".repeat(n / 3), "a".repeat(n % 3))
+}
+
+#[test]
+fn a_result_is_bounded_as_stored_with_its_record_summaries_and_a_refusal_writes_nothing() {
+    const BOUND: usize = 32_768;
+    let (_dir, store) = setup();
+    // Forty records with 64-byte ids and 300-byte multibyte titles: their
+    // summaries add far more to a result than their references do.
+    let cited: Vec<i64> = (0..40).map(|n| {
+        seq(&comment(&store, "author", &format!("record-{n}"), "T-1",
+            finding(&format!("r{n:0>63}"), "open", "systems", &"速".repeat(100))).unwrap())
+    }).collect();
+    let dispatched = store.collaboration_call(Some("other"), "task_dispatch", json!({"requestId":"dispatch",
+        "taskId":"T-1","expectedVersion":version_of_task(&store, "T-1"),"toAgentId":"author"})).unwrap();
+    let dispatch = dispatched["message"]["dispatchId"].as_str().unwrap().to_owned();
+    let submit = |key: &str, padding: usize| {
+        let criteria: Vec<Value> = cited.chunks(10).enumerate().map(|(n, records)| json!({"id":format!("c{n}"),
+            "label":"What the acceptance asks","report":"報".repeat(500),"reportedStatus":"unknown","artifacts":[],
+            "records":records.iter().map(|seq| json!({"activitySeq":seq})).collect::<Vec<_>>()})).collect();
+        let outcome = json!({"criteria":criteria,"remaining":text_of(padding),"nextAgentId":"other",
+            "nextStep":"Read the cited records"});
+        let sent = serde_json::to_vec(&outcome).unwrap().len();
+        (sent, store.collaboration_call(Some("author"), "task_submit_result", json!({"requestId":key,"taskId":"T-1",
+            "expectedVersion":version_of_task(&store, "T-1"),"dispatchId":dispatch,"summary":format!("Result {key}"),
+            "outcome":outcome})))
+    };
+    let stored = |answer: &Value| serde_json::to_vec(&answer["task"]["result"]["outcome"]).unwrap().len();
+    // Only the padding changes between submissions, byte for byte, so one
+    // result well inside the bound finds it.
+    let first = submit("first", 30).1.unwrap();
+    let base = stored(&first) - 30;
+    assert!(base > 20_000, "the summaries are most of it: {base}");
+    // One byte past the bound as stored, from an input far inside it.
+    let before = counts(&store);
+    let (sent, refused) = submit("over", BOUND + 1 - base);
+    assert!(sent + 10_000 < BOUND, "the input alone is far inside the bound: {sent}");
+    let refused = error(refused);
+    assert!(refused.contains("exceeds 32768 bytes as stored") && refused.contains("(32769 bytes)"), "{refused}");
+    assert_eq!(counts(&store), before, "no task version, status, result activity, receipt or notification is written");
+    let read = store.collaboration_call(None, "task_result_get", json!({"taskId":"T-1"})).unwrap();
+    assert_eq!(read["currentResultId"], first["task"]["result"]["id"], "the earlier result stays current and readable");
+    // At the bound exactly, the result is kept whole and notified.
+    let kept = submit("at-bound", BOUND - base).1.unwrap();
+    assert_eq!(stored(&kept), BOUND);
+    let outcome = &kept["task"]["result"]["outcome"];
+    let records: usize = outcome["criteria"].as_array().unwrap().iter().map(|c| c["records"].as_array().unwrap().len()).sum();
+    assert_eq!((records, outcome["nextAgent"]["id"].clone()), (40, json!("other")));
+    assert!(kept.get("message").is_some(), "the dispatching Agent is notified: {kept}");
+    assert_eq!(counts(&store), (before.0 + 1, before.1.clone(), before.2 + 1, before.3 + 1, before.4 + 1));
+    // A summary only: a record's text is never copied into the result.
+    assert!(!outcome.to_string().contains("as its author argues it"));
+}
+
 #[test]
 fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() {
     let (_dir, store) = setup();
