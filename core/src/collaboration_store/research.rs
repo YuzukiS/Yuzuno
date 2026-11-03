@@ -637,7 +637,7 @@ pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &V
 /// The method record a run follows (T-17 slice 4): one of the run's task's
 /// own method records, fixed by its activity. A later method version leaves
 /// the run as it was; only a changed command or input needs a new run.
-pub(super) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value> {
+pub(crate) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value> {
     let number = task_seq(db, task)?;
     let row = record_in(db, task, seq)?
         .filter(|row| row["research"]["type"] == "method")
@@ -648,7 +648,7 @@ pub(super) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value>
 
 /// The research record an analysis decision cites (T-17 slice 4): any record
 /// of the run's task, fixed as it reads when the decision is made.
-pub(super) fn decision_record(db: &Connection, task: &str, seq: i64) -> Result<Value> {
+pub(crate) fn decision_record(db: &Connection, task: &str, seq: i64) -> Result<Value> {
     let number = task_seq(db, task)?;
     let row = record_in(db, task, seq)?
         .with_context(|| format!("invalid_input: record: activity {seq} is not a research record of {}", task_number(number)))?;
@@ -661,7 +661,7 @@ pub(super) fn decision_record(db: &Connection, task: &str, seq: i64) -> Result<V
 }
 
 /// Where a record's line stands now, for a run or a decision that cites it.
-pub(super) fn line_now(db: &Connection, task: &str, seq: i64) -> Result<Value> {
+pub(crate) fn line_now(db: &Connection, task: &str, seq: i64) -> Result<Value> {
     if record_in(db, task, seq)?.is_none() {
         return Ok(json!({"state":"missing"}));
     }
