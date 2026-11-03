@@ -506,7 +506,12 @@ for (const run of runs) {
     await trialsCard.waitFor({ timeout: 10_000 });
     if ((await trialsMore.count()) && (await trialsMore.getAttribute("aria-expanded")) === "false") await trialsMore.click();
     await bringInTrial("undecodable.png");
-    await trialsCard.locator(".brief-image-failed").first().waitFor({ timeout: 10_000 });
+    // Settled either way, so the row below decides: a failed box, or a picture shown anyway.
+    await page.waitForFunction((find) => {
+      const item = new Function(`return (${find})`)()("undecodable.png");
+      const img = item?.querySelector("img");
+      return !!item?.querySelector(".brief-image-failed") || (!!img && img.complete && !img.hasAttribute("data-loading"));
+    }, trialItem.toString(), { timeout: 10_000 });
     await bringInTrial("caption.png");
     await shownTrial("caption.png");
     await bringInTrial("url.png");
