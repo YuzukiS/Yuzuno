@@ -775,3 +775,95 @@ test("a review's reasons follow a language change in Jobs too; one this version 
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+// T-19 F1: before Core answers, a list or a chosen job or run says it is being
+// read. On main it said there were none, or that nothing was chosen.
+const texts = (p, selector) => [...p.doc.querySelectorAll(selector)].map(el => el.textContent);
+function held() { let answer; const promise = new Promise(r => { answer = r; }); return { promise, answer }; }
+
+test('the job list reads as being read until Core first answers, and only then as empty (T-19 JB-04)', async () => {
+  const list = held();
+  const p = mount(async url => url.startsWith('/api/jobs?') ? (await list.promise, page([])) : page([]));
+  try {
+    await open(p);
+    await until(() => p.doc.querySelector('.jobs-browser .jobs-empty'));
+    await wait();
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('No jobs yet.'), false, 'not "none" before the answer');
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('Reading jobs…'), true);
+    list.answer();
+    await until(() => texts(p, '.jobs-browser .jobs-empty').includes('No jobs yet.'));
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('Reading jobs…'), false);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a chosen job reads as being read until its answer comes; a narrow window brings it into view, at once under reduced motion (T-19 JB-07)', async () => {
+  for (const reduced of [false, true]) {
+    const detail = held();
+    const p = mount(async url => url === '/api/jobs/job-one' ? (await detail.promise, job) : page([job]));
+    const scrolled = [];
+    p.window.matchMedia = query => ({ matches: query === '(max-width: 720px)' || (reduced && query === '(prefers-reduced-motion: reduce)'), addEventListener() {}, removeEventListener() {} });
+    // Only the job's own box is counted: other parts may scroll themselves.
+    p.window.HTMLElement.prototype.scrollIntoView = function (options) { if (this.classList.contains('job-detail')) scrolled.push({ className: this.className, options }); };
+    try {
+      await open(p);
+      await until(() => p.doc.querySelector('.jobs-browser .job-row'));
+      p.doc.querySelector('.jobs-browser .job-row').click();
+      await until(() => p.doc.querySelector('.job-detail')?.getAttribute('aria-busy') === 'true');
+      const box = p.doc.querySelector('.job-detail');
+      assert.doesNotMatch(box.textContent, /Select a job/, 'not "unchosen" while it is read');
+      assert.match(box.textContent, /Reading this job…/);
+      assert.deepEqual(scrolled, [{ className: 'job-detail', options: { block: 'start', behavior: reduced ? 'auto' : 'smooth' } }]);
+      detail.answer();
+      await until(() => p.doc.querySelector('.job-log'));
+      assert.equal(p.doc.querySelector('.job-detail').getAttribute('aria-busy'), null);
+      assert.doesNotMatch(p.doc.querySelector('.job-detail').textContent, /Reading this job/);
+      assert.equal(scrolled.length, 1, 'brought into view once, when chosen');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+});
+
+test('a wide window leaves the list where it is when a job is chosen (T-19 JB-07)', async () => {
+  const p = mount(url => url === '/api/jobs/job-one' ? job : page([job]));
+  const scrolled = [];
+  p.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  p.window.HTMLElement.prototype.scrollIntoView = function () { if (this.classList.contains('job-detail')) scrolled.push(this.className); };
+  try {
+    await open(p);
+    await until(() => p.doc.querySelector('.jobs-browser .job-row'));
+    p.doc.querySelector('.jobs-browser .job-row').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    assert.deepEqual(scrolled, []);
+  } finally { p.close(); }
+});
+
+test('Actions runs, a linked run and its jobs and steps read as being read until Core answers (T-19 JB-04, CI-04)', async () => {
+  const list = held(), report = held();
+  const steps = { run: ciRun, error: null, details: { jobs: [{ id: 1, name: 'Build passed', status: 'passed', url: 'https://github.com/o/r/actions/runs/42/job/1', steps: [{ number: 1, name: 'Compile', status: 'completed', conclusion: 'success' }] }], page: 1, hasMore: false, nextPage: null, observedAt: ciRun.observedAt } };
+  const p = mount(async url => url.startsWith('/api/ci/') ? (await report.promise, steps) : url.startsWith('/api/ci?') ? (await list.promise, ciPage) : page([]));
+  try {
+    await until(() => p.doc.querySelector('[aria-label="Jobs"]'));
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { source: 'github_actions', runKey: ciRun.id } }));
+    await until(() => p.doc.querySelector('.ci-jobs .job-detail'));
+    await wait();
+    const ci = () => p.doc.querySelector('.ci-jobs');
+    const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+    assert.doesNotMatch(ci().textContent, /No Actions runs observed yet/, 'not "none" before the answer');
+    assert.match(ci().textContent, /Reading runs…/);
+    assert.doesNotMatch(box().textContent, /Select a run/, 'not "unchosen" while the linked run is read');
+    assert.match(box().textContent, /Reading this run…/);
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    list.answer();
+    await until(() => ci().querySelector('.job-row'));
+    await until(() => /a{40}/.test(box().textContent));
+    assert.match(box().textContent, /Reading its jobs and steps…/, 'the steps card is there, saying it is being read');
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    report.answer();
+    await until(() => p.doc.querySelector('.ci-child-job'));
+    assert.doesNotMatch(box().textContent, /Reading/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.equal(box().querySelectorAll('.job-card').length >= 2, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
