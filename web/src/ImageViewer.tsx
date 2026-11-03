@@ -7,9 +7,13 @@ import {
   opening,
   pan,
   percent,
+  place,
   resized,
   STEP,
-  track,
+  BAR,
+  barLength,
+  thumb as thumbAt,
+  thumbMove,
   wheelFactor,
   zoomTo,
   type Mode,
@@ -163,19 +167,17 @@ export function ImageViewer({
     setView((was) => zoomTo(was, modeScale(next, size.natural, size.box), at ?? middle(size.box), size.natural, size.box));
     setMode(next);
   }, []);
-  // Double-click or double-tap: actual size at that point, or back to how it
-  // opened (or, for one that opened at actual size, the whole of it).
+  // Double-click or double-tap: actual size at that point; at actual size,
+  // back to how it opened, or the whole of it where that was actual size too.
   const toggle = (at: Point) => {
     const size = sized(now.current);
     if (!size) return;
     if (Math.abs(now.current.view.scale - 1) > 1e-3) return choose("actual", at);
-    const back = now.current.opened && now.current.opened !== "actual" ? now.current.opened : "fit";
     const first = opening(size.natural, size.box);
-    if (back === first.mode) {
-      setAnimate(true);
-      setView(first.view);
-      setMode(first.mode);
-    } else choose(back, at);
+    if (Math.abs(first.view.scale - 1) <= 1e-3) return choose("fit", at);
+    setAnimate(true);
+    setView(first.view);
+    setMode(first.mode);
   };
 
   // The wheel, and Safari's trackpad pinch, are taken only here, and their
@@ -223,7 +225,14 @@ export function ImageViewer({
   // Dragging moves the image; two fingers pinch and move it together. The
   // pointer is captured, so letting go outside the stage still ends it.
   const pinch = useRef<{ distance: number; middle: Point } | null>(null);
+  // A tap is one finger down and up again, barely moved. Two in quick
+  // succession, close together, are a double-tap. A drag, a pinch, another
+  // finger or a cancel is no tap, and forgets the one before.
+  const tap = useRef<{ id: number; at: Point } | null>(null);
   const lastTap = useRef<{ at: Point; time: number } | null>(null);
+  // The last pointer's kind: a double-click that a touch double-tap makes
+  // is left to the taps, so it does not count twice.
+  const kind = useRef("");
   const local = (event: React.PointerEvent | React.MouseEvent) => {
     const element = stage.current!;
     const rect = element.getBoundingClientRect();
@@ -234,26 +243,28 @@ export function ImageViewer({
     return { distance: Math.hypot(a.x - b.x, a.y - b.y), middle: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
   };
   const press = (event: React.PointerEvent<HTMLDivElement>) => {
+    kind.current = event.pointerType;
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const at = local(event);
     pointers.current.set(event.pointerId, at);
     pinch.current = pointers.current.size >= 2 ? measure() : null;
     setDragging(true);
-    // A double-tap: two quick taps close together, one finger.
-    if (event.pointerType === "touch" && pointers.current.size === 1) {
-      const tap = lastTap.current;
-      if (tap && event.timeStamp - tap.time < 300 && Math.hypot(at.x - tap.at.x, at.y - tap.at.y) < 24) {
-        lastTap.current = null;
-        toggle(at);
-      } else lastTap.current = { at, time: event.timeStamp };
-    }
+    if (event.pointerType !== "touch") return;
+    if (pointers.current.size === 1) tap.current = { id: event.pointerId, at };
+    else forgetTaps();
+  };
+  const forgetTaps = () => {
+    tap.current = null;
+    lastTap.current = null;
   };
   const drag = (event: React.PointerEvent<HTMLDivElement>) => {
     const was = pointers.current.get(event.pointerId);
     if (!was) return;
     const at = local(event);
     pointers.current.set(event.pointerId, at);
+    const down = tap.current;
+    if (down?.id === event.pointerId && Math.hypot(at.x - down.at.x, at.y - down.at.y) > 10) forgetTaps();
     if (pointers.current.size >= 2) {
       const next = measure();
       const before = pinch.current;
@@ -273,11 +284,22 @@ export function ImageViewer({
     if (!pointers.current.delete(event.pointerId)) return;
     pinch.current = pointers.current.size >= 2 ? measure() : null;
     if (!pointers.current.size) setDragging(false);
+    const down = tap.current;
+    tap.current = null;
+    // Only a finger lifted (not cancelled) where it went down is a tap.
+    if (event.type !== "pointerup" || down?.id !== event.pointerId) return void (lastTap.current = null);
+    const before = lastTap.current;
+    if (before && event.timeStamp - before.time < 300 && Math.hypot(down.at.x - before.at.x, down.at.y - before.at.y) < 24) {
+      lastTap.current = null;
+      toggle(down.at);
+    } else lastTap.current = { at: down.at, time: event.timeStamp };
   };
 
-  // A position bar's thumb, dragged along its side, moves the image there:
-  // the thumb's share of its bar is the view's share of the image.
-  const held = useRef<{ axis: "x" | "y"; from: number } | null>(null);
+  // A position bar's thumb, dragged along its bar, moves the image so the
+  // thumb stays under the pointer: the bar's whole travel is the image's
+  // whole movement (image-view.ts). Measured from where the drag began, so
+  // going past an end and back finds the same place again.
+  const held = useRef<{ axis: "x" | "y"; from: number; offset: number } | null>(null);
   const thumb = (axis: "x" | "y") => {
     const coordinate = (event: React.PointerEvent) => (axis === "x" ? event.clientX : event.clientY);
     const stop = () => (held.current = null);
@@ -285,16 +307,17 @@ export function ImageViewer({
       onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
         event.stopPropagation();
         event.currentTarget.setPointerCapture?.(event.pointerId);
-        held.current = { axis, from: coordinate(event) };
+        held.current = { axis, from: coordinate(event), offset: now.current.view[axis] };
       },
       onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => {
         const size = sized(now.current);
-        if (held.current?.axis !== axis || !size) return;
+        const grip = held.current;
+        if (grip?.axis !== axis || !size) return;
         const shown = (axis === "x" ? size.natural.width : size.natural.height) * now.current.view.scale;
         const room = axis === "x" ? size.box.width : size.box.height;
-        const delta = -((coordinate(event) - held.current.from) * shown) / room;
-        held.current.from = coordinate(event);
-        moveBy(axis === "x" ? delta : 0, axis === "y" ? delta : 0);
+        const offset = grip.offset + thumbMove(coordinate(event) - grip.from, shown, room, barLength(room));
+        setAnimate(false);
+        setView((was) => place({ ...was, [axis]: offset }, size.natural, size.box));
       },
       onPointerUp: stop,
       onPointerCancel: stop,
@@ -349,8 +372,8 @@ export function ImageViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown, alt, scale, mode, t]);
   const bars = shown ? {
-    x: track(view.x, natural.width * view.scale, box.width),
-    y: track(view.y, natural.height * view.scale, box.height),
+    x: thumbAt(view.x, natural.width * view.scale, box.width, barLength(box.width)),
+    y: thumbAt(view.y, natural.height * view.scale, box.height, barLength(box.height)),
   } : { x: null, y: null };
   const movable = !!(bars.x || bars.y);
   return (
@@ -410,7 +433,7 @@ export function ImageViewer({
         onPointerUp={release}
         onPointerCancel={release}
         onLostPointerCapture={release}
-        onDoubleClick={(event) => shown && toggle(local(event))}
+        onDoubleClick={(event) => shown && kind.current !== "touch" && toggle(local(event))}
       >
         <img
           src={src}
@@ -443,9 +466,11 @@ export function ImageViewer({
         {(["x", "y"] as const).map((axis) => {
           const bar = bars[axis];
           if (!bar) return null;
-          const along = axis === "x" ? { left: `${bar.start * 100}%`, width: `${bar.size * 100}%` } : { top: `${bar.start * 100}%`, height: `${bar.size * 100}%` };
+          // Where the bar runs and where its thumb sits, both from image-view.ts.
+          const ends = axis === "x" ? { left: BAR.start, right: BAR.end } : { top: BAR.start, bottom: BAR.end };
+          const along = axis === "x" ? { left: bar.start, width: bar.length } : { top: bar.start, height: bar.length };
           return (
-            <div key={axis} className="image-viewer-track" data-axis={axis} aria-hidden="true">
+            <div key={axis} className="image-viewer-track" data-axis={axis} style={ends} aria-hidden="true">
               <div className="image-viewer-thumb" style={along} {...thumb(axis)} />
             </div>
           );

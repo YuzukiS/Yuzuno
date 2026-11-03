@@ -1,7 +1,7 @@
 // T-20: how an image sits in its viewer. Pure arithmetic, no DOM.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { bounds, MAX_SCALE, modeScale, opening, pan, place, resized, same, track, wheelFactor, zoomTo } from "../src/image-view.ts";
+import { BAR, barLength, bounds, MAX_SCALE, modeScale, opening, pan, place, resized, same, thumb, thumbMove, wheelFactor, zoomTo } from "../src/image-view.ts";
 
 const box = { width: 1000, height: 700 };
 const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-6, `${message}: ${actual} ≠ ${expected}`);
@@ -105,12 +105,33 @@ test("a wheel's turn: one notch is a modest step; a fast spin is held to doublin
   assert.equal(wheelFactor(0, 0, false), 1);
 });
 
-test("the position bar shows the share in view and where it is; none when all of a side is in view", () => {
-  assert.equal(track(0, 600, 700), null, "smaller than the stage");
-  assert.equal(track(0, 700, 700), null, "just fits");
-  assert.deepEqual(track(0, 7000, 700), { size: 0.1, start: 0 }, "at the top");
-  assert.deepEqual(track(-6300, 7000, 700), { size: 0.1, start: 0.9 }, "at the bottom");
-  assert.deepEqual(track(-3150, 7000, 700), { size: 0.1, start: 0.45 }, "halfway");
+test("a position bar's thumb: its whole travel along the bar is the image's whole movement", () => {
+  assert.equal(barLength(600), 600 - BAR.start - BAR.end, "the bar runs short of the stage at both ends");
+  assert.equal(thumb(0, 600, 700, 682), null, "nothing to move: no bar");
+  assert.equal(thumb(0, 700, 700, 682), null, "just fits: no bar");
+  // The Lead's case: a 600 px stage, an image 12000 px long at 1×. The bar is
+  // 582, the thumb 29.1, its travel 552.9; that travel must move all 11400 px.
+  const bar = barLength(600);
+  assert.equal(bar, 582);
+  const top = thumb(0, 12000, 600, bar);
+  near(top.length, 29.1, "the share of the image in view");
+  near(top.start, 0, "at the top");
+  const bottom = thumb(600 - 12000, 12000, 600, bar);
+  near(bottom.start + bottom.length, bar, "at the bottom, its end is the bar's end");
+  near(thumbMove(552.9, 12000, 600, bar), -11400, "the thumb dragged its whole travel moves the whole image");
+  near(thumbMove(-552.9, 12000, 600, bar), 11400, "and back");
+  const half = thumb(-5700, 12000, 600, bar);
+  near(half.start, 552.9 / 2, "halfway down the image, halfway along the travel");
+  // So long that the thumb is at its shortest: still on the bar at both ends, and its travel still reaches the edges.
+  const strip = 400000;
+  const shortest = thumb(600 - strip, strip, 600, bar);
+  near(shortest.length, BAR.thumb, "the shortest thumb");
+  near(shortest.start + shortest.length, bar, "on the bar at the bottom, not past it");
+  near(thumbMove(bar - BAR.thumb, strip, 600, bar), -(strip - 600), "its travel reaches the image's end");
+  // A bar shorter than the shortest thumb: the thumb is the bar, and dragging it moves nothing.
+  const tiny = thumb(-100, 12000, 30, 12);
+  assert.deepEqual(tiny, { start: 0, length: 12 });
+  assert.equal(thumbMove(5, 12000, 30, 12), 0);
 });
 
 test("nothing breaks before the image or the stage has a size", () => {

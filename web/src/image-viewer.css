@@ -74,6 +74,20 @@
 .image-viewer-modes button:hover:not(:disabled) {
   background: var(--cream);
 }
+/* Pressed in as T-19's transparent controls are, without the dip: these sit
+   joined in a group. */
+.image-viewer-zoom > button,
+.image-viewer-modes button {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}
+.image-viewer-zoom > button:active:not(:disabled),
+.image-viewer-modes button:active:not(:disabled) {
+  box-shadow: var(--press-shadow-quiet);
+  transition: background-color var(--motion-micro) var(--ease-standard), box-shadow 0s;
+}
 .image-viewer-zoom > button:disabled,
 .image-viewer-modes button:disabled {
   opacity: 0.45;
@@ -192,7 +206,7 @@
 }
 /* A button's or key's change glides; a gesture follows the hand at once. */
 .image-viewer-stage[data-animate] > img {
-  transition: transform var(--motion-small, 180ms) var(--ease-standard, cubic-bezier(0.2, 0, 0, 1));
+  transition: transform var(--motion-small) var(--ease-standard);
 }
 @media (prefers-reduced-motion: reduce) {
   .image-viewer-stage[data-animate] > img {
@@ -226,28 +240,24 @@
   font-size: calc(10px + var(--font-adjust, 3px));
 }
 /* Where the view is in an image larger than the stage, along each side; its
-   thumb can be dragged. */
+   thumb can be dragged. Where each bar runs along its side, and its thumb's
+   place and length, are set by the viewer (image-view.ts BAR), so the bar's
+   travel and the image's movement are measured alike. */
 .image-viewer-track {
   position: absolute;
   border-radius: 4px;
 }
 .image-viewer-track[data-axis="y"] {
-  top: 4px;
   right: 3px;
-  bottom: 14px;
   width: 6px;
 }
 .image-viewer-track[data-axis="x"] {
-  left: 4px;
-  right: 14px;
   bottom: 3px;
   height: 6px;
 }
 /* Over light and dark images alike: a mid tone with an edge of the other. */
 .image-viewer-thumb {
   position: absolute;
-  min-width: 6px;
-  min-height: 6px;
   border-radius: 4px;
   background: rgb(60 66 58 / 0.6);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7);
@@ -257,12 +267,10 @@
 .image-viewer-track[data-axis="y"] > .image-viewer-thumb {
   left: 0;
   right: 0;
-  min-height: 24px;
 }
 .image-viewer-track[data-axis="x"] > .image-viewer-thumb {
   top: 0;
   bottom: 0;
-  min-width: 24px;
 }
 /* Touch: every target at least 44 px. */
 @media (pointer: coarse) {

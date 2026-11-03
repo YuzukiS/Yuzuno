@@ -193,24 +193,39 @@ test("T-20 a long screenshot opens as wide as the stage from its top; keys, the 
   assert.equal(p.transform(), "translate(0px, 0px) scale(0.8)", "from its top");
   const bars = () => [...p.dialog().querySelectorAll(".image-viewer-track")].map((bar) => bar.dataset.axis);
   assert.deepEqual(bars(), ["y"], "a position bar down its side only");
-  const thumb = () => p.dialog().querySelector('.image-viewer-track[data-axis="y"] > .image-viewer-thumb');
-  assert.equal(thumb().style.top, "0%");
+  const track = () => p.dialog().querySelector('.image-viewer-track[data-axis="y"]');
+  const thumb = () => track().querySelector(".image-viewer-thumb");
+  const px = (value) => parseFloat(value || "0");
+  // The bar runs 4 px in from the top and 14 from the bottom: 682 px of a
+  // 700 px stage. The thumb is the share in view, 682 × 700 / 12000.
+  assert.deepEqual([track().style.top, track().style.bottom], ["4px", "14px"]);
+  const bar = 700 - 18, length = (bar * 700) / 12000, travel = bar - length;
+  assert.ok(Math.abs(px(thumb().style.height) - length) < 1e-6 && px(thumb().style.top) === 0, thumb().style.cssText);
 
   // PageDown and End move down it; Home back to its top; arrows a tenth of the stage.
   assert.equal(p.key("PageDown").defaultPrevented, true);
   await until(() => p.transform() === "translate(0px, -630px) scale(0.8)", "a page down");
   p.key("End");
   await until(() => p.transform() === `translate(0px, ${700 - 15000 * 0.8}px) scale(0.8)`, "its bottom");
-  assert.ok(Math.abs(parseFloat(thumb().style.top) + parseFloat(thumb().style.height) - 100) < 1e-6, "the bar's thumb at its end");
+  assert.ok(Math.abs(px(thumb().style.top) + px(thumb().style.height) - bar) < 1e-6, "the thumb's end at the bar's end");
   p.key("Home");
   await until(() => p.transform() === "translate(0px, 0px) scale(0.8)", "its top");
   p.key("ArrowDown");
   await until(() => p.transform() === "translate(0px, -70px) scale(0.8)", "a tenth of the stage down");
-  // The thumb dragged 70 px (a tenth of its bar) moves a tenth of the image, not starting a drag of the image.
+  // The thumb dragged 70 px of its travel moves the image 70/travel of the
+  // way it can move, and it does not start a drag of the image.
+  const moved = -70 - (70 / travel) * (12000 - 700);
   p.pointer("pointerdown", 995, 10, 7, "mouse", thumb());
   assert.equal(p.stageEl().hasAttribute("data-dragging"), false);
   p.pointer("pointermove", 995, 80, 7, "mouse", thumb());
-  await until(() => p.transform() === `translate(0px, ${-70 - 1200}px) scale(0.8)`, "the thumb moves the view");
+  await until(() => Math.abs(p.parse()[1] - moved) < 1e-6, "the thumb moves the view");
+  // Past the bar's end the image stops at its bottom, the thumb at the bar's end;
+  // back to the same pointer place, the same view as before.
+  p.pointer("pointermove", 995, 5000, 7, "mouse", thumb());
+  await until(() => p.parse()[1] === 700 - 12000, "the image's bottom");
+  assert.ok(Math.abs(px(thumb().style.top) + px(thumb().style.height) - bar) < 1e-6);
+  p.pointer("pointermove", 995, 80, 7, "mouse", thumb());
+  await until(() => Math.abs(p.parse()[1] - moved) < 1e-6, "the same place again");
   p.pointer("pointerup", 995, 80, 7, "mouse", thumb());
 
   // + and − zoom; 0 fits the whole image, W its width, 1 actual size.
@@ -325,5 +340,77 @@ test("T-20 an Agent's image file opens in the same viewer, Mark up on its bar; o
   p.window.showArtifact({ artifact: { kind: "text", name: "notes.md", path: "notes.md" } });
   await until(() => p.dialog() && !p.dialog().querySelector(".image-viewer"), "a text file");
   assert.equal(p.dialog().classList.contains("image-viewer-modal"), false);
+  assert.deepEqual(p.errors, []);
+});
+
+test("T-20 touch: a real double-tap toggles; a drag, a pinch, a cancel or a third finger before a tap never makes one", async (t) => {
+  const p = mount();
+  t.after(p.close);
+  p.window.showPreview({ open: true, src: "/tall.png", name: "tall.png" });
+  await until(p.image, "the viewer opens");
+  p.load(1000, 3000);
+  await until(() => p.output() === "100%" && p.pressed()[0] === "Fit width", "a tall image at the stage's width");
+  const touch = (type, x, y, id) => p.pointer(type, x, y, id, "touch");
+  const tapAt = (x, y, id) => {
+    touch("pointerdown", x, y, id);
+    touch("pointerup", x, y, id);
+  };
+  const scale = () => p.output();
+  const settle = () => tick(350);
+
+  // A drag, then at once a tap where it began: no double-tap.
+  touch("pointerdown", 500, 350, 1);
+  touch("pointermove", 500, 250, 1);
+  touch("pointerup", 500, 250, 1);
+  tapAt(502, 351, 2);
+  await tick(60);
+  assert.equal(scale(), "100%", "a drag is no tap");
+  await until(() => p.parse()[1] === -100, "the drag moved it");
+  await settle();
+
+  // A real double-tap: Fit width is already 100% here, so it shows the whole image; again, back.
+  tapAt(500, 350, 3);
+  tapAt(503, 352, 4);
+  await until(() => p.pressed()[0] === "Fit", "a double-tap toggles");
+  // The double-click a touch double-tap may also send is not taken twice.
+  p.stageEl().dispatchEvent(new p.window.MouseEvent("dblclick", { clientX: 503, clientY: 352, bubbles: true }));
+  await tick(60);
+  assert.equal(p.pressed()[0], "Fit", "the touch's double-click is left to the taps");
+  await settle();
+  tapAt(500, 300, 5);
+  tapAt(500, 300, 6);
+  await until(() => p.output() === "100%", "and back to actual size");
+  await settle();
+
+  // A pinch, then a tap: the pinch was no tap.
+  touch("pointerdown", 400, 350, 7);
+  touch("pointerdown", 600, 350, 8);
+  touch("pointermove", 700, 350, 8);
+  touch("pointerup", 400, 350, 7);
+  touch("pointerup", 700, 350, 8);
+  await until(() => p.output() !== "100%", "the pinch zoomed");
+  const pinched = scale();
+  tapAt(500, 350, 9);
+  await tick(60);
+  assert.equal(scale(), pinched, "a tap after a pinch is only a first tap");
+  await settle();
+
+  // A tap, a touch cancelled, then a tap: the cancel forgets the first.
+  tapAt(500, 350, 10);
+  touch("pointerdown", 500, 350, 11);
+  touch("pointercancel", 500, 350, 11);
+  tapAt(500, 350, 12);
+  await tick(60);
+  assert.equal(scale(), pinched, "no double-tap across a cancel");
+  await settle();
+
+  // A tap, three fingers down and up, then a tap: no double-tap either.
+  tapAt(500, 350, 13);
+  for (const id of [14, 15, 16]) touch("pointerdown", 400 + id, 350, id);
+  for (const id of [14, 15, 16]) touch("pointerup", 400 + id, 350, id);
+  tapAt(500, 350, 17);
+  await tick(60);
+  assert.equal(scale(), pinched, "no double-tap across other fingers");
+  assert.equal(p.stageEl().hasAttribute("data-dragging"), false, "every finger is up");
   assert.deepEqual(p.errors, []);
 });

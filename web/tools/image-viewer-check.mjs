@@ -96,6 +96,8 @@ const images = {
   "settings-long.png": screenshot(1200, 6000),
   "dashboard-wide.png": png(6000, 1200, (y) => solid(6000, y < 600 ? [122, 156, 110] : [94, 129, 172])),
   "icon.png": png(200, 120, () => solid(200, [196, 148, 92])),
+  // So long that its position bar's thumb is at its shortest.
+  "receipt-strip.png": png(200, 40000, (y) => solid(200, y < 120 ? [88, 117, 82] : y >= 39880 ? [196, 64, 60] : [250, 250, 246])),
   "photo.png": png(1600, 1000, (y) => solid(1600, [Math.round(120 + (y / 1000) * 80), 150, 170])),
 };
 const messageImage = `${"c".repeat(64)}.png`;
@@ -115,7 +117,7 @@ const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }
 const node = (type, props, children) => (children ? { type, props, children } : { type, props });
 const spec = (top, elements) => ({ root: "body", elements: { body: node("BriefBody", {}, top), ...elements } });
 const snapshot = (name) => ({ name, kind: "image", mime: "image/png", size: images[name]?.length ?? 1000, snapshot: true, mayChange: false, takenAt: taken });
-const captions = { "settings-long.png": "Settings, scrolled to the end", "dashboard-wide.png": "Dashboard", "icon.png": "Icon", "photo.png": "Desk photo", "gone.png": "Old capture" };
+const captions = { "settings-long.png": "Settings, scrolled to the end", "dashboard-wide.png": "Dashboard", "icon.png": "Icon", "photo.png": "Desk photo", "receipt-strip.png": "Receipt strip", "gone.png": "Old capture" };
 const sections = [{
   id: 11, key: "shots", kind: "report", title: "Settings screens", version: 3, owner: { agentId: "b", name: "Hana", state: "active" },
   updatedAt: ago(5), updatedTurnId: "t1", refs: {}, seen: null, history: false,
@@ -186,6 +188,44 @@ const settled = async (page) => {
   await page.waitForTimeout(250);
   return state(page);
 };
+/** A position bar and its thumb, as laid out. */
+const barOf = (page, axis) => page.evaluate((axis) => {
+  const track = document.querySelector(`[role="dialog"] .image-viewer-track[data-axis="${axis}"]`);
+  if (!track) return null;
+  const box = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+  return { track: box(track), thumb: box(track.querySelector(".image-viewer-thumb")) };
+}, axis);
+/**
+ * A bar's thumb dragged by the mouse past one end of its bar: the image must
+ * then be at that edge, and the thumb still on the bar, at its end.
+ */
+async function dragThumb(page, axis, end) {
+  const before = await barOf(page, axis);
+  assert.ok(before, `a ${axis} bar`);
+  const { thumb, track } = before;
+  const from = { x: thumb.left + thumb.width / 2, y: thumb.top + thumb.height / 2 };
+  const far = end === "end" ? 400 : -400;
+  const to = axis === "y" ? { x: from.x, y: (end === "end" ? track.bottom : track.top) + far } : { x: (end === "end" ? track.right : track.left) + far, y: from.y };
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 8 });
+  await page.mouse.up();
+  const s = await state(page);
+  const after = await barOf(page, axis);
+  const near = (a, b, what) => assert.ok(Math.abs(a - b) <= 1, `${axis} ${end}: ${what}: ${a} vs ${b}`);
+  if (axis === "y") {
+    if (end === "end") near(s.image.top + s.image.height, s.stage.top + s.stage.height, "the image's last row at the stage's bottom");
+    else near(s.image.top, s.stage.top, "the image's top at the stage's top");
+    near(end === "end" ? after.thumb.bottom : after.thumb.top, end === "end" ? after.track.bottom : after.track.top, "the thumb at the bar's end");
+    assert.ok(after.thumb.top >= after.track.top - 0.5 && after.thumb.bottom <= after.track.bottom + 0.5, `the thumb on its bar: ${JSON.stringify(after)}`);
+  } else {
+    if (end === "end") near(s.image.left + s.image.width, s.stage.left + s.stage.width, "the image's right edge at the stage's right");
+    else near(s.image.left, s.stage.left, "the image's left edge at the stage's left");
+    near(end === "end" ? after.thumb.right : after.thumb.left, end === "end" ? after.track.right : after.track.left, "the thumb at the bar's end");
+    assert.ok(after.thumb.left >= after.track.left - 0.5 && after.thumb.right <= after.track.right + 0.5, `the thumb on its bar: ${JSON.stringify(after)}`);
+  }
+  return after;
+}
 /** One step of a touch, as the phone's screen sends it. */
 const touch = (cdp, type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
 
@@ -334,13 +374,10 @@ try {
       assert.deepEqual(d.pressed, ["Fit width"]);
       close(d.image.top + d.image.height, d.stage.top + d.stage.height, 1, "End: its last row at the stage's bottom");
       await shot("message-bottom");
-      // The position bar's thumb, dragged to the top, brings the top back.
-      const bar = await page.locator('[role="dialog"] .image-viewer-track[data-axis="y"] .image-viewer-thumb').boundingBox();
-      await page.mouse.move(bar.x + bar.width / 2, bar.y + bar.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(bar.x + bar.width / 2, d.stage.top - 400, { steps: 6 });
-      await page.mouse.up();
-      close((await state(page)).image.top, d.stage.top, 1, "the thumb dragged to the top: its top");
+      // The position bar's thumb, dragged past each end of its bar, takes the image to that edge.
+      await dragThumb(page, "y", "start");
+      await dragThumb(page, "y", "end");
+      await dragThumb(page, "y", "start");
       await page.keyboard.press("End");
       await page.keyboard.press("Home");
       close((await settled(page)).image.top, d.stage.top, 1, "Home: its top");
@@ -416,6 +453,37 @@ try {
       assert.equal(d.page.scale, 1, "the page is not zoomed");
       assert.deepEqual(d.pressed, []);
       await shot("home-long-pinched");
+      // Taps: a drag then a tap where it began, a pinch then a tap: never a double-tap.
+      // A real double-tap: actual size there, and only once (the browser's own double-click is not taken too).
+      await dialog.locator("select.image-viewer-menu").selectOption("width");
+      await settled(page);
+      const scaleNow = async () => (await state(page)).output;
+      const opened0 = await scaleNow();
+      const tap = async (x, y) => {
+        await touch(cdp, "touchStart", [[x, y]]);
+        await touch(cdp, "touchEnd", []);
+      };
+      await touch(cdp, "touchStart", [[c.x, c.y]]);
+      await touch(cdp, "touchMove", [[c.x, c.y - 60]]);
+      await touch(cdp, "touchMove", [[c.x, c.y - 120]]);
+      await touch(cdp, "touchEnd", []);
+      await tap(c.x + 2, c.y + 2);
+      await page.waitForTimeout(450);
+      assert.equal(await scaleNow(), opened0, "a drag then a tap is no double-tap");
+      await touch(cdp, "touchStart", [[c.x - 40, c.y], [c.x + 40, c.y]]);
+      for (let i = 1; i <= 4; i++) await touch(cdp, "touchMove", [[c.x - 40 - i * 10, c.y], [c.x + 40 + i * 10, c.y]]);
+      await touch(cdp, "touchEnd", []);
+      const pinched = await scaleNow();
+      assert.notEqual(pinched, opened0, "the pinch zoomed");
+      await tap(c.x, c.y);
+      await page.waitForTimeout(450);
+      assert.equal(await scaleNow(), pinched, "a pinch then a tap is no double-tap");
+      await tap(c.x, c.y);
+      await tap(c.x + 3, c.y + 2);
+      await page.waitForFunction(() => document.querySelector('[role="dialog"] .image-viewer-zoom output').textContent === "100%");
+      await page.waitForTimeout(500);
+      assert.equal(await scaleNow(), "100%", "a double-tap toggles once, not back again");
+      check(`${viewport.name}: a drag or a pinch followed by a tap is no double-tap; a real double-tap shows actual size, once`);
       const row = await page.evaluate(() => {
         const bar = document.querySelector('[role="dialog"] .image-viewer-bar');
         const dialog = document.querySelector('[role="dialog"]').getBoundingClientRect();
@@ -456,6 +524,15 @@ try {
       close(s.image.width, s.stage.width, 1, "a wide image fits the width");
       assert.ok(s.image.top > s.stage.top, "and is centred top to bottom");
       await shot("home-wide");
+      // At actual size it runs past the stage both ways: each bar's thumb, end to end, reaches each edge.
+      await page.keyboard.press("1");
+      await settled(page);
+      for (const axis of ["x", "y"]) {
+        await dragThumb(page, axis, "end");
+        await dragThumb(page, axis, "start");
+      }
+      await page.keyboard.press("0");
+      await settled(page);
       await page.setViewportSize({ width: 900, height: 700 });
       await page.waitForFunction((w) => document.querySelector('[role="dialog"] .image-viewer-stage').clientWidth < w, s.stage.width);
       const r = await settled(page);
@@ -475,7 +552,28 @@ try {
       assert.equal(s.movable, false, "nothing to drag");
       await shot("home-icon");
       await escape();
-      check(`${viewport.name}: each image starts afresh; a wide one and a photo open whole, a small icon at its own size; a resize keeps Fit`);
+      check(`${viewport.name}: each image starts afresh; a wide one and a photo open whole, a small icon at its own size; a resize keeps Fit; at actual size both bars' thumbs take the wide image to every edge`);
+
+      // A strip so long the thumb is at its shortest: still on its bar, and its travel still reaches both ends,
+      // after a resize and a zoom too.
+      s = await open(card, "receipt-strip.png");
+      assert.deepEqual(s.pressed, ["Actual size"]);
+      let strip = await barOf(page, "y");
+      close(strip.thumb.height, 24, 0.5, "the thumb at its shortest");
+      await dragThumb(page, "y", "end");
+      await page.setViewportSize({ width: 900, height: 700 });
+      await page.waitForFunction((h) => document.querySelector('[role="dialog"] .image-viewer-stage').clientHeight < h, s.stage.height);
+      await settled(page);
+      strip = await barOf(page, "y");
+      assert.ok(strip.thumb.top >= strip.track.top - 0.5 && strip.thumb.bottom <= strip.track.bottom + 0.5, `after a resize, on its bar: ${JSON.stringify(strip)}`);
+      await dragThumb(page, "y", "start");
+      await page.keyboard.press("+");
+      await settled(page);
+      await dragThumb(page, "y", "end");
+      await shot("home-strip-end");
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await escape();
+      check(`${viewport.name}: a 200 × 40000 strip's thumb is at its shortest yet stays on its bar, and takes the strip to both ends, after a resize and a zoom too`);
 
       // The report's own page shows the same images, and opens them in the same viewer.
       await card.locator(".home-report-open").click();

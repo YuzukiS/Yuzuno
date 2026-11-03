@@ -121,15 +121,34 @@ export function wheelFactor(deltaY: number, deltaMode: number, pinch: boolean, p
   return Math.min(2, Math.max(0.5, factor));
 }
 
+/** A position bar along one side of the stage: how far in from the stage's
+ * edge it starts and ends, so the two bars never cross, and its thumb's
+ * shortest length, so it can always be grabbed. */
+export const BAR = { start: 4, end: 14, thumb: 24 };
+
+/** The bar's length along a stage side of `room` px. */
+export const barLength = (room: number) => Math.max(0, room - BAR.start - BAR.end);
+
 /**
- * Where the stage's position bar sits along one side: the share of the
- * image in view, and how far along it the view is, both 0–1. Null when the
- * whole side is in view and there is nothing to move to.
+ * The thumb on a bar `bar` px long, for an image `shown` px long on a stage
+ * side of `room` px, at offset `at`: as long as the share of the image in
+ * view (at least BAR.thumb, at most the bar), and as far along the bar's
+ * travel as the view is along the image's. Its whole travel is the image's
+ * whole movement. Null when all of that side is in view.
  */
-export function track(at: number, shown: number, room: number): { size: number; start: number } | null {
-  if (!(shown > room + 0.5) || !(room > 0)) return null;
-  const size = room / shown;
-  return { size, start: Math.min(1 - size, Math.max(0, -at / shown)) };
+export function thumb(at: number, shown: number, room: number, bar: number): { start: number; length: number } | null {
+  if (!(shown > room + 0.5) || !(room > 0) || !(bar > 0)) return null;
+  const length = Math.min(bar, Math.max(BAR.thumb, (bar * room) / shown));
+  const along = Math.min(1, Math.max(0, -at / (shown - room)));
+  return { start: along * (bar - length), length };
+}
+
+/** How far the view moves (stage px, as `pan` takes it) when that thumb is
+ * dragged `delta` px along its bar: its travel maps onto the image's. */
+export function thumbMove(delta: number, shown: number, room: number, bar: number): number {
+  const length = Math.min(bar, Math.max(BAR.thumb, (bar * room) / shown));
+  const travel = bar - length;
+  return travel > 0 && shown > room ? -(delta / travel) * (shown - room) : 0;
 }
 
 /** The scale as a whole percentage of the image's own size. */
