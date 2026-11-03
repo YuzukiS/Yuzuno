@@ -3154,7 +3154,7 @@ export function App() {
                 <PhoneDockButtons
                   open={phoneDock}
                   onOpen={dockMotion.choose}
-                  leaving={dockMotion.way === "out"}
+                  leaving={dockMotion.leaving}
                   turn={readingBy === "inputs" ? readingInputNumber : readingTurnNumber}
                   turns={readingBy === "inputs" ? conversationInputs.total : logicalTurns.length}
                   inputs={readingBy === "inputs"}

@@ -5,7 +5,7 @@
 // (WorkDock.tsx, TurnNavigator.tsx): phone-docks.css lays the open one out
 // as a panel above its button. Each button shows only while its dock has
 // something to show.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BriefcaseBusiness, History } from "lucide-react";
 import { strings, useStrings } from "./i18n";
 import { animates } from "./motion";
@@ -37,10 +37,11 @@ const DOCK_MOTION_MS = 180 + 100;
 
 /**
  * The dock shown and its way in or out (T-19): a panel the reader opens rises
- * from its button, one they close fades back into it, taking no taps on its
- * way. Any other change is at once: navigating, switching docks, or the panel
- * coming back as the on-screen keyboard goes. `choose` is for the reader's
- * own open and close; `end` for the animation's end.
+ * from its button, one they close fades back into it, with nothing on it to
+ * reach on its way (PhoneDockButtons). Any other change is at once:
+ * navigating, switching docks, or the panel coming back as the on-screen
+ * keyboard goes. `choose` is for the reader's own open and close; `end` for
+ * the animation's end.
  */
 export function usePhoneDockMotion(open: PhoneDock, setOpen: (dock: PhoneDock) => void) {
   const [moving, setMoving] = useState<{ dock: "work" | "turns"; way: "in" | "out" } | null>(null);
@@ -59,21 +60,27 @@ export function usePhoneDockMotion(open: PhoneDock, setOpen: (dock: PhoneDock) =
     return () => window.clearTimeout(timer);
   }, [moving]);
   const end = useCallback(() => setMoving(null), []);
-  return { shown: open ?? (moving?.way === "out" ? moving.dock : null), way: moving?.way ?? null, choose, end };
+  return {
+    shown: open ?? (moving?.way === "out" ? moving.dock : null),
+    way: moving?.way ?? null,
+    leaving: moving?.way === "out" ? moving.dock : null,
+    choose,
+    end,
+  };
 }
 
 export function PhoneDockButtons({
   open,
   onOpen,
-  leaving = false,
+  leaving = null,
   turn,
   turns,
   inputs = false,
 }: {
   open: PhoneDock;
   onOpen: (dock: PhoneDock) => void;
-  /** A closed panel is on its way out: its scrim stays, taking no taps. */
-  leaving?: boolean;
+  /** The closed panel on its way out (usePhoneDockMotion). */
+  leaving?: PhoneDock;
   /** The Turn being read, counted from 1, and how many there are. */
   turn: number;
   turns: number;
@@ -81,18 +88,56 @@ export function PhoneDockButtons({
   inputs?: boolean;
 }) {
   const t = useStrings(text);
+  const workButton = useRef<HTMLButtonElement>(null);
+  const turnsButton = useRef<HTMLButtonElement>(null);
+  // The panel the reader has just closed, for its button to take focus.
+  const closed = useRef<PhoneDock>(null);
+  const close = useCallback(() => {
+    closed.current = open;
+    onOpen(null);
+  }, [open, onOpen]);
   // Escape closes the open panel, as tapping outside it does, and only that:
   // handled here, it does not also interrupt a working Agent (App's Escape).
   useEffect(() => {
     if (!open) return;
-    const close = (event: KeyboardEvent) => {
+    const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
-      onOpen(null);
+      close();
     };
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
-  }, [open, onOpen]);
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [open, close]);
+  // Closed by the reader, a panel gives focus back to its button, unless it
+  // is somewhere else by then (the composer). A panel closed by navigating
+  // leaves focus to where the reader went.
+  useLayoutEffect(() => {
+    const dock = closed.current;
+    closed.current = null;
+    if (!dock || open) return;
+    const at = document.activeElement;
+    if (!at || at === document.body || at.closest(".work-dock, .turn-dock, .phone-dock-scrim"))
+      (dock === "work" ? workButton : turnsButton).current?.focus({ preventScroll: true });
+  }, [open]);
+  // On its way out the panel is still on screen but no longer there: no tap,
+  // key or focus reaches it (its Back to latest takes taps of its own) and it
+  // is not read out. It may be a new element after any render (another
+  // Agent's dock), so this is set again each time.
+  useLayoutEffect(() => {
+    const body = workButton.current?.parentElement;
+    if (!leaving || !body) return;
+    const panels = [...body.querySelectorAll(`:scope > .${leaving === "work" ? "work-dock" : "turn-dock"}`)];
+    for (const panel of panels) {
+      panel.setAttribute("inert", "");
+      panel.setAttribute("aria-hidden", "true");
+    }
+    return () => {
+      for (const panel of panels) {
+        panel.removeAttribute("inert");
+        panel.removeAttribute("aria-hidden");
+      }
+    };
+  });
   return (
     <>
       {open ? (
@@ -100,27 +145,29 @@ export function PhoneDockButtons({
           type="button"
           className="phone-dock-scrim"
           aria-label={open === "work" ? t.closeWork : t.closeTurns}
-          onClick={() => onOpen(null)}
+          onClick={close}
         />
-      ) : leaving && <div className="phone-dock-scrim" aria-hidden="true" />}
+      ) : leaving && <div className="phone-dock-scrim" aria-hidden="true" inert />}
       <button
+        ref={workButton}
         type="button"
         className="phone-dock-button phone-dock-work"
         aria-expanded={open === "work"}
         aria-label={t.work}
         title={t.work}
-        onClick={() => onOpen(open === "work" ? null : "work")}
+        onClick={() => (open === "work" ? close() : onOpen("work"))}
       >
         <BriefcaseBusiness size={16} aria-hidden="true" />
         <span className="phone-dock-signal" aria-hidden="true" />
       </button>
       <button
+        ref={turnsButton}
         type="button"
         className="phone-dock-button phone-dock-turns"
         aria-expanded={open === "turns"}
         aria-label={inputs ? t.readingInput(turn, turns) : t.reading(turn, turns)}
         title={inputs ? t.inputs : t.turns}
-        onClick={() => onOpen(open === "turns" ? null : "turns")}
+        onClick={() => (open === "turns" ? close() : onOpen("turns"))}
       >
         <History size={14} aria-hidden="true" />
         <span>{turn}</span>
