@@ -1778,3 +1778,69 @@ test("value, low, high and n past JavaScript's safe integers read as approximate
     }
   }
 });
+
+test("what each kind of study keeps apart shows as given with what it cannot show, and a claim's revision says what it does to the earlier scope (T-17)", async () => {
+  const base = { schema: "research/1", text: "As written." };
+  const theory = { ...base, type: "claim", id: "bound", title: "The bound holds", field: "theory", status: "supported",
+    details: { result: "proof", checked: "enumeration", bound: "n ≤ 12", obligations: ["Base case", "Induction step"] } };
+  const systems = { ...base, type: "method", id: "timing", title: "Timing protocol", field: "systems",
+    details: { machines: 1, builds: 2, processes: 10, iterations: 5, warmup: "One discarded process" } };
+  const ml = { ...base, type: "claim", id: "gain", title: "A gain on task A", field: "ml", status: "conditional",
+    details: { baseline: "Tuned baseline", selection: "Best validation loss", budget: "20 trials each", seeds: 5, split: "80/10/10" } };
+  const robot = { ...base, type: "observation", id: "episodes", title: "Real-arm episodes", field: "robotics",
+    details: JSON.parse('{"planned":20,"executed":18,"completed":12,"intervened":3,"stopped":6,"excluded":9007199254740993,"protocol":"Grasp protocol v1"}') };
+  const first = { ...base, type: "claim", id: "faster", title: "Layout B is faster", field: "systems", status: "conditional", conditions: ["Machine A", "Machine B"] };
+  const narrowed = { ...first, title: "Layout B is faster on machine A", conditions: ["Machine A"],
+    revises: { activitySeq: 8, scope: "narrows", reason: "Machine B reverses it." } };
+  const answer = { taskId: "T-1", activitySeq: 8, version: 1, revisedBy: 9, latestActivitySeq: 9, research: first, method: null,
+    revision: { activitySeq: 9, scope: "narrows", reason: "Machine B reverses it." } };
+  for (const [language, expected] of [
+    ["en", {
+      bound: ["Proof · checked by enumeration up to n ≤ 12", "A finite enumeration is no general proof.", "Proof obligations", "Induction step"],
+      timing: ["Levels: 1 machine · 2 builds · 10 processes · 5 iterations", "Warm-up: One discarded process", "Iterations within one process are not independent runs."],
+      gain: ["Baseline", "Tuned baseline", "Selection", "Best validation loss", "Budget", "20 trials each", "Seeds", "5", "Split", "80/10/10"],
+      episodes: ["Episodes: 20 planned · 18 executed · 12 completed · 3 intervened · 6 stopped · ≈9007199254740992 excluded", "Protocol: Grasp protocol v1",
+        "These counts overlap: an intervened episode may also be completed, and the denominator is the protocol's."],
+      narrowed: "Narrows activity 8 Machine B reverses it.",
+      revised: "Activity 9 narrows this scope: Machine B reverses it.",
+    }],
+    ["zh-Hans", {
+      bound: ["证明 · 枚举核对至 n ≤ 12", "有限枚举不是一般性证明。", "证明义务"],
+      timing: ["层级：1 台机器 · 2 次构建 · 10 个进程 · 5 次迭代", "同一进程内的多次迭代不是相互独立的运行。"],
+      gain: ["基线", "选模", "预算", "种子数", "数据划分"],
+      episodes: ["回合：20 计划 · 18 执行 · 12 完成 · 3 介入 · 6 停止 · ≈9007199254740992 排除", "这些计数会重叠"],
+      narrowed: "收窄活动 8 Machine B reverses it.",
+      revised: "活动 9 收窄了这一适用范围: Machine B reverses it.",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(3, theory, "T."), recorded(4, systems, "S."), recorded(5, ml, "M."), recorded(6, robot, "R."),
+        recorded(8, first, "v1."), recorded(9, narrowed, "v2.")], executions: [], hasMore: false },
+      task_research_get: (body) => (body.activitySeq === 8 ? answer : { ...answer, activitySeq: body.activitySeq, revision: null, revisedBy: null }),
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === 6, "every record");
+      const cards = [...page.document.querySelectorAll(".task-research")];
+      const card = (title) => cards.find((el) => el.textContent.includes(title));
+      for (const [title, key] of [["The bound holds", "bound"], ["Timing protocol", "timing"], ["A gain on task A", "gain"], ["Real-arm episodes", "episodes"]]) {
+        const details = card(title).querySelector(".task-research-details");
+        for (const text of expected[key]) assert.ok(details.textContent.includes(text), `${language} ${key}: ${text} in ${details.textContent}`);
+      }
+      const v2 = card("Layout B is faster on machine A");
+      assert.equal(v2.querySelector(".task-research-revises").getAttribute("data-scope"), "narrows");
+      assert.ok(v2.querySelector(".task-research-revises").textContent.includes(expected.narrowed), v2.querySelector(".task-research-revises").textContent);
+      const v1 = cards.find((el) => el.textContent.includes("Layout B is faster") && !el.textContent.includes("on machine A"));
+      assert.ok(v1.textContent.includes("Machine B"), "the earlier scope is shown as written");
+      toggleOf(v1).click();
+      await waitFor(() => v1.querySelector(".task-research-revised"), `${language}: how it was revised`);
+      assert.ok(v1.querySelector(".task-research-revised").textContent.includes(expected.revised), v1.querySelector(".task-research-revised").textContent);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
