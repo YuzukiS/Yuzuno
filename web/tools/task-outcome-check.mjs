@@ -67,8 +67,9 @@ async function snap(page, name) {
   report.screenshots.push(`${name}.png`);
   report.checks.push({ name, bounds });
 }
-async function mount(width = 1440, theme = "light") {
+async function mount(width = 1440, theme = "light", prepare) {
   const fixture = outcomeFixture();
+  prepare?.(fixture);
   const context = await browser.newContext({
     viewport: { width, height: width < 650 ? 844 : 960 },
     locale: "zh-CN",
@@ -180,6 +181,58 @@ async function mount(width = 1440, theme = "light") {
   await page.locator(".task-outcome").waitFor();
   await settle(page);
   return { page, fixture, context };
+}
+/** The current result's two items cite a comparison and a negative claim. */
+function citeRecords(fixture) {
+  const mina = { kind: "agent", id: "writer", name: "Mina" };
+  const at = "2026-10-01T14:00:00Z";
+  const [desktop, mobile] = fixture.current.outcome.criteria;
+  desktop.records = [
+    {
+      activitySeq: 14,
+      version: 2,
+      producer: mina,
+      at,
+      record: {
+        kind: "research",
+        type: "comparison",
+        id: "widths",
+        title: "桌面与手机阅读的比较",
+        counts: { included: 2, excluded: 1, missing: 0, not_done: 1 },
+      },
+    },
+  ];
+  mobile.records = [
+    {
+      activitySeq: 12,
+      version: 1,
+      producer: mina,
+      at,
+      record: {
+        kind: "research",
+        type: "claim",
+        id: "touch",
+        title: "390 宽度下触控区域足够大",
+        status: "unsupported",
+      },
+    },
+  ];
+  const answer = fixture.answer;
+  fixture.answer = (path, body) => {
+    const data = answer(path, body);
+    if (path.endsWith("/task_result_get") && body.taskId === "T-1")
+      data.records = [
+        { criterionId: "desktop", activitySeq: 14, state: "missing" },
+        {
+          criterionId: "mobile",
+          activitySeq: 12,
+          state: "readable",
+          revisedBy: 15,
+          latestActivitySeq: 15,
+        },
+      ];
+    return data;
+  };
 }
 try {
   const { page, fixture, context } = await mount();
@@ -332,6 +385,92 @@ try {
   await dark.page.locator(".outcome-drawer .outcome-author-report").waitFor();
   await snap(dark.page, "desktop-dark");
   await dark.context.close();
+  // Research records a criterion cites (T-17): as cited, their support apart
+  // from the item's status, and where each line stands now; by keyboard,
+  // readable, and inside the drawer on a phone.
+  for (const [width, theme, name] of [
+    [1440, "light", "records-desktop"],
+    [1440, "dark", "records-dark"],
+    [390, "light", "records-mobile"],
+  ]) {
+    const cited = await mount(width, theme, citeRecords);
+    await cited.page
+      .getByRole("button", { name: "成果与证据", exact: true })
+      .click();
+    await cited.page.locator(".outcome-drawer .outcome-author-report").waitFor();
+    await cited.page.getByRole("tab", { name: "逐项依据", exact: true }).click();
+    const summaries = cited.page.locator(".outcome-criterion > summary");
+    for (let n = 0; n < (await summaries.count()); n++) {
+      await summaries.nth(n).focus();
+      await cited.page.keyboard.press("Enter");
+    }
+    await cited.page.locator(".outcome-record").nth(1).waitFor();
+    const text = await cited.page.locator(".outcome-drawer").innerText();
+    for (const expected of [
+      "研究记录",
+      "每条记录引用的是这里显示的摘要，在本结果提交时固定",
+      "两者互不推导",
+      "活动 12 · 第 1 版 · 作者 Mina",
+      "不支持 — 记录作者对支持程度的判断",
+      "较新的版本是活动 15；本结果引用的是上面这一版",
+      "纳入 2 · 排除 1 · 缺失 0 · 未做 1",
+      "这条记录已无法读取",
+    ])
+      assert.ok(text.includes(expected), `${name}: ${expected}`);
+    assert.doesNotMatch(text, /verified|已验证/i);
+    const low = await cited.page.evaluate(() => {
+      // Any CSS colour (rgb, color(srgb …) from color-mix, oklch …) as 0–255
+      // RGB and 0–1 alpha, read back from a 1×1 canvas: a computed colour is
+      // not always rgb(), and reading its numbers as 0–255 is wrong.
+      const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+      const rgb = (css) => {
+        pixel.clearRect(0, 0, 1, 1);
+        pixel.fillStyle = "rgba(0, 0, 0, 0)";
+        pixel.fillStyle = css;
+        pixel.fillRect(0, 0, 1, 1);
+        const [r, g, b, a] = pixel.getImageData(0, 0, 1, 1).data;
+        return [r, g, b, a / 255];
+      };
+      const lum = ([r, g, b]) =>
+        [r, g, b]
+          .map((v) => {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+          })
+          .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+      const behind = (el) => {
+        for (let node = el; node; node = node.parentElement) {
+          const c = rgb(getComputedStyle(node).backgroundColor);
+          if (c[3] > 0.95) return c;
+        }
+        return [255, 255, 255];
+      };
+      const rows = [];
+      for (const el of document.querySelectorAll(
+        ".outcome-records, .outcome-records *",
+      )) {
+        if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
+          continue;
+        // Text with alpha is seen blended over what is behind it.
+        const under = behind(el),
+          [r, g, b, a] = rgb(getComputedStyle(el).color);
+        const fg = lum([r, g, b].map((v, i) => v * a + under[i] * (1 - a))),
+          bg = lum(under);
+        const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+        rows.push({ what: el.className, ratio: Math.round(ratio * 100) / 100 });
+      }
+      return { lowest: Math.min(...rows.map((r) => r.ratio)), rows: rows.filter((r) => r.ratio < 4.5), measured: rows.length };
+    });
+    assert.deepEqual(low.rows, [], `${name}: every word readable`);
+    await cited.page.locator(".outcome-records").first().scrollIntoViewIfNeeded();
+    await snap(cited.page, name);
+    report.checks.push({
+      name: `${name}: cited records by keyboard, support apart from the item's status, readable, inside the drawer`,
+      lowestContrast: low.lowest,
+      measured: low.measured,
+    });
+    await cited.context.close();
+  }
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
   assert.deepEqual(report.writes, []);

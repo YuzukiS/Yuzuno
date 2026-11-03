@@ -10,7 +10,8 @@
 // - Its words are readable (contrast at least 4.5:1); nothing scrolls sideways.
 // - A comparison (slice 2) shows every entry, left out or not, each with
 //   why, and says what its included entries share; no difference is computed.
-// - Reads only: no write leaves the page.
+// - Reads only: no write leaves the page, and every read it makes is one
+//   this fixture answers on purpose (none falls through to an empty {}).
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or real Agent. Screenshots and report.json go to
 // YUZUNO_BROWSER_OUTPUT.
@@ -173,6 +174,11 @@ async function serve(route) {
     "/api/ci": () => noCiRuns,
     "/api/reviews": () => noReviews,
     "/api/backlog": () => ({ observedAt: at, agents: {} }),
+    // The task pane's own reads, answered in their real empty shapes (Lead
+    // 2784: #479's check answered them {} and listed them as unexpected).
+    "/api/tasks/T-1/workspaces": () => ({ taskId: "T-1", repositories: [], workspaces: [] }),
+    "/api/pr-reviews": () => ({ reviews: [], hasMore: false, nextBefore: null }),
+    "/api/pr-operations": () => ({ operations: [], repositories: [], hasMore: false, nextBefore: null }),
     "/api/machines": () => ({ machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture" }] }),
     "/api/models": () => ({ models: [] }),
   }[path];
@@ -214,20 +220,33 @@ async function openTask() {
 /** Each piece of the record's own words, with the contrast against what is behind it. */
 const contrast = () =>
   page.evaluate(() => {
-    const rgb = (text) => (text.match(/[\d.]+/g) || []).map(Number);
+    // Any CSS colour (rgb, color(srgb …) from color-mix, oklch …) as 0–255
+    // RGB and 0–1 alpha, read back from a 1×1 canvas: a computed colour is
+    // not always rgb(), and reading its numbers as 0–255 is wrong.
+    const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    const rgb = (css) => {
+      pixel.clearRect(0, 0, 1, 1);
+      pixel.fillStyle = "rgba(0, 0, 0, 0)";
+      pixel.fillStyle = css;
+      pixel.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = pixel.getImageData(0, 0, 1, 1).data;
+      return [r, g, b, a / 255];
+    };
     const lum = ([r, g, b]) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
       .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
     const behind = (el) => {
       for (let node = el; node; node = node.parentElement) {
         const color = rgb(getComputedStyle(node).backgroundColor);
-        if (color.length >= 3 && (color.length < 4 || color[3] > 0.95)) return color;
+        if (color[3] > 0.95) return color;
       }
       return [255, 255, 255];
     };
     const rows = [];
     for (const el of document.querySelectorAll(".task-research, .task-research *")) {
       if (![...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim())) continue;
-      const fg = lum(rgb(getComputedStyle(el).color)), bg = lum(behind(el));
+      // Text with alpha is seen blended over what is behind it.
+      const under = behind(el), [r, g, b, a] = rgb(getComputedStyle(el).color);
+      const fg = lum([r, g, b].map((v, i) => v * a + under[i] * (1 - a))), bg = lum(under);
       const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
       rows.push({ what: el.className || el.tagName, text: el.textContent.trim().slice(0, 40), ratio: Math.round(ratio * 100) / 100 });
     }
@@ -354,9 +373,10 @@ await step("desktop: a Home research desk's definition versions each show their 
 });
 
 await browser.close();
-await step("reads only: nothing is written and no other host is asked", async () => {
+await step("reads only: nothing is written, no other host is asked, and every read is one the fixture answers", async () => {
   assert.deepEqual(report.writes, []);
-  assert.deepEqual(report.unexpected.filter((url) => !url.startsWith("/api/")), []);
+  // Every request the page made was answered by this fixture on purpose.
+  assert.deepEqual(report.unexpected, []);
   assert.deepEqual(report.errors, []);
 });
 await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
