@@ -149,6 +149,36 @@ function measureContrast() {
   return { shadow, reach, rows };
 }
 
+/** The text contrast of a control in its current state, over the backgrounds under it. */
+function textContrast(el) {
+  const probe = document.body.appendChild(document.createElement("i"));
+  const parse = (c) => {
+    probe.style.color = "";
+    probe.style.color = c;
+    const v = getComputedStyle(probe).color;
+    const m = v.match(/rgba?\(([^)]+)\)/) || v.match(/color\(srgb ([^)]+)\)/);
+    if (!m) return null;
+    const parts = m[1].replace("/", " ").split(/[\s,]+/).filter(Boolean).map((p) => (p.endsWith("%") ? parseFloat(p) / 100 : Number(p)));
+    const scale = v.startsWith("color(") ? 255 : 1;
+    return { r: parts[0] * scale, g: parts[1] * scale, b: parts[2] * scale, a: parts.length > 3 ? parts[3] : 1 };
+  };
+  const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
+  const layers = [];
+  for (let n = el; n; n = n.parentElement) {
+    const c = parse(getComputedStyle(n).backgroundColor);
+    if (c && c.a > 0) layers.push(c);
+    if (c && c.a >= 1) break;
+  }
+  const background = layers.reverse().reduce((acc, c) => over(c, acc), { r: 255, g: 255, b: 255, a: 1 });
+  const text = over(parse(getComputedStyle(el).color), background);
+  const lum = ({ r, g, b }) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+    .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const [x, y] = [lum(text), lum(background)].sort((p, q) => q - p);
+  probe.remove();
+  return { ratio: +((x + 0.05) / (y + 0.05)).toFixed(2), color: getComputedStyle(el).color, hovered: el.matches(":hover"),
+    focusVisible: el.matches(":focus-visible"), active: el.matches(":active") };
+}
+
 const browser = await launchBrowser();
 report.browser = browser.version();
 const runs = [
@@ -276,11 +306,17 @@ for (const run of runs) {
       await page.locator(".add-agent").first().click();
       await page.locator(".modal").first().waitFor();
       await page.waitForTimeout(300);
-      const onTop = await page.evaluate(() => {
-        const toast = document.querySelector(".toast");
-        const r = toast.getBoundingClientRect();
-        return toast.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+      // A toast takes no clicks, so it is hit-tested with its pointer events on for the moment.
+      await page.evaluate(() => {
+        window.__onTop = (toast) => {
+          const r = toast.getBoundingClientRect();
+          toast.style.pointerEvents = "auto";
+          const hit = toast.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+          toast.style.pointerEvents = "";
+          return hit;
+        };
       });
+      const onTop = await page.evaluate(() => window.__onTop(document.querySelector(".toast")));
       ok(`${tag}: a toast shown under an open dialog stays on top and visible`, onTop);
       const live = await page.evaluate(() => {
         const stack = document.querySelector(".toast-stack");
@@ -288,26 +324,86 @@ for (const run of runs) {
       });
       ok(`${tag}: with a dialog open, the toasts stay a live region that is not aria-hidden`, live.live === "polite" && !live.hidden, live);
       if (shot("x")) await page.screenshot({ path: join(output, "toast-over-dialog.png") });
-      // The Portal full screen, as Portal.tsx sets it (its root attribute and a
-      // full panel in <body>; the preview has no Portal): the dialog rises above
-      // the panel, and the toast above both.
-      const full = await page.evaluate(() => {
-        document.documentElement.dataset.portal = "full";
-        const panel = Object.assign(document.createElement("div"), { className: "portal-panel is-full" });
-        panel.id = "t19-portal-stand-in";
-        document.body.append(panel);
-        const toast = document.querySelector(".toast");
-        const r = toast.getBoundingClientRect();
-        const z = (selector) => Number(getComputedStyle(document.querySelector(selector)).zIndex);
-        const result = { onTop: toast.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)),
-          panel: z("#t19-portal-stand-in"), overlay: z(".modal-overlay"), dialog: z(".modal"), toasts: z(".toast-stack") };
-        panel.remove();
-        delete document.documentElement.dataset.portal;
-        return result;
-      });
-      ok(`${tag}: with the Portal full screen, a toast stays above the Portal and its dialog`,
-        full.onTop && full.toasts > full.dialog && full.dialog > full.panel, full);
-      await page.keyboard.press("Escape");
+      // The build before this batch has no toast stack: these record nothing for a baseline.
+      if (!baseline) {
+        // The Portal full screen, as Portal.tsx sets it (its root attribute and a
+        // full panel in <body>; the preview has no Portal): the dialog rises above
+        // the panel, and the toast above both.
+        const full = await page.evaluate(() => {
+          document.documentElement.dataset.portal = "full";
+          const panel = Object.assign(document.createElement("div"), { className: "portal-panel is-full" });
+          panel.id = "t19-portal-stand-in";
+          document.body.append(panel);
+          const toast = document.querySelector(".toast");
+          const z = (selector) => Number(getComputedStyle(document.querySelector(selector)).zIndex);
+          const result = { onTop: window.__onTop(toast),
+            panel: z("#t19-portal-stand-in"), overlay: z(".modal-overlay"), dialog: z(".modal"), toasts: z(".toast-stack") };
+          panel.remove();
+          delete document.documentElement.dataset.portal;
+          return result;
+        });
+        ok(`${tag}: with the Portal full screen, a toast stays above the Portal and its dialog`,
+          full.onTop && full.toasts > full.dialog && full.dialog > full.panel, full);
+        // A second dialog opened over the first (emulated: a copy of its overlay and box, later in <body>).
+        const nested = await page.evaluate(() => {
+          const copies = [...document.querySelectorAll("body > .modal-overlay, body > .modal")].map((el) => {
+            const copy = el.cloneNode(true);
+            copy.removeAttribute("id");
+            copy.dataset.t19 = "nested";
+            document.body.append(copy);
+            return copy;
+          });
+          const onTop = window.__onTop(document.querySelector(".toast"));
+          copies.forEach((copy) => copy.remove());
+          return { copies: copies.length, onTop };
+        });
+        ok(`${tag}: with a second dialog over the first (emulated), the toast stays on top`, nested.copies === 2 && nested.onTop, nested);
+        // The toast in <body> takes the same theme values as inside the app, in every palette and theme:
+        // its computed style against a copy of the stack put back where it was, in the app's root element.
+        const inherit = await page.evaluate(() => {
+          const stack = document.querySelector(".toast-stack");
+          const app = document.querySelector("#root > *");
+          const copy = stack.cloneNode(true);
+          copy.removeAttribute("aria-live");
+          copy.style.visibility = "hidden";
+          app.append(copy);
+          const props = ["color", "backgroundColor", "borderTopColor", "boxShadow", "fontFamily", "fontSize", "fontWeight", "lineHeight"];
+          const read = (el) => Object.fromEntries(props.map((p) => [p, getComputedStyle(el)[p]]));
+          const root = document.documentElement;
+          const was = [root.dataset.palette, root.dataset.theme];
+          const rows = [];
+          for (const palette of ["garden", "graphite", "pine", "sunroom", "yuzu"])
+            for (const theme of ["light", "dark"]) {
+              root.dataset.palette = palette;
+              root.dataset.theme = theme;
+              const [a, b] = [read(stack.querySelector(".toast")), read(copy.querySelector(".toast"))];
+              rows.push({ palette, theme, same: props.every((p) => a[p] === b[p]), differs: props.filter((p) => a[p] !== b[p]), color: a.color, background: a.backgroundColor });
+            }
+          for (const [key, value] of [["palette", was[0]], ["theme", was[1]]])
+            if (value === undefined) delete root.dataset[key];
+            else root.dataset[key] = value;
+          copy.remove();
+          return rows;
+        });
+        ok(`${tag}: in all 10 palette/theme combinations the toast in <body> is styled exactly as inside the app`,
+          inherit.length === 10 && inherit.every((r) => r.same), inherit);
+        // It takes no focus and has nothing to focus; a click on it goes through to what is under it.
+        const through = await page.evaluate(() => {
+          const stack = document.querySelector(".toast-stack");
+          const toast = stack.querySelector(".toast");
+          const r = toast.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          window.__toastClick = null;
+          document.addEventListener("click", (e) => (window.__toastClick = { inToast: !!e.target.closest?.(".toast-stack"), target: e.target.className?.toString().slice(0, 40) }), { capture: true, once: true });
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2, pointerEvents: getComputedStyle(toast).pointerEvents, hitInToast: stack.contains(hit),
+            focusIn: stack.contains(document.activeElement), focusable: stack.querySelectorAll("button, a[href], input, select, textarea, [tabindex]").length };
+        });
+        await page.mouse.click(through.x, through.y);
+        const clicked = await page.evaluate(() => window.__toastClick);
+        ok(`${tag}: the toast takes no focus, has nothing to focus, and a click on it reaches what is under it`,
+          through.pointerEvents === "none" && !through.hitInToast && !through.focusIn && through.focusable === 0 && !!clicked && !clicked.inToast, { through, clicked });
+      }
+      if (await page.locator(".modal").count()) await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
     } else report.notShown.push(`${tag}: Send to Agent → Hana was not available in the preview`);
 
@@ -381,6 +477,46 @@ for (const run of runs) {
           ok(`${tag}: ${palette}/${theme}: the pressed-in shadow is read (${rows.length} controls measured)`, !!shadow && rows.length > 0, { shadow, rows: rows.length });
           const covering = rows.filter((r) => !r.clear);
           ok(`${tag}: ${palette}/${theme}: the pressed-in shadow stays clear of the text, so pressed contrast is the resting contrast`, covering.length === 0, { reach, covering });
+        }
+      // The quiet labels read at 4.5:1 at rest, hovered, focused from the keyboard and pressed, in every
+      // palette and theme. Each state is made for real (pointer, keyboard), and left without a click.
+      const kinds = [["nav", ".toolbar-nav .catchup-nav:not(.selected)"], ["Copy turn", ".turn-divider .copy-button"],
+        ["Copy reply", ".reply-actions .copy-button"], ["Send to Agent", ".reply-actions .send-to-agent-button"]];
+      report.stateContrast = [];
+      for (const palette of ["garden", "graphite", "pine", "sunroom", "yuzu"])
+        for (const theme of ["light", "dark"]) {
+          await page.evaluate(([p, t]) => { document.documentElement.dataset.palette = p; document.documentElement.dataset.theme = t; }, [palette, theme]);
+          await page.waitForTimeout(80);
+          for (const [kind, selector] of kinds) {
+            const el = page.locator(selector).filter({ visible: true }).first();
+            if (!(await el.count())) { report.notShown.push(`${tag}: ${palette}/${theme}: no visible ${kind}`); continue; }
+            await el.scrollIntoViewIfNeeded();
+            const box = await el.boundingBox();
+            const read = () => el.evaluate(textContrast);
+            await page.mouse.move(2, 2);
+            await el.evaluate((n) => n.blur());
+            await page.waitForTimeout(150);
+            const rest = await read();
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+            await page.waitForTimeout(150);
+            const hover = await read();
+            await page.mouse.down();
+            await page.waitForTimeout(150);
+            const pressed = await read();
+            await page.mouse.move(2, 2);
+            await page.mouse.up();
+            await page.keyboard.press("Shift");
+            await el.evaluate((n) => n.focus());
+            await page.waitForTimeout(150);
+            const focus = await read();
+            await el.evaluate((n) => n.blur());
+            const row = { palette, theme, kind, rest, hover, focus, pressed };
+            report.stateContrast.push(row);
+            const states = { rest, hover, focus, pressed };
+            ok(`${tag}: ${palette}/${theme}: ${kind} reads at 4.5:1 or more at rest, hovered, keyboard-focused and pressed`,
+              hover.hovered && focus.focusVisible && pressed.active && Object.values(states).every((v) => v.ratio >= 4.5),
+              Object.fromEntries(Object.entries(states).map(([k, v]) => [k, v.ratio])));
+          }
         }
       await page.evaluate(() => { document.documentElement.dataset.palette = "garden"; document.documentElement.dataset.theme = "light"; });
     }
