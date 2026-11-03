@@ -180,7 +180,9 @@ export function researchDeskMarkdown(desk: Desk, resolved?: ResearchResolved, wo
     for (const source of desk.sources) {
       const info = resolved?.sources[source.id];
       const snapshot = source.snapshot && info?.sha256 ? ` — ${inline(source.snapshot)}, SHA-256 ${info.sha256}${info.takenAt ? `, ${info.takenAt}` : ""}` : "";
-      out.push(`- ${block(source.label)}${snapshot}${source.location ? ` (${inline(source.location)})` : ""}`);
+      // A Task research record by its task and activity (T-17), as the desk names it.
+      const record = source.task ? ` — ${source.task.taskId} #${source.task.activitySeq}` : "";
+      out.push(`- ${block(source.label)}${snapshot}${record}${source.location ? ` (${inline(source.location)})` : ""}`);
     }
     out.push("");
   }

@@ -1176,6 +1176,293 @@ const activities = [
   { seq: 2, taskId: "T-1", kind: "comment", body: "Bounds look right to me.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:05:00Z" },
 ];
 
+test("a research record shows as its author wrote it with each source's identity, and reads what holds now on request (T-17)", async () => {
+  const record = {
+    schema: "research/1",
+    type: "claim",
+    id: "faster",
+    title: "Layout B is faster on the small inputs",
+    text: "Layout B runs the small inputs about 4% faster than layout A.",
+    status: "conditional",
+    field: "systems",
+    conditions: ["Small inputs only"],
+    limits: ["One machine only"],
+    method: { activitySeq: 3, id: "timing", title: "Timing protocol" },
+    sources: [
+      { kind: "job", label: "Raw timings", jobId: "job-1", attempt: "11111111-1111-4111-8111-111111111111", path: "out/timings.json", sha256: "a".repeat(64), bytes: 40, recorded: "recorded_match" },
+      { kind: "task", taskId: "T-2", activitySeq: 9, record: { kind: "research", type: "observation", id: "ranking", title: "Ranking flips with link order" }, producer: { kind: "agent", id: "dev-5", name: "Dev 5" }, at: "2026-10-12T11:00:00Z" },
+      { kind: "external", label: "Upstream benchmark notes", url: "https://example.org/bench", version: "v3", observedAt: "2026-11-01", coverage: "Small inputs only", checked: false },
+    ],
+  };
+  const researched = { seq: 4, taskId: "T-1", kind: "comment", body: "Claim recorded.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:10:00Z", research: record };
+  const now = ["recorded_match", "readable", "stated"];
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },
+    task_get: { task: task(), activities: [...activities, researched], executions: [], hasMore: false },
+    task_research_get: { taskId: "T-1", activitySeq: 4, version: 2, revisedBy: null, latestActivitySeq: 4,
+      research: { ...record, sources: record.sources.map((source, n) => ({ ...source, now: { state: now[n] } })) },
+      method: { activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: 6, research: { type: "method", id: "timing", title: "Timing protocol", text: "Ten fresh processes." }, method: null } },
+  }));
+  try {
+    page.render();
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card");
+    page.document.querySelector(".collab-task-card").click();
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the research record");
+    const text = () => card.textContent;
+    assert.match(text(), /Claim/);
+    assert.match(text(), /Layout B is faster on the small inputs/, "the title as written");
+    assert.match(text(), /Holds under conditions \(the author's judgement\)/);
+    assert.match(text(), /Made with the method “Timing protocol” as written in activity 3/);
+    assert.match(text(), /Small inputs only/);
+    assert.match(text(), /One machine only/);
+    assert.match(text(), /out\/timings\.json/);
+    assert.match(text(), /Matched this task's recorded Job check when written/);
+    assert.match(text(), /T-2 · activity 9/);
+    assert.match(text(), /by Dev 5/, "the cited record's own producer");
+    assert.match(text(), /As its author stated it; Yuzuno did not check it/);
+    assert.doesNotMatch(text(), /verified/i);
+    assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "nothing is read until asked");
+    const toggle = [...card.querySelectorAll("button")].find((b) => b.textContent === "Version and sources now");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    toggle.click();
+    await waitFor(() => /Version 2 of this record/.test(text()), "the record's version");
+    assert.match(text(), /This is the newest version/);
+    assert.match(text(), /The method as cited is version 1; a newer version is activity 6/);
+    assert.match(text(), /Now: the Job's record still lists this file and hash; the file itself was not read/);
+    assert.match(text(), /Now: Record readable/);
+    assert.match(text(), /Now: Not checked/);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    const reads = page.calls.filter((call) => call.operation === "task_research_get");
+    assert.deepEqual(reads.map((call) => [call.method, call.body]), [["POST", { taskId: "T-1", activitySeq: 4 }]]);
+    assert.ok(!page.calls.some((call) => ["task_comment", "task_update", "task_submit_result"].includes(call.operation)), "reading writes nothing");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+/** A research method record (T-17) and Core's read of it. */
+const methodV1 = { schema: "research/1", type: "method", id: "timing", title: "Timing protocol", text: "Ten iterations in one process." };
+const methodV2 = { ...methodV1, text: "Ten fresh processes.", revises: { activitySeq: 3, reason: "Iterations share caches." } };
+const mina = { kind: "agent", id: "dev-2", name: "Dev 2" };
+const recorded = (seq, research, body) => ({ seq, taskId: "T-1", kind: "comment", body, actor: mina, at: "2026-10-12T12:10:00Z", research });
+const readOf = (seq, research, version, latest) => ({ taskId: "T-1", activitySeq: seq, version, revisedBy: latest === seq ? null : latest, latestActivitySeq: latest, research, method: null });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
+const toggleOf = (card) => card.querySelector(".task-research-toggle");
+const openTask = async (page) => {
+  await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card");
+  page.document.querySelector(".collab-task-card").click();
+};
+
+test("a research record is read again at every opening: a revision added since shows (T-17)", async () => {
+  let activities2 = [recorded(3, methodV1, "Method v1.")];
+  let answer = readOf(3, methodV1, 1, 3);
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => ({ task: task(), activities: activities2, executions: [], hasMore: false }),
+    task_research_get: () => answer,
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the method");
+    toggleOf(card).click();
+    await waitFor(() => /This is the newest version/.test(card.textContent), "the first read");
+    assert.match(card.textContent, /Read /, "when it was read");
+    toggleOf(card).click();
+    // A revision is a comment: the task's version does not change, the history does.
+    activities2 = [recorded(3, methodV1, "Method v1."), recorded(6, methodV2, "Method v2.")];
+    answer = readOf(3, methodV1, 1, 6);
+    page.render({ workspaceId: "ws-1", revision: 1 });
+    await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "the revision in the history");
+    const first = page.document.querySelector(".task-research");
+    toggleOf(first).click();
+    await waitFor(() => /A newer version is activity 6/.test(first.textContent), "the second read");
+    assert.doesNotMatch(first.textContent, /This is the newest version/);
+    assert.equal(page.calls.filter((call) => call.operation === "task_research_get").length, 2, "one read per opening");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("Check again reads the record again: a Job record gone shows so, the recorded identity stays (T-17)", async () => {
+  const source = { kind: "job", label: "Raw timings", jobId: "job-1", attempt: "11111111-1111-4111-8111-111111111111", path: "out/timings.json", sha256: "a".repeat(64), recorded: "recorded_match" };
+  const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional", sources: [source] };
+  let state = "recorded_match";
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: { task: task(), activities: [recorded(4, claim, "Claim.")], executions: [], hasMore: false },
+    task_research_get: () => ({ ...readOf(4, { ...claim, sources: [{ ...source, now: { state, file: "not_read" } }] }, 1, 4) }),
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "the claim");
+    toggleOf(card).click();
+    await waitFor(() => /Now: the Job's record still lists this file and hash/.test(card.textContent), "the first read");
+    state = "job_missing";
+    [...card.querySelectorAll("button")].find((b) => b.textContent === "Check again").click();
+    await waitFor(() => /Now: Job record no longer kept/.test(card.textContent), "the read after the Job record went");
+    assert.match(card.textContent, /out\/timings\.json/, "the recorded identity stays");
+    assert.match(card.textContent, /Matched this task's recorded Job check when written/);
+    assert.equal(page.calls.filter((call) => call.operation === "task_research_get").length, 2);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a read answering late, after the board turned to another Workspace, is dropped (T-17)", async () => {
+  // Activity numbers are unique within one Workspace's store, so the same
+  // number naming another record happens only across Workspaces.
+  const ours = { schema: "research/1", type: "claim", id: "ours", title: "Our claim", text: "In ws-1.", status: "open" };
+  const theirs = { ...ours, id: "theirs", title: "Another Workspace's claim", text: "In ws-2." };
+  const late = deferred();
+  let workspace = "ws-1";
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => ({ task: task(), activities: [recorded(4, workspace === "ws-1" ? ours : theirs, "Claim.")], executions: [], hasMore: false }),
+    task_research_get: () => (workspace === "ws-1" ? late.promise : readOf(4, theirs, 1, 4)),
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    const card = await waitFor(() => page.document.querySelector(".task-research"), "our claim");
+    toggleOf(card).click();
+    await waitFor(() => /Reading the record/.test(card.textContent), "the read under way");
+    workspace = "ws-2";
+    page.render({ workspaceId: "ws-2", revision: 1 });
+    await waitFor(() => /Another Workspace's claim/.test(page.document.querySelector(".task-research")?.textContent ?? ""), "the other Workspace's record");
+    const now = page.document.querySelector(".task-research");
+    assert.equal(toggleOf(now).getAttribute("aria-expanded"), "false", "closed: the open read was for another record");
+    late.resolve(readOf(4, ours, 7, 4));
+    await tick(30);
+    assert.doesNotMatch(page.document.body.textContent, /Version 7 of this record/, "the late answer is not shown");
+    toggleOf(now).click();
+    await waitFor(() => /Version 1 of this record/.test(now.textContent), "its own read");
+    assert.doesNotMatch(now.textContent, /Version 7/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("turning to another Workspace with the same task number opens that Workspace's task: nothing of the old one shows, its late answers are dropped, the board stays (T-17)", async () => {
+  // Only the Workspace changes: the same selected T-1, the same revision.
+  let workspace = "ws-1";
+  const laterPage = deferred();
+  const other = deferred();
+  const note = (seq, body) => ({ seq, taskId: "T-1", kind: "comment", body, actor: mina, at: "2026-10-12T12:10:00Z" });
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: (body) => {
+      if (body.afterSeq !== undefined) return laterPage.promise;
+      if (workspace === "ws-1")
+        return { task: task({ title: "The first Workspace's task" }), activities: [note(5, "A ws-1 note.")], executions: [], hasMore: true, nextAfterSeq: 5 };
+      return other.promise;
+    },
+  }));
+  const pane = () => page.document.querySelector(".collab-detail");
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => /A ws-1 note\./.test(pane()?.textContent ?? ""), "the first Workspace's task");
+    const board = page.document.querySelector(".collab-task-layout");
+    button(page, "More updates").click();
+    await tick();
+    workspace = "ws-2";
+    page.render({ workspaceId: "ws-2" });
+    await waitFor(() => /Opening task/.test(pane()?.textContent ?? ""), "the other Workspace's task opening");
+    assert.doesNotMatch(pane().textContent, /first Workspace|A ws-1 note/, "nothing of the old task while the new one opens");
+    // The old Workspace's page of history answers late: dropped.
+    laterPage.resolve({ task: task({ title: "The first Workspace's task" }), activities: [note(3, "An older ws-1 note.")], executions: [], hasMore: false });
+    await tick();
+    assert.doesNotMatch(pane().textContent, /ws-1/);
+    other.resolve({ task: task({ title: "The second Workspace's task" }), activities: [note(5, "A ws-2 note.")], executions: [], hasMore: false });
+    await waitFor(() => /A ws-2 note\./.test(pane()?.textContent ?? ""), "the second Workspace's task");
+    assert.doesNotMatch(pane().textContent, /ws-1|first Workspace/);
+    assert.match(pane().textContent, /The second Workspace's task/);
+    assert.equal(page.document.querySelector(".collab-task-layout"), board, "the board itself was not mounted again");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("an update in the same Workspace keeps a note being written (T-17)", async () => {
+  let reads = 0;
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+    task_get: () => {
+      reads += 1;
+      return { task: task(), activities: [], executions: [], hasMore: false };
+    },
+  }));
+  try {
+    page.render({ workspaceId: "ws-1" });
+    await openTask(page);
+    await waitFor(() => field(page, "Add a note"), "the note field");
+    await value(page, field(page, "Add a note"), "A note half written");
+    const before = reads;
+    page.render({ workspaceId: "ws-1", revision: 1 });
+    await waitFor(() => reads > before, "the task read again");
+    await tick();
+    assert.equal(field(page, "Add a note").value, "A note half written");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("past the length Core follows, the first of a line names its next version and its latest as unknown, never as newest or as maybe none; the last is its newest, in English and Chinese (T-17)", async () => {
+  const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional",
+    method: { activitySeq: 3, id: "timing", title: "Timing protocol" } };
+  const last = { ...claim, text: "About 3%.", revises: { activitySeq: 208, reason: "Step 201." } };
+  // As Core reads a line of 202 (the first and 201 revisions): the first is
+  // version 1 with its next version known and its latest not; the last is its
+  // own latest with its version not counted. The cited method's line is long too.
+  const method = { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: null, research: methodV1, method: null };
+  const answers = {
+    4: { taskId: "T-1", activitySeq: 4, version: 1, revisedBy: 5, latestActivitySeq: null, research: claim, method },
+    209: { taskId: "T-1", activitySeq: 209, version: null, revisedBy: null, latestActivitySeq: 209, research: last, method },
+  };
+  for (const [language, first, newest] of [
+    ["en", ["Version 1 of this record", "Activity 5 revises this one; the latest version is unknown",
+      "The method as cited is version 1; activity 6 revises it, and its latest version is unknown"],
+      ["This record's version was not counted", "This is the newest version"]],
+    ["zh-Hans", ["这条记录的第 1 版", "活动 5 修订了它；最新版本未确定", "引用的方法是第 1 版；活动 6 修订了它，最新版本未确定"],
+      ["这条记录的版本数未计出", "这是最新版本"]],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(4, claim, "Claim."), recorded(209, last, "Claim, step 201.")], executions: [], hasMore: false },
+      task_research_get: (body) => answers[body.activitySeq],
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "both records");
+      const [one, two] = page.document.querySelectorAll(".task-research");
+      toggleOf(one).click();
+      toggleOf(two).click();
+      await waitFor(() => first.every((text) => one.textContent.includes(text)), `${language}: ${first.join(" / ")}`);
+      await waitFor(() => newest.every((text) => two.textContent.includes(text)), `${language}: ${newest.join(" / ")}`);
+      assert.doesNotMatch(one.textContent, /This is the newest version|这是最新版本/, "unknown is never newest");
+      // A newer version is known to exist: never worded as if there might be none.
+      for (const card of [one, two]) assert.doesNotMatch(card.textContent, /whether|是否/);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
 test("the task list and a task read in Chinese; what was written stays as written (T-189)", async () => {
   const page = mount(quietCore({
     task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },

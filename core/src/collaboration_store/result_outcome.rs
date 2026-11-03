@@ -77,31 +77,7 @@ pub(super) fn validate(
         );
         for artifact in artifacts {
             allowed(artifact, &["jobId", "attempt", "path", "sha256"])?;
-            required_text(artifact, "jobId", 128)?;
-            let attempt = required_text(artifact, "attempt", 128)?;
-            ensure!(
-                uuid::Uuid::parse_str(&attempt).is_ok(),
-                "invalid_input: artifact attempt must be the Job's UUID, not a stage attempt number"
-            );
-            ensure!(
-                relative(&required_text(artifact, "path", 4096)?),
-                "invalid_input: artifact path must be relative without parent traversal"
-            );
-            let sha = required_text(artifact, "sha256", 64)?;
-            ensure!(
-                sha.len() == 64
-                    && sha
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-                "invalid_input: artifact sha256 must be 64 lowercase hexadecimal characters"
-            );
-            let binding = resolve(db, &task.id, &id, artifact)?;
-            ensure!(
-                binding["state"] == "recorded_match",
-                "invalid_input: artifact {} does not match this task's retained checked Job attempt ({})",
-                artifact["path"].as_str().unwrap_or_default(),
-                binding["state"].as_str().unwrap_or_default()
-            );
+            matched(db, &task.id, &id, artifact)?;
         }
     }
     for (key, max) in [("remaining", 8000), ("nextStep", 4000)] {
@@ -113,6 +89,39 @@ pub(super) fn validate(
         value["nextAgent"] = serde_json::to_value(agent_actor(store, db, &id)?)?;
     }
     Ok(Some(value))
+}
+
+/// One artifact reference, checked as a result's are and as a research
+/// record's Job sources are (T-17): this task's Job, its exact attempt, and the
+/// recorded check of that path with the same SHA-256. Refused unless it is a
+/// recorded match; the binding is returned.
+pub(super) fn matched(db: &Connection, task: &str, criterion: &str, artifact: &Value) -> Result<Value> {
+    required_text(artifact, "jobId", 128)?;
+    let attempt = required_text(artifact, "attempt", 128)?;
+    ensure!(
+        uuid::Uuid::parse_str(&attempt).is_ok(),
+        "invalid_input: artifact attempt must be the Job's UUID, not a stage attempt number"
+    );
+    ensure!(
+        relative(&required_text(artifact, "path", 4096)?),
+        "invalid_input: artifact path must be relative without parent traversal"
+    );
+    let sha = required_text(artifact, "sha256", 64)?;
+    ensure!(
+        sha.len() == 64
+            && sha
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "invalid_input: artifact sha256 must be 64 lowercase hexadecimal characters"
+    );
+    let binding = resolve(db, task, criterion, artifact)?;
+    ensure!(
+        binding["state"] == "recorded_match",
+        "invalid_input: artifact {} does not match this task's retained checked Job attempt ({})",
+        artifact["path"].as_str().unwrap_or_default(),
+        binding["state"].as_str().unwrap_or_default()
+    );
+    Ok(binding)
 }
 
 /// Keep the assignment's frozen acceptance, even if the current registration
@@ -142,7 +151,7 @@ pub(super) fn acceptance_context(
         "activitySeq":registration["activitySeq"],"capturedAt":registration["at"]}))
 }
 
-fn resolve(db: &Connection, task: &str, criterion: &str, reference: &Value) -> Result<Value> {
+pub(super) fn resolve(db: &Connection, task: &str, criterion: &str, reference: &Value) -> Result<Value> {
     let mut out = json!({"criterionId":criterion,"jobId":reference["jobId"],"attempt":reference["attempt"],
         "path":reference["path"],"sha256":reference["sha256"],"state":"job_missing",
         "jobStatus":null,"checkedAt":null,"finishedAt":null,"bytes":null,"index":null,

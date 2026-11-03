@@ -212,6 +212,84 @@ export const benchmark = {
 };
 
 /** What the attachments of each desk hold, for a Core or UI test that writes them. */
+/**
+ * A CS systems evaluation (T-17) whose timing method lives on a task, not in
+ * this section: each definition version cites its own Task method record
+ * (activity 3 for v1, activity 6 for v2), so the section has no attachment.
+ * The claim was made with v1 and still names it after v2 replaced it.
+ */
+export const layoutStudy = {
+  op: "put",
+  key: "layout-study",
+  kind: "report",
+  title: "Layout B vs A (synthetic)",
+  attachments: [],
+  body: {
+    root: "body",
+    elements: {
+      body: { type: "BriefBody", props: {}, children: ["desk"] },
+      desk: {
+        type: "ResearchDesk",
+        props: {
+          schema: "research/1",
+          title: "Is layout B faster?",
+          claims: [
+            {
+              id: "small",
+              title: "Layout B looked faster on small inputs",
+              statement: "Timed by iterations in one process (v1), layout B ran the small inputs about 4% faster; timed in fresh processes (v2), the interval crosses zero.",
+              status: "conditional",
+              primary: "small-v2",
+              plots: ["runtime"],
+              conditions: [{ id: "inputs", text: "Small inputs only; the large inputs were not run" }],
+              dependsOn: [{ id: "timing", version: 1 }],
+            },
+          ],
+          plots: [
+            {
+              id: "runtime",
+              title: "Runtime change, layout B vs A",
+              unit: "%",
+              digits: 1,
+              rows: [
+                { id: "small-v1", label: "Small inputs", compare: "small",
+                  estimate: { value: -4.1, low: -6.0, high: -2.2, definition: { id: "timing", version: 1 }, cite: { source: "timing-v1" } } },
+                { id: "small-v2", label: "Small inputs", compare: "small",
+                  estimate: { value: -1.2, low: -3.5, high: 1.1, definition: { id: "timing", version: 2 }, cite: { source: "timing-v2" } } },
+              ],
+            },
+          ],
+          sources: [
+            { id: "timing-v1", label: "Timing protocol, v1", kind: "notes", task: { taskId: "T-1", activitySeq: 3 } },
+            { id: "timing-v2", label: "Timing protocol, v2", kind: "notes", task: { taskId: "T-1", activitySeq: 6 } },
+          ],
+          definitions: [
+            {
+              id: "timing",
+              title: "Timing protocol",
+              versions: [
+                { version: 1, text: "Ten iterations in one process.", cite: { source: "timing-v1" } },
+                { version: 2, text: "Ten fresh processes; iterations in one process are not independent runs.", cite: { source: "timing-v2" },
+                  change: "Iterations in one process share caches and memory layout." },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  },
+};
+
+/** Core's research read of layoutStudy's sources: each Task method record as its task keeps it. */
+export const layoutStudyRecords = (at = "2026-11-02T09:00:00Z") => {
+  const producer = { kind: "agent", id: "mina", name: "Mina" };
+  const method = { kind: "research", type: "method", id: "timing", title: "Timing protocol" };
+  return {
+    "timing-v1": { taskId: "T-1", activitySeq: 3, available: true, record: method, producer, at, version: 1, latestActivitySeq: 6 },
+    "timing-v2": { taskId: "T-1", activitySeq: 6, available: true, record: method, producer, at, version: 2, latestActivitySeq: 6 },
+  };
+};
+
 export const fixtureFiles = {
   "results.json": {
     v2: {

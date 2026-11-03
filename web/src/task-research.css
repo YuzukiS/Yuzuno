@@ -1,0 +1,164 @@
+/* A research record in a task's activity (T-17). Quiet: the record is the
+   author's text; Yuzuno's own words are the small notes. */
+.task-research {
+  margin: 6px 0 4px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  font-size: 0.86rem;
+}
+.task-research-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.task-research-kind {
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+.task-research-id {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+.task-research-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  /* On the soft fill, secondary text falls under 4.5:1 in light themes. */
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+.task-research-head .task-research-tag {
+  margin-left: 0;
+}
+.task-research h5 {
+  margin: 4px 0 2px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.task-research-status {
+  margin: 0 0 4px;
+  font-weight: 550;
+}
+.task-research-status span,
+.task-research-note,
+.task-research-identity,
+.task-research-method,
+.task-research-now {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.task-research-text {
+  margin: 4px 0 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.task-research-revises,
+.task-research-method {
+  margin: 4px 0;
+  font-size: 0.8rem;
+}
+.task-research-revises strong {
+  font-weight: 600;
+}
+.task-research-list,
+.task-research-sources {
+  margin: 6px 0;
+}
+.task-research-list > strong,
+.task-research-sources > strong {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.task-research-list ul,
+.task-research-sources ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+.task-research-sources ul {
+  padding-left: 0;
+  list-style: none;
+}
+.task-research-source {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.task-research-source:first-child {
+  border-top: 0;
+}
+.task-research-source-name {
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.task-research-source-name a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.task-research-identity,
+.task-research-note,
+.task-research-now {
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+.task-research-identity code {
+  font-size: 0.74rem;
+}
+/* The state's colour is a mark beside its words, never the words' colour. */
+.task-research-now::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--line);
+  vertical-align: 1px;
+}
+.task-research-now[data-state="recorded_match"]::before,
+.task-research-now[data-state="readable"]::before {
+  background: var(--green);
+}
+.task-research-now[data-state="attempt_mismatch"]::before,
+.task-research-now[data-state="artifact_missing"]::before,
+.task-research-now[data-state="artifact_mismatch"]::before,
+.task-research-now[data-state="job_missing"]::before,
+.task-research-now[data-state="missing"]::before {
+  background: var(--coral);
+}
+.task-research-failed {
+  color: var(--ink);
+}
+.task-research-toggle {
+  margin-top: 2px;
+}
+.task-research-details {
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.task-research-details p {
+  margin: 2px 0;
+}
+.task-research-read {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
