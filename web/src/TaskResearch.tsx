@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { formatTime } from "./home/brief/brief-catalog";
 import { strings, useStrings } from "./i18n";
@@ -11,7 +11,11 @@ import "./task-research.css";
  * the identity recorded with it; what holds now (the newest version, each
  * source's state, the method version a claim was made with) is read on
  * request from task_research_get, by the same resolver a Home research desk
- * uses. Nothing here says a record is true: a claim's status is its author's,
+ * uses: again at every opening, and with "Check again", because a record's
+ * newest version and its sources' states change without the task changing
+ * (a research record is a comment: the task's version stays). An answer is
+ * kept for one record (Workspace, task and activity) and shown with when it
+ * was read; a late answer for another record, or an older read, is dropped. Nothing here says a record is true: a claim's status is its author's,
  * a Job source is a recorded match of this task's Job, and an external source
  * is as stated.
  */
@@ -69,6 +73,8 @@ const text = strings({
   coverage: "Coverage",
   details: "Version and sources now",
   hide: "Hide",
+  again: "Check again",
+  checked: (at: string) => `Read ${at}`,
   loading: "Reading the record…",
   failed: (reason: string) => `The record couldn't be read: ${reason}`,
   versionOf: (version: number) => `Version ${version} of this record`,
@@ -108,6 +114,8 @@ const text = strings({
   coverage: "覆盖范围",
   details: "版本与来源现状",
   hide: "收起",
+  again: "重新核对",
+  checked: (at) => `读取于 ${at}`,
   loading: "正在读取记录…",
   failed: (reason) => `无法读取这条记录：${reason}`,
   versionOf: (version) => `这条记录的第 ${version} 版`,
@@ -197,24 +205,58 @@ function SourceRow({ source, now }: { source: ResearchSource; now?: string }) {
   );
 }
 
-export function TaskResearch({ taskId, seq, record }: { taskId: string; seq: number; record: ResearchRecord }) {
+type Read = { record: string; data?: ResearchView; error?: string; readAt?: string };
+
+export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId: string; taskId: string; seq: number; record: ResearchRecord }) {
   const t = useStrings(text);
+  const time = useTimeDisplay();
+  // The record this card is: an answer for any other is never shown here.
+  const identity = `${workspaceId}\n${taskId}\n${seq}`;
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<{ data?: ResearchView; error?: string } | null>(null);
+  const [read, setRead] = useState<Read | null>(null);
+  const reading = useRef<{ generation: number; controller: AbortController | null }>({ generation: 0, controller: null });
+  const stop = () => {
+    reading.current.generation += 1;
+    reading.current.controller?.abort();
+    reading.current.controller = null;
+  };
+  // Another record in this place (another Workspace, task or activity):
+  // forget the answer, close, and drop any read still on its way.
   useEffect(() => {
-    if (!open || view) return;
+    stop();
+    setRead(null);
+    setOpen(false);
+    return stop;
+  }, [identity]);
+  const check = () => {
+    stop();
+    const generation = reading.current.generation;
     const controller = new AbortController();
+    reading.current.controller = controller;
+    const mine = () => reading.current.generation === generation && !controller.signal.aborted;
+    setRead({ record: identity });
     api<ResearchView>("/collaboration/task_research_get", {
       method: "POST",
       body: JSON.stringify({ taskId, activitySeq: seq }),
       signal: controller.signal,
     })
-      .then((data) => setView({ data }))
+      .then((data) => {
+        if (mine()) setRead({ record: identity, data, readAt: new Date().toISOString() });
+      })
       .catch((error) => {
-        if (!controller.signal.aborted) setView({ error: errorText(error) });
+        if (mine()) setRead({ record: identity, error: errorText(error) });
       });
-    return () => controller.abort();
-  }, [open, view, taskId, seq]);
+  };
+  const toggle = () => {
+    if (open) {
+      stop();
+      setOpen(false);
+    } else {
+      setOpen(true);
+      check();
+    }
+  };
+  const view = read?.record === identity ? read : null;
   const now = view?.data?.research.sources;
   const id = `task-research-${seq}`;
   return (
@@ -266,16 +308,22 @@ export function TaskResearch({ taskId, seq, record }: { taskId: string; seq: num
         className="text-button task-research-toggle"
         aria-expanded={open}
         aria-controls={`${id}-now`}
-        onClick={() => setOpen((shown) => !shown)}
+        onClick={toggle}
       >
         {open ? t.hide : t.details}
       </button>
       {open && (
         <div className="task-research-details" id={`${id}-now`} role="status">
-          {!view && <p>{t.loading}</p>}
+          {!view?.data && !view?.error && <p>{t.loading}</p>}
           {view?.error && <p className="task-research-failed">{t.failed(view.error)}</p>}
           {view?.data && (
             <>
+              <p className="task-research-read">
+                {view.readAt && t.checked(formatTime(view.readAt, time))}
+                <button type="button" className="text-button task-research-again" onClick={check}>
+                  {t.again}
+                </button>
+              </p>
               <p>
                 {view.data.version ? t.versionOf(view.data.version) : null}
                 {" · "}

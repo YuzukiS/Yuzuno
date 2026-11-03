@@ -455,6 +455,7 @@ export function CollaborationBoard({
   projects = [],
   scope = ALL_PROJECTS,
   focus = null,
+  workspaceId = "",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -468,6 +469,8 @@ export function CollaborationBoard({
   scope?: ProjectScope;
   /** A link to one task, optionally to one of its reviews. */
   focus?: { taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null;
+  /** Which Workspace the board is reading: what is kept per record names it (T-17). */
+  workspaceId?: string;
 }) {
   const t = useStrings(boardText);
   const language = useLanguage();
@@ -1014,6 +1017,7 @@ export function CollaborationBoard({
                 <TaskPane
                   key={selected}
                   id={selected}
+                  workspaceId={workspaceId}
                   agents={agents}
                   projects={projects}
                   revision={revision}
@@ -1165,6 +1169,7 @@ function NewTask({
 
 function TaskPane({
   id,
+  workspaceId,
   agents,
   projects,
   revision,
@@ -1175,6 +1180,7 @@ function TaskPane({
   focusWorkspaces = false,
 }: {
   id: string;
+  workspaceId: string;
   agents: Agent[];
   projects: Project[];
   revision: number;
@@ -1872,7 +1878,7 @@ function TaskPane({
                     <p className="collab-hint">{t.activityKinds[activity.kind]}</p>
                   )}
                   {activity.research && (
-                    <TaskResearch taskId={detail.task.id} seq={activity.seq} record={activity.research} />
+                    <TaskResearch workspaceId={workspaceId} taskId={detail.task.id} seq={activity.seq} record={activity.research} />
                   )}
                   {activity.source &&
                     agents.some(

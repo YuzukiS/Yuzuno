@@ -3691,6 +3691,7 @@ export function App() {
         projects={projects}
         scope={scope}
         focus={taskFocus}
+        workspaceId={previewMode ? "" : workspaceId}
       />
       {agent && !isClaude && !isOpenCode && (
         <CodexGoalDialog

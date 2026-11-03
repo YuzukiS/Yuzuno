@@ -156,3 +156,9 @@
 .task-research-details p {
   margin: 2px 0;
 }
+.task-research-read {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}

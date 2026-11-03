@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { benchmark, doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+import { benchmark, doseStudy, fixtureFiles, layoutStudy, layoutStudyRecords } from "./research-fixtures.mjs";
 
 // T-9: a research desk as Home draws it. The real BriefSectionBody in JSDOM,
 // with two synthetic desks of different shapes first accepted by the real
@@ -139,28 +139,33 @@ const radios = (document, label) => [...document.querySelectorAll(`[role="radiog
 const checked = (document, label) => radios(document, label).find((radio) => radio.getAttribute("aria-checked") === "true");
 const radio = (document, label, text) => radios(document, label).find((item) => item.textContent.includes(text));
 
-test("a source naming a Task research record shows as its task keeps it, with no attachment (T-17)", async () => {
-  const put = structuredClone(doseStudy);
-  put.body.elements.desk.props.sources[1] = { id: "protocol", label: "Protocol", kind: "notes", task: { taskId: "T-17", activitySeq: 42 } };
-  put.attachments = put.attachments.filter((attachment) => attachment.name !== "protocol.md");
-  for (const [record, expected] of [
-    [{ taskId: "T-17", activitySeq: 42, available: true, record: { kind: "research", type: "method", id: "recovery", title: "Recovery definition" },
-      producer: { kind: "agent", id: "dev-5", name: "Dev 5" }, at: "2026-10-30T09:00:00Z", version: 2, latestActivitySeq: 57 },
-      ["Task record T-17 · activity 42", "Method “Recovery definition”", "version 2", "by Dev 5", "a newer version is activity 57", "the record's identity, not a check of it"]],
-    [{ taskId: "T-17", activitySeq: 42, available: false, reason: "activity_not_found" }, ["Task record T-17 · activity 42", "The task has no such activity"]],
+test("a definition's versions show the Task method records they cite, each its own, with no attachment (T-17)", async () => {
+  const records = layoutStudyRecords();
+  for (const [sources, expected] of [
+    [records, [
+      "Task record T-1 · activity 3", "Method “Timing protocol” · version 1", "a newer version is activity 6",
+      "Task record T-1 · activity 6", "Method “Timing protocol” · version 2", "by Mina", "the record's identity, not a check of it",
+    ]],
+    [{ ...records, "timing-v2": { taskId: "T-1", activitySeq: 6, available: false, reason: "activity_not_found" } },
+      ["Task record T-1 · activity 3", "Task record T-1 · activity 6", "The task has no such activity"]],
   ]) {
     const page = mount((url) => {
-      const answer = serve(put)(url);
-      if (answer.body?.sources) answer.body.sources.protocol = record;
-      return answer;
+      const match = url.match(/\/brief\/research\/([^/]+)\/desk\?version=(\d+)$/);
+      return match && decodeURIComponent(match[1]) === layoutStudy.key
+        ? { body: { key: layoutStudy.key, version: Number(match[2]), elementId: "desk", values: {}, sources } }
+        : { status: 404, body: { error: "not here" } };
     });
     try {
-      page.window.renderSection(section(page, put, 3), PROJECT, "ws-1");
+      page.window.renderSection(section(page, layoutStudy, 3), PROJECT, "ws-1");
       const desk = await until(() => page.document.querySelector(".research-desk"), "the desk");
-      await until(() => desk.textContent.includes(expected[1]), `the record: ${expected[1]}`);
+      radio(page.document, "Views of this desk", "Definitions").click();
+      await until(() => desk.textContent.includes(expected[1]), `the records: ${expected[1]}`);
       for (const text of expected) assert.ok(desk.textContent.includes(text), text);
+      // Version 1 still names its own record, after version 2 replaced it.
+      const versions = [...desk.querySelectorAll(".research-versions > li")].map((item) => item.textContent);
+      assert.ok(versions.some((item) => item.includes("Ten iterations in one process.") && item.includes("activity 3")), versions.join(" | "));
+      assert.ok(versions.some((item) => item.includes("Ten fresh processes") && item.includes("activity 6")), versions.join(" | "));
       assert.ok(!desk.textContent.match(/verified|checked by/i), "nothing is called verified");
-      // Core reads the record; the desk asks only for its own research read.
       assert.ok(page.requests.every((request) => request.method === "GET" && /\/brief\/research\//.test(request.url)), JSON.stringify(page.requests));
       assert.deepEqual(page.errors, []);
     } finally {

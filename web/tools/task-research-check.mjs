@@ -17,7 +17,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
-import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+import { layoutStudy, layoutStudyRecords } from "./research-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -85,30 +85,10 @@ const view = (seq) => {
   if (seq === 3) return { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: 6, research: methodV1, method: null };
   return { taskId: "T-1", activitySeq: 6, version: 2, revisedBy: null, latestActivitySeq: 6, research: methodV2, method: null };
 };
-// A Home desk whose "protocol" source is the Task method record, version 2.
-const desk = structuredClone(doseStudy);
-desk.body.elements.desk.props.sources[1] = { id: "protocol", label: "Protocol", kind: "notes", task: { taskId: "T-1", activitySeq: 6 } };
-desk.attachments = desk.attachments.filter((attachment) => attachment.name !== "protocol.md");
-const pointer = (document, path) => path.split("/").slice(1).reduce((value, step) => (value && typeof value === "object" ? value[step] : undefined), document);
-function research(version) {
-  const props = desk.body.elements.desk.props;
-  const values = {};
-  for (const plot of props.plots)
-    for (const row of plot.rows)
-      for (const [id, estimate] of [[row.id, row.estimate], ...(row.parts ?? []).map((part) => [part.id, part.estimate])])
-        for (const field of ["value", "low", "high"]) {
-          const number = estimate[field];
-          if (!number || typeof number !== "object") continue;
-          const found = pointer(fixtureFiles[number.from], number.pointer);
-          values[`${id}.${field}`] = typeof found === "number" ? { status: "read", value: found, from: number.from } : { status: "missing", from: number.from };
-        }
-  const sources = {};
-  for (const source of props.sources)
-    sources[source.id] = source.task
-      ? { taskId: "T-1", activitySeq: 6, available: true, record: { kind: "research", type: "method", id: "timing", title: "Timing protocol" }, producer: mina, at, version: 2, latestActivitySeq: 6 }
-      : { attachment: source.snapshot, takenAt: at, size: 1200, sha256: "5f3c".padEnd(64, "0"), available: true };
-  return { key: desk.key, version, elementId: "desk", values, sources };
-}
+// A Home desk on the same study: each version of its timing definition cites
+// its own Task method record (activity 3, then 6), with no attachment.
+const desk = layoutStudy;
+const research = (version) => ({ key: desk.key, version, elementId: "desk", values: {}, sources: layoutStudyRecords(at) });
 const agents = [mina, iris].map((a) => ({ ...a, projectId: "p1", harness: "codex", cwd: "/fixture", model: "test-model", settings: {}, color: "sage",
   createdAt: at, updatedAt: at, status: "idle", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, closedAt: null }));
 const projects = [{ id: "p1", name: "Layouts (synthetic)", defaultDirs: {}, archivedAt: null, createdAt: at, updatedAt: at }];
@@ -268,6 +248,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     await until("the record's state now", async () => (await claimCard.innerText()).includes("Version 1 of this record"));
     assert.equal(await toggle.getAttribute("aria-expanded"), "true");
     const text = await claimCard.innerText();
+    assert.ok(/Read /.test(text), "when it was read");
     for (const expected of ["This is the newest version", "The method as cited is version 1; a newer version is activity 6",
       "Now: the Job's record still lists this file and hash; the file itself was not read", "Now: Record readable", "Now: Not checked"])
       assert.ok(text.includes(expected), `${expected}: ${text}`);
@@ -284,7 +265,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
   await page.close();
 }
 
-await step("desktop: a Home research desk shows its definition as the Task method record, with no attachment", async () => {
+await step("desktop: a Home research desk's definition versions each show their own Task method record, with no attachment", async () => {
   await open(1440, 960, "light");
   if (!(await page.locator(".home-view").isVisible())) await page.locator(".toolbar-nav .catchup-nav").first().click();
   const toggle = page.locator('.home-view .home-panel-toggle[aria-expanded="false"]');
@@ -293,10 +274,14 @@ await step("desktop: a Home research desk shows its definition as the Task metho
   const deskBlock = page.locator(`.home-view [data-section-key="${desk.key}"] .research-desk`);
   await deskBlock.waitFor();
   await deskBlock.locator('[role="radiogroup"][aria-label="Views of this desk"] [role="radio"]', { hasText: "Definitions" }).click();
-  await until("the task record", async () => (await deskBlock.innerText()).includes("Task record T-1 · activity 6"));
+  await until("the task records", async () => (await deskBlock.innerText()).includes("Task record T-1 · activity 6"));
   const text = await deskBlock.innerText();
-  for (const expected of ["Method “Timing protocol”", "version 2", "by Mina", "the record's identity, not a check of it"])
+  for (const expected of ["Method “Timing protocol” · version 2", "by Mina", "the record's identity, not a check of it"])
     assert.ok(text.includes(expected), `${expected}: ${text}`);
+  // Version 1 keeps the record it was written with, after version 2 replaced it.
+  const versions = await deskBlock.locator(".research-versions > li").allInnerTexts();
+  assert.ok(versions.some((item) => item.includes("Ten iterations in one process.") && item.includes("activity 3") && item.includes("version 1")), versions.join(" | "));
+  assert.ok(versions.some((item) => item.includes("Ten fresh processes") && item.includes("activity 6") && item.includes("version 2")), versions.join(" | "));
   assert.ok(!/verified|checked by/i.test(text));
   await deskBlock.scrollIntoViewIfNeeded();
   await deskBlock.screenshot({ path: resolve(output, "desktop-desk-definition.png") });
