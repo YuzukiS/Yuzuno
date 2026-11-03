@@ -212,9 +212,9 @@ test("a Task record source says newest only when it is: newer, unknown, and noth
       producer: { kind: "agent", id: "iris", name: "Iris" }, at: "2026-11-02T09:00:00Z" },
   };
   for (const [language, expected, absent] of [
-    ["en", ["activity 3 · Method “Timing protocol” · version 1", "whether there is a newer version is unknown", "activity 6 · Method “Timing protocol” · version 2", "the newest version", "Result “Layout B shipped”"],
-      /Result “Layout B shipped” · version|Layout B shipped” · by Iris, [^·]*· (the newest|whether)/],
-    ["zh-Hans", ["是否有较新的版本未知", "这是最新版本"], /结果“Layout B shipped” · 第/],
+    ["en", ["activity 3 · Method “Timing protocol” · version 1", "a newer version exists; the latest version is unknown", "activity 6 · Method “Timing protocol” · version 2", "the newest version", "Result “Layout B shipped”"],
+      /Result “Layout B shipped” · version|Layout B shipped” · by Iris, [^·]*· (the newest|a newer)|whether there is a newer/],
+    ["zh-Hans", ["已有较新的版本；最新版本未确定", "这是最新版本"], /结果“Layout B shipped” · 第|是否有较新/],
   ]) {
     const page = mount((url) => (/\/brief\/research\//.test(url) ? layoutRead(sources) : { status: 404, body: { error: "not here" } }));
     try {
