@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { ArrowUpRight, Clock3, Eye, MessageSquareReply, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
@@ -51,6 +51,9 @@ export function PinnedSection({
   const [replying, setReplying] = useState(
     () => !!reply && hasCardReply(cardReplySlot(reply.workspaceId, pin.projectId, pin.key)),
   );
+  // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
+  const [replyOpened, setReplyOpened] = useState(false);
+  const replyButton = useRef<HTMLButtonElement>(null);
   return (
     <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={t.pinnedFrom(title, projectName)}>
       <header className="home-pinned-head">
@@ -102,10 +105,14 @@ export function PinnedSection({
               <button
                 type="button"
                 className="quiet-button"
+                ref={replyButton}
                 aria-expanded={replying}
                 aria-label={t.replyLabel(source.section.title)}
                 title={t.replyTitle(source.section.owner.name)}
-                onClick={() => setReplying((open) => !open)}
+                onClick={() => {
+                  setReplyOpened(true);
+                  setReplying((open) => !open);
+                }}
               >
                 <MessageSquareReply size={13} /> {t.reply}
               </button>
@@ -118,7 +125,11 @@ export function PinnedSection({
               projectId={pin.projectId}
               workspaceId={reply.workspaceId}
               agents={reply.agents}
-              onClose={() => setReplying(false)}
+              opened={replyOpened}
+              onClose={() => {
+                replyButton.current?.focus();
+                setReplying(false);
+              }}
             />
           )}
         </>
