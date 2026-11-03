@@ -6,8 +6,9 @@
 // shows, one a Core reset brings (also when it comes right after an announcement, before the read),
 // one in a new native session, one shown again after a return from another Agent (also straight back,
 // before the other was read), the same list read again, or one made while the stream was down,
-// whether Core replays its announcement when the stream resumes or resets it (Lead 3299; a resume with
-// nothing to replay reads nothing, and once it has stayed quiet the next request fades, R1 276d4a1d), or one
+// whether Core replays its announcement when the stream resumes or resets it (Lead 3299), or arrives
+// before a resumed stream's first heartbeat, which ends its replay (Lead 3356, R1 276d4a1d: a resume
+// reads no conversation; after that heartbeat the first live request fades), or one
 // announced while Home was over the conversation (Lead 3301); a request announced after each of these
 // fades again. Nothing plays under reduced motion, and reduced motion
 // turned on while it fades stops the fade.
@@ -51,8 +52,9 @@ let moriPending;
 let staged = [];
 // While set, Hana's detail is answered this late: a return to Mori comes before it is read.
 let holdHana = 0;
-// Reads of Mori's detail, to tell that a recovery read happened, once.
+// Reads of Mori's detail, to tell that a resume reads none; while set, they are answered this late.
 let moriReads = 0;
+let holdMori = 0;
 // A Codex Agent with a native thread reads its account usage and MCP tools: none known here.
 const usage = {
   revision: 1, status: "unknown", account: null, accountId: null,
@@ -95,7 +97,10 @@ async function serve(route) {
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
     if (holdHana && url.pathname === "/api/agents/b") await new Promise((done) => setTimeout(done, holdHana));
-    if (url.pathname === "/api/agents/a") moriReads++;
+    if (url.pathname === "/api/agents/a") {
+      moriReads++;
+      if (holdMori) await new Promise((done) => setTimeout(done, holdMori));
+    }
     const known = gets()[url.pathname];
     if (known === undefined && !report.unknownGets.includes(url.pathname)) report.unknownGets.push(url.pathname);
     return route.fulfill({ json: known ?? {} });
@@ -127,8 +132,30 @@ function pageHelpers() {
         this.onmessage?.({ data: JSON.stringify({ type: "resumed" }), lastEventId: String(++id) });
       }, 0);
     }
-    addEventListener() {}
+    addEventListener(type, listener) { ((this.listeners ??= {})[type] ??= []).push(listener); }
     close() { this.readyState = 2; }
+  };
+  // Core's named heartbeat on the open stream; after `resumed` the first one ends its replay.
+  window.__heartbeat = () => {
+    const stream = streams.findLast((s) => s.readyState === 1);
+    for (const listener of stream?.listeners?.heartbeat ?? []) listener({ type: "heartbeat" });
+  };
+  // The stream breaks, and stays down until __reopenResumed.
+  window.__break = () => {
+    const stream = streams.findLast((s) => s.readyState === 1);
+    stream.readyState = 0;
+    stream.onerror?.({});
+  };
+  // A heartbeat for a connection that is not open (it broke): not this connection's.
+  window.__staleHeartbeat = () => {
+    for (const listener of streams.at(-1)?.listeners?.heartbeat ?? []) listener({ type: "heartbeat" });
+  };
+  window.__reopenResumed = async () => {
+    await fetch("/__check/release");
+    const stream = streams.at(-1);
+    stream.readyState = 1;
+    stream.onopen?.({});
+    stream.onmessage?.({ data: JSON.stringify({ type: "resumed" }), lastEventId: String(++id) });
   };
   const send = (event) => {
     const stream = streams.findLast((s) => s.readyState === 1);
@@ -188,11 +215,14 @@ function pageHelpers() {
   window.__sample = (span, how) => new Promise((done) => {
     const t0 = performance.now();
     const seen = [];
+    const record = () => seen.push({ t: Math.round(performance.now() - t0), reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, cards: window.__cards() });
     const frame = () => {
-      seen.push({ t: Math.round(performance.now() - t0), reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, cards: window.__cards() });
+      record();
       if (performance.now() - t0 < span) requestAnimationFrame(frame);
       else done(seen);
     };
+    // The first record is taken before `how` runs: what it brings can come within one frame.
+    record();
     requestAnimationFrame(frame);
     if (how) window[how]();
   });
@@ -231,6 +261,7 @@ for (const run of runs) {
   moriPending = [listed];
   staged = [];
   moriReads = 0;
+  holdMori = 0;
   const heldBefore = report.held.length;
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
@@ -329,16 +360,59 @@ for (const run of runs) {
     onlyShows("after a short break, Core resets the stream instead: the request made meanwhile",
       await bring(request("reset-1", "npm run deps"), "__resetReplay", 1500));
     fadesIn("after that recovery, a request announced live", await bring(request("live-after", "npm run size"), "__announce"));
-    // A short break that resumes with nothing to replay (R1 276d4a1d): the conversation is not read
-    // again (a resumed reconnect reads no conversation, ui.test #137), and once the stream has stayed
-    // quiet about Mori (1.5 s) the first request announced live fades in.
+    // Lead 3356 (R1 276d4a1d): a resumed stream's replay is over at its first heartbeat, not after a
+    // guessed time. S1: a break that resumes with nothing to replay reads no conversation (ui.test
+    // #137); after the heartbeat, the first request announced live fades in.
+    const heartbeat = async () => { await page.evaluate(() => window.__heartbeat()); await page.waitForTimeout(150); };
     const readsBefore = moriReads;
     await page.evaluate(() => window.__quietResume());
-    await page.waitForTimeout(2000);
-    const recoveryReads = moriReads - readsBefore;
-    ok(`${tag}: after a short break the stream resumes with nothing to replay: Mori's conversation is not read again (${recoveryReads} reads)`,
-      recoveryReads === 0, recoveryReads);
-    fadesIn("after that quiet recovery, the first request announced live", await bring(request("live-quiet", "npm run quiet"), "__announce"));
+    await page.waitForTimeout(600);
+    const resumeReads = moriReads - readsBefore;
+    ok(`${tag}: after a short break the stream resumes with nothing to replay: Mori's conversation is not read again (${resumeReads} reads)`,
+      resumeReads === 0, resumeReads);
+    await heartbeat();
+    fadesIn("after the resumed stream's first heartbeat, the first request announced live", await bring(request("beat-1", "npm run quiet"), "__announce"));
+    // S1b: before that heartbeat, a request announced live only shows (its replay may not be over).
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(300);
+    onlyShows("before a resumed stream's first heartbeat, a request announced live", await bring(request("pre-beat", "npm run pre"), "__announce"));
+    await heartbeat();
+    fadesIn("and after that heartbeat, a request announced live", await bring(request("post-beat", "npm run post"), "__announce"));
+    // S2: a replay slower than any guessed window (2.5 s after `resumed`), still before the heartbeat.
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(2500);
+    onlyShows("a replay that arrives 2.5 s after the stream resumed, before its heartbeat", await bring(request("slow-1", "npm run slow"), "__announce"));
+    await heartbeat();
+    fadesIn("after the slow replay's heartbeat, a request announced live", await bring(request("post-slow", "npm run later"), "__announce"));
+    // S3: a heartbeat on a connection that broke again does not end the next one's replay.
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.__break());
+    await page.evaluate(() => window.__staleHeartbeat());
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.__reopenResumed());
+    await page.waitForTimeout(200);
+    onlyShows("after a heartbeat on a broken connection and another resume, a request announced live", await bring(request("stale-1", "npm run stale"), "__announce"));
+    await heartbeat();
+    fadesIn("after that connection's own heartbeat, a request announced live", await bring(request("post-stale", "npm run own"), "__announce"));
+    // S4: the replay ends while a read is on its way: nothing is live until it, and the one queued
+    // behind it, are done.
+    await page.evaluate(() => window.__quietResume());
+    await page.waitForTimeout(200);
+    holdMori = 1500;
+    const inflightMark = await calls();
+    staged.push(() => { moriPending = [...moriPending, request("held-1", "npm run held")]; });
+    const inflight = page.evaluate(() => window.__sample(4200, "__announce"));
+    await page.waitForTimeout(500);
+    await page.evaluate(() => window.__heartbeat());
+    staged.push(() => { moriPending = [...moriPending, request("held-2", "npm run held2")]; });
+    await page.evaluate(() => window.__announce());
+    const inflightFrames = await inflight;
+    holdMori = 0;
+    const heldShown = inflightFrames.filter((f) => f.cards["request-held-1"] && f.cards["request-held-2"]);
+    ok(`${tag}: requests read by reads still on their way when the replay ended show with nothing playing (${heldShown.length} frames, ${(await calls()) - inflightMark} calls)`,
+      heldShown.length > 5 && (await calls()) === inflightMark && still(inflightFrames), heldShown[0]?.cards["request-held-1"]);
+    fadesIn("once those reads are done, a request announced live", await bring(request("post-held", "npm run done"), "__announce"));
 
     // To another Agent and straight back, before that one is read: Mori's next detail is a new baseline,
     // whatever was announced for it before (a request made meanwhile shows with nothing playing).
