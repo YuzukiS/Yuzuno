@@ -51,11 +51,19 @@ export function PinnedSection({
   const [replying, setReplying] = useState(
     () => !!reply && hasCardReply(cardReplySlot(reply.workspaceId, pin.projectId, pin.key)),
   );
-  // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
+  // Opened by the user here, not kept from before; closed, focus goes back to
+  // Reply (T-19 HM:S7), or, with the card folded meanwhile and Reply hidden in
+  // it, to the card's fold button. The card stays as the user folded it.
   const [replyOpened, setReplyOpened] = useState(false);
   const replyButton = useRef<HTMLButtonElement>(null);
+  const card = useRef<HTMLElement>(null);
+  const closeReply = () => {
+    const fold = card.current?.querySelector<HTMLButtonElement>(".home-pinned-head .home-fold");
+    (collapsed ? fold : replyButton.current)?.focus();
+    setReplying(false);
+  };
   return (
-    <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={t.pinnedFrom(title, projectName)}>
+    <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={t.pinnedFrom(title, projectName)} ref={card}>
       <header className="home-pinned-head">
         <h2>
           {source.state === "shown" && <FoldButton collapsed={collapsed} onToggle={toggleFold} label={title} controls={body} />}
@@ -126,10 +134,7 @@ export function PinnedSection({
               workspaceId={reply.workspaceId}
               agents={reply.agents}
               opened={replyOpened}
-              onClose={() => {
-                replyButton.current?.focus();
-                setReplying(false);
-              }}
+              onClose={closeReply}
             />
           )}
         </>
