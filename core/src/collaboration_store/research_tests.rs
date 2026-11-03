@@ -389,3 +389,47 @@ fn past_the_followed_length_a_line_says_its_newest_and_version_are_unknown() {
     let cited = desk_source(&db, "T-1", first).unwrap();
     assert!(cited["latestActivitySeq"].is_null() && cited["version"] == 1, "{cited}");
 }
+
+#[test]
+fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() {
+    let (_dir, store) = setup();
+    let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Ten iterations in one process.")).unwrap());
+    let mut revised = method("timing", "Ten fresh processes.");
+    revised["revises"] = json!({"activitySeq":m1,"reason":"Iterations in one process are not independent runs."});
+    let m2 = seq(&comment(&store, "author", "m2", "T-1", revised).unwrap());
+    // Units ms, s and none; methods by their fixed activities; a level given
+    // by two of three; one definition throughout. Partial facts stay as given.
+    let entries = json!([
+        {"id":"a","label":"A","status":"included","unit":"ms","definition":"median of runs","level":"process",
+            "method":{"activitySeq":m1},"value":{"value":12.0,"low":10.5}},
+        {"id":"b","label":"B","status":"included","unit":"s","definition":"median of runs",
+            "method":{"activitySeq":m2},"n":10},
+        {"id":"c","label":"C","status":"included","definition":"median of runs","level":"process",
+            "method":{"activitySeq":m1},"value":{"value":11.0,"high":12.5}},
+        {"id":"d","label":"D","status":"missing","reason":"The large set was not exported.","unit":"ms"},
+    ]);
+    let answer = comment(&store, "author", "mixed", "T-1", comparison(m1, m2, entries)).unwrap();
+    let stored = &answer["activity"]["research"];
+    let summary = &stored["comparability"];
+    assert_eq!(summary["differs"], json!(["unit", "method"]), "known values that differ are said: {summary}");
+    assert_eq!(summary["unknown"], json!(["unit", "level"]), "and so is what some entries leave out: {summary}");
+    assert_eq!(summary["shared"], json!({"definition":"median of runs"}), "a field missing anywhere is never shared");
+    assert_eq!(summary["aligned"], false);
+    assert_eq!(summary["counts"], json!({"included":3,"excluded":0,"missing":1,"not_done":0}));
+    // The entries keep exactly what their author gave, nothing made up.
+    assert_eq!(stored["entries"][0]["value"], json!({"value":12.0,"low":10.5}));
+    assert_eq!(stored["entries"][1].get("value"), None);
+    assert_eq!((stored["entries"][1]["n"].clone(), stored["entries"][1].get("level")), (json!(10), None));
+    assert_eq!(stored["entries"][2]["value"], json!({"value":11.0,"high":12.5}));
+    assert_eq!((stored["entries"][3]["unit"].clone(), stored["entries"][3].get("value")), (json!("ms"), None));
+    assert_eq!(stored["entries"][1]["method"]["activitySeq"], m2, "each entry keeps the method version it names");
+    // Every entry giving the same value for a field is shared, and with one
+    // missing field the comparison says that alone.
+    let same = json!([entry("x", "included", m2, "%", "process"), {"id":"y","label":"Y","status":"included",
+        "method":{"activitySeq":m2},"unit":"%","definition":"median of runs","n":10}]);
+    let mut record = comparison(m2, m2, same);
+    record["id"] = json!("same");
+    let summary = comment(&store, "author", "same", "T-1", record).unwrap()["activity"]["research"]["comparability"].clone();
+    assert_eq!((summary["differs"].clone(), summary["unknown"].clone()), (json!([]), json!(["level"])));
+    assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","method":m2}));
+}

@@ -1642,3 +1642,58 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
   }
 });
 
+
+test("a comparison entry shows each part its author gave and says which part is missing; a field can differ and be missing at once (T-17)", async () => {
+  const entries = [
+    { id: "a", label: "Iterations", status: "included", unit: "ms", level: "process", definition: "median of runs",
+      method: { activitySeq: 3, id: "timing", title: "Timing protocol" }, value: { value: 12, low: 10.5 } },
+    { id: "b", label: "Fresh processes", status: "included", unit: "s", n: 10, definition: "median of runs",
+      method: { activitySeq: 6, id: "timing", title: "Timing protocol" } },
+    { id: "c", label: "Second machine", status: "included", definition: "median of runs", value: { value: 11, high: 12.5 } },
+    { id: "d", label: "Large inputs", status: "missing", reason: "The large set was not exported.", unit: "ms" },
+    { id: "e", label: "Warm cache", status: "excluded", reason: "The cache was left warm.", level: "iteration", n: 0 },
+  ];
+  const record = { schema: "research/1", type: "comparison", id: "partial", title: "Layouts, partly reported", text: "As reported.", entries,
+    comparability: { aligned: false, shared: { definition: "median of runs" }, differs: ["unit", "method"], unknown: ["unit", "level", "method"],
+      counts: { included: 3, excluded: 1, missing: 1, not_done: 0 } } };
+  for (const [language, expected] of [
+    ["en", {
+      a: ["12 [10.5, high not given] ms", "process · median of runs · method in activity 3"],
+      b: ["No value given · unit s", "sample level not given · n = 10 · median of runs · method in activity 6"],
+      c: ["11 [low not given, 12.5]"],
+      d: ["No value given · unit ms"],
+      e: ["iteration · n = 0"],
+      line: "Side by side only: the included entries differ in unit, method; unit, sample level, method are not given for every entry.",
+    }],
+    ["zh-Hans", {
+      a: ["12 [10.5, 上限未给] ms"],
+      b: ["未给数值 · 单位 s", "未给样本层级 · n = 10"],
+      c: ["11 [下限未给, 12.5]"],
+      d: ["未给数值 · 单位 ms"],
+      e: ["iteration · n = 0"],
+      line: "仅并列展示：纳入的条目在单位, 方法上不同；并非每个条目都给出了单位, 样本层级, 方法。",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(9, record, "Compared.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const card = await waitFor(() => page.document.querySelector(".task-research"), "the comparison");
+      const rows = [...card.querySelectorAll(".task-research-entry")];
+      assert.equal(rows.length, 5, "every entry, whatever its state");
+      for (const [n, id] of ["a", "b", "c", "d", "e"].entries())
+        for (const text of expected[id]) assert.ok(rows[n].textContent.includes(text), `${language} ${id}: ${text} in ${rows[n].textContent}`);
+      assert.ok(card.textContent.includes(expected.line), `${language}: ${card.textContent}`);
+      // Nothing made up: no value where none was given, no zero for a missing bound.
+      for (const n of [1, 3, 4]) assert.doesNotMatch(rows[n].querySelector(".task-research-value")?.textContent ?? "", /\d+ \[/);
+      assert.doesNotMatch(rows[2].textContent, /\[0|, 0\]/);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
