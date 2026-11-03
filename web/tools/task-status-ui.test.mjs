@@ -150,6 +150,45 @@ test("shows Core's outcome: applied, declined, refused as stale, unanswered and 
   }
 });
 
+// T-19 HM:T3 (Lead 3578): only the outcome of a decision sent, or checked
+// again, from this card takes focus, and only once.
+test("an outcome takes focus only for a decision acted on here, and once: not one Core had when first read, nor one an older read took away", async () => {
+  const page = mount();
+  const outcome = () => page.document.querySelector(".task-status-outcome");
+  const focusedOutcome = () => !!outcome() && page.document.activeElement === outcome();
+  try {
+    // Restored after a reload: the lost decision is still `mine`, but the user has not acted here.
+    page.render({ view: null, mine: "c1", onDecide: () => {} });
+    page.render({ view: view({ attempts: [attempt({})] }), mine: "c1", onDecide: () => {} });
+    await tick();
+    assert.match(page.text(), /You confirmed it/);
+    assert.equal(focusedOutcome(), false, "a decision Core already had takes no focus");
+  } finally {
+    page.close();
+  }
+  const again = mount();
+  const shown = () => again.document.querySelector(".task-status-outcome");
+  try {
+    // Checked again here, with the same requestId: its outcome takes focus.
+    again.render({ view: view(), mine: "c1", acted: "c1", onDecide: () => {} });
+    again.render({ view: view({ attempts: [attempt({})] }), mine: "c1", acted: "c1", onDecide: () => {} });
+    await tick();
+    assert.equal(again.document.activeElement, shown(), "the outcome of a decision acted on here takes focus");
+    // An older read takes the outcome away; a newer one brings it back: no second time.
+    again.render({ view: view(), mine: "c1", acted: "c1", onDecide: () => {} });
+    await tick();
+    assert.equal(shown(), null);
+    again.document.body.focus();
+    again.render({ view: view({ attempts: [attempt({})] }), mine: "c1", acted: "c1", onDecide: () => {} });
+    await tick();
+    assert.ok(shown(), "the outcome is back");
+    assert.notEqual(again.document.activeElement, shown(), "it does not take focus a second time");
+    assert.deepEqual([...page.errors, ...again.errors], []);
+  } finally {
+    again.close();
+  }
+});
+
 // T-189: the card follows the interface language, changed in another window.
 // The task's title, the Agent's and the person's reasons, names and Core's
 // words stay as written; the choice and the typed reason stay; nothing is
