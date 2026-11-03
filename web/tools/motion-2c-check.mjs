@@ -275,24 +275,45 @@ for (const run of runs) {
         ok(`${tag}: opened, closed and opened again frame by frame, it plays one move, the newest (${cut.quick.inspector?.plays.length})`,
           cut.quick.inspector?.plays.length === 1 && !!moveOf(cut.quick.inspector.plays), cut.quick.inspector);
 
-        // Reduced motion turned on while the Agent list comes in, then off again.
+        // Reduced motion turned on while the Agent list comes in, then off again. As motion-2a-check does,
+        // the move is held at 60 ms first, so the check does not race the change: held, it cannot end
+        // by itself, and only the app's cancel removes it.
         await page.evaluate(async () => {
           document.querySelector('.toolbar button[aria-label="Hide agent sidebar"]').click();
           await new Promise((done) => setTimeout(done, 150));
           document.querySelector('.toolbar button[aria-label="Show agent sidebar"]').click();
-          await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 30)));
-          window.__coming = window.__panels();
         });
+        const held = await page.evaluate(() => new Promise((done) => {
+          let tries = 0;
+          const look = () => {
+            const move = document.querySelector(".rail")?.getAnimations().find((a) => a.effect?.getKeyframes?.()[0]?.transform !== undefined);
+            if (!move && ++tries > 30) return done({ held: false });
+            if (!move) return requestAnimationFrame(look);
+            move.pause();
+            move.currentTime = 60;
+            requestAnimationFrame(() => done({ held: true, ...window.__panels().rail }));
+          };
+          look();
+        }));
+        const railFrames = (span) => page.evaluate((span) => new Promise((done) => {
+          const t0 = performance.now();
+          const seen = [];
+          const frame = () => {
+            seen.push({ t: Math.round(performance.now() - t0), ...window.__panels().rail });
+            if (performance.now() - t0 < span) requestAnimationFrame(frame);
+            else done(seen);
+          };
+          requestAnimationFrame(frame);
+        }), span);
         await page.emulateMedia({ reducedMotion: "reduce" });
-        const turned = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done({ coming: window.__coming, now: window.__panels() }))));
+        const during = await railFrames(250);
         await page.emulateMedia({ reducedMotion: "no-preference" });
-        const back = await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(window.__panels())))));
-        report.frames[`${tag}: reduced motion turned on mid-way`] = { ...turned, back };
-        const was = moveOf(turned.coming.rail?.plays);
-        const due = was ? was.current + (turned.now.now - turned.coming.now) : Infinity;
-        ok(`${tag}: reduced motion turned on while the Agent list comes in (${Math.round(due)} of 240 ms): it stops at once, the list in place`,
-          !!was && due < 240 && !turned.now.rail.plays.length && turned.now.rail.opacity === 1 && turned.now.rail.transform === "none", { coming: turned.coming.rail, now: turned.now.rail });
-        ok(`${tag}: and turned off again, nothing plays again`, !back.rail.plays.length && back.rail.shown, back.rail);
+        const back = await railFrames(300);
+        report.frames[`${tag}: reduced motion turned on mid-way`] = { held, during, back };
+        const inPlace = (f) => f.shown && !f.plays.length && f.opacity === 1 && f.transform === "none";
+        ok(`${tag}: reduced motion turned on while the Agent list comes in (held at 60 ms, opacity ${held.opacity}): it stops at once, the list in place (${during.length} frames)`,
+          held.held && held.opacity < 1 && during.length > 0 && during.every(inPlace), { held, during: during.slice(0, 3) });
+        ok(`${tag}: and turned off again, nothing plays again (${back.length} frames)`, back.length > 0 && back.every(inPlace), back.slice(0, 3));
 
         // A window narrowed while the Portal comes in: it covers the chat, and nothing is left playing.
         await page.locator('aside.inspector .artifact-row', { hasText: "timer.html" }).first().click();
