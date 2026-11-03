@@ -537,12 +537,14 @@ export function Home({
   useSurfaceIn(pinnedWidget, pinnedHere?.n ?? 0, "small", !!pinnedHere, "translateY(4px)");
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
-    (projectId: string, section: Section) => {
+    (projectId: string, section: Section, pressed?: HTMLElement) => {
       const source = pinSource(data, projectId, section);
       if (!source) return;
-      // What was pressed (the Pin button, or Pin the current version) holds its place.
-      const pressed = document.activeElement;
-      pinAnchor.current = pressed instanceof HTMLElement && pressed.closest(".home-view")
+      // The control the press was on (the Pin button, or Pin the current
+      // version) holds its place, read now, before the pin. It is the one
+      // the press named, not whatever has focus: a click does not focus a
+      // button in every browser (Safari), and focus may be elsewhere.
+      pinAnchor.current = pressed?.closest(".home-view")
         ? { element: pressed, top: pressed.getBoundingClientRect().top }
         : null;
       const id = pinWidgetId({ projectId, key: source.section.key, id: source.section.id! });
@@ -561,10 +563,10 @@ export function Home({
             isPinned: (projectId: string, section: Section) =>
               layout.pins.some((p) => p.projectId === projectId && p.id === section.id),
             canPin: (projectId: string, section: Section) => !!pinSource(data, projectId, section),
-            toggle: (projectId: string, section: Section) => {
+            toggle: (projectId: string, section: Section, pressed?: HTMLElement) => {
               const pinned = layout.pins.find((p) => p.projectId === projectId && p.id === section.id);
               if (pinned) unpin(pinned);
-              else pinIfAllowed(projectId, section);
+              else pinIfAllowed(projectId, section, pressed);
             },
           },
     [readOnly, layout, unpin, data, pinIfAllowed],
@@ -591,9 +593,9 @@ export function Home({
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
             onPinCurrent={
               source.state === "replaced" && pinSource(data, p.projectId, source.section)
-                ? () => {
+                ? (pressed: HTMLElement) => {
                     unpin(p);
-                    pinIfAllowed(p.projectId, source.section);
+                    pinIfAllowed(p.projectId, source.section, pressed);
                   }
                 : undefined
             }
