@@ -65,7 +65,8 @@ export const researchText = strings({
   recordNewer: (seq: number) => `a newer version is activity ${seq}`,
   recordNewest: "the newest version",
   recordVersionUnknown: "version not counted",
-  recordNewerUnknown: "whether there is a newer version is unknown",
+  // Past the length Core follows a newer version exists; the latest is unknown.
+  recordNewerUnknown: "a newer version exists; the latest version is unknown",
   recordsRead: (at: string) => `Task records read ${at}`,
   checkAgain: "Check again",
   checking: "Checking…",
@@ -168,7 +169,7 @@ export const researchText = strings({
   recordNewer: (seq) => `较新的版本是活动 ${seq}`,
   recordNewest: "这是最新版本",
   recordVersionUnknown: "版本数未计出",
-  recordNewerUnknown: "是否有较新的版本未知",
+  recordNewerUnknown: "已有较新的版本；最新版本未确定",
   recordsRead: (at) => `任务记录读取于 ${at}`,
   checkAgain: "重新核对",
   checking: "正在核对…",

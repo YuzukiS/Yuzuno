@@ -81,12 +81,15 @@ const text = strings({
   versionUnknown: "This record's version was not counted (its line is longer than Yuzuno follows)",
   newest: "This is the newest version",
   newer: (seq: number) => `A newer version is activity ${seq}`,
-  // The newest is unknown, but the next one is known: say both.
-  newerFrom: (seq: number) => `A newer version exists (activity ${seq} revises this one); which is the newest is unknown`,
-  newerUnknown: "Whether there is a newer version is unknown",
-  methodVersion: (version: number | null, latest: number | null, seq: number) =>
+  // Past the length Core follows a newer version always exists; which one is
+  // the latest is what is unknown. The next one, when known, is named.
+  newerFrom: (seq: number) => `Activity ${seq} revises this one; the latest version is unknown`,
+  newerUnknown: "A newer version exists; the latest version is unknown",
+  methodVersion: (version: number | null, latest: number | null, seq: number, next: number | null) =>
     `The method as cited is ${version ? `version ${version}` : "a version not counted"}` +
-    (latest == null ? "; whether it has a newer version is unknown" : latest === seq ? "; that is its newest version" : `; a newer version is activity ${latest}`),
+    (latest == null
+      ? next != null ? `; activity ${next} revises it, and its latest version is unknown` : "; a newer version exists, and its latest version is unknown"
+      : latest === seq ? "; that is its newest version" : `; a newer version is activity ${latest}`),
   now: "Now",
   state: {
     recorded_match: "the Job's record still lists this file and hash; the file itself was not read",
@@ -127,11 +130,13 @@ const text = strings({
   versionUnknown: "这条记录的版本数未计出（版本链超出 Yuzuno 追溯的长度）",
   newest: "这是最新版本",
   newer: (seq) => `较新的版本是活动 ${seq}`,
-  newerFrom: (seq) => `已有较新的版本（活动 ${seq} 修订了它）；最新的是哪一版未知`,
-  newerUnknown: "是否有较新的版本未知",
-  methodVersion: (version, latest, seq) =>
+  newerFrom: (seq) => `活动 ${seq} 修订了它；最新版本未确定`,
+  newerUnknown: "已有较新的版本；最新版本未确定",
+  methodVersion: (version, latest, seq, next) =>
     `引用的方法是${version ? `第 ${version} 版` : "未计出版本数的一版"}` +
-    (latest == null ? "；是否有较新的版本未知" : latest === seq ? "；这是它的最新版本" : `；较新的版本是活动 ${latest}`),
+    (latest == null
+      ? next != null ? `；活动 ${next} 修订了它，最新版本未确定` : "；已有较新的版本，最新版本未确定"
+      : latest === seq ? "；这是它的最新版本" : `；较新的版本是活动 ${latest}`),
   now: "现在",
   state: {
     recorded_match: "Job 记录仍列出这个文件和哈希；没有读取文件本身",
@@ -346,7 +351,7 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
                       : t.newerUnknown}
               </p>
               {view.data.method && (
-                <p>{t.methodVersion(view.data.method.version, view.data.method.latestActivitySeq, view.data.method.activitySeq)}</p>
+                <p>{t.methodVersion(view.data.method.version, view.data.method.latestActivitySeq, view.data.method.activitySeq, view.data.method.revisedBy)}</p>
               )}
             </>
           )}

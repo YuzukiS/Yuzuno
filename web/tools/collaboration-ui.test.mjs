@@ -1419,30 +1419,43 @@ test("an update in the same Workspace keeps a note being written (T-17)", async 
   }
 });
 
-test("a record whose newest version is unknown never reads as the newest, in English and Chinese (T-17)", async () => {
+test("past the length Core follows, the first of a line names its next version and its latest as unknown, never as newest or as maybe none; the last is its newest, in English and Chinese (T-17)", async () => {
   const claim = { schema: "research/1", type: "claim", id: "faster", title: "B is faster", text: "About 4%.", status: "conditional",
     method: { activitySeq: 3, id: "timing", title: "Timing protocol" } };
-  // Past the length Core follows: the next version is known, the newest and this version's number are not.
-  const answer = { taskId: "T-1", activitySeq: 4, version: null, revisedBy: 9, latestActivitySeq: null, research: claim,
-    method: { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: null, research: methodV1, method: null } };
-  for (const [language, expected] of [
-    ["en", ["This record's version was not counted", "A newer version exists (activity 9 revises this one); which is the newest is unknown",
-      "The method as cited is version 1; whether it has a newer version is unknown"]],
-    ["zh-Hans", ["这条记录的版本数未计出", "已有较新的版本（活动 9 修订了它）；最新的是哪一版未知", "引用的方法是第 1 版；是否有较新的版本未知"]],
+  const last = { ...claim, text: "About 3%.", revises: { activitySeq: 208, reason: "Step 201." } };
+  // As Core reads a line of 202 (the first and 201 revisions): the first is
+  // version 1 with its next version known and its latest not; the last is its
+  // own latest with its version not counted. The cited method's line is long too.
+  const method = { taskId: "T-1", activitySeq: 3, version: 1, revisedBy: 6, latestActivitySeq: null, research: methodV1, method: null };
+  const answers = {
+    4: { taskId: "T-1", activitySeq: 4, version: 1, revisedBy: 5, latestActivitySeq: null, research: claim, method },
+    209: { taskId: "T-1", activitySeq: 209, version: null, revisedBy: null, latestActivitySeq: 209, research: last, method },
+  };
+  for (const [language, first, newest] of [
+    ["en", ["Version 1 of this record", "Activity 5 revises this one; the latest version is unknown",
+      "The method as cited is version 1; activity 6 revises it, and its latest version is unknown"],
+      ["This record's version was not counted", "This is the newest version"]],
+    ["zh-Hans", ["这条记录的第 1 版", "活动 5 修订了它；最新版本未确定", "引用的方法是第 1 版；活动 6 修订了它，最新版本未确定"],
+      ["这条记录的版本数未计出", "这是最新版本"]],
   ]) {
     const page = mount(quietCore({
       task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
-      task_get: { task: task(), activities: [recorded(4, claim, "Claim.")], executions: [], hasMore: false },
-      task_research_get: () => answer,
+      task_get: { task: task(), activities: [recorded(4, claim, "Claim."), recorded(209, last, "Claim, step 201.")], executions: [], hasMore: false },
+      task_research_get: (body) => answers[body.activitySeq],
     }));
     try {
       if (language !== "en") chinese(page);
       page.render({ workspaceId: "ws-1" });
       await openTask(page);
-      const card = await waitFor(() => page.document.querySelector(".task-research"), "the claim");
-      toggleOf(card).click();
-      await waitFor(() => expected.every((text) => card.textContent.includes(text)), `${language}: ${expected.join(" / ")}`);
-      assert.doesNotMatch(card.textContent, /This is the newest version|这是最新版本/, "unknown is never newest");
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === 2, "both records");
+      const [one, two] = page.document.querySelectorAll(".task-research");
+      toggleOf(one).click();
+      toggleOf(two).click();
+      await waitFor(() => first.every((text) => one.textContent.includes(text)), `${language}: ${first.join(" / ")}`);
+      await waitFor(() => newest.every((text) => two.textContent.includes(text)), `${language}: ${newest.join(" / ")}`);
+      assert.doesNotMatch(one.textContent, /This is the newest version|这是最新版本/, "unknown is never newest");
+      // A newer version is known to exist: never worded as if there might be none.
+      for (const card of [one, two]) assert.doesNotMatch(card.textContent, /whether|是否/);
       assert.deepEqual(page.errors, []);
     } finally {
       page.close();
