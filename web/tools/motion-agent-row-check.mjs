@@ -194,7 +194,10 @@ function pageHelpers() {
     if (!stream) throw new Error("no open stream");
     stream.onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "agents" }), lastEventId: String(++id) });
   };
-  const entries = (el) => el.getAnimations().filter((a) => !(typeof CSSAnimation !== "undefined" && a instanceof CSSAnimation));
+  // Its own entry: an animation the app plays on it, not a CSS one (the settle's tint) nor a CSS
+  // transition (its colours as it is chosen).
+  const entries = (el) => el.getAnimations().filter((a) => !(typeof CSSAnimation !== "undefined" && a instanceof CSSAnimation) &&
+    !(typeof CSSTransition !== "undefined" && a instanceof CSSTransition));
   const row = (el) => {
     if (!el) return null;
     const list = el.closest(".agent-list");
@@ -255,10 +258,11 @@ const quiet = (frames) => frames.length > 0 && frames.every((f) => f.entering.le
 /** Its project group is open, not folded nor still opening, in this frame. */
 const open = (f) => !f.grouped || (!f.folded && f.bodyOpacity === 1 && !f.bodyMoving);
 /** Created into a folded group: not seen while the group opens; seen first with it open, coming in
- * then (at most two frames after it opened), or at once under reduced motion. */
+ * then (at most two frames after it opened), or at once under reduced motion (where the group opens
+ * at once, possibly before a frame shows it folded). */
 function cameInOnceOpen(frames, reduced) {
   const shown = frames.filter(Boolean);
-  if (!shown.some((f) => !open(f))) return false;
+  if (!reduced && !shown.some((f) => !open(f))) return false;
   if (shown.some((f) => !open(f) && (f.opacity > 0 || f.entries > 0))) return false;
   const opened = shown.filter(open);
   const seen = opened.findIndex((f) => f.opacity > 0 || f.entries > 0);
@@ -407,7 +411,7 @@ for (const run of runs) {
   };
   /** Imports the native session `threadId` from the new Agent dialog, as the user does. */
   const importSession = async (threadId) => {
-    await page2.getByRole("button", { name: "Create agent", exact: true }).first().click({ timeout: 10_000 });
+    await page2.locator(".rail-top").getByRole("button", { name: "Create agent", exact: true }).click({ timeout: 10_000 });
     const dialog = page2.locator('[role="dialog"]').last();
     await dialog.getByRole("button", { name: "Existing Codex session", exact: true }).click();
     await dialog.locator("#import-session-id").fill(threadId);
@@ -426,16 +430,17 @@ for (const run of runs) {
     await page2.waitForTimeout(800);
 
     // Created into App's folded group, from its own New agent button.
+    const wasFolded = await page2.locator('.project-group[data-group="p1"].is-folded').count() === 1;
     const intoGroup = await create(page2.locator('.project-group[data-group="p1"] .project-group-add'), "Cherry");
     await rowOf("cherry").waitFor({ state: "attached", timeout: 10_000 });
     await page2.waitForTimeout(2600);
     const cherry = record2("created into a folded group", (await since(intoGroup)).map((f) => f.cherry));
     ok(`${tag}: an Agent created here into a folded project group: the group opens, and its row is seen only once the group is open, coming in then over small, 4 px up with a fade (under reduced motion at once), and settling once there`,
-      cameInOnceOpen(cherry, reduced) && settledOnceOpen(cherry),
-      { opening: cherry.filter((f) => f && !open(f)).slice(0, 3), firstOpen: cherry.filter((f) => f && open(f)).slice(0, 3), last: cherry.filter(Boolean).at(-1) });
+      wasFolded && cameInOnceOpen(cherry, reduced) && settledOnceOpen(cherry),
+      { wasFolded, opening: cherry.filter((f) => f && !open(f)).slice(0, 3), firstOpen: cherry.filter((f) => f && open(f)).slice(0, 3), last: cherry.filter(Boolean).at(-1) });
 
     // Created, and listed by a read of the Workspace before Core's answer came.
-    const listedFirst = await create(page2.getByRole("button", { name: "Create agent", exact: true }).first(), "Quince");
+    const listedFirst = await create(page2.locator(".rail-top").getByRole("button", { name: "Create agent", exact: true }), "Quince");
     await page2.waitForTimeout(2600);
     const quince = record2("listed before the answer", (await since(listedFirst)).map((f) => f.quince));
     ok(`${tag}: an Agent created here that a read of the Workspace listed before Core's answer came: shown already, it does not come in again; it is brought into view and settles once`,
@@ -460,7 +465,7 @@ for (const run of runs) {
     await page2.locator(".rail-top").getByRole("button", { name: "Search agents", exact: true }).click();
     const search = page2.locator(".agent-search input");
     await search.fill("no such agent");
-    const hidden = await create(page2.getByRole("button", { name: "Create agent", exact: true }).first(), "Grape");
+    const hidden = await create(page2.locator(".rail-top").getByRole("button", { name: "Create agent", exact: true }), "Grape");
     await page2.waitForTimeout(1500);
     await search.fill("");
     await rowOf("grape").waitFor({ state: "attached", timeout: 10_000 });
