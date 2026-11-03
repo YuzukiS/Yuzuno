@@ -1607,16 +1607,21 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
 // cards become rows fades in (CB-09). One test per row, each failing alone on
 // the board before this batch.
 function quietBoard() {
+  // The latest held answer of each operation, and all of them in order.
   const held = {};
+  const queue = {};
   const counts = {};
-  const state = { holding: new Set(), failList: false, current: task() };
-  const hold = (operation, answer) => new Promise((resolve) => { held[operation] = () => resolve(answer); });
+  const state = { holding: new Set(), failList: false, current: task(), messages: [] };
+  const hold = (operation, answer) => new Promise((resolve) => {
+    held[operation] = () => resolve(answer);
+    (queue[operation] ||= []).push(held[operation]);
+  });
   const page = mount((operation) => {
     counts[operation] = (counts[operation] || 0) + 1;
     const answer =
       operation === "task_list" ? (state.failList ? { httpStatus: 503, error: "Core is away" } : { tasks: [state.current], hasMore: false })
       : operation === "task_get" ? { task: state.current, activities: [], executions: [], hasMore: false }
-      : operation === "peer_read" ? { messages: [], hasMore: false }
+      : operation === "peer_read" ? { messages: state.messages, hasMore: false }
       : operation === "task_update" ? { task: (state.current = task({ version: 2, title: "Preview line links clearly" })) }
       : operation === "workspaces" ? { taskId: "T-1", repositories: [], workspaces: [] }
       : operation === "github_links" || operation === "github_refresh" ? { links: [], repositories: [] }
@@ -1645,7 +1650,7 @@ function quietBoard() {
     page.document.querySelector(".collab-task-card").click();
     await waitFor(() => refreshButton("Refresh task details") && !refreshButton("Refresh task details").disabled, "the task opens");
   };
-  return { page, held, counts, state, refreshButton, shows, duringRevision, openTask };
+  return { page, held, queue, counts, state, refreshButton, shows, duringRevision, openTask };
 }
 
 test("a Workspace revision reloads the board's list quietly; an error stays until an answer replaces it, and the reader's own Refresh still shows (T-19 CB-04)", async () => {
@@ -1745,6 +1750,175 @@ test("as a task opens, the rows that take over from the cards fade in, and are d
     rows.dispatchEvent(new page.window.Event("webkitAnimationEnd", { bubbles: true }));
     await tick();
     assert.ok(!page.document.querySelector(".collab-groups").classList.contains("collab-list-flip"), "and are done once that ends");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// Revisions every few seconds and a Core slow to answer: a revision's read never cancels the one on
+// its way. That one answers and shows, the revisions that came meanwhile are read once more after
+// it, and nothing else is asked; the reader's Refresh, or other conditions, still take over, and
+// the late answer they replace is ignored (T-19 F4: CB-04, TD-01, MS-01).
+async function revisions(page, from, to) {
+  for (let revision = from; revision <= to; revision++) {
+    page.render({ revision });
+    // The board reads a revision 600 ms after it arrives.
+    await tick(700);
+  }
+}
+
+test("revisions faster than a slow list read: the read on its way answers, one more follows for the latest, and Refresh or other conditions take over (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue, refreshButton, shows } = board;
+  const listed = () => page.document.querySelector(".collab-cards, .collab-groups")?.textContent || "";
+  const titled = (title) => { state.current = task({ title }); };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    const base = counts.task_list;
+    state.holding = new Set(["task_list"]);
+    titled("Answer to the first revision");
+    page.render({ revision: 1 });
+    await waitFor(() => counts.task_list === base + 1, "a revision's read");
+    titled("Answer after the third revision");
+    await revisions(page, 2, 3);
+    assert.equal(counts.task_list, base + 1, "no other read starts while one is on its way");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: false, spins: false });
+    queue.task_list.shift()();
+    await waitFor(() => /Answer to the first revision/.test(listed()), "the read on its way answers and shows");
+    await waitFor(() => counts.task_list === base + 2, "one more read, for the revisions that came meanwhile");
+    queue.task_list.shift()();
+    await waitFor(() => /Answer after the third revision/.test(listed()), "the latest shows");
+    await tick(700);
+    assert.equal(counts.task_list, base + 2, "and nothing more is read");
+
+    titled("A late answer");
+    page.render({ revision: 4 });
+    await waitFor(() => counts.task_list === base + 3, "a revision's read");
+    titled("The reader's answer");
+    refreshButton("Refresh tasks").click();
+    await waitFor(() => counts.task_list === base + 4, "the reader's Refresh starts at once");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: true, spins: true }, "and shows");
+    queue.task_list.shift()();
+    await tick();
+    assert.ok(!/A late answer/.test(listed()), "the revision's late answer is ignored");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: true, spins: true }, "and leaves the Refresh showing");
+    queue.task_list.shift()();
+    await waitFor(() => /The reader's answer/.test(listed()) && !refreshButton("Refresh tasks").disabled, "the reader's answer");
+
+    titled("Another late answer");
+    page.render({ revision: 5 });
+    await waitFor(() => counts.task_list === base + 5, "a revision's read");
+    titled("The answer for all tasks");
+    await value(page, field(page, "Show"), "all");
+    await waitFor(() => counts.task_list === base + 6, "other conditions start their read at once");
+    queue.task_list.shift()();
+    await tick();
+    assert.ok(!/Another late answer/.test(listed()), "the revision's late answer is ignored");
+    queue.task_list.shift()();
+    await waitFor(() => /The answer for all tasks/.test(listed()), "the answer for the new conditions");
+    await tick(700);
+    assert.equal(counts.task_list, base + 6, "nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("revisions faster than a slow task read: the read on its way answers, one more follows for the latest, and Refresh takes over (T-19 TD-01)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue, refreshButton, shows } = board;
+  const detail = () => page.document.querySelector(".collab-detail")?.textContent || "";
+  const titled = (title) => { state.current = task({ title }); };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    await board.openTask();
+    const base = counts.task_get;
+    state.holding = new Set(["task_get"]);
+    titled("Task read for the first revision");
+    page.render({ revision: 1 });
+    await waitFor(() => counts.task_get === base + 1, "a revision's read");
+    titled("Task after the third revision");
+    await revisions(page, 2, 3);
+    assert.equal(counts.task_get, base + 1, "no other read starts while one is on its way");
+    assert.deepEqual(shows("Refresh task details"), { disabled: false, spins: false });
+    queue.task_get.shift()();
+    await waitFor(() => /Task read for the first revision/.test(detail()), "the read on its way answers and shows");
+    await waitFor(() => counts.task_get === base + 2, "one more read, for the revisions that came meanwhile");
+    queue.task_get.shift()();
+    await waitFor(() => /Task after the third revision/.test(detail()), "the latest shows");
+    await tick(700);
+    assert.equal(counts.task_get, base + 2, "and nothing more is read");
+
+    titled("A late task answer");
+    page.render({ revision: 4 });
+    await waitFor(() => counts.task_get === base + 3, "a revision's read");
+    titled("The reader's task answer");
+    refreshButton("Refresh task details").click();
+    await waitFor(() => counts.task_get === base + 4, "the reader's Refresh starts at once");
+    assert.deepEqual(shows("Refresh task details"), { disabled: true, spins: true }, "and shows");
+    queue.task_get.shift()();
+    await tick();
+    assert.ok(!/A late task answer/.test(detail()), "the revision's late answer is ignored");
+    assert.deepEqual(shows("Refresh task details"), { disabled: true, spins: true }, "and leaves the Refresh showing");
+    queue.task_get.shift()();
+    await waitFor(() => /The reader's task answer/.test(detail()) && !refreshButton("Refresh task details").disabled, "the reader's answer");
+    await tick(700);
+    assert.equal(counts.task_get, base + 4, "nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("revisions faster than a slow Messages read: the read on its way answers, one more follows for the latest, and Refresh takes over (T-19 MS-01)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue, refreshButton, shows } = board;
+  const shown = () => page.document.querySelector(".collab-messages")?.textContent || "";
+  const say = (body) => {
+    state.messages = [{ id: "mail-1", seq: 1, sender: { kind: "agent", id: "dev-2", name: "Dev 2" },
+      recipient: { kind: "agent", id: "dev-1", name: "Dev 1" }, body, taskId: "T-1", replyTo: null, threadId: "mail-1",
+      createdAt: "2026-10-12T12:00:00Z", firstReadAt: null, delivery: { state: "pending", detail: {} } }];
+  };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    click(page, "Messages");
+    await waitFor(() => refreshButton("Refresh messages") && !refreshButton("Refresh messages").disabled, "Messages read");
+    const base = counts.peer_read;
+    state.holding = new Set(["peer_read"]);
+    say("Mail read for the first revision");
+    page.render({ revision: 1 });
+    await waitFor(() => counts.peer_read === base + 1, "a revision's read");
+    say("Mail after the third revision");
+    await revisions(page, 2, 3);
+    assert.equal(counts.peer_read, base + 1, "no other read starts while one is on its way");
+    assert.deepEqual(shows("Refresh messages"), { disabled: false, spins: false });
+    queue.peer_read.shift()();
+    await waitFor(() => /Mail read for the first revision/.test(shown()), "the read on its way answers and shows");
+    await waitFor(() => counts.peer_read === base + 2, "one more read, for the revisions that came meanwhile");
+    queue.peer_read.shift()();
+    await waitFor(() => /Mail after the third revision/.test(shown()), "the latest shows");
+    await tick(700);
+    assert.equal(counts.peer_read, base + 2, "and nothing more is read");
+
+    say("A late mail answer");
+    page.render({ revision: 4 });
+    await waitFor(() => counts.peer_read === base + 3, "a revision's read");
+    say("The reader's mail answer");
+    refreshButton("Refresh messages").click();
+    await waitFor(() => counts.peer_read === base + 4, "the reader's Refresh starts at once");
+    assert.deepEqual(shows("Refresh messages"), { disabled: true, spins: true }, "and shows");
+    queue.peer_read.shift()();
+    await tick();
+    assert.ok(!/A late mail answer/.test(shown()), "the revision's late answer is ignored");
+    assert.deepEqual(shows("Refresh messages"), { disabled: true, spins: true }, "and leaves the Refresh showing");
+    queue.peer_read.shift()();
+    await waitFor(() => /The reader's mail answer/.test(shown()) && !refreshButton("Refresh messages").disabled, "the reader's answer");
+    await tick(700);
+    assert.equal(counts.peer_read, base + 4, "nothing more is read");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
