@@ -11,13 +11,18 @@ directory, and no test binds a fixed port.
 
 1. `cargo test --locked --no-run --message-format=json` names the test
    executables `cargo test` would run (it builds nothing after the Build step).
-2. Each one lists its tests (`--list --format terse`). One with at least SPLIT
-   tests is split by sorted name, round-robin, into one shard per worker; the
-   others run whole.
-3. CORE_TEST_JOBS processes (default: the CPU count) run at once, largest
-   first, each `<executable> --test-threads=1 [--exact NAME...]` in its
-   package's directory, as cargo runs it. Each process's output is kept and
-   printed whole when it ends; its process group is killed then.
+2. Each one lists its tests (`--list --format terse`). Tests named under an
+   ALONE prefix go into a process of their own. Of the rest, a binary with at
+   least SPLIT tests is split by sorted name, round-robin, into one shard per
+   worker; the others run whole.
+3. The ALONE processes run first, one at a time, with nothing else running:
+   the data_dir move tests refuse while any `yuzuno-update-helper` runs on
+   the host, and other tests (updates, and data_dir's own guard test) start
+   such helpers. Then CORE_TEST_JOBS processes (default: the CPU count) run
+   at once, largest first. Each runs `<executable> --test-threads=1
+   [--exact NAME...]` in its package's directory, as cargo runs it. Each
+   process's output is kept and printed whole when it ends; its process
+   group is killed then.
 4. A process passes only if it exits 0 and its libtest summary accounts for
    exactly the tests it was given: passed + ignored equals that number and
    none failed. A test that did not run therefore fails the step.
@@ -35,6 +40,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 SPLIT = 100
+# Test name prefixes run alone, before everything else (T-19: a data_dir move
+# test saw another shard's update helper and refused).
+ALONE = ('data_dir::tests::',)
 SUMMARY = re.compile(r'^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured; \d+ filtered out', re.M)
 STOP = 0
 
@@ -89,14 +97,31 @@ def plan(jobs):
     items = []
     for label, executable, cwd in executables():
         names = listed(executable, cwd)
+        alone = [name for name in names if name.startswith(ALONE)]
+        if alone:
+            items.append(dict(label=f'{label} [alone]', cwd=cwd, count=len(alone), alone=True,
+                              command=[executable, '--test-threads=1', '--exact', *alone]))
+            names = [name for name in names if not name.startswith(ALONE)]
+            if not names:
+                continue
         if len(names) >= SPLIT and jobs > 1:
             for shard in range(jobs):
                 part = names[shard::jobs]
                 items.append(dict(label=f'{label} [{shard + 1}/{jobs}]', cwd=cwd, count=len(part),
                                   command=[executable, '--test-threads=1', '--exact', *part]))
+        elif alone:
+            items.append(dict(label=label, cwd=cwd, count=len(names), command=[executable, '--test-threads=1', '--exact', *names]))
         else:
             items.append(dict(label=label, cwd=cwd, count=len(names), command=[executable, '--test-threads=1']))
-    return sorted(items, key=lambda item: -item['count'])
+    # The ALONE processes first; then the largest first.
+    return sorted(items, key=lambda item: (not item.get('alone'), -item['count']))
+
+
+def may_start(item, running, pending):
+    """An ALONE process starts with nothing else running; no other starts while one is to come or runs."""
+    if item.get('alone'):
+        return not running
+    return not any(other.get('alone') for other in [*running, *pending])
 
 
 def verdict(item):
@@ -130,7 +155,7 @@ def run(items, jobs, logdir):
     pending, running, done = list(items), [], []
     try:
         while (pending or running) and not STOP:
-            while pending and len(running) < jobs and not STOP:
+            while pending and len(running) < jobs and not STOP and may_start(pending[0], running, pending[1:]):
                 item = pending.pop(0)
                 item.update(start=time.monotonic(), log=logdir / f'{len(done) + len(running)}.log')
                 print(f'START {item["label"]} ({item["count"]} tests)', flush=True)
@@ -172,7 +197,10 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, interrupt)
     items = plan(jobs)
-    print(f'{sum(item["count"] for item in items)} tests in {len(items)} processes, {jobs} at a time', flush=True)
+    alone = [item for item in items if item.get('alone')]
+    print(f'{sum(item["count"] for item in items)} tests in {len(items)} processes, {jobs} at a time'
+          + (f'; first, alone: {", ".join(item["label"] for item in alone)} ({sum(item["count"] for item in alone)} tests)' if alone else ''),
+          flush=True)
     with tempfile.TemporaryDirectory(prefix='yuzuno-core-tests-') as directory:
         done = run(items, jobs, Path(directory))
     failures = sum(bool(item['reason']) for item in done)
