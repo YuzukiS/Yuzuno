@@ -6,8 +6,9 @@
 // shows, one a Core reset brings (also when it comes right after an announcement, before the read),
 // one in a new native session, one shown again after a return from another Agent (also straight back,
 // before the other was read), the same list read again, or one made while the stream was down,
-// whether Core replays its announcement when the stream resumes or resets it (Lead 3299); a request
-// announced after that recovery fades again. Nothing plays under reduced motion, and reduced motion
+// whether Core replays its announcement when the stream resumes or resets it (Lead 3299), or one
+// announced while Home was over the conversation (Lead 3301); a request announced after each of these
+// fades again. Nothing plays under reduced motion, and reduced motion
 // turned on while it fades stops the fade.
 // Allow once, pressed while its card is still coming in, is sent and every decision locks. Writes:
 // one decision per run, held and never answered, and the app's own saves of where an Agent was read;
@@ -338,6 +339,23 @@ for (const run of runs) {
     holdHana = 0;
     ok(`${tag}: to another Agent and straight back before it was read, a request made meanwhile shows with nothing playing (${(await calls()) - quickMark} calls)`,
       (await calls()) === quickMark && quick.every((f) => f.cards["request-quick-1"]) && still(quick), quick[0]?.cards["request-quick-1"]);
+    fadesIn("after that quick return, a request announced live", await bring(request("live-quick", "npm run fix"), "__announce"));
+
+    if (!run.phone) {
+      // Home over the conversation, and back (Lead 3301): a request announced while Home was open shows
+      // with nothing playing on return, and the next one announced live fades in.
+      await page.locator(".toolbar-nav .catchup-nav").first().click();
+      await page.locator('.toolbar-nav .catchup-nav[aria-current="page"]').waitFor();
+      staged.push(() => { moriPending = [...moriPending, request("home-1", "npm run home")]; });
+      await page.evaluate(() => window.__sample(700, "__announce"));
+      const homeMark = await calls();
+      await open("Mori");
+      await page.locator("#request-home-1").waitFor();
+      const homeBack = await page.evaluate(() => window.__sample(600));
+      ok(`${tag}: back from Home, a request announced while it was open shows with nothing playing (${(await calls()) - homeMark} calls since the return)`,
+        (await calls()) === homeMark && homeBack.every((f) => f.cards["request-home-1"]) && still(homeBack), homeBack[0]?.cards["request-home-1"]);
+      fadesIn("after that return from Home, a request announced live", await bring(request("live-home", "npm run deploy"), "__announce"));
+    }
 
     if (!reduced) {
       // Reduced motion turned on while a live request fades in, held at 60 ms; in the new session, after the return.
