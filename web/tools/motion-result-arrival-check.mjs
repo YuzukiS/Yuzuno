@@ -7,7 +7,8 @@
 // - A result block streamed in a running Turn shows its placeholder while it is written; once whole,
 //   the result takes its place and fades in.
 // - After a switch to another Agent and back, both results are drawn from the first frame they show:
-//   no placeholder stands in for them and nothing fades.
+//   no placeholder stands in for them (none painted, and none put in the page, which a MutationObserver
+//   from the document's start records) and nothing fades.
 // - Under reduced motion nothing fades.
 // Writes: only the app's own saves of where an Agent was read; anything else is refused and counted.
 // Served from http://127.0.0.1. Chromium is not Safari.
@@ -148,6 +149,18 @@ function pageHelpers() {
   const frames = [];
   window.__frames = frames;
   window.__now = () => frames.length;
+  // Every placeholder put in the page, painted or not, with the frame it was put in at: a frame can
+  // miss one that a later commit took out before the next paint.
+  const placed = [];
+  window.__placed = placed;
+  new MutationObserver((records) => {
+    for (const record of records)
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element)) continue;
+        const found = node.matches(".result-placeholder") ? [node] : [...node.querySelectorAll(".result-placeholder")];
+        for (const p of found) placed.push({ at: frames.length, published: !!p.closest(".turn-results"), text: p.textContent.trim() });
+      }
+  }).observe(document.documentElement, { childList: true, subtree: true });
   const step = () => {
     frames.push({
       // The published result, and its placeholder in the Turn's results.
@@ -203,6 +216,7 @@ for (const run of runs) {
   await page.addInitScript(pageHelpers);
   const record = (label, value) => { report.frames[`${tag}: ${label}`] = value; return value; };
   const framesSince = (from) => page.evaluate((from) => window.__frames.slice(from), from);
+  const placedSince = (from) => page.evaluate((from) => window.__placed.filter((p) => p.at >= from), from);
   /** Opens an Agent's conversation from the list, as the user does. */
   const open = async (name) => {
     if (run.phone && await page.locator(".phone-back").count()) await page.locator(".phone-back").click();
@@ -243,14 +257,16 @@ for (const run of runs) {
     await bothShown();
     await page.waitForTimeout(500);
     const back = await framesSince(away);
+    const putBack = record("placeholders put in the page, back", await placedSince(away));
     const publishedBack = record("published, back", after(back, "published"));
     const replyBack = record("in a reply, back", after(back, "reply"));
-    const publishedWaited = back.some((f) => f.publishedWaits);
+    // None painted, and none put in the page at all.
+    const publishedWaited = back.some((f) => f.publishedWaits) || putBack.some((p) => p.published);
     ok(`${tag}: back from another Agent: the published result is drawn from the first frame it shows, with no placeholder before it, and does not fade`,
-      !publishedWaited && still(publishedBack.shown), { placeholder: publishedWaited, first: publishedBack.shown.slice(0, 3) });
-    const replyWaited = back.some((f) => f.replyWaits);
+      !publishedWaited && still(publishedBack.shown), { placeholder: publishedWaited, placed: putBack, first: publishedBack.shown.slice(0, 3) });
+    const replyWaited = back.some((f) => f.replyWaits) || putBack.some((p) => !p.published && p.text.includes("Loading interactive result"));
     ok(`${tag}: back from another Agent: the result in the reply is drawn from the first frame it shows, with no placeholder before it, and does not fade`,
-      !replyWaited && still(replyBack.shown), { placeholder: replyWaited, first: replyBack.shown.slice(0, 3) });
+      !replyWaited && still(replyBack.shown), { placeholder: replyWaited, placed: putBack, first: replyBack.shown.slice(0, 3) });
     await page.screenshot({ path: join(output, `${tag}-after.png`) });
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));
