@@ -157,7 +157,7 @@ impl Store {
         );
         ensure!(waiting(&stage), "This analysis gate already has a decision");
         // The record that explains the decision is one of this run's task's
-        // own, fixed as it reads now; it decides nothing by itself.
+        // own, kept as a citation summary fixed now; it decides nothing by itself.
         let record = input
             .record
             .as_ref()

@@ -267,12 +267,10 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
       assert.ok(text.includes(expected), `${expected}: ${text}`);
     assert.ok(report.reads.includes("job_cost"));
     await card.scrollIntoViewIfNeeded();
-    // The values this card adds must be readable; its title, labels and
-    // footnote use the Jobs panel's shared quiet style, measured and
-    // reported apart (below 4.5:1 in light before this slice too).
+    // Every word of the card is readable: the values it adds, and its title,
+    // labels and footnote in the Jobs panel's shared styles (raised by #483).
     const measured = await readable(".job-task-spend dd");
-    const shared = await contrast(".job-task-spend .job-card-heading, .job-task-spend dt, .job-task-spend .job-footnote");
-    measured.sharedQuietLabels = Math.min(...shared.map((row) => row.ratio));
+    measured.labels = (await readable(".job-task-spend .job-card-heading, .job-task-spend dt, .job-task-spend .job-footnote")).lowestContrast;
     await card.screenshot({ path: resolve(output, `${name}-spend.png`) });
     report.shots.push(`${name}-spend.png`);
     return measured;

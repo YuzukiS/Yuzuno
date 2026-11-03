@@ -644,8 +644,9 @@ pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &V
 }
 
 /// The method record a run follows (T-17 slice 4): one of the run's task's
-/// own method records, fixed by its activity. A later method version leaves
-/// the run as it was; only a changed command or input needs a new run.
+/// own method records, fixed by its activity with its id, title and version,
+/// not its text. A later method version leaves the run as it was; only a
+/// changed command or input needs a new run.
 pub(crate) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value> {
     let number = task_seq(db, task)?;
     let row = record_in(db, task, seq)?
@@ -656,7 +657,8 @@ pub(crate) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value>
 }
 
 /// The research record an analysis decision cites (T-17 slice 4): any record
-/// of the run's task, fixed as it reads when the decision is made.
+/// of the run's task, as a citation summary fixed when the decision is made,
+/// with its proposed next step; not its text, method or sources.
 pub(crate) fn decision_record(db: &Connection, task: &str, seq: i64) -> Result<Value> {
     let number = task_seq(db, task)?;
     let row = record_in(db, task, seq)?
