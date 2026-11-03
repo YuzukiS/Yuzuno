@@ -1072,6 +1072,7 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
       )}
       {op.error && op.state !== "running" && <p className="workspace-backup-error">{op.error}</p>}
       {op.state === "succeeded" && op.result && <Result op={op} />}
+      {op.state === "running" && <span className="step-moving" aria-hidden="true" />}
     </div>
   );
 }
