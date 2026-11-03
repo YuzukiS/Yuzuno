@@ -17,6 +17,7 @@ import {
 } from "react";
 import { settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
+import { animates } from "./motion";
 import {
   Archive,
   ArchiveRestore,
@@ -478,7 +479,42 @@ export function App() {
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
     "home",
   );
-  const [atBottom, setAtBottom] = useState(true);
+  const [atBottom, setAtBottomState] = useState(true);
+  // Whether Back to latest shows (T-19 SH:C19, CV:CW-05). Set with `atBottom`
+  // wherever the app decides, but a scroll shows it only 96 px or more from
+  // the end and hides it only under 48 px, so it does not flicker while a
+  // stream grows the page. `atBottom` (follow, reading) keeps its 72 px.
+  const [latestAway, setLatestAway] = useState(false);
+  const setAtBottom = useCallback((at: boolean) => {
+    setAtBottomState(at);
+    setLatestAway(!at);
+  }, []);
+  const latestShown = latestAway || historyReading;
+  // Back to latest leaves through a copy (T-19): aria-hidden, inert and not
+  // hit by the pointer, it fades out where the button was, while the button
+  // itself is gone at once. Only within one conversation: another one shown
+  // takes it away at once. None under reduced motion or without Web Animations.
+  const [latestLeaving, setLatestLeaving] = useState(0);
+  const latestWas = useRef({ shown: latestShown, scope: "" });
+  useLayoutEffect(() => {
+    const scope = `${workspaceId}\n${selected}`;
+    const was = latestWas.current;
+    latestWas.current = { shown: latestShown, scope };
+    if (latestShown || was.scope !== scope) {
+      setLatestLeaving(0);
+      return;
+    }
+    if (!was.shown || !animates()) return;
+    setLatestLeaving((n) => n + 1);
+    const gone = setTimeout(() => setLatestLeaving(0), 400);
+    return () => clearTimeout(gone);
+  }, [latestShown, workspaceId, selected]);
+  // Each time it shows, it comes in, rising 4 px as it fades in over small.
+  const latestButton = useRef<HTMLButtonElement>(null);
+  const latestShows = useRef({ shown: false, n: 0 });
+  if (latestShows.current.shown !== latestShown)
+    latestShows.current = { shown: latestShown, n: latestShows.current.n + (latestShown ? 1 : 0) };
+  useSurfaceIn(latestButton, latestShows.current.n, "small", true, "translateY(4px)");
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
@@ -531,7 +567,10 @@ export function App() {
   // that (a scroll says the rest) and moves nothing.
   const measureLatest = useCallback(() => {
     const el = scroll.current;
-    if (el && el.clientHeight > 0 && el.scrollHeight - el.scrollTop - el.clientHeight >= 72) setAtBottom(false);
+    if (!el || el.clientHeight <= 0) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (gap >= 72) setAtBottomState(false);
+    if (gap >= 96) setLatestAway(true);
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
@@ -3030,11 +3069,13 @@ export function App() {
                       setHistoryReading(false);
                       searchReading.current = false;
                     }
-                    const bottom =
-                      el.scrollHeight - el.scrollTop - el.clientHeight < 72;
+                    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+                    const bottom = gap < 72;
                     if (!bottom && stickToBottom.current) live.pinWindow();
-                    const latest = bottom && !searchReading.current && !currentDetail?.conversation?.hasAfter;
-                    setAtBottom(latest);
+                    const elsewhere = searchReading.current || !!currentDetail?.conversation?.hasAfter;
+                    const latest = bottom && !elsewhere;
+                    setAtBottomState(latest);
+                    setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
                     stickToBottom.current = latest;
                     noteReading(latest);
                   }
@@ -3216,11 +3257,18 @@ export function App() {
                   inputs={readingBy === "inputs"}
                 />
               )}
-              {(!atBottom || historyReading) && (
-                <button className="jump-latest" onClick={backToLatest}>
+              {latestShown && (
+                <button className="jump-latest" ref={latestButton} onClick={backToLatest}>
                   <ArrowDown size={13} />
                   Back to latest
                 </button>
+              )}
+              {latestLeaving > 0 && (
+                <div key={latestLeaving} className="jump-latest-leaving" aria-hidden="true" inert
+                  onAnimationEnd={() => setLatestLeaving(0)}>
+                  <ArrowDown size={13} />
+                  Back to latest
+                </div>
               )}
             </div>
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}

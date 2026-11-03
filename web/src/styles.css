@@ -1496,11 +1496,12 @@ p {
   border-radius: 5px;
   padding: 6px 9px;
 }
-.jump-latest {
+.jump-latest,
+.jump-latest-leaving {
   position: absolute;
   left: 50%;
   bottom: 156px;
-  transform: translateX(-50%);
+  translate: -50% 0;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1511,6 +1512,24 @@ p {
   background: #fbfcf5;
   font-size: calc(10px + var(--font-adjust, 3px));
   z-index: 2;
+}
+/* Back to latest leaves through a copy the pointer passes through, sinking
+   4 px as it fades (T-19 SH:C19, CV:CW-05; it comes in from App.tsx). They
+   are centred with `translate`, so the movement's `transform` adds to it. */
+.jump-latest-leaving {
+  pointer-events: none;
+  animation: jump-latest-out var(--motion-exit-small) var(--ease-exit) forwards;
+}
+@keyframes jump-latest-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-latest-leaving {
+    display: none;
+  }
 }
 .conversation-empty {
   display: flex;
