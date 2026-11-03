@@ -132,6 +132,8 @@ test("T-20 a photo opens whole; the wheel zooms at the pointer and is taken from
   assert.match(p.document.getElementById(p.stageEl().getAttribute("aria-describedby")).textContent, /Plus and minus zoom/);
   assert.equal(p.output(), "–", "no scale before the image has loaded");
   assert.match(p.stageEl().textContent, /Loading image/);
+  const hint = () => p.dialog().querySelector(".image-viewer-hint");
+  assert.equal(hint(), null, "no way to zoom told before there is anything to zoom");
   assert.deepEqual(p.heading(), { title: "one.png", details: "Attached image" });
   p.load(2000, 1000);
   await until(() => p.output() === "50%", "it opens fitted");
@@ -139,6 +141,7 @@ test("T-20 a photo opens whole; the wheel zooms at the pointer and is taken from
   assert.equal(p.transform(), "translate(0px, 100px) scale(0.5)", "whole and centred");
   assert.equal(p.button("Zoom out").disabled, true, "out no further than the whole image");
   assert.deepEqual(p.heading(), { title: "one.png", details: "2000 × 1000 px · Attached image" }, "its size in pixels, once read");
+  assert.equal(hint().textContent, "Scroll to zoom · Drag to move");
   await until(() => p.stageEl().getAttribute("aria-label") === "one.png, 50%, Fit", "the stage says its view, once settled");
 
   // A wheel's turn in, at the middle: that point of the image stays under it.
@@ -294,6 +297,7 @@ test("T-20 a caption leads; a resize keeps the mode; a new image starts afresh; 
   assert.equal(p.output(), "–");
   assert.ok(p.button("Zoom in").disabled && p.button("Zoom out").disabled && p.button("Fit").disabled);
   assert.equal(p.button("Mark up"), undefined);
+  assert.equal(p.dialog().querySelector(".image-viewer-hint"), null, "nor how to zoom it");
   assert.equal(p.stageEl().textContent.includes("Loading image"), false);
   assert.deepEqual(p.errors, []);
 });

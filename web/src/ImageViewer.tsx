@@ -391,7 +391,8 @@ export function ImageViewer({
             </button>
           ))}
         </div>
-        <span className="image-viewer-hint" aria-hidden="true">{coarse ? t.touch : t.pointer}</span>
+        {/* How to zoom, only while there is something to zoom. */}
+        {shown && <span className="image-viewer-hint" aria-hidden="true">{coarse ? t.touch : t.pointer}</span>}
         {actions && <div className="image-viewer-actions">{actions}</div>}
       </div>
       <div
