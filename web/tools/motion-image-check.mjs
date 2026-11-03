@@ -14,6 +14,20 @@
 // - The card moves on (a new snapshot, another size) while its first picture is still decoding: the
 //   new box has its own shape at once, and nothing plays on the new picture before it is decoded,
 //   whatever the first one's late decode says (decode slowed by 1.5 s in the page for this).
+// - Lead 3619, on a second card ("trials"), each of its versions served by this check, decodes held
+//   or refused in the page:
+//   - a picture that loads but whose decode fails: it says so in its own box, of the size it had
+//     while loading, and is never shown;
+//   - a picture already complete when drawn (its address was read before, so the browser holds
+//     it), whose decode is held: it is not shown before its decode succeeds, then comes in once;
+//   - a snapshot replaced while its decode is held, that decode then failing: the new snapshot comes
+//     in once and is not failed; and the first one, when a later version keeps it again, was not
+//     marked shown: it comes in once then;
+//   - a newer version that changes only a caption: the picture stays shown and plays nothing;
+//   - a newer version while the picture's decode is held and the newer address is slow: the late
+//     decode shows nothing; the picture comes in once, from the newer address;
+//   - the card written again as a new section under the same key, a file of the same name, time
+//     and size in it: its picture is not taken as shown; it loads hidden and comes in once.
 // Writes: none; Home's list read of linked repositories is a POST and counted apart; anything else is
 // refused and counted. Served from http://127.0.0.1. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-image-check.mjs
@@ -93,6 +107,13 @@ const images = {
   "unknown.png": png(480, 320, [196, 148, 92]),
   "turned.jpg": jpeg,
   "known-4.png": png(300, 300, [94, 129, 172]),
+  "trials/undecodable.png": png(640, 400, [150, 110, 140]),
+  "trials/caption.png": png(320, 200, [110, 150, 150]),
+  "trials/swap.png": png(400, 400, [170, 120, 90]),
+  "trials/swap-2.png": png(400, 300, [90, 120, 170]),
+  "trials/url.png": png(360, 240, [140, 160, 100]),
+  "trials/entity.png": png(300, 200, [120, 120, 170]),
+  "trials/cached.png": png(320, 320, [170, 150, 110]),
 };
 const DELAY = 700;
 
@@ -127,6 +148,30 @@ const section = () => ({
     files: { type: "Attachments", props: { items: ["known.png", "unknown.png", "gone.png", "turned.jpg", "ref.png"].map((name) => ({ name, caption: `Caption of ${name}` })) } },
   } },
 });
+/** The trials card (Lead 3619): version 1, then each version the check moves it to. Version 4 is
+ * the card written again under the same key, a new section (id 22). */
+let trials = 1;
+const trialsAt = (ms) => iso(ms * MIN);
+const trial = (name, file, extra) => kept(name, "image/png", images[`trials/${file}`].length, { takenAt: trialsAt(-20), ...extra });
+const trialsSection = () => ({
+  id: trials < 4 ? 21 : 22, key: "trials", kind: "report", title: "Trials", version: trials, owner, updatedAt: iso(-20 * MIN), updatedTurnId: null,
+  refs: {}, seen: null, history: false,
+  attachments: [
+    trial("undecodable.png", "undecodable.png", { width: 640, height: 400 }),
+    trial("caption.png", "caption.png", { width: 320, height: 200 }),
+    trials === 2
+      ? trial("swap.png", "swap-2.png", { width: 400, height: 300, takenAt: trialsAt(-2) })
+      : trial("swap.png", "swap.png", { width: 400, height: 400 }),
+    trial("url.png", "url.png", { width: 360, height: 240 }),
+    trial("entity.png", "entity.png", { width: 300, height: 200 }),
+    ...(trials >= 2 ? [trial("cached.png", "cached.png", { width: 320, height: 320, takenAt: trialsAt(-2) })] : []),
+  ],
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["files"] },
+    files: { type: "Attachments", props: { items: ["undecodable.png", "caption.png", "swap.png", "url.png", "entity.png", ...(trials >= 2 ? ["cached.png"] : [])]
+      .map((name) => ({ name, caption: name === "caption.png" && trials >= 2 ? "Caption, as changed" : `Caption of ${name}` })) } },
+  } },
+});
 const home = () => ({
   generatedAt: new Date().toISOString(),
   order: ["p1"],
@@ -135,7 +180,7 @@ const home = () => ({
     project: { id: "p1", name: "Yuzuno app" },
     agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
     errors: [], pending: [], jobs: [],
-    brief: { version: version + 6, sections: [section()], history: [] },
+    brief: { version: version + 6 + trials, sections: [section(), trialsSection()], history: [] },
     unseen: 1, missing: [],
   }],
 });
@@ -148,12 +193,16 @@ const gets = () => ({
 });
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
   ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
-const ATTACHMENT = /^\/api\/projects\/p1\/brief\/attachments\/shots\/([^/]+)$/;
+const ATTACHMENT = /^\/api\/projects\/p1\/brief\/attachments\/(shots|trials)\/([^/]+)$/;
 async function serve(route) {
   const request = route.request();
   const url = new URL(request.url());
   if (url.pathname === "/__check/brief") {
     version = 4;
+    return route.fulfill({ json: {} });
+  }
+  if (url.pathname === "/__check/trials") {
+    trials = Number(url.searchParams.get("to"));
     return route.fulfill({ json: {} });
   }
   if (url.pathname.startsWith("/api/")) {
@@ -167,8 +216,18 @@ async function serve(route) {
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
     const file = ATTACHMENT.exec(url.pathname);
+    if (file?.[1] === "trials") {
+      const name = decodeURIComponent(file[2]);
+      const asked = Number(url.searchParams.get("version"));
+      report.images.push(`trials/${name}@${asked}`);
+      // url.png's newer address answers after its first decode, held, has settled.
+      await new Promise((done) => setTimeout(done, name === "url.png" && asked >= 2 ? 2500 : DELAY));
+      const bytes = images[`trials/${name === "swap.png" && asked === 2 ? "swap-2.png" : name}`];
+      if (!bytes) return route.fulfill({ status: 404, json: { error: "snapshot_not_found" } });
+      return route.fulfill({ body: bytes, contentType: "image/png" }).catch(() => {});
+    }
     if (file) {
-      const name = decodeURIComponent(file[1]);
+      const name = decodeURIComponent(file[2]);
       const asked = url.searchParams.get("version");
       // The card's newer version answers late: its first picture's decode settles while it loads.
       const late = name === "known.png" && asked === "4";
@@ -222,11 +281,34 @@ function pageHelpers() {
     if (!stream) throw new Error("no open stream");
     stream.onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "brief" }), lastEventId: String(++id) });
   };
+  // The trials card moves to version `to`, then Core says the Brief changed.
+  window.__trialsTo = async (to) => {
+    await fetch(`/__check/trials?to=${to}`);
+    const stream = streams.findLast((s) => s.readyState === 1);
+    if (!stream) throw new Error("no open stream");
+    stream.onmessage?.({ data: JSON.stringify({ type: "workspace.changed", scope: "brief" }), lastEventId: String(++id) });
+  };
+  // Decodes on the trials card: refused, held 1.5 s then refused, or held 1.5 s.
+  const rules = [
+    [/\/trials\/undecodable\.png\?/, "refuse"],
+    [/\/trials\/swap\.png\?version=1$/, "hold, then refuse"],
+    [/\/trials\/url\.png\?version=1$/, "hold"],
+    [/\/trials\/cached\.png\?/, "hold"],
+  ];
+  window.__decodes = [];
   const decode = HTMLImageElement.prototype.decode;
   HTMLImageElement.prototype.decode = function () {
     const done = decode.call(this);
-    if (sessionStorage.getItem("slow-decode") !== "1" || !this.src.includes("version=3")) return done;
     const later = (settle) => (value) => new Promise((resolve, reject) => setTimeout(() => (settle ? resolve(value) : reject(value)), 1500));
+    const rule = rules.find(([pattern]) => pattern.test(this.src))?.[1];
+    if (rule) {
+      window.__decodes.push(`${rule}: ${this.src.split("/trials/")[1]}`);
+      const refused = () => Promise.reject(new DOMException("The source image cannot be decoded.", "EncodingError"));
+      if (rule === "refuse") return done.then(refused, refused);
+      if (rule === "hold, then refuse") return done.then(later(false), later(false));
+      return done.then(later(true), later(false));
+    }
+    if (sessionStorage.getItem("slow-decode") !== "1" || !this.src.includes("version=3")) return done;
     return done.then(later(true), later(false));
   };
   const entries = (el) => el.getAnimations().filter((a) => !(typeof CSSAnimation !== "undefined" && a instanceof CSSAnimation));
@@ -236,7 +318,7 @@ function pageHelpers() {
     const keys = new Set();
     for (const a of plays) for (const k of a.effect?.getKeyframes?.() ?? [])
       for (const p of Object.keys(k)) if (!["offset", "easing", "composite", "computedOffset"].includes(p)) keys.add(p);
-    return { src: img.getAttribute("src"), complete: img.complete && img.naturalWidth > 0, natural: [img.naturalWidth, img.naturalHeight],
+    return { src: img.getAttribute("src"), complete: img.complete && img.naturalWidth > 0, loading: img.hasAttribute("data-loading"), natural: [img.naturalWidth, img.naturalHeight],
       opacity: Number(getComputedStyle(img).opacity), entries: plays.length, keys: [...keys].sort().join("+"),
       duration: plays[0]?.effect?.getComputedTiming().duration ?? null, fit: getComputedStyle(img).objectFit };
   };
@@ -245,9 +327,10 @@ function pageHelpers() {
   window.__now = () => frames.length;
   const step = () => {
     const shown = {};
-    for (const item of document.querySelectorAll('.home-section[data-section-key="shots"] .brief-attachments > li')) {
-      const name = item.querySelector(".brief-image-info dd")?.textContent ?? item.querySelector("strong")?.textContent;
-      if (!name) continue;
+    for (const item of document.querySelectorAll('.home-section[data-section-key="shots"] .brief-attachments > li, .home-section[data-section-key="trials"] .brief-attachments > li')) {
+      const bare = item.querySelector(".brief-image-info dd")?.textContent ?? item.querySelector("strong")?.textContent;
+      if (!bare) continue;
+      const name = item.closest('[data-section-key="trials"]') ? `trials/${bare}` : bare;
       const box = item.querySelector(".brief-image") ?? item.querySelector(".brief-image-failed");
       const caption = item.querySelector(".brief-attachment-caption");
       const at = box?.getBoundingClientRect();
@@ -291,6 +374,7 @@ for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
   version = 3;
+  trials = 1;
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion, locale: "en-US",
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
   const page = await context.newPage();
@@ -319,6 +403,20 @@ for (const run of runs) {
     await bringIn(name);
     return loaded(name, also);
   };
+  const trialsCard = page.locator('.home-section[data-section-key="trials"]');
+  const trialsMore = trialsCard.locator("button.brief-attachments-more");
+  const trialItem = (name) => [...document.querySelectorAll('.home-section[data-section-key="trials"] .brief-attachments > li')]
+    .find((li) => li.querySelector(".brief-image-info dd")?.textContent === name);
+  const bringInTrial = (name) => page.evaluate(([find, name]) => new Function(`return (${find})`)()(name)
+    ?.scrollIntoView({ block: "center", behavior: "instant" }), [trialItem.toString(), name]);
+  const trialLoaded = (name, also) => page.waitForFunction(([find, name, also]) => {
+    const img = new Function(`return (${find})`)()(name)?.querySelector("img");
+    return !!img && img.complete && img.naturalWidth > 0 && img.getAttribute("src").includes(also);
+  }, [trialItem.toString(), name, also], { timeout: 10_000 });
+  const shownTrial = (name) => page.waitForFunction(([find, name]) => {
+    const img = new Function(`return (${find})`)()(name)?.querySelector("img");
+    return !!img && !img.hasAttribute("data-loading") && Number(getComputedStyle(img).opacity) === 1;
+  }, [trialItem.toString(), name], { timeout: 10_000 });
   const loaded = (name, also = "") => page.waitForFunction(([name, also]) => {
     const img = [...document.querySelectorAll('.home-section[data-section-key="shots"] .brief-attachments > li')]
       .find((li) => li.querySelector(".brief-image-info dd")?.textContent === name)?.querySelector("img");
@@ -392,6 +490,98 @@ for (const run of runs) {
       later.length > 0 && later.every(sized) && later.some((f) => !f.picture.complete) && cameIn(later, reduced),
       { first: later[0], playingBeforeDecoded: later.filter((f) => !f.picture.complete && f.picture.entries).length, last: later.at(-1)?.picture });
     await page.screenshot({ path: join(output, `${tag}-moved-on.png`) });
+
+    // Lead 3619, the trials card, from a fresh page: cached.png's version 2 address is read first,
+    // so the browser holds it complete when version 2 draws it.
+    trials = 1;
+    await page.reload();
+    await page.evaluate((src) => new Promise((done, fail) => {
+      const img = new Image();
+      window.__held = img;
+      img.onload = done;
+      img.onerror = fail;
+      img.src = src;
+    }), "/api/projects/p1/brief/attachments/trials/cached.png?version=2");
+    await openHome();
+    await trialsCard.waitFor({ timeout: 10_000 });
+    if ((await trialsMore.count()) && (await trialsMore.getAttribute("aria-expanded")) === "false") await trialsMore.click();
+    await bringInTrial("undecodable.png");
+    await trialsCard.locator(".brief-image-failed").first().waitFor({ timeout: 10_000 });
+    await bringInTrial("caption.png");
+    await shownTrial("caption.png");
+    await bringInTrial("url.png");
+    await trialLoaded("swap.png", "version=1");
+    await trialLoaded("url.png", "version=1");
+    const before = await page.evaluate(() => window.__now());
+    await page.evaluate(() => window.__trialsTo(2));
+    await trialLoaded("swap.png", "version=2");
+    await trialLoaded("cached.png", "version=2");
+    await shownTrial("cached.png");
+    await trialLoaded("url.png", "version=2");
+    await shownTrial("url.png");
+    await page.waitForTimeout(1000);
+    const all = record("trials", await framesSince(0));
+    const second = all.slice(before);
+    const trialFrames = (frames, name) => of(frames, `trials/${name}`);
+
+    const undecodable = trialFrames(all, "undecodable.png");
+    ok(`${tag}: a picture that loads but whose decode fails says so in its own box, of the size it had while loading, and is never shown`,
+      undecodable.some((f) => !f.box.failed) && undecodable.at(-1)?.box.failed && steady(undecodable, "outer")
+        && undecodable.every((f) => !f.picture || (f.picture.opacity === 0 && !f.picture.entries)),
+      { loading: undecodable.find((f) => !f.box.failed)?.box, last: undecodable.at(-1)?.box,
+        shown: undecodable.filter((f) => f.picture && (f.picture.opacity > 0 || f.picture.entries)).length });
+
+    const cached = trialFrames(second, "cached.png").map((f) => f.picture).filter(Boolean);
+    const firstVisible = cached.findIndex((p) => p.opacity > 0 || p.entries);
+    const heldHidden = cached.slice(0, firstVisible < 0 ? cached.length : firstVisible).filter((p) => p.complete && p.opacity === 0 && p.loading);
+    const after = cached.slice(Math.max(firstVisible, 0));
+    const plays = after.filter((p, i) => p.entries && !after[i - 1]?.entries);
+    ok(`${tag}: a picture already complete when drawn (its address read before), its decode held: hidden until the decode succeeds, then in once (under reduced motion, at once)`,
+      cached[0]?.complete === true && heldHidden.length >= 20 && firstVisible > 0 && after.at(-1)?.opacity === 1 && !after.at(-1)?.entries
+        && (reduced ? plays.length === 0 : plays.length === 1 && plays[0].keys === "opacity" && Math.abs((plays[0].duration ?? 0) - 180) < 0.5),
+      { completeWhenDrawn: cached[0]?.complete, hiddenWhileHeld: heldHidden.length, firstVisible, plays: plays.length, last: after.at(-1) });
+
+    const swapped = trialFrames(second, "swap.png").filter((f) => f.picture?.src.includes("version=2"));
+    ok(`${tag}: a snapshot replaced while its decode is held, that decode then failing: the new snapshot is never failed and comes in once (under reduced motion, at once)`,
+      swapped.length > 0 && swapped.every((f) => !f.box.failed) && trialFrames(second, "swap.png").every((f) => !f.box.failed) && cameIn(swapped, reduced),
+      { failed: trialFrames(second, "swap.png").filter((f) => f.box.failed).length, first: swapped[0]?.picture, last: swapped.at(-1)?.picture });
+
+    const caption = trialFrames(second, "caption.png");
+    ok(`${tag}: a newer version that changes only a caption: the picture stays shown and plays nothing`,
+      caption.length > 0 && caption.every((f) => f.picture && f.picture.opacity === 1 && !f.picture.entries && !f.picture.loading),
+      { hidden: caption.filter((f) => !f.picture || f.picture.opacity !== 1 || f.picture.loading).length, playing: caption.filter((f) => f.picture?.entries).length });
+
+    const earlyUrl = trialFrames(all.slice(0, before), "url.png").filter((f) => f.picture && (f.picture.opacity > 0 || f.picture.entries));
+    const url = trialFrames(second, "url.png").filter((f) => f.picture?.src.includes("version=2"));
+    ok(`${tag}: a newer version while the picture's decode is held and the newer address is slow: the late decode shows nothing; the picture comes in once, from the newer address (under reduced motion, at once)`,
+      earlyUrl.length === 0 && url.length > 0 && url.some((f) => !f.picture.complete) && cameIn(url, reduced),
+      { shownBeforeTheMove: earlyUrl.length, shownBeforeItsAddress: url.filter((f) => !f.picture.complete && (f.picture.opacity > 0 || f.picture.entries)).length,
+        last: url.at(-1)?.picture });
+
+    // Version 3 keeps swap.png's first snapshot again; version 4 is the card written again.
+    const third = await page.evaluate(() => window.__now());
+    await page.evaluate(() => window.__trialsTo(3));
+    await trialLoaded("swap.png", "version=3");
+    await shownTrial("swap.png");
+    await bringInTrial("entity.png");
+    await shownTrial("entity.png");
+    await page.waitForTimeout(800);
+    const keptAgain = trialFrames(record("trials, version 3", await framesSince(third)), "swap.png").filter((f) => f.picture?.src.includes("version=3"));
+    ok(`${tag}: the first snapshot, kept again by a later version, was not marked shown when its decode failed: it loads hidden and comes in once (under reduced motion, at once)`,
+      keptAgain.length > 0 && keptAgain.some((f) => f.picture.loading) && cameIn(keptAgain, reduced),
+      { hidden: keptAgain.filter((f) => f.picture.loading).length, first: keptAgain[0]?.picture, last: keptAgain.at(-1)?.picture });
+
+    const fourth = await page.evaluate(() => window.__now());
+    await page.evaluate(() => window.__trialsTo(4));
+    await trialLoaded("entity.png", "version=4");
+    await shownTrial("entity.png");
+    await page.waitForTimeout(800);
+    const entity = trialFrames(record("trials, version 4", await framesSince(fourth)), "entity.png").filter((f) => f.picture?.src.includes("version=4"));
+    ok(`${tag}: the card written again as a new section under the same key, a file of the same name, time and size in it: its picture is not taken as shown; it loads hidden and comes in once (under reduced motion, at once)`,
+      entity.length > 0 && entity.some((f) => f.picture.loading) && cameIn(entity, reduced),
+      { hidden: entity.filter((f) => f.picture.loading).length, first: entity[0]?.picture, last: entity.at(-1)?.picture });
+    report.decodes = { ...report.decodes, [tag]: await page.evaluate(() => window.__decodes) };
+    await page.screenshot({ path: join(output, `${tag}-trials.png`) });
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));
     await page.screenshot({ path: join(output, `${tag}-error.png`) }).catch(() => {});

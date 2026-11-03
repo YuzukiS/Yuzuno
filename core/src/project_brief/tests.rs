@@ -592,6 +592,7 @@ async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_ha
         {"name":"claimed.png","path":wide,"width":900,"height":900},
         {"name":"big.png","path":files.join("big.png")},
         {"name":"linked.png","url":"https://example.com/linked.png"},
+        {"name":"plain.webp","path":file("plain.webp", &picture(image::ImageFormat::WebP, 40, 20))},
     ]);
     accept(&ws, "a", input("a1", 0, vec![change])).await;
     let shown = section(&brief(&ws, "a"), "shots")["attachments"].clone();
@@ -617,6 +618,7 @@ async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_ha
     assert_eq!(size(8), without(8));
     assert_eq!(shown[9]["kind"], "link");
     assert_eq!(size(9), without(9));
+    assert_eq!(size(10), sized(10, 40, 20));
     // Home shows the same.
     let home = &home::build(&ws.store).unwrap()["projects"][0]["brief"]["sections"][0]["attachments"];
     assert_eq!((home[2]["width"].clone(), home[2]["height"].clone()), (json!(20), json!(40)));
@@ -635,6 +637,139 @@ async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_ha
     assert_eq!((released["snapshot"].clone(), released.get("width"), released.get("height")), (json!(false), None, None), "{released}");
     let history = &home::build(&ws.store).unwrap()["projects"][0]["brief"]["history"][0]["attachments"];
     assert!(history.as_array().unwrap().iter().all(|shown| shown.get("width").is_none() && shown.get("height").is_none()), "{history}");
+}
+
+/// Refuses, once armed, any one allocation past ARMED_LIMIT, and keeps the
+/// largest asked for. Only a test process of its own arms it (`kept_apart`):
+/// it shows what Core asks of memory to keep an image whose header lies,
+/// without the machine being asked for it (T-19 HM:B14).
+mod watched {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+
+    pub(super) static ARMED: AtomicBool = AtomicBool::new(false);
+    pub(super) static LARGEST: AtomicUsize = AtomicUsize::new(0);
+    pub(super) const ARMED_LIMIT: usize = 16 << 20;
+
+    fn refused(size: usize) -> bool {
+        if !ARMED.load(Relaxed) {
+            return false;
+        }
+        LARGEST.fetch_max(size, Relaxed);
+        size > ARMED_LIMIT
+    }
+
+    struct Watched;
+    unsafe impl GlobalAlloc for Watched {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if refused(layout.size()) { std::ptr::null_mut() } else { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            if refused(layout.size()) { std::ptr::null_mut() } else { System.alloc_zeroed(layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            if refused(size) { std::ptr::null_mut() } else { System.realloc(ptr, layout, size) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout)
+        }
+    }
+
+    #[global_allocator]
+    static WATCHED: Watched = Watched;
+}
+use watched::{ARMED, ARMED_LIMIT, LARGEST};
+
+const APART: &str = "YUZUNO_TEST_KEPT_APART";
+
+/// Keeps `bytes()` as the image `name` through Core in a test process of its
+/// own, the allocator armed while Core reads and keeps it. In that process,
+/// says what Core kept and the largest allocation asked for, and returns
+/// None; here, returns them, after asserting that the process ended well
+/// (refusing an allocation aborts it). `test` is the calling test's name.
+fn kept_apart(test: &str, name: &str, bytes: fn() -> Vec<u8>) -> Option<(Value, usize)> {
+    let test = format!("{}::{test}", module_path!().split_once("::").unwrap().1);
+    if std::env::var(APART).as_deref() == Ok(test.as_str()) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let (dir, ws, _) = lab();
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes()).unwrap();
+            let mut change = put("shots", "report");
+            change["attachments"] = json!([{"name":name,"path":path}]);
+            ARMED.store(true, std::sync::atomic::Ordering::SeqCst);
+            accept(&ws, "a", input("a1", 0, vec![change])).await;
+            ARMED.store(false, std::sync::atomic::Ordering::SeqCst);
+            let kept = section(&brief(&ws, "a"), "shots")["attachments"][0].clone();
+            println!("{APART}={}", json!({"kept":kept,"largest":LARGEST.load(std::sync::atomic::Ordering::SeqCst)}));
+        });
+        return None;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+        .env(APART, &test)
+        .output()
+        .unwrap();
+    let (said, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let tail: String = err.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+    assert!(out.status.success(), "Core kept {name} asking for no allocation past {ARMED_LIMIT} bytes: {}\n{tail}", out.status);
+    let line = said.lines().find_map(|line| line.strip_prefix(&format!("{APART}="))).expect("what the process kept");
+    let report: Value = serde_json::from_str(line).unwrap();
+    let largest = usize::try_from(report["largest"].as_u64().unwrap()).unwrap();
+    println!("{name}: kept {}, the largest allocation asked for meanwhile {largest} bytes", report["kept"]);
+    Some((report["kept"].clone(), largest))
+}
+
+/// A WebP whose EXIF chunk says it is 4 GiB long: VP8X, a 40 x 20 lossless
+/// image, then that chunk's head and 16 bytes.
+fn webp_with_a_4_gib_exif() -> Vec<u8> {
+    let lossless = picture(image::ImageFormat::WebP, 40, 20);
+    let mut body = b"WEBPVP8X\x0a\x00\x00\x00\x08\x00\x00\x00".to_vec();
+    body.extend(&39u32.to_le_bytes()[..3]);
+    body.extend(&19u32.to_le_bytes()[..3]);
+    body.extend(&lossless[12..]);
+    body.extend(b"EXIF");
+    body.extend(0xFFFF_FFF0u32.to_le_bytes());
+    body.extend([0; 16]);
+    [b"RIFF".as_slice(), &u32::try_from(body.len()).unwrap().to_le_bytes()[..], &body[..]].concat()
+}
+
+/// A 40 x 20 PNG whose ICC profile, 32 KiB or so compressed, inflates to
+/// 32 MiB of zeros: written a block at a time, so writing it asks for little.
+fn png_with_a_32_mib_profile() -> Vec<u8> {
+    use std::io::Write;
+    let png = picture(image::ImageFormat::Png, 40, 20);
+    let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    let zeros = [0u8; 64 * 1024];
+    for _ in 0..512 {
+        zlib.write_all(&zeros).unwrap();
+    }
+    let typed = [b"iCCPprofile\0\0".as_slice(), &zlib.finish().unwrap()[..]].concat();
+    let mut crc = flate2::Crc::new();
+    crc.update(&typed);
+    let mut chunk = u32::try_from(typed.len() - 4).unwrap().to_be_bytes().to_vec();
+    chunk.extend(&typed);
+    chunk.extend(crc.sum().to_be_bytes());
+    [&png[..33], &chunk[..], &png[33..]].concat()
+}
+
+#[test]
+fn a_webp_whose_exif_chunk_says_4_gib_is_kept_without_core_asking_for_it() {
+    let Some((kept, largest)) = kept_apart("a_webp_whose_exif_chunk_says_4_gib_is_kept_without_core_asking_for_it",
+        "lying.webp", webp_with_a_4_gib_exif) else { return };
+    // Kept, as an image Core gives no size: the chunk runs past the bytes.
+    assert_eq!((kept["kind"].clone(), kept["snapshot"].clone()), (json!("image"), json!(true)), "{kept}");
+    assert_eq!((kept.get("width"), kept.get("height")), (None, None), "{kept}");
+    assert!(largest < 4 << 20, "the largest allocation while Core kept it: {largest} bytes");
+}
+
+#[test]
+fn a_png_whose_icc_profile_inflates_to_32_mib_is_sized_without_inflating_it() {
+    let Some((kept, largest)) = kept_apart("a_png_whose_icc_profile_inflates_to_32_mib_is_sized_without_inflating_it",
+        "profiled.png", png_with_a_32_mib_profile) else { return };
+    // Its header gives its size; its profile is passed by its length.
+    assert_eq!((kept["kind"].clone(), kept["width"].clone(), kept["height"].clone()), (json!("image"), json!(40), json!(20)), "{kept}");
+    assert!(largest < 4 << 20, "the largest allocation while Core kept it: {largest} bytes");
 }
 
 fn attach(file: &std::path::Path) -> Value {
