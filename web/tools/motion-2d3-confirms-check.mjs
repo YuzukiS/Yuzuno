@@ -2,8 +2,9 @@
 // production build of the app, through the real Settings, with every API answered here (no Core).
 // - The shared Appearance preset's Preview… and Follow this preset… stay enabled while their preview
 //   is open, say so (aria-expanded) and keep focus; pressed again, Preview… closes its preview. Each
-//   preview reveals: from nothing to its height over small with a fade, clipped meanwhile. Cancel
-//   brings focus back to the button that opened it.
+//   preview reveals: from nothing to its height over small with a fade, clipped meanwhile; only the
+//   box it is in opens, and the preview keeps its own padding and margins, its buttons still within
+//   it. Cancel brings focus back to the button that opened it.
 // - A backup's Remove… confirmation reveals the same way below the backup and takes focus; Cancel
 //   brings focus back to that Remove….
 // - Under reduced motion each is there at once; reduced motion turned on while one reveals shows it
@@ -98,9 +99,16 @@ function pageHelpers() {
   const frame = (selector) => {
     const el = document.querySelector(selector);
     if (!el) return null;
-    const animations = el.getAnimations();
-    return { h: Math.round(el.getBoundingClientRect().height * 10) / 10, opacity: Number(getComputedStyle(el).opacity), overflow: el.style.overflow,
-      animations: animations.length, duration: animations[0]?.effect?.getComputedTiming().duration ?? null };
+    // What reveals: the box the panel is in, where it has one (useRevealIn), else the panel itself.
+    const box = el.parentElement?.classList.contains("reveal") ? el.parentElement : el;
+    const animations = box.getAnimations();
+    const own = getComputedStyle(el);
+    const button = el.querySelector("button");
+    return { h: Math.round(box.getBoundingClientRect().height * 10) / 10, opacity: Number(getComputedStyle(box).opacity), overflow: box.style.overflow,
+      animations: animations.length, duration: animations[0]?.effect?.getComputedTiming().duration ?? null,
+      // The panel itself: its own padding and margins, and where its first button is in it.
+      padding: `${own.paddingTop} ${own.paddingBottom}`, margin: `${own.marginTop} ${own.marginBottom}`,
+      control: button ? Math.round((button.getBoundingClientRect().top - el.getBoundingClientRect().top) * 10) / 10 : null };
   };
   window.__focused = () => {
     const el = document.activeElement;
@@ -160,6 +168,14 @@ function revealed(frames, still, reduced) {
     Math.abs(last.h - still.h) <= 0.5 && last.opacity === 1 && last.animations === 0 && last.overflow === "";
 }
 
+/** The panel itself, from the first frame of its reveal to its end: its own padding and margins as
+ * when it is still, and its buttons where they are in it then (only the box it is in opens). */
+function steady(frames, still) {
+  const shown = (frames ?? []).filter(Boolean);
+  return !!still && still.control !== null && shown.length > 0 &&
+    shown.every((f) => f.padding === still.padding && f.margin === still.margin && f.control !== null && Math.abs(f.control - still.control) <= 0.5);
+}
+
 const browser = await launchBrowser();
 report.browser = browser.version();
 const runs = [
@@ -213,6 +229,8 @@ for (const run of runs) {
       !!state && !state.disabled && state.expanded === "true" && state.focused, { state, focus: await focused() });
     ok(`${tag}: ${label}: its preview reveals from nothing to its height over 180 ms with a fade, clipped meanwhile; under reduced motion it is there at once (first frame ${JSON.stringify(frames?.find(Boolean) ?? null)}, still ${natural?.h ?? "none"} px)`,
       revealed(frames ?? [], natural, reduced), { first: frames?.slice(0, 4), still: natural });
+    ok(`${tag}: ${label}: the preview keeps its own padding and margins, and its buttons do not move within it, from the first frame of its reveal (padding ${natural?.padding}, margin ${natural?.margin}, button at ${natural?.control} px)`,
+      steady(frames, natural), { moved: (frames ?? []).filter(Boolean).filter((f) => f.padding !== natural?.padding || f.margin !== natural?.margin || f.control !== natural?.control).slice(0, 3), still: natural });
   }
   try {
     await page.goto("http://127.0.0.1:4319/");
@@ -265,6 +283,8 @@ for (const run of runs) {
     const natural = await still(CONFIRM);
     ok(`${tag}: Remove…: its confirmation reveals below the backup from nothing over 180 ms with a fade, clipped meanwhile; under reduced motion it is there at once (still ${natural?.h ?? "none"} px)`,
       revealed(frames ?? [], natural, reduced), { first: frames?.slice(0, 4), still: natural });
+    ok(`${tag}: Remove…: the confirmation keeps its own padding and margins, and its buttons do not move within it, from the first frame of its reveal (padding ${natural?.padding}, margin ${natural?.margin}, button at ${natural?.control} px)`,
+      steady(frames, natural), { moved: (frames ?? []).filter(Boolean).filter((f) => f.padding !== natural?.padding || f.margin !== natural?.margin || f.control !== natural?.control).slice(0, 3), still: natural });
     const inConfirm = await focused();
     ok(`${tag}: Remove…: the confirmation takes focus (${inConfirm?.label})`,
       inConfirm?.className.includes("backup-retention-confirm") && inConfirm.label === `Remove ${NAME}`, inConfirm);
