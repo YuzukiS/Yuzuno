@@ -584,6 +584,36 @@ fn a_result_is_bounded_as_stored_with_its_record_summaries_and_a_refusal_writes_
 }
 
 #[test]
+fn a_record_proposes_its_next_check_or_a_stop_and_a_method_does_not() {
+    let (_dir, store) = setup();
+    let observation = json!({"type":"observation","id":"ranking-flips","title":"Ranking flips with link order",
+        "text":"Reordering the link step reverses which layout is faster.",
+        "next":{"action":"check","text":"Time ten fresh processes with the link order shuffled: a ranking that still flips is the measurement, not the layout."}});
+    let before = counts(&store);
+    let written = comment(&store, "author", "o1", "T-1", observation.clone()).unwrap();
+    assert_eq!(written["activity"]["research"]["next"], observation["next"]);
+    let after = counts(&store);
+    assert_eq!((after.0, after.1, after.4), (before.0, before.1, before.4), "a proposal changes no task and sends no mail");
+    let with = |base: &Value, id: &str, next: Value| {
+        let mut record = base.clone();
+        record["id"] = json!(id);
+        record["next"] = next;
+        record
+    };
+    let before = counts(&store);
+    for (name, research, expected) in [
+        ("a method", with(&method("timing", "Ten fresh processes."), "timing", json!({"action":"stop","text":"Enough."})), "is for claims, observations and comparisons"),
+        ("an invented action", with(&observation, "o2", json!({"action":"retry","text":"Run it again."})), "must be one of check, stop"),
+        ("no reason", with(&observation, "o3", json!({"action":"stop"})), "text"),
+        ("extra fields", with(&observation, "o4", json!({"action":"check","text":"t","run":"now"})), "invalid_input"),
+    ] {
+        let refused = error(comment(&store, "author", name, "T-1", research));
+        assert!(refused.contains(expected), "{name}: {refused}");
+        assert_eq!(counts(&store), before, "{name}: nothing written");
+    }
+}
+
+#[test]
 fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() {
     let (_dir, store) = setup();
     let m1 = seq(&comment(&store, "author", "m1", "T-1", method("timing", "Ten iterations in one process.")).unwrap());
@@ -625,6 +655,146 @@ fn a_field_can_differ_among_the_entries_that_give_it_and_be_missing_on_others() 
     let summary = comment(&store, "author", "same", "T-1", record).unwrap()["activity"]["research"]["comparability"].clone();
     assert_eq!((summary["differs"].clone(), summary["unknown"].clone()), (json!([]), json!(["level"])));
     assert_eq!(summary["shared"], json!({"unit":"%","definition":"median of runs","method":m2}));
+}
+
+// Three synthetic studies (T-17 slice 4) where an early result turns: each
+// keeps its counterexample in the trail a result cites, so it cannot be
+// read as a general advantage, and a conditional conclusion stays possible.
+// Core judges none of it: it keeps what was written and refuses nothing for
+// being negative.
+
+fn comparison_of(id: &str, title: &str, entries: Value) -> Value {
+    json!({"type":"comparison","id":id,"title":title,"field":"systems","text":format!("{title}, as compared by its author."),"entries":entries})
+}
+
+fn task_source(task: &str, seq: i64) -> Value {
+    json!({"kind":"task","taskId":task,"activitySeq":seq})
+}
+
+/// The record a result's criterion cites, read back through the task.
+fn cited_trail(store: &Store, task: &str) -> Value {
+    store.collaboration_call(None, "task_result_get", json!({"taskId":task})).unwrap()
+}
+
+#[test]
+fn a_cs_layout_reversal_keeps_the_reversing_run_and_the_method_turn_in_the_cited_trail() {
+    let (_dir, store) = setup();
+    let task = task_with(&store, "cs", "Is layout B faster? (synthetic)", "Answer under which conditions layout B is faster, with the evidence either way");
+    let v1 = seq(&comment(&store, "author", "cs-m1", &task, method("timing", "Ten iterations in one process.")).unwrap());
+    let mut flip = json!({"type":"observation","id":"ranking-flips","title":"Ranking flips with link order",
+        "text":"Swapping the link order reverses which layout is faster.","method":{"activitySeq":v1},
+        "next":{"action":"check","text":"Time fresh processes under both link orders: a ranking that still flips is the measurement."}});
+    flip["field"] = json!("systems");
+    let observed = seq(&comment(&store, "author", "cs-o1", &task, flip).unwrap());
+    let mut turned = method("timing", "Ten fresh processes under each link order.");
+    turned["revises"] = json!({"activitySeq":v1,"reason":"Iterations in one process share caches and memory layout."});
+    let v2 = seq(&comment(&store, "author", "cs-m2", &task, turned).unwrap());
+    let compared = seq(&comment(&store, "author", "cs-c1", &task, comparison_of("orders", "Layout B against A by link order", json!([
+        {"id":"order-a","label":"Link order A","status":"included","unit":"%","level":"process","n":10,"definition":"median runtime change",
+            "method":{"activitySeq":v2},"value":{"value":-4.0,"low":-5.1,"high":-2.9}},
+        {"id":"order-b","label":"Link order B","status":"included","unit":"%","level":"process","n":10,"definition":"median runtime change",
+            "method":{"activitySeq":v2},"value":{"value":3.0,"low":1.8,"high":4.2}},
+        {"id":"iterations","label":"Iterations in one process","status":"excluded","reason":"Not independent runs; kept as the first observation.",
+            "unit":"%","value":{"value":-6.0}},
+    ]))).unwrap());
+    let mut claim = finding("faster-order-a", "conditional", "systems", "Layout B is faster only under link order A");
+    claim["conditions"] = json!(["Link order A", "Small inputs", "Fresh processes"]);
+    claim["method"] = json!({"activitySeq":v2});
+    claim["sources"] = json!([task_source(&task, compared), task_source(&task, observed)]);
+    let claimed = seq(&comment(&store, "author", "cs-claim", &task, claim).unwrap());
+    let delivered = result(&store, "cs", &task, "met", json!([{"activitySeq":claimed},{"activitySeq":compared}])).unwrap();
+    // The trail a reader follows from the result keeps the reversal.
+    let cited = &delivered["task"]["result"]["outcome"]["criteria"][0]["records"];
+    assert_eq!(cited[1]["record"]["counts"], json!({"included":2,"excluded":1,"missing":0,"not_done":0}));
+    let comparison = record(&store, &task, compared)["research"].clone();
+    assert_eq!(comparison["comparability"]["aligned"], true, "same unit, definition, level and method");
+    assert_eq!(comparison["entries"][1]["value"]["value"], 3.0, "the reversing run is kept, as written");
+    assert_eq!(comparison["entries"][2]["reason"], "Not independent runs; kept as the first observation.");
+    let claim = record(&store, &task, claimed);
+    assert_eq!(claim["research"]["status"], "conditional");
+    assert_eq!(claim["research"]["sources"][0]["record"]["counts"]["included"], 2, "the claim's source says what was compared");
+    assert_eq!((claim["method"]["activitySeq"].clone(), claim["method"]["version"].clone()), (json!(v2), json!(2)));
+    // The first method version still reads as the first; nothing rewrote it.
+    let first = record(&store, &task, v1);
+    assert_eq!((first["version"].clone(), first["latestActivitySeq"].clone()), (json!(1), json!(v2)));
+    assert!(cited_trail(&store, &task)["note"].as_str().unwrap().contains("neither is derived from the other"));
+}
+
+#[test]
+fn an_ml_selective_advantage_keeps_the_losing_and_diverged_seeds_and_the_budget_difference() {
+    let (_dir, store) = setup();
+    let task = task_with(&store, "ml", "Does the new mechanism beat the baseline? (synthetic)",
+        "Deliver a mechanism better than a fully implemented baseline at an equal tuning budget");
+    let protocol = seq(&comment(&store, "author", "ml-m1", &task, json!({"type":"method","id":"selection","title":"Selection protocol",
+        "text":"Select on the validation split; report every seed and task.","field":"ml"})).unwrap());
+    let entry = |id: &str, label: &str, status: &str, value: Option<f64>, budget: &str, reason: Option<&str>| {
+        let mut entry = json!({"id":id,"label":label,"status":status,"unit":"accuracy points","level":"seed","definition":budget,
+            "method":{"activitySeq":protocol}});
+        if let Some(value) = value { entry["value"] = json!({"value":value}); }
+        if let Some(reason) = reason { entry["reason"] = json!(reason); }
+        entry
+    };
+    let compared = seq(&comment(&store, "author", "ml-c1", &task, json!({"type":"comparison","id":"seeds","title":"New mechanism minus baseline, by seed",
+        "field":"ml","text":"Per seed, as run.","entries":[
+            entry("seed-1", "Seed 1, task A", "included", Some(2.1), "tuning budget 20 trials", None),
+            entry("seed-2", "Seed 2, task A", "included", Some(-0.4), "tuning budget 20 trials", None),
+            entry("seed-3", "Seed 3, task B", "included", Some(1.2), "tuning budget 60 trials", None),
+            entry("seed-4", "Seed 4, task A", "excluded", None, "tuning budget 20 trials", Some("Diverged at step 3000 (NaN loss): a valid observation of the method, not a dropped run.")),
+        ]})).unwrap());
+    let summary = record(&store, &task, compared)["research"]["comparability"].clone();
+    assert_eq!(summary["differs"], json!(["definition"]), "the baseline was tuned on a different budget: {summary}");
+    assert_eq!(summary["aligned"], false, "side by side only");
+    let mut narrow = finding("advantage-task-a", "conditional", "ml", "An advantage on task A at a 20-trial budget, not on every seed");
+    narrow["conditions"] = json!(["Task A", "20-trial budget", "Seeds 1 and 2; seed 4 diverged"]);
+    narrow["limits"] = json!(["Margins overlapping is no test of the difference", "No difference found is not equivalence"]);
+    narrow["sources"] = json!([task_source(&task, compared)]);
+    let claimed = seq(&comment(&store, "author", "ml-claim", &task, narrow).unwrap());
+    let general = seq(&comment(&store, "author", "ml-general", &task,
+        finding("better-overall", "unsupported", "ml", "The mechanism beats the baseline at an equal budget")).unwrap());
+    let delivered = result(&store, "ml", &task, "not_met", json!([{"activitySeq":general},{"activitySeq":claimed},{"activitySeq":compared}])).unwrap();
+    let criterion = &delivered["task"]["result"]["outcome"]["criteria"][0];
+    assert_eq!(criterion["reportedStatus"], "not_met", "a negative answer is delivered as it is, not retried");
+    assert_eq!(criterion["records"][0]["record"]["status"], "unsupported");
+    assert_eq!(criterion["records"][2]["record"]["counts"], json!({"included":3,"excluded":1,"missing":0,"not_done":0}));
+    let seeds = record(&store, &task, compared)["research"]["entries"].clone();
+    assert_eq!(seeds[1]["value"]["value"], -0.4, "the losing seed is kept");
+    assert!(seeds[3]["reason"].as_str().unwrap().starts_with("Diverged"), "the diverged seed is kept with why");
+    assert_eq!(delivered["task"]["status"], "review");
+}
+
+#[test]
+fn a_robotics_study_keeps_stopped_and_lost_episodes_and_starts_nothing_on_its_own() {
+    let (_dir, store) = setup();
+    let task = task_with(&store, "robot", "Why does the grasp fail on the real arm? (synthetic)",
+        "Explain the gap between simulation and the real arm, or say what is still unknown");
+    let key = task_key(&store.db.read().unwrap(), &task).unwrap().0;
+    let jobs = || -> i64 { store.db.read().unwrap().query_row("SELECT (SELECT COUNT(*) FROM local_jobs WHERE task_id=?1)+(SELECT COUNT(*) FROM local_job_runs WHERE task_id=?1)",
+        params![key], |r| r.get(0)).unwrap() };
+    let protocol = seq(&comment(&store, "author", "rb-m1", &task, json!({"type":"method","id":"grasp-protocol","title":"Grasp protocol v1",
+        "text":"Twenty episodes per condition; an operator may stop any episode.","field":"robotics"})).unwrap());
+    let episodes = seq(&comment(&store, "author", "rb-c1", &task, json!({"type":"comparison","id":"episodes","title":"Real-arm episodes against the simulation",
+        "field":"robotics","text":"As logged by the operator.","entries":[
+            {"id":"sim","label":"Simulation replay","status":"included","unit":"successes of 20","level":"episode","n":20,"method":{"activitySeq":protocol},"value":{"value":19.0}},
+            {"id":"real","label":"Real arm, completed episodes","status":"included","unit":"successes of 20","level":"episode","n":12,"method":{"activitySeq":protocol},"value":{"value":5.0}},
+            {"id":"stopped","label":"Real arm, stopped episodes","status":"not_done","reason":"The operator stopped 6 episodes at the torque limit."},
+            {"id":"lost","label":"Real arm, unlogged episodes","status":"missing","reason":"The action log of 2 episodes was not written."},
+        ]})).unwrap());
+    let mut open = finding("gap-cause", "open", "robotics", "The gap comes from the controller's timing, not the policy");
+    open["limits"] = json!(["A simulation replay is no proof of the closed loop on the real arm", "8 of 20 real episodes have no outcome"]);
+    open["sources"] = json!([task_source(&task, episodes)]);
+    open["next"] = json!({"action":"stop","text":"The operator decides the next protocol on the arm; nothing here runs it."});
+    let claimed = seq(&comment(&store, "author", "rb-claim", &task, open).unwrap());
+    let before = jobs();
+    let delivered = result(&store, "robot", &task, "unknown", json!([{"activitySeq":claimed},{"activitySeq":episodes}])).unwrap();
+    let criterion = &delivered["task"]["result"]["outcome"]["criteria"][0];
+    assert_eq!(criterion["reportedStatus"], "unknown");
+    assert_eq!(criterion["records"][1]["record"]["counts"], json!({"included":2,"excluded":0,"missing":1,"not_done":1}));
+    let claim = record(&store, &task, claimed)["research"].clone();
+    assert_eq!((claim["status"].clone(), claim["next"]["action"].clone()), (json!("open"), json!("stop")));
+    let summary = record(&store, &task, episodes)["research"]["comparability"].clone();
+    assert_eq!(summary["shared"]["level"], "episode");
+    assert_eq!(jobs(), before, "no Job or run is started to fill the plan: a stop, a proposal and a result start nothing");
+    assert_eq!(before, 0);
 }
 
 #[test]

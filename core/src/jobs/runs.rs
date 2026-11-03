@@ -41,11 +41,19 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
         task_id TEXT NOT NULL, agent_id TEXT NOT NULL, data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS local_job_runs_agent ON local_job_runs(agent_id,seq);
+        CREATE INDEX IF NOT EXISTS local_job_runs_task ON local_job_runs(task_id,seq);
         CREATE TABLE IF NOT EXISTS local_job_run_attempts (
         run_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL,
         job_id TEXT UNIQUE NOT NULL, PRIMARY KEY(run_id,stage,attempt));",
     )?;
     Ok(())
+}
+
+/// A research record of the run's task, named by its activity (T-17).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResearchRef {
+    pub activity_seq: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,6 +69,9 @@ pub(super) struct RunSubmit {
     /// A soft limit on recorded cost: no new stage attempt starts beyond it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cost_limit_usd: Option<f64>,
+    /// The task's method record this run follows (T-17), fixed by activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    method: Option<ResearchRef>,
     pub(super) stages: Vec<Stage>,
 }
 
@@ -1079,6 +1090,17 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
         })
         .collect();
     run["stages"] = json!(stages);
+    // Where each cited research record's line stands now, beside the version
+    // the run or its decision cites (T-17).
+    let task = run["taskId"].as_str().unwrap_or_default().to_owned();
+    if let Some(seq) = run["method"]["activitySeq"].as_i64() {
+        run["methodNow"] = collaboration::research_line_now(db, &task, seq)?;
+    }
+    for stage in run["stages"].as_array_mut().into_iter().flatten() {
+        if let Some(seq) = stage["analysis"]["record"]["activitySeq"].as_i64() {
+            stage["analysis"]["recordNow"] = collaboration::research_line_now(db, &task, seq)?;
+        }
+    }
     run["awaitingAnalysis"] = json!(run["stages"].as_array().into_iter().flatten().any(analysis::waiting));
     run["status"] = json!(status);
     run["cost"] = cost(&all);
@@ -1176,6 +1198,13 @@ impl Store {
         }
         let (author, source) = collaboration::actor_context(self, &tx, actor)?;
         let (task, number) = collaboration::task_key(&tx, &input.task_id)?;
+        // Checked before anything is written: a run follows a method record
+        // of its own task, as that record reads now.
+        let method = input
+            .method
+            .as_ref()
+            .map(|method| collaboration::research_run_method(&tx, &task, method.activity_seq))
+            .transpose()?;
         let mut payload = serde_json::to_value(&input)?;
         payload["taskId"] = json!(task);
         let id = uuid::Uuid::new_v4().to_string();
@@ -1215,10 +1244,13 @@ impl Store {
                 params![id, stage.key, job["id"].as_str()],
             )?;
         }
-        let run = json!({"id":id,"requestId":input.request_id,"taskId":task,"taskRef":format!("T-{number}"),
+        let mut run = json!({"id":id,"requestId":input.request_id,"taskId":task,"taskRef":format!("T-{number}"),
             "agentId":owner["agentId"],"agent":owner["agent"],"requestedBy":author,"source":source,
             "name":input.name,"experiment":input.experiment,"costLimitUsd":input.cost_limit_usd,
             "stages":list,"createdAt":now(),"cancelRequestedAt":null,"notifications":{},"settledAt":null});
+        if let Some(method) = method {
+            run["method"] = method;
+        }
         tx.execute(
             "INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES(?1,?2,?3,?4)",
             params![id, task, run["agentId"].as_str(), run.to_string()],

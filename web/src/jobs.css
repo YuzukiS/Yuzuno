@@ -580,16 +580,19 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.job-detail dl {
+.job-detail dl,
+.job-task-spend dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px 18px;
   margin: 0;
 }
-.job-detail dt {
+.job-detail dt,
+.job-task-spend dt {
   color: var(--text-secondary);
 }
-.job-detail dd {
+.job-detail dd,
+.job-task-spend dd {
   margin: 0;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -667,6 +670,12 @@
 }
 .job-run-wait {
   flex-basis: 100%;
+  line-height: 1.5;
+}
+/* The research record a decided gate cites (T-17): read, not decoration. */
+.job-run-stage .job-run-explained {
+  flex-basis: 100%;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 .job-state.state-waiting {

@@ -64,11 +64,13 @@
   line-height: 1.5;
 }
 .task-research-revises,
+.task-research-next,
 .task-research-method {
   margin: 4px 0;
   font-size: 0.8rem;
 }
-.task-research-revises strong {
+.task-research-revises strong,
+.task-research-next strong {
   font-weight: 600;
 }
 .task-research-list,

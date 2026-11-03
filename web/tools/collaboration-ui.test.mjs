@@ -1643,6 +1643,34 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
 });
 
 
+test("a record's proposed next check or stop shows as a proposal, in English and Chinese (T-17)", async () => {
+  const observation = { schema: "research/1", type: "observation", id: "ranking-flips", title: "Ranking flips with link order",
+    text: "Reordering the link step reverses which layout is faster.",
+    next: { action: "check", text: "Time ten fresh processes with the link order shuffled." } };
+  for (const [language, label, note] of [
+    ["en", "Proposes a next check", "A proposal: nothing runs or stops because of it."],
+    ["zh-Hans", "提议下一项检查", "只是提议：不会因此运行或停止任何东西。"],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(5, observation, "Observed.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const next = await waitFor(() => page.document.querySelector(".task-research-next"), "the proposal");
+      assert.equal(next.getAttribute("data-action"), "check");
+      assert.ok(next.textContent.includes(label) && next.textContent.includes("Time ten fresh processes"), next.textContent);
+      assert.equal(next.getAttribute("title"), note);
+      assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "nothing is read for a proposal");
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
 test("a comparison entry shows each part its author gave and says which part is missing; a field can differ and be missing at once (T-17)", async () => {
   const entries = [
     { id: "a", label: "Iterations", status: "included", unit: "ms", level: "process", definition: "median of runs",

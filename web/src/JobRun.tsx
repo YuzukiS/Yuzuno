@@ -49,8 +49,26 @@ type Stage = {
   retry?: { attempts: number } | null;
   reusedFrom?: { jobId: string } | null;
   attempts: Attempt[];
-  analysis?: { id: string; state: string; jobId: string; attemptId: string; execution: string } | null;
+  analysis?: {
+    id: string;
+    state: string;
+    jobId: string;
+    attemptId: string;
+    execution: string;
+    /** The research record that explains the decision (T-17), as cited. */
+    record?: CitedRecord | null;
+    recordNow?: LineNow | null;
+  } | null;
 };
+/** A research record of the run's task, as the run or a decision cites it (T-17). */
+type CitedRecord = {
+  activitySeq: number;
+  record?: { type?: string; id?: string; title?: string } | null;
+  version?: number | null;
+  next?: { action: string; text: string } | null;
+};
+/** Where a cited record's line stands now, beside the version cited. */
+type LineNow = { state: string; revisedBy?: number | null; latestActivitySeq?: number | null };
 export type Run = {
   id: string;
   name: string;
@@ -60,6 +78,43 @@ export type Run = {
   cancelRequestedAt?: string | null;
   stages: Stage[];
   cost: Cost;
+  /** The method record of the task this run follows (T-17), as cited. */
+  method?: { activitySeq: number; id?: string; title?: string; version?: number | null } | null;
+  methodNow?: LineNow | null;
+};
+/** What a task's Jobs recorded spending (job_cost, T-17). */
+export type TaskSpend = {
+  taskId: string;
+  attempts: number;
+  byStatus: Record<string, number>;
+  usd: {
+    knownUsd: number;
+    attemptsReporting: number;
+    attemptsNotRecorded: number;
+    attemptsWithUnknown: number;
+    attemptsRunning: number;
+    complete: boolean;
+  };
+  compute: {
+    cpuSeconds: number;
+    workerWallSeconds: number;
+    /** Each added over the attempts that measured it; absent from an older Core. */
+    attemptsWithCpu?: number;
+    attemptsWithoutCpu?: number;
+    attemptsWithWall?: number;
+    attemptsWithoutWall?: number;
+    /** Attempts with both measured, and the rest. */
+    attemptsMeasured: number;
+    attemptsUnmeasured: number;
+  };
+  gpu: { attemptsReserving: number; measured: boolean };
+  runs: number;
+  reusedStages: number;
+  /** Which counts stop at the newest `limit` attempts or runs. */
+  attemptsTruncated?: boolean;
+  runsTruncated?: boolean;
+  limit?: number;
+  truncated: boolean;
 };
 
 // A run's own words (T-189); stage keys, names, Core's reasons and what an
@@ -126,6 +181,42 @@ const text = strings({
   download: "Download this attempt's file",
   progress: "Progress",
   unreadable: (problem: string) => `Unreadable: ${problem}`,
+  // Research records a run or a decision cites (T-17).
+  follows: (title: string, seq: number, version: number | null | undefined) =>
+    `Follows the method “${title}”, activity ${seq}${version ? `, version ${version}` : ""}`,
+  newer: (seq: number) => `; a newer version is activity ${seq}, and the run keeps the version it followed`,
+  latestUnknown: "; a newer version exists, and the run keeps the version it followed",
+  missing: "; this record can no longer be read",
+  recordType: { method: "method", claim: "claim", observation: "observation", comparison: "comparison" } as Record<string, string>,
+  explained: (state: string, type: string, title: string, seq: number, version: number | null | undefined) =>
+    `${state === "continued" ? "Continued" : "Cancelled"}, as the ${type} “${title}” (activity ${seq}${version ? `, version ${version}` : ""}) explains`,
+  decisionNewer: (seq: number) => `; a newer version is activity ${seq}, and the decision keeps the version it cited`,
+  decisionLatestUnknown: "; a newer version exists, and the decision keeps the version it cited",
+  proposes: { check: "It proposed a next check", stop: "It proposed to stop" } as Record<string, string>,
+  // A task's spend across its Jobs (job_cost, T-17).
+  spendTitle: "Recorded spend on this task",
+  spendUsd: "Recorded cost",
+  notRecorded: (n: number) => `${n} attempt${n === 1 ? "" : "s"} recorded none`,
+  unknownAmount: (n: number) => `${n} with an unknown amount`,
+  spendRunning: (n: number) => `${n} still running`,
+  compute: "Compute",
+  cpu: (seconds: string, measured: number) => `${seconds} s of CPU over ${measured} measured attempt${measured === 1 ? "" : "s"}`,
+  cpuMissing: (n: number) => `${n} without a CPU measurement`,
+  cpuNone: "CPU not measured",
+  // An older Core's answer counts only attempts with both CPU and wall time.
+  cpuPaired: (seconds: string, n: number) =>
+    `${seconds} s of CPU over ${n} attempt${n === 1 ? "" : "s"} that measured both CPU and wall time`,
+  cpuPairedNone: "No attempt measured both CPU and wall time",
+  cpuPairedUnknown: (n: number) => `whether ${n} attempt${n === 1 ? "" : "s"} measured CPU is not said`,
+  attempts: "Attempts",
+  attemptsLine: (n: number, runs: number) => `${n} attempt${n === 1 ? "" : "s"}, each counted once, in ${runs} run${runs === 1 ? "" : "s"} and single Jobs`,
+  reusedStages: (n: number) => `${n} reused stage${n === 1 ? "" : "s"} ran nothing and ${n === 1 ? "is" : "are"} not counted again`,
+  gpuNotMeasured: (n: number) => `GPU use is not measured; ${n} attempt${n === 1 ? "" : "s"} reserved a GPU`,
+  partialAttempts: (limit: number) => `partial: only the newest ${limit} attempts are read`,
+  partialRuns: (limit: number) => `runs and reused stages partial: only the newest ${limit} runs are read`,
+  spendNote: "A soft total, not a bill or a limit: failed and retried attempts count, unknown is never zero, and nothing resets when the method or the run changes.",
+  spendUnreadable: "Core's answer was not a spend summary",
+  spendFailed: (error: string) => `Could not read the recorded spend: ${error}`,
 }, {
   run: {
     waiting_analysis: "等待分析",
@@ -188,10 +279,50 @@ const text = strings({
   download: "下载此次尝试的文件",
   progress: "进度",
   unreadable: (problem) => `无法读取：${problem}`,
+  follows: (title, seq, version) => `遵循方法“${title}”，活动 ${seq}${version ? `，第 ${version} 版` : ""}`,
+  newer: (seq) => `；较新的版本是活动 ${seq}，本运行保留它遵循的版本`,
+  latestUnknown: "；已有较新的版本，本运行保留它遵循的版本",
+  missing: "；这条记录已无法读取",
+  recordType: { method: "方法", claim: "主张", observation: "观察", comparison: "比较" },
+  explained: (state, type, title, seq, version) =>
+    `${state === "continued" ? "已继续" : "已取消"}，理由见${type}“${title}”（活动 ${seq}${version ? `，第 ${version} 版` : ""}）`,
+  decisionNewer: (seq) => `；较新的版本是活动 ${seq}，本决定保留它引用的版本`,
+  decisionLatestUnknown: "；已有较新的版本，本决定保留它引用的版本",
+  proposes: { check: "它提议了下一项检查", stop: "它提议停止" },
+  spendTitle: "此任务记录的花费",
+  spendUsd: "记录的成本",
+  notRecorded: (n) => `${n} 次尝试没有记录`,
+  unknownAmount: (n) => `${n} 次金额未知`,
+  spendRunning: (n) => `${n} 次仍在运行`,
+  compute: "计算",
+  cpu: (seconds, measured) => `${measured} 次已测量的尝试共用 CPU ${seconds} 秒`,
+  cpuMissing: (n) => `${n} 次没有 CPU 计量`,
+  cpuNone: "CPU 未测量",
+  cpuPaired: (seconds, n) => `${n} 次同时测得 CPU 和墙钟时间的尝试共用 CPU ${seconds} 秒`,
+  cpuPairedNone: "没有同时测得 CPU 和墙钟时间的尝试",
+  cpuPairedUnknown: (n) => `${n} 次尝试是否测得 CPU 未说明`,
+  attempts: "尝试",
+  attemptsLine: (n, runs) => `${n} 次尝试，每次只计一次，分布在 ${runs} 个运行和单独的 Job 中`,
+  reusedStages: (n) => `${n} 个复用的阶段没有运行，不再重复计算`,
+  gpuNotMeasured: (n) => `GPU 用量未测量；${n} 次尝试预留了 GPU`,
+  partialAttempts: (limit) => `不完整：只读取了最新的 ${limit} 次尝试`,
+  partialRuns: (limit) => `运行数和复用阶段数不完整：只读取了最新的 ${limit} 个运行`,
+  spendNote: "这是软性合计，不是账单也不是上限：失败和重试的尝试都计入，未知从不当作零，更换方法或运行也不会清零。",
+  spendUnreadable: "Core 的回答不是花费汇总",
+  spendFailed: (error) => `无法读取记录的花费：${error}`,
 });
 type Text = ReturnType<typeof text>;
 const ended = new Set(["failed", "cancelled", "rejected", "interrupted"]);
 const usd = (value: number) => `$${value.toFixed(value < 1 ? 4 : 2)}`;
+/** Where a cited record's line stands now, said after the version cited. */
+const lineNow = (cited: number, now: LineNow | null | undefined, missing: string, newer: (seq: number) => string, unknown: string) =>
+  now?.state === "missing"
+    ? missing
+    : now && now.latestActivitySeq !== cited
+      ? now.latestActivitySeq != null
+        ? newer(now.latestActivitySeq)
+        : unknown
+      : "";
 
 /** Recorded cost as said, never more certain than it is. */
 export function costText(cost?: Cost | null, language: Language = "en") {
@@ -263,6 +394,12 @@ export function RunCard({
         <strong>{run.name}</strong>
         {run.experiment && <span> · {run.experiment}</span>}
       </p>
+      {run.method && (
+        <p className="job-run-method">
+          {t.follows(run.method.title || "", run.method.activitySeq, run.method.version)}
+          {lineNow(run.method.activitySeq, run.methodNow, t.missing, t.newer, t.latestUnknown)}
+        </p>
+      )}
       <ol className="job-run-stages" aria-label={t.stages}>
         {run.stages.map((stage) => {
           const last = stage.attempts[stage.attempts.length - 1];
@@ -292,6 +429,19 @@ export function RunCard({
               )}
               {stage.needs.length > 0 && <small>{t.needs(stage.needs.join(", "))}</small>}
               {last?.status === "waiting" && last.reason && <small className="job-run-wait">{last.reason}</small>}
+              {stage.analysis?.record && stage.analysis.state !== "waiting" && (
+                <small className="job-run-explained">
+                  {t.explained(
+                    stage.analysis.state,
+                    t.recordType[stage.analysis.record.record?.type ?? ""] ?? "",
+                    stage.analysis.record.record?.title || "",
+                    stage.analysis.record.activitySeq,
+                    stage.analysis.record.version,
+                  )}
+                  {lineNow(stage.analysis.record.activitySeq, stage.analysis.recordNow, t.missing, t.decisionNewer, t.decisionLatestUnknown)}
+                  {stage.analysis.record.next && ` · ${t.proposes[stage.analysis.record.next.action] ?? ""}: ${stage.analysis.record.next.text}`}
+                </small>
+              )}
               {stage.analysis?.state === "waiting" && !run.cancelRequestedAt && (
                 <div className="job-analysis-decision">
                   <p>{stage.analysis.execution === "reused" ? t.reused : t.succeeded}{t.noResources}</p>
@@ -346,6 +496,93 @@ export function RunCard({
           )}
         </div>
       )}
+    </JobCard>
+  );
+}
+
+/** What a task's Jobs recorded spending (T-17): every attempt once, unknown
+ * apart and never zero; a soft total that limits nothing. */
+export function TaskSpendCard({ taskId, revision }: { taskId: string; revision: string }) {
+  const language = useLanguage();
+  const t = text(language);
+  const [spend, setSpend] = useState<TaskSpend | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    setSpend(null);
+    setError("");
+    post<TaskSpend>("/collaboration/job_cost", { taskId })
+      .then((value) => {
+        if (!current) return;
+        // Only an answer of the expected shape is added up; anything else
+        // says it could not be read, and the panel around it stays.
+        if (typeof value?.usd?.knownUsd === "number" && typeof value.compute?.cpuSeconds === "number" && value.gpu)
+          setSpend(value);
+        else setError(t.spendUnreadable);
+      })
+      .catch((e) => current && setError(errorText(e)));
+    return () => {
+      current = false;
+    };
+  }, [taskId, revision]);
+  if (!spend)
+    return error ? (
+      <JobCard title={t.spendTitle} className="job-task-spend">
+        <p className="job-footnote">{t.spendFailed(error)}</p>
+      </JobCard>
+    ) : null;
+  const { usd: cost, compute, gpu } = spend;
+  // Each subtotal says when it stops at the newest attempts or runs; an
+  // older Core says only that something stopped, read as the attempts.
+  const limit = spend.limit ?? 5000;
+  const attemptsPartial = (spend.attemptsTruncated ?? spend.truncated) && t.partialAttempts(limit);
+  // CPU time is said over the attempts that measured CPU, whatever their
+  // wall time. An older Core's answer counts only attempts with both, so it
+  // is said as that, and nothing is inferred about the others' CPU.
+  const cpu =
+    typeof compute.attemptsWithCpu === "number"
+      ? [
+          compute.attemptsWithCpu > 0 ? t.cpu(compute.cpuSeconds.toFixed(1), compute.attemptsWithCpu) : t.cpuNone,
+          (compute.attemptsWithoutCpu ?? 0) > 0 && t.cpuMissing(compute.attemptsWithoutCpu ?? 0),
+        ]
+      : [
+          compute.attemptsMeasured > 0 ? t.cpuPaired(compute.cpuSeconds.toFixed(1), compute.attemptsMeasured) : t.cpuPairedNone,
+          compute.attemptsUnmeasured > 0 && t.cpuPairedUnknown(compute.attemptsUnmeasured),
+        ];
+  const gaps = [
+    cost.attemptsWithUnknown > 0 && t.unknownAmount(cost.attemptsWithUnknown),
+    cost.attemptsNotRecorded > 0 && t.notRecorded(cost.attemptsNotRecorded),
+    cost.attemptsRunning > 0 && t.spendRunning(cost.attemptsRunning),
+    attemptsPartial,
+  ].filter(Boolean);
+  return (
+    <JobCard title={t.spendTitle} className="job-task-spend">
+      <dl>
+        <dt>{t.spendUsd}</dt>
+        <dd>{[usd(cost.knownUsd || 0), ...gaps].join(" · ")}</dd>
+        <dt>{t.compute}</dt>
+        <dd>
+          {[
+            ...cpu,
+            gpu.attemptsReserving > 0 && t.gpuNotMeasured(gpu.attemptsReserving),
+            attemptsPartial,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </dd>
+        <dt>{t.attempts}</dt>
+        <dd>
+          {[
+            t.attemptsLine(spend.attempts, spend.runs),
+            spend.reusedStages > 0 && t.reusedStages(spend.reusedStages),
+            attemptsPartial,
+            spend.runsTruncated && t.partialRuns(limit),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </dd>
+      </dl>
+      <p className="job-footnote">{t.spendNote}</p>
     </JobCard>
   );
 }
