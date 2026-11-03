@@ -21,7 +21,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/motion-2d1");
 await mkdir(output, { recursive: true });
-const report = { checks: [], failures: [], errors: [], writes: [], held: [], readingSaves: [], frames: {} };
+const report = { checks: [], failures: [], errors: [], console: [], unknownGets: [], writes: [], held: [], readingSaves: [], frames: {} };
 const ok = (name, cond, detail) => {
   (cond ? report.checks : report.failures).push({ name, detail });
   console.log(`${cond ? "PASS" : "FAIL"} ${name}`);
@@ -70,7 +70,9 @@ async function serve(route) {
       report.writes.push(`${request.method()} ${url.pathname}`);
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
-    return route.fulfill({ json: gets()[url.pathname] ?? {} });
+    const known = gets()[url.pathname];
+    if (known === undefined && !report.unknownGets.includes(url.pathname)) report.unknownGets.push(url.pathname);
+    return route.fulfill({ json: known ?? {} });
   }
   const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
   const path = resolve(dist, file);
@@ -182,6 +184,8 @@ for (const run of runs) {
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
   const page = await context.newPage();
   page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
+  // Kept to read, not counted: a refused write logs a failed load too.
+  page.on("console", (m) => { if (m.type() === "error") report.console.push(`${tag}: ${m.text().slice(0, 600)}`); });
   await page.route("**/*", serve);
   await page.addInitScript(pageHelpers);
   const calls = async () => (await page.evaluate(() => window.__calls.length));
