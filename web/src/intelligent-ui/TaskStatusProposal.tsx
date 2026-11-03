@@ -86,6 +86,10 @@ type CardProps = {
   unanswered?: Decision | null;
   /** This window's last decision, to show its outcome. */
   mine?: string | null;
+  /** The decision the user sent, or checked again, from this card since it
+   * opened (T-19 HM:T3): only its outcome comes in. One restored from a lost
+   * reply is `mine`, not this, until the user checks it again. */
+  acted?: string | null;
   busy?: "confirm" | "decline" | "check" | "";
   onDecide?: (decision: Omit<Decision, "requestId">) => void;
   onCheck?: () => void;
@@ -100,6 +104,7 @@ export function TaskStatusCard({
   error,
   unanswered,
   mine,
+  acted,
   busy = "",
   onDecide,
   onCheck,
@@ -116,19 +121,22 @@ export function TaskStatusCard({
   const edited = status !== proposal.status || reason.trim() !== proposal.reason.trim();
   const same = !!task && task.status === status;
   const disabled = !!busy || !!blocked || !task || !onDecide || !!unanswered;
-  // Decided here (T-19 HM:T3): once Core records this window's decision, its
-  // outcome takes the edit area's place, fades in and, focus having gone with
-  // the buttons, takes it. A proposal already decided when it is shown, or
-  // decided elsewhere, does neither.
+  // Decided here (T-19 HM:T3): once Core records the decision the user sent,
+  // or checked again, from this card, its outcome takes the edit area's place,
+  // fades in and, focus having gone with the buttons, takes it. Each outcome
+  // does so once at most: one Core already had when it was first read (sent
+  // before a reload that lost its answer, or decided elsewhere), or one shown
+  // before (an older read took it away, a newer one brings it back), does
+  // neither.
   const outcome = useRef<HTMLParagraphElement>(null);
   const finalId = final?.requestId ?? null;
-  const shownFinal = useRef(finalId);
+  const shownFinals = useRef(new Set<string>());
   const [decided, setDecided] = useState(0);
   useLayoutEffect(() => {
-    const before = shownFinal.current;
-    shownFinal.current = finalId;
-    if (finalId && !before && finalId === mine) setDecided((n) => n + 1);
-  }, [finalId, mine]);
+    if (!finalId || shownFinals.current.has(finalId)) return;
+    shownFinals.current.add(finalId);
+    if (finalId === acted) setDecided((n) => n + 1);
+  }, [finalId, acted]);
   useSurfaceIn(outcome, decided, "small", decided > 0);
   useLayoutEffect(() => {
     if (decided && (!document.activeElement || document.activeElement === document.body)) outcome.current?.focus({ preventScroll: true });
@@ -266,6 +274,8 @@ export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps })
     resultId ? readDecision(localStorage, resultId) : null,
   );
   const [mine, setMine] = useState<string | null>(unanswered?.requestId || null);
+  // What the user sent or checked again from this card, for this result.
+  const [acted, setActed] = useState<{ resultId: string; requestId: string } | null>(null);
   const path = resultId ? `/results/${encodeURIComponent(resultId)}/task-status` : "";
   const load = useCallback(async () => {
     if (!path || !resultId) return;
@@ -297,6 +307,7 @@ export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps })
     setBusy(kind);
     setError("");
     setMine(decision.requestId);
+    setActed({ resultId, requestId: decision.requestId });
     // Kept until Core answers, so a lost reply can be checked with the same requestId.
     saveDecision(localStorage, resultId, decision);
     setUnanswered(null);
@@ -327,6 +338,7 @@ export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps })
       error={error}
       unanswered={unanswered}
       mine={mine}
+      acted={acted?.resultId === resultId ? acted.requestId : null}
       busy={busy}
       onDecide={(decision) => void send({ ...decision, requestId: crypto.randomUUID() }, decision.action)}
       onCheck={() => unanswered && void send(unanswered, "check")}
