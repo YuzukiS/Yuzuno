@@ -293,8 +293,14 @@ struct SessionPreviewInput { thread_id: String }
 async fn preview_session(State(ws): State<Arc<Workspace>>, Json(input): Json<SessionPreviewInput>) -> ApiResult<Json<crate::codex_sessions::SessionPreview>> {
     Ok(Json(ws.preview_codex_session(&input.thread_id).await?))
 }
-async fn import_session(State(ws): State<Arc<Workspace>>, Json(input): Json<crate::codex_sessions::ImportSession>) -> ApiResult<Json<crate::model::Agent>> {
-    Ok(Json(ws.import_codex_session(input).await?))
+/// The Agent, as before, and `importOutcome`: "created" when this import
+/// made it, "existing" when the session already had one. An optional fact
+/// an older client ignores; the Agent keeps no mark of it (T-19 SH:R11).
+async fn import_session(State(ws): State<Arc<Workspace>>, Json(input): Json<crate::codex_sessions::ImportSession>) -> ApiResult<Json<Value>> {
+    let (agent, created) = ws.import_codex_session_outcome(input).await?;
+    let mut answer = serde_json::to_value(agent).map_err(anyhow::Error::from)?;
+    answer["importOutcome"] = json!(if created { "created" } else { "existing" });
+    Ok(Json(answer))
 }
 async fn preview_fork(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<crate::codex_sessions::ForkPreview>> {
     Ok(Json(ws.preview_codex_fork(&id).await?))

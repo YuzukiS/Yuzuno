@@ -438,6 +438,11 @@ p {
   overflow: auto;
   min-height: 0;
 }
+/* A row this window added, while its group opens: it comes in once the
+   group is open (T-19 SH:R11). */
+.agent-row[data-joining] {
+  opacity: 0;
+}
 .agent-row {
   position: relative;
   display: block;
