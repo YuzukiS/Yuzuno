@@ -88,7 +88,8 @@ const run = { id: "run-1", name: "Layout timing", experiment: "layouts", status:
       recordNow: { state: "readable", revisedBy: 7, latestActivitySeq: 7 } } }] };
 const spend = { taskId: "T-1", attempts: 4, byStatus: { cancelled: 1, failed: 1, running: 1, succeeded: 1 },
   usd: { knownUsd: 1.75, attemptsReporting: 2, attemptsNotRecorded: 1, attemptsWithUnknown: 1, unknownEntries: 1, invalidLines: 0, attemptsRunning: 1, complete: false },
-  compute: { cpuSeconds: 12.34, workerWallSeconds: 20, attemptsMeasured: 2, attemptsUnmeasured: 1 },
+  compute: { cpuSeconds: 12.34, attemptsWithCpu: 3, attemptsWithoutCpu: 1, workerWallSeconds: 20, attemptsWithWall: 2, attemptsWithoutWall: 2,
+    attemptsMeasured: 2, attemptsUnmeasured: 2 },
   gpu: { attemptsReserving: 1, measured: false }, runs: 1, reusedStages: 1, truncated: false, scope: "fixture" };
 const agents = [mina].map((a) => ({ ...a, projectId: "p1", harness: "codex", cwd: "/fixture", model: "test-model", settings: {}, color: "sage",
   createdAt: at, updatedAt: at, status: "idle", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, closedAt: null }));
@@ -263,7 +264,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     const text = await card.evaluate((el) => el.textContent);
     for (const expected of ["Recorded spend on this task",
       "$1.75 · 1 with an unknown amount · 1 attempt recorded none · 1 still running",
-      "12.3 s of CPU over 2 measured attempts · 1 not measured · GPU use is not measured; 1 attempt reserved a GPU",
+      "12.3 s of CPU over 3 measured attempts · 1 without a CPU measurement · GPU use is not measured; 1 attempt reserved a GPU",
       "4 attempts, each counted once, in 1 run and single Jobs · 1 reused stage ran nothing and is not counted again",
       "nothing resets when the method or the run changes"])
       assert.ok(text.includes(expected), `${expected}: ${text}`);

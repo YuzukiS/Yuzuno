@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 /// read says which of its counts are partial.
 const LIMIT: usize = 5000;
 const FINISHED: &[&str] = &["succeeded", "failed", "cancelled", "interrupted", "rejected"];
-pub(super) const DESCRIPTION: &str = "Read what a task's Jobs have recorded spending, every attempt counted once: failed, cancelled and retried attempts included, reused stages not again (they run nothing). usd adds up each attempt's own usage file. An attempt whose file is missing, empty or blank recorded none; one with unknown or unreadable entries recorded an unknown amount; both are counted apart and never as zero, while an entry with usd 0 is a known $0. compute adds up measured CPU time and worker wall time; remote and unmeasured attempts are counted apart. GPU use is not measured: only attempts admitted with a GPU reservation of their own are counted, not a request still queued, a cancel before admission or a retry still carrying an earlier attempt's reservation. At most the newest 5000 attempts and 5000 runs are read: attemptsTruncated and runsTruncated say which counts are partial. A soft rollup, not a provider bill or a limit: a new method or run resets nothing, and admission, timeouts and a run's costLimitUsd apply as before.";
+pub(super) const DESCRIPTION: &str = "Read what a task's Jobs have recorded spending, every attempt counted once: failed, cancelled and retried attempts included, reused stages not again (they run nothing). usd adds up each attempt's own usage file. An attempt whose file is missing, empty or blank recorded none; one with unknown or unreadable entries recorded an unknown amount; both are counted apart and never as zero, while an entry with usd 0 is a known $0. compute adds up measured CPU time and worker wall time, each over the attempts that measured it (attemptsWithCpu, attemptsWithWall): one missing never drops the other, an explicit 0 is measured, and no average is made of the two; remote attempts and evidence that does not identify the attempt are counted without either. GPU use is not measured: only attempts admitted with a GPU reservation of their own are counted, not a request still queued, a cancel before admission or a retry still carrying an earlier attempt's reservation. At most the newest 5000 attempts and 5000 runs are read: attemptsTruncated and runsTruncated say which counts are partial. A soft rollup, not a provider bill or a limit: a new method or run resets nothing, and admission, timeouts and a run's costLimitUsd apply as before.";
 
 impl Store {
     pub(super) fn task_cost(&self, reference: &str) -> Result<Value> {
@@ -29,7 +29,9 @@ impl Store {
         let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
         let (mut known, mut unknown_entries, mut invalid) = (0.0, 0i64, 0i64);
         let (mut reporting, mut not_recorded, mut unknown_attempts, mut live) = (0, 0, 0, 0);
-        let (mut cpu, mut wall, mut measured, mut unmeasured, mut gpu) = (0.0, 0.0, 0, 0, 0);
+        let (mut cpu, mut with_cpu, mut without_cpu) = (0.0, 0, 0);
+        let (mut wall, mut with_wall, mut without_wall) = (0.0, 0, 0);
+        let (mut measured, mut unmeasured, mut gpu) = (0, 0, 0);
         for raw in rows.iter().take(LIMIT) {
             let job: Value = serde_json::from_str(raw)?;
             let status = job["status"].as_str().unwrap_or("unknown").to_owned();
@@ -67,15 +69,23 @@ impl Store {
                     unknown_attempts += 1;
                 }
             }
+            // CPU and wall time are each added where this attempt measured
+            // it, as the attempt's own summary keeps them apart.
             if finished {
-                let summary = resource_summary::attempt(&job);
-                match (summary["actual"]["cpuSeconds"].as_f64(), summary["actual"]["workerWallSeconds"].as_f64()) {
-                    (Some(c), Some(w)) => {
-                        cpu += c;
-                        wall += w;
-                        measured += 1;
-                    }
-                    _ => unmeasured += 1,
+                let actual = &resource_summary::attempt(&job)["actual"];
+                let (c, w) = (actual["cpuSeconds"].as_f64(), actual["workerWallSeconds"].as_f64());
+                match c {
+                    Some(c) => (cpu, with_cpu) = (cpu + c, with_cpu + 1),
+                    None => without_cpu += 1,
+                }
+                match w {
+                    Some(w) => (wall, with_wall) = (wall + w, with_wall + 1),
+                    None => without_wall += 1,
+                }
+                if c.is_some() && w.is_some() {
+                    measured += 1;
+                } else {
+                    unmeasured += 1;
                 }
             }
         }
@@ -95,7 +105,8 @@ impl Store {
             "usd":{"knownUsd":round(known, 1e6),"attemptsReporting":reporting,"attemptsNotRecorded":not_recorded,
                 "attemptsWithUnknown":unknown_attempts,"unknownEntries":unknown_entries,"invalidLines":invalid,
                 "attemptsRunning":live,"complete":not_recorded == 0 && unknown_attempts == 0 && live == 0 && !truncated},
-            "compute":{"cpuSeconds":round(cpu, 1e3),"workerWallSeconds":round(wall, 1e3),
+            "compute":{"cpuSeconds":round(cpu, 1e3),"attemptsWithCpu":with_cpu,"attemptsWithoutCpu":without_cpu,
+                "workerWallSeconds":round(wall, 1e3),"attemptsWithWall":with_wall,"attemptsWithoutWall":without_wall,
                 "attemptsMeasured":measured,"attemptsUnmeasured":unmeasured},
             "gpu":{"attemptsReserving":gpu,"measured":false},
             "runs":runs.len().min(LIMIT),"reusedStages":reused,"limit":LIMIT,

@@ -277,7 +277,7 @@ test("a task's Jobs show what it recorded spending: every attempt once, unknown 
     const text = p.doc.querySelector('.job-task-spend').textContent;
     for (const expected of ['Recorded spend on this task',
       '$1.75 · 1 with an unknown amount · 1 attempt recorded none · 1 still running',
-      '12.3 s of CPU over 2 measured attempts · 1 not measured · GPU use is not measured; 1 attempt reserved a GPU',
+      '12.3 s of CPU over 2 measured attempts · 1 without a CPU measurement · GPU use is not measured; 1 attempt reserved a GPU',
       '4 attempts, each counted once, in 1 run and single Jobs · 1 reused stage ran nothing and is not counted again',
       'unknown is never zero', 'nothing resets when the method or the run changes'])
       assert.ok(text.includes(expected), `${expected}: ${text}`);
@@ -314,6 +314,38 @@ test("a task's spend says which of its counts stop at the newest attempts or run
     for (const line of [cost, compute, attempts])
       assert.ok(line.includes('partial: only the newest 5000 attempts are read'), line);
     assert.ok(!attempts.includes('runs are read'), attempts);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("a task's CPU time is said over the attempts that measured CPU, whatever their wall time (T-17)", async () => {
+  const base = { taskId: 'T-105', attempts: 4, byStatus: { succeeded: 4 },
+    usd: { knownUsd: 1, attemptsReporting: 4, attemptsNotRecorded: 0, attemptsWithUnknown: 0, unknownEntries: 0, invalidLines: 0, attemptsRunning: 0, complete: true },
+    gpu: { attemptsReserving: 0, measured: false }, runs: 0, reusedStages: 0, truncated: false };
+  const answers = {
+    // Three measured CPU, one of them without a wall time: not two.
+    'T-201': { cpuSeconds: 3.5, attemptsWithCpu: 3, attemptsWithoutCpu: 1, workerWallSeconds: 9, attemptsWithWall: 3, attemptsWithoutWall: 1, attemptsMeasured: 2, attemptsUnmeasured: 2 },
+    'T-202': { cpuSeconds: 0, attemptsWithCpu: 0, attemptsWithoutCpu: 4, workerWallSeconds: 12, attemptsWithWall: 4, attemptsWithoutWall: 0, attemptsMeasured: 0, attemptsUnmeasured: 4 },
+    // An explicit zero is a measurement.
+    'T-203': { cpuSeconds: 0, attemptsWithCpu: 1, attemptsWithoutCpu: 3, workerWallSeconds: 0, attemptsWithWall: 0, attemptsWithoutWall: 4, attemptsMeasured: 0, attemptsUnmeasured: 4 },
+  };
+  const p = mount((url, body) => {
+    if (url === '/api/collaboration/job_cost') return { ...base, taskId: body.taskId, compute: answers[body.taskId] };
+    if (url.startsWith('/api/jobs/runs?')) return { runs: [], hasMore: false };
+    return page([]);
+  });
+  const compute = () => p.doc.querySelectorAll('.job-task-spend dd')[1]?.textContent;
+  try {
+    await open(p);
+    for (const [task, expected] of [
+      ['T-201', '3.5 s of CPU over 3 measured attempts · 1 without a CPU measurement'],
+      ['T-202', 'CPU not measured · 4 without a CPU measurement'],
+      ['T-203', '0.0 s of CPU over 1 measured attempt · 3 without a CPU measurement'],
+    ]) {
+      p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { taskId: task } }));
+      await until(() => p.calls.some(c => c.url === '/api/collaboration/job_cost' && c.body.taskId === task) && compute() === expected);
+      assert.equal(compute(), expected, task);
+    }
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
