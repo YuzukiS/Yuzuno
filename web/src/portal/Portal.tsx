@@ -5,6 +5,7 @@ import { api, errorText, post } from "../api";
 import { langTag, strings, useLanguage, useStrings } from "../i18n";
 import { openJobs } from "../Jobs";
 import type { OpenedService, ProjectService } from "../ProjectServices";
+import { useSurfaceIn } from "../surface";
 import { savedPortalWidth, savePortalWidth } from "./portal-preference";
 import {
   closePortal,
@@ -292,6 +293,13 @@ function PortalHost() {
   useEffect(() => {
     if (shown) panel.current?.querySelector<HTMLElement>(".portal-title")?.focus({ preventScroll: true });
   }, [shown?.key]);
+  // Opened beside the chat, the page comes in from the right over medium (T-19 M7, WK:PT-01), in
+  // the column the grid gave it above: its transform and opacity move nothing in the chat, so
+  // keepInPlace holds the reading as before. Over the chat, nothing plays; closing stays instant.
+  const opens = useRef({ open: false, n: 0 });
+  const open = !!(shown && shape);
+  if (opens.current.open !== open) opens.current = { open, n: opens.current.n + (open ? 1 : 0) };
+  useSurfaceIn(panel, opens.current.n, "medium", open && shape?.mode === "side", "translateX(8px)");
   if (!shown || !shape) return null;
   const full = shape.mode === "full";
   const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
