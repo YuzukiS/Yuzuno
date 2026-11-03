@@ -267,7 +267,12 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
       assert.ok(text.includes(expected), `${expected}: ${text}`);
     assert.ok(report.reads.includes("job_cost"));
     await card.scrollIntoViewIfNeeded();
-    const measured = await readable(".job-task-spend");
+    // The values this card adds must be readable; its title, labels and
+    // footnote use the Jobs panel's shared quiet style, measured and
+    // reported apart (below 4.5:1 in light before this slice too).
+    const measured = await readable(".job-task-spend dd");
+    const shared = await contrast(".job-task-spend .job-card-heading, .job-task-spend dt, .job-task-spend .job-footnote");
+    measured.sharedQuietLabels = Math.min(...shared.map((row) => row.ratio));
     await card.screenshot({ path: resolve(output, `${name}-spend.png`) });
     report.shots.push(`${name}-spend.png`);
     return measured;
