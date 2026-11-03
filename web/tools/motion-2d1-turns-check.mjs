@@ -64,6 +64,7 @@ const gets = () => ({
   "/api/workspace": { workspace: { id: "fixture" }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/w" },
   "/api/agents/a": detailOf(0, "a"), "/api/agents/b": detailOf(1, "b"), "/api/agents/k": detailOf(2, "k"),
+  "/api/agents/s": detailOf(3, "s"), "/api/agents/i": detailOf(4, "i"), "/api/agents/m": detailOf(5, "m"),
   "/api/home": { generatedAt: new Date().toISOString(), order: ["p"], needsYou: [], projects: [] },
 });
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
@@ -145,6 +146,8 @@ function pageHelpers() {
   // Core cannot resume the stream: everything is read again.
   window.__reset = after({ type: "reset", reason: "check" });
   window.__announceThenReset = after((agentId) => ({ type: "agent.changed", agentId }), { type: "reset", reason: "check" });
+  // Something else about the Workspace changed: App reads its list again and renders, nothing more.
+  window.__workspaceChanged = after({ type: "workspace.changed", scope: "projects" });
   // A short break, as the browser's own reconnect has it: the same stream errs, opens again 300 ms
   // later, before any poll could, and says what Core says then. What was staged changed meanwhile.
   const reconnect = (...events) => async (agentId) => {
@@ -261,8 +264,10 @@ const still = (frames) => frames.every((f) => Object.values(f.turns).every((t) =
 for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
-  agents = [agent("a", "Mori"), agent("b", "Hana"), agent("k", "Kumo", "claude")];
-  state = { a: { turns: base("Mori"), receipts: [] }, b: { turns: base("Hana"), receipts: [] }, k: { turns: base("Kumo"), receipts: [] } };
+  // Sora, Kiri and Ame have no Turns yet (Lead 3415).
+  agents = [agent("a", "Mori"), agent("b", "Hana"), agent("k", "Kumo", "claude"), agent("s", "Sora"), agent("i", "Kiri"), agent("m", "Ame")];
+  state = { a: { turns: base("Mori"), receipts: [] }, b: { turns: base("Hana"), receipts: [] }, k: { turns: base("Kumo"), receipts: [] },
+    s: { turns: [], receipts: [] }, i: { turns: [], receipts: [] }, m: { turns: [], receipts: [] } };
   staged = [];
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
     hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
@@ -419,6 +424,50 @@ for (const run of runs) {
       (await calls()) === quickMark && quick.every((f) => f.turns["quick-1"]) && still(quick), quick[0]?.turns["quick-1"]);
     await nextItem("live-quick", "After the return");
     fades("after that quick return, a Turn Core streams", await bring("a", "live-quick", made("live-quick", "After the return"), "__stream"));
+
+    // Lead 3415: an Agent shown with no Turns yet takes its first live one as arriving. Its first
+    // detail is what was shown; a Turn a reset brings, or this window's own message, only shows.
+    const empty = async (name) => {
+      await open(name);
+      await page.getByRole("textbox", { name: `Message ${name}` }).waitFor();
+      await page.waitForTimeout(400);
+    };
+    await empty("Sora");
+    await nextItem("sora-1", "First for Sora");
+    fades("an Agent shown with no Turns yet: the first Turn Core streams",
+      await bring("s", "sora-1", () => { state.s.turns = [turn("sora-1", [user("sora-1-u", "First for Sora"), answer("sora-1-r", "Hello.")])]; }, "__stream"));
+    await empty("Kiri");
+    onlyShows("an Agent shown with no Turns yet: a Turn a Core reset brings",
+      await bring("i", "kiri-1", () => { state.i.turns = [turn("kiri-1", [user("kiri-1-u", "First for Kiri"), answer("kiri-1-r", "Hi.")])]; }, "__reset", 1500));
+    await empty("Ame");
+    await bring("m", "x", () => { state.m.receipts = [receipt("c-a1", "Hello Ame")]; }, "__announce", 400);
+    const amePreview = await page.evaluate(() => window.__previews());
+    const ame = await bring("m", "ame-1", () => {
+      state.m.turns = [turn("ame-1", [user("ame-1-u", "Hello Ame", { clientId: "c-a1" }), answer("ame-1-r", "Hello.")])];
+      state.m.receipts = [receipt("c-a1", "Hello Ame", "accepted", { turnId: "ame-1", itemId: "ame-1-u", userIndex: 0 })];
+    }, "__announce");
+    ok(`${tag}: an Agent shown with no Turns yet: a message shown as a preview (${JSON.stringify(amePreview)}), then its Turn: the Turn shows with nothing playing (${ame.calls.length} calls)`,
+      amePreview.includes("c-a1") && !ame.frames[0]?.turns["ame-1"] && ame.shown.length > 5 && ame.calls.length === 0 && still(ame.frames), ame.at);
+
+    // A preview hidden (Hide is the preview's own state): its Turn is no longer that preview handed
+    // over, whether App drew anything in between or not (Lead 3415).
+    await open("Mori");
+    await page.locator('.turn[data-turn-id="live-quick"]').waitFor();
+    await page.waitForTimeout(400);
+    const hideThen = async (clientId, text, between) => {
+      await bring("a", "x", () => { state.a.receipts = [receipt(clientId, text, "uncertain")]; }, "__announce", 400);
+      const preview = page.locator(`.outgoing-message[data-client-message-id="${clientId}"]`);
+      await preview.locator(".outgoing-hide").click();
+      await preview.waitFor({ state: "detached" });
+      if (between) { await page.evaluate(() => window.__workspaceChanged()); await page.waitForTimeout(700); }
+      const turnId = `hidden-${clientId}`;
+      return bring("a", turnId, () => {
+        state.a.turns = [...state.a.turns, turn(turnId, [user(`${turnId}-u`, text, { clientId }), answer(`${turnId}-r`, "Done.")])];
+        state.a.receipts = [];
+      }, "__announce");
+    };
+    fades("a preview hidden, then its Turn, with nothing drawn by App in between", await hideThen("c-h1", "Hidden, then sent", false));
+    fades("a preview hidden, then App drawn again for something else, then its Turn", await hideThen("c-h2", "Hidden, then sent again", true));
 
     if (!reduced) {
       // A Turn with controls in it, held at 60 ms: they take the pointer where they will stay, and nothing moves.
