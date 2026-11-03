@@ -26,7 +26,10 @@ pub(super) const HEADS_BUDGET: usize = 256;
 /// - for a format Core reads no size of (only PNG, JPEG and WebP are read);
 /// - for a header that is not one, or a range it gives past the bytes;
 /// - for a side of 0 or past IMAGE_SIDE;
-/// - past a budget above;
+/// - past a budget above, a JPEG's heads included: its size counts only once
+///   its scan (or end) is reached, so no later EXIF is missed;
+/// - for EXIF whose orientation cannot be read for certain: not a TIFF, cut
+///   short, or an Orientation entry that is not one SHORT from 1 to 8;
 /// - for a PNG or WebP whose EXIF says to turn it a quarter, which browsers
 ///   do not all do.
 ///
@@ -90,7 +93,7 @@ fn png(bytes: &[u8]) -> Option<(u32, u32, bool)> {
         take(bytes, at + 8 + len, 4)?;
         match kind {
             b"IDAT" | b"IEND" => return Some((width, height, false)),
-            b"eXIf" => return Some((width, height, quarter(budgeted(data)?))),
+            b"eXIf" => return Some((width, height, quarter(budgeted(data)?)?)),
             _ => at += 12 + len,
         }
     }
@@ -98,10 +101,11 @@ fn png(bytes: &[u8]) -> Option<(u32, u32, bool)> {
 }
 
 /// The segments before the scan: the frame's size (SOF) and the first
-/// APP1 Exif's orientation.
+/// APP1 Exif's orientation. Only a scan (or the end) reached within the
+/// budget makes them the image's: past it, a later EXIF may say otherwise.
 fn jpeg(bytes: &[u8]) -> Option<(u32, u32, bool)> {
     let mut at = 2;
-    let (mut size, mut turned, mut exif) = (None, false, false);
+    let (mut size, mut turned, mut exif, mut reached) = (None, false, false, false);
     for _ in 0..HEADS_BUDGET {
         if *bytes.get(at)? != 0xFF {
             return None;
@@ -114,7 +118,10 @@ fn jpeg(bytes: &[u8]) -> Option<(u32, u32, bool)> {
         at += 2;
         match marker {
             0x01 | 0xD0..=0xD8 => continue,
-            0xD9 | 0xDA => break,
+            0xD9 | 0xDA => {
+                reached = true;
+                break;
+            }
             _ => {}
         }
         let len = usize::from(be16(bytes, at)?);
@@ -125,11 +132,14 @@ fn jpeg(bytes: &[u8]) -> Option<(u32, u32, bool)> {
             }
             0xE1 if !exif && segment.starts_with(b"Exif\0\0") => {
                 exif = true;
-                turned = quarter(&segment[6..]);
+                turned = quarter(&segment[6..])?;
             }
             _ => {}
         }
         at += len;
+    }
+    if !reached {
+        return None;
     }
     let (width, height) = size?;
     Some((width, height, turned))
@@ -177,7 +187,7 @@ fn webp(bytes: &[u8]) -> Option<(u32, u32, bool)> {
                 return None;
             }
             let turned = match exif {
-                Some(data) => quarter(budgeted(data)?),
+                Some(data) => quarter(budgeted(data)?)?,
                 None => false,
             };
             Some((width, height, turned))
@@ -200,28 +210,37 @@ fn budgeted(exif: &[u8]) -> Option<&[u8]> {
 }
 
 /// Whether EXIF `exif` (a TIFF, after an `Exif\0\0` some writers put first)
-/// says to turn the image a quarter: orientation 5 to 8. One that cannot be
-/// read says nothing, as a browser takes it.
-fn quarter(exif: &[u8]) -> bool {
+/// says to turn the image a quarter (orientation 5 to 8: Some(true)) or not
+/// (1 to 4, or no Orientation entry: Some(false)). None when that cannot be
+/// read for certain: not a TIFF, IFD0 inside its header or its entries past
+/// the end, or an Orientation entry that is not one SHORT from 1 to 8.
+fn quarter(exif: &[u8]) -> Option<bool> {
     let tiff = exif.strip_prefix(b"Exif\0\0").unwrap_or(exif);
-    let read = || -> Option<bool> {
-        let big = match take(tiff, 0, 4)? {
-            b"MM\0*" => true,
-            b"II*\0" => false,
-            _ => return None,
-        };
-        let u16_at = |at: usize| if big { be16(tiff, at) } else { le16(tiff, at) };
-        let u32_at = |at: usize| if big { be32(tiff, at) } else { le32(tiff, at) };
-        let ifd = usize::try_from(u32_at(4)?).ok()?;
-        for entry in 0..usize::from(u16_at(ifd)?) {
-            let at = ifd.checked_add(2)?.checked_add(entry.checked_mul(12)?)?;
-            if u16_at(at)? == 0x0112 {
-                return Some(u16_at(at + 2)? == 3 && (5..=8).contains(&u16_at(at + 8)?));
-            }
-        }
-        Some(false)
+    let big = match take(tiff, 0, 4)? {
+        b"MM\0*" => true,
+        b"II*\0" => false,
+        _ => return None,
     };
-    read().unwrap_or(false)
+    let u16_at = |at: usize| if big { be16(tiff, at) } else { le16(tiff, at) };
+    let u32_at = |at: usize| if big { be32(tiff, at) } else { le32(tiff, at) };
+    let ifd = usize::try_from(u32_at(4)?).ok()?;
+    if ifd < 8 {
+        return None;
+    }
+    let count = usize::from(u16_at(ifd)?);
+    // Every entry of IFD0 is there.
+    take(tiff, ifd.checked_add(2)?, count.checked_mul(12)?)?;
+    for entry in 0..count {
+        let at = ifd + 2 + entry * 12;
+        if u16_at(at)? == 0x0112 {
+            let value = u16_at(at + 8)?;
+            if u16_at(at + 2)? != 3 || u32_at(at + 4)? != 1 || !(1..=8).contains(&value) {
+                return None;
+            }
+            return Some(value >= 5);
+        }
+    }
+    Some(false)
 }
 
 #[cfg(test)]
@@ -325,8 +344,89 @@ mod tests {
         let webp = |value: u16| riff(&[vp8x(0x08, 40, 20), vp8l(40, 20), sized(b"EXIF", &tiff(value, false))]);
         assert_eq!(image_size(&webp(6)), None);
         assert_eq!(image_size(&webp(1)), Some((40, 20)));
-        // EXIF that cannot be read says nothing.
-        assert_eq!(image_size(&riff(&[vp8x(0x08, 40, 20), vp8l(40, 20), sized(b"EXIF", b"no tiff here")])), Some((40, 20)));
+    }
+
+    /// A TIFF whose IFD0 holds `entries`, each (tag, type, count, value as
+    /// it is stored in the entry's last four bytes), big-endian.
+    fn tiff_of(entries: &[(u16, u16, u32, [u8; 4])]) -> Vec<u8> {
+        let mut out = b"MM\0*".to_vec();
+        out.extend(8u32.to_be_bytes());
+        out.extend(u16::try_from(entries.len()).unwrap().to_be_bytes());
+        for (tag, kind, count, value) in entries {
+            out.extend(tag.to_be_bytes());
+            out.extend(kind.to_be_bytes());
+            out.extend(count.to_be_bytes());
+            out.extend(value);
+        }
+        out.extend(0u32.to_be_bytes());
+        out
+    }
+    /// A 40 x 20 JPEG with `exif` in an APP1 segment, after its SOI.
+    fn jpeg_with(exif: &[u8]) -> Vec<u8> {
+        let jpeg = picture(image::ImageFormat::Jpeg, 40, 20);
+        let body = [b"Exif\0\0".as_slice(), exif].concat();
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend(u16::try_from(body.len() + 2).unwrap().to_be_bytes());
+        app1.extend(body);
+        [&jpeg[..2], &app1, &jpeg[2..]].concat()
+    }
+    /// An APP segment of `marker` with `len` bytes of data.
+    fn app(marker: u8, len: usize) -> Vec<u8> {
+        let mut out = vec![0xFF, marker];
+        out.extend(u16::try_from(len + 2).unwrap().to_be_bytes());
+        out.extend(vec![0; len]);
+        out
+    }
+
+    #[test]
+    fn a_jpeg_whose_heads_run_out_before_its_scan_gives_no_size() {
+        // Its SOF read, then more segments than the budget before the scan.
+        let jpeg = picture(image::ImageFormat::Jpeg, 40, 20);
+        let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+        let many: Vec<u8> = (0..HEADS_BUDGET).flat_map(|_| app(0xE2, 4)).collect();
+        let late = [&jpeg[..sof], &jpeg[sof..sof + 2 + 17], &many[..], &jpeg[sof + 2 + 17..]].concat();
+        assert_eq!(image_size(&late), None);
+    }
+
+    #[test]
+    fn a_jpeg_exif_after_many_heads_within_the_budget_still_turns_it() {
+        let jpeg = jpeg_with(&tiff(6, true));
+        let many: Vec<u8> = (0..HEADS_BUDGET - 20).flat_map(|_| app(0xE2, 4)).collect();
+        assert_eq!(image_size(&[&jpeg[..2], &many[..], &jpeg[2..]].concat()), Some((20, 40)));
+    }
+
+    #[test]
+    fn an_orientation_entry_of_the_wrong_count_or_type_gives_no_size() {
+        // Two SHORTs, value 6 first; one LONG of 6.
+        assert_eq!(image_size(&jpeg_with(&tiff_of(&[(0x0112, 3, 2, [0, 6, 0, 6])]))), None);
+        assert_eq!(image_size(&jpeg_with(&tiff_of(&[(0x0112, 4, 1, [0, 0, 0, 6])]))), None);
+    }
+
+    #[test]
+    fn an_orientation_value_out_of_range_gives_no_size() {
+        assert_eq!(image_size(&jpeg_with(&tiff_of(&[(0x0112, 3, 1, [0, 0, 0, 0])]))), None);
+        assert_eq!(image_size(&jpeg_with(&tiff_of(&[(0x0112, 3, 1, [0, 9, 0, 0])]))), None);
+    }
+
+    #[test]
+    fn a_cut_or_unreadable_tiff_gives_no_size() {
+        // IFD0 says three entries; one is there.
+        let mut cut = tiff_of(&[(0x010F, 2, 4, *b"Cam\0")]);
+        cut[9] = 3;
+        assert_eq!(image_size(&jpeg_with(&cut)), None);
+        // Not a TIFF, in a JPEG, a PNG and a WebP.
+        assert_eq!(image_size(&jpeg_with(b"no tiff here")), None);
+        let png = picture(image::ImageFormat::Png, 40, 20);
+        assert_eq!(image_size(&after_ihdr(&png, &png_chunk(b"eXIf", b"no tiff here"))), None);
+        assert_eq!(image_size(&riff(&[vp8x(0x08, 40, 20), vp8l(40, 20), sized(b"EXIF", b"no tiff here")])), None);
+    }
+
+    #[test]
+    fn exif_without_an_orientation_keeps_the_size() {
+        let make = tiff_of(&[(0x010F, 2, 4, *b"Cam\0")]);
+        assert_eq!(image_size(&jpeg_with(&make)), Some((40, 20)));
+        let png = picture(image::ImageFormat::Png, 40, 20);
+        assert_eq!(image_size(&after_ihdr(&png, &png_chunk(b"eXIf", &make))), Some((40, 20)));
     }
 
     #[test]
