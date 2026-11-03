@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText } from "./api";
 import { formatTime } from "./home/brief/brief-catalog";
 import { strings, useStrings } from "./i18n";
@@ -36,7 +36,11 @@ export type ResearchRecord = {
   limits?: string[];
   method?: { activitySeq: number; id?: string; title?: string };
   sources?: ResearchSource[];
-  revises?: { activitySeq: number; reason: string };
+  revises?: { activitySeq: number; reason: string; scope?: "narrows" | "withdraws" | "unchecked" };
+  /** What its kind of study keeps apart (T-17 slice 5), by field; never required. */
+  details?: Record<string, string | number | string[]>;
+  /** What the record proposes next (T-17 slice 4): a proposal, never an action. */
+  next?: { action: "check" | "stop"; text: string };
   /** A comparison's entries (T-17 slice 2), as their author gave them. */
   entries?: ResearchEntry[];
   comparability?: Comparability;
@@ -69,6 +73,8 @@ type ResearchView = {
   latestActivitySeq: number | null;
   research: ResearchRecord;
   method: (ResearchView & { at?: string }) | null;
+  /** How the next version revised this one, as it said. */
+  revision?: { activitySeq: number; scope: string | null; reason: string } | null;
 };
 
 const text = strings({
@@ -103,6 +109,37 @@ const text = strings({
   limits: "Limits",
   madeWith: (title: string, seq: number) => `Made with the method “${title}” as written in activity ${seq}`,
   revises: (seq: number) => `Revises activity ${seq}`,
+  // What a claim's new version says it does to the earlier scope (slice 5).
+  revisesScope: {
+    narrows: (seq: number) => `Narrows activity ${seq}`,
+    withdraws: (seq: number) => `Withdraws activity ${seq}`,
+    unchecked: (seq: number) => `Revises activity ${seq}; whether its scope still holds is not checked yet`,
+  } as Record<string, (seq: number) => string>,
+  revisedHow: (seq: number, scope: string | null) =>
+    scope === "narrows" ? `Activity ${seq} narrows this scope`
+      : scope === "withdraws" ? `Activity ${seq} withdraws it`
+        : scope === "unchecked" ? `Activity ${seq} revises it; whether this scope still holds is not checked yet`
+          : `Activity ${seq} revises it and leaves this scope as written`,
+  // What each kind of study keeps apart (slice 5): as given, never judged.
+  result: { proof: "Proof", counterexample: "Counterexample", conjecture: "Conjecture", partial: "Partial result" } as Record<string, string>,
+  checkedHow: (how: string, bound?: string) =>
+    ({ by_hand: "checked by hand", formal: "checked formally", enumeration: `checked by enumeration up to ${bound}`, none: "not checked" } as Record<string, string>)[how] ?? how,
+  bound: "Bound",
+  enumerationNote: "A finite enumeration is no general proof.",
+  formalNote: "A formal check covers the formal statement; whether it answers the question is the author's judgement.",
+  obligations: "Proof obligations",
+  levels: "Levels",
+  level: { machines: ["machine", "machines"], builds: ["build", "builds"], processes: ["process", "processes"],
+    iterations: ["iteration", "iterations"] } as Record<string, string | [string, string]>,
+  warmup: "Warm-up",
+  iterationsNote: "Iterations within one process are not independent runs.",
+  ml: { baseline: "Baseline", selection: "Selection", budget: "Budget", seeds: "Seeds", split: "Split" } as Record<string, string>,
+  episodes: "Episodes",
+  episode: { planned: "planned", executed: "executed", completed: "completed", intervened: "intervened", stopped: "stopped", excluded: "excluded" } as Record<string, string>,
+  protocol: "Protocol",
+  episodesNote: "These counts overlap: an intervened episode may also be completed, and the denominator is the protocol's.",
+  next: { check: "Proposes a next check", stop: "Proposes to stop" } as Record<string, string>,
+  nextNote: "A proposal: nothing runs or stops because of it.",
   sources: "Sources",
   job: "Job artifact",
   jobRecorded: "Matched this task's recorded Job check when written",
@@ -168,6 +205,34 @@ const text = strings({
   limits: "限制",
   madeWith: (title, seq) => `用活动 ${seq} 中写下的方法“${title}”得出`,
   revises: (seq) => `修订活动 ${seq}`,
+  revisesScope: {
+    narrows: (seq) => `收窄活动 ${seq}`,
+    withdraws: (seq) => `撤回活动 ${seq}`,
+    unchecked: (seq) => `修订活动 ${seq}；它的适用范围是否仍成立尚未核对`,
+  },
+  revisedHow: (seq, scope) =>
+    scope === "narrows" ? `活动 ${seq} 收窄了这一适用范围`
+      : scope === "withdraws" ? `活动 ${seq} 撤回了它`
+        : scope === "unchecked" ? `活动 ${seq} 修订了它；这一适用范围是否仍成立尚未核对`
+          : `活动 ${seq} 修订了它，这一适用范围保持原样`,
+  result: { proof: "证明", counterexample: "反例", conjecture: "猜想", partial: "部分结果" },
+  checkedHow: (how, bound) =>
+    ({ by_hand: "人工核对", formal: "形式化核对", enumeration: `枚举核对至 ${bound}`, none: "未核对" } as Record<string, string>)[how] ?? how,
+  bound: "界限",
+  enumerationNote: "有限枚举不是一般性证明。",
+  formalNote: "形式化核对只覆盖形式化的命题；它是否回答了原问题是作者的判断。",
+  obligations: "证明义务",
+  levels: "层级",
+  level: { machines: "台机器", builds: "次构建", processes: "个进程", iterations: "次迭代" },
+  warmup: "预热",
+  iterationsNote: "同一进程内的多次迭代不是相互独立的运行。",
+  ml: { baseline: "基线", selection: "选模", budget: "预算", seeds: "种子数", split: "数据划分" },
+  episodes: "回合",
+  episode: { planned: "计划", executed: "执行", completed: "完成", intervened: "介入", stopped: "停止", excluded: "排除" },
+  protocol: "协议",
+  episodesNote: "这些计数会重叠：被介入的回合也可能完成，分母以协议为准。",
+  next: { check: "提议下一项检查", stop: "提议停止" },
+  nextNote: "只是提议：不会因此运行或停止任何东西。",
   sources: "来源",
   job: "Job 产物",
   jobRecorded: "写下时与本任务 Job 的记录检查一致",
@@ -217,6 +282,73 @@ const inexact = (n: number) => Number.isInteger(n) && !Number.isSafeInteger(n);
 /** A number as its author gave it, with a true minus sign; marked ≈ when
  * this page cannot show it exactly. */
 const figure = (n: number) => (inexact(n) ? "≈" : "") + String(n).replace("-", "−");
+
+/** What a record's kind of study keeps apart (slice 5), as its author gave
+ * it, with what each part cannot show. Never judged or reconciled. */
+function Details({ field, details }: { field: string; details: Record<string, string | number | string[]> }) {
+  const t = useStrings(text);
+  const count = (key: string) => (typeof details[key] === "number" ? figure(details[key] as number) : undefined);
+  const counted = (keys: Record<string, string | [string, string]>) =>
+    Object.keys(keys)
+      .filter((key) => count(key) !== undefined)
+      .map((key) => {
+        const label = keys[key];
+        return `${count(key)} ${Array.isArray(label) ? label[details[key] === 1 ? 0 : 1] : label}`;
+      })
+      .join(" · ");
+  const note = (line: string) => <span className="task-research-note">{line}</span>;
+  let body: ReactNode = null;
+  if (field === "theory") {
+    const result = typeof details.result === "string" ? t.result[details.result] ?? details.result : undefined;
+    const bound = typeof details.bound === "string" ? details.bound : undefined;
+    const checked = typeof details.checked === "string" ? t.checkedHow(details.checked, bound) : undefined;
+    body = (
+      <>
+        {(result || checked) && <span>{[result, checked].filter(Boolean).join(" · ")}</span>}
+        {/* An enumeration's line already says how far it went. */}
+        {bound !== undefined && details.checked !== "enumeration" && <span>{t.bound}: {bound}</span>}
+        {details.checked === "enumeration" && note(t.enumerationNote)}
+        {details.checked === "formal" && note(t.formalNote)}
+        {Array.isArray(details.obligations) && details.obligations.length > 0 && (
+          <>
+            <strong>{t.obligations}</strong>
+            <ul>{details.obligations.map((item, n) => <li key={n}>{item}</li>)}</ul>
+          </>
+        )}
+      </>
+    );
+  } else if (field === "systems") {
+    const levels = counted(t.level);
+    body = (
+      <>
+        {levels && <span>{t.levels}: {levels}</span>}
+        {typeof details.warmup === "string" && <span>{t.warmup}: {details.warmup}</span>}
+        {details.iterations !== undefined && note(t.iterationsNote)}
+      </>
+    );
+  } else if (field === "ml") {
+    body = (
+      <dl>
+        {Object.keys(t.ml).filter((key) => details[key] !== undefined).map((key) => (
+          <div key={key}>
+            <dt>{t.ml[key]}</dt>
+            <dd>{count(key) ?? String(details[key])}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  } else if (field === "robotics") {
+    const episodes = counted(t.episode);
+    body = (
+      <>
+        {episodes && <span>{t.episodes}: {episodes}</span>}
+        {typeof details.protocol === "string" && <span>{t.protocol}: {details.protocol}</span>}
+        {episodes && note(t.episodesNote)}
+      </>
+    );
+  }
+  return body ? <div className="task-research-study" data-field={field}>{body}</div> : null;
+}
 
 /** A comparison's entries: every one, left out or not, each with why. */
 function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; comparability?: Comparability; now?: ResearchEntry[] }) {
@@ -423,10 +555,14 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
       )}
       <p className="task-research-text">{record.text}</p>
       {record.revises && (
-        <p className="task-research-revises">
-          <strong>{t.revises(record.revises.activitySeq)}</strong> {record.revises.reason}
+        <p className="task-research-revises" data-scope={record.revises.scope}>
+          <strong>
+            {(record.revises.scope && t.revisesScope[record.revises.scope]?.(record.revises.activitySeq)) ?? t.revises(record.revises.activitySeq)}
+          </strong>{" "}
+          {record.revises.reason}
         </p>
       )}
+      {record.details && record.field && <Details field={record.field} details={record.details} />}
       {record.method && (
         <p className="task-research-method">{t.madeWith(record.method.title ?? record.method.id ?? "", record.method.activitySeq)}</p>
       )}
@@ -441,6 +577,11 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
           <strong>{t.limits}</strong>
           <ul>{record.limits.map((item, n) => <li key={n}>{item}</li>)}</ul>
         </div>
+      )}
+      {record.next && (
+        <p className="task-research-next" data-action={record.next.action} title={t.nextNote}>
+          <strong>{t.next[record.next.action] ?? record.next.action}</strong> {record.next.text}
+        </p>
       )}
       {!!record.entries?.length && <Entries entries={record.entries} comparability={record.comparability} now={view?.data?.research.entries} />}
       {!!record.sources?.length && (
@@ -486,6 +627,11 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
                       ? t.newerFrom(view.data.revisedBy)
                       : t.newerUnknown}
               </p>
+              {view.data.revision && (
+                <p className="task-research-revised" data-scope={view.data.revision.scope ?? undefined}>
+                  <strong>{t.revisedHow(view.data.revision.activitySeq, view.data.revision.scope)}:</strong> {view.data.revision.reason}
+                </p>
+              )}
               {view.data.method && (
                 <p>{t.methodVersion(view.data.method.version, view.data.method.latestActivitySeq, view.data.method.activitySeq, view.data.method.revisedBy)}</p>
               )}

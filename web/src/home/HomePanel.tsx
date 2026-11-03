@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import {
@@ -156,10 +156,39 @@ function Approvals({ projectId, count, children }: { projectId: string; count: n
 function HistoryReply({ section, projectId, workspaceId, agents }: { section: Section; projectId: string; workspaceId: string; agents: Agent[] }) {
   const t = useStrings(homeText);
   const [open, setOpen] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
+  // Reply and the reply take each other's place: focus goes with them (T-19 HM:S7).
+  const [opened, setOpened] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const closing = useRef(false);
+  useLayoutEffect(() => {
+    if (open || !closing.current) return;
+    closing.current = false;
+    button.current?.focus();
+  }, [open]);
   return open ? (
-    <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setOpen(false)} />
+    <CardReply
+      section={section}
+      projectId={projectId}
+      workspaceId={workspaceId}
+      agents={agents}
+      opened={opened}
+      onClose={() => {
+        closing.current = true;
+        setOpen(false);
+      }}
+    />
   ) : (
-    <button type="button" className="quiet-button" aria-label={t.replyLabel(section.title)} title={t.replyTitle(section.owner.name)} onClick={() => setOpen(true)}>
+    <button
+      type="button"
+      className="quiet-button"
+      ref={button}
+      aria-label={t.replyLabel(section.title)}
+      title={t.replyTitle(section.owner.name)}
+      onClick={() => {
+        setOpened(true);
+        setOpen(true);
+      }}
+    >
       <MessageSquareReply size={13} /> {t.reply}
     </button>
   );

@@ -9,6 +9,7 @@ use crate::{model::AgentDetail, store::Store};
 
 mod analysis_tests;
 mod analysis_integration;
+mod research_tests;
 
 fn setup() -> (tempfile::TempDir, Arc<Store>) {
     let dir = tempfile::tempdir().unwrap();

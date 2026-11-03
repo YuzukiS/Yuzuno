@@ -107,6 +107,23 @@ fn a_completed_job_exports_its_recorded_evidence_and_nothing_outside_the_list() 
 }
 
 #[test]
+fn an_empty_usage_file_exports_as_none_recorded_and_a_runs_cost_says_why_it_is_partial() {
+    // The host's summary of an empty usage file: complete, with no entries.
+    let mut job = local_job();
+    job["result"]["cost"] = json!({"entries":0,"knownUsd":0.0,"unknownEntries":0,"invalidLines":0,"incompleteLines":0,
+        "truncated":false,"sources":[],"complete":true});
+    let run = json!({"id":"run-1","name":"Fixture run","status":"succeeded","taskRef":"T-7","stages":[],
+        "cost":{"knownUsd":0.5,"unknownEntries":0,"invalidLines":0,"truncated":false,"attemptsReporting":1,
+            "attemptsNotRecorded":2,"attemptsWithUnknown":1,"attemptsRunning":0,"complete":false}});
+    let value = provenance::export(Some(&run), &[job], &[Ok(json!({"segments":0}))], known());
+    let (m, report) = (&value["manifest"], value["report"].as_str().unwrap());
+    assert_eq!(m["attempts"][0]["cost"], json!({"state":"notRecorded"}), "an empty file recorded nothing, not $0");
+    assert!(!report.contains("- Cost:"), "{report}");
+    assert_eq!((m["run"]["cost"]["attemptsNotRecorded"].clone(), m["run"]["cost"]["attemptsWithUnknown"].clone()), (json!(2), json!(1)));
+    assert!(report.contains("Recorded cost 0.5 USD known, incomplete (1 attempts with an unknown amount, 2 attempts recorded none)."), "{report}");
+}
+
+#[test]
 fn reasons_lose_known_paths_at_their_boundaries_only() {
     let mut job = local_job();
     job["reason"] = json!("Missing /home/someone/work/exp. See /home/someone/work/exp2/x and /srv/core-data/jobs.");

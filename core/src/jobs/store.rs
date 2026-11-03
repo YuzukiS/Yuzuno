@@ -12,6 +12,8 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS local_jobs_state ON local_jobs(status,seq);
         CREATE INDEX IF NOT EXISTS local_jobs_agent ON local_jobs(agent_id,seq);
+        -- A task's Jobs, newest first (job_list by task, job_cost).
+        CREATE INDEX IF NOT EXISTS local_jobs_task ON local_jobs(task_id,seq);
         CREATE TABLE IF NOT EXISTS local_job_settings (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS local_job_disk (id INTEGER PRIMARY KEY CHECK(id=1), reserve_gib INTEGER);
         -- The most Windows attempts at once on the PC this Core's WSL runs on;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
 import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
@@ -10,6 +10,8 @@ import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
+import { usePhone } from "../phone-layout";
+import { useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
@@ -28,6 +30,7 @@ import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDens
 import { ReportPage } from "./report/ReportPage";
 import { linkTo } from "./report/report-model";
 import { ReportOpen, type ReportOpener } from "./report/report-open";
+import { settleWhenLanded } from "../settle";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -128,6 +131,11 @@ export function Home({
   // a reply Home can't use, an order not saved, or Core's reason as it came.
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
+  // Home fades in as it opens, over medium (T-19 M6: SH:M10, R27); not on a
+  // phone, where what is open comes in by its own motion (M8, later).
+  const view = useRef<HTMLDivElement>(null);
+  const phone = usePhone();
+  useSurfaceIn(view, "home", "medium", !phone);
   const [errorState, setErrorState] = useState<(HomeError & { workspaceId: string }) | null>(null);
   const error = errorState?.workspaceId === workspaceId ? errorState : null;
   const setError = useCallback((value: HomeError | null) => {
@@ -146,6 +154,9 @@ export function Home({
   const [saving, setSaving] = useState(false);
   // Panels the needs-you row jumped to, shown whole for this visit.
   const [reveal, setReveal] = useState<{ n: number; projects: Record<string, number> }>({ n: 0, projects: {} });
+  // The Needs you area's landing mark, from the return overview (T-19).
+  const needsSettled = useRef<(() => void) | null>(null);
+  useEffect(() => () => needsSettled.current?.(), []);
   const pendingJump = useRef<{ target: () => HTMLElement | null; n: number } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   useEffect(() => {
@@ -289,23 +300,22 @@ export function Home({
     pendingJump.current = null;
     const target = jumpTo.target();
     if (!target) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let frame = 0;
-    const clear = () => target.removeAttribute("data-home-highlight");
+    let settled: (() => void) | undefined;
     const show = () => {
       // Only the user's click scrolls Home; new content never does.
-      target.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+      const smooth = !reducedMotion();
+      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
       target.focus({ preventScroll: true });
-      target.setAttribute("data-home-highlight", "");
-      timer = setTimeout(clear, 2400);
+      // Where it landed, once the scroll has (T-19): kept until the next press.
+      settled = settleWhenLanded(target, "data-home-highlight", smooth);
     };
     // A card the user collapsed opens to show what the jump is to (T-115).
     if (unfoldAround(target)) frame = requestAnimationFrame(show);
     else show();
     return () => {
       cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      clear();
+      settled?.();
     };
   }, [reveal]);
   // A section's report, over Home (T-18). Home stays mounted and laid out
@@ -472,13 +482,78 @@ export function Home({
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
   const { layout, pin, unpin } = widgetLayout;
+  // A section pinned here (T-19 HM:W5): what was pressed keeps its place
+  // while the widget column above it grows, and the new widget comes in over
+  // small (opacity, 4 px up) and settles once; under reduced motion it is
+  // there at once. Only a widget this press added does so: not one already
+  // pinned (a pin that changed nothing, or Pin the new section for one pinned
+  // already), not one past the limit, a layout read again or another
+  // window's pin. It is this Workspace's: another one opened drops it.
+  const [pinnedHere, setPinnedHere] = useState<{ workspace: string; id: string; n: number; had: boolean } | null>(null);
+  const pinAnchor = useRef<{ element: HTMLElement; top: number } | null>(null);
+  const pinnedWidget = useRef<HTMLElement | null>(null);
+  const layoutNow = useRef(layout);
+  layoutNow.current = layout;
+  useLayoutEffect(() => {
+    pinnedWidget.current = null;
+    const anchor = pinAnchor.current;
+    pinAnchor.current = null;
+    if (!pinnedHere || pinnedHere.workspace !== workspaceId) return;
+    // Held now, and for two more frames until the reader scrolls, presses a
+    // key or touches: so whatever the browser's own scroll anchoring did or
+    // does, the pressed control ends where it was, and what the reader then
+    // does stands.
+    const view = anchor?.element.isConnected ? anchor.element.closest<HTMLElement>(".home-view") : null;
+    const hold = () => {
+      if (!anchor || !view || !anchor.element.isConnected) return;
+      const moved = anchor.element.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(moved) >= 1) view.scrollTop += moved;
+    };
+    hold();
+    let frame = requestAnimationFrame(() => {
+      hold();
+      frame = requestAnimationFrame(hold);
+    });
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    const yield_ = () => {
+      cancelAnimationFrame(frame);
+      for (const kind of inputs) window.removeEventListener(kind, yield_, true);
+    };
+    for (const kind of inputs) window.addEventListener(kind, yield_, { capture: true, passive: true });
+    const added = !pinnedHere.had && !!layout?.pins.some((p) => pinWidgetId(p) === pinnedHere.id);
+    const widget = added ? [...document.querySelectorAll<HTMLElement>(".home-widget-slot")].find((slot) => slot.dataset.widget === pinnedHere.id) : undefined;
+    pinnedWidget.current = widget ?? null;
+    // The tint paints the widget's own card: the card's background would
+    // hide one painted behind it.
+    const card = widget?.firstElementChild instanceof HTMLElement ? widget.firstElementChild : widget;
+    const settled = card ? settleWhenLanded(card, "data-settle", false, "animation") : null;
+    return () => {
+      yield_();
+      settled?.();
+    };
+    // `layout` is read as this pin committed it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedHere, workspaceId]);
+  useSurfaceIn(pinnedWidget, pinnedHere?.n ?? 0, "small", !!pinnedHere, "translateY(4px)");
   /** Every pin is made here, and only of a section pinSource allows. */
   const pinIfAllowed = useCallback(
-    (projectId: string, section: Section) => {
+    (projectId: string, section: Section, pressed?: HTMLElement) => {
       const source = pinSource(data, projectId, section);
-      if (source) pin(projectId, source.projectName, source.section);
+      if (!source) return;
+      // The control the press was on (the Pin button, or Pin the current
+      // version) holds its place, read now, before the pin. It is the one
+      // the press named, not whatever has focus: a click does not focus a
+      // button in every browser (Safari), and focus may be elsewhere.
+      pinAnchor.current = pressed?.closest(".home-view")
+        ? { element: pressed, top: pressed.getBoundingClientRect().top }
+        : null;
+      const id = pinWidgetId({ projectId, key: source.section.key, id: source.section.id! });
+      // Pinned already before this press, as the layout was last drawn.
+      const had = !!layoutNow.current?.pins.some((p) => pinWidgetId(p) === id);
+      pin(projectId, source.projectName, source.section);
+      setPinnedHere((last) => ({ workspace: workspaceId, id, n: (last?.n ?? 0) + 1, had }));
     },
-    [data, pin],
+    [data, pin, workspaceId],
   );
   const pins = useMemo<PinControl | null>(
     () =>
@@ -488,10 +563,10 @@ export function Home({
             isPinned: (projectId: string, section: Section) =>
               layout.pins.some((p) => p.projectId === projectId && p.id === section.id),
             canPin: (projectId: string, section: Section) => !!pinSource(data, projectId, section),
-            toggle: (projectId: string, section: Section) => {
+            toggle: (projectId: string, section: Section, pressed?: HTMLElement) => {
               const pinned = layout.pins.find((p) => p.projectId === projectId && p.id === section.id);
               if (pinned) unpin(pinned);
-              else pinIfAllowed(projectId, section);
+              else pinIfAllowed(projectId, section, pressed);
             },
           },
     [readOnly, layout, unpin, data, pinIfAllowed],
@@ -518,9 +593,9 @@ export function Home({
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
             onPinCurrent={
               source.state === "replaced" && pinSource(data, p.projectId, source.section)
-                ? () => {
+                ? (pressed: HTMLElement) => {
                     unpin(p);
-                    pinIfAllowed(p.projectId, source.section);
+                    pinIfAllowed(p.projectId, source.section, pressed);
                   }
                 : undefined
             }
@@ -542,6 +617,7 @@ export function Home({
     <ReportOpen.Provider value={cardReport}>
     <div className="home-stage">
     <div
+      ref={view}
       className={`home-view${report ? " is-under-report" : ""}`}
       lang={langTag(language)}
       data-density={density}
@@ -614,8 +690,12 @@ export function Home({
             onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
             onNeedsYou={() => {
               const target = document.getElementById("home-current-needs");
-              target?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
-              target?.focus({ preventScroll: true });
+              if (!target) return;
+              const smooth = !reducedMotion();
+              target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+              target.focus({ preventScroll: true });
+              needsSettled.current?.();
+              needsSettled.current = settleWhenLanded(target, "data-home-highlight", smooth);
             }}
             onNavigate={onNavigate}
           />

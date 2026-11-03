@@ -31,14 +31,25 @@ export const SAFETY_NET_MS = 45_000;
  *
  * An open, quiet stream is healthy: business-event silence is not a timeout;
  * only missing heartbeats are.
+ *
+ * `onReplay` is told when Core resumes a stream (`"resumed"`: what follows is
+ * its replay) and, once per connection, when it has sent everything it
+ * replayed (`"drained"`): Core sends the replay before any heartbeat
+ * (core/src/events.rs, Reader::next), so the first heartbeat after `resumed`
+ * on the same open connection says so. Not that every live change has
+ * arrived; never after a reset (its read is the new start) or for another
+ * connection, and never from a timer (T-19 CV:Q-01, Lead 3356).
  */
 export function useWorkspaceEvents(
   enabled: boolean,
   onEvent: (event: WorkspaceEvent) => void,
+  onReplay?: (state: "resumed" | "drained") => void,
 ) {
   const [connection, setConnection] = useState<EventConnection>("connecting");
   const handler = useRef(onEvent);
   handler.current = onEvent;
+  const replay = useRef(onReplay);
+  replay.current = onReplay;
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
@@ -46,6 +57,9 @@ export function useWorkspaceEvents(
     let open = false;
     let lastId = "";
     let lastHeard = Date.now();
+    // This connection said `resumed` (and no reset since): its first
+    // heartbeat ends the replay. Cleared by a new connection, an error or a reset.
+    let resumedHere = false;
     // After the browser reports going offline (T-170): an open stream is not
     // trusted until it is heard from again, and the next `online` reconnects.
     let doubted = false;
@@ -77,6 +91,7 @@ export function useWorkspaceEvents(
       }
       open = false;
       doubted = false;
+      resumedHere = false;
       // A new connection resumes from the last id it saw, like a browser
       // reconnect does with Last-Event-ID.
       const events = new EventSource(
@@ -91,6 +106,7 @@ export function useWorkspaceEvents(
         clearTimeout(reopen);
         reopen = undefined;
         open = true;
+        resumedHere = false;
         setConnection("open");
         heard();
         clearTimeout(starting);
@@ -107,16 +123,24 @@ export function useWorkspaceEvents(
         if (event.type === "resumed" || event.type === "reset") {
           clearTimeout(starting);
           starting = undefined;
+          resumedHere = event.type === "resumed";
+          if (resumedHere) replay.current?.("resumed");
         }
         if (event.type === "resumed" || event.type === "heartbeat") return;
         emit(event);
       };
       events.addEventListener?.("heartbeat", () => {
-        if (!disposed && source === events) heard();
+        if (disposed || source !== events) return;
+        heard();
+        if (open && resumedHere) {
+          resumedHere = false;
+          replay.current?.("drained");
+        }
       });
       events.onerror = () => {
         if (disposed || source !== events) return;
         open = false;
+        resumedHere = false;
         clearTimeout(starting);
         clearTimeout(silence);
         starting = silence = undefined;

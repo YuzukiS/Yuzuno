@@ -1,0 +1,369 @@
+/* The image viewer (T-20): a bar of controls above the stage the image is
+   zoomed and moved in, so they never cover it. The dialog takes the
+   window's height, and the stage all the room the heading and bar leave.
+   Where a window is too short even for the stage's least height, the dialog
+   scrolls, so the stage is never cut off: it can always be brought whole
+   into view, and the viewer measures the stage as it is shown. */
+.modal.image-viewer-modal {
+  width: min(1180px, calc(var(--safe-vw) - 32px));
+  height: calc(var(--safe-dvh) - 32px);
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+/* The image's meaning first: its caption, then its file, size and time. */
+.image-viewer-modal .modal-heading h2 {
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+.image-viewer-modal .modal-heading p {
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  color: var(--text-secondary, #5d6656);
+  overflow-wrap: anywhere;
+}
+/* They grow into the room left, and never shrink below the bar and the
+   stage's least height: past that, the dialog scrolls instead. */
+.image-viewer-modal > .image-viewer,
+.image-viewer-modal > .artifact-content {
+  flex: 1 0 auto;
+}
+.image-viewer-modal > .artifact-content {
+  display: flex;
+  max-height: none;
+  overflow: visible;
+  margin-top: 14px;
+  padding-top: 0;
+  border-top: 0;
+}
+.image-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  margin-top: 14px;
+}
+.artifact-content > .image-viewer {
+  margin-top: 0;
+}
+.image-viewer-bar {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+}
+.image-viewer-zoom,
+.image-viewer-modes {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+}
+.image-viewer-zoom > button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+.image-viewer-zoom > button:hover:not(:disabled),
+.image-viewer-modes button:hover:not(:disabled) {
+  background: var(--cream);
+}
+/* Pressed in as T-19's transparent controls are, without the dip: these sit
+   joined in a group. */
+.image-viewer-zoom > button,
+.image-viewer-modes button {
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard);
+}
+.image-viewer-zoom > button:active:not(:disabled),
+.image-viewer-modes button:active:not(:disabled) {
+  box-shadow: var(--press-shadow-quiet);
+  transition: background-color var(--motion-micro) var(--ease-standard), box-shadow 0s;
+}
+.image-viewer-zoom > button:disabled,
+.image-viewer-modes button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.image-viewer-scale {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.image-viewer-scale output {
+  min-width: 5ch;
+  text-align: center;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+/* The views' menu is the phone's; a wide window shows them side by side. */
+.image-viewer-menu,
+.image-viewer-menu-mark {
+  display: none;
+}
+.image-viewer-modes {
+  overflow: hidden;
+}
+.image-viewer-modes button {
+  height: 32px;
+  padding: 0 11px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: none;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.image-viewer-modes button:first-child {
+  border-left: 0;
+}
+.image-viewer-modes button[aria-pressed="true"] {
+  background: var(--accent-wash, #f5edcf);
+  color: var(--accent-ink, #786637);
+  font-weight: 600;
+}
+.image-viewer-zoom > button:focus-visible,
+.image-viewer-modes button:focus-visible,
+.image-viewer-scale:has(.image-viewer-menu:focus-visible) {
+  outline: 2px solid var(--accent-ink, #786637);
+  outline-offset: -2px;
+}
+.image-viewer-hint {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  color: var(--text-secondary, #5d6656);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+/* Only where it fits beside the controls; never a second row. */
+@container (max-width: 700px) {
+  .image-viewer-hint {
+    display: none;
+  }
+}
+.image-viewer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+/* Mark up in ink, its icon too: the shared button's own grey is too faint here. */
+.image-viewer-actions .secondary-button {
+  color: var(--ink);
+}
+/* Wheel, drag and pinch are taken here only: no page scroll or zoom. A flat
+   ground a step from the dialog's, so the image's edges show. */
+.image-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 140px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft, #eceee4);
+  touch-action: none;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+:root[data-theme="dark"] .image-viewer-stage {
+  background: color-mix(in srgb, var(--paper) 72%, #000);
+}
+.image-viewer-stage:focus-visible {
+  outline: 2px solid var(--accent-ink, #786637);
+  outline-offset: 2px;
+}
+.image-viewer-stage[data-movable] {
+  cursor: grab;
+}
+.image-viewer-stage[data-movable][data-dragging] {
+  cursor: grabbing;
+}
+.image-viewer-stage > img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  max-height: none;
+  transform-origin: 0 0;
+  -webkit-user-drag: none;
+}
+.image-viewer-stage[data-dragging] > img {
+  will-change: transform;
+}
+/* A button's or key's change glides; a gesture follows the hand at once. */
+.image-viewer-stage[data-animate] > img {
+  transition: transform var(--motion-small) var(--ease-standard);
+}
+@media (prefers-reduced-motion: reduce) {
+  .image-viewer-stage[data-animate] > img {
+    transition: none;
+  }
+}
+/* An image that cannot be read: said in the middle of the stage. */
+.image-viewer-failed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary, #5d6656);
+}
+.image-viewer-failed p {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.image-viewer-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary, #5d6656);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+/* Where the view is in an image larger than the stage, along each side; its
+   thumb can be dragged. Where each bar runs along its side, and its thumb's
+   place and length, are set by the viewer (image-view.ts BAR), so the bar's
+   travel and the image's movement are measured alike. */
+.image-viewer-track {
+  position: absolute;
+  border-radius: 4px;
+}
+.image-viewer-track[data-axis="y"] {
+  right: 3px;
+  width: 6px;
+}
+.image-viewer-track[data-axis="x"] {
+  bottom: 3px;
+  height: 6px;
+}
+/* Over light and dark images alike: a mid tone with an edge of the other. */
+.image-viewer-thumb {
+  position: absolute;
+  border-radius: 4px;
+  background: rgb(60 66 58 / 0.6);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7);
+  cursor: grab;
+  touch-action: none;
+}
+.image-viewer-track[data-axis="y"] > .image-viewer-thumb {
+  left: 0;
+  right: 0;
+}
+.image-viewer-track[data-axis="x"] > .image-viewer-thumb {
+  top: 0;
+  bottom: 0;
+}
+/* Touch: every target at least 44 px. */
+@media (pointer: coarse) {
+  .image-viewer-zoom > button {
+    width: 44px;
+    height: 44px;
+  }
+  .image-viewer-modes button {
+    height: 44px;
+  }
+  .image-viewer-track[data-axis="y"] {
+    width: 10px;
+  }
+  .image-viewer-track[data-axis="x"] {
+    height: 10px;
+  }
+}
+/* A short window (a phone held sideways, a small laptop window): less
+   around the stage, so it keeps as much of the height as it can. */
+@media (max-height: 520px) {
+  .modal.image-viewer-modal {
+    height: calc(var(--safe-dvh) - 16px);
+    padding: 12px 16px;
+  }
+  .image-viewer-modal .modal-heading p {
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .image-viewer,
+  .image-viewer-modal > .artifact-content {
+    margin-top: 8px;
+  }
+  .image-viewer {
+    gap: 6px;
+  }
+}
+/* A phone: the whole screen for the image, the bar in one row. The views
+   are a menu on the scale, and Mark up is its icon. */
+@media (max-width: 520px) {
+  .modal.image-viewer-modal {
+    width: var(--safe-vw);
+    height: var(--safe-dvh);
+    border-radius: 0;
+    border: 0;
+    padding: 14px;
+  }
+  .image-viewer {
+    margin-top: 8px;
+  }
+  .image-viewer-bar {
+    gap: 8px;
+  }
+  .image-viewer-modes {
+    display: none;
+  }
+  .image-viewer-scale {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 4px;
+  }
+  .image-viewer-menu-mark {
+    display: block;
+    color: var(--text-secondary, #5d6656);
+  }
+  .image-viewer-menu {
+    display: block;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    opacity: 0;
+    font-size: 16px;
+  }
+  .image-viewer-actions {
+    padding-left: 8px;
+  }
+  .image-viewer-actions .secondary-button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
+  }
+  .image-viewer-actions .image-viewer-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}

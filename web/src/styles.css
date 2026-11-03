@@ -438,6 +438,11 @@ p {
   overflow: auto;
   min-height: 0;
 }
+/* A row this window added, while its group opens: it comes in once the
+   group is open (T-19 SH:R11). */
+.agent-row[data-joining] {
+  opacity: 0;
+}
 .agent-row {
   position: relative;
   display: block;
@@ -816,6 +821,34 @@ p {
   outline-offset: 5px;
   border-radius: 6px;
   scroll-margin-block: 18px;
+  /* As it arrives a ring fades once (T-19); the outline and tint stay while it is shown. */
+  animation: settle-ring var(--motion-settle) ease-out;
+}
+@keyframes settle-ring {
+  from {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--source-ring, #d9c984) 35%, transparent);
+  }
+}
+/* A Turn or input a jump landed on (App.tsx): a tint that fades once. */
+[data-settle] {
+  animation: settle-tint var(--motion-settle) ease-out;
+}
+@keyframes settle-tint {
+  from {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 80%, transparent);
+  }
+}
+/* Under reduced motion the tint does not fade: it is there, still, while the
+   landing is shown, and settle.ts takes it off after the settle's time. */
+@media (prefers-reduced-motion: reduce) {
+  [data-settle] {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 55%, transparent);
+  }
+}
+.turn:focus-visible {
+  outline: 2px solid var(--focus, #789065);
+  outline-offset: 4px;
+  border-radius: 6px;
 }
 .source-highlight:focus {
   outline: 2px solid #b59a44;
@@ -2141,20 +2174,31 @@ p {
 .modal {
   position: fixed;
   z-index: 51;
-  /* Centred in the safe area, and no larger than it. */
+  /* Centred across the safe area and hung from near its top, no larger than
+     it: what a dialog shows next (a confirm step, a stop mode) moves only its
+     bottom edge (T-19 ST:D4). */
   left: calc(50% + (var(--safe-left) - var(--safe-right)) / 2);
-  top: calc(50% + (var(--safe-top) - var(--safe-bottom)) / 2);
-  transform: translate(-50%, -50%);
+  top: calc(var(--safe-top) + max(8vh, 24px));
+  transform: translateX(-50%);
   width: min(470px, calc(var(--safe-vw) - 32px));
-  max-height: calc(var(--safe-dvh) - 52px);
+  max-height: calc(var(--safe-dvh) - max(8vh, 24px) - 24px);
   overflow: auto;
   background: #fcfcf7;
   border: 1px solid #dce4ce;
   border-radius: 13px;
   box-shadow: 0 20px 90px #24341d2b;
   padding: 25px;
-  /* `translate`, apart from the transform that centres it (or a drawer's). */
+  /* `translate`, apart from the transform that places it (or a drawer's). */
   animation: dialog-in var(--motion-medium) var(--ease-standard);
+}
+/* Kept centred in the safe area: Settings, Jobs and the task board (panels
+   of a fixed height whose content scrolls inside), the Portal's service
+   confirmation, and the image viewer (T-20), nearly the window's height.
+   Their own rules set any other size, the max-height above included. */
+.modal:where(.settings-modal, .jobs-dialog, .service-control-dialog, .image-viewer-modal, :has(.collaboration)) {
+  top: calc(50% + (var(--safe-top) - var(--safe-bottom)) / 2);
+  transform: translate(-50%, -50%);
+  max-height: calc(var(--safe-dvh) - 52px);
 }
 /* What approves or destroys never moves under the pointer: it only fades. */
 .modal.modal-confirm {
@@ -2799,6 +2843,36 @@ p {
   to {
     opacity: 1;
   }
+}
+/* A step whose work Core reports running (T-19 M14): a lit segment moves
+   along its bar, as on the update steps' current bar (updates.css). Under
+   reduced motion it stands still, and the step's text carries it. */
+.step-moving {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent),
+      transparent
+    )
+    0 0 / 50% 100% no-repeat,
+    color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+  animation: step-moving 1.6s ease-in-out infinite;
+}
+@keyframes step-moving {
+  from {
+    background-position: -100% 0, 0 0;
+  }
+  to {
+    background-position: 200% 0, 0 0;
+  }
+}
+/* The box an inline panel reveals in (surface.ts useRevealIn): it holds the
+   panel's own margins, so only its height moves as the panel opens. */
+.reveal {
+  display: flow-root;
 }
 @media (min-width: 1500px) {
   .app {

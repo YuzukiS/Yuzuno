@@ -64,11 +64,13 @@
   line-height: 1.5;
 }
 .task-research-revises,
+.task-research-next,
 .task-research-method {
   margin: 4px 0;
   font-size: 0.8rem;
 }
-.task-research-revises strong {
+.task-research-revises strong,
+.task-research-next strong {
   font-weight: 600;
 }
 .task-research-list,
@@ -219,4 +221,43 @@
 .task-research-entry-source .task-research-source {
   border-top: 0;
   padding: 2px 0;
+}
+/* What a record's kind of study keeps apart (T-17 slice 5): as given, with
+   what each part cannot show. */
+.task-research-study {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.task-research-study strong {
+  margin-top: 2px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.task-research-study ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.task-research-study dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0;
+}
+.task-research-study dl > div {
+  display: contents;
+}
+.task-research-study dt {
+  color: var(--text-secondary);
+}
+.task-research-study dd {
+  margin: 0;
+}
+.task-research-revised strong {
+  font-weight: 600;
 }

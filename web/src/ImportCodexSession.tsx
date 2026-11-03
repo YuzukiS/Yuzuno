@@ -52,7 +52,8 @@ export function ImportCodexSession({
 }: {
   disabled: boolean;
   close: () => void;
-  onCreated: (agent: Agent, source?: "imported" | "existing") => void;
+  /** `added`: Core says this import made the Agent (T-19 SH:R11). */
+  onCreated: (agent: Agent, source?: "imported" | "existing", added?: boolean) => void;
   onBusyChange: (busy: boolean) => void;
 }) {
   const language = useLanguage();
@@ -135,19 +136,26 @@ export function ImportCodexSession({
     onBusyChange(true);
     setError("");
     try {
-      const agent = preview.existingAgentId
-        ? (
-            await api<AgentDetail>(
-              `/agents/${encodeURIComponent(preview.existingAgentId)}`,
-            )
-          ).agent
-        : await post<Agent>("/codex/sessions/import", {
-            threadId: preview.threadId,
-            name: name.trim(),
-            permissionPreset: settings.permissionPreset,
-          });
+      let agent: Agent;
+      let source: "imported" | "existing" = "existing";
+      let added = false;
+      if (preview.existingAgentId) {
+        agent = (await api<AgentDetail>(`/agents/${encodeURIComponent(preview.existingAgentId)}`)).agent;
+      } else {
+        // What the import did, as Core says it: the session may have an
+        // Agent since the preview (another window imported it). An older
+        // Core does not say, and nothing then marks the row as added here.
+        const { importOutcome, ...imported } = await post<Agent & { importOutcome?: "created" | "existing" }>("/codex/sessions/import", {
+          threadId: preview.threadId,
+          name: name.trim(),
+          permissionPreset: settings.permissionPreset,
+        });
+        agent = imported;
+        if (importOutcome !== "existing") source = "imported";
+        added = importOutcome === "created";
+      }
       if (!mounted.current) return;
-      onCreated(agent, preview.existingAgentId ? "existing" : "imported");
+      onCreated(agent, source, added);
       close();
     } catch (error) {
       if (mounted.current) setError(errorText(error));
