@@ -2,11 +2,10 @@
 // covered in collaboration-ui.test.mjs): in Chromium on a production build of
 // the app with a synthetic Workspace whose board has three tasks, never
 // written to. Opening a task turns the cards into rows beside it: the rows
-// that take over fade in once over small (collab-list-flip), and so do the
-// cards when the task has gone. Under reduced motion nothing fades. A narrow
-// window is run too. Every board request is a read (task_list, task_get,
-// peer_read and the pane's own reads); anything else would be recorded as a
-// write and fail the check. Chromium is not Safari.
+// that take over fade in once over small (collab-list-flip). The cards coming
+// back after a close are not read here. Under reduced motion nothing fades. A
+// narrow window is run too. The board's Core calls are reads; one in WRITES
+// would be recorded and fail the check. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-1c-board-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
