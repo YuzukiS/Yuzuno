@@ -322,7 +322,10 @@ fn resources(job: &Value) -> Value {
 
 fn cost(job: &Value) -> Value {
     let cost = &job["result"]["cost"];
-    if !cost.is_object() {
+    // An empty or blank usage file recorded no spending (T-17), as job_cost
+    // and a run's total read it; a known $0 has an entry.
+    let empty = cost["entries"] == 0 && cost["complete"] == true;
+    if !cost.is_object() || empty {
         return json!({"state": "notRecorded"});
     }
     // Numbers only: the command writes this file, its source names included.
@@ -397,7 +400,8 @@ fn run(run: &Value, labels: &mut Labels) -> Value {
         "taskRef": run["taskRef"], "requestedBy": run["requestedBy"], "createdAt": run["createdAt"],
         "costLimitUsd": run["costLimitUsd"], "stages": stages,
         "cost": {"knownUsd": c["knownUsd"], "unknownEntries": c["unknownEntries"], "invalidLines": c["invalidLines"],
-            "truncated": c["truncated"], "attemptsReporting": c["attemptsReporting"], "complete": c["complete"],
+            "truncated": c["truncated"], "attemptsReporting": c["attemptsReporting"],
+            "attemptsNotRecorded": c["attemptsNotRecorded"], "attemptsWithUnknown": c["attemptsWithUnknown"], "complete": c["complete"],
             "state": "declared", "by": "each attempt's own usage report"}})
 }
 
@@ -427,6 +431,29 @@ pub(super) fn export(run_view: Option<&Value>, jobs: &[Value], extents: &[Result
     known.scrub_all(&mut manifest);
     let report = report(&manifest);
     json!({"manifest": manifest, "report": report})
+}
+
+/// Why a run's recorded cost is not whole, part by part; an older export
+/// that has only unknown entries says just those.
+fn incomplete(cost: &Value) -> String {
+    let count = |key: &str| cost[key].as_i64().unwrap_or(0);
+    let mut parts = Vec::new();
+    if count("unknownEntries") > 0 || cost["attemptsNotRecorded"].is_null() {
+        parts.push(format!("{} unknown entries", md(&cost["unknownEntries"])));
+    }
+    if count("attemptsWithUnknown") > 0 {
+        parts.push(format!("{} attempts with an unknown amount", count("attemptsWithUnknown")));
+    }
+    if count("attemptsNotRecorded") > 0 {
+        parts.push(format!("{} attempts recorded none", count("attemptsNotRecorded")));
+    }
+    if cost["truncated"] == true {
+        parts.push("a usage file too long to read whole".to_owned());
+    }
+    if parts.is_empty() {
+        parts.push("attempts still running".to_owned());
+    }
+    parts.join(", ")
 }
 
 /// Recorded text, inert in Markdown: one line, nothing that formats.
@@ -493,7 +520,7 @@ fn report(m: &Value) -> String {
     if let Some(run) = m["run"].as_object() {
         let _ = writeln!(out, "## Run\n\nStatus {}. Recorded cost {} USD known{}.\n", md(&run["status"]),
             md(&run["cost"]["knownUsd"]),
-            if run["cost"]["complete"] == true { "".to_owned() } else { format!(", incomplete ({} unknown entries)", md(&run["cost"]["unknownEntries"])) });
+            if run["cost"]["complete"] == true { "".to_owned() } else { format!(", incomplete ({})", incomplete(&run["cost"])) });
         for stage in run["stages"].as_array().into_iter().flatten() {
             let needs: Vec<String> = stage["needs"].as_array().into_iter().flatten().map(md).collect();
             let attempts = stage["attempts"].as_array().map_or(0, |a| a.len());
