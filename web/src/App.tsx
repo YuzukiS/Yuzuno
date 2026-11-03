@@ -264,6 +264,10 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** How long a stream opened again after a break may stay quiet about the shown Agent before what is
+ * shown counts as where arrivals start again (T-19 CV:Q-01, R1 276d4a1d). Core sends what was missed
+ * right after `resumed`, so this is far longer than a replay takes. */
+const ARRIVALS_QUIET_MS = 1_500;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -602,7 +606,7 @@ export function App() {
   // detail only becomes what was shown, so neither a read already on its way,
   // a copy kept from before, nor a change Core replays when the stream resumes
   // makes an old request play (Lead 3299, 3301).
-  const arrivalsSettle = useRef<{ after: number } | null>(null);
+  const arrivalsSettle = useRef<{ after: number; quiet?: boolean } | null>(null);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -702,9 +706,10 @@ export function App() {
   );
   const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
   // The stream broke, or opened again after breaking (T-19 CV:Q-01; Lead 3299, R1 276d4a1d). A
-  // short break can resume without a reset and with nothing replayed, so opening again also reads
-  // the shown Agent's detail once, after the mark: that read, not one already on its way, settles
-  // the wait. The first opening has nothing to replay and marks nothing.
+  // short break can resume without a reset and with nothing replayed: then nothing reads the shown
+  // Agent again (a resumed reconnect reads no conversation), so the wait also ends once the stream
+  // has stayed quiet about it for a while (below). The first opening has nothing to replay and
+  // marks nothing.
   const lastConnection = useRef(eventConnection);
   const reopened = useRef(false);
   if (lastConnection.current !== eventConnection) {
@@ -722,10 +727,21 @@ export function App() {
   useEffect(() => {
     if (eventConnection !== "open" || previewMode) return;
     jobsRefresh.now();
-    if (reopened.current) {
-      reopened.current = false;
-      live.sync.refetch({ now: true });
-    }
+    if (!reopened.current) return;
+    reopened.current = false;
+    // Core sends what the stream missed right after it says `resumed` (core/src/events.rs). Once a
+    // reopened stream has gone this long with no read of the shown Agent running, queued or due,
+    // there was nothing to replay for it: what is shown is the baseline, without reading it again.
+    // A read a replay asks for still settles the wait itself, and a read already on its way when the
+    // stream broke never does.
+    const mark = arrivalsSettle.current;
+    const timer = setTimeout(() => {
+      if (!mark || arrivalsSettle.current !== mark) return;
+      mark.quiet = true;
+      const sync = live.sync;
+      if (!sync.running && !sync.queued && sync.refetchTimer === undefined) arrivalsSettle.current = null;
+    }, ARRIVALS_QUIET_MS);
+    return () => clearTimeout(timer);
   }, [eventConnection, previewMode, jobsRefresh, live.sync]);
   useEffect(() => {
     const refreshJobs = () => jobsRefresh.now();
@@ -962,7 +978,10 @@ export function App() {
   // shown. One that is the newest read, none on its way, is current.
   const readNumber = (live.detail && live.sync.readOf.get(live.detail)) ?? 0;
   const newest = !!live.detail && readNumber === live.sync.currentRead && !live.sync.running;
-  let settles = !!arrivalsSettle.current && readNumber > arrivalsSettle.current.after;
+  // A quiet reopened stream whose last read was on its way when the window ended settles when the
+  // shown detail is the newest read and nothing more is running, queued or due.
+  const settled = newest && !live.sync.queued && live.sync.refetchTimer === undefined;
+  let settles = !!arrivalsSettle.current && (readNumber > arrivalsSettle.current.after || (!!arrivalsSettle.current.quiet && settled));
   if (pendingScope) {
     const seen = pendingSeen.current;
     if (!seen || seen.scope !== pendingScope) {
