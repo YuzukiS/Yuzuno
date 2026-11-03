@@ -444,7 +444,7 @@ test("in Chinese the capsule's words are Chinese; names, IDs and Core's codes st
   ]);
   assert.equal(page.row("r1").querySelector(".tool-call-note").getAttribute("lang"), "", "Core's code is in no language of the page's");
   const heading = page.document.querySelector(".tool-activity > summary .tool-overview");
-  assert.equal(heading.textContent, "8 个工具步骤1 个被拒绝");
+  assert.equal(heading.textContent, "8 个工具步骤已返回 6 次1 个被拒绝");
   page.row("c2").querySelector(":scope > summary").focus();
   await tick();
   assert.equal(page.tip().getAttribute("lang"), "zh-Hans");
