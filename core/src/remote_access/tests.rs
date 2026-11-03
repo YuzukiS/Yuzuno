@@ -467,7 +467,7 @@ async fn an_operation_a_stopped_core_left_running_is_marked_interrupted() {
     let lab = lab("wsl");
     let left = Operation {
         id: "op-1".into(), request_id: "r-1".into(), kind: "apply".into(), state: "running".into(), step: "serve".into(),
-        error: None, notes: Vec::new(), started_at: "2026-10-24T00:00:00Z".into(), finished_at: None, url: None,
+        error: None, notes: Vec::new(), started_at: "2026-10-24T00:00:00Z".into(), finished_at: None, url: None, legacy: None,
         request: serde_json::from_value(json!({"requestId": "r-1", "enabled": true})).unwrap(),
     };
     update(&lab.ws, |saved| { saved.operations.push(left); Ok(()) }).unwrap();
@@ -535,13 +535,13 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     known.extend(keys(&fixtures["remoteEntryReadOnly"]));
     assert!(keys(&real).is_subset(&known), "fields the page does not know: {:?}", keys(&real).difference(&known).collect::<Vec<_>>());
     assert!(keys(example).is_subset(&keys(&real)), "fields the page reads but Core does not send: {:?}", keys(example).difference(&keys(&real)).collect::<Vec<_>>());
-    for field in ["support", "saved", "listening", "serve", "tailscale", "verification", "qr", "defaults", "preview"] {
+    for field in ["support", "saved", "listening", "serve", "tailscale", "verification", "qr", "defaults", "previews"] {
         assert_eq!(keys(&real[field]), keys(&example[field]), "{field}");
     }
     for field in ["coreHost", "tailscaleHost"] {
         assert_eq!(keys(&real["support"][field]), keys(&example["support"][field]), "support.{field}");
     }
-    let optional: std::collections::BTreeSet<String> = ["error", "notes"].map(String::from).into();
+    let optional: std::collections::BTreeSet<String> = ["error", "notes", "legacy"].map(String::from).into();
     let mut op_known = keys(&example["operation"]);
     op_known.extend(optional);
     assert!(keys(&real["operation"]).is_subset(&op_known), "{}", real["operation"]);
@@ -673,42 +673,38 @@ async fn an_unreadable_record_is_kept_aside_by_the_next_apply() {
 // ---- phone previews (T-5) ----------------------------------------------
 
 const PAGE: &str = "<!doctype html><title>Proto</title><button onclick=\"this.textContent='clicked'\">Try</button>";
+/// Yuzuno's own page, as the lab's web folder has it: what a path that fell
+/// through to the page would get.
+const SHELL: &str = "<!doctype html><title>Yuzuno</title><p>the app shell</p>";
 
 impl Lab {
-    /// An Agent "a" whose working directory holds `proto.html`, for previews.
+    /// An Agent "a" whose working directory holds `proto.html`, for
+    /// previews; and Yuzuno's page in the web folder.
     fn with_page(&self) {
         let work = self.dir.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("proto.html"), PAGE).unwrap();
+        std::fs::create_dir_all(self.dir.path().join("web")).unwrap();
+        std::fs::write(self.dir.path().join("web/index.html"), SHELL).unwrap();
         let agent: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"Mori","cwd":work,"model":"test","color":"sage",
             "status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
             "turns":[],"pending":[],"artifacts":[]})).unwrap();
         self.ws.store.insert(&agent).unwrap();
     }
-    async fn previews(&self, request: Value) -> Result<Value> {
-        let op = preview::start(&self.ws, serde_json::from_value(request)?).await?;
-        let id = op["id"].as_str().unwrap().to_owned();
-        for _ in 0..400 {
-            let op = preview::read(&preview::path(&self.ws)).unwrap().operations.into_iter().find(|o| o.id == id).unwrap();
-            if op.state != "running" {
-                return Ok(serde_json::to_value(op)?);
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("operation {id} did not finish");
-    }
-    /// Phone access on `phone` and previews on `local`, both on their default Serve ports.
-    async fn both_on(&self, phone: u16, local: u16) {
+    /// Phone access on `phone`, including previews.
+    async fn on_with_previews(&self, phone: u16) {
         self.start(startup(&self.ws.data_dir, None).bind().await.unwrap());
-        let op = self.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-        assert_eq!(op["state"], "succeeded", "{op}");
-        let op = self.previews(json!({"requestId": "previews", "enabled": true, "localPort": local})).await.unwrap();
+        let op = self.apply(json!({"requestId": "on", "enabled": true, "localPort": phone, "previews": true})).await.unwrap();
         assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("succeeded"), Some("done")), "{op}");
+    }
+    /// An older Core's phone previews record, as it is on disk.
+    fn legacy_record(&self) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(self.ws.data_dir.join("remote-preview.json")).unwrap()).unwrap()
     }
 }
 
-/// A request through the phone entry on `port`, as Serve passes a phone's on:
-/// its Host, the login and, for a change, the page's origin and client header.
+/// A preview asked for through the phone entry on `port`, as Serve passes a
+/// phone's request: its Host, the login, the page's origin and client header.
 async fn mint(port: u16, login: &str) -> (u16, Value) {
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let response = client.post(format!("http://127.0.0.1:{port}/api/previews")).header("host", format!("{DNS}:8444"))
@@ -718,7 +714,7 @@ async fn mint(port: u16, login: &str) -> (u16, Value) {
     (code, response.json().await.unwrap_or(Value::Null))
 }
 
-/// One request on the previews' entry as Serve passes it: the header lines as given.
+/// One request on the phone entry as Serve passes it: the path and header lines as given.
 async fn raw(port: u16, method: &str, path: &str, headers: &str) -> (u16, String, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -730,466 +726,446 @@ async fn raw(port: u16, method: &str, path: &str, headers: &str) -> (u16, String
     (status, head.to_owned(), body.to_owned())
 }
 
-fn after_host(url: &Value) -> String {
-    let url = url.as_str().unwrap();
-    url[url.find("/.well-known/").or_else(|| url.find("/v/")).unwrap()..].to_owned()
+/// What follows the phone entry's origin in `url`.
+fn after_origin(url: &Value) -> String {
+    url.as_str().unwrap().strip_prefix(&format!("https://{DNS}:8444")).unwrap().to_owned()
 }
 
 fn has(head: &str, name: &str, value: &str) -> bool {
     head.split("\r\n").any(|line| line.split_once(':').is_some_and(|(n, v)| n.eq_ignore_ascii_case(name) && v.trim() == value))
 }
 
+fn named(head: &str, name: &str) -> bool {
+    head.split("\r\n").any(|line| line.split_once(':').is_some_and(|(n, _)| n.eq_ignore_ascii_case(name)))
+}
+
+/// The head lines Serve adds for this PC's owner on the phone entry.
+fn as_serve() -> String {
+    format!("Host: {DNS}:8444\r\nTailscale-User-Login: {OWNER}\r\nX-Forwarded-For: 100.64.0.2\r\n")
+}
+
+/// As `as_serve`, for a change from the phone page itself.
+fn from_page() -> String {
+    format!("{}Origin: https://{DNS}:8444\r\nX-Yuzuno-Client: desktop\r\n", as_serve())
+}
+
 #[tokio::test]
-async fn phone_previews_serve_a_snapshot_only_to_the_phone_entry_login_under_their_own_name() {
+async fn previews_open_on_the_phone_entrys_own_origin_through_its_one_serve_entry() {
     let lab = lab("wsl");
     lab.with_page();
-    let (phone, local) = (free_port(), free_port());
-    lab.both_on(phone, local).await;
-    // Serve: the previews' entry beside the phone entry and the other service, nothing reset.
+    let phone = free_port();
+    lab.on_with_previews(phone).await;
+    // Serve: the phone entry beside the other service, and nothing else; nothing reset.
     let serve = &lab.fake()["serve"];
-    assert_eq!(serve["Web"][format!("{DNS}:8445")], json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{local}")}}}));
-    assert_eq!(serve["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str());
-    assert!(serve["Web"][format!("{DNS}:443")].is_object());
-    assert!(lab.calls().iter().all(|c| !c.contains("reset")), "{:?}", lab.calls());
-    let view = lab.view().await["preview"].clone();
-    assert_eq!((view["url"].as_str(), view["saved"]["applied"].as_bool()), (Some(format!("https://{DNS}:8445").as_str()), Some(true)), "{view}");
-    assert_eq!(view["verification"]["ok"], true, "{}", view["verification"]);
-    assert_eq!(view["serve"]["state"], "ours");
-    // The shape the page is built on (the fixture's example).
-    let fixtures: Value = serde_json::from_str(VIEWS).unwrap();
-    let example = &fixtures["appliedVerified"]["preview"];
-    assert_eq!(keys(&view), keys(example));
-    for field in ["saved", "listening", "serve", "verification", "defaults"] {
-        assert_eq!(keys(&view[field]), keys(&example[field]), "preview.{field}");
-    }
-    assert!(keys(&view["operation"]).is_subset(&keys(&example["operation"])), "{}", view["operation"]);
-    assert_eq!(keys(&view["operation"]["request"]), keys(&example["operation"]["request"]));
-    let ids: Vec<Value> = view["verification"]["steps"].as_array().unwrap().iter().map(|s| s["id"].clone()).collect();
-    assert_eq!(Value::from(ids), fixtures["previewSteps"]);
+    assert_eq!(serve["TCP"].as_object().unwrap().keys().collect::<Vec<_>>(), ["443", "8444"], "{serve}");
+    assert_eq!(serve["Web"].as_object().unwrap().len(), 2, "{serve}");
+    let changes: Vec<String> = lab.calls().into_iter().filter(|c| c.starts_with("serve --")).collect();
+    assert_eq!(changes, [format!("serve --bg --https=8444 http://127.0.0.1:{phone}")]);
+    let view = lab.view().await;
+    assert_eq!(view["previews"], json!({"included": true, "available": true, "legacy": null}), "{view}");
+    assert_eq!(view["saved"]["previews"], true);
 
-    // Minted through the phone entry: the previews' own origin, framed only by the phone page's.
+    // Asked for through the phone entry: its own origin, a proof by POST.
+    let origin = format!("https://{DNS}:8444");
     let (code, minted) = mint(phone, OWNER).await;
     assert_eq!(code, 200, "{minted}");
-    let preview_origin = format!("https://{DNS}:8445");
-    assert!(minted["url"].as_str().unwrap().starts_with(&format!("{preview_origin}/v/")), "{minted}");
-    assert!(minted["proof"]["url"].as_str().unwrap().starts_with(&format!("{preview_origin}/.well-known/yuzuno-preview/")), "{minted}");
-    assert_eq!(minted["port"], 8445);
-    let (page, proof) = (after_host(&minted["url"]), after_host(&minted["proof"]["url"]));
-    let as_serve = format!("Host: {DNS}:8445\r\nTailscale-User-Login: {OWNER}\r\nX-Forwarded-For: 100.64.0.2\r\n");
-    let (status, head, body) = raw(local, "GET", &page, &as_serve).await;
+    let page = after_origin(&minted["url"]);
+    let token = page.strip_prefix("/__yuzuno/preview/v/").unwrap_or_else(|| panic!("{minted}")).to_owned();
+    assert!(token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{minted}");
+    assert!(after_origin(&minted["proof"]["url"]).starts_with("/__yuzuno/preview/proof/"), "{minted}");
+    assert_eq!((minted["proof"]["method"].as_str(), minted["port"].as_u64()), (Some("POST"), Some(8444)), "{minted}");
+
+    // The page: every header of its own, framed only by the phone page, never refused by X-Frame-Options.
+    let (status, head, body) = raw(phone, "GET", &page, &as_serve()).await;
     assert_eq!((status, body.as_str()), (200, PAGE), "{head}");
-    assert!(has(&head, "Content-Security-Policy", &crate::previews::page_policy(Some(&format!("https://{DNS}:8444")))), "{head}");
-    assert!(has(&head, "Cross-Origin-Opener-Policy", "same-origin") && has(&head, "X-Content-Type-Options", "nosniff"), "{head}");
+    for (name, value) in [
+        ("Content-Type", "text/html; charset=utf-8".to_owned()),
+        ("Content-Security-Policy", crate::previews::page_policy(Some(&origin))),
+        ("Cross-Origin-Opener-Policy", "same-origin".into()),
+        ("Cross-Origin-Resource-Policy", "same-origin".into()),
+        ("Referrer-Policy", "no-referrer".into()),
+        ("X-Content-Type-Options", "nosniff".into()),
+        ("Cache-Control", "no-store".into()),
+    ] {
+        assert!(has(&head, name, &value), "{name}: {head}");
+    }
+    assert!(head.to_ascii_lowercase().contains("permissions-policy: accelerometer=(), camera=()"), "{head}");
+    assert!(!named(&head, "X-Frame-Options") && !named(&head, "Access-Control-Allow-Origin"), "{head}");
+    let (status, head_only, body) = raw(phone, "HEAD", &page, &as_serve()).await;
+    assert_eq!((status, body.as_str()), (200, ""), "{head_only}");
+    assert!(has(&head_only, "Content-Security-Policy", &crate::previews::page_policy(Some(&origin))) && !named(&head_only, "X-Frame-Options"), "{head_only}");
+    // Yuzuno's own page and API are never framed.
+    for path in ["/api/health", "/", "/api/remote-access", "/some/page"] {
+        let (_, head, _) = raw(phone, "GET", path, &as_serve()).await;
+        assert!(has(&head, "X-Frame-Options", "DENY"), "{path}: {head}");
+    }
 
     // Anyone or anything else gets no page.
     let refused = [
-        (format!("Host: {DNS}:8445\r\n"), 403, "no login"),
-        (format!("Host: {DNS}:8445\r\nTailscale-User-Login: someone@else\r\n"), 403, "another login"),
-        (format!("Host: {DNS}:8445\r\nTailscale-User-Login: {OWNER}\r\nTailscale-User-Login: {OWNER}\r\n"), 403, "the login twice"),
-        (format!("Host: {DNS}:8445\r\nTailscale-User-Login: {OWNER}\r\nTailscale-Funnel-Request: ?1\r\n"), 403, "Funnel"),
-        (format!("Host: {DNS}:8444\r\nTailscale-User-Login: {OWNER}\r\n"), 421, "the phone entry's name"),
-        (format!("Host: 127.0.0.1:{local}\r\nTailscale-User-Login: {OWNER}\r\n"), 421, "a loopback name"),
-        (format!("Host: {DNS}:8445\r\nHost: {DNS}:8445\r\nTailscale-User-Login: {OWNER}\r\n"), 421, "the name twice"),
+        (format!("Host: {DNS}:8444\r\n"), 403, "no login"),
+        (format!("Host: {DNS}:8444\r\nTailscale-User-Login: someone@else\r\n"), 403, "another login"),
+        (format!("Host: {DNS}:8444\r\nTailscale-User-Login: {OWNER}\r\nTailscale-User-Login: {OWNER}\r\n"), 403, "the login twice"),
+        (format!("{}Tailscale-Funnel-Request: ?1\r\n", as_serve()), 403, "Funnel"),
+        (format!("Host: 127.0.0.1:{phone}\r\nTailscale-User-Login: {OWNER}\r\n"), 403, "a loopback name"),
+        (format!("{}Upgrade: websocket\r\n", as_serve()), 400, "a change of protocol"),
     ];
     for (headers, want, what) in refused {
-        let (status, _, body) = raw(local, "GET", &page, &headers).await;
+        let (status, _, body) = raw(phone, "GET", &page, &headers).await;
         assert_eq!(status, want, "{what}: {body}");
-        assert!(!body.contains("button"), "{what}");
+        assert!(!body.contains("button") && !body.contains(SHELL), "{what}: {body}");
     }
-    assert_eq!(raw(local, "POST", &page, &as_serve).await.0, 405);
-    for never in ["/", "/api/workspace", "/api/remote-access", "/api/health"] {
-        assert_eq!(raw(local, "GET", never, &as_serve).await.0, 404, "never Core's API: {never}");
+    assert_eq!(raw(phone, "POST", &page, &from_page()).await.0, 405, "a page only by GET or HEAD");
+    // Nothing under the reserved path is Yuzuno's page, however its path is written.
+    let first = token.as_bytes()[0];
+    for path in [
+        format!("/__yuzuno/preview/v/{}", "0".repeat(64)),
+        format!("{page}/more"),
+        format!("{page}x"),
+        format!("/__yuzuno/preview/v/{}", token.to_uppercase()),
+        format!("/__yuzuno/preview/v/%{first:02X}{}", &token[1..]),
+        format!("/%5F%5Fyuzuno/preview/v/{token}"),
+        format!("/%255F%255Fyuzuno/preview/v/{token}"),
+        format!("/__yuzuno%2Fpreview%2Fv%2F{token}"),
+        format!("/x/../__yuzuno/preview/v/{token}"),
+        format!("/./__yuzuno/preview/v/{token}"),
+        format!("/__yuzuno/./preview/v/{token}"),
+        format!("/__YUZUNO/preview/v/{token}"),
+        "/__yuzuno/preview/v/..%2F..%2Fapi%2Fhealth".into(),
+        "/__yuzuno".into(),
+        "/__yuzuno/".into(),
+        "/__yuzuno/preview".into(),
+        "/__yuzuno/preview/v/".into(),
+        "/__yuzuno/api/health".into(),
+    ] {
+        for method in ["GET", "HEAD"] {
+            let (status, head, body) = raw(phone, method, &path, &as_serve()).await;
+            assert_eq!(status, 404, "{method} {path}: {head}{body}");
+            assert!(method == "HEAD" || body.contains("(Yuzuno preview)"), "{path}: {body}");
+            assert!(!body.contains("button") && !body.contains(SHELL) && has(&head, "X-Frame-Options", "DENY"), "{method} {path}: {head}{body}");
+        }
     }
+    // A path the reserved one is not part of is Yuzuno's page, as always.
+    assert!(raw(phone, "GET", "/__yuzunox/page", &as_serve()).await.2.contains(SHELL));
 
-    // The proof: once, to the phone page's origin only, never the previews' own.
+    // The proof: once, by POST from the phone page itself (its exact Origin and client header); never by GET.
+    let proof = after_origin(&minted["proof"]["url"]);
     let answer = minted["proof"]["answer"].as_str().unwrap();
-    assert_eq!(raw(local, "GET", &proof, &format!("{as_serve}Origin: {preview_origin}\r\n")).await.0, 404);
-    assert_eq!(raw(local, "GET", &proof, &format!("{as_serve}Origin: http://localhost:4317\r\n")).await.0, 404);
-    let (status, head, body) = raw(local, "GET", &proof, &format!("{as_serve}Origin: https://{DNS}:8444\r\n")).await;
+    assert_eq!(raw(phone, "GET", &proof, &format!("{}Origin: {origin}\r\n", as_serve())).await.0, 405, "never by GET");
+    for (headers, what) in [
+        (format!("{}Origin: null\r\nX-Yuzuno-Client: desktop\r\n", as_serve()), "Origin null"),
+        (format!("{}Origin: https://{DNS}:8445\r\nX-Yuzuno-Client: desktop\r\n", as_serve()), "another origin"),
+        (format!("{}Origin: http://localhost:4317\r\nX-Yuzuno-Client: desktop\r\n", as_serve()), "Core's own port"),
+        (format!("{}X-Yuzuno-Client: desktop\r\n", as_serve()), "no Origin"),
+        (format!("{}Origin: {origin}\r\n", as_serve()), "no client header"),
+        (format!("{}Origin: {origin}\r\nOrigin: {origin}\r\nX-Yuzuno-Client: desktop\r\n", as_serve()), "the Origin twice"),
+    ] {
+        assert_eq!(raw(phone, "POST", &proof, &headers).await.0, 403, "{what}");
+    }
+    let (status, head, body) = raw(phone, "POST", &proof, &from_page()).await;
     assert_eq!((status, body.as_str()), (200, answer), "{head}");
-    assert!(has(&head, "Access-Control-Allow-Origin", &format!("https://{DNS}:8444")), "{head}");
-    assert_eq!(raw(local, "GET", &proof, &format!("{as_serve}Origin: https://{DNS}:8444\r\n")).await.0, 404, "answered once");
+    assert!(!named(&head, "Access-Control-Allow-Origin") && has(&head, "X-Frame-Options", "DENY"), "{head}");
+    assert_eq!(raw(phone, "POST", &proof, &from_page()).await.0, 404, "answered once");
 
-    // The page asks through the phone entry with what it is: another origin cannot choose for it.
+    // The page asks through the phone entry as what it is: another origin cannot choose for it.
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let chosen = client.post(format!("http://127.0.0.1:{phone}/api/previews")).header("host", format!("{DNS}:8444"))
         .header("tailscale-user-login", OWNER).header("origin", "http://localhost:4317").header("x-yuzuno-client", "desktop")
         .json(&json!({"kind": "artifact", "agentId": "a", "path": "proto.html"})).send().await.unwrap();
     assert_eq!(chosen.status().as_u16(), 403);
-    // Phone previews are changed from Core's own port only.
-    let refused = client.post(format!("http://127.0.0.1:{phone}/api/remote-access/preview")).header("host", format!("{DNS}:8444"))
-        .header("tailscale-user-login", OWNER).header("origin", format!("https://{DNS}:8444")).header("x-yuzuno-client", "desktop")
-        .json(&json!({"requestId": "from-phone", "enabled": false})).send().await.unwrap();
-    assert!(matches!(refused.status().as_u16(), 404 | 405), "{}", refused.status());
+    // Neither the choice nor the older way of turning previews on is there.
+    for path in ["/api/remote-access/apply", "/api/remote-access/preview"] {
+        let refused = client.post(format!("http://127.0.0.1:{phone}{path}")).header("host", format!("{DNS}:8444"))
+            .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
+            .json(&json!({"requestId": "from-phone", "enabled": true, "previews": false})).send().await.unwrap();
+        assert!(matches!(refused.status().as_u16(), 404 | 405), "{path}: {}", refused.status());
+    }
+    assert_eq!(lab.view().await["previews"]["included"], true);
 }
 
 #[tokio::test]
-async fn a_new_phone_login_ends_what_the_old_one_could_open_in_previews() {
-    let lab = lab("wsl");
-    lab.with_page();
-    let (phone, local) = (free_port(), free_port());
-    lab.both_on(phone, local).await;
-    let (_, minted) = mint(phone, OWNER).await;
-    let page = after_host(&minted["url"]);
-    let as_login = |login: &str| format!("Host: {DNS}:8445\r\nTailscale-User-Login: {login}\r\n");
-    assert_eq!(raw(local, "GET", &page, &as_login(OWNER)).await.0, 200);
-    let op = lab.apply(json!({"requestId": "partner", "enabled": true, "localPort": phone, "login": "partner@github"})).await.unwrap();
-    assert_eq!(op["state"], "succeeded", "{op}");
-    assert_eq!(raw(local, "GET", &page, &as_login(OWNER)).await.0, 403, "the old login is refused");
-    assert_eq!(raw(local, "GET", &page, &as_login("partner@github")).await.0, 404, "the new login never opens what the old one was given");
-    let (code, again) = mint(phone, "partner@github").await;
-    assert_eq!(code, 200, "{again}");
-    assert_eq!(raw(local, "GET", &after_host(&again["url"]), &as_login("partner@github")).await.0, 200);
-    assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{local}").as_str(), "the previews' entry is unchanged");
-}
-
-#[tokio::test]
-async fn phone_previews_need_phone_access_and_go_off_with_it() {
+async fn previews_go_with_the_choice_and_leaving_them_out_ends_what_a_phone_was_given() {
     let lab = lab("wsl");
     lab.with_page();
     lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let local = free_port();
-    let op = lab.previews(json!({"requestId": "early", "enabled": true, "localPort": local})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
-    assert!(op["error"].as_str().unwrap().contains("Phone access is off"), "{op}");
-    assert!(lab.calls().iter().all(|c| !c.starts_with("serve --")), "{:?}", lab.calls());
     let phone = free_port();
-    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-    let op = lab.previews(json!({"requestId": "previews", "enabled": true, "localPort": local})).await.unwrap();
+    // Phone access as it was before the choice: no previews.
+    let op = lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
     assert_eq!(op["state"], "succeeded", "{op}");
-    let off = lab.apply(json!({"requestId": "off", "enabled": false})).await.unwrap();
-    assert_eq!(off["state"], "succeeded", "{off}");
-    assert!(off["notes"].as_array().unwrap().iter().any(|n| n == "Phone previews were turned off too"), "{off}");
-    let serve = &lab.fake()["serve"];
-    assert!(serve["TCP"].get("8444").is_none() && serve["TCP"].get("8445").is_none(), "{serve}");
-    assert!(serve["Web"][format!("{DNS}:443")].is_object(), "the other service is kept");
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    assert!(client.get(format!("http://127.0.0.1:{local}/")).send().await.is_err(), "nothing listens for previews");
-    let view = lab.view().await["preview"].clone();
-    assert_eq!((view["saved"]["enabled"].as_bool(), view["listening"].is_null(), view["url"].is_null()), (Some(false), true, true), "{view}");
-    assert_eq!(view["operation"]["requestId"], "off:previews");
-    // Phone access on again: previews stay off until asked for.
-    let before = lab.calls().len();
-    lab.apply(json!({"requestId": "on-again", "enabled": true, "localPort": phone})).await.unwrap();
-    assert!(lab.calls()[before..].iter().all(|c| !c.contains("8445")), "{:?}", &lab.calls()[before..]);
-    assert!(client.get(format!("http://127.0.0.1:{local}/")).send().await.is_err());
-    let (code, refused) = mint(phone, OWNER).await;
-    assert_eq!(code, 400);
-    assert!(refused["error"].as_str().unwrap().starts_with("preview_unavailable_remote:"), "{refused}");
-}
-
-#[tokio::test]
-async fn a_preview_port_someone_else_serves_changes_nothing() {
-    let lab = lab("wsl");
-    lab.with_page();
-    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let (phone, local) = (free_port(), free_port());
-    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-    lab.set_fake(|s| {
-        s["serve"]["TCP"]["8445"] = json!({"HTTPS": true});
-        s["serve"]["Web"][format!("{DNS}:8445")] = json!({"Handlers": {"/": {"Proxy": "http://127.0.0.1:9999"}}});
-    });
-    // Check shows it before anything is asked.
-    let checked = lab.check().await["preview"].clone();
-    assert_eq!(checked["serve"]["state"], "conflict", "{checked}");
-    let before = lab.calls().len();
-    let op = lab.previews(json!({"requestId": "previews", "enabled": true, "localPort": local})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
-    assert!(op["error"].as_str().unwrap().contains("already used by another Serve configuration"), "{op}");
-    assert!(op["error"].as_str().unwrap().ends_with("nothing was changed"), "{op}");
-    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    assert!(client.get(format!("http://127.0.0.1:{local}/")).send().await.is_err(), "nothing was bound");
-    assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")]["Handlers"]["/"]["Proxy"], "http://127.0.0.1:9999");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry works on");
-    assert!(lab.view().await["preview"]["saved"].is_null(), "nothing saved before the port is known to be free");
-}
-
-#[tokio::test]
-async fn a_refused_preview_entry_rolls_back_and_the_phone_entry_works_on() {
-    let lab = lab("wsl");
-    lab.with_page();
-    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let (phone, local) = (free_port(), free_port());
-    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-    lab.set_fake(|s| s["failAddTarget"] = json!(format!("http://127.0.0.1:{local}")));
-    let op = lab.previews(json!({"requestId": "previews", "enabled": true, "localPort": local})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("rolledBack"), Some("serve")), "{op}");
-    assert!(op["error"].as_str().unwrap().starts_with("Phone previews stay off: Tailscale Serve refused"), "{op}");
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    assert!(client.get(format!("http://127.0.0.1:{local}/")).send().await.is_err(), "the new listener is closed");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry works on");
-    assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str());
-    assert!(lab.fake()["serve"]["TCP"].get("8445").is_none());
+    assert_eq!(lab.view().await["previews"], json!({"included": false, "available": false, "legacy": null}));
     let (code, refused) = mint(phone, OWNER).await;
     assert_eq!(code, 400, "{refused}");
+    assert!(refused["error"].as_str().unwrap().starts_with("preview_unavailable_remote:"), "{refused}");
+    // Included, on the same entry: nothing is asked of Serve.
+    let before = lab.calls().len();
+    let op = lab.apply(json!({"requestId": "include", "enabled": true, "localPort": phone, "previews": true})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
+    let (code, minted) = mint(phone, OWNER).await;
+    assert_eq!(code, 200, "{minted}");
+    let page = after_origin(&minted["url"]);
+    assert_eq!(raw(phone, "GET", &page, &as_serve()).await.0, 200);
+    // Left out by an older page: the choice holds, and so does what the same entry gave.
+    let op = lab.apply(json!({"requestId": "older-page", "enabled": true, "localPort": phone})).await.unwrap();
+    assert_eq!((op["state"].as_str(), lab.view().await["previews"]["included"].as_bool()), (Some("succeeded"), Some(true)), "{op}");
+    assert_eq!(raw(phone, "GET", &page, &as_serve()).await.0, 200);
+    // Left out: refused at once, and what a phone was given is gone.
+    let op = lab.apply(json!({"requestId": "exclude", "enabled": true, "localPort": phone, "previews": false})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    let (status, _, body) = raw(phone, "GET", &page, &as_serve()).await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("does not include previews"), "{body}");
+    assert_eq!(mint(phone, OWNER).await.0, 400);
+    assert_eq!(lab.view().await["previews"], json!({"included": false, "available": false, "legacy": null}));
+    // Included again: what was given before stays gone.
+    lab.apply(json!({"requestId": "include-again", "enabled": true, "localPort": phone, "previews": true})).await.unwrap();
+    assert_eq!(raw(phone, "GET", &page, &as_serve()).await.0, 404, "revoked");
+    let (_, again) = mint(phone, OWNER).await;
+    let again = after_origin(&again["url"]);
+    assert_eq!(raw(phone, "GET", &again, &as_serve()).await.0, 200);
+    // Phone access off keeps the choice, and ends what was given; on again, the choice applies.
+    let off = lab.apply(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    assert_eq!(off["state"], "succeeded", "{off}");
+    let view = lab.view().await;
+    assert_eq!((view["saved"]["previews"].clone(), view["previews"].clone()), (json!(true), json!({"included": true, "available": false, "legacy": null})), "{view}");
+    let on = lab.apply(json!({"requestId": "on-again", "enabled": true, "localPort": phone})).await.unwrap();
+    assert_eq!(on["state"], "succeeded", "{on}");
+    assert_eq!(raw(phone, "GET", &again, &as_serve()).await.0, 404, "phone access off ended it");
+    assert_eq!(mint(phone, OWNER).await.0, 200);
+    // A new Core on the same data reads the choice as it applies.
+    assert_eq!(lab.saved().previews, Some(true));
 }
 
 #[tokio::test]
-async fn an_unanswered_preview_entry_is_uncertain_and_the_retry_finishes_with_one_entry() {
-    let lab = lab("wsl");
-    lab.with_page();
-    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let (phone, local) = (free_port(), free_port());
-    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-    lab.set_fake(|s| s["hangAdd"] = json!(true));
-    let op = lab.previews(json!({"requestId": "previews", "enabled": true, "localPort": local})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("uncertain"), Some("serve")), "{op}");
-    assert!(op["error"].as_str().unwrap().contains("Serve did not confirm the entry for previews"), "{op}");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry works on");
-    lab.set_fake(|s| s["hangAdd"] = Value::Null);
-    let again = lab.previews(json!({"requestId": "again", "enabled": true, "localPort": local})).await.unwrap();
-    assert_eq!(again["state"], "succeeded", "{again}");
-    assert_eq!(lab.fake()["serve"]["TCP"].as_object().unwrap().len(), 3, "the phone entry, the previews' and the other one");
-}
-
-#[tokio::test]
-async fn a_preview_entry_that_cannot_be_pointed_back_says_so_and_the_phone_entry_works_on() {
-    let lab = lab("wsl");
-    lab.with_page();
-    let (phone, first, second) = (free_port(), free_port(), free_port());
-    lab.both_on(phone, first).await;
-    // A new local port on the same Serve port: Core's own entry is replaced, and every add is refused.
-    lab.set_fake(|s| s["failAdd"] = json!("serve config locked"));
-    let op = lab.previews(json!({"requestId": "move", "enabled": true, "localPort": second})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("rolledBack"), Some("serve")), "{op}");
-    assert!(op["notes"][0].as_str().unwrap().contains(&format!("could not be pointed back at http://127.0.0.1:{first}")), "{op}");
-    assert!(lab.fake()["serve"]["TCP"].get("8445").is_none(), "removed, and not pointed back");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry works on");
-    assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str());
-    // The previous listener is kept; the new one is closed. Check says the entry is gone.
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    assert!(client.get(format!("http://127.0.0.1:{second}/")).send().await.is_err());
-    assert_eq!(client.get(format!("http://127.0.0.1:{first}/")).send().await.unwrap().status().as_u16(), 403);
-    assert_eq!(lab.view().await["preview"]["serve"]["state"], "absent", "read again after the rollback");
-    lab.set_fake(|s| s["failAdd"] = Value::Null);
-    let again = lab.previews(json!({"requestId": "move-again", "enabled": true, "localPort": second})).await.unwrap();
-    assert_eq!(again["state"], "succeeded", "{again}");
-}
-
-#[tokio::test]
-async fn a_preview_request_id_repeats_its_change_and_waits_for_no_other() {
-    let lab = lab("wsl");
-    lab.with_page();
-    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let (phone, local) = (free_port(), free_port());
-    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-    lab.set_fake(|s| s["slow"] = json!(1));
-    let request = json!({"requestId": "previews", "enabled": true, "localPort": local});
-    let first = preview::start(&lab.ws, serde_json::from_value(request.clone()).unwrap()).await.unwrap();
-    let repeated = preview::start(&lab.ws, serde_json::from_value(request.clone()).unwrap()).await.unwrap();
-    assert_eq!(first["id"], repeated["id"]);
-    let phone_change = start(&lab.ws, serde_json::from_value(json!({"requestId": "other", "enabled": false})).unwrap()).await.unwrap_err();
-    assert!(phone_change.to_string().contains("remote_access_busy"), "{phone_change}");
-    let changed = preview::start(&lab.ws, serde_json::from_value(json!({"requestId": "previews", "enabled": false})).unwrap()).await.unwrap_err();
-    assert!(changed.to_string().contains("idempotency_conflict"), "{changed}");
-    assert!(serde_json::from_value::<preview::PreviewRequest>(json!({"requestId": "x", "enabled": true, "origin": "https://evil.test"})).is_err(), "no origin or host is taken from a request");
-    lab.set_fake(|s| s["slow"] = json!(0));
-    let done = lab.previews(request).await.unwrap();
-    assert_eq!((done["id"].clone(), done["state"].clone()), (first["id"].clone(), json!("succeeded")), "{done}");
-}
-
-#[tokio::test]
-async fn phone_settings_from_before_previews_open_nothing_new_and_applied_previews_start_again() {
-    // A record from before previews: phone access applied, no previews record.
+async fn a_phone_entry_served_anew_opens_none_of_what_an_earlier_one_was_given() {
     let lab = lab("wsl");
     lab.with_page();
     let phone = free_port();
-    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
-    assert!(!preview::path(&lab.ws).exists());
-    let next = startup(&lab.ws.data_dir, None);
-    assert_eq!((next.listen.is_some(), next.preview.0.is_none(), next.preview.1.is_none()), (true, true, true));
-    let view = lab.view().await["preview"].clone();
-    assert_eq!((view["saved"].is_null(), view["listening"].is_null(), view["url"].is_null(), view["available"].as_bool()), (true, true, true, Some(true)), "{view}");
-    assert!(lab.calls().iter().all(|c| !c.contains("8445")), "{:?}", lab.calls());
-
-    // Applied previews: a new Core on the same data binds them again.
-    let local = free_port();
-    lab.previews(json!({"requestId": "previews", "enabled": true, "localPort": local})).await.unwrap();
-    let again = startup(&lab.ws.data_dir, None);
-    assert_eq!(again.preview.0.as_ref().map(|(p, name)| (p.local_port, p.serve_port, name.as_str())), Some((local, 8445, DNS)));
-    // Their port taken: phone access still starts, previews say why.
-    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let taken = held.local_addr().unwrap().port();
-    let ports = preview::Ports::for_tests(8445, taken);
-    let bound = Startup { listen: None, environment: None, error: None, preview: (Some((ports, DNS.into())), None) }.bind().await.unwrap();
-    assert!(bound.preview.0.is_none());
-    assert!(bound.preview.1.unwrap().contains(&format!("Phone previews could not listen on 127.0.0.1:{taken}")));
-    // Their record unreadable: phone access still starts.
-    std::fs::write(preview::path(&lab.ws), "{not json").unwrap();
-    let unreadable = startup(&lab.ws.data_dir, None);
-    assert!(unreadable.listen.is_some(), "the phone entry starts");
-    assert!(unreadable.preview.1.unwrap().contains("Phone previews were not started"));
+    lab.on_with_previews(phone).await;
+    let (_, minted) = mint(phone, OWNER).await;
+    let page = after_origin(&minted["url"]);
+    assert_eq!(raw(phone, "GET", &page, &as_serve()).await.0, 200);
+    // Another login, on the same port.
+    let op = lab.apply(json!({"requestId": "partner", "enabled": true, "localPort": phone, "login": "partner@github"})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    let partner = format!("Host: {DNS}:8444\r\nTailscale-User-Login: partner@github\r\n");
+    assert_eq!(raw(phone, "GET", &page, &as_serve()).await.0, 403, "the old login is refused");
+    assert_eq!(raw(phone, "GET", &page, &partner).await.0, 404, "the new login never opens what the old one was given");
+    let (code, minted) = mint(phone, "partner@github").await;
+    assert_eq!(code, 200, "{minted}");
+    let page = after_origin(&minted["url"]);
+    // Another local port.
+    let other = free_port();
+    let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": other, "login": "partner@github"})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert_eq!(raw(other, "GET", &page, &partner).await.0, 404, "a new port opens nothing from the old one");
+    let (_, minted) = mint(other, "partner@github").await;
+    let page = after_origin(&minted["url"]);
+    assert_eq!(raw(other, "GET", &page, &partner).await.0, 200);
+    // Off, then on again just as it was.
+    lab.apply(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    let op = lab.apply(json!({"requestId": "same-again", "enabled": true, "localPort": other, "login": "partner@github"})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert_eq!(raw(other, "GET", &page, &partner).await.0, 404, "off and on again opens nothing from before");
+    assert_eq!(mint(other, "partner@github").await.0, 200);
 }
 
-/// Phone access and previews as Settings left them, written as a Core finds
-/// them when it starts: the phone entry on `phone`, previews on `local`.
-fn records(dir: &Path, phone: u16, local: u16) {
+#[test]
+fn the_choice_is_what_a_change_asks_else_what_was_saved_else_what_applies() {
+    let saved = |previews: Option<bool>| Saved { previews, ..Default::default() };
+    // No choice of its own yet: an older Core's previews decide; with none, off.
+    assert!(!included(&saved(None), false));
+    assert!(included(&saved(None), true));
+    // A choice of its own always holds.
+    assert!(!included(&saved(Some(false)), true));
+    assert!(included(&saved(Some(true)), false));
+    let request = |previews: Option<bool>| -> ApplyRequest {
+        serde_json::from_value(json!({"requestId": "r", "enabled": true, "previews": previews})).unwrap()
+    };
+    let desired = |previews: Option<bool>| Desired {
+        enabled: true, login: OWNER.into(), serve_port: 8444, local_port: 4318, origin: None, previews, saved_at: "now".into(),
+    };
+    assert!(chosen(&request(Some(true)), Some(&desired(Some(false))), false));
+    assert!(!chosen(&request(Some(false)), Some(&desired(Some(true))), true));
+    assert!(chosen(&request(None), Some(&desired(Some(true))), false));
+    assert!(!chosen(&request(None), Some(&desired(None)), false));
+    assert!(chosen(&request(None), None, true));
+    // Sent by an older page, a request has none, and is kept as it was sent.
+    let older: ApplyRequest = serde_json::from_value(json!({"requestId": "r", "enabled": true})).unwrap();
+    assert_eq!(serde_json::to_value(&older).unwrap().get("previews"), None);
+}
+
+/// Phone access and an older Core's phone previews as that Core left them:
+/// the phone entry on `phone`; previews turned on (`on`), with their own
+/// Serve entry on 8445 to `local`, which `serve_8445` says Serve has.
+fn older(lab: &Lab, phone: u16, local: u16, on: bool, serve_8445: Option<Value>) {
     let origin = format!("https://{DNS}:8444");
+    let dir = &lab.ws.data_dir;
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join(FILE), json!({"format": 1,
         "desired": {"enabled": true, "login": OWNER, "servePort": 8444, "localPort": phone, "origin": origin, "savedAt": "2026-10-31T00:00:00Z"},
         "effective": {"listen": {"port": phone, "origin": origin, "login": OWNER}, "servePort": 8444, "appliedAt": "2026-10-31T00:00:00Z"},
         "owned": {"servePort": 8444, "host": DNS, "target": format!("http://127.0.0.1:{phone}")}, "operations": []}).to_string()).unwrap();
     std::fs::write(dir.join("remote-preview.json"), json!({"format": 1,
-        "desired": {"enabled": true, "servePort": 8445, "localPort": local, "savedAt": "2026-10-31T00:00:00Z"},
+        "desired": {"enabled": on, "servePort": 8445, "localPort": local, "savedAt": "2026-10-31T00:00:00Z"},
         "effective": {"listen": {"servePort": 8445, "localPort": local}, "appliedAt": "2026-10-31T00:00:00Z"},
-        "owned": {"servePort": 8445, "host": DNS, "target": format!("http://127.0.0.1:{local}")}, "operations": []}).to_string()).unwrap();
+        "owned": {"servePort": 8445, "host": DNS, "target": format!("http://127.0.0.1:{local}")},
+        "operations": [{"id": "p-1", "requestId": "page-p1", "kind": "apply", "state": "succeeded", "step": "done",
+            "startedAt": "2026-10-31T00:00:00Z", "request": {"requestId": "page-p1", "enabled": true, "servePort": null, "localPort": null}}]}).to_string()).unwrap();
+    lab.set_fake(|s| {
+        s["serve"]["TCP"]["8444"] = json!({"HTTPS": true});
+        s["serve"]["Web"][format!("{DNS}:8444")] = json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{phone}")}}});
+        if let Some(entry) = serve_8445 {
+            s["serve"]["TCP"]["8445"] = json!({"HTTPS": true});
+            s["serve"]["Web"][format!("{DNS}:8445")] = entry;
+        }
+    });
+}
+
+/// The Serve entry an older Core set for its phone previews on `local`.
+fn theirs(local: u16) -> Option<Value> {
+    Some(json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{local}")}}}))
 }
 
 #[tokio::test]
-async fn phone_access_never_takes_the_port_kept_for_previews_that_could_not_start() {
+async fn an_older_cores_previews_keep_their_choice_never_listen_again_and_their_entry_goes_with_the_next_change() {
     let lab = lab("wsl");
+    lab.with_page();
     let (phone, local) = (free_port(), free_port());
-    records(&lab.ws.data_dir, phone, local);
-    // Previews' port is held as Core starts: they stay off, and their record keeps the port.
-    let held = std::net::TcpListener::bind(("127.0.0.1", local)).unwrap();
+    older(&lab, phone, local, true, theirs(local));
     lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let view = lab.view().await;
-    assert!(view["preview"]["startupError"].as_str().unwrap().contains(&format!("could not listen on 127.0.0.1:{local}")), "{view}");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
-    drop(held);
-    // That port, free again, is still the previews': phone access does not take it.
-    let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": local})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
-    assert!(op["error"].as_str().unwrap().contains(&format!("{local} is kept for phone previews")), "{op}");
-    let op = lab.apply(json!({"requestId": "serve", "enabled": true, "localPort": phone, "servePort": 8445})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
-    assert!(op["error"].as_str().unwrap().contains("8445 is kept for phone previews"), "{op}");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry is unchanged");
-    assert_eq!(startup(&lab.ws.data_dir, None).listen.map(|(e, _)| e.port), Some(phone));
-}
-
-#[tokio::test]
-async fn previews_never_take_the_phone_entrys_port_as_core_starts() {
-    // Records that already share a port (from before phone access checked previews' ports): the phone entry starts.
-    let port = free_port();
-    let entry = Entry { port, origin: format!("https://{DNS}:8444"), login: OWNER.into() };
-    for source in ["settings", "environment"] {
-        let started = Startup { listen: Some((entry.clone(), source)), environment: None, error: None,
-            preview: (Some((preview::Ports::for_tests(8445, port), DNS.into())), None) };
-        let bound = started.bind().await.unwrap_or_else(|e| panic!("{source}: Core must start: {e:#}"));
-        assert!(bound.listener.as_ref().is_some_and(|(l, e, _)| e.port == port && l.local_addr().unwrap().port() == port), "{source}: the phone entry listens");
-        assert!(bound.error.is_none(), "{source}: {:?}", bound.error);
-        assert!(bound.preview.0.is_none(), "{source}: previews do not start");
-        assert!(bound.preview.1.as_deref().unwrap_or("").contains(&format!("127.0.0.1:{port} is the phone entry's")), "{source}: {:?}", bound.preview.1);
-    }
-}
-
-/// Bytes sent as they are, in one write, on the previews' entry.
-async fn send(port: u16, bytes: &str) -> (u16, String) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    stream.write_all(bytes.as_bytes()).await.unwrap();
-    let mut text = String::new();
-    let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut text)).await;
-    let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
-    (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default())
-}
-
-#[tokio::test]
-async fn phone_previews_take_identity_and_name_from_the_head_alone() {
-    let lab = lab("wsl");
-    lab.with_page();
-    let (phone, local) = (free_port(), free_port());
-    lab.both_on(phone, local).await;
-    let (_, minted) = mint(phone, OWNER).await;
-    let page = after_host(&minted["url"]);
-    let host = format!("Host: {DNS}:8445\r\n");
-    let login = format!("Tailscale-User-Login: {OWNER}\r\n");
-    let after = |head: &str, rest: &str| format!("GET {page} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{rest}", rest.len());
-    // No login in the head: refused, whatever comes after it.
-    assert_eq!(send(local, &after(&host, &login)).await.0, 403);
-    // No name in the head: refused, whatever comes after it.
-    assert_eq!(send(local, &after(&login, &host)).await.0, 421);
-    // Both in the head: the page, whatever comes after it.
-    let (status, body) = send(local, &after(&format!("{host}{login}"), "Tailscale-User-Login: someone@else\r\nHost: other\r\n")).await;
-    assert_eq!((status, body.as_str()), (200, PAGE));
-    // A second request in the same write lends the first nothing.
-    assert_eq!(send(local, &format!("GET {page} HTTP/1.1\r\n{host}\r\nGET {page} HTTP/1.1\r\n{host}{login}\r\n")).await.0, 403);
-}
-
-#[tokio::test]
-async fn ports_of_a_previews_entry_a_failed_turning_off_left_stay_theirs_until_it_is_gone() {
-    let lab = lab("wsl");
-    lab.with_page();
-    let (phone, local) = (free_port(), free_port());
-    lab.both_on(phone, local).await;
-    // Turning previews off cannot remove their Serve entry: Core keeps it as its own, to remove on a retry.
-    lab.set_fake(|s| s["failOff"] = json!("serve config locked"));
-    let op = lab.previews(json!({"requestId": "off", "enabled": false})).await.unwrap();
-    assert_eq!(op["state"], "failed", "{op}");
-    assert!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")].is_object(), "the entry is left");
-    lab.set_fake(|s| s["failOff"] = Value::Null);
-    // Phone access takes neither of its ports, and changes nothing trying.
-    let before = lab.calls().len();
-    for (id, request, kept) in [
-        ("both", json!({"localPort": local, "servePort": 8445}), format!("{local} is kept for phone previews")),
-        ("local", json!({"localPort": local}), format!("{local} is kept for phone previews")),
-        ("serve", json!({"localPort": phone, "servePort": 8445}), "8445 is kept for phone previews".to_owned()),
-    ] {
-        let mut request = request;
-        request["requestId"] = json!(id);
-        request["enabled"] = json!(true);
-        let op = lab.apply(request).await.unwrap();
-        assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{id}: {op}");
-        assert!(op["error"].as_str().unwrap().contains(&kept), "{id}: {op}");
-    }
-    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry is unchanged");
-    // The retry removes only the previews' entry; the phone entry stays.
-    let op = lab.previews(json!({"requestId": "off-again", "enabled": false})).await.unwrap();
-    assert_eq!(op["state"], "succeeded", "{op}");
+    // Starting changes nothing in Serve, and nothing of theirs listens.
+    assert!(lab.calls().is_empty(), "{:?}", lab.calls());
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_err(), "their listener never starts");
+    let legacy = json!({"servePort": 8445, "host": DNS, "target": format!("http://127.0.0.1:{local}")});
+    assert_eq!(lab.view().await["previews"], json!({"included": true, "available": true, "legacy": legacy}));
+    // Their choice holds: previews open through the phone entry itself.
+    let (code, minted) = mint(phone, OWNER).await;
+    assert_eq!(code, 200, "{minted}");
+    assert_eq!(raw(phone, "GET", &after_origin(&minted["url"]), &as_serve()).await.0, 200);
+    // The next change, once its own entry is verified, removes theirs alone, and keeps their record.
+    let op = lab.apply(json!({"requestId": "next", "enabled": true, "localPort": phone})).await.unwrap();
+    assert_eq!((op["state"].as_str(), op["legacy"]["state"].as_str()), (Some("succeeded"), Some("removed")), "{op}");
+    assert!(op["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("Serve port 8445 was removed")), "{op}");
     let serve = &lab.fake()["serve"];
-    assert!(serve["TCP"].get("8445").is_none(), "{serve}");
-    assert_eq!(serve["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str());
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
-    // Once it is gone, its ports are free for phone access.
-    let op = lab.apply(json!({"requestId": "now", "enabled": true, "localPort": local, "servePort": 8445})).await.unwrap();
-    assert_eq!(op["state"], "succeeded", "{op}");
-    assert_eq!(lab.saved().owned.map(|o| (o.serve_port, o.target)), Some((8445, format!("http://127.0.0.1:{local}"))));
-}
-
-#[tokio::test]
-async fn previews_move_to_another_serve_port_only_by_turning_off_and_on_again() {
-    let lab = lab("wsl");
-    lab.with_page();
-    let (phone, local, other) = (free_port(), free_port(), free_port());
-    lab.both_on(phone, local).await;
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    // Removing a Serve entry fails from here on.
-    lab.set_fake(|s| s["failOff"] = json!("serve config locked"));
-    let before = lab.calls().len();
-    let refused = |op: &Value| {
-        assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{op}");
-        assert!(op["error"].as_str().unwrap().contains("turn previews off first, then turn them on with Serve port 8446"), "{op}");
-    };
-    // Another Serve port while Core owns their entry: refused before anything changes.
-    refused(&lab.previews(json!({"requestId": "move", "enabled": true, "servePort": 8446, "localPort": other})).await.unwrap());
-    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
-    assert!(client.get(format!("http://127.0.0.1:{other}/")).send().await.is_err(), "nothing listens on the new port");
-    let serve = &lab.fake()["serve"];
-    assert_eq!(serve["Web"][format!("{DNS}:8445")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{local}").as_str());
-    assert!(serve["TCP"].get("8446").is_none(), "{serve}");
-    let view = lab.view().await["preview"].clone();
-    assert_eq!((view["listening"]["servePort"].as_u64(), view["saved"]["servePort"].as_u64()), (Some(8445), Some(8445)), "{view}");
-    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
-    // A turning off that cannot remove the entry keeps it Core's: the move is still refused.
-    let off = lab.previews(json!({"requestId": "off", "enabled": false})).await.unwrap();
-    assert_eq!(off["state"], "failed", "{off}");
-    refused(&lab.previews(json!({"requestId": "move-again", "enabled": true, "servePort": 8446, "localPort": other})).await.unwrap());
-    assert!(lab.fake()["serve"]["TCP"].get("8446").is_none());
-    // Once a turning off removes it, the new port is theirs.
-    lab.set_fake(|s| s["failOff"] = Value::Null);
-    let off = lab.previews(json!({"requestId": "off-again", "enabled": false})).await.unwrap();
-    assert_eq!(off["state"], "succeeded", "{off}");
-    let on = lab.previews(json!({"requestId": "move-now", "enabled": true, "servePort": 8446, "localPort": other})).await.unwrap();
-    assert_eq!(on["state"], "succeeded", "{on}");
-    let serve = &lab.fake()["serve"];
-    assert_eq!(serve["Web"][format!("{DNS}:8446")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{other}").as_str());
-    assert!(serve["TCP"].get("8445").is_none(), "{serve}");
-    assert_eq!(serve["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{phone}").as_str(), "the phone entry is untouched");
+    assert_eq!(serve["TCP"].as_object().unwrap().keys().collect::<Vec<_>>(), ["443", "8444"], "{serve}");
     assert_eq!(serve["Web"][format!("{DNS}:443")]["Handlers"]["/"]["Proxy"], "http://127.0.0.1:8790", "someone else's entry is untouched");
+    assert!(lab.calls().iter().all(|c| !c.contains("reset")), "{:?}", lab.calls());
+    let record = lab.legacy_record();
+    assert!(record["owned"].is_null(), "{record}");
+    assert_eq!((record["desired"]["enabled"].clone(), record["operations"][0]["id"].clone()), (json!(true), json!("p-1")), "the rest is kept: {record}");
+    assert_eq!(lab.view().await["previews"], json!({"included": true, "available": true, "legacy": null}));
+    assert_eq!(lab.saved().previews, Some(true), "the choice is phone access's own now");
+    // Nothing is left of theirs: the next change asks nothing for it.
+    let before = lab.calls().len();
+    let op = lab.apply(json!({"requestId": "after", "enabled": true, "localPort": phone})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert!(op.get("legacy").is_none(), "{op}");
+    assert!(lab.calls()[before..].iter().all(|c| !c.contains("8445")), "{:?}", &lab.calls()[before..]);
+}
+
+#[tokio::test]
+async fn an_older_cores_previews_turned_off_or_left_out_by_a_choice_stay_off() {
+    // Theirs off: previews stay off.
+    let lab = lab("wsl");
+    lab.with_page();
+    let (phone, local) = (free_port(), free_port());
+    older(&lab, phone, local, false, theirs(local));
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    assert_eq!(lab.view().await["previews"]["included"], false);
+    assert_eq!(mint(phone, OWNER).await.0, 400);
+    // A choice of phone access's own holds over theirs.
+    let lab = lab_with(|lab| older(lab, free_port(), free_port(), true, None));
+    let mut saved = lab.saved();
+    saved.previews = Some(false);
+    crate::updates::package::atomic_json(&path(&lab.ws), &saved).unwrap();
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    assert_eq!(lab.view().await["previews"]["included"], false);
+}
+
+/// A lab `prepare` writes records into before its Core starts.
+fn lab_with(prepare: impl FnOnce(&Lab)) -> Lab {
+    let lab = lab("wsl");
+    lab.with_page();
+    prepare(&lab);
+    lab
+}
+
+#[tokio::test]
+async fn an_older_cores_entry_is_removed_only_while_it_is_still_exactly_its_own() {
+    // (case, Serve's entry on 8445, a fault, how it ends, whether Serve keeps 8445, whether the record keeps it)
+    let cases: [(&str, fn(u16) -> Option<Value>, Value, &str, bool, bool); 5] = [
+        ("absent", |_| None, Value::Null, "absent", false, false),
+        ("foreign", |_| Some(json!({"Handlers": {"/": {"Proxy": "http://127.0.0.1:9999"}}})), Value::Null, "foreign", true, false),
+        ("another handler", |local| Some(json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{local}")}, "/x": {"Path": "/srv"}}})), Value::Null, "foreign", true, false),
+        ("refused", theirs, json!({"failOff": "serve config locked"}), "partial", true, true),
+        ("no answer", theirs, json!({"lostOff": true}), "uncertain", false, true),
+    ];
+    for (case, entry, fault, ends, served, recorded) in cases {
+        let (phone, local) = (free_port(), free_port());
+        let lab = lab_with(|lab| older(lab, phone, local, true, entry(local)));
+        lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+        lab.set_fake(|s| if let Value::Object(fault) = &fault { s.as_object_mut().unwrap().extend(fault.clone()) });
+        let before = lab.fake()["serve"]["Web"][format!("{DNS}:8445")].clone();
+        let op = lab.apply(json!({"requestId": "next", "enabled": true, "localPort": phone})).await.unwrap();
+        // Phone access works however theirs ended, and says so apart.
+        assert_eq!((op["state"].as_str(), op["legacy"]["state"].as_str()), (Some("succeeded"), Some(ends)), "{case}: {op}");
+        assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "{case}");
+        let now = lab.fake()["serve"]["Web"][format!("{DNS}:8445")].clone();
+        assert_eq!(!now.is_null(), served, "{case}: {now}");
+        if served {
+            assert_eq!(now, before, "{case}: left as it is");
+        }
+        assert_eq!(!lab.legacy_record()["owned"].is_null(), recorded, "{case}");
+        assert_eq!(lab.view().await["previews"]["legacy"].is_null(), !recorded, "{case}");
+        if recorded {
+            // The next change looks again, with nothing in the way: then it is gone.
+            lab.set_fake(|s| {
+                s["failOff"] = Value::Null;
+                s["lostOff"] = Value::Null;
+            });
+            let op = lab.apply(json!({"requestId": "again", "enabled": true, "localPort": phone})).await.unwrap();
+            let want = if case == "no answer" { "absent" } else { "removed" };
+            assert_eq!((op["state"].as_str(), op["legacy"]["state"].as_str()), (Some("succeeded"), Some(want)), "{case}: {op}");
+            assert!(lab.legacy_record()["owned"].is_null(), "{case}");
+            assert!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")].is_null(), "{case}");
+        }
+        assert!(lab.calls().iter().all(|c| !c.contains("reset")), "{case}: {:?}", lab.calls());
+    }
+}
+
+#[tokio::test]
+async fn an_older_cores_entry_goes_with_phone_access_turned_off_and_an_unreadable_record_is_kept() {
+    let (phone, local) = (free_port(), free_port());
+    let lab = lab_with(|lab| older(lab, phone, local, true, theirs(local)));
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let off = lab.apply(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    assert_eq!((off["state"].as_str(), off["legacy"]["state"].as_str()), (Some("succeeded"), Some("removed")), "{off}");
+    let serve = &lab.fake()["serve"];
+    assert!(serve["TCP"].get("8444").is_none() && serve["TCP"].get("8445").is_none(), "{serve}");
+    assert!(serve["Web"][format!("{DNS}:443")].is_object());
+    // Unreadable: phone access goes on, and the record is kept as it is.
+    let (phone, local) = (free_port(), free_port());
+    let lab = lab_with(|lab| {
+        older(lab, phone, local, true, theirs(local));
+        std::fs::write(lab.ws.data_dir.join("remote-preview.json"), "{not json").unwrap();
+    });
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    assert!(lab.view().await["previews"]["legacy"]["error"].as_str().unwrap().contains("not a readable phone previews record"));
+    let op = lab.apply(json!({"requestId": "next", "enabled": true, "localPort": phone})).await.unwrap();
+    assert_eq!((op["state"].as_str(), op["legacy"]["state"].as_str()), (Some("succeeded"), Some("partial")), "{op}");
+    assert_eq!(std::fs::read_to_string(lab.ws.data_dir.join("remote-preview.json")).unwrap(), "{not json");
+    assert!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")].is_object(), "nothing removed it cannot read as its own");
     assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+}
+
+#[tokio::test]
+async fn an_older_page_turning_previews_on_by_themselves_is_refused_and_changes_nothing() {
+    use axum::response::IntoResponse;
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let error = previews_moved().await.unwrap_err().into_response();
+    assert_eq!(error.status().as_u16(), 400);
+    let body = axum::body::to_bytes(error.into_body(), 4096).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("phone_previews_moved"), "{body:?}");
+    assert!(!path(&lab.ws).exists() && lab.calls().is_empty());
 }

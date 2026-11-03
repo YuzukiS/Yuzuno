@@ -80,9 +80,13 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
 /// events and artifacts the local port serves, never the Agents' MCP
 /// endpoints, and starts nothing: the local router runs Core's services.
 /// Every request must pass `RemoteEntry::admit`; none falls back to the
-/// local port's rules.
+/// local port's rules. Previews asked for here are served here too, under
+/// the path it keeps for them (`previews::phone_router`, T-5), which never
+/// reaches Yuzuno's page.
 pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>, entry: RemoteEntry) -> Router {
     let router = browser_routes(assets, updates.clone())
+        .merge(crate::previews::phone_router())
+        .layer(middleware::from_fn(crate::previews::reserved))
         .layer(middleware::from_fn_with_state(Arc::new(entry), remote_browser_boundary))
         .with_state(ws);
     finish(router, updates)
@@ -428,13 +432,17 @@ async fn local_browser_boundary(
     harden(next.run(req).await)
 }
 
+/// Every response may not be sniffed, framed or stored; only a previewed
+/// page (T-5), as its handler marks it, is framed by its own policy instead.
 fn harden(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    response
-        .headers_mut()
-        .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    if response.extensions().get::<crate::previews::PreviewDocument>().is_none() {
+        response
+            .headers_mut()
+            .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    }
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -454,7 +462,11 @@ pub struct RemoteEntry {
     origin: String,
     host: String,
     login: String,
+    run: u64,
 }
+
+/// The next `RemoteEntry::run`.
+static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl RemoteEntry {
     /// `origin` is `https://<host>[:<port>]` as the browser shows it, with
@@ -475,7 +487,8 @@ impl RemoteEntry {
             !login.is_empty() && login.trim() == login && !login.chars().any(char::is_control),
             "YUZUNO_REMOTE_LOGIN is one Tailscale login, without spaces around it"
         );
-        Ok(Self { origin: format!("https://{authority}"), host: authority, login: login.to_owned() })
+        let run = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Self { origin: format!("https://{authority}"), host: authority, login: login.to_owned(), run })
     }
 
     /// From the YUZUNO_REMOTE_PORT, _ORIGIN and _LOGIN settings: all three
@@ -500,6 +513,13 @@ impl RemoteEntry {
 
     pub fn login(&self) -> &str {
         &self.login
+    }
+
+    /// A number of this entry's own, never another's while Core runs: what a
+    /// preview asked for through it is taken for (T-5), so that an entry
+    /// served anew, even as it was, opens none of what an earlier one was given.
+    pub fn run(&self) -> u64 {
+        self.run
     }
 
     /// Whether a request may enter: the configured login, this host and, for
@@ -545,7 +565,7 @@ async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req:
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
     // Pages that change phone access read this to stay read-only here, and
-    // a preview asked for here is served by the phone previews' entry.
+    // a preview asked for here is taken for this entry.
     req.extensions_mut().insert(crate::remote_access::RemoteRequest);
     req.extensions_mut().insert(entry.clone());
     harden(next.run(req).await)
