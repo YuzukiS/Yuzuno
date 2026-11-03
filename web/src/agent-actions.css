@@ -15,6 +15,27 @@
 .agent-actions-menu[data-placed="false"] {
   visibility: hidden;
 }
+/* Once placed it comes from its button (transform-origin, AgentActionsMenu.tsx);
+   closed by Escape, a press or a choice it goes back, taking no clicks. */
+.agent-actions-menu[data-placed="true"] {
+  animation: agent-menu-in var(--motion-small) var(--ease-standard);
+}
+.agent-actions-menu.is-leaving {
+  pointer-events: none;
+  animation: agent-menu-out var(--motion-exit-small) var(--ease-exit) both;
+}
+@keyframes agent-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--menu-rise, -4px)) scale(0.98);
+  }
+}
+@keyframes agent-menu-out {
+  to {
+    opacity: 0;
+    transform: translateY(var(--menu-rise, -4px)) scale(0.98);
+  }
+}
 .agent-actions-item {
   display: flex;
   align-items: center;
