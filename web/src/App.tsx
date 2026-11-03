@@ -1189,7 +1189,13 @@ export function App() {
   // its exact ID, never by its text.
   const turnScope = pendingScope;
   const turnsSeen = useRef<{ scope: string; latest: boolean; ids: Set<string>; arrived: string[] } | null>(null);
+  // New Claude messages sending in their Turn, as of App's last commit (the layout effect below);
+  // previews, as of their own last commit, for the conversation they were shown in.
   const shownMessages = useRef<ReadonlySet<string>>(new Set());
+  const shownPreviews = useRef<{ scope: string; ids: ReadonlySet<string> }>({ scope: "", ids: new Set() });
+  const previewsShown = useCallback((scope: string, ids: ReadonlySet<string>) => {
+    shownPreviews.current = { scope, ids };
+  }, []);
   // Left (the settle mark is the requests' above): the next detail is a new baseline.
   if (!turnScope && turnsSeen.current) {
     turnsSeen.current = null;
@@ -1201,7 +1207,9 @@ export function App() {
     const ids = currentDetail.turns.map((turn) => turn.id);
     let last = -1;
     if (seen?.scope === turnScope) ids.forEach((id, index) => { if (seen.ids.has(id)) last = index; });
-    if (!seen || seen.scope !== turnScope || !seen.latest || !latest || last < 0) {
+    // A conversation already shown with no Turns takes its first ones as added after nothing; one
+    // whose Turns no longer overlap the shown ones (another window, a jump) is a new baseline.
+    if (!seen || seen.scope !== turnScope || !seen.latest || !latest || (last < 0 && seen.ids.size > 0)) {
       turnsSeen.current = { scope: turnScope, latest, ids: new Set(ids.slice(-500)), arrived: seen?.scope === turnScope ? seen.arrived : [] };
       if (seen?.scope !== turnScope) liveTurn.current = null;
     } else if (ids.some((id) => !seen.ids.has(id))) {
@@ -1212,9 +1220,11 @@ export function App() {
         const first = turn.items.find((item) => item.type === "userMessage");
         const id = typeof first?.clientId === "string" ? first.clientId
           : typeof first?._yuzunoClientMessageId === "string" && inTurn.has(first._yuzunoClientMessageId) ? first._yuzunoClientMessageId : null;
-        if (id && shownMessages.current.has(id)) return true;
+        const previews = shownPreviews.current.scope === turnScope ? shownPreviews.current.ids : null;
+        const shown = (message: string) => shownMessages.current.has(message) || !!previews?.has(message);
+        if (id && shown(id)) return true;
         return !!currentDetail.messageReceipts?.some((receipt) => receipt.binding?.turnId === turn.id
-          && turn.items.some((item) => item.id === receipt.binding!.itemId) && shownMessages.current.has(receipt.input.clientMessageId));
+          && turn.items.some((item) => item.id === receipt.binding!.itemId) && shown(receipt.input.clientMessageId));
       };
       turnsSeen.current = { scope: turnScope, latest, ids: new Set([...seen.ids, ...ids].slice(-500)),
         arrived: announced ? [...seen.arrived, ...fresh.filter((turn) => !handedOver(turn)).map((turn) => turn.id)].slice(-20) : seen.arrived };
@@ -1229,12 +1239,10 @@ export function App() {
     },
     "small",
   );
-  // The messages this window shows as on their way, as of this commit: previews, and new Claude
-  // messages sending in their Turn. Read by the next render's Turn arrivals above.
+  // New Claude messages this window shows sending in their Turn, as of this commit. Read by the next
+  // render's Turn arrivals above, with the previews (`previewsShown`).
   useLayoutEffect(() => {
     const shown = new Set<string>();
-    for (const preview of document.querySelectorAll<HTMLElement>(".outgoing-message[data-client-message-id]"))
-      if (preview.dataset.clientMessageId) shown.add(preview.dataset.clientMessageId);
     const sending = (currentDetail?.turns ?? []).flatMap((turn) => turn.items.filter((item) =>
       typeof item._yuzunoClientMessageId === "string" && inTurn.has(item._yuzunoClientMessageId)));
     if (sending.length) {
@@ -3314,6 +3322,8 @@ export function App() {
                     agentId={agent.id}
                     messages={outgoing}
                     detail={currentDetail}
+                    scope={turnScope ?? ""}
+                    onShown={previewsShown}
                   />
                   {pending.map((request) => (
                     <PendingCard

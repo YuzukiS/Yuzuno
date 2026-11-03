@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
 import { agentHarnessName } from "./machine-checks";
@@ -39,10 +39,17 @@ export const OutgoingMessages = memo(function OutgoingMessages({
   agentId,
   messages,
   detail,
+  scope = "",
+  onShown,
 }: {
   agentId: string;
   messages: OutgoingMessage[];
   detail: AgentDetail | null;
+  /** The conversation on screen, as App names it; `onShown` is told it with what shows. */
+  scope?: string;
+  /** Told after each commit of these previews which messages they show (T-19 CV:T-01): a Hide
+   * here is seen at once, not at App's next commit. */
+  onShown?: (scope: string, ids: ReadonlySet<string>) => void;
 }) {
   const [hidden, setHidden] = useState(loadHidden);
   const language = useLanguage();
@@ -75,14 +82,21 @@ export const OutgoingMessages = memo(function OutgoingMessages({
   for (const message of messages) if (message.agentId === agentId) pending.set(message.receipt.input.clientMessageId, message);
   // A new Claude message still sending that its Turn shows is shown there.
   const inTurn = sendingInTurn(detail, agentId, messages);
-  return [...pending.values()]
-    .filter(
-      (message) =>
-        message.agentId === agentId &&
-        !nativeIds.has(message.receipt.input.clientMessageId) &&
-        !inTurn.has(message.receipt.input.clientMessageId) &&
-        !hidden.includes(message.receipt.input.clientMessageId),
-    )
+  const visible = [...pending.values()].filter(
+    (message) =>
+      message.agentId === agentId &&
+      !nativeIds.has(message.receipt.input.clientMessageId) &&
+      !inTurn.has(message.receipt.input.clientMessageId) &&
+      !hidden.includes(message.receipt.input.clientMessageId),
+  );
+  const shownKey = visible.map((message) => message.receipt.input.clientMessageId).join("\n");
+  useLayoutEffect(() => {
+    if (!onShown) return;
+    onShown(scope, new Set(shownKey ? shownKey.split("\n") : []));
+    // Gone from the page: nothing of this conversation is shown here.
+    return () => onShown(scope, new Set());
+  }, [onShown, scope, shownKey]);
+  return visible
     .map(({ receipt: local }) => {
       const saved = detail?.messageReceipts?.find(
         (r) => r.input.clientMessageId === local.input.clientMessageId,
