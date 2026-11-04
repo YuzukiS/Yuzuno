@@ -11,9 +11,11 @@ import { briefText } from "./brief/brief-text";
 import { CardChart, type ChartKind } from "./brief/Charts";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
+import { keptSnapshot, useKeptImage } from "./brief/kept-image";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { PinOff } from "lucide-react";
+import { CardFoldWorkspace } from "./card-fold";
 import { cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, shownSize, TABLE_PREVIEW, type CardFigure, type CardSize } from "./card-preview";
 import { DeckSizes, sizable } from "./card-sizes";
 import { SizeChoice } from "./SizeChoice";
@@ -460,13 +462,18 @@ function BigNumbers({ items }: { items: Metric[] }) {
 function FigureFrame({ section, projectId, figure, large }: { section: Section; projectId: string; figure: CardFigure; large: boolean }) {
   const t = useStrings(cardText);
   const words = useStrings(briefText);
-  // The image this frame failed to load, by its whole source: the project, the section (its key, Core's id for it and its
-  // version), the file and its snapshot. The image element is keyed by it and its error names it, so an older image's
-  // late error never marks another, and another image in its place loads again (R2, Lead 3275, 3278).
-  const [unloaded, setUnloaded] = useState<string | null>(null);
-  const shot = figure.kind === "image"
-    ? JSON.stringify([projectId, section.key, section.id ?? null, section.version, figure.name, figure.takenAt])
-    : null;
+  // A kept image arrives as on its report page (T-19 HM:B14, kept-image.ts): the same snapshot (this Workspace, the
+  // project, the section's key and id, the file kept) and read (with the card's version and the address), so it stays
+  // unseen until its decode succeeds, then fades in once in this window, and a failed load or decode says so in the
+  // frame. An older read's late load or decode changes nothing; a snapshot shown on its report page is here at once.
+  const workspaceId = useContext(CardFoldWorkspace);
+  const file = figure.kind === "image" ? section.attachments.find((item) => item.name === figure.name) : undefined;
+  const snapshot = figure.kind === "image" && figure.kept
+    ? keptSnapshot({ workspaceId, projectId, sectionKey: section.key, sectionId: section.id, name: figure.name,
+      takenAt: file?.takenAt ?? figure.takenAt, size: file?.size, mime: file?.mime })
+    : "";
+  const src = figure.kind === "image" ? attachmentUrl(projectId, section.key, figure.name, section.version) : "";
+  const kept = useKeptImage(snapshot, `${snapshot}\n${section.version}\n${src}`);
   const shape = large ? LARGE_TABLE_PREVIEW : TABLE_PREVIEW;
   const table = figure.kind === "table" ? { columns: figure.columns.slice(0, shape.columns), rows: figure.rows.slice(0, shape.rows) } : null;
   const metrics = large ? metricsOf(section, figure) : null;
@@ -507,17 +514,20 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
               <span>{words.referenced} · {figure.name}</span>
               <small>{words.notKept}</small>
             </p>
-          ) : unloaded === shot ? (
+          ) : kept.failed ? (
             <p className="home-card-figure-unavailable" role="status">
               <ImageIcon size={16} aria-hidden="true" />
               <span>{words.imageNotLoaded}</span>
             </p>
           ) : (
             <img
-              key={shot}
-              src={attachmentUrl(projectId, section.key, figure.name, section.version)}
+              key={snapshot}
+              ref={kept.picture}
+              src={src}
               alt={figure.caption ?? figure.name}
-              onError={() => setUnloaded(shot)}
+              data-loading={kept.loading ? "" : undefined}
+              onLoad={kept.onLoad}
+              onError={kept.onError}
             />
           )
         ) : figure.kind === "desk" ? (
