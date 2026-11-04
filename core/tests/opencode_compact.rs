@@ -501,10 +501,9 @@ async fn a_part_left_behind_a_later_finished_answer_keeps_nothing_out() {
     let lab = lab(true).await;
     let turn = lab.stopped().await;
     refuses_new_writes(&lab, "还留着上一次没有完成的压缩").await;
-    let (message, part) = {
-        let attempt = &compaction(&lab.detail())["_opencodeCompact"];
-        (attempt["message"].as_str().unwrap().to_owned(), attempt["part"].as_str().unwrap().to_owned())
-    };
+    let d = lab.detail();
+    let attempt = &compaction(&d)["_opencodeCompact"];
+    let (message, part) = (attempt["message"].as_str().unwrap().to_owned(), attempt["part"].as_str().unwrap().to_owned());
     // Another client's answer, finished, under a message this Agent never sent.
     let session = lab.session();
     lab.control("reply", json!({"sessionID":session,"text":"Elsewhere.","parentID":"msg_another_client"})).await;
