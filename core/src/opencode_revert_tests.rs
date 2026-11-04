@@ -221,6 +221,7 @@ async fn a_confirm_reads_again_keeps_its_attempt_asks_once_and_the_turns_it_reve
     assert_eq!((&outcome["status"], &outcome["draft"], &outcome["files"]), (&json!("completed"), &json!("second"), &json!([])), "{outcome}");
     assert_eq!(reverts(&data), 1, "asked once");
     assert_eq!(turn_ids(&ws), vec![first.clone()], "the Turn it reverts leaves");
+    assert!(ws.pending_rewind("oc").await.unwrap()["attempt"].is_null(), "none left to check once kept");
     let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
     assert_eq!(session.server.session(&session.session).await.unwrap()["revert"]["messageID"], json!(second), "kept in the session");
     // Asked again for the same preview: that attempt as it stands, nothing asked.
@@ -270,6 +271,8 @@ async fn a_revert_whose_outcome_is_unknown_holds_back_every_new_input_and_is_nev
     let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
     assert_eq!(outcome["status"], "unknown", "a 500 says nothing of what it did: {outcome}");
     assert_eq!(outcome["draft"], "", "no text back while not known");
+    // What a client opening the Agent again reads to check it: the same attempt, as it stands.
+    assert_eq!(ws.pending_rewind("oc").await.unwrap()["attempt"], outcome, "the attempt is found again from what Core keeps");
     for (what, error) in [
         ("send", ws.opencode_send("oc", "next".into()).await.expect_err("a send is held back")),
         ("compact", ws.opencode_compact("oc").await.expect_err("a compaction is held back")),
@@ -282,6 +285,7 @@ async fn a_revert_whose_outcome_is_unknown_holds_back_every_new_input_and_is_nev
         "a request with no answer stays unknown whatever a later read finds");
     assert_eq!(reverts(&data), 1, "never asked again");
     assert_eq!(turn_ids(&ws), vec![first], "nothing removed");
+    assert_eq!(reverts(&data), 1, "reading it asks nothing");
     ws.close_agent("oc").await.unwrap();
 }
 

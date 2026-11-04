@@ -10,7 +10,7 @@ use crate::{
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
     extract::{Path, State},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use rusqlite::{params, OptionalExtension};
@@ -279,6 +279,14 @@ fn project(detail: &mut AgentDetail, kept: &[String], recent: Vec<Value>, histor
 }
 
 impl Workspace {
+    /// The Agent's attempt whose outcome is not yet known, if any, as it
+    /// stands (`/rewind/attempt`): what a client opening the Agent again
+    /// shows, to check it (Lead 4128). It reads only: no check, no request.
+    pub async fn pending_rewind(&self, id: &str) -> Result<Value> {
+        let agent = id.to_owned();
+        let attempt = self.stored(move |s| s.rewind_attempt(&agent, None)).await?;
+        Ok(json!({"attempt": attempt.map(|a| a.outcome())}))
+    }
     pub(crate) async fn ensure_rewind_settled(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
         self.stored(move |s| s.ensure_no_pending_rewind(&id)).await
@@ -741,6 +749,9 @@ async fn check(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.rewind_check(&id, &p.attempt_id).await?))
 }
+async fn pending(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(ws.pending_rewind(&id).await?))
+}
 async fn resolve(
     State(ws): State<Arc<Workspace>>,
     Path(id): Path<String>,
@@ -754,6 +765,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/agents/{id}/rewind/confirm", post(confirm))
         .route("/api/agents/{id}/rewind/check", post(check))
         .route("/api/agents/{id}/rewind/resolve", post(resolve))
+        .route("/api/agents/{id}/rewind/attempt", get(pending))
 }
 
 #[cfg(test)]
