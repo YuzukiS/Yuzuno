@@ -13,7 +13,9 @@
 //   and a read: the pin takes it in one step, and nothing in it plays again;
 // - on a desktop, a jump made as the pin opens (Turn 8 from the turn dock, 40 ms after the press): the
 //   pane's scroll padding follows the pin, and the jumped-to Turn must end below the open pin, with
-//   nothing over it.
+//   nothing over it;
+// - a fifth run, on a desktop, where the running Turn is an index entry (_yuzunoIndex), so the pin ends
+//   with the preview's footer: the whole sequence again, and the footer's margin is the pin's end.
 // Writes: only the app's own saves of where an Agent was read. Reads the fixture does not know are
 // answered {} and listed. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-current-pin-check.mjs
@@ -141,6 +143,9 @@ const runs = [
   { tag: "desktop-reduced", width: 1280, height: 860, touch: false, reduced: true },
   { tag: "phone", width: 390, height: 844, touch: true, reduced: false },
   { tag: "phone-reduced", width: 390, height: 844, touch: true, reduced: true },
+  // The running Turn as an index entry stands for it (Core's _yuzunoIndex): the pin then ends with the
+  // preview's footer, "View in conversation", not its list (Lead 4067).
+  { tag: "desktop-footer", width: 1280, height: 860, touch: false, reduced: false, footer: true },
 ];
 try {
   for (const run of runs) {
@@ -148,6 +153,7 @@ try {
       reducedMotion: run.reduced ? "reduce" : "no-preference" });
     const page = await context.newPage();
     turns[8].items = [...running];
+    turns[8]._yuzunoIndex = run.footer || undefined;
     await page.addInitScript(() => {
       // The event stream, spoken for Core by this check: a fresh one starts with `reset`, and
       // __announce says Sora's conversation changed, which the app answers with a read.
@@ -227,6 +233,18 @@ try {
       const listed = await pin.locator(".current-turn-messages").innerText();
       ok(`${run.tag}: the open pin reads the request and its follow-up`,
         listed.includes("run the layout check") && listed.includes("larger reading size"), listed.slice(0, 200));
+      // Settled open, the pin ends just after its last part, that part's own margin, and its padding and border:
+      // the height CurrentTurnPrompt keeps room for while it opens.
+      const ends = await pin.evaluate((el) => {
+        const last = el.lastElementChild, style = getComputedStyle(el), r = el.getBoundingClientRect();
+        const margin = parseFloat(getComputedStyle(last).marginBottom);
+        const reached = last.getBoundingClientRect().bottom - r.top + margin + parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
+        return { last: last.tagName, text: last.textContent.slice(0, 60), margin, reached: Math.round(reached * 10) / 10,
+          height: Math.round(r.height * 10) / 10 };
+      });
+      ok(`${run.tag}: settled open, the pin ends just after its last part${run.footer ? ", the preview's footer," : ""} and that part's margin`,
+        Math.abs(ends.reached - ends.height) <= 1
+          && (run.footer ? ends.last === "P" && ends.text.includes("View in conversation") : ends.last === "OL"), ends);
       const closed = await toggle(`${press} closes`, () => (run.touch ? summary.tap() : summary.click()));
       judge(`a second ${press} closes it, folding`, closed, false);
       wholeRow(`closed by a second ${press}, the whole pin only shrinks, never first growing`, closed);
