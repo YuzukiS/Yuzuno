@@ -1,8 +1,9 @@
 // T-115: Home's card folds in Chromium, on a production build with every API
-// answered here (no Core, no GitHub). A wide window and a phone: each card's
-// fold is visible and works by keyboard, the project's Repositories fold on
-// their own, Seen and the fold do not set each other off. Screenshots for
-// review.
+// answered here (no Core, no GitHub). A wide window and a phone: each card
+// that holds a body has a fold that is visible and works by keyboard; a
+// summary card has none (T-18); the project's Repositories are one line whose
+// details open by keyboard; Seen and the fold do not set each other off.
+// Screenshots for review.
 //   YUZUNO_UI_DIST=<isolated build> node tools/home-fold-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -15,7 +16,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/home-fold");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], writes: [], unexpected: [] };
+const report = { checks: [], errors: [], writes: [], refreshes: [], unexpected: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -63,6 +64,11 @@ try {
       const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
       assert.equal(url.hostname, "yuzuno-home-fold.test");
       if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: linked });
+      // The links, once Repository details show them, ask Core to refresh them (as before T-18): counted apart.
+      if (method === "POST" && path === "/api/collaboration/github_refresh") {
+        report.refreshes.push({ viewport: viewport.name, path });
+        return route.fulfill({ json: linked });
+      }
       if (method !== "GET") {
         report.writes.push({ viewport: viewport.name, method, path });
         return route.fulfill({ json: {} });
@@ -93,45 +99,53 @@ try {
       return { label: el.getAttribute("aria-label"), width: Math.round(r.width), height: Math.round(r.height), shown: r.width > 0 && getComputedStyle(el).visibility !== "hidden" };
     }));
     const labels = boxes.map((b) => b.label);
-    for (const card of ["Needs you", "Machines", "Repositories", "Ship today?", "Progress"]) assert.ok(labels.includes(card), `${viewport.name}: ${card} has a fold (${labels})`);
+    for (const card of ["Needs you", "Machines", "Ship today?"]) assert.ok(labels.includes(card), `${viewport.name}: ${card} has a fold (${labels})`);
+    // A summary card's body is on its report page: nothing to fold (T-18).
+    assert.equal(await page.locator('[data-section-key="progress"] .home-fold').count(), 0, `${viewport.name}: the summary card has no fold`);
+    assert.ok(!labels.includes("Repositories"), `${viewport.name}: one line of repositories has no fold`);
     const least = viewport.touch ? 36 : 22;
     assert.ok(boxes.filter((b) => b.shown).every((b) => b.width >= least && b.height >= least), JSON.stringify(boxes));
-    check(`${viewport.name}: each card has a visible fold of at least ${least} px`, { folds: labels });
+    check(`${viewport.name}: each card with a body has a visible fold of at least ${least} px; the summary card and the repositories' line have none`, { folds: labels });
     await page.screenshot({ path: resolve(output, `${viewport.name}-expanded.png`), fullPage: true });
 
-    // The Repositories fold, by keyboard, without folding the project.
-    const repos = page.locator(".home-repos .home-fold");
-    await repos.focus();
-    await page.keyboard.press("Enter");
+    // Repository details, by keyboard, without folding the project (T-18).
+    const repos = page.locator(".home-repos-details");
     assert.equal(await repos.getAttribute("aria-expanded"), "false");
-    assert.equal(await page.locator(".home-repos .repo-activity").count(), 0);
+    assert.equal(await page.locator(".home-repos .repo-activity-lists").count(), 0, "one line until details open");
+    await repos.focus();
+    assert.deepEqual(report.refreshes.filter((r) => r.viewport === viewport.name), [], "no refresh before details open");
+    await page.keyboard.press("Enter");
+    assert.equal(await repos.getAttribute("aria-expanded"), "true");
+    await page.locator(".home-repos .repo-activity-lists").waitFor();
     assert.equal(await page.locator(".home-panel").first().evaluate((el) => el.classList.contains("is-collapsed")), false);
     await page.keyboard.press(" ");
-    assert.equal(await repos.getAttribute("aria-expanded"), "true");
-    await page.locator(".home-repos .repo-activity-repo").waitFor();
-    check(`${viewport.name}: Repositories fold on their own, with Enter and Space`);
+    assert.equal(await repos.getAttribute("aria-expanded"), "false");
+    assert.equal(await page.locator(".home-repos .repo-activity-lists").count(), 0);
+    await page.locator(".home-repos .repo-line").waitFor();
+    // The refresh follows the links' first read: wait for it, at most 5 s.
+    for (let end = Date.now() + 5000; !report.refreshes.some((r) => r.viewport === viewport.name) && Date.now() < end; ) await page.waitForTimeout(50);
+    assert.deepEqual(report.refreshes.filter((r) => r.viewport === viewport.name).map((r) => r.path), ["/api/collaboration/github_refresh"],
+      "showing the links asked for one refresh");
+    check(`${viewport.name}: Repository details open and close on their own, with Enter and Space; showing the links asks Core for one refresh`);
 
-    // Seen and the fold do not set each other off.
-    const progress = page.locator('[data-section-key="progress"]');
-    await progress.locator(".home-fold").click();
-    assert.equal(await progress.locator(".home-section-body").isVisible(), false);
-    assert.ok(await progress.locator(".home-seen").isVisible(), "Seen is still offered on a collapsed card");
-    assert.deepEqual(report.writes.filter((w) => w.viewport === viewport.name), [], "folding wrote nothing");
-    await progress.locator(".home-seen").click();
+    // Seen and the fold do not set each other off, on the Ask that folds.
+    const ship = page.locator('[data-section-key="ship"]');
+    await ship.locator(".home-fold").click();
+    assert.equal(await ship.locator(".home-section-body").isVisible(), false);
+    assert.ok(await ship.locator(".home-seen").isVisible(), "Seen is still offered on a collapsed card");
+    assert.deepEqual(report.writes.filter((w) => w.viewport === viewport.name), [], "folding and details wrote nothing");
+    await ship.locator(".home-seen").click();
     await page.waitForTimeout(200);
-    assert.equal(await progress.locator(".home-fold").getAttribute("aria-expanded"), "false", "Seen did not unfold it");
+    assert.equal(await ship.locator(".home-fold").getAttribute("aria-expanded"), "false", "Seen did not unfold it");
     assert.deepEqual(report.writes.filter((w) => w.viewport === viewport.name).map((w) => w.path), ["/api/projects/p1/brief/seen"]);
     check(`${viewport.name}: Seen on a collapsed card marks it seen and leaves it collapsed; the fold alone writes nothing`);
     // A jump from Needs you opens the collapsed card it goes to.
-    const ship = page.locator('[data-section-key="ship"]');
-    await ship.locator(".home-fold").click();
     assert.equal(await ship.locator("textarea").isVisible(), false);
     await page.locator(".home-needs-item").first().click();
     await page.waitForTimeout(400);
     assert.equal(await ship.locator(".home-fold").getAttribute("aria-expanded"), "true");
     assert.ok(await ship.locator("textarea").isVisible(), "the Ask's reply is in view");
     check(`${viewport.name}: a jump from Needs you opens the collapsed Ask it goes to`);
-    await page.locator(".home-repos .home-fold").click();
     await page.locator(".home-machines .home-fold").click();
     await page.screenshot({ path: resolve(output, `${viewport.name}-collapsed.png`), fullPage: true });
     await context.close();

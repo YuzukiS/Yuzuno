@@ -24,11 +24,16 @@ import {createRoot} from 'react-dom/client';
 import {RemoteCreateAgent} from ${JSON.stringify(path.join(root, "src/RemoteCreateAgent.tsx"))};
 import {PendingCard, Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 import {AgentSettings} from ${JSON.stringify(path.join(root, "src/AgentSettings.tsx"))};
+import {OpenCodeRevertHost} from ${JSON.stringify(path.join(root, "src/Rewind.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.renderSettings=(props)=>root.render(<AgentSettings {...props}/>);
 window.renderCreate=(props)=>root.render(<RemoteCreateAgent {...props}/>);
 window.renderPending=(props)=>root.render(<PendingCard onViewChanges={()=>{}} {...props}/>);
-window.renderTurn=(props)=>root.render(<Turn {...props}/>);`,
+// An OpenCode turn as the app shows it: inside its Agent's revert host.
+window.renderTurn=(props)=>root.render(props.agent.harness==='opencode'
+  ? <OpenCodeRevertHost workspaceId={props.workspaceId ?? 'ws-1'} agent={props.agent} onDraft={props.onRewindDraft}><Turn {...props}/></OpenCodeRevertHost>
+  : <Turn {...props}/>);
+window.unmount=()=>root.render(null);`,
   );
   const result = await build({
     root,
@@ -312,7 +317,7 @@ test("an unsent answer survives a reload, within bounds, and says so when it can
   } finally { damaged.close(); }
 });
 
-test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind", async () => {
+test("an OpenCode turn names OpenCode, shows its tool calls and offers its own revert", async () => {
   const turn = { id: "msg_1", status: "completed", items: [
     { id: "u1", type: "userMessage", content: [{ type: "text", text: "List the files" }] },
     { id: "prt_1", type: "opencodeTool", name: "bash", callId: "call_1", input: { command: "ls" }, output: "a.txt\nb.txt", status: "completed" },
@@ -328,7 +333,7 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind
   try {
     await tick(); await tick();
     assert.ok(button(codex, "Rewind"), "the same turn of a Codex Agent offers a rewind");
-    assert.equal(button(page, "Rewind"), undefined);
+    assert.match(button(page, "Rewind")?.title ?? "", /reverting to before this turn, with its files/);
     const text = page.document.body.textContent;
     assert.match(text, /OpenCode/);
     assert.doesNotMatch(text, /Codex/);
@@ -340,4 +345,207 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind
     assert.match(tool.textContent, /a\.txt\s*b\.txt/);
     assert.deepEqual(page.errors, []);
   } finally { codex.close(); page.close(); }
+});
+
+// OpenCode's revert (T-10): previewed with its files, asked once, the
+// original text given back only once OpenCode keeps the revert; an outcome
+// not confirmed is only checked, never kept by choice or asked again.
+test("OpenCode's revert previews its files, asks once and gives the text back only once it is kept", async () => {
+  const turn = { id: "msg_2", status: "completed", items: [
+    { id: "u2", type: "userMessage", content: [{ type: "text", text: "Fix a.txt" }] },
+    { id: "prt_3", type: "agentMessage", text: "Fixed." },
+  ] };
+  const preview = { previewId: "revert_1", available: true, removedTurns: 2, keptTurns: 1, draft: "Fix a.txt",
+    files: [{ path: "/work/a.txt", current: { state: "file", size: 3, sha256: "b", executable: false }, expected: { state: "absent" } }] };
+  const open = async (answers) => {
+    const drafts = [];
+    const page = mount((url) => {
+      for (const [end, body] of Object.entries(answers)) if (url.endsWith(end)) return typeof body === "function" ? body() : body;
+      return undefined;
+    });
+    page.window.renderTurn({ turn, index: 0, agent: { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" },
+      onFile() {}, onRewindDraft(agent, text) { drafts.push([agent, text]); return true; } });
+    await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    return { page, drafts };
+  };
+  const sent = (page, end) => page.calls.filter((call) => call.url.endsWith(end)).map((call) => call.body);
+
+  // Kept, every file as the snapshot holds it: the text comes back once, and the dialog closes.
+  const kept = await open({ "/rewind/preview": preview,
+    "/rewind/confirm": { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [{ path: "/work/a.txt", outcome: "verified" }] } });
+  try {
+    const text = kept.page.document.body.textContent;
+    assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay/);
+    assert.match(text, /\/work\/a\.txt: now 3 bytes, becomes no file/);
+    assert.match(text, /Any change made since, by you or another Agent, is overwritten; Core keeps a copy of each first/);
+    assert.ok(!button(kept.page, "Keep current history"), "no way to keep the current history");
+    assert.ok(!button(kept.page, "Preview file restore…"), "no Claude file restore");
+    assert.deepEqual(kept.drafts, [], "nothing given back before the revert is confirmed");
+    button(kept.page, "Revert").click(); await tick(); await tick();
+    assert.deepEqual(sent(kept.page, "/rewind/confirm"), [{ previewId: "revert_1" }], "asked once, for that preview");
+    assert.deepEqual(kept.drafts, [["a", "Fix a.txt"]]);
+    assert.match(kept.page.document.body.textContent, /Reverted\. 已回退/);
+    assert.match(kept.page.document.body.textContent, /\/work\/a\.txt: as OpenCode’s snapshot holds it/);
+    button(kept.page, "Close").click(); await tick();
+    assert.doesNotMatch(kept.page.document.body.textContent, /in OpenCode’s conversation and in the files/, "closed");
+    assert.deepEqual(kept.page.errors, []);
+  } finally { kept.page.close(); }
+
+  // Not confirmed: only checked, held back meanwhile; kept on check with a file that drifted: the text once, the file named.
+  let checks = 0;
+  const unsure = await open({ "/rewind/preview": preview,
+    "/rewind/confirm": { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" },
+    "/rewind/check": () => (++checks === 1
+      ? { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" }
+      : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退，但有 1 个文件不是快照里的内容",
+        files: [{ path: "/work/a.txt", outcome: "drifted", why: null }] }) });
+  try {
+    button(unsure.page, "Revert").click(); await tick(); await tick();
+    let text = unsure.page.document.body.textContent;
+    assert.match(text, /The revert is not yet confirmed/);
+    assert.match(text, /New messages to this Agent wait until the outcome is confirmed\. The revert is never asked for again/);
+    assert.ok(!button(unsure.page, "Keep current history"), "an unknown outcome is never kept by choice");
+    assert.deepEqual(unsure.drafts, [], "no text back while not confirmed");
+    button(unsure.page, "Check outcome").click(); await tick(); await tick();
+    assert.deepEqual(unsure.drafts, []);
+    button(unsure.page, "Check outcome").click(); await tick(); await tick();
+    assert.deepEqual(sent(unsure.page, "/rewind/check"), [{ attemptId: "revert_1" }, { attemptId: "revert_1" }]);
+    assert.deepEqual(sent(unsure.page, "/rewind/confirm").length, 1, "never asked again");
+    assert.deepEqual(unsure.drafts, [["a", "Fix a.txt"]], "the text once, when kept");
+    text = unsure.page.document.body.textContent;
+    assert.match(text, /Reverted\./);
+    assert.match(text, /\/work\/a\.txt: neither as before nor as the snapshot holds it/, "a file that drifted is named, the dialog left open");
+    assert.deepEqual(unsure.page.errors, []);
+  } finally { unsure.page.close(); }
+
+  // Ended with nothing kept: no text back, even were one given.
+  const none = await open({ "/rewind/preview": preview,
+    "/rewind/confirm": { attemptId: "revert_1", status: "unchanged", draft: "Fix a.txt", message: "没有保留回退的结果" } });
+  try {
+    button(none.page, "Revert").click(); await tick(); await tick();
+    assert.match(none.page.document.body.textContent, /Not reverted\. 没有保留回退的结果/);
+    assert.deepEqual(none.drafts, [], "nothing kept, no text back");
+  } finally { none.page.close(); }
+});
+
+// Bound to its Workspace and Agent, given only once taken, never undone by an
+// older read (Lead 4133): what OpenCode's revert does when the page moves on.
+const later = () => { let settle; const promise = new Promise((resolve) => { settle = resolve; }); return { promise, settle }; };
+const fixTurn = { id: "msg_2", status: "completed", items: [
+  { id: "u2", type: "userMessage", content: [{ type: "text", text: "Fix a.txt" }] },
+  { id: "prt_3", type: "agentMessage", text: "Fixed." },
+] };
+const shownPreview = { previewId: "revert_1", available: true, removedTurns: 1, keptTurns: 1, draft: "Fix a.txt", files: [] };
+const kept = { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] };
+const ocAgent = { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" };
+function revertPage(answer) {
+  const page = mount((url) => {
+    const { pathname, search } = new URL(url, "http://isolated.test/");
+    const route = pathname.match(/\/rewind\/(\w+)$/)?.[1];
+    return route ? answer(route, new URLSearchParams(search)) : undefined;
+  });
+  const show = (workspaceId, onRewindDraft) => page.window.renderTurn({ turn: fixTurn, index: 0, agent: ocAgent, workspaceId, onFile() {}, onRewindDraft });
+  return { page, show };
+}
+
+test("a late answer is given to its own Workspace's draft, once that Workspace is shown again, never to another's", async () => {
+  const confirm = later();
+  const { page, show } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
+    : route === "attempt" ? { attempt: query.get("id") === "revert_1" ? kept : null } : undefined);
+  const first = [], second = [];
+  try {
+    show("ws-1", (agent, text) => { first.push([agent, text]); return true; }); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    button(page, "Revert").click(); await tick();
+    // Another Workspace, with an Agent of the same ID, is shown while the answer is on its way.
+    show("ws-2", (agent, text) => { second.push([agent, text]); return true; }); await tick();
+    confirm.settle(kept); await tick(); await tick();
+    assert.deepEqual(second, [], "never into another Workspace's draft");
+    assert.deepEqual(first, [], "nor into its own while it is not shown");
+    show("ws-1", (agent, text) => { first.push([agent, text]); return true; }); await tick(); await tick();
+    assert.deepEqual(first, [["a", "Fix a.txt"]], "given to its own, once it is shown again");
+    assert.deepEqual(second, []);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a text the draft did not take is not counted as given: it is offered again, then given once", async () => {
+  const { page, show } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? kept
+    : route === "attempt" ? { attempt: query.get("id") === "revert_1" ? kept : null } : undefined);
+  const tries = [];
+  let takes = false;
+  const draft = (agent, text) => { tries.push([agent, text]); return takes; };
+  try {
+    show("ws-1", draft); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    button(page, "Revert").click(); await tick(); await tick();
+    assert.equal(tries.length, 1);
+    assert.match(page.document.body.textContent, /The original text could not be added to the draft/, "said, not counted as given");
+    takes = true;
+    button(page, "Add to draft").click(); await tick();
+    assert.equal(tries.length, 2, "offered again");
+    assert.doesNotMatch(page.document.body.textContent, /could not be added/);
+    button(page, "Close").click(); await tick();
+    // Shown again from nothing: found again by Core, not given twice.
+    page.window.unmount(); await tick();
+    show("ws-1", draft); await tick(); await tick();
+    assert.equal(tries.length, 2, "given once");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a read begun before the Agent's revert was opened does not undo it", async () => {
+  const pending = later();
+  const { page, show } = revertPage((route) => route === "preview" ? shownPreview : route === "attempt" ? pending.promise : undefined);
+  try {
+    show("ws-1", () => true); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    assert.ok(button(page, "Revert"), "the preview is shown");
+    pending.settle({ attempt: { attemptId: "revert_0", status: "unknown", draft: "", message: "old" } }); await tick(); await tick();
+    assert.ok(button(page, "Revert"), "an older read does not take the preview's place");
+    assert.doesNotMatch(page.document.body.textContent, /not yet confirmed/);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a preview left for another Workspace leaves nothing waiting when its own is shown again", async () => {
+  const first = later();
+  let previews = 0;
+  const { page, show } = revertPage((route) => route === "preview" ? (++previews === 1 ? first.promise : shownPreview)
+    : route === "attempt" ? { attempt: null } : undefined);
+  try {
+    show("ws-1", () => true); await tick();
+    button(page, "Rewind").click(); await tick();
+    show("ws-2", () => true); await tick();
+    first.settle(shownPreview); await tick(); await tick();
+    show("ws-1", () => true); await tick(); await tick();
+    assert.doesNotMatch(page.document.body.textContent, /Reading OpenCode’s session/, "nothing left waiting");
+    button(page, "Rewind").click(); await tick(); await tick();
+    assert.ok(button(page, "Revert"), "a new preview is shown");
+    assert.equal(previews, 2);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an answer taken is not undone by a read begun before it", async () => {
+  const confirm = later();
+  const read = later();
+  let reads = 0;
+  const { page, show } = revertPage((route) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
+    : route === "attempt" ? (++reads === 1 ? { attempt: null } : read.promise) : undefined);
+  try {
+    show("ws-1", () => true); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    button(page, "Revert").click(); await tick();
+    // Shown again while the confirm is on its way: a read of what Core keeps begins.
+    page.window.unmount(); await tick();
+    show("ws-1", () => true); await tick();
+    confirm.settle(kept); await tick(); await tick();
+    assert.match(page.document.body.textContent, /Reverted\./);
+    read.settle({ attempt: { attemptId: "revert_1", status: "sending", draft: "", message: "" } }); await tick(); await tick();
+    assert.match(page.document.body.textContent, /Reverted\./, "the answer taken stays");
+    assert.doesNotMatch(page.document.body.textContent, /not yet confirmed/, "not undone by the older read");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
 });

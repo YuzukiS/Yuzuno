@@ -78,6 +78,7 @@ OpenCode Agent keeps working either way.
 
 ## Not yet
 
-Remote machines, rewind, and following OpenCode's sub-agent sessions. Commands OpenCode makes of its MCP servers'
+Remote machines, and following OpenCode's sub-agent sessions. (Rewind is
+OpenCode's own revert: see [Rewind](rewind.md#opencode).) Commands OpenCode makes of its MCP servers'
 prompts and of its skills are not in its configuration, so they are not
 listed, and `/<name>` for one is sent as text.

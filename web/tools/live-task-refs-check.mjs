@@ -1,11 +1,12 @@
-// A live task list on Home (T-9) in a real browser: the Agent names the
-// tasks, their order and a note; Core's facts (title, state, who is
-// responsible, when the task last changed) fill each row, the assignee at
-// either density. A task change Core announces reads Home again once for a
-// burst; the changed row carries a quiet mark and the rest stay as they
-// were, and a draft being typed keeps its text and focus. A read that fails
-// keeps the last facts and says they are out of date. Desktop at both densities and a 393 px phone, in
-// Chinese. Production bundle with an explicit API fixture and a stand-in
+// A live task list (T-9) in a real browser, on its report page (T-18: a
+// report's body is read on its page, opened from its Home card, at high
+// density): the Agent names the tasks, their order and a note; Core's facts
+// (title, state, who is responsible, when the task last changed) fill each
+// row. A task change Core announces reads Home again once for a burst; the
+// open page follows, the changed row carries a quiet mark and the rest stay
+// as they were, and a draft typed on Home keeps its text. A read that fails
+// keeps the last facts and says they are out of date. Desktop and a 393 px
+// phone, in Chinese. Production bundle with an explicit API fixture and a stand-in
 // event stream: no Core, synthetic data, nothing is sent.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_CHECK_OUTPUT=<dir> node tools/live-task-refs-check.mjs
 import assert from "node:assert/strict";
@@ -167,7 +168,7 @@ async function open({ width, height, touch, theme, density }) {
   page.on("pageerror", (error) => report.errors.push(`${width} ${density}: ${error.message}`));
   await page.goto(`https://${HOST}/`);
   await page.locator(".toolbar-nav .catchup-nav").first().click();
-  await page.locator('[data-section-key="work"] .brief-ref-list').first().waitFor({ timeout: 10_000 });
+  await page.locator('.home-view [data-section-key="work"]').first().waitFor({ timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
   // The stream opens, as Core's does: the app then stops polling, and its
   // one reset after opening is read before anything here is counted.
@@ -178,7 +179,7 @@ async function open({ width, height, touch, theme, density }) {
 
 /** A Core event, as the stream would deliver it. */
 const announce = (page, event) => page.evaluate((event) => window.__events.onmessage?.({ data: JSON.stringify(event), lastEventId: "" }), event);
-const rows = (page) => page.locator('[data-section-key="work"] .brief-ref-row').evaluateAll((all) => all.map((row) => ({
+const rows = (page) => page.locator(".home-report .brief-ref-row").evaluateAll((all) => all.map((row) => ({
   id: row.querySelector(".brief-ref-row-open small")?.textContent,
   title: row.querySelector(".brief-ref-row-title")?.textContent,
   state: row.querySelector(".brief-ref-state")?.textContent ?? null,
@@ -190,19 +191,42 @@ const rows = (page) => page.locator('[data-section-key="work"] .brief-ref-row').
   height: Math.round(row.getBoundingClientRect().height),
 })));
 const sideways = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-const card = (page, key) => page.locator(`[data-section-key="${key}"]`).first();
+const card = (page, key) => page.locator(`.home-view [data-section-key="${key}"]`).first();
+/** A section's report page, opened from its card on Home (T-18): the list is read there. */
+async function openReport(page, key) {
+  const opener = card(page, key).locator(".home-report-open");
+  await opener.scrollIntoViewIfNeeded();
+  await opener.click();
+  const article = page.locator(".home-report .report-article");
+  await article.locator(".report-head h1").waitFor({ timeout: 10_000 });
+  await page.evaluate(() => document.fonts.ready);
+  return article;
+}
+async function closeReport(page) {
+  await page.locator(".home-report .report-back").click();
+  await page.locator(".home-report").waitFor({ state: "hidden", timeout: 10_000 });
+}
 
 try {
   for (const view of [
+    // A report page reads at high density whatever Home's density (T-18).
     { name: "desktop-high", width: 1440, height: 1000, touch: false, theme: "light", density: "high" },
-    { name: "desktop-low", width: 1440, height: 1000, touch: false, theme: "light", density: "low" },
     { name: "desktop-high-dark", width: 1440, height: 1000, touch: false, theme: "dark", density: "high" },
     { name: "phone-high", width: 393, height: 852, touch: true, theme: "light", density: "high" },
-    // Home's default density, on a phone.
+    // Home's default density, on a phone: the page is the same.
     { name: "phone-low", width: 393, height: 852, touch: true, theme: "light", density: "low" },
   ].filter((view) => !process.env.YUZUNO_CHECK_VIEWS || process.env.YUZUNO_CHECK_VIEWS.split(",").includes(view.name))) {
     const { context, page, state } = await open(view);
+    const drafting = view.name === "desktop-high" || view.name === "phone-high";
     try {
+      // A draft being typed on Home before the report opens: Home stays
+      // mounted under the page, so the draft is there on the way back.
+      const field = card(page, "naming").locator("textarea").first();
+      if (drafting) {
+        await field.click();
+        await field.fill("先叫它实时任务卡");
+      }
+      const work = await openReport(page, "work");
       const first = await rows(page);
       assert.deepEqual(first.map((r) => [r.id, r.title, r.state, r.who]), [
         ["T-9", "优先推进｜Generative UI：交互设计、信息分层与回答卡片", "进行中", "负责人 Dev 7"],
@@ -213,45 +237,31 @@ try {
         ["T-999", "T-999", "未找到", null],
         ["T-15", "T-15", "读取失败", null],
       ], `${view.name}: ${JSON.stringify(first)}`);
-      assert.match(await card(page, "work").locator(".brief-ref-list-read").textContent(), /^状态为 Core 在 .+ 读取的记录$/);
-      if (view.density === "high") {
-        assert.match(first[0].meta, /^任务更新于 .+Dev 7 的说明：整卡负责人：实时任务卡试点$/);
-        assert.equal(first[5].meta, "Dev 7 的说明：（演示）一个不存在的任务");
-        assert.deepEqual(first.map((r) => r.tone), ["active", "active", "neutral", "active", "attention", "missing", "missing"]);
-      } else {
-        assert.ok(first.every((r) => r.meta === null), "low density: no meta line, but who is responsible");
-        if (!view.touch) assert.ok(first.every((r) => r.height < 44), `low density rows are one line: ${first.map((r) => r.height)}`);
-      }
+      assert.match(await work.locator(".brief-ref-list-read").textContent(), /^状态为 Core 在 .+ 读取的记录$/);
+      // The page reads at high density: each row has its meta line.
+      assert.match(first[0].meta, /^任务更新于 .+Dev 7 的说明：整卡负责人：实时任务卡试点$/);
+      assert.equal(first[5].meta, "Dev 7 的说明：（演示）一个不存在的任务");
+      assert.deepEqual(first.map((r) => r.tone), ["active", "active", "neutral", "active", "attention", "missing", "missing"]);
       assert.ok((await sideways(page)) <= 0, `${view.name}: nothing sideways`);
-      record(`${view.name}: the Agent's order and notes, Core's title, state, assignee and update; not found and couldn't read`, { rows: first });
-      await shoot(card(page, "work"), `${view.name}-list`);
-      if (view.name === "desktop-high") await shoot(card(page, "chips"), `${view.name}-chips-existing`);
-      await shoot(page, `${view.name}-home`);
+      record(`${view.name}: on the report page, the Agent's order and notes, Core's title, state, assignee and update; not found and couldn't read`, { rows: first });
+      await shoot(work, `${view.name}-list`);
+      await shoot(page, `${view.name}-report`);
       if (view.touch) {
-        // On a phone an ID and a state word stay whole, in the list and in
-        // the chips; a long title wraps instead.
-        const words = await page.evaluate(() => [...document.querySelectorAll(
-          '[data-section-key="work"] :is(.brief-ref-row-open small, .brief-ref-state), [data-section-key="chips"] .brief-ref :is(small, .brief-ref-state)')]
+        // On a phone an ID and a state word stay whole; a long title wraps.
+        const words = await page.evaluate(() => [...document.querySelectorAll(".home-report :is(.brief-ref-row-open small, .brief-ref-state)")]
           .map((el) => ({ text: el.textContent, lines: el.getClientRects().length,
             tall: el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight || "0") * 1.5 + 2 })));
         const broken = words.filter((word) => word.lines > 1 || word.tall);
         assert.deepEqual(broken, [], `${view.name}: an ID or state broken inside: ${JSON.stringify(broken)}`);
-        const chipTitle = await page.evaluate(() => {
-          const chip = document.querySelector('[data-section-key="chips"] .brief-ref');
-          const title = chip.querySelector("span");
-          return { titleHeight: Math.round(title.getBoundingClientRect().height), chipWidth: Math.round(chip.getBoundingClientRect().width), page: innerWidth };
-        });
-        assert.ok(chipTitle.chipWidth <= chipTitle.page, `the chip stays inside the screen: ${JSON.stringify(chipTitle)}`);
-        record(`${view.name}: IDs and state words stay whole on a phone; a long chip title wraps`, { checked: words.length, chipTitle });
-        await shoot(card(page, "chips"), `${view.name}-chips`);
+        record(`${view.name}: IDs and state words stay whole on a phone`, { checked: words.length });
         // Scrolled to the list's end: its last row and the read time are
-        // reached, and nothing fixed at the bottom of the screen covers them.
-        const end = card(page, "work").locator(".brief-ref-list-read");
+        // reached, and nothing fixed on the screen covers them.
+        const end = work.locator(".brief-ref-list-read");
         await end.scrollIntoViewIfNeeded();
         await page.waitForTimeout(300);
         const reach = await page.evaluate(() => {
-          const last = [...document.querySelectorAll('[data-section-key="work"] .brief-ref-row')].at(-1);
-          const read = document.querySelector('[data-section-key="work"] .brief-ref-list-read');
+          const last = [...document.querySelectorAll(".home-report .brief-ref-row")].at(-1);
+          const read = document.querySelector(".home-report .brief-ref-list-read");
           const covered = (el) => {
             const r = el.getBoundingClientRect();
             const top = document.elementFromPoint(r.left + Math.min(20, r.width / 2), r.bottom - 2);
@@ -267,51 +277,68 @@ try {
         await shoot(page, `${view.name}-list-end`);
       }
 
-      if (view.name === "desktop-high" || view.name === "phone-high") {
-        // A draft being typed elsewhere on Home.
-        const field = card(page, "naming").locator("textarea").first();
-        await field.click();
-        await field.fill("先叫它实时任务卡");
+      if (drafting) {
         // Mail and other collaboration changes don't read Home again.
         const before = state.reads;
         await announce(page, { type: "workspace.changed", scope: "collaboration", collaboration: true });
         await page.waitForTimeout(2_500);
         assert.equal(state.reads, before, "a collaboration notice without tasks reads nothing");
         // A task change does: once, and Home's read is all it reads for the
-        // list (no task is read on its own).
+        // list (no task is read on its own); the open page follows it.
         const asked = report.requests.length;
         state.phase = 2;
         await announce(page, { type: "workspace.changed", scope: "collaboration", collaboration: true, tasks: true });
-        await page.waitForFunction(() => document.querySelector('[data-section-key="work"] .brief-ref-row[data-changed]'), null, { timeout: 5_000 });
+        await page.waitForFunction(() => document.querySelector(".home-report .brief-ref-row[data-changed]"), null, { timeout: 5_000 });
         const second = await rows(page);
         assert.equal(state.reads, before + 1);
         const delta = report.requests.slice(asked);
         assert.equal(delta.filter((path) => path === "/api/home").length, 1, JSON.stringify(delta));
         assert.deepEqual(delta.filter((path) => /task_get|\/tasks\//.test(path)), [], `no task read on its own: ${JSON.stringify(delta)}`);
         assert.deepEqual(second.filter((r) => r.changed).map((r) => [r.id, r.state]), [["T-12", "待审阅"]], JSON.stringify(second));
-        const kept = await page.evaluate(() => ({ value: document.activeElement?.value, tag: document.activeElement?.tagName,
-          inAsk: !!document.activeElement?.closest('[data-section-key="naming"]') }));
-        assert.deepEqual(kept, { value: "先叫它实时任务卡", tag: "TEXTAREA", inAsk: true }, "the draft keeps its text and focus");
-        // The section's version did not change, so no "updated" mark on the card.
-        assert.equal(await card(page, "work").locator(".brief-change").count(), 0);
-        record(`${view.name}: a task change reads Home once; only T-12 carries the quiet "changed" mark; the draft keeps its text and focus`, { kept, second: second.map((r) => [r.id, r.state, r.changed]) });
-        await shoot(card(page, "work"), `${view.name}-partial-update`);
+        // The section's version did not change, so no "updated" mark on its blocks.
+        assert.equal(await work.locator(".brief-change").count(), 0);
+        record(`${view.name}: a task change reads Home once; only T-12 carries the quiet "changed" mark on the open page`, { second: second.map((r) => [r.id, r.state, r.changed]) });
+        await shoot(work, `${view.name}-partial-update`);
 
         // A burst of changes, and the read fails: one read, then "not current".
         state.failFrom = state.reads + 1;
         const burst = state.reads;
         for (let i = 0; i < 5; i++) await announce(page, { type: "workspace.changed", scope: "collaboration", collaboration: true, tasks: true });
-        await page.locator('[data-section-key="work"] .brief-ref-list-stale').waitFor({ timeout: 6_000 });
+        await work.locator(".brief-ref-list-stale").waitFor({ timeout: 6_000 });
         await page.waitForTimeout(2_500);
         assert.equal(state.reads, burst + 1, `a burst reads Home once: ${state.reads - burst}`);
         const third = await rows(page);
         assert.ok(third.every((r) => r.stale), "every row says it is not current");
         assert.deepEqual(third.map((r) => r.state), second.map((r) => r.state), "the last facts stay, marked");
-        const banner = await card(page, "work").locator(".brief-ref-list-stale").textContent();
+        const banner = await work.locator(".brief-ref-list-stale").textContent();
         assert.match(banner, /^已过期：Home 刚才没能读取 Core，以下是 .+ 读取的状态。$/);
+        record(`${view.name}: a burst of five reads Home once; a failed read keeps the last facts and says they are out of date`, { banner });
+        await shoot(work, `${view.name}-not-current`);
+      }
+      await closeReport(page);
+      if (drafting) {
         assert.equal(await field.inputValue(), "先叫它实时任务卡");
-        record(`${view.name}: a burst of five reads Home once; a failed read keeps the last facts, says they are out of date, and keeps the draft`, { banner });
-        await shoot(card(page, "work"), `${view.name}-not-current`);
+        record(`${view.name}: back on Home, the Ask's draft keeps its text`);
+      }
+      // The chips of another report, on its own page.
+      if (view.name === "desktop-high" || view.touch) {
+        const chips = await openReport(page, "chips");
+        if (view.touch) {
+          const words = await page.evaluate(() => [...document.querySelectorAll(".home-report .brief-ref :is(small, .brief-ref-state)")]
+            .map((el) => ({ text: el.textContent, lines: el.getClientRects().length,
+              tall: el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight || "0") * 1.5 + 2 })));
+          const broken = words.filter((word) => word.lines > 1 || word.tall);
+          assert.deepEqual(broken, [], `${view.name}: an ID or state broken inside a chip: ${JSON.stringify(broken)}`);
+          const chipTitle = await page.evaluate(() => {
+            const chip = document.querySelector(".home-report .brief-ref");
+            const title = chip.querySelector("span");
+            return { titleHeight: Math.round(title.getBoundingClientRect().height), chipWidth: Math.round(chip.getBoundingClientRect().width), page: innerWidth };
+          });
+          assert.ok(chipTitle.chipWidth <= chipTitle.page, `the chip stays inside the screen: ${JSON.stringify(chipTitle)}`);
+          record(`${view.name}: in chips too, IDs and state words stay whole; a long chip title wraps`, { checked: words.length, chipTitle });
+        }
+        await shoot(chips, view.touch ? `${view.name}-chips` : `${view.name}-chips-existing`);
+        await closeReport(page);
       }
     } catch (error) {
       await page.screenshot({ path: `${output}/failed-${view.name}.png` }).catch(() => {});

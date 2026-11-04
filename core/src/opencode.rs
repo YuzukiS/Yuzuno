@@ -122,6 +122,21 @@ pub enum CompactAnswer {
     Unknown(String),
 }
 
+/// What a revert request is known to have done (T-10 Revert, Lead 3990).
+#[derive(Debug, PartialEq)]
+pub enum RevertAnswer {
+    /// 200 with the session as OpenCode answered it. Whether it reverted
+    /// anything is that session's `revert`, not the status: a message it
+    /// does not find also answers 200, the session unchanged.
+    Answered(Value),
+    /// Refused before OpenCode did anything, as only its own refusals
+    /// before the revert begins answer (see `refused_before`).
+    Refused(HttpStatus),
+    /// Anything else: no answer, a lost connection, a 5xx, any other 4xx or
+    /// body. Its files may have been sent back in part or whole.
+    Unknown(String),
+}
+
 /// An answer to a permission request. OpenCode's third answer, `always`,
 /// is not offered: it would allow later requests of this process by patterns
 /// the tool chooses.
@@ -402,6 +417,11 @@ impl Server {
         Ok(server)
     }
 
+    /// OpenCode's process ID, while it is not yet reaped.
+    pub fn pid(&self) -> Option<u32> {
+        self.group.0
+    }
+
     /// Ends OpenCode and its own children: `dispose` (at most DISPOSE_LIMIT),
     /// then SIGTERM to the group, up to GRACE for OpenCode to finish, then
     /// SIGKILL to whatever of it is left. A refused or unanswered dispose only
@@ -621,6 +641,18 @@ impl Server {
         self.json(Method::GET, &format!("/session/{}", segment(session)?), None).await
     }
 
+    /// OpenCode's own folders and this instance's worktree and directory
+    /// (`GET /path`, `handlers/instance.ts`): `home`, `state`, `config`,
+    /// `worktree`, `directory`.
+    pub async fn path(&self) -> Result<Value> {
+        self.json(Method::GET, "/path", None).await
+    }
+
+    /// The project OpenCode holds this instance's folder for (`GET /project/current`).
+    pub async fn project(&self) -> Result<Value> {
+        self.json(Method::GET, "/project/current", None).await
+    }
+
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
     pub async fn messages(&self, session: &str) -> Result<Value> {
         let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
@@ -649,6 +681,34 @@ impl Server {
                 },
                 Ok(response) if response.status().is_client_error() => CompactAnswer::Refused(status(response).await),
                 Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
+            }
+        })
+    }
+
+    /// The request that reverts the session to before `message` (T-10
+    /// Revert), as OpenCode 1.19.3's own (`POST /session/:id/revert`,
+    /// `session/revert.ts`): it checks the files of every later patch out of
+    /// OpenCode's snapshots, then keeps the revert in the session, to apply at
+    /// its next prompt, and answers once that is done. So it has no time
+    /// limit of its own and holds nothing of this server; sent once.
+    pub fn revert(&self, session: &str, message: &str) -> Result<impl std::future::Future<Output = RevertAnswer> + Send + 'static> {
+        let path = format!("/session/{}/revert", segment(session)?);
+        let request = self.request(Method::POST, &path).json(&json!({"messageID": message}));
+        let session = session.to_owned();
+        Ok(async move {
+            match request.send().await {
+                Err(error) => RevertAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
+                    Ok(body) => match serde_json::from_str::<Value>(&body) {
+                        Ok(session) if session.is_object() => RevertAnswer::Answered(session),
+                        _ => RevertAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
+                    },
+                    Err(error) => RevertAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
+                },
+                Ok(response) => {
+                    let status = status(response).await;
+                    if refused_before(&status, &session) { RevertAnswer::Refused(status) } else { RevertAnswer::Unknown(status.to_string()) }
+                }
             }
         })
     }
@@ -864,6 +924,31 @@ async fn success(response: Response) -> Result<Response> {
     Err(status(response).await.into())
 }
 
+/// Whether a revert's answer is one OpenCode 1.19.3 gives only before it
+/// does anything (Lead 4109), its status and whole body together, as its own
+/// API declares them (`packages/sdk/openapi.json`): 409 `SessionBusyError`
+/// of `session` itself, from `assertNotBusy`, the revert's first step
+/// (`session/revert.ts`); 404
+/// `NotFoundError`, from `requireSession`, the handler's own first step
+/// (`handlers/session.ts`); 400 `BadRequest` of a parameter, query or
+/// payload that could not be decoded, before the handler runs
+/// (`middleware/schema-error.ts`). Not one of kind `Body`: OpenCode answers
+/// so too when it cannot encode its own response, after the handler ran
+/// (`test/server/httpapi-schema-error-body.test.ts`, Lead 4121). Nor any
+/// other answer: a 401 or 403, any other body for those statuses, or one
+/// cut short.
+fn refused_before(status: &HttpStatus, session: &str) -> bool {
+    let Ok(body) = serde_json::from_str::<Value>(&status.body) else { return false };
+    let text = |value: &Value| value.is_string();
+    match status.code {
+        409 => body["_tag"] == "SessionBusyError" && body["sessionID"] == session && text(&body["message"]),
+        404 => body["name"] == "NotFoundError" && text(&body["data"]["message"]),
+        400 => body["name"] == "BadRequest" && text(&body["data"]["message"])
+            && matches!(body["data"]["kind"].as_str(), Some("Params" | "Query" | "Payload")),
+        _ => false,
+    }
+}
+
 async fn status(response: Response) -> HttpStatus {
     let code = response.status().as_u16();
     let mut body = response.text().await.unwrap_or_default();
@@ -881,6 +966,29 @@ async fn status(response: Response) -> HttpStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_opencodes_own_refusals_before_a_revert_begins_count_as_refused() {
+        let refused = |code: u16, body: Value| refused_before(&HttpStatus { code, body: body.to_string() }, "ses_1");
+        assert!(refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_1", "message": "Session is busy: ses_1"})));
+        assert!(refused(404, json!({"name": "NotFoundError", "data": {"message": "Session not found: ses_1"}})));
+        assert!(refused(400, json!({"name": "BadRequest", "data": {"message": "Expected string", "kind": "Payload"}})));
+        for (code, body) in [
+            (409, json!({"name": "SessionBusyError", "data": {"sessionID": "ses_1", "message": "busy"}})),
+            (409, json!({"_tag": "ConflictError", "message": "conflict"})),
+            (404, json!({"_tag": "SessionNotFoundError", "sessionID": "ses_1", "message": "gone"})),
+            (400, json!({"name": "BadRequest", "data": {"message": "no", "kind": "Headers"}})),
+            (400, json!({"name": "BadRequest", "data": {"message": "Expected a session", "kind": "Body"}})),
+            (401, json!({"_tag": "UnauthorizedError", "message": "no"})),
+            (403, json!({"_tag": "ForbiddenError", "message": "no"})),
+            (500, json!({"name": "UnknownError", "data": {"message": "no"}})),
+        ] {
+            assert!(!refused(code, body.clone()), "{code} {body}");
+        }
+        assert!(!refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_2", "message": "Session is busy: ses_2"})),
+            "a busy answer of another session is no refusal of this one");
+        assert!(!refused_before(&HttpStatus { code: 409, body: "{\"_tag\":\"SessionBusyError\",\"sessionID\":\"ses_1\",…".into() }, "ses_1"), "cut short");
+    }
 
     #[test]
     fn only_a_loopback_listening_line_gives_an_address() {

@@ -263,9 +263,16 @@ export function ImportCodexSession({
             {t.codexHandoff}
             {!preview.existingAgentId && t.codexAddsNothing}
           </p>
-          {errorShown && (
-            <p role="alert" className="remote-field-error">
-              {errorShown}
+          {/* The error's two lines are kept while empty: a failure fills them instead of
+              pushing the buttons down under the pointer. Below them it could fall out of this
+              dialog's scrolled view (T-19 SX-35). */}
+          {errorShown ? (
+            <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
+              <span>{errorShown}</span>
+            </p>
+          ) : (
+            <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
+              <span>&nbsp;</span>
             </p>
           )}
           <div className="modal-actions">

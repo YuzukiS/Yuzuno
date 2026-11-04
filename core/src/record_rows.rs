@@ -790,6 +790,16 @@ pub fn turn_count(db: &Connection, id: &str) -> Result<usize> {
     Ok(count(db.prepare_cached("SELECT COUNT(*) FROM agent_turns WHERE agent_id=?1")?.query_row([id], |r| r.get(0))?)?)
 }
 
+/// How many of the Agent's Turns come before `turn`; None if it has no such Turn.
+pub fn turns_before(db: &Connection, id: &str, turn: &str) -> Result<Option<usize>> {
+    let Some(ord) = db.prepare_cached("SELECT ord FROM agent_turns WHERE agent_id=?1 AND turn_id=?2")?
+        .query_row(params![id, turn], |r| r.get::<_, i64>(0)).optional()? else {
+        return Ok(None);
+    };
+    Ok(Some(count(db.prepare_cached("SELECT COUNT(*) FROM agent_turns WHERE agent_id=?1 AND ord<?2")?
+        .query_row(params![id, ord], |r| r.get(0))?)?))
+}
+
 /// The IDs of the newest `n` Turns, oldest first.
 pub fn newest_turns(db: &Connection, id: &str, n: usize) -> Result<Vec<String>> {
     let mut ids: Vec<String> = db.prepare_cached("SELECT turn_id FROM agent_turns WHERE agent_id=?1 ORDER BY ord DESC LIMIT ?2")?

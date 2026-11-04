@@ -19,10 +19,14 @@ import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
-import { PinnedSection } from "./PinnedSection";
+import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
+import { DeckSizes, sizable, useHeldSizes } from "./card-sizes";
+import { cardContent, shownSize, type CardSize } from "./card-preview";
+import { SummaryCard } from "./SummaryCard";
+import { replyableIn } from "./CardReply";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -481,7 +485,15 @@ export function Home({
   }, [agentsKey, readOnly]);
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
-  const { layout, pin, unpin } = widgetLayout;
+  // The sizes the deck's cards are shown at in this visit (T-18).
+  const deckSizes = useHeldSizes(readOnly ? "" : workspaceId, visit);
+  // How each pinned card is shown, fixed for the visit by its pin (Lead 2604): as its summary card, or
+  // whole as before. A newer version that adds or drops the summary changes it only at the next visit,
+  // so the widget, its reply and its focus stay; a pin the user sized is always its card.
+  const pinPaths = useRef({ workspaceId, visit, paths: new Map<string, "card" | "full">() });
+  if (pinPaths.current.workspaceId !== workspaceId || pinPaths.current.visit !== visit)
+    pinPaths.current = { workspaceId, visit, paths: new Map() };
+  const { layout, pin, unpin, resize, resetSizes } = widgetLayout;
   // A section pinned here (T-19 HM:W5): what was pressed keeps its place
   // while the widget column above it grows, and the new widget comes in over
   // small (opacity, 4 px up) and settles once; under reduced motion it is
@@ -575,14 +587,54 @@ export function Home({
     {
       id: "machines",
       name: t.machines,
+      // Built in: the whole row at its content's height, no size to choose (Dev 7's v19).
+      full: "builtin",
       body: <MachineWidget projectName={projectName} readOnly={readOnly} />,
     },
     // The design preview has no pins: its sections are not this workspace's.
-    ...(readOnly || !layout ? [] : layout.pins).map((p) => {
+    ...(readOnly || !layout ? [] : layout.pins).map((p): HomeWidget => {
       const source = resolvePin(p, data, readFailed);
+      const id = pinWidgetId(p);
+      const name = source.state === "shown" ? source.section.title : p.title;
+      const onResize = (size: CardSize | null) => resize(p, size);
+      // A pinned card with a summary is the same card as in its project, at the size the user gave the widget,
+      // else its Agent's, held for the visit (T-18, Lead 2457, 2473; Dev 7's v19). Nothing is written to the card.
+      // Its summary gone in a later version, it says so on the same card (Lead 2604), never the old body.
+      let path = pinPaths.current.paths.get(id);
+      if (source.state === "shown" && !path) {
+        path = p.size || cardContent(source.section).kind === "named" ? "card" : "full";
+        pinPaths.current.paths.set(id, path);
+      }
+      if (source.state === "shown" && (path === "card" || p.size)) {
+        const section = source.section;
+        const { size, own } = shownSize(section, cardContent(section), p.size ?? null,
+          sizable(section) ? (computed) => deckSizes.held(p.projectId, section.id!, computed) : undefined);
+        return {
+          id,
+          name,
+          size: { shown: size, own, chosen: p.size ?? null, onChange: onResize },
+          onUnpin: () => unpin(p),
+          body: (
+            <SummaryCard
+              section={section}
+              projectId={p.projectId}
+              workspaceId={workspaceId}
+              agents={byProject.get(p.projectId) || noAgents}
+              readOnly={readOnly}
+              onSeen={(marks) => seen(p.projectId, marks)}
+              widget={{ id, chosen: p.size ?? null, onResize, onUnpin: () => unpin(p) }}
+              // Marked seen, it keeps its Reply and the reply being written, as History does (T-174, Lead 2655).
+              referable={replyableIn(data?.projects.find((panel) => panel.project.id === p.projectId), section)}
+              notice={<PinNotes source={source} />}
+            />
+          ),
+        };
+      }
+      // Any other pin as before: its whole body, or why it can't show it, across the row (Dev 7's v19).
       return {
-        id: pinWidgetId(p),
-        name: source.state === "shown" ? source.section.title : p.title,
+        id,
+        name,
+        full: "legacy",
         onUnpin: () => unpin(p),
         body: (
           <PinnedSection
@@ -612,6 +664,7 @@ export function Home({
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
+    <DeckSizes.Provider value={deckSizes}>
     <BriefDensity.Provider value={density}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
     <ReportOpen.Provider value={cardReport}>
@@ -707,6 +760,7 @@ export function Home({
             widgets={widgets}
             layout={readOnly ? (layout ?? { order: [], hidden: [], pins: [] }) : layout}
             onChange={layout ? widgetLayout.change : undefined}
+            onResetSizes={layout ? resetSizes : undefined}
           />
           <div className="home-main">
             {landed?.kind === "gone" && landedNote(false)}
@@ -781,6 +835,7 @@ export function Home({
     </ReportOpen.Provider>
     </HomeReadContext.Provider>
     </BriefDensity.Provider>
+    </DeckSizes.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>
