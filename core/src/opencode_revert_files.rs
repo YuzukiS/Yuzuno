@@ -371,15 +371,21 @@ async fn git(store: &Path, args: &[&str], limit: u64) -> Result<std::result::Res
     for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG_PARAMETERS"] {
         command.env_remove(name);
     }
-    let (status, stdout, said) = capture(command, limit).await?;
+    let (status, stdout, said) = capture(command, limit, Duration::from_secs(GIT_SECONDS)).await?;
     Ok(if status.success() { Ok(stdout) } else { Err(said) })
 }
 
-/// `command` run with its answer kept, at most `limit` bytes of it: more ends
-/// it at once (killed and reaped), as does GIT_SECONDS without an end. What
-/// it says on error is kept from its start and the rest read away, so it
-/// never waits on a full pipe.
-async fn capture(mut command: tokio::process::Command, limit: u64) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
+/// `command` run with its answer kept, at most `limit` bytes of it, and the
+/// start of what it says on error (the rest read away, so it never waits on
+/// a full pipe). Its answer, what it says and its end all come within one
+/// deadline, `within` from its start (Lead 4081): past it, more than `limit`
+/// bytes, or a read that fails, and it is ended as it is: the process this
+/// started is killed and reaped, and the reader of what it says is stopped
+/// and waited for. A process it started in turn, and still holding a pipe,
+/// is not this one's to end: the reads stop at the deadline all the same.
+/// Each such end is its own error, never an answer.
+async fn capture(mut command: tokio::process::Command, limit: u64, within: Duration) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
+    let deadline = tokio::time::Instant::now() + within;
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -389,27 +395,36 @@ async fn capture(mut command: tokio::process::Command, limit: u64) -> Result<(st
         .context("Git could not be started on this Core's host")?;
     let mut out = child.stdout.take().context("Missing Git output")?;
     let mut err = child.stderr.take().context("Missing Git errors")?;
-    let said = tokio::spawn(async move {
+    let mut said = tokio::spawn(async move {
         let mut kept = Vec::new();
         (&mut err).take(4096).read_to_end(&mut kept).await?;
         tokio::io::copy(&mut err, &mut tokio::io::sink()).await?;
         Ok::<_, std::io::Error>(String::from_utf8_lossy(&kept).trim().chars().take(600).collect::<String>())
     });
-    let run = async {
+    let late = |what: &str| anyhow::anyhow!("{what} within {} s", within.as_secs_f32());
+    let outcome: Result<(std::process::ExitStatus, Vec<u8>, String)> = async {
         let mut stdout = Vec::new();
-        (&mut out).take(limit + 1).read_to_end(&mut stdout).await?;
-        if stdout.len() as u64 > limit {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            bail!("Git's answer exceeded {limit} bytes");
-        }
-        Ok::<_, anyhow::Error>((child.wait().await?, stdout))
-    };
-    let (status, stdout) = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), run)
-        .await
-        .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))??;
-    let said = said.await.context("What Git said was not read")??;
-    Ok((status, stdout, said))
+        tokio::time::timeout_at(deadline, (&mut out).take(limit + 1).read_to_end(&mut stdout))
+            .await
+            .map_err(|_| late("Git did not answer"))?
+            .context("Git's answer could not be read")?;
+        ensure!(stdout.len() as u64 <= limit, "Git's answer exceeded {limit} bytes");
+        let status = tokio::time::timeout_at(deadline, child.wait()).await.map_err(|_| late("Git did not end"))??;
+        let text = tokio::time::timeout_at(deadline, &mut said)
+            .await
+            .map_err(|_| late("What Git said did not end"))?
+            .context("What Git said was not read")?
+            .context("What Git said could not be read")?;
+        Ok((status, stdout, text))
+    }
+    .await;
+    if outcome.is_err() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        said.abort();
+        let _ = said.await;
+    }
+    outcome
 }
 
 /// Git as OpenCode itself runs it on its store for a checkout (`snapshot/index.ts`: its work tree, its own
@@ -431,7 +446,7 @@ async fn native_git(store: &Path, worktree: &Path, env: &[(String, String)], arg
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .envs(env.iter().map(|(k, v)| (k, v)));
-    capture(command, limit).await
+    capture(command, limit, Duration::from_secs(GIT_SECONDS)).await
 }
 
 /// That OpenCode's checkout of `rel` would write the snapshot's bytes as they are (Lead 4037): no attribute that

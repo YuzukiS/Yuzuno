@@ -459,3 +459,56 @@ async fn a_git_answer_past_its_bound_ends_git_at_once() {
     assert!(error.contains("exceeded 10 bytes"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(10), "ended at once, not at the time limit: {:?}", started.elapsed());
 }
+
+/// Whether the process `pid` is gone, reaped: no such process, not even one that ended unreaped.
+#[cfg(target_os = "linux")]
+fn reaped(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat.rsplit(')').next().and_then(|rest| rest.split_whitespace().next()) == Some("X"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_capture_ends_within_its_deadline_and_reaps_what_it_started_however_it_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid = |name: &str| -> i32 { std::fs::read_to_string(dir.path().join(name)).unwrap().trim().parse().unwrap() };
+    let sh = |script: String| {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        command
+    };
+    let within = Duration::from_secs(2);
+
+    // What it says held open by a process it started in turn: its answer and its own end came, what it says
+    // never ends; the deadline ends that wait, and what it started itself is reaped.
+    let held = dir.path().join("held");
+    let started = std::time::Instant::now();
+    let error = capture(sh(format!("echo $$ > {0}/self; sh -c 'echo $$ > {1}; exec sleep 30 >/dev/null' & echo answer", dir.path().display(), held.display())), 100, within)
+        .await.unwrap_err().to_string();
+    assert!(error.contains("What Git said did not end within"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert!(reaped(pid("self")), "what it started itself is reaped");
+    let descendant = pid("held");
+    assert!(!reaped(descendant), "a process it did not start is not its to end");
+    unsafe { libc::kill(descendant, libc::SIGKILL) };
+
+    // No answer by the deadline: killed and reaped.
+    let started = std::time::Instant::now();
+    let error = capture(sh(format!("echo $$ > {}/slow; exec sleep 30", dir.path().display())), 100, within).await.unwrap_err().to_string();
+    assert!(error.contains("Git did not answer within"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert!(reaped(pid("slow")), "killed and reaped at the deadline");
+
+    // More than it may answer: killed and reaped at once.
+    let started = std::time::Instant::now();
+    let error = capture(sh(format!("echo $$ > {}/loud; exec yes", dir.path().display())), 10, within).await.unwrap_err().to_string();
+    assert!(error.contains("exceeded 10 bytes"), "{error}");
+    assert!(started.elapsed() < within, "ended at once: {:?}", started.elapsed());
+    assert!(reaped(pid("loud")), "killed and reaped when it said too much");
+
+    // And an ordinary end: its answer, what it said, how it ended.
+    let (status, answer, said) = capture(sh("echo answer; echo trouble >&2; exit 3".into()), 100, within).await.unwrap();
+    assert_eq!((status.code(), answer, said.as_str()), (Some(3), b"answer\n".to_vec(), "trouble"));
+}
