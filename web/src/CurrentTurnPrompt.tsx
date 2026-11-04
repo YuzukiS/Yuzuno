@@ -39,6 +39,23 @@ export function userRequests(turn: NativeTurn) {
     .filter((item) => item.text);
 }
 
+/** The pin's height once open, while it is opening; 0 when it is not open. */
+function openHeight(pin: HTMLDetailsElement) {
+  const last = pin.open ? pin.lastElementChild : null;
+  if (!last) return 0;
+  const style = getComputedStyle(pin);
+  // The excerpt still folding away, while it is drawn: it ends at no height.
+  const excerpt = pin.querySelector<HTMLElement>(".current-turn-excerpt");
+  const folding = excerpt?.getClientRects().length
+    ? excerpt.getBoundingClientRect().height + parseFloat(getComputedStyle(excerpt).marginTop)
+    : 0;
+  // The last part's box (the list as its max-height holds it, or the preview's
+  // footer) and what follows it: its margin, the pin's padding and border.
+  return last.getBoundingClientRect().bottom - pin.getBoundingClientRect().top - folding
+    + parseFloat(getComputedStyle(last).marginBottom)
+    + parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
+}
+
 export function CurrentTurnPrompt({
   turn,
   number,
@@ -131,8 +148,10 @@ export function CurrentTurnPrompt({
         setPinned(shown);
       }
       // Jumps land below the pin at its current size, including a jump that
-      // only brings it in by moving the original out of view.
-      const room = `${element.offsetHeight + 16}px`;
+      // only brings it in by moving the original out of view. Open, at the
+      // size it is opening to (T-19): its list is laid out whole under the
+      // clip that unfolds it, and the excerpt it is folding away ends at none.
+      const room = `${Math.max(element.offsetHeight, Math.round(openHeight(element))) + 16}px`;
       if (scroller.style.scrollPaddingTop !== room)
         scroller.style.scrollPaddingTop = room;
     };
