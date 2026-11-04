@@ -319,16 +319,12 @@ async fn git(store: &Path, args: &[&str], limit: u64) -> Result<std::result::Res
         .kill_on_drop(true)
         .spawn()
         .context("Git could not be started on this Core's host")?;
-    let mut out = child.stdout.take().context("Missing Git output")?;
-    let mut err = child.stderr.take().context("Missing Git errors")?;
+    let mut out = child.stdout.take().context("Missing Git output")?.take(limit + 1);
+    let mut err = child.stderr.take().context("Missing Git errors")?.take(4096);
     let run = async {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let (a, b, status) = tokio::join!(
-            (&mut out).take(limit + 1).read_to_end(&mut stdout),
-            (&mut err).take(4096).read_to_end(&mut stderr),
-            child.wait()
-        );
+        let (a, b, status) = tokio::join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr), child.wait());
         a?;
         b?;
         Ok::<_, anyhow::Error>((status?, stdout, stderr))
