@@ -311,4 +311,9 @@ impl Store {
     pub fn agent_project(&self, agent_id: &str) -> Result<Option<String>> {
         agent_project(&*self.db.read()?, agent_id)
     }
+
+    /// The Agent's listed kind (T-33): `lead`, `executor`, or None if standing.
+    pub fn agent_kind(&self, agent_id: &str) -> Result<Option<String>> {
+        crate::agent_roles::listed_kind(&*self.db.read()?, agent_id)
+    }
 }

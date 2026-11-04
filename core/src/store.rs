@@ -270,6 +270,7 @@ fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
     let mut agent = detail.agent.clone();
     agent.work_summary = crate::rail::project(detail);
     agent.project_id = None;
+    agent.kind = None;
     let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress");
     let active_turn = active.and_then(|t| t["id"].as_str()).map(str::to_owned);
     let active_turn_unmatched = active.is_some_and(|t| t["_yuzunoUnmatched"] == true);
@@ -1072,6 +1073,7 @@ fn project_window(
     crate::mailbox_notice::annotate(db, &mut index)?;
     crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
     index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
+    index.agent.kind = crate::agent_roles::listed_kind(db, &index.agent.id)?;
     let found = crate::conversation_window::project_from(&index.turns, query, |t, i| {
         let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
         // The complete index has already been annotated from this snapshot.
@@ -1101,6 +1103,7 @@ fn project_window_marked(
     crate::mailbox_notice::annotate(db, &mut index)?;
     crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
     index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
+    index.agent.kind = crate::agent_roles::listed_kind(db, &index.agent.id)?;
     let found = crate::conversation_window::project_marked(&index.turns, ords, counts, query, position, |t, i| {
         let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
         // The index has been annotated from this snapshot: its provenance on
@@ -1190,6 +1193,7 @@ impl Store {
         record_rows::mark_store(&db)?;
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
+        crate::agent_roles::migrate(&db)?;
         crate::services::migrate(&db)?;
         crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
@@ -1328,6 +1332,7 @@ impl Store {
         let mut detail = detail.clone();
         detail.agent.work_summary = None;
         let project = detail.agent.project_id.take();
+        detail.agent.kind = None;
         let rows = record_rows::split(&detail)?;
         let _kept_out = self.keep_older_cores_out_for(detail.agent.remote.as_ref()
             .and_then(|remote| crate::older_cores::agent_hazard(&detail.agent.name, &remote.machine)))?;
@@ -2041,11 +2046,11 @@ impl Store {
     }
 
     pub fn agents(&self) -> Result<Vec<Agent>> {
-        let (ids, mut projects) = {
+        let (ids, mut projects, kinds) = {
             let db = self.db.read()?;
             let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
             let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            (ids, crate::projects::agent_projects(&db)?)
+            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?)
         };
         let mut agents = Vec::with_capacity(ids.len());
         for id in ids {
@@ -2053,6 +2058,7 @@ impl Store {
             let Some(listed) = self.listed(&id, Load::Reader)? else { continue };
             let mut agent = listed.agent;
             agent.project_id = projects.remove(&id);
+            agent.kind = kinds.get(&id).map(|kind| (*kind).to_owned());
             agents.push(agent);
         }
         Ok(agents)

@@ -688,6 +688,7 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
             cwd,
             model,
             settings,

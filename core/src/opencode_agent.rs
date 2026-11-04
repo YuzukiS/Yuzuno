@@ -508,6 +508,7 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
             cwd: cwd.to_string_lossy().into_owned(),
             model,
             settings: Default::default(),

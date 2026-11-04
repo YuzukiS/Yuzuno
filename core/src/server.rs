@@ -107,6 +107,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
     let asset_service = tower::service_fn(move |request: Request| crate::updates::assets::serve(assets.clone(), asset_updates.clone(), request));
     Router::new()
         .merge(update_routes)
+        .merge(crate::agent_roles::router())
         .merge(crate::pr_review::router())
         .merge(crate::pr_operations::router())
         .merge(crate::jobs::router())
