@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react";
 import { CopyButton, Prose } from "../components";
 import { useFullItem } from "../item-payload";
@@ -6,6 +6,7 @@ import type { NativeItem } from "../types";
 import { parseReply, type ReplySegment, type ResultProblem } from "./message";
 import type { ResultSpec } from "./spec";
 import { resultText } from "./result-text";
+import { reserveFor, type Reserve } from "./result-reserve";
 import { useStrings } from "../i18n";
 import "./result-states.css";
 
@@ -17,6 +18,9 @@ type ResultProps = {
   onFile?: (path: string, line?: number) => void;
   onDraft?: (text: string) => void;
   onInteract?: () => void;
+  /** Read as the renderer mounts: a placeholder stood in for this result, so
+   * it comes in with a fade (T-19 HM:I5). */
+  arrival?: { readonly current: boolean };
 };
 
 /** The renderer chunk could not be loaded (offline, or replaced by an update). */
@@ -124,10 +128,29 @@ function RawResult({ raw, problem }: { raw?: string; problem?: ResultProblem }) 
 }
 
 /** Where a result goes while it is still being written or loaded. */
-export function ResultPlaceholder({ what }: { what: keyof ReturnType<typeof resultText>["placeholder"] }) {
+export function ResultPlaceholder({
+  what,
+  onShown,
+  reserve,
+}: {
+  what: keyof ReturnType<typeof resultText>["placeholder"];
+  /** Called once it is shown. */
+  onShown?: () => void;
+  /** The room its spec's kinds keep, when its spec is known (see result-reserve.ts). */
+  reserve?: Reserve | null;
+}) {
   const t = useStrings(resultText);
+  useLayoutEffect(() => {
+    onShown?.();
+  }, [onShown]);
   return (
-    <div className="result-state result-placeholder" role="status" aria-live="polite">
+    <div
+      className="result-state result-placeholder"
+      role="status"
+      aria-live="polite"
+      data-reserve={reserve?.kinds.join(" ")}
+      style={reserve ? { minHeight: reserve.height } : undefined}
+    >
       <LoaderCircle size={15} className="spin" aria-hidden="true" />
       <span>{t.placeholder[what]}</span>
     </div>
@@ -181,9 +204,19 @@ function stateOf(problem: ResultProblem): Unavailable {
 }
 
 /** One valid result, drawn by the lazily loaded renderer. */
-export function ShownResult(props: ResultProps) {
+export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "arrival"> & {
+  /** A placeholder stood in for it until now: its read, or its block still being written. */
+  arrived?: boolean;
+}) {
   // Re-rendered on retry, so the boundary gets the current lazy component.
   const [, setTries] = useState(0);
+  // It comes in with a fade if a placeholder stood in for it, here (the
+  // renderer still loading) or before (T-19 HM:I5); one drawn at once does not.
+  const waited = useRef(arrived);
+  if (arrived) waited.current = true;
+  // Its spec is known while the renderer loads: its placeholder keeps room
+  // for what the spec holds (T-19 HM:I5, F3).
+  const reserve = useMemo(() => reserveFor(props.spec), [props.spec]);
   return (
     <ResultBoundary
       key={props.identity + props.raw}
@@ -218,14 +251,28 @@ export function ShownResult(props: ResultProps) {
         )
       }
     >
-      <Suspense fallback={<ResultPlaceholder what="result" />}>
-        <LazyResult {...props} />
+      <Suspense fallback={<ResultPlaceholder what="result" reserve={reserve} onShown={() => (waited.current = true)} />}>
+        <LazyResult {...props} arrival={waited} />
       </Suspense>
     </ResultBoundary>
   );
 }
 
-function Segment({ segment, props }: { segment: ReplySegment; props: Omit<ResultProps, "spec" | "raw"> }) {
+function Segment({
+  segment,
+  arrived,
+  props,
+}: {
+  segment: ReplySegment;
+  /** A placeholder stood in for the reply's rest while it was read. */
+  arrived: boolean;
+  props: Omit<ResultProps, "spec" | "raw" | "arrival">;
+}) {
+  // A block still being written showed a placeholder: once whole, it comes in.
+  const pending = useRef(false);
+  useLayoutEffect(() => {
+    if (segment.kind === "pending") pending.current = true;
+  }, [segment.kind]);
   switch (segment.kind) {
     case "text":
       return <Prose text={segment.text} onFile={props.onFile} />;
@@ -234,7 +281,7 @@ function Segment({ segment, props }: { segment: ReplySegment; props: Omit<Result
     case "invalid":
       return <ResultUnavailable kind={stateOf(segment.problem)} raw={segment.raw} problem={segment.problem} />;
     case "result":
-      return <ShownResult {...props} spec={segment.spec} raw={segment.raw} />;
+      return <ShownResult {...props} spec={segment.spec} raw={segment.raw} arrived={arrived || pending.current} />;
   }
 }
 
@@ -278,6 +325,8 @@ export function AgentReply({
     if (preview && !full.expanded) expand();
   }, [preview, full.expanded, expand]);
   const loaded = preview && full.expanded && !full.loading && !full.error;
+  // Its result comes in with a fade once the rest is read (T-19 HM:I5).
+  const readRest = useRef(false);
   const shownText = loaded && typeof full.item.text === "string" ? full.item.text : text;
   const segments = useMemo(
     () => (preview && !loaded ? null : parseReply(shownText, complete)),
@@ -299,7 +348,7 @@ export function AgentReply({
             </p>
           </div>
         ) : (
-          <ResultPlaceholder what="reply" />
+          <ResultPlaceholder what="reply" onShown={() => (readRest.current = true)} />
         )}
       </>
     );
@@ -307,7 +356,7 @@ export function AgentReply({
   return (
     <>
       {segments.map((segment, index) => (
-        <Segment key={index} segment={segment} props={{ identity, onFile, onDraft, onInteract }} />
+        <Segment key={index} segment={segment} arrived={readRest.current} props={{ identity, onFile, onDraft, onInteract }} />
       ))}
     </>
   );
