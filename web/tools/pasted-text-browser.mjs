@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
-import { installConnectionFixture } from "./connection-fixture.mjs";
+import { FIXTURE_WORKSPACE, installConnectionFixture } from "./connection-fixture.mjs";
 import { draftIdentityInPage } from "./browser-fixtures.mjs";
 
 const base = process.env.T33_UI_URL || "http://127.0.0.1:4485";
@@ -121,10 +121,9 @@ const input = () => page.locator("[data-composer-input]");
 const chips = () => page.locator(".pasted-text-chip");
 const ids = () =>
   chips().evaluateAll((els) => els.map((el) => el.dataset.pasteId));
-// A draft is saved under the Workspace and the Agent (T-195). The key is
-// found by the Agent it names (draftIdentityInPage), so no Workspace id is
-// spelled here and a fixture may call its own whatever it likes.
-const identityOf = (id) => page.evaluate(draftIdentityInPage, id);
+// A draft is saved under the Workspace and the Agent (T-195): the connection
+// fixture's Workspace, which its /api/workspace names.
+const identityOf = (id) => page.evaluate(draftIdentityInPage, [FIXTURE_WORKSPACE, id]);
 const saved = async (id = "a") =>
   page.evaluate((identity) => {
     const draft = JSON.parse(
@@ -399,8 +398,8 @@ try {
     "missing body recovery requires confirmation, survives reload and leaves other Agents intact",
     async () => {
       const kept = await saved("b");
-      // The key this Agent's draft is saved under, found by the Agent it
-      // names (T-195); its paste bodies use the same identity.
+      // The key this Agent's draft is saved under, its Workspace's and its
+      // own (T-195); its paste bodies use the same identity.
       const mine = await identityOf("a");
       const read = () =>
         page.evaluate(

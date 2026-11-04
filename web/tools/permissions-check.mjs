@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-permissions";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -16,6 +18,9 @@ const report = {
   mode: "isolated-browser-fixtures",
   checks: [],
   mutations: [],
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
   errors: [],
 };
 const agent = {
@@ -116,6 +121,10 @@ await page.route("**/*", async (route) => {
   // The read receipt for the conversation on screen is not a settings write.
   if (request.method() === "POST" && url.pathname === "/api/agents/a/review")
     return route.fulfill({ json: {} });
+  if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     const input = request.postDataJSON();
     report.mutations.push({ path: url.pathname, input });
@@ -136,11 +145,16 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
+        workspace: { id: WORKSPACE },
         agents: [agent],
         runtime: { connected: true },
         defaultCwd: "/fixture",
       },
     });
+  // What the app reads once it knows its Workspace: no reading place held by Core, and Home with nothing.
+  if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  if (url.pathname === "/api/home")
+    return route.fulfill({ json: { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] } });
   if (url.pathname === "/api/agents/a") return route.fulfill({ json: detail });
   if (url.pathname === "/api/agents/a/models")
     return route.fulfill({
@@ -253,7 +267,7 @@ try {
       report.mutations.at(-1).input.settings.permissionPreset,
       preset,
     );
-    assert.equal(await composerDraft(composer), "保留这段还没发送的草稿。");
+    assert.equal(await composerDraft(composer, WORKSPACE), "保留这段还没发送的草稿。");
     record("Permission mode saved with its next-turn preview", { preset });
   }
   const full = permissions.presets.find((p) => p.id === "full");
@@ -317,7 +331,7 @@ try {
   assert.equal(detail.messageReceipts[0].turnId, "turn-2");
   await modal.getByRole("button", { name: "Close dialog", exact: true }).click();
   await modal.waitFor({ state: "detached" });
-  assert.equal(await composerDraft(composer), "保留这段还没发送的草稿。");
+  assert.equal(await composerDraft(composer, WORKSPACE), "保留这段还没发送的草稿。");
   record(
     "A stale active-turn UI accepts the Core receipt for a new turn; draft is preserved",
   );

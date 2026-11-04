@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-ui-refine";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -12,7 +14,14 @@ const output = resolve(
   process.env.YUZUNO_CHECK_OUTPUT || "../acceptance/ui-refine",
 );
 await mkdir(output, { recursive: true });
-const report = { checks: [], mutations: [], errors: [] };
+const report = {
+  checks: [],
+  mutations: [],
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
+  errors: [],
+};
 const agent = {
   id: "a",
   name: "Mori",
@@ -160,6 +169,10 @@ await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   assert.equal(url.hostname, "yuzuno-ui-refine.test");
+  if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     const input = request.postDataJSON();
     report.mutations.push({ path: url.pathname, input });
@@ -178,8 +191,12 @@ await page.route("**/*", async (route) => {
   }
   if (url.pathname === "/api/workspace")
     return route.fulfill({
-      json: { agents, runtime: { connected: true }, defaultCwd: "/fixture" },
+      json: { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/fixture" },
     });
+  // What the app reads once it knows its Workspace: no reading place held by Core, and Home with nothing.
+  if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  if (url.pathname === "/api/home")
+    return route.fulfill({ json: { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] } });
   if (/^\/api\/agents\/[ab]$/.test(url.pathname))
     return route.fulfill({
       json: {
@@ -249,7 +266,7 @@ async function openAppearance() {
 try {
   await page.goto("https://yuzuno-ui-refine.test/");
   const composer = page.getByRole("textbox", { name: "Message Mori" });
-  const draftOf = () => composerDraft(composer);
+  const draftOf = () => composerDraft(composer, WORKSPACE);
   await composer.fill("保留还未发送的草稿");
   const history = page.locator(".artifact-history");
   await page

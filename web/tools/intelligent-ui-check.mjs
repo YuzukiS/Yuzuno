@@ -13,6 +13,8 @@ import {
   VIEW_MAX_ENTRIES,
   resultFingerprint,
 } from "../src/intelligent-ui/view-storage.ts";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "fixture";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated production build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -122,9 +124,9 @@ await page.addInitScript(() => {
       JSON.stringify({ theme: "light", fontSize: 20, palette: "garden" }),
     );
   // A draft is saved under the Workspace and the Agent it was written in
-  // (T-195); this fixture's /api/workspace says "fixture".
+  // (T-195); this fixture's /api/workspace says WORKSPACE.
   for (const [agent, text] of [["a", "保留这段原草稿。"], ["b", "Hana's own draft."]]) {
-    const key = `yuzuno.composer.v1:${JSON.stringify(["fixture", agent])}`;
+    const key = `yuzuno.composer.v1:${JSON.stringify([WORKSPACE, agent])}`;
     if (!localStorage.getItem(key))
       localStorage.setItem(
         key,
@@ -143,7 +145,7 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
-        workspace: { id: "fixture" },
+        workspace: { id: WORKSPACE },
         agents,
         runtime: { connected: true },
         defaultCwd: "/fixture",
@@ -251,7 +253,7 @@ try {
     .getByRole("button", { name: "Continue with selection", exact: true })
     .click();
   const draft = await composerDraft(
-    page.getByRole("textbox", { name: "Message Mori", exact: true }),
+    page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
   );
   assert.ok(draft.startsWith("保留这段原草稿。\n\n"));
   assert.match(draft, /Selected:\n- Options: Option: Turn dock/);
@@ -280,7 +282,7 @@ try {
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   assert.equal(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     draft,
   );
@@ -309,7 +311,7 @@ try {
     .click();
   assert.match(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     /Update latency: Snapshot — 120 ms/,
   );
@@ -338,7 +340,7 @@ try {
     .waitFor();
   assert.equal(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Hana", exact: true }),
+      page.getByRole("textbox", { name: "Message Hana", exact: true }), WORKSPACE,
     ),
     "Hana's own draft.",
   );
@@ -432,7 +434,7 @@ try {
     .click();
   assert.match(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     /Please include an interactive data report/,
   );
@@ -510,7 +512,7 @@ try {
   );
 
   const beforePressure = await composerDraft(
-    page.getByRole("textbox", { name: "Message Mori", exact: true }),
+    page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
   );
   const pressure = await page.evaluate(({ prefix }) => {
     let added = 0,
@@ -546,7 +548,7 @@ try {
     exact: true,
   });
   await composer.waitFor();
-  assert.equal(await composerDraft(composer), beforePressure);
+  assert.equal(await composerDraft(composer, WORKSPACE), beforePressure);
   assert.equal(
     await page.evaluate(
       (prefix) =>
@@ -567,12 +569,12 @@ try {
   await page
     .getByRole("button", { name: "Continue with selection", exact: true })
     .click();
-  const afterPressure = await composerDraft(composer);
+  const afterPressure = await composerDraft(composer, WORKSPACE);
   assert.ok(afterPressure.startsWith(storageDraft + "\n\n"));
   // Saved where the composer keeps drafts since T-33, paste blocks included,
   // under the Workspace and the Agent it was written in (T-195); this
-  // fixture's /api/workspace says "fixture".
-  const mine = JSON.stringify(["fixture", "a"]);
+  // fixture's /api/workspace says WORKSPACE.
+  const mine = JSON.stringify([WORKSPACE, "a"]);
   await page.waitForFunction(({ text, identity }) => {
     const saved = localStorage.getItem("yuzuno.composer.v1:" + identity);
     return (
@@ -588,7 +590,7 @@ try {
   }, { text: afterPressure, identity: mine });
   await page.reload();
   await page.locator(".interactive-result").waitFor();
-  assert.equal(await composerDraft(composer), afterPressure);
+  assert.equal(await composerDraft(composer, WORKSPACE), afterPressure);
   assert.ok(
     await page
       .getByRole("checkbox", { name: "Select Turn dock", exact: true })
@@ -651,7 +653,7 @@ try {
   await page.reload();
   await page.locator(".interactive-result").waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, WORKSPACE),
     storageDraft + " After a failed preference write.",
   );
   assert.equal(
@@ -705,7 +707,7 @@ try {
   );
   assert.match(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     /存储压力后的新草稿/,
   );

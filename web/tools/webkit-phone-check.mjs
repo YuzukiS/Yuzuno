@@ -105,6 +105,9 @@ const coreProcess = spawn(coreBin, ["--port", String(port), "--data-dir", join(l
 let browser;
 try {
   await until(async () => coreProcess.exitCode === null && (await core("GET", "/api/health")), "the lab Core to answer");
+  // Drafts are saved under the Workspace the lab Core says it is (T-195).
+  const workspaceId = (await core("GET", "/api/workspace")).workspace?.id;
+  assert.ok(workspaceId, "the lab Core says which Workspace it is");
   check("the lab Core runs on its own port and data folder, without the caller's YUZUNO_* settings", { port });
 
   const projectId = (await core("POST", "/api/projects", { name: "Phone check" })).id;
@@ -174,7 +177,7 @@ try {
   const draft = "Written while the network goes away.";
   await composer.click();
   await page.keyboard.type(draft);
-  assert.equal(await composerDraft(composer), draft, "the composer holds what was typed");
+  assert.equal(await composerDraft(composer, workspaceId), draft, "the composer holds what was typed");
   const shownBefore = await turnsShown();
   const offAt = Date.now();
   await context.setOffline(true);
@@ -184,14 +187,14 @@ try {
   }, "the page to say Core cannot be reached", 45);
   const noticedAfter = (Date.now() - offAt) / 1000;
   await shot("1-offline");
-  assert.equal(await composerDraft(composer), draft, "draft kept while offline");
+  assert.equal(await composerDraft(composer, workspaceId), draft, "draft kept while offline");
   await sendElsewhere("run:3:0:0:0");
   await context.setOffline(false);
   const onAt = Date.now();
   await until(async () => (await turnsShown()) > shownBefore && !(await status()).banner, "the reply sent meanwhile to appear", 60);
   const recoveredAfter = (Date.now() - onAt) / 1000;
   const back = await status();
-  assert.equal(await composerDraft(composer), draft, "draft kept after reconnecting");
+  assert.equal(await composerDraft(composer, workspaceId), draft, "draft kept after reconnecting");
   await shot("1-back-online");
   check("offline, the draft stays and the page says Core cannot be reached; back online it reconnects and shows a reply sent meanwhile, draft intact",
     { noticed, noticedAfterSeconds: noticedAfter, back, recoveredAfterSeconds: recoveredAfter, nonGetWhileOffline: report.requests.filter((r) => r.at >= offAt && r.at < onAt && r.method !== "GET").length });
@@ -209,7 +212,7 @@ try {
   await openKiri();
   await card.waitFor({ timeout: 30_000 });
   assert.equal(await field.inputValue(), "Teal, like the leaf", "the typed answer is back after a reload");
-  assert.equal(await composerDraft(composer), draft, "the message draft is back after a reload");
+  assert.equal(await composerDraft(composer, workspaceId), draft, "the message draft is back after a reload");
   assert.deepEqual(posts(asked, "/respond"), [], "nothing answered before Send answer");
   await shot("2-question-after-reload");
   check("a native question's typed answer, and the message draft, survive a reload; nothing is sent");

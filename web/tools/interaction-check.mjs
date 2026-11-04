@@ -5,6 +5,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace the fixture's Core says it is: drafts are saved under it (T-195). With --real, the lab
+// Core's own, read from it.
+const WORKSPACE = "ws-interaction";
 
 const modelCheck = process.argv.includes("--model-check");
 const real = process.argv.includes("--real") || modelCheck;
@@ -151,6 +154,7 @@ async function fixture() {
         const id = url.pathname.split("/")[3];
         if (url.pathname === "/api/workspace")
           result = {
+            workspace: { id: WORKSPACE },
             agents: [a, b],
             runtime: { connected: true },
             defaultCwd: "/fixture",
@@ -270,7 +274,7 @@ async function fixture() {
     .getByRole("button", { name: "Answer sent", exact: true })
     .waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, WORKSPACE),
     "Keep my unfinished draft 保留草稿",
   );
   const answer = requests.filter((r) => r.path.endsWith("/messages"));
@@ -322,6 +326,8 @@ async function native() {
     model: selected.model || selected.id,
   });
   report.agentId = agent.id;
+  const workspaceId = (await api("/workspace")).workspace?.id;
+  assert.ok(workspaceId, "the lab Core says which Workspace it is");
   const path = `/agents/${agent.id}`;
   await wait(
     async () => (await api(path)).agent.connectionState === "connected",
@@ -427,7 +433,7 @@ async function native() {
     .getByRole("button", { name: "Answer sent", exact: true })
     .waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, workspaceId),
     "This unfinished draft must survive the direct answer.",
   );
   await page.screenshot({
@@ -461,7 +467,7 @@ async function native() {
     .getByRole("button", { name: "Answer sent", exact: true })
     .waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, workspaceId),
     "This unfinished draft must survive the direct answer.",
   );
   await settings.click();

@@ -13,6 +13,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { engine, launchBrowser } from "./browser-engine.mjs";
 import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-narrow";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -105,7 +107,7 @@ async function open(viewport) {
     }
     const agent = agents.find((a) => path === `/api/agents/${a.id}`);
     const json = agent ? detail(agent) : {
-      "/api/workspace": { workspace: { id: "ws-narrow" }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
+      "/api/workspace": { workspace: { id: WORKSPACE }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
       "/api/home": home,
       "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
       "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
@@ -274,16 +276,16 @@ try {
     }
     await tapAgent(page, "Mori");
     assert.equal(await scroller(page).evaluate((el) => el.scrollTop), place, "the same Agent comes back where it was");
-    assert.equal(await composerDraft(composer(page, "Mori")), "Draft typed on the phone.");
+    assert.equal(await composerDraft(composer(page, "Mori"), WORKSPACE), "Draft typed on the phone.");
     check("the list and back keep the conversation's place and draft; the list scrolls on its own", { place });
 
     // Another Agent has its own draft; Mori's comes back with Mori.
     await back(page);
     await tapAgent(page, "Hana");
-    assert.equal(await composerDraft(composer(page, "Hana")), "");
+    assert.equal(await composerDraft(composer(page, "Hana"), WORKSPACE), "");
     await back(page);
     await tapAgent(page, "Mori");
-    assert.equal(await composerDraft(composer(page, "Mori")), "Draft typed on the phone.");
+    assert.equal(await composerDraft(composer(page, "Mori"), WORKSPACE), "Draft typed on the phone.");
     const restored = await scroller(page).evaluate((el) => ({ top: el.scrollTop, bottom: el.scrollHeight - el.clientHeight }));
     assert.ok(restored.top < restored.bottom - 50, `Mori reopens where it was left, not at the latest: ${JSON.stringify(restored)}`);
     check("another Agent between keeps each draft and reopens Mori where it was read (T-166)", restored);
@@ -318,7 +320,7 @@ try {
     assert.equal(await dialog.getByLabel("Area 1 comment").inputValue(), "This button is too small.");
     await shot(page, `${viewport.name}-annotation`);
     await dialog.getByRole("button", { name: "Cancel" }).click();
-    assert.equal(await composerDraft(composer(page, "Mori")), "Draft typed on the phone.");
+    assert.equal(await composerDraft(composer(page, "Mori"), WORKSPACE), "Draft typed on the phone.");
     check("an annotation in progress and the draft survive narrow → wide → narrow");
     await context.close();
   }

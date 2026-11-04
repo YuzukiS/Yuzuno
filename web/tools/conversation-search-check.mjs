@@ -5,6 +5,8 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-conversation-search";
 
 const dist = await realpath(
   process.env.YUZUNO_UI_DIST || "/tmp/yuzuno-conversation-search-dist",
@@ -132,11 +134,21 @@ const report = {
   dist,
   checks: [],
   browserErrors: errors,
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
 };
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://127.0.0.1");
     if (url.pathname.startsWith("/api/")) {
+      if (request.method === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+        for await (const _ of request);
+        report.readingSaves++;
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ accepted: true }));
+        return;
+      }
       requests.push({ method: request.method, path: url.pathname });
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -147,7 +159,7 @@ const server = createServer(async (request, response) => {
       }
       const body =
         url.pathname === "/api/workspace"
-          ? { agents, runtime: { connected: true }, defaultCwd: "/fixture" }
+          ? { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/fixture" }
           : detail[url.pathname.split("/").at(-1)] || {};
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(body));
@@ -287,7 +299,7 @@ try {
         1,
     );
     assert.equal(
-      await composerDraft(composer),
+      await composerDraft(composer, WORKSPACE),
       "Keep this unsent draft 保留草稿",
     );
     assert.equal(await page.locator(".pending-card").count(), 1);

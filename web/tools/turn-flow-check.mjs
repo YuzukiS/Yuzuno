@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, savedDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "An isolated build is required");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_CHECK_OUTPUT || "../acceptance/turn-flow");
 await mkdir(output, { recursive: true });
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "fixture";
 const report = {
   mode: "isolated-event-fixtures",
   checks: [],
@@ -121,8 +123,7 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
-        // Drafts are saved per Workspace once it is known (T-195): the draft checks read them there.
-        workspace: { id: "fixture" },
+        workspace: { id: WORKSPACE },
         agents: [agent, otherAgent],
         runtime: { connected: true },
         defaultCwd: "/fixture",
@@ -348,9 +349,10 @@ try {
   await page.getByRole("dialog", { name: "Search conversation" }).locator(".conversation-search-result").click();
   // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
   await page.locator('[data-item-id="steering"].source-highlight').waitFor();
-  // Mori's draft as saved. Since T-195 the open Agent is kept per Workspace (yuzuno.selected.<id>), so
-  // the composer's Agent is named here rather than read from the older unscoped key.
-  assert.equal((await savedDraft(page, "a")) ?? "", "下一条草稿保留");
+  assert.equal(
+    await composerDraft(page.getByRole("textbox", { name: "Message Mori" }), WORKSPACE),
+    "下一条草稿保留",
+  );
   await page.getByRole("button", { name: "Search conversation" }).click();
   await page
     .getByRole("searchbox", { name: "Search loaded messages" })
