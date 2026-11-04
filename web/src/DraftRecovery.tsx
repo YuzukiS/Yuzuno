@@ -46,11 +46,6 @@ export function DraftRecovery({ onDiscard }: { onDiscard: () => boolean }) {
         lang={langTag(language)}
         closeLabel={t.closeDialog}
       >
-        {failed && (
-          <p className="inline-error" role="alert">
-            {t.failed}
-          </p>
-        )}
         <div className="pasted-text-dialog-actions">
           <button
             type="button"
@@ -70,6 +65,12 @@ export function DraftRecovery({ onDiscard }: { onDiscard: () => boolean }) {
             {t.discard}
           </button>
         </div>
+        {/* Below the buttons, so a failure does not move them under the pointer (T-19 CX-70). */}
+        {failed && (
+          <p className="inline-error" role="alert">
+            {t.failed}
+          </p>
+        )}
       </Modal>
     </>
   );
