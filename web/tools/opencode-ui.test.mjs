@@ -31,8 +31,9 @@ window.renderCreate=(props)=>root.render(<RemoteCreateAgent {...props}/>);
 window.renderPending=(props)=>root.render(<PendingCard onViewChanges={()=>{}} {...props}/>);
 // An OpenCode turn as the app shows it: inside its Agent's revert host.
 window.renderTurn=(props)=>root.render(props.agent.harness==='opencode'
-  ? <OpenCodeRevertHost agent={props.agent} onDraft={props.onRewindDraft}><Turn {...props}/></OpenCodeRevertHost>
-  : <Turn {...props}/>);`,
+  ? <OpenCodeRevertHost workspaceId={props.workspaceId ?? 'ws-1'} agent={props.agent} onDraft={props.onRewindDraft}><Turn {...props}/></OpenCodeRevertHost>
+  : <Turn {...props}/>);
+window.unmount=()=>root.render(null);`,
   );
   const result = await build({
     root,
@@ -363,7 +364,7 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
       return undefined;
     });
     page.window.renderTurn({ turn, index: 0, agent: { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" },
-      onFile() {}, onRewindDraft(agent, text) { drafts.push([agent, text]); } });
+      onFile() {}, onRewindDraft(agent, text) { drafts.push([agent, text]); return true; } });
     await tick();
     button(page, "Rewind").click(); await tick(); await tick();
     return { page, drafts };
@@ -426,4 +427,84 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     assert.match(none.page.document.body.textContent, /Not reverted\. 没有保留回退的结果/);
     assert.deepEqual(none.drafts, [], "nothing kept, no text back");
   } finally { none.page.close(); }
+});
+
+// Bound to its Workspace and Agent, given only once taken, never undone by an
+// older read (Lead 4133): what OpenCode's revert does when the page moves on.
+const later = () => { let settle; const promise = new Promise((resolve) => { settle = resolve; }); return { promise, settle }; };
+const fixTurn = { id: "msg_2", status: "completed", items: [
+  { id: "u2", type: "userMessage", content: [{ type: "text", text: "Fix a.txt" }] },
+  { id: "prt_3", type: "agentMessage", text: "Fixed." },
+] };
+const shownPreview = { previewId: "revert_1", available: true, removedTurns: 1, keptTurns: 1, draft: "Fix a.txt", files: [] };
+const kept = { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] };
+const ocAgent = { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" };
+function revertPage(answer) {
+  const page = mount((url) => {
+    const { pathname, search } = new URL(url, "http://isolated.test/");
+    const route = pathname.match(/\/rewind\/(\w+)$/)?.[1];
+    return route ? answer(route, new URLSearchParams(search)) : undefined;
+  });
+  const show = (workspaceId, onRewindDraft) => page.window.renderTurn({ turn: fixTurn, index: 0, agent: ocAgent, workspaceId, onFile() {}, onRewindDraft });
+  return { page, show };
+}
+
+test("a late answer is given to its own Workspace's draft, once that Workspace is shown again, never to another's", async () => {
+  const confirm = later();
+  const { page, show } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
+    : route === "attempt" ? { attempt: query.get("id") === "revert_1" ? kept : null } : undefined);
+  const first = [], second = [];
+  try {
+    show("ws-1", (agent, text) => { first.push([agent, text]); return true; }); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    button(page, "Revert").click(); await tick();
+    // Another Workspace, with an Agent of the same ID, is shown while the answer is on its way.
+    show("ws-2", (agent, text) => { second.push([agent, text]); return true; }); await tick();
+    confirm.settle(kept); await tick(); await tick();
+    assert.deepEqual(second, [], "never into another Workspace's draft");
+    assert.deepEqual(first, [], "nor into its own while it is not shown");
+    show("ws-1", (agent, text) => { first.push([agent, text]); return true; }); await tick(); await tick();
+    assert.deepEqual(first, [["a", "Fix a.txt"]], "given to its own, once it is shown again");
+    assert.deepEqual(second, []);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a text the draft did not take is not counted as given: it is offered again, then given once", async () => {
+  const { page, show } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? kept
+    : route === "attempt" ? { attempt: query.get("id") === "revert_1" ? kept : null } : undefined);
+  const tries = [];
+  let takes = false;
+  const draft = (agent, text) => { tries.push([agent, text]); return takes; };
+  try {
+    show("ws-1", draft); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    button(page, "Revert").click(); await tick(); await tick();
+    assert.equal(tries.length, 1);
+    assert.match(page.document.body.textContent, /The original text could not be added to the draft/, "said, not counted as given");
+    takes = true;
+    button(page, "Add to draft").click(); await tick();
+    assert.equal(tries.length, 2, "offered again");
+    assert.doesNotMatch(page.document.body.textContent, /could not be added/);
+    button(page, "Close").click(); await tick();
+    // Shown again from nothing: found again by Core, not given twice.
+    page.window.unmount(); await tick();
+    show("ws-1", draft); await tick(); await tick();
+    assert.equal(tries.length, 2, "given once");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a read begun before the Agent's revert was opened does not undo it", async () => {
+  const pending = later();
+  const { page, show } = revertPage((route) => route === "preview" ? shownPreview : route === "attempt" ? pending.promise : undefined);
+  try {
+    show("ws-1", () => true); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    assert.ok(button(page, "Revert"), "the preview is shown");
+    pending.settle({ attempt: { attemptId: "revert_0", status: "unknown", draft: "", message: "old" } }); await tick(); await tick();
+    assert.ok(button(page, "Revert"), "an older read does not take the preview's place");
+    assert.doesNotMatch(page.document.body.textContent, /not yet confirmed/);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
 });

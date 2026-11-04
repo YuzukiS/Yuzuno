@@ -43,7 +43,7 @@ const unknown = { attemptId: "revert_1", status: "unknown", draft: "", message: 
  * The app with Mori (OpenCode, two turns) and Hana (Codex). `core.answers`
  * answers the revert routes; `core.turns` is Mori's record as Core holds it.
  */
-async function mount(core, stored = {}) {
+async function mount(core, stored = {}, shownTurn = "t2") {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (e) => errors.push(e.message));
@@ -61,15 +61,16 @@ async function mount(core, stored = {}) {
     createdAt: "2026-11-04", updatedAt: "2026-11-04", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1 });
   const agents = [agent("a", "Mori", "opencode"), agent("b", "Hana", "codex")];
   window.fetch = async (url, init = {}) => {
-    const { pathname: path } = new URL(String(url), window.location.href);
-    core.calls.push({ path, method: init.method || "GET", body: init.body && JSON.parse(init.body) });
+    const { pathname: path, searchParams } = new URL(String(url), window.location.href);
+    core.calls.push({ path, query: searchParams.get("id"), method: init.method || "GET", body: init.body && JSON.parse(init.body) });
     if (path === "/api/workspace") return reply(200, { workspace: { id: "ws-1" }, agents, runtime: { connected: true }, defaultCwd: "/w" });
     if (path === "/api/agents/a") return reply(200, { agent: agents[0], pending: [], artifacts: [], messageReceipts: [], turns: core.turns });
     if (path === "/api/agents/b") return reply(200, { agent: agents[1], pending: [], artifacts: [], messageReceipts: [], turns: [] });
     const revert = path.match(/^\/api\/agents\/a\/rewind\/(\w+)$/)?.[1];
     if (revert) {
       const answer = core.answers[revert];
-      return reply(200, typeof answer === "function" ? answer() : answer ?? {});
+      const body = typeof answer === "function" ? answer(searchParams.get("id")) : answer;
+      return reply(200, (await body) ?? {});
     }
     if (/\/models(\?|$)/.test(path)) return reply(200, { models: [] });
     return reply(200, {});
@@ -87,7 +88,7 @@ async function mount(core, stored = {}) {
     sent: (route) => core.calls.filter((c) => c.method === "POST" && c.path === `/api/agents/a/rewind/${route}`),
   };
   if (page.shown() !== "a") { await until(() => d.querySelector(".agent-row"), "the rail lists the Agents"); page.open("Mori"); }
-  await until(() => d.querySelector('[data-turn-id="t2"]'), "Mori's conversation opens");
+  await until(() => d.querySelector(`[data-turn-id="${shownTurn}"]`), "Mori's conversation opens");
   return page;
 }
 const occurrences = (text, part) => text.split(part).length - 1;
@@ -125,8 +126,9 @@ test("a revert's result stays readable once Core's record drops the turn it reve
 test("an outcome not yet confirmed is found again however the Agent is left, only checked, its text given once", async () => {
   let checks = 0;
   const core = { calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
-    preview, confirm: unknown, attempt: { attempt: null },
-    check: () => (++checks < 2 ? unknown : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] }),
+    // As Core answers it: not yet known, whether asked for by its ID or as the one pending.
+    preview, confirm: unknown, attempt: () => ({ attempt: unknown }),
+    check: () => (++checks < 2 ? { ...unknown, message: "第一次核对：仍无法确认" } : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] }),
   } };
   const page = await mount(core);
   let stored;
@@ -148,7 +150,6 @@ test("an outcome not yet confirmed is found again however the Agent is left, onl
   } finally { page.close(); }
 
   // Reloaded: what Core keeps brings the check back, and asking it is all that is done.
-  core.answers.attempt = { attempt: unknown };
   core.calls.length = 0;
   const again = await mount(core, stored);
   try {
@@ -158,7 +159,7 @@ test("an outcome not yet confirmed is found again however the Agent is left, onl
     await until(() => again.button("Check outcome", again.dialog()), "its dialog opens on the outcome");
     assert.equal(again.sent("check").length, 0, "opening it asks nothing");
     again.button("Check outcome", again.dialog()).click();
-    await until(() => again.sent("check").length === 1 && again.button("Check outcome", again.dialog()) && !again.button("Check outcome", again.dialog()).disabled, "checked once");
+    await until(() => /第一次核对：仍无法确认/.test(again.text()) && !again.button("Check outcome", again.dialog())?.disabled, "checked once, its answer shown");
     assert.equal(occurrences(savedDraftText(again.window.localStorage, "a"), "Fix a.txt"), 0, "no text while not confirmed");
     again.button("Check outcome", again.dialog()).click();
     await until(() => /Reverted\./.test(again.text()), "kept on the second check");
@@ -181,4 +182,72 @@ test("an outcome not yet confirmed is found again however the Agent is left, onl
     assert.equal(third.sent("confirm").length, 0, "never confirmed again");
     assert.deepEqual(third.errors, []);
   } finally { third.close(); }
+});
+
+test("a revert that settled while the page was away is found again with its result, its text given once", async () => {
+  const files = [{ path: "/w/a.txt", outcome: "verified" }];
+  const core = { calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
+    preview,
+    // The page goes before OpenCode answers.
+    confirm: () => new Promise(() => {}),
+    attempt: (id) => ({ attempt: id === "revert_1" ? { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files } : null }),
+  } };
+  const page = await mount(core);
+  let stored;
+  try {
+    page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
+    await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    page.button("Revert", page.dialog()).click();
+    await until(() => page.sent("confirm").length === 1, "asked");
+    stored = Object.fromEntries(Object.entries(page.window.localStorage));
+  } finally { page.close(); }
+
+  // Meanwhile Core kept it, and dropped the turn. Reloaded: found by its ID, with its result and its text.
+  core.turns = [turn("t1", "Start", "Started."), turn("t3", "Later", "Later.")];
+  core.calls.length = 0;
+  const again = await mount(core, stored, "t3");
+  try {
+    await until(() => /OpenCode’s revert has an outcome you have not seen yet/.test(again.text()), "an outcome to see");
+    assert.deepEqual([...new Set(again.calls.filter((c) => c.path === "/api/agents/a/rewind/attempt").map((c) => c.query))].sort(), ["revert_1", null].sort(),
+      "read as the one pending and by its own ID");
+    await until(() => occurrences(savedDraftText(again.window.localStorage, "a"), "Fix a.txt") === 1, "its text, once, in Mori's draft");
+    again.button("Show outcome").click();
+    await until(() => /Reverted\. 已回退/.test(again.text()), "its result");
+    assert.match(again.text(), /\/w\/a\.txt: as OpenCode’s snapshot holds it/);
+    again.button("Close", again.dialog()).click();
+    await until(() => !again.dialog(), "closed");
+    assert.equal(again.sent("confirm").length + again.sent("check").length, 0, "only read");
+    stored = Object.fromEntries(Object.entries(again.window.localStorage));
+  } finally { again.close(); }
+
+  // Seen through: not shown again, nor its text given again.
+  core.calls.length = 0;
+  const third = await mount(core, stored, "t3");
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.doesNotMatch(third.text(), /OpenCode’s revert/, "nothing left to see");
+    assert.deepEqual([...new Set(third.calls.filter((c) => c.path === "/api/agents/a/rewind/attempt").map((c) => c.query))], [null], "no longer asked for by its ID");
+    assert.equal(occurrences(savedDraftText(third.window.localStorage, "a"), "Fix a.txt"), 1, "not given twice");
+    assert.deepEqual(third.errors, []);
+  } finally { third.close(); }
+});
+
+test("a saved draft that cannot be read is not overwritten, and the text is left to give", async () => {
+  const damaged = "{not a draft";
+  const key = `yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`;
+  const core = { calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
+    preview, confirm: { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] },
+    attempt: { attempt: null },
+  } };
+  const page = await mount(core, { [key]: damaged });
+  try {
+    page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
+    await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    page.button("Revert", page.dialog()).click();
+    await until(() => /Reverted\./.test(page.text()), "kept");
+    await until(() => /The original text could not be added to the draft/.test(page.text()), "said so");
+    assert.ok(page.button("Add to draft", page.dialog()), "offered again");
+    assert.equal(page.window.localStorage.getItem(key), damaged, "the damaged draft is left as it was");
+    assert.doesNotMatch(page.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "", /revert_1/, "not counted as given");
+  } finally { page.close(); }
 });

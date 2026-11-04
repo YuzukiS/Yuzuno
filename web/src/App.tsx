@@ -2444,9 +2444,11 @@ export function App() {
     (text: string) => turnHandlers.current.appendToDraft(text),
     [],
   );
+  // Whether the text was added and saved (an OpenCode revert counts its text as given only then).
   const rewindDraft = useCallback((agentId: string, text: string) => {
-    setDraft(agentId, current => appendDraft(current, text));
-    setNotice(shellNow.current.rewindSaved);
+    const saved = setDraft(agentId, current => appendDraft(current, text));
+    if (saved) setNotice(shellNow.current.rewindSaved);
+    return saved;
   }, [setDraft]);
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It
@@ -3207,7 +3209,7 @@ export function App() {
                 <div className="conversation-inner" ref={followGrowth}>
                   <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
                   {/* OpenCode's revert, held for the Agent, not for the turn it removes (T-10). */}
-                  <OpenCodeRevertHost agent={agent} onDraft={previewMode || closed ? undefined : rewindDraft}>
+                  <OpenCodeRevertHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onDraft={previewMode || closed ? undefined : rewindDraft}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpHere ? { turnId: jumpHere, itemId: jumpItem.current ?? undefined } : pageTarget}>

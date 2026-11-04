@@ -104,8 +104,10 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
    * since moved to the Workspace that arrived. So the storage key comes from
    * `at`, never from the current `workspaceId`.
    */
-  function write(at: string, id: string, draft: ComposerDraft) {
-    if (broken.current.has(at)) return;
+  /** Whether the draft was saved: not if its saved draft is damaged, it has no Workspace to be saved under, or saving failed. */
+  function write(at: string, id: string, draft: ComposerDraft): boolean {
+    if (broken.current.has(at)) return false;
+    let saved = false;
     const [workspace] = JSON.parse(at) as [string, string];
     drafts.current.set(at, draft);
     unsaved.current.add(at);
@@ -126,6 +128,7 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
         storage.current.save(key, draft);
         unsaved.current.delete(at);
         errors.current.delete(at);
+        saved = true;
       }
     } catch {
       errors.current.set(
@@ -134,11 +137,14 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
       );
     }
     render((n) => n + 1);
+    return saved;
   }
-  function setDraft(id: string, update: ComposerDraft | ((current: ComposerDraft) => ComposerDraft)) {
+  /** Whether the change was saved (see `write`). A saved draft that cannot be read is neither changed nor overwritten. */
+  function setDraft(id: string, update: ComposerDraft | ((current: ComposerDraft) => ComposerDraft)): boolean {
     const at = cache(id);
+    if (broken.current.has(at)) return false;
     const draft = typeof update === "function" ? update(drafts.current.get(at) || saved(id) || emptyDraft()) : update;
-    write(at, id, draft);
+    return write(at, id, draft);
   }
   /**
    * Clear what was sent, where it is filed now. The draft object decides, not

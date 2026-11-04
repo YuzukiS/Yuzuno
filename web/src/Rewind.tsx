@@ -106,114 +106,206 @@ type RevertFile = { path: string; expected: FileState; current: FileState };
 type RevertPreview = { previewId: string; removedTurns: number; keptTurns: number; draft: string; files: RevertFile[] };
 type FileOutcome = { path: string; outcome: "verified" | "notRestored" | "drifted"; why?: string | null };
 type RevertOutcome = { attemptId: string; status: "sending" | "unknown" | "failed" | "completed" | "unchanged"; message?: string; draft: string; files?: FileOutcome[] };
-/** One Agent's revert as this window holds it: the turn asked about, its preview, its outcome. */
-type Revert = { turnId?: string; preview?: RevertPreview; outcome?: RevertOutcome; error?: string; busy?: boolean; open: boolean };
+/** One Agent's revert as this window holds it, in one Workspace: the turn asked about, its preview, its outcome. */
+type Revert = { workspace: string; agent: string; turnId?: string; preview?: RevertPreview; outcome?: RevertOutcome; error?: string;
+  busy?: boolean; open: boolean; undelivered?: boolean; version: number };
 
 const unsettled = (outcome?: RevertOutcome) => !!outcome && ["sending", "unknown"].includes(outcome.status);
+const keyOf = (workspace: string, agent: string) => JSON.stringify([workspace, agent]);
 
 /**
- * Each OpenCode Agent's revert, kept outside any component (Lead 4128): an
- * answer that comes after its turn left, the host was mounted again or
- * another Agent was shown still settles the Agent it is for.
+ * Each OpenCode Agent's revert, by Workspace and Agent, kept outside any
+ * component (Lead 4128, 4133): an answer that comes after its turn left, the
+ * host was mounted again, another Agent or another Workspace was shown still
+ * settles the one it is for, and only that one. `version` counts what was
+ * done to it here, so that a read begun before is not let undo it.
  */
 const reverts = new Map<string, Revert>();
 const listeners = new Set<() => void>();
-let version = 0;
-function put(agentId: string, change: Partial<Revert> | undefined) {
-  if (change) reverts.set(agentId, { ...(reverts.get(agentId) ?? { open: false }), ...change });
-  else reverts.delete(agentId);
-  version++;
+let changes = 0;
+function put(key: string, change: Partial<Revert> | undefined, base?: Pick<Revert, "workspace" | "agent">) {
+  const held = reverts.get(key);
+  if (change === undefined) reverts.delete(key);
+  else if (held || base) reverts.set(key, { ...(held ?? { ...base!, open: false, version: 0 }), ...change });
+  changes++;
   for (const listener of listeners) listener();
 }
+/** A step the user took: what was read before it no longer applies. */
+const step = (key: string, change: Partial<Revert>, base: Pick<Revert, "workspace" | "agent">) =>
+  put(key, { ...change, version: (reverts.get(key)?.version ?? 0) + 1 }, base);
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
-/** Where a kept revert's text goes: the mounted host's, last given. */
-let giveDraft: ((agentId: string, text: string) => void) | undefined;
+
+/** The Workspace the page shows now: no request goes out for, nor an answer is taken into, another. */
+let shownWorkspace = "";
+/** Where each Workspace's kept revert texts go: its host's draft, while it shows that Workspace. It says whether the text was saved. */
+const deliverers = new Map<string, (agentId: string, text: string) => boolean>();
+
+// The attempts asked for here, until seen through: settled, closed, and their
+// text given if kept. So one that settles while the page is away is found
+// again by its ID (Lead 4133).
+const ASKED = "yuzuno.revert.asked.v1";
+type Asked = { workspace: string; agent: string; attemptId: string };
+function asked(): Asked[] {
+  try { const list = JSON.parse(localStorage.getItem(ASKED) ?? "[]"); return Array.isArray(list) ? list : []; } catch { return []; }
+}
+function remember(entry: Asked) {
+  const list = asked().filter(e => !(e.workspace === entry.workspace && e.attemptId === entry.attemptId));
+  try { localStorage.setItem(ASKED, JSON.stringify([...list, entry].slice(-20))); } catch { /* found again only while this window lives */ }
+}
+function forget(workspace: string, attemptId: string) {
+  try { localStorage.setItem(ASKED, JSON.stringify(asked().filter(e => !(e.workspace === workspace && e.attemptId === attemptId)))); } catch { /* left to find */ }
+}
 
 // The attempts whose text went back to a draft, so none goes back twice: for
 // this window, and across reloads (the draft itself is kept as drafts are).
 const GIVEN = "yuzuno.revert.given.v1";
-function given(attemptId: string): boolean {
-  try { return (JSON.parse(localStorage.getItem(GIVEN) ?? "[]") as string[]).includes(attemptId); } catch { return false; }
+const givenHere = new Set<string>();
+function given(workspace: string, attemptId: string): boolean {
+  const id = JSON.stringify([workspace, attemptId]);
+  if (givenHere.has(id)) return true;
+  try { return (JSON.parse(localStorage.getItem(GIVEN) ?? "[]") as string[]).includes(id); } catch { return false; }
 }
-function markGiven(attemptId: string) {
+function markGiven(workspace: string, attemptId: string) {
+  const id = JSON.stringify([workspace, attemptId]);
+  givenHere.add(id);
   let ids: string[] = [];
   try { ids = JSON.parse(localStorage.getItem(GIVEN) ?? "[]") as string[]; } catch { ids = []; }
-  try { localStorage.setItem(GIVEN, JSON.stringify([...ids.filter(id => id !== attemptId), attemptId].slice(-50))); } catch { /* kept for this window only */ }
+  try { localStorage.setItem(GIVEN, JSON.stringify([...ids.filter(other => other !== id), id].slice(-50))); } catch { /* given in this window only */ }
 }
-const givenHere = new Set<string>();
 
-function settle(agentId: string, value: RevertOutcome) {
-  // Only a revert OpenCode keeps gives the original text back, once, to the Agent it is for.
-  if (value.status === "completed" && value.draft && !givenHere.has(value.attemptId) && !given(value.attemptId)) {
-    givenHere.add(value.attemptId); markGiven(value.attemptId);
-    giveDraft?.(agentId, value.draft);
+/**
+ * A kept revert's text to its Agent's draft, once (Lead 4133): only through
+ * the host of the Workspace it is for, only while the page shows that
+ * Workspace, and counted as given only once the draft took it and saved it.
+ * Otherwise it is left to give, and the next time that Agent is shown again
+ * (or Add to draft) tries once more. Never over a draft it could not read.
+ */
+function deliver(key: string) {
+  const revert = reverts.get(key);
+  const outcome = revert?.outcome;
+  if (!revert || outcome?.status !== "completed" || !outcome.draft) return;
+  if (given(revert.workspace, outcome.attemptId)) { put(key, { undelivered: false }); return; }
+  const to = deliverers.get(revert.workspace);
+  let saved = false;
+  if (to && revert.workspace === shownWorkspace) {
+    try { saved = to(revert.agent, outcome.draft); } catch { saved = false; }
   }
-  put(agentId, { outcome: value, preview: undefined, busy: false });
+  if (saved) markGiven(revert.workspace, outcome.attemptId);
+  put(key, { undelivered: !saved });
 }
 
-async function preview(agentId: string, turnId: string) {
-  put(agentId, { turnId, preview: undefined, outcome: undefined, error: "", busy: true, open: true });
+function settle(key: string, value: RevertOutcome) {
+  put(key, { outcome: value, preview: undefined, busy: false });
+  deliver(key);
+}
+
+async function preview(key: string, workspace: string, agent: string, turnId: string) {
+  step(key, { turnId, preview: undefined, outcome: undefined, error: "", busy: true, open: true, undelivered: false }, { workspace, agent });
+  const version = reverts.get(key)!.version;
+  const current = () => workspace === shownWorkspace && reverts.get(key)?.version === version;
   try {
-    const value = await post<RevertPreview>(`/agents/${encodeURIComponent(agentId)}/rewind/preview`, { turnId });
-    if (reverts.get(agentId)?.turnId === turnId) put(agentId, { preview: value, busy: false });
+    const value = await post<RevertPreview>(`/agents/${encodeURIComponent(agent)}/rewind/preview`, { turnId });
+    if (current()) put(key, { preview: value, busy: false });
   } catch (e) {
-    if (reverts.get(agentId)?.turnId === turnId) put(agentId, { error: errorText(e), busy: false });
+    if (current()) put(key, { error: errorText(e), busy: false });
   }
 }
 
-async function act(agentId: string, action: "confirm" | "check") {
-  const revert = reverts.get(agentId);
-  if (!revert || revert.busy) return;
+async function act(key: string, action: "confirm" | "check") {
+  const revert = reverts.get(key);
+  if (!revert || revert.busy || revert.workspace !== shownWorkspace) return;
   const attemptId = action === "check" ? revert.outcome?.attemptId : revert.preview?.previewId;
   if (!attemptId) return;
-  put(agentId, { busy: true, error: "" });
+  // Kept before it is asked, so it is found again however this page ends.
+  if (action === "confirm") remember({ workspace: revert.workspace, agent: revert.agent, attemptId });
+  step(key, { busy: true, error: "" }, revert);
+  // An answer for another Workspace than the one shown when it comes is not taken: its attempt is found again there.
+  const ours = () => revert.workspace === shownWorkspace;
   try {
-    settle(agentId, await post<RevertOutcome>(`/agents/${encodeURIComponent(agentId)}/rewind/${action}`,
-      action === "check" ? { attemptId } : { previewId: attemptId }));
+    const value = await post<RevertOutcome>(`/agents/${encodeURIComponent(revert.agent)}/rewind/${action}`,
+      action === "check" ? { attemptId } : { previewId: attemptId });
+    if (ours()) settle(key, value); else put(key, { busy: false });
   } catch (e) {
-    put(agentId, { error: errorText(e), busy: false, preview: undefined,
+    if (!ours()) { put(key, { busy: false }); return; }
+    put(key, { error: errorText(e), busy: false, preview: undefined,
       outcome: action === "confirm" || !revert.outcome ? { attemptId, status: "unknown", draft: "",
         message: "The request did not return a confirmed result. Check this attempt or reconnect; the revert is not repeated." } : revert.outcome });
   }
+}
+
+/**
+ * What Core keeps of this Agent's reverts, read whenever it is shown: the one
+ * not yet known, and each one asked for here and not yet seen through, by its
+ * ID, whatever it became meanwhile. Reading asks OpenCode nothing. A read
+ * that comes after anything was done here is not taken (`version`).
+ */
+async function recover(key: string, workspace: string, agent: string) {
+  const version = reverts.get(key)?.version ?? 0;
+  const base = { workspace, agent };
+  const read = (query: string) => api<{ attempt: RevertOutcome | null }>(`/agents/${encodeURIComponent(agent)}/rewind/attempt${query}`);
+  const mine = asked().filter(e => e.workspace === workspace && e.agent === agent);
+  try {
+    const [pending, ...ours] = await Promise.all([read(""), ...mine.map(e => read(`?id=${encodeURIComponent(e.attemptId)}`))]);
+    if (workspace !== shownWorkspace || (reverts.get(key)?.version ?? 0) !== version || reverts.get(key)?.busy) return;
+    mine.forEach((entry, i) => { if (!ours[i].attempt) forget(workspace, entry.attemptId); });
+    // One not yet known first: it holds the Agent back. Else the latest asked here that is not seen through.
+    const found = pending.attempt ?? ours.map(o => o.attempt).filter((a): a is RevertOutcome => !!a).at(-1);
+    if (!found) return;
+    if (reverts.get(key)?.outcome?.attemptId === found.attemptId && reverts.get(key)?.outcome?.status === found.status) { deliver(key); return; }
+    put(key, { outcome: found, preview: undefined, turnId: undefined }, base);
+    deliver(key);
+  } catch { /* read again the next time it is shown */ }
 }
 
 /** Opens the shown Agent's revert for one of its turns. */
 const RevertHost = createContext<((agentId: string, turnId: string) => void) | null>(null);
 
 /**
- * OpenCode's own revert (T-10), held at the Agent's level (Lead 4128): the
- * dialog and its result stay when the reverted turn leaves the conversation,
- * and an outcome not yet confirmed is read again from Core whenever the Agent
- * is shown, so its check is never lost with a window, a reload or another
- * Agent. Reading it asks OpenCode nothing; it is only ever checked.
+ * OpenCode's own revert (T-10), held at the Agent's level (Lead 4128, 4133):
+ * the dialog and its result stay when the reverted turn leaves the
+ * conversation, and what Core keeps of it is read again whenever the Agent
+ * is shown, so its check, or its result and text, are never lost with a
+ * window, a reload, another Agent or another Workspace. It is only ever
+ * checked, never confirmed again or resolved.
  */
-export function OpenCodeRevertHost({ agent, onDraft, children }: { agent?: Agent; onDraft?: (agentId: string, text: string) => void; children: ReactNode }) {
-  useSyncExternalStore(subscribe, () => version);
-  useEffect(() => { giveDraft = onDraft; }, [onDraft]);
-  const id = agent?.harness === "opencode" ? agent.id : undefined;
+export function OpenCodeRevertHost({ workspaceId, agent, onDraft, children }: { workspaceId: string; agent?: Agent;
+  onDraft?: (agentId: string, text: string) => boolean; children: ReactNode }) {
+  useSyncExternalStore(subscribe, () => changes);
+  const id = agent?.harness === "opencode" && workspaceId ? agent.id : undefined;
+  const key = id ? keyOf(workspaceId, id) : undefined;
   useEffect(() => {
-    if (!id) return;
-    let live = true;
-    void api<{ attempt: RevertOutcome | null }>(`/agents/${encodeURIComponent(id)}/rewind/attempt`).then(({ attempt }) => {
-      const held = reverts.get(id);
-      if (live && attempt && unsettled(attempt) && !held?.busy && held?.outcome?.attemptId !== attempt.attemptId) put(id, { outcome: attempt, preview: undefined });
-    }).catch(() => { /* shown again on the next check */ });
-    return () => { live = false; };
-  }, [id]);
+    shownWorkspace = workspaceId;
+    if (!workspaceId || !onDraft) return;
+    deliverers.set(workspaceId, onDraft);
+    return () => { if (deliverers.get(workspaceId) === onDraft) deliverers.delete(workspaceId); };
+  }, [workspaceId, onDraft]);
+  useEffect(() => { if (key && id) void recover(key, workspaceId, id); }, [key, id, workspaceId]);
   const open = useCallback((agentId: string, turnId: string) => {
-    // One not yet confirmed is shown again, never asked about anew.
-    if (unsettled(reverts.get(agentId)?.outcome)) put(agentId, { open: true });
-    else void preview(agentId, turnId);
-  }, []);
-  const revert = id ? reverts.get(id) : undefined;
-  const close = () => { if (!id) return; if (unsettled(revert?.outcome)) put(id, { open: false }); else put(id, undefined); };
+    const at = keyOf(workspaceId, agentId);
+    const held = reverts.get(at);
+    // One not yet seen through is shown again, never asked about anew.
+    if (held?.outcome && (unsettled(held.outcome) || held.undelivered)) step(at, { open: true }, held);
+    else void preview(at, workspaceId, agentId, turnId);
+  }, [workspaceId]);
+  const revert = key ? reverts.get(key) : undefined;
+  const close = () => {
+    if (!key || !revert) return;
+    if (unsettled(revert.outcome) || revert.undelivered) { step(key, { open: false }, revert); return; }
+    if (revert.outcome) forget(revert.workspace, revert.outcome.attemptId);
+    put(key, undefined);
+  };
+  // Closed with something still to see through: one not yet known, a text not yet given, or an outcome found again.
+  const waiting = !!revert && !revert.open && !!revert.outcome;
   return <RevertHost.Provider value={id && onDraft ? open : null}>
     {children}
-    {id && revert && !revert.open && unsettled(revert.outcome) && <div className="revert-dock" role="status">
-      <span>OpenCode’s revert is not yet confirmed: new messages to {agent?.name} wait.</span>
-      <button type="button" className="secondary-button" onClick={() => put(id, { open: true })}>Check outcome</button>
+    {key && revert && waiting && revert.outcome && <div className="revert-dock" role="status">
+      <span>{unsettled(revert.outcome) ? `OpenCode’s revert is not yet confirmed: new messages to ${agent?.name} wait.`
+        : revert.undelivered ? "OpenCode’s revert was kept; its original text is not yet in the draft."
+        : "OpenCode’s revert has an outcome you have not seen yet."}</span>
+      <button type="button" className="secondary-button" onClick={() => step(key, { open: true }, revert)}>{unsettled(revert.outcome) ? "Check outcome" : "Show outcome"}</button>
     </div>}
-    {id && revert?.open && <RevertDialog revert={revert} onConfirm={() => void act(id, "confirm")} onCheck={() => void act(id, "check")} onClose={close} />}
+    {key && revert?.open && <RevertDialog revert={revert} onConfirm={() => void act(key, "confirm")} onCheck={() => void act(key, "check")}
+      onDeliver={() => deliver(key)} onClose={close} />}
   </RevertHost.Provider>;
 }
 
@@ -228,7 +320,7 @@ function fileOutcomeText(file: FileOutcome) {
   return file.why ? `could not be checked: ${file.why}` : "neither as before nor as the snapshot holds it";
 }
 
-function RevertDialog({ revert, onConfirm, onCheck, onClose }: { revert: Revert; onConfirm: () => void; onCheck: () => void; onClose: () => void }) {
+function RevertDialog({ revert, onConfirm, onCheck, onDeliver, onClose }: { revert: Revert; onConfirm: () => void; onCheck: () => void; onDeliver: () => void; onClose: () => void }) {
   const { preview, outcome, error, busy } = revert;
   const files = preview?.files ?? [];
   return <Modal open confirm onOpenChange={next => !next && !busy && onClose()} title="Revert"
@@ -253,11 +345,13 @@ function RevertDialog({ revert, onConfirm, onCheck, onClose }: { revert: Revert;
         {outcome.files.map(file => <li key={file.path}><code>{file.path}</code>: {fileOutcomeText(file)}</li>)}
       </ul>}
       {unsettled(outcome) && <p>New messages to this Agent wait until the outcome is confirmed. The revert is never asked for again.</p>}
+      {revert.undelivered && <p role="alert">The original text could not be added to the draft (the draft cannot be edited or saved here now). It is kept for you to add.</p>}
       <p className="rewind-note">Only files OpenCode’s snapshots recorded go back. Commands, submitted Jobs, PRs and approvals are not undone. Yuzuno keeps the removed history and execution records.</p>
       {error && <p role="alert" className="checkpoint-problem">{error}</p>}
       <div className="modal-actions">
         <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>Close</button>
         {unsettled(outcome) && <button type="button" className="primary-button" disabled={busy} onClick={onCheck}>Check outcome</button>}
+        {revert.undelivered && <button type="button" className="secondary-button" disabled={busy} onClick={onDeliver}>Add to draft</button>}
         {preview?.previewId && !outcome && <button type="button" className="primary-button" disabled={busy} onClick={onConfirm}>Revert</button>}
       </div>
     </div>
