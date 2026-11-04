@@ -601,6 +601,9 @@ export function App() {
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
+  // Where the pane was when a touch on it began: a touch that moved it is the
+  // reader scrolling, one that did not is a tap.
+  const touchFrom = useRef<number | null>(null);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
   // or a pane that shrinks under a growing composer, keeps the end in view
   // while the conversation follows it, as an update does. A row the reader
@@ -3157,9 +3160,17 @@ export function App() {
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                // A tap on a disclosure opens or closes it; it is not the reader going to the end.
+                onTouchStart={() => {
+                  touchFrom.current = scroll.current?.scrollTop ?? null;
+                }}
+                // A tap on a disclosure opens or closes it (its click hands the
+                // conversation to the reader); it is not the reader going to the
+                // end. A touch that scrolled the pane is, wherever it began.
                 onTouchEnd={(e) => {
-                  if (!(e.target as Element).closest?.("summary")) readerScrollIntent();
+                  const from = touchFrom.current;
+                  touchFrom.current = null;
+                  const scrolled = from === null || Math.abs((scroll.current?.scrollTop ?? from) - from) >= 1;
+                  if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
                 }}
                 onKeyDownCapture={(e) => {
                   if (
@@ -3182,10 +3193,13 @@ export function App() {
                   // The reader opens or closes a disclosure (by pointer, key or
                   // touch, which all click it): they take over from following,
                   // as a wheel up or Home does, so nothing moves what they
-                  // clicked; their window is kept as it is (T-19).
+                  // clicked; their window is kept as it is, and where they are
+                  // reading is noted, as a scroll would note it, so the
+                  // conversation reopens there rather than at the end (T-19).
                   if ((e.target as Element).closest?.("summary")) {
                     live.pinWindow();
                     stickToBottom.current = false;
+                    noteReading(false);
                   }
                 }}
                 onPointerDown={(e) => {
