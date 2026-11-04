@@ -1413,6 +1413,10 @@ fn not_started_reason(error: &anyhow::Error) -> String {
 const INPUTS: &str = "Small files the command reads (at most 2 MiB each, 16 MiB together), relative to cwd: their SHA-256 is \
     frozen at submit and checked again just before the command starts, and a change rejects the job before it runs. This is a check \
     before the start, not a read-only snapshot while it runs. An input missing at submit is recorded as missing.";
+/// guardGit in short (T-29): what it adds to the inputs, and that those count.
+const GUARD_GIT: &str = "Also freeze the Git HEAD of cwd's checkout and its changed tracked files (not untracked or ignored ones), \
+    checked like inputs before the command starts. Those files count toward the same limits as inputs: 2 MiB each, 16 MiB and 128 \
+    files together with them. Set it to false for a checkout with large uncommitted files, and list in inputs what the command reads.";
 const REMOTE_INPUTS: &str = "With machineId they are files on that machine, read there at submit (on windows by its native \
     helper, never through /mnt): one that is missing, unreadable or too large refuses the submit, and nothing of this host is read for them.";
 const ARTIFACTS: &str = "Files a clean exit must leave behind, relative to cwd. After exit 0 each must be a regular file inside cwd \
@@ -1466,7 +1470,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "resources":{"type":"object","properties":{"cpuMillis":{"type":"integer","minimum":100},"memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["cpuMillis","memoryMiB","swapMiB"],"additionalProperties":false},
         "exclusive":{"type":"boolean","default":false,"description":"Run alone among this Core's managed local jobs. FIFO waits for existing jobs and their process-group cleanup; later jobs remain queued until this reservation releases. Does not stop other applications or reserve the whole host. Request actual CPU/RAM/swap limits as usual."},
         "timeoutSeconds":{"type":"integer","minimum":1,"maximum":604800,"default":86400},
-        "guardGit":{"type":"boolean","default":true},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
+        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
     let artifacts = json!({"type":"array","maxItems":20,"description":ARTIFACTS,
         "items":{"type":"object","properties":{"path":string,"format":{"type":"string","enum":["bytes","json","jsonl"],"default":"bytes"},"minBytes":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}});
     let mut properties = properties;
