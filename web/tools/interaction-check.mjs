@@ -159,6 +159,9 @@ async function fixture() {
             runtime: { connected: true },
             defaultCwd: "/fixture",
           };
+        else if (url.pathname === "/api/reviews")
+          // The status bar's read of running reviews, after each burst of events (StatusBar.tsx): none here.
+          result = { reviews: [], hasMore: false, nextBefore: null };
         else if (url.pathname.endsWith("/models")) result = { models };
         else if (url.pathname.endsWith("/settings")) {
           Object.assign(details[id].agent, body);
@@ -323,7 +326,9 @@ async function fixture() {
       .includes("unavailable"),
   );
   assert.deepEqual(
-    requests.filter((r) => /interrupt|review|respond/.test(r.path)).map((r) => `${r.method} ${r.path}`),
+    requests
+      .filter((r) => r.method !== "GET" && /interrupt|review|respond/.test(r.path))
+      .map((r) => `${r.method} ${r.path}`),
     [],
   );
   check("working send, agent switch, no interrupt/read/pending mutations");
