@@ -106,6 +106,34 @@
   font-size: var(--reading-size);
   line-height: 1.6;
 }
+/* Opening unfolds the request as a tool row's details do (tool-activity.css),
+   small: it is a short list over the conversation. Closing folds it a little
+   faster. The summary, Enter and Escape keep the native details behaviour. */
+@supports (interpolate-size: allow-keywords) and
+  selector(details::details-content) {
+  @media (prefers-reduced-motion: no-preference) {
+    .current-turn-prompt {
+      interpolate-size: allow-keywords;
+    }
+    .current-turn-prompt::details-content {
+      block-size: 0;
+      opacity: 0;
+      overflow: clip;
+      transition:
+        block-size var(--motion-exit-small) var(--ease-exit),
+        opacity var(--motion-exit-small) var(--ease-exit),
+        content-visibility var(--motion-exit-small) allow-discrete;
+    }
+    .current-turn-prompt[open]::details-content {
+      block-size: auto;
+      opacity: 1;
+      transition:
+        block-size var(--motion-small) var(--ease-standard),
+        opacity var(--motion-small) var(--ease-standard) 40ms,
+        content-visibility var(--motion-small) allow-discrete;
+    }
+  }
+}
 
 .current-turn-prompt > summary:focus-visible {
   outline: 2px solid var(--focus);
