@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, savedDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "An isolated build is required");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -145,6 +145,9 @@ await page.route("**/*", async (route) => {
   if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname))
     return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
   if (/^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  // Home, which the app reads once its Workspace is known: nothing on it.
+  if (url.pathname === "/api/home")
+    return route.fulfill({ json: { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] } });
   // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
   // whole check at the first one.
   if (url.pathname.startsWith("/api/")) {
@@ -343,10 +346,9 @@ try {
   await page.locator(".conversation-search-result").click();
   // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
   await page.locator('[data-item-id="steering"].source-highlight').waitFor();
-  assert.equal(
-    await composerDraft(page.getByRole("textbox", { name: "Message Mori" })),
-    "下一条草稿保留",
-  );
+  // Mori's draft as saved. Since T-195 the open Agent is kept per Workspace (yuzuno.selected.<id>), so
+  // the composer's Agent is named here rather than read from the older unscoped key.
+  assert.equal((await savedDraft(page, "a")) ?? "", "下一条草稿保留");
   await page.getByRole("button", { name: "Search conversation" }).click();
   await page
     .getByRole("searchbox", { name: "Search loaded messages" })
