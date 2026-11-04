@@ -1260,7 +1260,7 @@ async fn an_older_cores_entry_on_phone_access_s_own_serve_port_is_never_removed_
     let before = lab.fake()["serve"].clone();
     let said = preview::clear(&lab.ws, &lab.ws.remote_access.host(false), Some(8445)).await.unwrap();
     assert_eq!(said["state"], "foreign", "{said}");
-    assert!(said["detail"].as_str().unwrap().contains("is phone access's own now"), "{said}");
+    assert!(said["detail"].as_str().unwrap().contains("Phone access serves on Serve port 8445 now; nothing of the older phone previews there was removed"), "{said}");
     assert_eq!(lab.fake()["serve"], before, "nothing removed");
     assert!(lab.calls().iter().all(|c| !c.starts_with("serve --")), "{:?}", lab.calls());
     let record = lab.legacy_record();
