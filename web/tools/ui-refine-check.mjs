@@ -922,6 +922,8 @@ try {
     });
     await page.keyboard.press("Escape");
     await modal.waitFor({ state: "detached" });
+    // A phone shows the turn dock as a panel from its Turns button (PhoneDocks, T-170).
+    await page.locator(".phone-dock-turns").click();
     await dock.locator('[data-turn-choice="current"]').hover();
     await dock.getByRole("tooltip").waitFor();
     assert.ok(
@@ -959,6 +961,7 @@ try {
       path: `${output}/sunroom-${theme}-turns-390.png`,
     });
     await page.mouse.move(100, 25);
+    await page.getByRole("button", { name: "Close turns" }).click();
   }
   assert.deepEqual(report.mutations, []);
   record("Narrow 390px layout at 20px; Escape does not interrupt or mutate");

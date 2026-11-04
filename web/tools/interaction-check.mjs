@@ -282,6 +282,8 @@ async function fixture() {
   await page.setViewportSize({ width: 1440, height: 960 });
   const composer = page.getByRole("textbox", { name: "Message Mori" });
   await composer.fill("Keep my unfinished draft 保留草稿");
+  // The question's only editor is its dock dialog (QuestionAnchor), opened from the question itself.
+  await page.getByRole("button", { name: "View question and answer", exact: true }).click();
   await page.getByRole("radio", { name: "Sage", exact: true }).check();
   await page.getByRole("button", { name: "Send answer", exact: true }).click();
   await page
