@@ -878,7 +878,7 @@ fn plain(line: &str) -> String {
         if c == '\u{1b}' {
             if chars.peek() == Some(&'[') {
                 chars.next();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if ('\u{40}'..='\u{7e}').contains(&c) {
                         break;
                     }
