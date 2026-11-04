@@ -231,6 +231,7 @@ impl Workspace {
                     // Rewind previews no one can confirm any more keep a
                     // whole history each; freed here, before any reclaim.
                     crate::rewind::expire_previews();
+                    crate::opencode_agent::expire_revert_previews();
                     // Large record copies may be freed yet stay resident in
                     // glibc. Reclaim outside Store locks and async workers,
                     // only once recent records are idle, with a process-wide

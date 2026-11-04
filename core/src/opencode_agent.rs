@@ -2535,6 +2535,10 @@ fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
     }
 }
 
+#[path = "opencode_revert.rs"]
+mod revert;
+pub(crate) use revert::expire_previews as expire_revert_previews;
+
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]
 mod tests;

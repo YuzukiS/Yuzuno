@@ -626,6 +626,18 @@ impl Server {
         self.json(Method::GET, &format!("/session/{}", segment(session)?), None).await
     }
 
+    /// OpenCode's own folders and this instance's worktree and directory
+    /// (`GET /path`, `handlers/instance.ts`): `home`, `state`, `config`,
+    /// `worktree`, `directory`.
+    pub async fn path(&self) -> Result<Value> {
+        self.json(Method::GET, "/path", None).await
+    }
+
+    /// The project OpenCode holds this instance's folder for (`GET /project/current`).
+    pub async fn project(&self) -> Result<Value> {
+        self.json(Method::GET, "/project/current", None).await
+    }
+
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
     pub async fn messages(&self, session: &str) -> Result<Value> {
         let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
