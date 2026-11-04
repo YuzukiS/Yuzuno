@@ -28,6 +28,13 @@
 //     decode shows nothing; the picture comes in once, from the newer address;
 //   - the card written again as a new section under the same key, a file of the same name, time
 //     and size in it: its picture is not taken as shown; it loads hidden and comes in once.
+// - T-18 (#467, plan on T-18 3117/3124, item C3): every report and status card on Home is a summary
+//   card there, which draws no Attachments block, so the cards above are Asks, whose cards still show
+//   their whole body (the rows are unchanged); each run first asserts their attachments are listed,
+//   so an empty card can't pass. A third report, "album", shows its kept images where else this
+//   picture box draws them: on the report's own page, and pinned with no summary (its whole body);
+//   each from a fresh page, its attachments listed, the same first view as the shots card's.
+//   A summary card's own image (its figure) is not this box: not covered here.
 // Writes: none; Home's list read of linked repositories is a POST and counted apart; anything else is
 // refused and counted. Served from http://127.0.0.1. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-image-check.mjs
@@ -129,9 +136,11 @@ const kept = (name, mime, size, extra) => ({ name, kind: "image", mime, size, sn
 /** The card as Core sends it: version 3, then (the card moved on) version 4 with a new snapshot of
  * known.png at another size. */
 let version = 3;
+/** An Ask, open (T-18: its card shows its whole body, the Attachments with it). */
+const asking = (question) => ({ question, state: "open", reply: { freeText: true } });
 const section = () => ({
-  id: 11, key: "shots", kind: "report", title: "Screens", version, owner, updatedAt: iso(-30 * MIN), updatedTurnId: null, refs: {},
-  seen: null, history: false,
+  id: 11, key: "shots", kind: "ask", title: "Screens", version, owner, updatedAt: iso(-30 * MIN), updatedTurnId: null, refs: {},
+  seen: null, history: false, ask: asking("Do the new screens look right?"),
   attachments: [
     version === 3
       ? kept("known.png", "image/png", images["known.png"].length, { width: 640, height: 400 })
@@ -154,8 +163,8 @@ let trials = 1;
 const trialsAt = (ms) => iso(ms * MIN);
 const trial = (name, file, extra) => kept(name, "image/png", images[`trials/${file}`].length, { takenAt: trialsAt(-20), ...extra });
 const trialsSection = () => ({
-  id: trials < 4 ? 21 : 22, key: "trials", kind: "report", title: "Trials", version: trials, owner, updatedAt: iso(-20 * MIN), updatedTurnId: null,
-  refs: {}, seen: null, history: false,
+  id: trials < 4 ? 21 : 22, key: "trials", kind: "ask", title: "Trials", version: trials, owner, updatedAt: iso(-20 * MIN), updatedTurnId: null,
+  refs: {}, seen: null, history: false, ask: asking("Which trial do we keep?"),
   attachments: [
     trial("undecodable.png", "undecodable.png", { width: 640, height: 400 }),
     trial("caption.png", "caption.png", { width: 320, height: 200 }),
@@ -172,6 +181,25 @@ const trialsSection = () => ({
       .map((name) => ({ name, caption: name === "caption.png" && trials >= 2 ? "Caption, as changed" : `Caption of ${name}` })) } },
   } },
 });
+/** A report with no summary, the shots card's first version of the same files (T-18): read on its
+ * page, and pinned (shown whole). */
+const album = () => ({
+  id: 31, key: "album", kind: "report", title: "Album", version: 1, owner, updatedAt: iso(-10 * MIN), updatedTurnId: null, refs: {},
+  seen: null, history: false,
+  attachments: [
+    kept("known.png", "image/png", images["known.png"].length, { width: 640, height: 400 }),
+    kept("unknown.png", "image/png", images["unknown.png"].length, {}),
+    kept("gone.png", "image/png", 4000, { width: 640, height: 400 }),
+    kept("turned.jpg", "image/jpeg", images["turned.jpg"].length, { width: 200, height: 400 }),
+    { name: "ref.png", kind: "image", mime: "image/png", size: 4000, snapshot: false, mayChange: true, takenAt: iso(-30 * MIN),
+      path: "/fixture/album/ref.png", width: 640, height: 400 },
+  ],
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["text", "files"] },
+    text: { type: "Markdown", props: { text: "The screens, kept for the album." } },
+    files: { type: "Attachments", props: { items: ["known.png", "unknown.png", "gone.png", "turned.jpg", "ref.png"].map((name) => ({ name, caption: `Caption of ${name}` })) } },
+  } },
+});
 const home = () => ({
   generatedAt: new Date().toISOString(),
   order: ["p1"],
@@ -180,7 +208,7 @@ const home = () => ({
     project: { id: "p1", name: "Yuzuno app" },
     agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
     errors: [], pending: [], jobs: [],
-    brief: { version: version + 6 + trials, sections: [section(), trialsSection()], history: [] },
+    brief: { version: version + 6 + trials, sections: [section(), trialsSection(), album()], history: [] },
     unseen: 1, missing: [],
   }],
 });
@@ -193,7 +221,7 @@ const gets = () => ({
 });
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
   ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
-const ATTACHMENT = /^\/api\/projects\/p1\/brief\/attachments\/(shots|trials)\/([^/]+)$/;
+const ATTACHMENT = /^\/api\/projects\/p1\/brief\/attachments\/(shots|trials|album)\/([^/]+)$/;
 async function serve(route) {
   const request = route.request();
   const url = new URL(request.url());
@@ -226,6 +254,14 @@ async function serve(route) {
       if (!bytes) return route.fulfill({ status: 404, json: { error: "snapshot_not_found" } });
       return route.fulfill({ body: bytes, contentType: "image/png" }).catch(() => {});
     }
+    if (file?.[1] === "album") {
+      const name = decodeURIComponent(file[2]);
+      report.images.push(`album/${name}@${url.searchParams.get("version")}`);
+      await new Promise((done) => setTimeout(done, DELAY));
+      const bytes = images[name];
+      if (!bytes) return route.fulfill({ status: 404, json: { error: "snapshot_not_found" } });
+      return route.fulfill({ body: bytes, contentType: name.endsWith(".jpg") ? "image/jpeg" : "image/png" }).catch(() => {});
+    }
     if (file) {
       const name = decodeURIComponent(file[2]);
       const asked = url.searchParams.get("version");
@@ -256,7 +292,7 @@ async function serve(route) {
  * slowed by 1.5 s for the card's first version when the check asks for it; and each frame, each
  * picture attachment: its box (or, where there is none, what stands in its place), the picture in it,
  * and where its caption is. */
-function pageHelpers() {
+function pageHelpers(PLACES) {
   let id = 0;
   const streams = [];
   window.EventSource = class {
@@ -327,10 +363,10 @@ function pageHelpers() {
   window.__now = () => frames.length;
   const step = () => {
     const shown = {};
-    for (const item of document.querySelectorAll('.home-section[data-section-key="shots"] .brief-attachments > li, .home-section[data-section-key="trials"] .brief-attachments > li')) {
+    for (const [prefix, root] of PLACES) for (const item of document.querySelectorAll(`${root} .brief-attachments > li`)) {
       const bare = item.querySelector(".brief-image-info dd")?.textContent ?? item.querySelector("strong")?.textContent;
       if (!bare) continue;
-      const name = item.closest('[data-section-key="trials"]') ? `trials/${bare}` : bare;
+      const name = `${prefix}${bare}`;
       const box = item.querySelector(".brief-image") ?? item.querySelector(".brief-image-failed");
       const caption = item.querySelector(".brief-attachment-caption");
       const at = box?.getBoundingClientRect();
@@ -347,6 +383,14 @@ function pageHelpers() {
   requestAnimationFrame(step);
 }
 
+/** Where picture boxes are read, each attachment's name prefixed: the shots and trials Ask cards; the
+ * album's report page; the album pinned with no summary, shown whole (T-18). */
+const PLACES = [
+  ["", '.home-section[data-section-key="shots"]'],
+  ["trials/", '.home-section[data-section-key="trials"]'],
+  ["page:", ".report-article"],
+  ["pin:", '.home-widget-slot[data-widget="pin:p1:31:album"]'],
+];
 const spread = (values) => (values.length ? Math.max(...values) - Math.min(...values) : 0);
 /** One attachment's frames from the first it is there in. */
 const of = (frames, name) => frames.map((f) => f[name]).filter((f) => f?.box);
@@ -381,7 +425,7 @@ for (const run of runs) {
   page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
   page.on("console", (m) => { if (m.type() === "error") report.console.push(`${tag}: ${m.text().slice(0, 600)}`); });
   await page.route("**/*", serve);
-  await page.addInitScript(pageHelpers);
+  await page.addInitScript(pageHelpers, PLACES);
   const record = (label, value) => { report.frames[`${tag}: ${label}`] = value; return value; };
   const framesSince = (from) => page.evaluate((from) => window.__frames.slice(from), from);
   const card = page.locator('.home-section[data-section-key="shots"]');
@@ -426,6 +470,11 @@ for (const run of runs) {
     await page.goto("http://127.0.0.1:4323/");
     await openHome();
     await showAll();
+    // Before any picture is waited for, so an empty card fails here and not only by a timeout.
+    await card.locator(".brief-attachments > li").nth(4).waitFor({ timeout: 5000 }).catch(() => {});
+    const listed = await card.locator(".brief-attachments > li").count();
+    ok(`${tag}: the shots card (an Ask, its whole body shown) lists its five attachments, so what follows measures them (${listed} listed)`,
+      listed === 5, { listed });
     await complete("known.png");
     await complete("unknown.png");
     await complete("turned.jpg");
@@ -505,6 +554,10 @@ for (const run of runs) {
     await openHome();
     await trialsCard.waitFor({ timeout: 10_000 });
     if ((await trialsMore.count()) && (await trialsMore.getAttribute("aria-expanded")) === "false") await trialsMore.click();
+    await trialsCard.locator(".brief-attachments > li").nth(4).waitFor({ timeout: 5000 }).catch(() => {});
+    const trialsListed = await trialsCard.locator(".brief-attachments > li").count();
+    ok(`${tag}: the trials card (an Ask, its whole body shown) lists its five attachments, so what follows measures them (${trialsListed} listed)`,
+      trialsListed === 5, { listed: trialsListed });
     await bringInTrial("undecodable.png");
     // Settled either way, so the row below decides: a failed box, or a picture shown anyway.
     await page.waitForFunction((find) => {
@@ -592,6 +645,58 @@ for (const run of runs) {
       { hidden: entity.filter((f) => f.picture.loading).length, first: entity[0]?.picture, last: entity.at(-1)?.picture });
     report.decodes = { ...report.decodes, [tag]: await page.evaluate(() => window.__decodes) };
     await page.screenshot({ path: join(output, `${tag}-trials.png`) });
+
+    // T-18: the album, from a fresh page each time, where else this picture box is drawn: the
+    // report's own page, opened from its card; and the album pinned with no summary, shown whole.
+    await page.evaluate(() => sessionStorage.removeItem("slow-decode"));
+    for (const [prefix, place, root, open] of [
+      ["page:", "on the album's report page", ".report-article", async () => {
+        await page.locator('.home-main [data-section-key="album"] .home-report-open').click();
+      }],
+      ["pin:", "pinned with no summary (shown whole)", '.home-widget-slot[data-widget="pin:p1:31:album"]', async () => {
+        const fewer = page.locator('.home-widget-slot[data-widget="pin:p1:31:album"] button.brief-attachments-more');
+        await page.locator('.home-widget-slot[data-widget="pin:p1:31:album"] .brief-attachments').waitFor({ timeout: 10_000 });
+        if ((await fewer.count()) && (await fewer.getAttribute("aria-expanded")) === "false") await fewer.click();
+      }],
+    ]) {
+      if (prefix === "pin:") await page.evaluate(() => localStorage.setItem("yuzuno.homeWidgets.ws", JSON.stringify({ order: [], hidden: [],
+        pins: [{ projectId: "p1", key: "album", id: 31, title: "Album", projectName: "Yuzuno app" }] })));
+      await page.goto("http://127.0.0.1:4323/");
+      await openHome();
+      await open();
+      const items = page.locator(`${root} .brief-attachments > li`);
+      await items.first().waitFor({ timeout: 10_000 });
+      const at = (name) => page.evaluate(([root, name]) => [...document.querySelectorAll(`${root} .brief-attachments > li`)]
+        .find((li) => li.querySelector(".brief-image-info dd")?.textContent === name)?.scrollIntoView({ block: "center", behavior: "instant" }), [root, name]);
+      const whole = (name) => page.waitForFunction(([root, name]) => {
+        const img = [...document.querySelectorAll(`${root} .brief-attachments > li`)]
+          .find((li) => li.querySelector(".brief-image-info dd")?.textContent === name)?.querySelector("img");
+        return !!img && img.complete && img.naturalWidth > 0;
+      }, [root, name], { timeout: 10_000 });
+      for (const name of ["known.png", "unknown.png", "turned.jpg"]) {
+        await at(name);
+        await whole(name);
+      }
+      await at("gone.png");
+      await page.locator(`${root} .brief-image-failed`).waitFor({ timeout: 10_000 });
+      await page.waitForTimeout(800);
+      const seen = record(`album ${place}`, await framesSince(0));
+      const count = await items.count();
+      ok(`${tag}: the album ${place} lists its five attachments, so what follows measures them (${count} listed)`, count === 5, { count });
+      const k = of(seen, `${prefix}known.png`);
+      ok(`${tag}: the album ${place}: a kept image with the size Core read has the picture's shape (640 x 400) from its first frame, and comes in once decoded (under reduced motion, at once)`,
+        k.some((f) => !f.picture?.complete) && k.every((f) => Math.abs(f.box.content[0] / f.box.content[1] - 640 / 400) <= 0.01) && steady(k, "content") && cameIn(k, reduced),
+        { first: k[0]?.box, last: k.at(-1)?.box, picture: k.at(-1)?.picture, frames: k.length });
+      const u = of(seen, `${prefix}unknown.png`);
+      ok(`${tag}: the album ${place}: an image Core has no size for keeps a fixed box as it loads, the picture fitted into it whole`,
+        u.some((f) => !f.picture?.complete) && steady(u, "outer") && u.at(-1).picture?.fit === "contain", { first: u[0]?.box, last: u.at(-1)?.box });
+      const g = of(seen, `${prefix}gone.png`);
+      ok(`${tag}: the album ${place}: an image that cannot be loaded says so in its own box, which keeps its size`,
+        g.some((f) => !f.box.failed) && g.at(-1)?.box.failed && steady(g, "outer"), { loading: g.find((f) => !f.box.failed)?.box, failed: g.at(-1)?.box });
+      const r = seen.at(-1)?.[`${prefix}ref.png`];
+      ok(`${tag}: the album ${place}: a file only referenced draws no picture box`, !!r && !r.box && r.note, r);
+      await page.screenshot({ path: join(output, `${tag}-album-${prefix.slice(0, -1)}.png`) });
+    }
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));
     await page.screenshot({ path: join(output, `${tag}-error.png`) }).catch(() => {});

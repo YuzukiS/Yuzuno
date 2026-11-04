@@ -281,28 +281,91 @@ function Placeholder() {
   );
 }
 
-function Head({ name, url, branch, observedAt }: { name: string; url: string; branch?: string; observedAt?: string | null }) {
+function Name({ name, url }: { name: string; url: string }) {
+  const href = githubPage(url);
+  return href ? (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="repo-name">
+      {name}
+      <ArrowUpRight size={11} aria-hidden />
+    </a>
+  ) : (
+    <span className="repo-name">{name}</span>
+  );
+}
+
+function AsOf({ observedAt }: { observedAt: string | null }) {
   const time = useTimeDisplay();
   const language = useLanguage();
   const t = homeText(language);
-  const href = githubPage(url);
+  return (
+    <small className="repo-asof" title={absolute(observedAt, time)}>
+      {observedAt ? t.asOf(relative(observedAt, language)) : t.notRead}
+    </small>
+  );
+}
+
+function Head({ name, url, branch, observedAt }: { name: string; url: string; branch?: string; observedAt?: string | null }) {
   return (
     <header>
-      {href ? (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="repo-name">
-          {name}
-          <ArrowUpRight size={11} aria-hidden />
-        </a>
-      ) : (
-        <span className="repo-name">{name}</span>
-      )}
+      <Name name={name} url={url} />
       {branch && <code className="repo-branch">{branch}</code>}
-      {observedAt !== undefined && (
-        <small className="repo-asof" title={absolute(observedAt, time)}>
-          {observedAt ? t.asOf(relative(observedAt, language)) : t.notRead}
-        </small>
-      )}
+      {observedAt !== undefined && <AsOf observedAt={observedAt} />}
     </header>
+  );
+}
+
+/**
+ * A repository in one line, as Home shows it (T-18): its name and default
+ * branch, that branch's latest run, its last commit and how many PRs are
+ * open. Without data yet, its name and a reading note.
+ */
+function Line({ repo, reading = true }: { repo: RepoActivityRepository | { fullName: string; url: string }; reading?: boolean }) {
+  const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
+  if (!("commits" in repo))
+    return (
+      <div className="repo-line">
+        <Name name={repo.fullName} url={repo.url} />
+        {reading && <span className="repo-empty">{t.readingShort}</span>}
+      </div>
+    );
+  const run = repo.runs.find((r) => !repo.defaultBranch || r.branch === repo.defaultBranch);
+  const found = run && runState(run);
+  const RunIcon = found?.icon;
+  const commit = repo.commits[0];
+  const open = repo.pullsTotal ?? repo.pulls.length;
+  return (
+    <div className="repo-line">
+      <Name name={repo.fullName} url={repo.url} />
+      {repo.defaultBranch && <code className="repo-branch">{repo.defaultBranch}</code>}
+      {run && found && RunIcon && (
+        <span className="repo-line-run">
+          <Row href={run.url} label={`${run.name} · ${t.run[found.word]} · ${absolute(run.at, time)}`}>
+            <span className={`repo-state is-${found.tone}`}>
+              <RunIcon size={11} aria-hidden /> {t.run[found.word]}
+            </span>
+            <span className="repo-row-title">{run.name}</span>
+          </Row>
+        </span>
+      )}
+      <span className="repo-line-commit">
+        {commit ? (
+          <Row
+            href={commit.url}
+            label={`${commit.sha.slice(0, 7)} ${commit.title} · ${commit.author || t.unknownAuthor} · ${absolute(commit.at, time)}`}
+          >
+            <code>{commit.sha.slice(0, 7)}</code>
+            <span className="repo-row-title">{commit.title}</span>
+            <small>{when(commit.at, language)}</small>
+          </Row>
+        ) : (
+          <span className="repo-empty">{t.noCommits}</span>
+        )}
+      </span>
+      <span className="repo-line-pulls">{t.openPullsCount(open)}</span>
+      <AsOf observedAt={repo.observedAt} />
+    </div>
   );
 }
 
@@ -318,10 +381,16 @@ function Problem({ lead, text }: { lead: string; text: string }) {
 export function RepoActivity({
   projectId,
   linked,
+  line = false,
+  lists = true,
 }: {
   projectId: string;
   /** The linked repositories as already known, to hold their place while loading. */
   linked?: { id: number; fullName: string; url: string }[];
+  /** Each repository as one line (Home, T-18) instead of its name heading the lists. */
+  line?: boolean;
+  /** Commits, PRs and runs as lists; Home shows them with the repository details. */
+  lists?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const visible = useOnScreen(ref);
@@ -380,17 +449,21 @@ export function RepoActivity({
             const problem = (repo.stale && (repo.error || t.notRefreshed)) || failure;
             return (
               <article key={repo.id} className="repo-activity-repo" data-repo={repo.fullName}>
-                <Head name={repo.fullName} url={repo.url} branch={repo.defaultBranch} observedAt={repo.observedAt} />
+                {line ? (
+                  <Line repo={repo} />
+                ) : (
+                  <Head name={repo.fullName} url={repo.url} branch={repo.defaultBranch} observedAt={repo.observedAt} />
+                )}
                 {problem && <Problem lead={t.lastKnown} text={problem} />}
-                <Lists repo={repo} />
+                {lists && <Lists repo={repo} />}
               </article>
             );
           })
         : (linked?.length ? linked : [{ id: 0, fullName: t.repository, url: "" }]).map((repo) => (
             <article key={repo.id} className={`repo-activity-repo${failure ? "" : " is-loading"}`}>
-              <Head name={repo.fullName} url={repo.url} />
+              {line ? <Line repo={repo} reading={!failure} /> : <Head name={repo.fullName} url={repo.url} />}
               {failure && <Problem lead={t.activityUnavailable} text={failure} />}
-              <Placeholder />
+              {lists && <Placeholder />}
             </article>
           ))}
     </div>

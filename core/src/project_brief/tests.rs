@@ -1790,6 +1790,80 @@ async fn a_retried_edit_is_answered_once_and_not_applied_twice() {
     assert_eq!(section(&brief(&ws, "a"), "overview")["version"], 2);
 }
 
+/// An author's card size (T-18, Lead 2457, 2473), through brief_update and
+/// the generated validator: kept with the body and read as written on
+/// brief_get, Home and History; a size outside the three is refused where it
+/// stands; a summary without one is accepted and advised, and still takes an
+/// edit, a status and an unchanged put, nothing written into it.
+#[tokio::test]
+async fn an_authors_card_size_is_kept_with_its_summary_and_read_as_written() {
+    let (_dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let sized = |size: Option<&str>| {
+        let mut summary = json!({"lead":"answer"});
+        if let Some(size) = size {
+            summary["size"] = json!(size);
+        }
+        json!({"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{"summary":summary},"children":["answer"]},
+            "answer":{"type":"Markdown","props":{"text":"B lowers loss."}}}})
+    };
+    let size_of = |section: &Value| section["body"]["elements"]["body"]["props"]["summary"]["size"].clone();
+    let advice = |answer: &Value| answer["advice"].as_array().cloned().unwrap_or_default();
+    let mut card = put("eval", "report");
+    card["body"] = sized(Some("wide"));
+    let accepted = update::update(&ws, &checker, "a", input("s1", 0, vec![card.clone()])).await.unwrap().unwrap();
+    assert!(advice(&accepted).is_empty(), "{accepted}");
+    assert_eq!(size_of(section(&brief(&ws, "a"), "eval")), "wide");
+    let on_home = |ws: &Workspace, list: &str, key: &str| {
+        let home = home::build(&ws.store).unwrap();
+        home["projects"][0]["brief"][list].as_array().unwrap().iter().find(|s| s["key"] == key).cloned().unwrap_or(Value::Null)
+    };
+    assert_eq!(size_of(&on_home(&ws, "sections", "eval")), "wide");
+    // An edit of another block keeps it.
+    let v = version(&ws, &project);
+    update::update(&ws, &checker, "a", input("s2", v, vec![edit("eval", json!({"answer":markdown("B lowers loss by 4%.")}))])).await.unwrap().unwrap();
+    assert_eq!(size_of(section(&brief(&ws, "a"), "eval")), "wide");
+    // A size outside the three is refused where it stands, and nothing changes.
+    let v = version(&ws, &project);
+    for bad in [json!("huge"), json!("Wide"), json!(2)] {
+        let mut wrong = card.clone();
+        wrong["body"]["elements"]["body"]["props"]["summary"]["size"] = bad.clone();
+        let rejected = update::update(&ws, &checker, "a", input("s3", v, vec![wrong])).await.unwrap().unwrap_err();
+        assert_eq!((rejected["problems"][0]["code"].clone(), rejected["problems"][0]["path"].clone()),
+            (json!("invalid_field"), json!("changes[0].body.elements.body.props.summary.size")), "{bad}: {rejected}");
+    }
+    assert_eq!(version(&ws, &project), v);
+    // The author's next size, in the next version; seen, it goes to History with it.
+    card["body"] = sized(Some("large"));
+    update::update(&ws, &checker, "a", input("s4", v, vec![card.clone()])).await.unwrap().unwrap();
+    assert_eq!(size_of(section(&brief(&ws, "a"), "eval")), "large");
+    let shown = section(&brief(&ws, "a"), "eval")["version"].as_i64().unwrap();
+    sections::mark_seen(&ws.store, &project, &[("eval".into(), shown)]).unwrap();
+    assert_eq!(size_of(&on_home(&ws, "history", "eval")), "large");
+    // A summary without a size: accepted and advised once, at the summary.
+    let mut old = put("load", "status");
+    old["body"] = sized(None);
+    let v = version(&ws, &project);
+    let accepted = update::update(&ws, &checker, "a", input("s5", v, vec![old])).await.unwrap().unwrap();
+    assert_eq!(advice(&accepted).iter().map(|a| (a["code"].clone(), a["path"].clone())).collect::<Vec<_>>(),
+        [(json!("summary_size_missing"), json!("changes[0].body.elements.body.props.summary"))], "{accepted}");
+    // Its Markdown alone, its status with an unchanged block, and the whole section put again as it reads:
+    // each accepted as before, and no size written into its summary.
+    let v = version(&ws, &project);
+    update::update(&ws, &checker, "a", input("s6", v, vec![edit("load", json!({"answer":markdown("Load is steady.")}))])).await.unwrap().unwrap();
+    let mut status_only = edit("load", json!({"answer":markdown("Load is steady.")}));
+    status_only["status"] = json!({"asOf":now(),"validFor":600});
+    update::update(&ws, &checker, "a", input("s7", version(&ws, &project), vec![status_only])).await.unwrap().unwrap();
+    let read = section(&brief(&ws, "a"), "load").clone();
+    assert_eq!(read["status"]["validFor"], 600);
+    let mut again = put("load", "status");
+    again["body"] = read["body"].clone();
+    update::update(&ws, &checker, "a", input("s8", version(&ws, &project), vec![again])).await.unwrap().unwrap();
+    assert_eq!(size_of(section(&brief(&ws, "a"), "load")), Value::Null);
+    assert_eq!(size_of(&on_home(&ws, "sections", "load")), Value::Null);
+}
+
 #[tokio::test]
 async fn the_generated_validator_checks_layout_and_edits_whole() {
     let (_dir, ws, project) = lab();

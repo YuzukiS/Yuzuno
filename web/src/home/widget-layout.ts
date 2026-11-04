@@ -7,6 +7,7 @@
  * layout never changes the content.
  */
 import { createContext, useCallback, useState } from "react";
+import { CARD_SIZES, type CardSize } from "./card-preview.ts";
 import type { HomeData, Section } from "./types";
 
 /** A status or report section, named by project, key and Core's id for it. */
@@ -19,6 +20,12 @@ export type Pin = {
   /** As last seen, to name a pin whose source is gone. */
   title: string;
   projectName: string;
+  /**
+   * The size the user gave this widget (T-18, Lead 2457). Absent, it is its
+   * Agent's, from the card as it reads now. Kept with the pin, so a newer
+   * version of the card keeps it; never written to the card itself.
+   */
+  size?: CardSize;
 };
 
 export type WidgetLayout = { order: string[]; hidden: string[]; pins: Pin[] };
@@ -51,7 +58,10 @@ export function readWidgetLayout(workspaceId: string): WidgetLayout {
     return {
       order: strings(saved?.order),
       hidden: strings(saved?.hidden),
-      pins: own && Array.isArray(saved?.pins) ? saved.pins.filter(isPin).slice(0, MAX_PINS) : [],
+      // A size that is not one of the three is no size: the widget is its Agent's.
+      pins: own && Array.isArray(saved?.pins)
+        ? saved.pins.filter(isPin).slice(0, MAX_PINS).map(({ size, ...pin }: Pin) => (CARD_SIZES.includes(size as CardSize) ? { ...pin, size } : pin))
+        : [],
     };
   } catch {
     return { order: [], hidden: [], pins: [] };
@@ -140,7 +150,25 @@ export function useWidgetLayout(workspaceId: string) {
       }),
     [change],
   );
-  return { layout, change, pin, unpin };
+  /** The user's size for a pinned widget; null gives it back to its Agent. */
+  const resize = useCallback(
+    (target: Pin, size: CardSize | null) =>
+      change((current) => ({
+        ...current,
+        pins: current.pins.map((p) => {
+          if (pinWidgetId(p) !== pinWidgetId(target)) return p;
+          const { size: _old, ...rest } = p;
+          return size ? { ...rest, size } : rest;
+        }),
+      })),
+    [change],
+  );
+  /** Every pinned widget given back to its Agent's size. */
+  const resetSizes = useCallback(
+    () => change((current) => ({ ...current, pins: current.pins.map(({ size: _size, ...pin }) => pin) })),
+    [change],
+  );
+  return { layout, change, pin, unpin, resize, resetSizes };
 }
 
 /** What a pin shows now: its section, or why it can't. */

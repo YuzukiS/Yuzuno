@@ -30,9 +30,9 @@ const section = (key, id, version, top, props = {}, extra = {}) => ({
 const all = ["answer", "holds", "loss", "method", "evidence", "plain", "refs", "shot"];
 
 test("the page leads with the summary its author named, each block once, then the rest in order with sources and files beside it", () => {
-  const report = section("eval", 7, 3, all, { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] });
+  const report = section("eval", 7, 3, all, { summary: { lead: "answer", visual: "loss", conditions: "holds", size: "wide" }, details: ["method"] });
   const parts = partsOf(report);
-  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds" });
+  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", size: "wide" });
   assert.deepEqual(parts.flow, ["method", "evidence", "plain"]);
   assert.deepEqual(parts.sources, ["refs"]);
   assert.deepEqual(parts.attachments, ["shot"]);
@@ -62,8 +62,9 @@ test("a summary or details that do not hold are taken as none, never half-applie
   // One file is the figure only when Core keeps it as an image; otherwise it stays among the attachments.
   const withFile = (kind) => partsOf(section("d", 4, 1, all, { summary: { lead: "answer", visual: "shot" } },
     { attachments: [{ name: "a.png", kind, mime: "", size: 1, snapshot: true, mayChange: false, takenAt: "" }] }));
-  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null });
-  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null });
+  // A summary kept from before sizes were named has none.
+  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, size: null });
+  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, size: null });
   assert.deepEqual(withFile("text").attachments, ["shot"]);
   // details: only titled Groups directly under the root, never a summary block.
   assert.deepEqual([...named({ details: ["plain", "note", "answer", "method", "missing"] }).details], ["method"]);
