@@ -33,10 +33,19 @@ export function DraftNotSaved() {
   return <p className="field-hint">{t.notSaved}</p>;
 }
 
+/** Opening the card again removes this button, so its card takes the focus
+ * first: never the page, nor the card's Send or Approve (T-19 CX-65). */
 export function AnswerAgain({ onClick }: { onClick: () => void }) {
   const t = useStrings(requestWords);
   return (
-    <button type="button" className="secondary-button" onClick={onClick}>
+    <button
+      type="button"
+      className="secondary-button"
+      onClick={(event) => {
+        event.currentTarget.closest<HTMLElement>(".pending-card")?.focus({ preventScroll: true });
+        onClick();
+      }}
+    >
       {t.answerAgain}
     </button>
   );
