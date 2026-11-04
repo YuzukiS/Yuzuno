@@ -321,7 +321,7 @@ function MoreActions({
             <PinOff size={13} aria-hidden="true" /> {homeText(language).unpinShort}
           </button>
         ) : (
-          pin && <PinButton section={section} projectId={projectId} />
+          pin && <PinButton section={section} projectId={projectId} anchor={trigger} />
         )}
         {copy && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={homeText(language).copyReport} />}
       </span>

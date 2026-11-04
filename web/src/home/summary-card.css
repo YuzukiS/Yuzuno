@@ -10,6 +10,13 @@
   background: var(--home-surface);
   transition: box-shadow 160ms ease-out;
 }
+/* A card just pinned settles on itself in My widgets (T-19 HM:W5); under
+ * reduced motion the still tint is the card's, as its background would cover it. */
+@media (prefers-reduced-motion: reduce) {
+  .home-section.home-summary-card[data-settle] {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 55%, var(--home-surface));
+  }
+}
 .home-section.home-summary-card:hover {
   box-shadow: 0 2px 10px color-mix(in srgb, var(--ink) 8%, transparent);
 }

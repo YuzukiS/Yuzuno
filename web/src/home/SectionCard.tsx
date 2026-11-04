@@ -1,4 +1,4 @@
-import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { BookOpen, CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
@@ -77,8 +77,11 @@ function useReservedHeight(version: number, collapsed: boolean) {
 }
 
 /** Pins a status or report section to the widget column, or takes it off.
- * Only this button follows the pins, so pinning redraws no card body. */
-export function PinButton({ section, projectId }: { section: Section; projectId: string }) {
+ * Only this button follows the pins, so pinning redraws no card body.
+ * `anchor` is the control that keeps its place while the widget comes in
+ * (T-19 HM:W5), when this button is not itself always in view: a summary
+ * card's More actions pass their trigger (Lead 3643, 3722). */
+export function PinButton({ section, projectId, anchor }: { section: Section; projectId: string; anchor?: RefObject<HTMLElement | null> }) {
   const pins = useContext(PinsContext);
   const t = useStrings(homeText);
   if (!pins || !pinnable(section)) return null;
@@ -92,7 +95,7 @@ export function PinButton({ section, projectId }: { section: Section; projectId:
       aria-pressed={pinned}
       aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
       title={pinned ? t.unpin : t.pin}
-      onClick={(event) => pins.toggle(projectId, section, event.currentTarget)}
+      onClick={(event) => pins.toggle(projectId, section, anchor?.current ?? event.currentTarget)}
     >
       {pinned ? <PinOff size={13} /> : <Pin size={13} />}
     </button>
