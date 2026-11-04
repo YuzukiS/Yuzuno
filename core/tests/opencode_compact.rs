@@ -439,7 +439,10 @@ impl Lab {
     }
 
     /// A compaction stopped while it ran: one OpenCode still holds, its
-    /// request answered 200 and true. Its Turn's ID.
+    /// request answered 200 and true. Its Turn's ID, once the whole read Core
+    /// makes after that answer is published: until then it may still publish
+    /// what it read before anything the test does next, and a later wait for
+    /// a read (`read_again`) could take it for its own.
     async fn stopped(&self) -> String {
         self.summarize("hold").await;
         self.ws.opencode_compact(ID).await.unwrap();
@@ -448,6 +451,10 @@ impl Lab {
         let d = self.until("its request's end", |d| compaction(d)["_opencodeCompact"]["answer"]["kind"] == "ended").await;
         let attempt = &compaction(&d)["_opencodeCompact"];
         assert_eq!((attempt["state"].as_str(), attempt["nativePending"].as_bool()), (Some("stopped"), Some(true)), "{attempt:#}");
+        self.until("the read after the request's answer, published", |_| {
+            let kinds = self.kinds();
+            kinds.iter().rposition(|k| k == "opencode/compactAnswered").is_some_and(|at| kinds[at + 1..].iter().any(|k| k == "opencode/resynced"))
+        }).await;
         compaction(&d)["id"].as_str().unwrap().to_owned()
     }
 }
@@ -498,15 +505,12 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
 /// part still in them; the removal and its own read after it come in
 /// between. The stale read is read again, and what it finds then is published.
 /// Nothing else reads meanwhile: the read after the request's answer is
-/// published first, and the stand-in says when the one read is held (Lead 3916).
+/// published first (`stopped`), and the stand-in says when the one read is
+/// held (Lead 3916).
 #[tokio::test]
 async fn a_read_from_before_a_removal_never_undoes_it() {
     let lab = lab(true).await;
     let turn = lab.stopped().await;
-    lab.until("the read after the request's answer, published", |_| {
-        let kinds = lab.kinds();
-        kinds.iter().rposition(|k| k == "opencode/compactAnswered").is_some_and(|at| kinds[at + 1..].iter().any(|k| k == "opencode/resynced"))
-    }).await;
     let reads = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/permission").count();
     let (resynced, before) = (lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), reads(&lab));
     lab.control("mode", json!({"holdPermission": true})).await;

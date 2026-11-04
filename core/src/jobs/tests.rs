@@ -1167,3 +1167,101 @@ fn machine_id_local_and_a_local_agents_agent_are_this_host_and_the_target_says_s
     let job = submit(&s, "unnamed");
     assert_eq!(job["target"], json!({"requested":null,"kind":"local","machineId":"local","machineName":"test"}));
 }
+
+/// T-29: inputs past the guard's bounds refuse the snapshot job_submit and
+/// each run's stage take at submit with one sentence: which file, how big,
+/// which limit, and whether guardGit counted it. No traceback, and no path of
+/// the helper in Core's data folder. Other helper failures read as before.
+#[tokio::test]
+async fn inputs_past_the_guard_are_refused_naming_the_file_its_size_and_the_limit() {
+    async fn refused(helper: &std::path::Path, request: Value) -> String {
+        host::invoke(helper, "snapshot", None, Some(request)).await.unwrap_err().to_string()
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let helper = host::helper(&dir.path().join("data")).await.unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    // Sparse files: their size is what the guard reads first.
+    let sized = |name: &str, bytes: u64| std::fs::File::create(work.join(name)).unwrap().set_len(bytes).unwrap();
+    let cwd = work.to_string_lossy().into_owned();
+    let clean = |error: &str| {
+        let helper = helper.to_string_lossy();
+        assert!(!error.contains("Traceback") && !error.contains(&*helper) && !error.contains("host-"), "{error}");
+    };
+
+    sized("small.txt", 10);
+    let ok = host::invoke(&helper, "snapshot", None, Some(json!({"cwd":cwd,"inputs":["small.txt"],"guardGit":false}))).await.unwrap();
+    assert_eq!(ok["files"][0]["path"], work.join("small.txt").to_string_lossy().as_ref());
+
+    sized("big.bin", 3 * 1024 * 1024);
+    let one = refused(&helper, json!({"cwd":cwd,"inputs":["small.txt","big.bin"],"guardGit":false})).await;
+    assert_eq!(one, "Input guard refused these inputs: big.bin is 3145728 bytes, over the 2 MiB per-file limit: guarded inputs \
+        are at most 2 MiB each and 16 MiB together, and large data is not snapshotted.");
+    clean(&one);
+
+    let parts: Vec<String> = (0..9).map(|i| format!("part{i}.bin")).collect();
+    for part in &parts {
+        sized(part, 2 * 1024 * 1024);
+    }
+    let all = refused(&helper, json!({"cwd":cwd,"inputs":parts,"guardGit":false})).await;
+    assert_eq!(all, "Input guard refused these inputs: guarded inputs reach 18874368 bytes with part8.bin, over the 16 MiB total \
+        limit: guarded inputs are at most 2 MiB each and 16 MiB together, and large data is not snapshotted.");
+    clean(&all);
+
+    // A changed tracked file guardGit adds counts too, and the refusal says so.
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=Lab", "-c", "user.email=lab@example.invalid"])
+            .args(args).output().unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("model.txt"), "small").unwrap();
+    git(&["add", "model.txt"]);
+    git(&["commit", "-qm", "fixture"]);
+    std::fs::File::create(repo.join("model.txt")).unwrap().set_len(3 * 1024 * 1024).unwrap();
+    let tracked = refused(&helper, json!({"cwd":repo.to_string_lossy(),"guardGit":true})).await;
+    assert_eq!(tracked, "Input guard refused these inputs: model.txt is 3145728 bytes, over the 2 MiB per-file limit: guarded \
+        inputs are at most 2 MiB each and 16 MiB together, and large data is not snapshotted. It is a changed tracked Git file, \
+        guarded because guardGit is true: commit it, or submit with guardGit=false and list the inputs the command reads.");
+    clean(&tracked);
+
+    // Anything else the helper fails at is reported as it always was.
+    let gone = refused(&helper, json!({"cwd":dir.path().join("gone").to_string_lossy(),"guardGit":false})).await;
+    assert!(gone.starts_with("Host helper failed: Traceback"), "{gone}");
+}
+
+/// T-29, through the callers: job_submit and a run's stage refuse an input
+/// past the guard with that sentence, the stage's after its "Stage {key}: "
+/// prefix, and save nothing. Both probe this host's systemd user manager
+/// before the snapshot.
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS) for the host probe; run in a Job"]
+async fn job_submit_and_a_run_stage_refuse_an_input_past_the_guard_in_that_sentence() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.jobs.started.set(()).unwrap();
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"a","cwd":"/tmp","model":"test","color":"sage",
+        "status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"task","title":"Jobs","status":"doing"})).unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::File::create(work.join("big.bin")).unwrap().set_len(3 * 1024 * 1024).unwrap();
+    let cwd = work.to_string_lossy().into_owned();
+    let resources = json!({"cpuMillis":200,"memoryMiB":64,"swapMiB":0});
+    let sentence = "Input guard refused these inputs: big.bin is 3145728 bytes, over the 2 MiB per-file limit: guarded inputs are at \
+        most 2 MiB each and 16 MiB together, and large data is not snapshotted.";
+    let submit = call(ws.clone(), Some("a".into()), "job_submit".into(), json!({"requestId":"big","taskId":"T-1","name":"big",
+        "cwd":cwd,"argv":["/usr/bin/true"],"resources":resources,"inputs":["big.bin"],"guardGit":false})).await.unwrap_err().to_string();
+    assert_eq!(submit, sentence);
+    let run = call(ws.clone(), Some("a".into()), "job_run_submit".into(), json!({"requestId":"run","taskId":"T-1","name":"run",
+        "stages":[{"key":"prep","cwd":cwd,"argv":["/usr/bin/true"],"resources":resources,"inputs":["big.bin"],"guardGit":false}]}))
+        .await.unwrap_err().to_string();
+    assert_eq!(run, format!("Stage prep: {sentence}"));
+    let db = ws.store.db.read().unwrap();
+    let count = |table: &str| db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!((count("local_jobs"), count("local_job_runs")), (0, 0), "nothing saved");
+}

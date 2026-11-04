@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -81,6 +81,15 @@ async fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
     })
     .await
 }
+/// The input guard's refusal (T-29): host.py ends a refused snapshot with one
+/// line, `yuzuno-input-guard {json}`. Its problem names the input and the
+/// limit; the rest of stderr, the helper's own path included, is left out.
+fn input_guard(stderr: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stderr);
+    let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
+    let detail: Value = serde_json::from_str(line.strip_prefix("yuzuno-input-guard ")?).ok()?;
+    detail["problem"].as_str().filter(|problem| !problem.is_empty()).map(str::to_owned)
+}
 async fn run(mut cmd: Command, input: Option<Value>, seconds: u64) -> Result<Value> {
     cmd.stdin(if input.is_some() {
         Stdio::piped()
@@ -116,6 +125,11 @@ async fn run(mut cmd: Command, input: Option<Value>, seconds: u64) -> Result<Val
             out.len() <= 1024 * 1024 && err.len() <= 16384,
             "Host helper output exceeded its bound"
         );
+        if !status.success() {
+            if let Some(problem) = input_guard(&err) {
+                bail!("Input guard refused these inputs: {problem}");
+            }
+        }
         ensure!(
             status.success(),
             "Host helper failed: {}",
