@@ -80,8 +80,11 @@ pub(crate) struct Attempt {
     pub(crate) opencode: Option<Value>,
 }
 impl Attempt {
+    /// An OpenCode revert gives its text back only once it is kept (Lead
+    /// 4124): not when it failed, kept nothing, or is not yet known.
     pub(crate) fn outcome(&self) -> Value {
-        let mut outcome = json!({"attemptId":self.id,"status":self.state,"message":self.message,"draft":self.draft});
+        let draft = if self.opencode.is_some() && self.state != "completed" { "" } else { self.draft.as_str() };
+        let mut outcome = json!({"attemptId":self.id,"status":self.state,"message":self.message,"draft":draft});
         if let Some(files) = &self.files {
             outcome["files"] = files.clone();
         }

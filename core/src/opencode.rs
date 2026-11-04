@@ -694,6 +694,7 @@ impl Server {
     pub fn revert(&self, session: &str, message: &str) -> Result<impl std::future::Future<Output = RevertAnswer> + Send + 'static> {
         let path = format!("/session/{}/revert", segment(session)?);
         let request = self.request(Method::POST, &path).json(&json!({"messageID": message}));
+        let session = session.to_owned();
         Ok(async move {
             match request.send().await {
                 Err(error) => RevertAnswer::Unknown(format!("OpenCode did not answer: {error}")),
@@ -706,7 +707,7 @@ impl Server {
                 },
                 Ok(response) => {
                     let status = status(response).await;
-                    if refused_before(&status) { RevertAnswer::Refused(status) } else { RevertAnswer::Unknown(status.to_string()) }
+                    if refused_before(&status, &session) { RevertAnswer::Refused(status) } else { RevertAnswer::Unknown(status.to_string()) }
                 }
             }
         })
@@ -925,8 +926,9 @@ async fn success(response: Response) -> Result<Response> {
 
 /// Whether a revert's answer is one OpenCode 1.19.3 gives only before it
 /// does anything (Lead 4109), its status and whole body together, as its own
-/// API declares them (`packages/sdk/openapi.json`): 409 `SessionBusyError`,
-/// from `assertNotBusy`, the revert's first step (`session/revert.ts`); 404
+/// API declares them (`packages/sdk/openapi.json`): 409 `SessionBusyError`
+/// of `session` itself, from `assertNotBusy`, the revert's first step
+/// (`session/revert.ts`); 404
 /// `NotFoundError`, from `requireSession`, the handler's own first step
 /// (`handlers/session.ts`); 400 `BadRequest` of a parameter, query or
 /// payload that could not be decoded, before the handler runs
@@ -935,11 +937,11 @@ async fn success(response: Response) -> Result<Response> {
 /// (`test/server/httpapi-schema-error-body.test.ts`, Lead 4121). Nor any
 /// other answer: a 401 or 403, any other body for those statuses, or one
 /// cut short.
-fn refused_before(status: &HttpStatus) -> bool {
+fn refused_before(status: &HttpStatus, session: &str) -> bool {
     let Ok(body) = serde_json::from_str::<Value>(&status.body) else { return false };
     let text = |value: &Value| value.is_string();
     match status.code {
-        409 => body["_tag"] == "SessionBusyError" && text(&body["sessionID"]) && text(&body["message"]),
+        409 => body["_tag"] == "SessionBusyError" && body["sessionID"] == session && text(&body["message"]),
         404 => body["name"] == "NotFoundError" && text(&body["data"]["message"]),
         400 => body["name"] == "BadRequest" && text(&body["data"]["message"])
             && matches!(body["data"]["kind"].as_str(), Some("Params" | "Query" | "Payload")),
@@ -967,7 +969,7 @@ mod tests {
 
     #[test]
     fn only_opencodes_own_refusals_before_a_revert_begins_count_as_refused() {
-        let refused = |code: u16, body: Value| refused_before(&HttpStatus { code, body: body.to_string() });
+        let refused = |code: u16, body: Value| refused_before(&HttpStatus { code, body: body.to_string() }, "ses_1");
         assert!(refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_1", "message": "Session is busy: ses_1"})));
         assert!(refused(404, json!({"name": "NotFoundError", "data": {"message": "Session not found: ses_1"}})));
         assert!(refused(400, json!({"name": "BadRequest", "data": {"message": "Expected string", "kind": "Payload"}})));
@@ -983,7 +985,9 @@ mod tests {
         ] {
             assert!(!refused(code, body.clone()), "{code} {body}");
         }
-        assert!(!refused_before(&HttpStatus { code: 409, body: "{\"_tag\":\"SessionBusyError\",\"sessionID\":\"ses_1\",…".into() }), "cut short");
+        assert!(!refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_2", "message": "Session is busy: ses_2"})),
+            "a busy answer of another session is no refusal of this one");
+        assert!(!refused_before(&HttpStatus { code: 409, body: "{\"_tag\":\"SessionBusyError\",\"sessionID\":\"ses_1\",…".into() }, "ses_1"), "cut short");
     }
 
     #[test]

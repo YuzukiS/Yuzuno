@@ -64,6 +64,8 @@ pub(super) struct Plan {
     pub entries: Vec<Entry>,
     pub root: Option<Root>,
     pub folder: String,
+    /// The Turns it archived, which leave the record if it is kept.
+    pub turns: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
 }
@@ -72,6 +74,20 @@ impl Plan {
     fn of(attempt: &Attempt) -> Result<Self> {
         Ok(serde_json::from_value(attempt.opencode.clone().context("The attempt keeps no plan")?)?)
     }
+}
+
+/// What `rx` gives within `within`: its answer, or none once it is closed
+/// (Lead 4124). An answer sent before the close is taken here, even one sent
+/// as the watch ended; a send after it fails, so its sender keeps the answer
+/// and settles the attempt itself. `at_end` runs between the watch's end and
+/// the close (where a test sends, to make an answer arrive just then).
+async fn watched<T>(rx: &mut tokio::sync::oneshot::Receiver<T>, within: Duration, at_end: impl FnOnce()) -> Option<T> {
+    if let Ok(answer) = tokio::time::timeout(within, &mut *rx).await {
+        return answer.ok();
+    }
+    at_end();
+    rx.close();
+    rx.try_recv().ok()
 }
 
 /// What a revert to before a Turn would do, as read now.
@@ -211,14 +227,14 @@ impl Workspace {
         let native = serde_json::to_string(&read.leaving)?;
         let room = MAX_ARCHIVE.saturating_sub(native.len());
         let (agent, turn) = (id.to_owned(), p.turn.clone());
-        let (kept, local) = self.stored(move |s| {
+        let (kept, leaving, local) = self.stored(move |s| {
             let ids = s.turn_ids(&agent)?;
             let at = ids.iter().position(|t| *t == turn).context("这个 Agent 没有这个 Turn；没有回退")?;
-            Ok((ids[..at].to_vec(), s.archive(&agent, &ids[at..], room)?))
+            Ok((ids[..at].to_vec(), ids[at..].to_vec(), s.archive(&agent, &ids[at..], room)?))
         }).await?;
         let local = local.context("要回退的内容超出可以留存的大小；没有回退")?;
         let plan = Plan { generation: read.generation, messages: read.messages.clone(), entries: read.entries.clone(), root: read.root,
-            folder: read.folder.clone(), ended: None };
+            folder: read.folder.clone(), turns: leaving, ended: None };
         let mut attempt = Attempt {
             id: key.into(), agent: id.into(), thread: read.session.clone(), target: p.turn.clone(), kept,
             draft: read.draft.clone(), state: "sending".into(), message: None, files: None, opencode: Some(serde_json::to_value(&plan)?),
@@ -244,7 +260,7 @@ impl Workspace {
         }
 
         // One request, watched for WATCH. An answer after that settles the attempt when it comes.
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
         let (owner, agent, key_owned) = (Arc::downgrade(self), id.to_owned(), key.to_owned());
         tokio::spawn(async move {
             let answer = request.await;
@@ -256,9 +272,9 @@ impl Workspace {
                 }
             }
         });
-        match tokio::time::timeout(WATCH, rx).await {
-            Ok(Ok(answer)) => self.opencode_revert_answered(id, attempt, answer).await,
-            _ => {
+        match watched(&mut rx, WATCH, || ()).await {
+            Some(answer) => self.opencode_revert_answered(id, attempt, answer).await,
+            None => {
                 attempt.state = "unknown".into();
                 attempt.message = Some(format!("OpenCode 在 {} 秒内没有回答这次回退；结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次", WATCH.as_secs()));
                 self.opencode_revert_saved(id, &attempt).await
@@ -332,7 +348,7 @@ impl Workspace {
             listed.push(file);
         }
         attempt.files = Some(Value::Array(listed));
-        self.opencode_revert_project(id, attempt).await?;
+        self.opencode_revert_project(id, attempt, plan).await?;
         let unverified = outcomes.iter().filter(|o| !matches!(o, Outcome::Verified)).count();
         attempt.state = "completed".into();
         attempt.message = Some(if unverified == 0 {
@@ -382,12 +398,11 @@ impl Workspace {
         self.opencode_revert_saved(id, &attempt).await
     }
 
-    /// The Turns a revert removed (all but those it keeps) leave this
-    /// Agent's record, with any request of theirs.
-    async fn opencode_revert_project(&self, id: &str, attempt: &Attempt) -> Result<()> {
-        let (agent, kept, key) = (id.to_owned(), attempt.kept.clone(), attempt.id.clone());
+    /// The Turns a revert archived leave this Agent's record, with any
+    /// request of theirs: exactly those, whatever else the record holds.
+    async fn opencode_revert_project(&self, id: &str, attempt: &Attempt, plan: &Plan) -> Result<()> {
+        let (agent, kept, key, removed) = (id.to_owned(), attempt.kept.clone(), attempt.id.clone(), plan.turns.clone());
         self.stored(move |s| {
-            let removed: Vec<String> = s.turn_ids(&agent)?.into_iter().filter(|t| !kept.contains(t)).collect();
             let gone = removed.clone();
             s.record_event(&agent, "opencode/reverted", &json!({"attemptId": key, "keptTurnIds": kept}), Sel::Turns(removed), move |d| {
                 let leaves = |turn: Option<&str>| turn.is_some_and(|turn| gone.iter().any(|g| g == turn));

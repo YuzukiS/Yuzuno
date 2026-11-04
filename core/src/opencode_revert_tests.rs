@@ -269,6 +269,7 @@ async fn a_revert_whose_outcome_is_unknown_holds_back_every_new_input_and_is_nev
     let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
     let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
     assert_eq!(outcome["status"], "unknown", "a 500 says nothing of what it did: {outcome}");
+    assert_eq!(outcome["draft"], "", "no text back while not known");
     for (what, error) in [
         ("send", ws.opencode_send("oc", "next".into()).await.expect_err("a send is held back")),
         ("compact", ws.opencode_compact("oc").await.expect_err("a compaction is held back")),
@@ -298,6 +299,7 @@ async fn a_revert_opencode_refuses_before_doing_anything_has_failed_and_holds_no
     let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
     let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
     assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert_eq!(outcome["draft"], "", "no text back from a revert refused");
     assert!(outcome["message"].as_str().unwrap().contains("SessionBusyError"), "{outcome}");
     assert_eq!(turn_ids(&ws), vec![first]);
     turn(&ws, &data, "next", json!({})).await;
@@ -331,6 +333,10 @@ async fn an_answer_after_the_confirm_stopped_watching_settles_its_attempt_when_i
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(settled["status"], "completed", "settled by its answer: {settled}");
+    assert_eq!(settled["draft"], "second", "the text back once kept");
+    // Another answer for it now changes nothing.
+    let again = ws.opencode_revert_late("oc", &key, RevertAnswer::Unknown("a second answer".into())).await.unwrap();
+    assert_eq!(again, settled, "a settled attempt stays as it was settled");
     assert_eq!(reverts(&data), 1, "asked once");
     assert_eq!(turn_ids(&ws), vec![first]);
     ws.close_agent("oc").await.unwrap();
@@ -411,6 +417,7 @@ async fn a_request_that_ended_with_no_revert_kept_lets_the_agent_go_on_only_once
     let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
     let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
     assert_eq!(outcome["status"], "unchanged", "{outcome}");
+    assert_eq!(outcome["draft"], "", "no text back from a revert nothing was kept of");
     assert_eq!(turn_ids(&ws), vec![first.clone()], "no Turn leaves");
     turn(&ws, &data, "next", json!({})).await;
     ws.close_agent("oc").await.unwrap();
@@ -473,4 +480,20 @@ async fn a_400_that_may_come_after_the_revert_ran_says_nothing_of_what_it_did() 
     assert_eq!(reverts(&data), 1, "never asked again");
     assert_eq!(turn_ids(&ws), vec![first, second], "nothing removed while unknown");
     ws.close_agent("oc").await.unwrap();
+}
+
+#[tokio::test]
+async fn an_answer_that_arrives_as_the_watch_ends_is_taken_and_one_after_it_stays_with_its_sender() {
+    // Within the watch.
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    tx.send(1).unwrap();
+    assert_eq!(watched(&mut rx, Duration::from_secs(5), || ()).await, Some(1));
+    // Sent just as the watch ended, before the receiver closed: taken, not lost.
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let answer = watched(&mut rx, Duration::ZERO, || tx.send(2).unwrap()).await;
+    assert_eq!(answer, Some(2), "an answer that arrives as the watch ends is taken");
+    // None by then: the receiver is closed, so a later send fails and its sender keeps the answer.
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<i32>();
+    assert_eq!(watched(&mut rx, Duration::ZERO, || ()).await, None);
+    assert_eq!(tx.send(3), Err(3), "one after it stays with its sender");
 }
