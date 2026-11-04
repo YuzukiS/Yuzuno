@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, ExternalLink, RefreshCw } from "lucide-react";
+import { ArrowUpRight, ExternalLink, GitPullRequest, RefreshCw } from "lucide-react";
 import { api, errorText } from "./api";
 import { reviewConclusions, reviewPassed, reviewReasons } from "./review-outcome";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -12,6 +12,7 @@ import {
   StateGroups,
   type Placement,
 } from "./JobParts";
+import { WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 
 export type ReviewRow = {
   id: string;
@@ -113,6 +114,8 @@ const reviewText = strings({
   reviewId: "Review ID",
   openReport: (task: string) => `Open full report in ${task}`,
   footnote: "Findings are the model's assessment. A review does not merge the PR, pass CI or complete its task.",
+  dockName: (number: number, round: number | null) => (round ? `PR #${number} · round ${round}` : `PR #${number}`),
+  dockFindings: (count: number) => (count === 1 ? "1 finding" : `${count} findings`),
 }, {
   preparing: "正在准备",
   reviewing: "正在审查",
@@ -173,6 +176,8 @@ const reviewText = strings({
   reviewId: "审查 ID",
   openReport: (task) => `在 ${task} 中打开完整报告`,
   footnote: "发现是模型的评估。审查不会合并 PR、让 CI 通过或完成其任务。",
+  dockName: (number, round) => (round ? `PR #${number} · 第 ${round} 轮` : `PR #${number}`),
+  dockFindings: (count) => `${count} 条发现`,
 });
 type ReviewText = ReturnType<typeof reviewText>;
 const reviewEn = reviewText("en");
@@ -599,5 +604,86 @@ function ReviewSummary({
       </div>
       <p className="job-footnote">{t.footnote}</p>
     </>
+  );
+}
+
+/** Opens the Jobs panel on its Reviews: one review in its task, or the list. */
+const openReviews = (detail: ReviewOpen = {}) =>
+  window.dispatchEvent(new CustomEvent("yuzuno:open-job", { detail: { ...detail, source: "reviews" } }));
+/** As many reviews as the conversation's dock shows: what runs first, then the latest ended. */
+export const DOCK_REVIEWS = 2;
+// The last answer for each Agent, shown again when its conversation comes
+// back, so the dock keeps its room until the next one (as lastCi does).
+const lastDock = new Map<string, Page>();
+/**
+ * The conversation's own reviews, for its work dock (T-25): those its Agent
+ * requested, those sent to it and those on a task assigned to it (Core's
+ * `involving`). Read again when Core says a review changed (the jobs scope,
+ * `revision`), never on a timer. A Core without `involving` refuses it, and
+ * the dock then has no reviews group.
+ */
+export function useConversationReviews(agentId: string, revision: string, disabled: boolean) {
+  const [page, setPage] = useState<Page>(() => lastDock.get(agentId) ?? empty);
+  useEffect(() => {
+    if (disabled) return;
+    const controller = new AbortController();
+    void api<Page>(`/reviews?${new URLSearchParams({ involving: agentId })}`, { signal: controller.signal })
+      .then((value) => {
+        if (controller.signal.aborted || !Array.isArray(value?.reviews)) return;
+        lastDock.set(agentId, value);
+        setPage(value);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [agentId, revision, disabled]);
+  return page;
+}
+/**
+ * A review's mark on the dock (T-19): only a passing review is marked
+ * passed; changes requested is a plain X; an end Core could not confirm,
+ * or a conclusion it does not know, stays unknown, never a failure.
+ */
+export function dockMark(r: ReviewRow) {
+  if (r.status === "preparing") return "pending";
+  if (r.status === "running") return "running";
+  if (r.status === "completed")
+    return reviewPassed(r) ? "passed" : r.conclusion === "changes_requested" ? "rejected" : "unknown";
+  if (r.status === "failed") return "failed";
+  if (r.status === "cancelled") return "cancelled";
+  return "unknown";
+}
+const at = (value: string | null | undefined) => Date.parse(value || "") || 0;
+/** The conversation's reviews on its dock, after its runs; none, no group. */
+export function ConversationReviews({ agentId, revision, disabled }: { agentId: string; revision: string; disabled: boolean }) {
+  const t = reviewText(useLanguage());
+  const page = useConversationReviews(agentId, revision, disabled);
+  if (!page.reviews.length) return null;
+  const shown = page.reviews
+    .map((r) => ({ r, running: active(r) }))
+    .sort((a, b) => +b.running - +a.running || (a.running ? 0 : at(b.r.finishedAt || b.r.createdAt) - at(a.r.finishedAt || a.r.createdAt)))
+    .slice(0, DOCK_REVIEWS)
+    .map(({ r }) => r);
+  // Of the page read, as the dock's runs count theirs; the list has the rest.
+  const more = page.reviews.length - shown.length;
+  return (
+    <WorkDockGroup label={t.region} icon={<GitPullRequest size={14} />} onOpen={() => openReviews()}>
+      {shown.map((r) => {
+        const state = reviewState(r, t);
+        return (
+          <WorkDockItem
+            key={r.id}
+            className="conversation-job conversation-review"
+            status={dockMark(r)}
+            state={state}
+            name={t.dockName(r.number, r.round)}
+            sub={r.status === "completed" && r.findingsCount > 0 ? `${state} · ${t.dockFindings(r.findingsCount)}` : state}
+            detail={`${r.repository} · ${r.taskRef}${r.headSha ? t.head(r.headSha.slice(0, 8)) : ""}`}
+            when={active(r) ? moments([[t.queuedAt, r.createdAt]]) : moments([[t.finishedAt, r.finishedAt]])}
+            onOpen={() => openReviews({ taskId: r.taskId, reviewId: r.id })}
+          />
+        );
+      })}
+      {more > 0 && <WorkDockMore label={t.region} count={more} onOpen={() => openReviews()} />}
+    </WorkDockGroup>
   );
 }

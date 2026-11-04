@@ -59,11 +59,13 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/reviews", get(index))
 }
 /// The Jobs list's scope: every review, one task's, or those an Agent
-/// requested; or one review a link points to.
+/// requested; or one review a link points to. `involving` is a conversation's
+/// work dock (T-25): what its Agent requested, was sent, or is assigned.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct IndexScope {
     agent_id: Option<String>,
+    involving: Option<String>,
     task_id: Option<String>,
     review_id: Option<String>,
     before: Option<i64>,
@@ -77,6 +79,7 @@ async fn index(
         ws.stored(move |s| {
             s.index_pr_reviews(
                 scope.agent_id.as_deref(),
+                scope.involving.as_deref(),
                 scope.task_id.as_deref(),
                 scope.review_id.as_deref(),
                 scope.before,

@@ -671,7 +671,8 @@ test('A refresh re-reads at most ten loaded pages and drops older rows instead o
     const more = all.some(r => r.cursor < rows.at(-1).cursor);
     return reviewPage(rows, more ? rows.at(-1).cursor : null);
   });
-  const lists = () => p.calls.filter(c => c.url.startsWith('/api/reviews?')).length;
+  // The Reviews list's own reads; the conversation dock reads its reviews apart (T-25).
+  const lists = () => p.calls.filter(c => c.url.startsWith('/api/reviews?') && !c.url.includes('involving=')).length;
   try {
     await open(p); button(p, 'Reviews').click();
     // Finished reviews fold after ten; earlier pages come once all show.
@@ -967,4 +968,76 @@ test('a run whose jobs and steps could not be read shows them without its failur
     assert.equal(reportReads(), reads, 'its steps came with the check');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+test('the conversation dock lists its PR reviews after its runs, follows Core to their end and opens each in its task (T-25)', async () => {
+  // Mori's reviews (Core's `involving`): a round the Lead started on Mori's PR, preparing; one that requested
+  // changes; one that passed; one whose end Core could not confirm.
+  let reviews = [
+    review('third', 12, { status: 'preparing', phase: 'Fetching fixed PR revision', conclusion: 'unknown', round: 3, createdAt: '2026-10-15T02:00:00Z', finishedAt: null, requestedBy: { kind: 'agent', id: 'lead', name: 'Lead' } }),
+    review('changes', 11, { conclusion: 'changes_requested', findingsCount: 3, round: 2, finishedAt: '2026-10-15T01:50:00Z' }),
+    review('clean', 10, { round: 1 }),
+    review('lost', 9, { status: 'unknown', conclusion: 'unknown', finishedAt: null, number: 8, round: 1 }),
+  ];
+  const p = mount(url => {
+    if (url === '/api/reviews?involving=a') return reviewPage(reviews);
+    if (url === '/api/reviews?taskId=task-one&reviewId=changes') return reviewPage([reviews.find(r => r.id === 'changes')]);
+    if (url.startsWith('/api/reviews?taskId=task-one')) return reviewPage(reviews);
+    return page([]);
+  });
+  const group = () => p.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]');
+  const items = () => [...(group()?.querySelectorAll('.conversation-review') || [])];
+  const names = () => items().map(i => i.querySelector('.work-dock-label strong').textContent);
+  const states = () => items().map(i => [...i.classList].find(c => c.startsWith('state-')));
+  const reads = () => p.calls.filter(c => c.url === '/api/reviews?involving=a').length;
+  try {
+    await until(() => items().length === 2);
+    // What is still going first, then the latest ended: two shown, the rest behind More.
+    assert.deepEqual(names(), ['PR #7 · round 3', 'PR #7 · round 2']);
+    assert.deepEqual(states(), ['state-pending', 'state-rejected']);
+    assert.match(items()[0].textContent, /Preparing/);
+    assert.match(items()[1].textContent, /Changes requested · 3 findings/);
+    assert.equal(group().querySelector('.work-dock-more')?.getAttribute('aria-label'), 'PR reviews: 2 more, open the list');
+    // Read once, and again only when Core says something changed: no timer.
+    for (let n = 0; n < 12; n++) await wait();
+    assert.equal(reads(), 1);
+    assert.equal(p.calls.some(c => c.url === '/api/reviews?agentId=a'), false, 'not only what Mori requested itself');
+    // Core says a review changed (the jobs scope): the round runs, then ends with no findings, the one mark of passing.
+    reviews = [{ ...reviews[0], status: 'running', phase: 'Reviewing' }, ...reviews.slice(1)];
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => states()[0] === 'state-running');
+    assert.match(items()[0].textContent, /Reviewing/);
+    reviews = [{ ...reviews[0], status: 'completed', conclusion: 'no_findings', finishedAt: '2026-10-15T02:20:00Z' }, ...reviews.slice(1)];
+    p.window.renderJobs({ ...props, revision: '3' });
+    await until(() => states()[0] === 'state-passed');
+    assert.deepEqual(names(), ['PR #7 · round 3', 'PR #7 · round 2']);
+    assert.match(items()[0].textContent, /No actionable findings/);
+    assert.equal(reads(), 3);
+    // Opened from the dock: the Jobs panel's Reviews, that review in its task.
+    items()[1].click();
+    await until(() => p.doc.querySelector('.review-jobs .job-detail h3'));
+    assert.match(p.doc.querySelector('.review-jobs .job-detail').textContent, /Changes requested/);
+    assert.equal(p.doc.querySelector('.job-task-scope').textContent, 'Task task-one');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+
+  // An end Core could not confirm stays unknown, never a failure.
+  let q = mount(url => url === '/api/reviews?involving=a' ? reviewPage([review('lost', 9, { status: 'unknown', conclusion: 'unknown', finishedAt: null })]) : page([]));
+  try {
+    await until(() => q.doc.querySelector('.work-dock .conversation-review'));
+    const item = q.doc.querySelector('.work-dock .conversation-review');
+    assert.ok(item.classList.contains('state-unknown'), item.className);
+    assert.match(item.textContent, /Outcome unknown/);
+    assert.equal(!!q.doc.querySelector('.work-dock .work-dock-more'), false);
+  } finally { q.close(); }
+  // No reviews, or a Core without `involving`: no group, no placeholder, no error.
+  for (const answer of [reviewPage([]), { httpStatus: 400, error: 'unknown field `involving`' }]) {
+    q = mount(url => url === '/api/reviews?involving=a' ? answer : page([]));
+    try {
+      await until(() => q.calls.some(c => c.url === '/api/reviews?involving=a'));
+      for (let n = 0; n < 4; n++) await wait();
+      assert.ok(!q.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]'), 'no reviews group');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+  }
 });

@@ -15,7 +15,7 @@ import "./phone-docks.css";
 const text = strings({
   closeWork: "Close jobs and CI",
   closeTurns: "Close turns",
-  work: "Jobs, CI and sub-agents",
+  work: "Jobs, CI, reviews and sub-agents",
   turns: "Turns",
   reading: (turn: number, turns: number) => `Turns: reading turn ${turn} of ${turns}`,
   inputs: "Your inputs",
@@ -23,7 +23,7 @@ const text = strings({
 }, {
   closeWork: "关闭 Job 与 CI",
   closeTurns: "关闭 Turn",
-  work: "Job、CI 与子 Agent",
+  work: "Job、CI、审查与子 Agent",
   turns: "Turn",
   reading: (turn, turns) => `Turn：正在阅读第 ${turn} 个，共 ${turns} 个`,
   inputs: "你的输入",

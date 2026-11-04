@@ -31,7 +31,7 @@ import {
   type WindowsJobsView,
 } from "./JobBudget";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
-import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
+import { ConversationReviews, openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import { ProvenanceCard } from "./Provenance";
 import type { Agent } from "./types";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
@@ -400,6 +400,8 @@ export function ConversationJobs({
           more={ci.runs.length - runs.length}
         />
       )}
+      {/* Its PR reviews, after the runs (T-25). */}
+      <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} />
       {children}
     </WorkDock>
   );
