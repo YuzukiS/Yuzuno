@@ -354,10 +354,13 @@ test("a body may name its summary and the details that start folded, among the r
       ...extra,
     } },
   });
-  // Valid: none at all (every body before T-18), a lead alone, conditions without a visual, each figure kind.
+  // Valid: none at all (every body before T-18), a lead alone, conditions without a visual, each figure kind,
+  // each size an author names (Lead 2457), and a summary kept from before sizes, with none (Lead 2473).
   for (const props of [{}, { summary: { lead: "answer" } }, { summary: { lead: "answer", conditions: "holds" } },
     { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] }, { summary: { lead: "answer", visual: "runs" } },
-    { summary: { lead: "answer", visual: "shot" } }, { details: ["method"] }])
+    { summary: { lead: "answer", visual: "shot" } }, { details: ["method"] },
+    { summary: { lead: "answer", size: "small" } }, { summary: { lead: "answer", visual: "runs", size: "wide" } },
+    { summary: { lead: "answer", visual: "shot", conditions: "holds", size: "large" } }])
     assert.deepEqual(checkBriefSection(body(props)).body.elements.body.props, props, JSON.stringify(props));
   const refused = (props) => problems(body(props));
   assert.deepEqual(refused({ summary: { lead: "method-text" } })[0], { code: "summary", path: "body.elements.body.props.summary.lead",
@@ -389,11 +392,17 @@ test("a body may name its summary and the details that start folded, among the r
   assert.equal(refused({ summary: { visual: "loss" } })[0].code, "missing_field");
   assert.equal(refused({ summary: { lead: "answer", figure: "loss" } })[0].code, "unknown_field");
   assert.equal(refused({ summary: ["answer"] })[0].code, "invalid_field");
+  // A size is one of three, as written; anything else is refused where it stands.
+  for (const size of ["huge", "Wide", "1x2", 2, null])
+    assert.deepEqual(refused({ summary: { lead: "answer", size } }).map((p) => `${p.code} ${p.path}`), ["invalid_field body.elements.body.props.summary.size"], JSON.stringify(size));
   assert.equal(refused({ details: [] })[0].code, "invalid_field");
   const content = briefGuide("content");
-  assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?\}: ids of the root's own blocks/);
+  assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?, size\}: lead, visual and conditions are ids of the root's own blocks/);
+  // The size is the author's to name with every summary; one without it is advised, not refused (Lead 2457, 2473).
+  assert.match(content, /size is the room the card takes among Home's cards: small \(one column[^)]*\), wide \(two columns[^)]*\) or large \(two columns, two rows[^)]*\)\. Name it with every summary/);
+  assert.match(content, /A summary without one is still accepted \(advice summary_size_missing\), and Home guesses its card's size from its figure\./);
   assert.match(content, /details lists titled Groups of supporting detail .* nothing else folds\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
-  assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
+  assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?, size\?="small"\|"wide"\|"large"\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
 });
 
 test("registered screenshots need reachable exact-name uses, not prose or source links", () => {

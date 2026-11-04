@@ -83,6 +83,25 @@
   min-width: 0;
   flex: 1 1 180px;
 }
+/* A failure's place in a dialog that scrolls (New agent and its import tabs, T-19 SX-25,
+   SX-35, SX-47): two lines of it are kept, hidden while empty, so the buttons below never
+   move. A longer message is clamped to them; it is whole in the title and to assistive
+   technology. */
+.kept-error {
+  height: calc(2lh + 22px);
+  overflow: hidden;
+}
+.kept-error.is-empty {
+  visibility: hidden;
+}
+.kept-error > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+}
 .remote-check-success,
 .remote-login-note {
   display: flex;

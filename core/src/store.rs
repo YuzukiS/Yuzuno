@@ -1620,6 +1620,15 @@ impl Store {
         record_rows::turn_count(&*self.db.read()?, id)
     }
 
+    /// How many of the Agent's Turns come before `turn`, and how many it has;
+    /// None if it has no such Turn.
+    pub fn turns_around(&self, id: &str, turn: &str) -> Result<Option<(usize, usize)>> {
+        self.settle_unwritten(id)?;
+        let db = self.db.read()?;
+        let Some(before) = record_rows::turns_before(&db, id, turn)? else { return Ok(None) };
+        Ok(Some((before, record_rows::turn_count(&db, id)?)))
+    }
+
     /// Every Turn of the Agent, oldest first, read without payloads and
     /// handed to `each` one at a time until it says to stop: for the few
     /// reads that need a whole history (rewind's local archive, a Codex

@@ -72,6 +72,7 @@ export const briefText = strings({
   snapshotAt: (at: string) => ` · snapshot ${at}`,
   downsampled: (points: string) => `Downsampled from ${points} points`,
   points: (points: string) => `${points} points`,
+  seriesShown: (shown: number, total: number) => `${shown} of ${total} series`,
   // Attachments.
   tooLarge: "Too large to preview here.",
   noPreview: "No preview for this format.",
@@ -157,6 +158,7 @@ export const briefText = strings({
   snapshotAt: (at) => ` · 快照 ${at}`,
   downsampled: (points) => `由 ${points} 个数据点降采样`,
   points: (points) => `${points} 个数据点`,
+  seriesShown: (shown, total) => `共 ${total} 个系列，显示 ${shown} 个`,
   tooLarge: "太大，无法在这里预览。",
   noPreview: "此格式没有预览。",
   loadingPreview: "正在读取预览…",

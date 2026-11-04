@@ -8,6 +8,9 @@
 //   fades in and takes focus (the button pressed has gone). Reply again brings the reply back the
 //   same way, with focus in its text. An Ask already replied when Home opens shows as it is.
 // - Under reduced motion nothing fades; focus moves the same.
+// - T-18 (#467, plan on T-18 3117/3124): every report card on Home is a summary card, its Pin and Unpin
+//   in its More actions, opened first. A report with a summary, pinned, is its summary card in My
+//   widgets: its Reply there opens, closes and gives focus back as the deck card's does.
 // Writes: only the one Ask reply sent on purpose in each run (POST .../brief/reply); anything else is
 // refused and counted, but the linked-repositories list Home reads with POST. Served from http://127.0.0.1. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-home-reply-check.mjs
@@ -40,9 +43,16 @@ const body = (text) => ({ root: "body", elements: {
   body: { type: "BriefBody", props: {}, children: ["text"] },
   text: { type: "Markdown", props: { text } },
 } });
+/** A body whose summary is its lead, on a small card (T-18). */
+const summarized = (text) => ({ root: "body", elements: {
+  body: { type: "BriefBody", props: { summary: { lead: "lead", size: "small" } }, children: ["lead"] },
+  lead: { type: "Markdown", props: { text } },
+} });
 const template = () => [
   { id: 11, key: "notes", kind: "report", title: "Weekly notes", version: 3, owner, updatedAt: iso(-30 * MIN), updatedTurnId: null,
     attachments: [], refs: {}, seen: null, history: false, body: body("The import is faster; the export waits for review.") },
+  { id: 13, key: "digest", kind: "report", title: "Weekly digest", version: 1, owner, updatedAt: iso(-25 * MIN), updatedTurnId: null,
+    attachments: [], refs: {}, seen: null, history: false, body: summarized("Two imports ran clean; the export waits for review.") },
   { id: 12, key: "plain", kind: "ask", title: "Anything to add?", version: 2, owner, updatedAt: iso(-20 * MIN), updatedTurnId: null,
     attachments: [], refs: {}, seen: null, history: false, body: body("Anything else before we ship?"),
     ask: { question: "Anything else before we ship?", state: "open", reply: { freeText: true } } },
@@ -119,7 +129,8 @@ function pageHelpers() {
     const el = document.activeElement;
     return el ? { tag: el.tagName, text: el.textContent.trim().slice(0, 40), label: el.getAttribute("aria-label"),
       className: typeof el.className === "string" ? el.className : "", inCard: el.closest("[data-section-key]")?.dataset.sectionKey ?? null,
-      inPinned: !!el.closest(".home-pinned"), shown: el.checkVisibility?.() ?? null } : null;
+      inPinned: !!el.closest(".home-pinned"), inWidget: el.closest(".home-widget-slot")?.dataset.widget ?? null,
+      shown: el.checkVisibility?.() ?? null } : null;
   };
   window.__press = (button, target, frames = 40) => new Promise((done) => {
     const b = document.querySelector(button);
@@ -171,6 +182,8 @@ const runs = [
 const NOTES = '[data-section-key="notes"]';
 const PLAIN = '[data-section-key="plain"]';
 const PIN = ".home-pinned";
+/** The pinned digest's widget: its summary card (T-18). */
+const DIGEST = '.home-widget-slot[data-widget="pin:p1:13:digest"]';
 for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
@@ -200,6 +213,12 @@ for (const run of runs) {
     await page.locator(NOTES).first().waitFor({ timeout: 10_000 });
     await page.waitForTimeout(400);
   };
+  /** A deck card's More actions opened by a pointer, if they are not open: its Pin or Unpin is there. */
+  const openMore = async (key) => {
+    const trigger = page.locator(`.home-main [data-section-key="${key}"] .home-summary-more > button[aria-expanded]`);
+    if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+    await page.locator(`.home-main [data-section-key="${key}"] .home-summary-more-list .home-pin`).waitFor({ state: "visible", timeout: 5000 });
+  };
   try {
     await page.goto("http://127.0.0.1:4319/");
     await openHome();
@@ -221,6 +240,7 @@ for (const run of runs) {
     ok(`${tag}: the reply closed with Escape in its text: focus is back on Reply (${afterEscape?.text})`,
       !(await page.locator(`${NOTES} .home-card-reply`).count()) && afterEscape?.className.includes("home-reply-open"), afterEscape);
     // A pinned card's reply (Lead 3455): its Reply is in the body the card folds, the reply below it.
+    await openMore("notes");
     await page.getByRole("button", { name: "Pin “Weekly notes” to My widgets" }).first().click();
     await page.locator(PIN).waitFor({ timeout: 5000 });
     await page.locator(`${PIN} .home-pinned-foot button[aria-expanded]`).click();
@@ -249,8 +269,35 @@ for (const run of runs) {
         after.open === 0 && after.folded && after.focus?.inPinned && after.focus.className.includes("home-fold") && after.focus.shown === true, after);
     }
     if (await page.locator(`${PIN}.is-collapsed`).count()) await page.locator(`${PIN} .home-pinned-head .home-fold`).click();
+    await openMore("notes");
     await page.getByRole("button", { name: "Unpin “Weekly notes” from My widgets" }).first().click();
     await page.locator(PIN).waitFor({ state: "detached", timeout: 5000 });
+
+    // A report with a summary, pinned: its summary card in My widgets takes a reply as the deck's does (T-18).
+    await openMore("digest");
+    await page.getByRole("button", { name: "Pin “Weekly digest” to My widgets" }).first().click();
+    await page.locator(`${DIGEST} .home-summary-card .home-reply-open`).waitFor({ timeout: 5000 });
+    const inWidget = record("Reply pressed on a pinned summary card", await press(`${DIGEST} .home-reply-open`, `${DIGEST} .home-card-reply`));
+    const widgetFocus = await focused();
+    ok(`${tag}: Reply pressed on a pinned summary card: the reply fades in over small (at once under reduced motion), and its text takes focus (${widgetFocus?.tag})`,
+      came(inWidget, reduced) && widgetFocus?.tag === "TEXTAREA" && widgetFocus.inWidget === "pin:p1:13:digest", { first: inWidget?.slice(0, 3), focus: widgetFocus });
+    await page.locator(`${DIGEST} .home-card-reply-head .icon-button`).click();
+    await page.waitForTimeout(150);
+    const widgetClose = await focused();
+    ok(`${tag}: the pinned summary card's reply closed with its ✕: focus is back on that card's Reply, which is shown (${widgetClose?.label})`,
+      !(await page.locator(`${DIGEST} .home-card-reply`).count()) && widgetClose?.inWidget === "pin:p1:13:digest" &&
+        widgetClose.className.includes("home-reply-open") && widgetClose.shown === true, widgetClose);
+    await press(`${DIGEST} .home-reply-open`, `${DIGEST} .home-card-reply`, 12);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    const widgetEscape = await focused();
+    ok(`${tag}: the pinned summary card's reply closed with Escape in its text: focus is back on that card's Reply (${widgetEscape?.label})`,
+      !(await page.locator(`${DIGEST} .home-card-reply`).count()) && widgetEscape?.inWidget === "pin:p1:13:digest" &&
+        widgetEscape.className.includes("home-reply-open"), widgetEscape);
+    if (await page.locator(`${DIGEST} .home-card-reply`).count()) await page.locator(`${DIGEST} .home-card-reply-head .icon-button`).click();
+    await openMore("digest");
+    await page.getByRole("button", { name: "Unpin “Weekly digest” from My widgets" }).first().click();
+    await page.locator(DIGEST).waitFor({ state: "detached", timeout: 5000 });
 
     // A draft kept from before: after a reload the reply is open again, as it was. (Where Escape
     // did not close it, its ✕ does first.)

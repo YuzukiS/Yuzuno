@@ -9,8 +9,8 @@ use crate::{
 };
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
-    extract::{Path, State},
-    routing::post,
+    extract::{Path, Query, State},
+    routing::{get, post},
     Json, Router,
 };
 use rusqlite::{params, OptionalExtension};
@@ -24,7 +24,7 @@ use std::{
 
 const TTL: Duration = Duration::from_secs(600);
 const MAX_TURNS: usize = 1000;
-const MAX_ARCHIVE: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE: usize = 32 * 1024 * 1024;
 struct Preview {
     owner: Weak<Workspace>,
     agent: String,
@@ -56,20 +56,39 @@ pub(crate) fn expire_previews() -> usize {
     expired.len()
 }
 
+/// A rewind's attempt, kept from before its one native request until its
+/// outcome is known; while it is `sending` or `unknown`, nothing new reaches
+/// the Agent (`ensure_no_pending_rewind`). An OpenCode revert's too (T-10
+/// Revert): `thread` its session, `target` the Turn it reverts to before.
 #[derive(Clone, Serialize, Deserialize)]
-struct Attempt {
-    id: String,
-    agent: String,
-    thread: String,
-    target: String,
-    kept: Vec<String>,
-    draft: String,
-    state: String,
-    message: Option<String>,
+pub(crate) struct Attempt {
+    pub(crate) id: String,
+    pub(crate) agent: String,
+    pub(crate) thread: String,
+    pub(crate) target: String,
+    pub(crate) kept: Vec<String>,
+    pub(crate) draft: String,
+    pub(crate) state: String,
+    pub(crate) message: Option<String>,
+    /// What became of each file an OpenCode revert sent back; none for a
+    /// Codex rewind, which sends none back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) files: Option<Value>,
+    /// What an OpenCode revert checked before it asked, and whether its one
+    /// request was answered whole (`opencode_revert::Plan`); none for Codex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) opencode: Option<Value>,
 }
 impl Attempt {
-    fn outcome(&self) -> Value {
-        json!({"attemptId":self.id,"status":self.state,"message":self.message,"draft":self.draft})
+    /// An OpenCode revert gives its text back only once it is kept (Lead
+    /// 4124): not when it failed, kept nothing, or is not yet known.
+    pub(crate) fn outcome(&self) -> Value {
+        let draft = if self.opencode.is_some() && self.state != "completed" { "" } else { self.draft.as_str() };
+        let mut outcome = json!({"attemptId":self.id,"status":self.state,"message":self.message,"draft":draft});
+        if let Some(files) = &self.files {
+            outcome["files"] = files.clone();
+        }
+        outcome
     }
 }
 
@@ -82,7 +101,7 @@ pub(crate) fn migrate(db: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 impl Store {
-    fn rewind_attempt(&self, agent: &str, id: Option<&str>) -> Result<Option<Attempt>> {
+    pub(crate) fn rewind_attempt(&self, agent: &str, id: Option<&str>) -> Result<Option<Attempt>> {
         let value: Option<String> = if let Some(id) = id {
             self.db
                 .read()?
@@ -98,10 +117,19 @@ impl Store {
         value.map(|v| Ok(serde_json::from_str(&v)?)).transpose()
     }
     pub(crate) fn ensure_no_pending_rewind(&self, agent: &str) -> Result<()> {
-        ensure!(self.rewind_attempt(agent, None)?.is_none(), "A conversation rewind is unconfirmed. Reconnect to check its outcome before sending; it will not be repeated.");
+        ensure!(self.rewind_attempt(agent, None)?.is_none(), "A rewind is unconfirmed. Reconnect to check its outcome before sending; it will not be repeated.");
         Ok(())
     }
-    fn save_rewind(&self, attempt: &Attempt) -> Result<()> {
+    /// A new attempt, `sending`, with what it removes: as the native side
+    /// holds it (`native`) and as this Agent's record does (`local`).
+    pub(crate) fn begin_rewind(&self, attempt: &Attempt, native: &str, local: &str) -> Result<()> {
+        self.db.write()?.execute(
+            "INSERT INTO conversation_rewinds(id,agent_id,state,attempt,native_archive,local_archive,created_at) VALUES(?1,?2,'sending',?3,?4,?5,?6)",
+            params![attempt.id, attempt.agent, serde_json::to_string(attempt)?, native, local, now()],
+        )?;
+        Ok(())
+    }
+    pub(crate) fn save_rewind(&self, attempt: &Attempt) -> Result<()> {
         self.db.write()?.execute(
             "UPDATE conversation_rewinds SET state=?2,attempt=?3 WHERE id=?1",
             params![attempt.id, attempt.state, serde_json::to_string(attempt)?],
@@ -251,6 +279,21 @@ fn project(detail: &mut AgentDetail, kept: &[String], recent: Vec<Value>, histor
 }
 
 impl Workspace {
+    /// The Agent's attempt whose outcome is not yet known, if any, as it
+    /// stands (`/rewind/attempt`): what a client opening the Agent again
+    /// shows, to check it (Lead 4128). It reads only: no check, no request.
+    pub async fn pending_rewind(&self, id: &str) -> Result<Value> {
+        self.rewind_attempt_view(id, None).await
+    }
+    /// The Agent's attempt `attempt`, in whatever state it is now, or with
+    /// none the one not yet known (`/rewind/attempt?id=`): what a client that
+    /// asked for it reads to find its outcome again, also one that settled
+    /// while that client was away (Lead 4133). It reads only.
+    pub async fn rewind_attempt_view(&self, id: &str, attempt: Option<&str>) -> Result<Value> {
+        let (agent, attempt) = (id.to_owned(), attempt.map(str::to_owned));
+        let attempt = self.stored(move |s| s.rewind_attempt(&agent, attempt.as_deref())).await?;
+        Ok(json!({"attempt": attempt.map(|a| a.outcome())}))
+    }
     pub(crate) async fn ensure_rewind_settled(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
         self.stored(move |s| s.ensure_no_pending_rewind(&id)).await
@@ -418,6 +461,8 @@ impl Workspace {
             draft: p.draft,
             state: "sending".into(),
             message: None,
+            files: None,
+            opencode: None,
         };
         // The local archive: the metadata and the Turns the rewind removes
         // (every local Turn the kept native prefix lacks), with their
@@ -433,10 +478,7 @@ impl Workspace {
             bail!("Rewind archive exceeds the safe size; nothing was sent");
         };
         let saved = attempt.clone();
-        self.stored(move |s| {
-            s.db.write()?.execute("INSERT INTO conversation_rewinds(id,agent_id,state,attempt,native_archive,local_archive,created_at) VALUES(?1,?2,'sending',?3,?4,?5,?6)", params![saved.id,saved.agent,serde_json::to_string(&saved)?,native,local,now()])?;
-            Ok(())
-        }).await?;
+        self.stored(move |s| s.begin_rewind(&saved, &native, &local)).await?;
         // A single native mutation. A timeout/disconnect leaves this durable
         // attempt blocking new input until a read verifies the exact prefix.
         let native = c
@@ -634,6 +676,10 @@ impl Workspace {
                 json!({"attemptId":key_id,"status":"failed","draft":"","message":"No native command was admitted for this preview. Close and preview again."}),
             );
         };
+        // An OpenCode revert's own check (T-10 Revert).
+        if matches!(a.state.as_str(), "sending" | "unknown") && self.listed(id).await?.harness == "opencode" {
+            return self.opencode_revert_recheck(id, a).await;
+        }
         if matches!(a.state.as_str(), "sending" | "unknown") {
             let c = self.ensure(id).await?;
             if let Err(e) = self.finish_rewind(id, &c, &mut a).await {
@@ -663,11 +709,19 @@ struct Confirmation {
 struct Check {
     attempt_id: String,
 }
+/// Whether the Agent is an OpenCode one, whose rewind is OpenCode's own
+/// revert (`opencode_revert`, T-10 Revert).
+async fn is_opencode(ws: &Workspace, id: &str) -> Result<bool> {
+    Ok(ws.listed(id).await?.harness == "opencode")
+}
 async fn preview(
     State(ws): State<Arc<Workspace>>,
     Path(id): Path<String>,
     Json(p): Json<Target>,
 ) -> Result<Json<Value>, ApiError> {
+    if is_opencode(&ws, &id).await? {
+        return Ok(Json(ws.opencode_revert_preview(&id, &p.turn_id).await?));
+    }
     Ok(Json(ws.rewind_preview(&id, &p.turn_id).await?))
 }
 async fn confirm(
@@ -675,7 +729,12 @@ async fn confirm(
     Path(id): Path<String>,
     Json(p): Json<Confirmation>,
 ) -> Result<Json<Value>, ApiError> {
-    match ws.rewind_confirm(&id, &p.preview_id).await {
+    let confirmed = if is_opencode(&ws, &id).await? {
+        ws.opencode_revert_confirm(&id, &p.preview_id).await
+    } else {
+        ws.rewind_confirm(&id, &p.preview_id).await
+    };
+    match confirmed {
         Ok(value) => Ok(Json(value)),
         Err(error) => {
             // No durable attempt means admission refused before any wire write.
@@ -697,6 +756,14 @@ async fn check(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.rewind_check(&id, &p.attempt_id).await?))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Which {
+    id: Option<String>,
+}
+async fn pending(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Query(which): Query<Which>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(ws.rewind_attempt_view(&id, which.id.as_deref()).await?))
+}
 async fn resolve(
     State(ws): State<Arc<Workspace>>,
     Path(id): Path<String>,
@@ -710,6 +777,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/agents/{id}/rewind/confirm", post(confirm))
         .route("/api/agents/{id}/rewind/check", post(check))
         .route("/api/agents/{id}/rewind/resolve", post(resolve))
+        .route("/api/agents/{id}/rewind/attempt", get(pending))
 }
 
 #[cfg(test)]

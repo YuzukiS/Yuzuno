@@ -1,6 +1,7 @@
-// A Home card's writing has levels again (T-9): an Agent's h1, h2 and h3 are
-// three visible steps, and a block's title stands above the body it
-// introduces. Read from getComputedStyle in a real browser on the production
+// A report's writing has levels (T-9): an Agent's h1, h2 and h3 are three
+// visible steps, and a block's title stands above the body it introduces.
+// Since T-18 a report's body is read on its page, opened from its Home card,
+// so the levels are measured there. Read from getComputedStyle in a real browser on the production
 // bundle, desktop and 320 px, light and dark, in both densities and in two
 // palettes. No Core, no Agent; nothing is sent.
 //
@@ -169,15 +170,29 @@ async function open({ width, height, touch, theme, density, palette }) {
 }
 
 const px = (value) => Math.round(parseFloat(value) * 100) / 100;
-/** What each level is actually drawn at, in the sample card. */
-const levels = (page) =>
-  page.locator('[data-section-key="typography"]').first().evaluate((card) => {
+/** A section's report page, opened from its card on Home (T-18). */
+async function openReport(page, key) {
+  const opener = page.locator(`.home-view [data-section-key="${key}"] .home-report-open`).first();
+  await opener.scrollIntoViewIfNeeded();
+  await opener.click();
+  const article = page.locator(".home-report .report-article");
+  await article.locator(".report-head h1").waitFor({ timeout: 10_000 });
+  await page.evaluate(() => document.fonts.ready);
+  return article;
+}
+async function closeReport(page) {
+  await page.locator(".home-report .report-back").click();
+  await page.locator(".home-report").waitFor({ state: "hidden", timeout: 10_000 });
+}
+/** What each level is actually drawn at, on the sample's report page. */
+const levels = (article) =>
+  article.evaluate((card) => {
     const of = (el) => {
       if (!el) return null;
       const style = getComputedStyle(el);
       return { size: parseFloat(style.fontSize), weight: Number(style.fontWeight), color: style.color };
     };
-    const markdown = card.querySelector(".brief-markdown");
+    const markdown = card.querySelector(".report-main .report-block .brief-markdown");
     return {
       h1: of(markdown.querySelector("h1")),
       h2: of(markdown.querySelector("h2")),
@@ -190,16 +205,16 @@ const levels = (page) =>
       code: of(markdown.querySelector("code")),
     };
   });
-/** The group title of the progress card, beside the body under it. */
-const groupTitle = (page) =>
-  page.locator('[data-section-key="development"]').first().evaluate((card) => {
+/** The group title on the progress report's page, beside the body under it. */
+const groupTitle = (article) =>
+  article.evaluate((card) => {
     const of = (el) => {
       if (!el) return null;
       const style = getComputedStyle(el);
       return { size: parseFloat(style.fontSize), weight: Number(style.fontWeight), text: el.textContent };
     };
     return {
-      card: of(card.querySelector(".home-section-head h3")),
+      card: of(card.querySelector(".report-head h1")),
       group: of(card.querySelector(".brief-group > h4")),
       body: of(card.querySelector(".brief-group .brief-markdown p")),
     };
@@ -215,8 +230,19 @@ try {
         const { context, page } = await open({ ...view, theme, density, palette });
         const where = `${view.name} ${theme} ${density} ${palette}`;
         try {
-          const shown = await levels(page);
-          const heads = await groupTitle(page);
+          const sample = await openReport(page, "typography");
+          const shown = await levels(sample);
+          const overflow = await sample.evaluate((el) => el.scrollWidth - el.clientWidth);
+          const shot = `${output}/levels-${view.name}-${theme}-${density}-${palette}.png`;
+          await sample.screenshot({ path: shot });
+          report.shots.push(shot);
+          await closeReport(page);
+          const progressPage = await openReport(page, "development");
+          const heads = await groupTitle(progressPage);
+          const cardShot = `${output}/card-${view.name}-${theme}-${density}-${palette}.png`;
+          await progressPage.screenshot({ path: cardShot });
+          report.shots.push(cardShot);
+          await closeReport(page);
           report.measured.push({ where, palette, ...shown, groupTitle: heads });
           // Outside Garden, heading and body are the same ink (appearance.css),
           // which is why the levels may not rest on colour.
@@ -249,18 +275,11 @@ try {
             // Emphasis: a full step of weight, not a tint alone.
             assert.ok(shown.strong.weight >= 700, `${where}: strong is heavier ${JSON.stringify(shown)}`);
             assert.ok(shown.strong.weight - shown.body.weight >= 200, `${where}: a visible step ${JSON.stringify(shown)}`);
-            record(`${where}: three heading levels, a title above the body, emphasis a step heavier in the computed style`, { ...shown, groupTitle: heads });
+            record(`${where}: on the report page, three heading levels, a title above the body, emphasis a step heavier in the computed style`, { ...shown, groupTitle: heads });
           }
           if (view.touch) {
-            const overflow = await page.locator('[data-section-key="typography"]').first()
-              .evaluate((el) => el.scrollWidth - el.clientWidth);
             assert.ok(overflow <= 1, `${where}: nothing runs off 320 px (${overflow})`);
-            if (!baseline) record(`${where}: the card fits 320 px`, { overflow });
-          }
-          for (const [key, label] of [["typography", "levels"], ["development", "card"]]) {
-            const shot = `${output}/${label}-${view.name}-${theme}-${density}-${palette}.png`;
-            await page.locator(`[data-section-key="${key}"]`).first().screenshot({ path: shot });
-            report.shots.push(shot);
+            if (!baseline) record(`${where}: the report page fits 320 px`, { overflow });
           }
         } finally {
           await context.close();

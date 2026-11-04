@@ -55,6 +55,23 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     ws.close_agent("oc").await.unwrap();
 }
 
+/// Whether where its OpenCode keeps snapshots can be known is kept with the
+/// connection (T-10 Revert): the stand-in runs through a script, so it
+/// cannot, and the connection says why.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_opencode_started_through_a_script_cannot_say_where_its_snapshots_are() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    let why = c.files.as_ref().as_ref().unwrap_err();
+    assert!(why.contains("not a native executable"), "{why}");
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// The stand-in's control, on its own port (`start.json`).
 #[cfg(target_os = "linux")]
 async fn control(data: &std::path::Path, name: &str, body: Value) -> Value {
