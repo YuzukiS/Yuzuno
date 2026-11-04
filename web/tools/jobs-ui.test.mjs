@@ -1041,3 +1041,47 @@ test('the conversation dock lists its PR reviews after its runs, follows Core to
     } finally { q.close(); }
   }
 });
+
+test('the dock keeps to Settings for its PR reviews (0 removes the group and its read), and its More opens this Agent\'s own reviews (T-25 R1)', async () => {
+  const many = [1, 2, 3, 4].map(n => review(`r${n}`, 10 + n, { round: n, finishedAt: `2026-10-15T0${n}:00:00Z` }));
+  const handler = url => url === '/api/reviews?involving=a' ? reviewPage(many) : url.startsWith('/api/reviews?') ? reviewPage([]) : page([]);
+  const group = p => p.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]');
+  const limits = dock => ({ 'yuzuno.appearance': JSON.stringify({ dock }) });
+  // 0: no group, and nothing is read for it.
+  let p = mount(handler, limits({ jobs: 5, actions: 2, reviews: 0, subAgents: 5 }));
+  try {
+    await until(() => p.calls.some(c => c.url.startsWith('/api/ci?')));
+    for (let n = 0; n < 4; n++) await wait();
+    assert.ok(!group(p), 'no reviews group at 0');
+    assert.equal(p.calls.some(c => c.url.includes('involving=')), false, 'and no read for it');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // 1: the latest ended one, the rest behind More.
+  p = mount(handler, limits({ jobs: 5, actions: 2, reviews: 1, subAgents: 5 }));
+  try {
+    await until(() => group(p)?.querySelectorAll('.conversation-review').length === 1);
+    assert.equal(group(p).querySelector('.conversation-review .work-dock-label strong').textContent, 'PR #7 · round 4');
+    const more = group(p).querySelector('.work-dock-more');
+    assert.equal(more.getAttribute('aria-label'), 'PR reviews: 3 more, open the list');
+    // More opens the Jobs panel's Reviews on the same reviews the dock lists: requested by, sent to, or on Mori's tasks.
+    const before = p.calls.filter(c => c.url === '/api/reviews?involving=a').length;
+    more.click();
+    await until(() => p.doc.querySelectorAll('.review-jobs .job-row').length === 4);
+    assert.ok(p.calls.filter(c => c.url === '/api/reviews?involving=a').length > before, 'the list reads involving');
+    assert.equal(p.calls.some(c => c.url === '/api/reviews?agentId=a'), false, 'not only what Mori requested itself');
+    assert.match(p.doc.querySelector('.review-jobs').textContent, /Showing Mori's reviews, as its conversation lists them/);
+    // The panel's other sources keep Mori's scope, never `involving`.
+    const jobReads = () => p.calls.filter(c => c.url === '/api/jobs?agentId=a').length;
+    const jobsBefore = jobReads();
+    button(p, 'Local').click();
+    await until(() => jobReads() > jobsBefore);
+    assert.equal(p.calls.some(c => c.url.startsWith('/api/jobs?') && c.url.includes('involving')), false);
+    // Mori's own button is the requester scope again, as before.
+    button(p, 'Reviews').click();
+    await until(() => p.doc.querySelector('.review-jobs'));
+    button(p, 'Mori').click();
+    await until(() => p.calls.some(c => c.url === '/api/reviews?agentId=a'));
+    await until(() => /Showing reviews Mori requested itself/.test(p.doc.querySelector('.review-jobs')?.textContent || ''));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});

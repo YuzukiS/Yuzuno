@@ -82,7 +82,9 @@ const reviewText = strings({
   refresh: "Refresh reviews",
   intro: "PR reviews started from a task. They run in Core and do not use this machine's job budget. Start a review from the task's PR.",
   agentOnly: (name: string) => ` Showing reviews ${name || "this Agent"} requested itself; reviews you requested are under Workspace.`,
+  involvingOnly: (name: string) => ` Showing ${name || "this Agent"}'s reviews, as its conversation lists them: those it requested, those sent to it and those on its tasks.`,
   noneBy: (name: string) => `No reviews requested by ${name || "this Agent"}.`,
+  noneInvolving: (name: string) => `No reviews for ${name || "this Agent"}.`,
   noneForTask: "No reviews for this task yet.",
   none: "No PR reviews yet. Start one from a task's linked PR.",
   loading: "Loading reviews…",
@@ -144,7 +146,9 @@ const reviewText = strings({
   refresh: "刷新审查",
   intro: "从任务发起的 PR 审查。它们在 Core 中运行，不使用此机器的 Job 预算。请从任务的 PR 发起审查。",
   agentOnly: (name) => ` 正在显示 ${name || "此 Agent"} 自己请求的审查；你请求的审查在 Workspace 下。`,
+  involvingOnly: (name) => ` 正在显示 ${name || "此 Agent"} 会话中列出的审查：它请求的、发给它的，以及它的任务上的。`,
   noneBy: (name) => `没有由 ${name || "此 Agent"} 请求的审查。`,
+  noneInvolving: (name) => `没有 ${name || "此 Agent"} 的审查。`,
   noneForTask: "此任务还没有审查。",
   none: "还没有 PR 审查。请从任务链接的 PR 发起一次。",
   loading: "正在加载审查…",
@@ -253,12 +257,15 @@ const REFRESH_PAGES = 10;
  */
 export function ReviewJobs({
   scope,
+  involving = false,
   agentName,
   revision,
   initial,
   onOpenReport,
 }: {
   scope: ReviewScope;
+  /** The scope's Agent's own reviews, as its conversation's dock lists them (T-25). */
+  involving?: boolean;
   agentName?: string;
   revision: string;
   initial: ReviewOpen;
@@ -288,7 +295,7 @@ export function ReviewJobs({
   shown.current = page;
   const selection = useRef(selected);
   selection.current = selected;
-  const query = new URLSearchParams(scope).toString();
+  const query = (involving && scope.agentId ? new URLSearchParams({ involving: scope.agentId }) : new URLSearchParams(scope)).toString();
   const read = useCallback(async (path: string) => {
     const g = generation.current;
     const controller = new AbortController();
@@ -441,7 +448,7 @@ export function ReviewJobs({
         }
       >
         {t.intro}
-        {scope.agentId && t.agentOnly(agentName || "")}
+        {scope.agentId && (involving ? t.involvingOnly(agentName || "") : t.agentOnly(agentName || ""))}
       </JobsSourceHeading>
       {error && (
         <p className="inline-error" role="alert">
@@ -458,7 +465,7 @@ export function ReviewJobs({
             page ? (
               <p className="jobs-empty">
                 {scope.agentId
-                  ? t.noneBy(agentName || "")
+                  ? involving ? t.noneInvolving(agentName || "") : t.noneBy(agentName || "")
                   : scope.taskId
                     ? t.noneForTask
                     : t.none}
@@ -607,11 +614,9 @@ function ReviewSummary({
   );
 }
 
-/** Opens the Jobs panel on its Reviews: one review in its task, or the list. */
-const openReviews = (detail: ReviewOpen = {}) =>
+/** Opens the Jobs panel on its Reviews: one review in its task, or an Agent's own list. */
+const openReviews = (detail: ReviewOpen & { involving?: string } = {}) =>
   window.dispatchEvent(new CustomEvent("yuzuno:open-job", { detail: { ...detail, source: "reviews" } }));
-/** As many reviews as the conversation's dock shows: what runs first, then the latest ended. */
-export const DOCK_REVIEWS = 2;
 // The last answer for each Agent, shown again when its conversation comes
 // back, so the dock keeps its room until the next one (as lastCi does).
 const lastDock = new Map<string, Page>();
@@ -653,20 +658,21 @@ export function dockMark(r: ReviewRow) {
   return "unknown";
 }
 const at = (value: string | null | undefined) => Date.parse(value || "") || 0;
-/** The conversation's reviews on its dock, after its runs; none, no group. */
-export function ConversationReviews({ agentId, revision, disabled }: { agentId: string; revision: string; disabled: boolean }) {
+/** The conversation's reviews on its dock, after its runs: what runs first, then the latest ended, as many as
+ * Settings allows (Appearance, Conversation dock); none, no group. */
+export function ConversationReviews({ agentId, revision, disabled, limit }: { agentId: string; revision: string; disabled: boolean; limit: number }) {
   const t = reviewText(useLanguage());
   const page = useConversationReviews(agentId, revision, disabled);
   if (!page.reviews.length) return null;
   const shown = page.reviews
     .map((r) => ({ r, running: active(r) }))
     .sort((a, b) => +b.running - +a.running || (a.running ? 0 : at(b.r.finishedAt || b.r.createdAt) - at(a.r.finishedAt || a.r.createdAt)))
-    .slice(0, DOCK_REVIEWS)
+    .slice(0, limit)
     .map(({ r }) => r);
   // Of the page read, as the dock's runs count theirs; the list has the rest.
   const more = page.reviews.length - shown.length;
   return (
-    <WorkDockGroup label={t.region} icon={<GitPullRequest size={14} />} onOpen={() => openReviews()}>
+    <WorkDockGroup label={t.region} icon={<GitPullRequest size={14} />} onOpen={() => openReviews({ involving: agentId })}>
       {shown.map((r) => {
         const state = reviewState(r, t);
         return (
@@ -683,7 +689,7 @@ export function ConversationReviews({ agentId, revision, disabled }: { agentId: 
           />
         );
       })}
-      {more > 0 && <WorkDockMore label={t.region} count={more} onOpen={() => openReviews()} />}
+      {more > 0 && <WorkDockMore label={t.region} count={more} onOpen={() => openReviews({ involving: agentId })} />}
     </WorkDockGroup>
   );
 }

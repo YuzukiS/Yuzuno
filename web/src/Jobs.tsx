@@ -305,7 +305,13 @@ type JobScope = { agentId?: string; taskId?: string };
 type JobSource = "local" | "github_actions" | "reviews";
 type JobOpen = JobScope &
   Omit<CiOpen, "source"> &
-  ReviewOpen & { source?: JobSource; jobId?: string; settings?: "budget" };
+  ReviewOpen & {
+    source?: JobSource;
+    jobId?: string;
+    settings?: "budget";
+    /** Reviews only: this Agent's own reviews, as its conversation's dock lists them (T-25). */
+    involving?: string;
+  };
 export const openJobs = (detail: JobOpen = {}) =>
   window.dispatchEvent(new CustomEvent("yuzuno:open-job", { detail }));
 
@@ -400,8 +406,8 @@ export function ConversationJobs({
           more={ci.runs.length - runs.length}
         />
       )}
-      {/* Its PR reviews, after the runs (T-25). */}
-      <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} />
+      {/* Its PR reviews, after the runs (T-25), as many as Settings allows. */}
+      {dock.reviews > 0 && <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} limit={dock.reviews} />}
       {children}
     </WorkDock>
   );
@@ -452,6 +458,10 @@ export function Jobs({
   const [source, setSource] = useState<JobSource>("local");
   const [ciInitial, setCiInitial] = useState<CiOpen>({});
   const [reviewInitial, setReviewInitial] = useState<ReviewOpen>({});
+  // Reviews read as the conversation's dock reads them (T-25): those the
+  // scope's Agent requested, was sent, or has on its tasks. Other sources
+  // keep that Agent's scope.
+  const [reviewsInvolving, setReviewsInvolving] = useState(false);
   const [page, setPage] = useState<Page>({
     jobs: [],
     hasMore: false,
@@ -584,10 +594,13 @@ export function Jobs({
       setScope(
         detail.taskId
           ? { taskId: detail.taskId }
-          : detail.agentId
-            ? { agentId: detail.agentId }
-            : {},
+          : detail.involving
+            ? { agentId: detail.involving }
+            : detail.agentId
+              ? { agentId: detail.agentId }
+              : {},
       );
+      setReviewsInvolving(detail.source === "reviews" && !detail.taskId && !!detail.involving);
       setSource(detail.source || "local");
       setCiInitial(
         detail.source === "github_actions"
@@ -876,6 +889,7 @@ export function Jobs({
                 onClick={() => {
                   setScope({});
                   setReviewInitial({});
+                  setReviewsInvolving(false);
                 }}
               >
                 {t.workspace}
@@ -888,6 +902,7 @@ export function Jobs({
                   onClick={() => {
                     setScope({ agentId: agent.id });
                     setReviewInitial({});
+                    setReviewsInvolving(false);
                   }}
                 >
                   {agent.name}
@@ -950,8 +965,9 @@ export function Jobs({
             >
               {source === "reviews" ? (
                 <ReviewJobs
-                  key={JSON.stringify([scope, reviewInitial])}
+                  key={JSON.stringify([scope, reviewInitial, reviewsInvolving])}
                   scope={scope}
+                  involving={reviewsInvolving}
                   agentName={agent?.name}
                   revision={revision}
                   initial={reviewInitial}

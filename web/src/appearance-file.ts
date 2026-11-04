@@ -20,6 +20,7 @@ export const appearanceFields = [
   "projectGroups",
   "dock.jobs",
   "dock.actions",
+  "dock.reviews",
   "dock.subAgents",
   "turnDock.numbers",
   "turnDock.bars",
@@ -34,7 +35,7 @@ const GROUPS: Record<string, string[] | null> = {
   fontSize: null,
   agentList: null,
   projectGroups: null,
-  dock: ["jobs", "actions", "subAgents"],
+  dock: ["jobs", "actions", "reviews", "subAgents"],
   turnDock: ["numbers", "bars"],
 };
 /** At most this many unknown names are listed, each cut to NAME_LENGTH. */
@@ -64,7 +65,7 @@ export function appearanceSettings(appearance: Appearance) {
     fontSize,
     agentList,
     projectGroups,
-    dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
+    dock: { jobs: dock.jobs, actions: dock.actions, reviews: dock.reviews, subAgents: dock.subAgents },
     turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
   };
 }
