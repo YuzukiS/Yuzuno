@@ -450,3 +450,27 @@ async fn a_409_that_is_not_opencodes_busy_refusal_says_nothing_of_what_it_did() 
     assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
     ws.close_agent("oc").await.unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_400_that_may_come_after_the_revert_ran_says_nothing_of_what_it_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    // OpenCode reverted, then could not encode its answer: a 400 BadRequest of kind Body.
+    control(&data, "mode", json!({"revert": "encode-fail"})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "unknown", "a 400 that may come after the revert ran says nothing of what it did: {outcome}");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
+    assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap()["status"], "unknown");
+    assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["status"], "unknown");
+    assert_eq!(reverts(&data), 1, "never asked again");
+    assert_eq!(turn_ids(&ws), vec![first, second], "nothing removed while unknown");
+    ws.close_agent("oc").await.unwrap();
+}

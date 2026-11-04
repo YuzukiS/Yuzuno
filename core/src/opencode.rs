@@ -928,10 +928,13 @@ async fn success(response: Response) -> Result<Response> {
 /// API declares them (`packages/sdk/openapi.json`): 409 `SessionBusyError`,
 /// from `assertNotBusy`, the revert's first step (`session/revert.ts`); 404
 /// `NotFoundError`, from `requireSession`, the handler's own first step
-/// (`handlers/session.ts`); 400 `BadRequest` of a parameter or payload that
-/// could not be decoded, before the handler runs
-/// (`middleware/schema-error.ts`). Not any other answer: a 401 or 403, any
-/// other body for those statuses, or one cut short.
+/// (`handlers/session.ts`); 400 `BadRequest` of a parameter, query or
+/// payload that could not be decoded, before the handler runs
+/// (`middleware/schema-error.ts`). Not one of kind `Body`: OpenCode answers
+/// so too when it cannot encode its own response, after the handler ran
+/// (`test/server/httpapi-schema-error-body.test.ts`, Lead 4121). Nor any
+/// other answer: a 401 or 403, any other body for those statuses, or one
+/// cut short.
 fn refused_before(status: &HttpStatus) -> bool {
     let Ok(body) = serde_json::from_str::<Value>(&status.body) else { return false };
     let text = |value: &Value| value.is_string();
@@ -939,7 +942,7 @@ fn refused_before(status: &HttpStatus) -> bool {
         409 => body["_tag"] == "SessionBusyError" && text(&body["sessionID"]) && text(&body["message"]),
         404 => body["name"] == "NotFoundError" && text(&body["data"]["message"]),
         400 => body["name"] == "BadRequest" && text(&body["data"]["message"])
-            && matches!(body["data"]["kind"].as_str(), Some("Params" | "Query" | "Payload" | "Body")),
+            && matches!(body["data"]["kind"].as_str(), Some("Params" | "Query" | "Payload")),
         _ => false,
     }
 }
@@ -973,6 +976,7 @@ mod tests {
             (409, json!({"_tag": "ConflictError", "message": "conflict"})),
             (404, json!({"_tag": "SessionNotFoundError", "sessionID": "ses_1", "message": "gone"})),
             (400, json!({"name": "BadRequest", "data": {"message": "no", "kind": "Headers"}})),
+            (400, json!({"name": "BadRequest", "data": {"message": "Expected a session", "kind": "Body"}})),
             (401, json!({"_tag": "UnauthorizedError", "message": "no"})),
             (403, json!({"_tag": "ForbiddenError", "message": "no"})),
             (500, json!({"name": "UnknownError", "data": {"message": "no"}})),

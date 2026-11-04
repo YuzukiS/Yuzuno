@@ -887,7 +887,8 @@ class Handler(BaseHTTPRequestHandler):
         connection ends with no answer), `late` (done, answered only on `goOn`), `hold` (nothing done
         until `goOn`), `conflict` (409 with another body, nothing done), `unmarked` (200 with the session
         unchanged, nothing done, as when no message matches), `unmarked-files` (the files checked out,
-        then 200 with no revert kept)."""
+        then 200 with no revert kept), `encode-fail` (done, then 400 as OpenCode answers a response it
+        cannot encode: `BadRequest` of kind `Body`)."""
         if statuses.get(session, {}).get('type') == 'busy':
             return self.reply(409, busy(session))
         mode = modes['revert']
@@ -950,6 +951,8 @@ class Handler(BaseHTTPRequestHandler):
         if mode == 'drop':
             self.close_connection = True
             return None
+        if mode == 'encode-fail':
+            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: the answer could not be encoded', 'kind': 'Body'}})
         if mode == 'late':
             go_on = threading.Event()
             reverting[session] = go_on
