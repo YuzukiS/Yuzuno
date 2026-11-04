@@ -32,7 +32,7 @@ use std::{
     fmt,
     path::PathBuf,
     process::Stdio,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
@@ -57,6 +57,15 @@ pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
 const BODY_LIMIT: usize = 2048;
 const LINE_LIMIT: u64 = 64 << 10;
 const EVENT_BUFFER_LIMIT: usize = 16 << 20;
+/// What a start that failed tells of why (T-32): the first STDERR_KEPT bytes
+/// OpenCode wrote on stderr (the rest is drained), waited for at most
+/// STDERR_WAIT once it has gone; of them, at most STDERR_LINES lines and
+/// REASON_CHARS characters. And `--version`, given at most VERSION_LIMIT.
+const STDERR_KEPT: usize = 4 << 10;
+const STDERR_WAIT: Duration = Duration::from_secs(1);
+const STDERR_LINES: usize = 3;
+const REASON_CHARS: usize = 300;
+const VERSION_LIMIT: Duration = Duration::from_secs(5);
 /// `sh -c WATCHED opencode PROGRAM ARGS…`: the watcher reads the pipe on fd 3
 /// until it closes, then ends its own process group, OpenCode's, as
 /// `shutdown` does: SIGTERM, GRACE, then SIGKILL. It ignores SIGTERM itself,
@@ -356,7 +365,7 @@ impl Server {
             .env("OPENCODE_DB", &launch.database)
             .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
@@ -364,6 +373,26 @@ impl Server {
             .spawn()
             .context("Could not start OpenCode: install the official OpenCode CLI on the Core host")?;
         let stdout = child.stdout.take().context("OpenCode's output is unavailable")?;
+        let stderr = child.stderr.take().context("OpenCode's error output is unavailable")?;
+        // Its first STDERR_KEPT bytes are kept, to tell why a start failed;
+        // all of it is drained, so that writing it never blocks or fails.
+        let said = Arc::new(Mutex::new(Vec::new()));
+        let (closed, ended) = tokio::sync::oneshot::channel::<()>();
+        {
+            let said = said.clone();
+            tokio::spawn(async move {
+                let (mut stderr, mut chunk) = (stderr, [0u8; 4096]);
+                while let Ok(read) = stderr.read(&mut chunk).await {
+                    if read == 0 {
+                        break;
+                    }
+                    let mut kept = said.lock().unwrap();
+                    let room = STDERR_KEPT.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..read.min(room)]);
+                }
+                let _ = closed.send(());
+            });
+        }
         let mut server = Self {
             group: Group(child.id()),
             child,
@@ -378,20 +407,32 @@ impl Server {
         // OpenCode's output is bytes, not necessarily UTF-8; a line is read
         // at most LINE_LIMIT at a time.
         let mut output = BufReader::new(stdout);
-        server.base = timeout(START_LIMIT, async {
+        let listened = timeout(START_LIMIT, async {
             let mut line = Vec::new();
             loop {
                 line.clear();
                 if (&mut output).take(LINE_LIMIT).read_until(b'\n', &mut line).await? == 0 {
-                    bail!("OpenCode exited before it was listening");
+                    return Ok::<_, anyhow::Error>(None);
                 }
                 if let Some(base) = listening(&String::from_utf8_lossy(&line))? {
-                    return Ok::<_, anyhow::Error>(base);
+                    return Ok(Some(base));
                 }
             }
         })
-        .await
-        .map_err(|_| anyhow!("OpenCode was not listening after {}s", START_LIMIT.as_secs()))??;
+        .await;
+        server.base = match listened {
+            Ok(Ok(Some(base))) => base,
+            Ok(Ok(None)) => {
+                let _ = timeout(STDERR_WAIT, ended).await;
+                let said = said.lock().unwrap().clone();
+                bail!("OpenCode exited before it was listening{}", diagnosis(launch, &said).await);
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                let said = said.lock().unwrap().clone();
+                bail!("OpenCode was not listening after {}s{}", START_LIMIT.as_secs(), diagnosis(launch, &said).await);
+            }
+        };
         // Its later output is not read, only drained so that writing it
         // never blocks or fails.
         tokio::spawn(async move { tokio::io::copy(&mut output, &mut tokio::io::sink()).await });
@@ -791,6 +832,73 @@ impl Events {
 /// `properties.sessionID` (`schema/src/v1/session.ts`, permission, question).
 pub fn session_of(event: &Value) -> Option<&str> {
     event["properties"]["sessionID"].as_str()
+}
+
+/// Why a start failed, as far as OpenCode says (T-32): which OpenCode it is,
+/// when `--version` names another than VERSION, and its first lines on
+/// stderr. Empty when it says neither.
+async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
+    let mut out = String::new();
+    if let Some(version) = installed(launch).await.filter(|v| *v != VERSION && *v != format!("opencode v{VERSION}")) {
+        out.push_str(&format!(" (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {VERSION})"));
+    }
+    let lines = reason(said);
+    if !lines.is_empty() {
+        out.push_str(": ");
+        out.push_str(&lines);
+    }
+    out
+}
+
+/// The first line `<program> --version` prints, within VERSION_LIMIT: 1.x
+/// prints `1.19.3`, 2.x `opencode v2.0.16`. It runs with the Agent's
+/// `OPENCODE_DB`, as the server would, and nothing else of its environment.
+async fn installed(launch: &Launch) -> Option<String> {
+    let mut command = Command::new(&launch.program);
+    command.arg("--version").current_dir(&launch.directory).env("OPENCODE_DB", &launch.database)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    let out = timeout(VERSION_LIMIT, command.output()).await.ok()?.ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines().map(plain).find(|line| !line.is_empty()).map(|line| clipped(&line, 80))
+}
+
+/// What stderr said, for a message: its first STDERR_LINES non-empty lines,
+/// plain, joined, at most REASON_CHARS characters.
+fn reason(said: &[u8]) -> String {
+    let text = String::from_utf8_lossy(said);
+    let lines: Vec<String> = text.lines().map(plain).filter(|line| !line.is_empty()).take(STDERR_LINES).collect();
+    clipped(&lines.join(" / "), REASON_CHARS)
+}
+
+/// A line without its terminal escape sequences (`ESC [ … final`) or other
+/// control characters, trimmed.
+fn plain(line: &str) -> String {
+    let (mut out, mut chars) = (String::new(), line.chars().peekable());
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else if c == '\t' {
+            out.push(' ');
+        } else if !c.is_control() {
+            out.push(c);
+        }
+    }
+    out.trim().to_owned()
+}
+
+/// `text` cut to at most `chars` characters, marked when it was cut.
+fn clipped(text: &str, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_owned(),
+    }
 }
 
 /// The base URL from `opencode server listening on http://HOST:PORT`
