@@ -199,7 +199,8 @@ for (const run of runs) {
       report.measures[`${tag}: in the dialog`] = { followed, start, moved, during };
       ok(`${tag}: the original input scrolls within the dialog (${JSON.stringify({ start, moved })})`, moved.height > moved.shown, { start, moved });
       ok(`${tag}: nothing done in the dialog reads the conversation, to its end or anywhere else (${JSON.stringify(during)})`, during.length === 0, { during });
-      await dialog.getByRole("button", { name: "Close" }).click();
+      // The dialog's own Close, among its actions (its corner's close button has the same name).
+      await dialog.locator(".modal-actions").getByRole("button", { name: "Close" }).click();
       await dialog.waitFor({ state: "detached", timeout: 5000 });
       await page.waitForTimeout(300);
       const closed = await gap(page);
