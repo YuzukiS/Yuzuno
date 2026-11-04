@@ -4,9 +4,11 @@
 // A press on the pin's summary (a tap on a phone), or Enter on it, opens the pin: the request's list
 // unfolds over frames as the excerpt goes. A second press, or Escape, folds it again; Escape gives
 // focus back to the summary. Under reduced motion the list is there, or gone, in the first frame.
-// Throughout, the conversation does not scroll and the pin stays pinned. Desktop 1280×860 and phone
-// 390×844, each with normal and reduced motion. Each toggle is sampled every frame: the pin's height
-// below its summary, its open state, whether it is pinned, and the conversation's scrollTop.
+// The whole pin only grows as it opens and only shrinks as it closes: the excerpt gives way as the list
+// comes, so it never first dips or jumps. Throughout, the conversation does not scroll and the pin stays
+// pinned. Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Each toggle is sampled
+// every frame: the whole pin's height and its height below the summary, its open state, whether it is
+// pinned, and the conversation's scrollTop.
 // Writes: only the app's own saves of where an Agent was read. Reads the fixture does not know are
 // answered {} and listed. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-current-pin-check.mjs
@@ -95,7 +97,8 @@ function startSampling(span) {
   const read = () => ({
     t: Math.round(performance.now() - t0),
     open: pin.open,
-    // The list's share of the pin: its height below the summary (padding and border included).
+    // The whole pin, and the list's share of it: its height below the summary (padding and border included).
+    whole: Math.round(pin.getBoundingClientRect().height * 10) / 10,
     body: Math.round((pin.getBoundingClientRect().height - summary.getBoundingClientRect().height) * 10) / 10,
     pinned: pin.dataset.pinned,
     top: Math.round(scroller.scrollTop),
@@ -160,8 +163,14 @@ try {
         const first = after[0];
         const final = after.at(-1);
         const between = after.filter((f) => f.body > Math.min(first.body, final.body) + 1 && f.body < Math.max(first.body, final.body) - 1);
-        return { before, after: after.length, first: first?.body, final: final?.body, between: between.length, settledOpen: final && final.open };
+        // The whole pin from the last frame before the toggle on: opening, it only grows; closing, it only shrinks.
+        const wholes = [frames.filter((f) => f.open === before).at(-1)?.whole, ...after.map((f) => f.whole)];
+        const steady = wholes.every((h, i) => i === 0 || (before ? h <= wholes[i - 1] + 1 : h >= wholes[i - 1] - 1))
+          && (before ? wholes.at(-1) < wholes[0] - 20 : wholes.at(-1) > wholes[0] + 20);
+        return { before, after: after.length, first: first?.body, final: final?.body, between: between.length, settledOpen: final && final.open,
+          steady, whole: [wholes[0], Math.min(...wholes), Math.max(...wholes), wholes.at(-1)] };
       }
+      const wholeRow = (name, seen) => ok(`${run.tag}: ${name}`, seen.after > 0 && seen.steady, { whole: seen.whole });
       const overFrames = (seen, opening) => seen.after > 0 && seen.settledOpen === opening && seen.between >= 2
         && (opening ? seen.final - seen.first > 20 : seen.first - seen.final > 20);
       const atOnce = (seen, opening) => seen.after > 0 && seen.settledOpen === opening && Math.abs(seen.final - seen.first) <= 1
@@ -172,17 +181,21 @@ try {
 
       const opened = await toggle(`${press} opens`, () => (run.touch ? summary.tap() : summary.click()));
       judge(`a ${press} on the pin opens it, its request unfolding`, opened, true);
+      wholeRow(`opened by a ${press}, the whole pin only grows, never first shrinking`, opened);
       const listed = await pin.locator(".current-turn-messages").innerText();
       ok(`${run.tag}: the open pin reads the request and its follow-up`,
         listed.includes("run the layout check") && listed.includes("larger reading size"), listed.slice(0, 200));
       const closed = await toggle(`${press} closes`, () => (run.touch ? summary.tap() : summary.click()));
       judge(`a second ${press} closes it, folding`, closed, false);
+      wholeRow(`closed by a second ${press}, the whole pin only shrinks, never first growing`, closed);
       const entered = await toggle("Enter opens", async () => {
         await summary.focus();
         await page.keyboard.press("Enter");
       });
       judge("Enter on its summary opens it", entered, true);
+      wholeRow("opened by Enter, the whole pin only grows, never first shrinking", entered);
       const escaped = await toggle("Escape closes", () => page.keyboard.press("Escape"));
+      wholeRow("closed by Escape, the whole pin only shrinks, never first growing", escaped);
       const focusBack = await summary.evaluate((el) => document.activeElement === el);
       if (run.reduced) ok(`${run.tag}: Escape closes it in the first frame, and focus is back on the summary`, atOnce(escaped, false) && focusBack, { ...escaped, focusBack });
       else ok(`${run.tag}: Escape closes it over frames, and focus is back on the summary`, overFrames(escaped, false) && focusBack, { ...escaped, focusBack });
