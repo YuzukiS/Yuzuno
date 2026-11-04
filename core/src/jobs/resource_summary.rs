@@ -5,6 +5,14 @@ use std::collections::BTreeMap;
 
 pub(super) const SCOPE: &str = "Per attempt, local worker cgroup including its wrapper, excluding the collector. Worker wall time uses monotonic start/exit and includes pauses. Unknown measurements are null. Memory peaks are not additive; reused jobs did not execute in this run.";
 
+/// Below this worker wall time no average CPU is given (T-29): its CPU time
+/// over its wall time says little. cpuMillis is a budget per 100 ms CFS period,
+/// so a short run can burst past it before throttling catches up; and CPU is
+/// read once the cgroup is empty, so a process still running after the main
+/// one exited adds CPU from outside the wall window. Both weigh most in a run
+/// of a few periods. CPU seconds and wall time are still reported.
+const MIN_AVERAGE_WALL_MICROS: u64 = 2_000_000;
+
 // systemd uses UINT64_MAX for unavailable counters. Its textual sentinels,
 // negative/fractional values and missing fields must not become zero.
 fn counter(value: &Value) -> Option<u64> {
@@ -72,7 +80,8 @@ pub(super) fn attempt(job: &Value) -> Value {
     if measured && !complete {
         problem = Some("Some final worker counters or monotonic timestamps are missing or invalid");
     }
-    json!({
+    let short = cpu.is_some() && wall.is_some_and(|wall| wall < MIN_AVERAGE_WALL_MICROS);
+    let mut summary = json!({
         "measurement":if complete { "complete" } else if any { "partial" } else { "unavailable" },
         "reason":problem,
         "declared":{"memoryMiB":counter(&job["resources"]["memoryMiB"]),
@@ -80,9 +89,13 @@ pub(super) fn attempt(job: &Value) -> Value {
         "actual":{"memoryPeakMiB":memory.map(|n| n as f64 / 1_048_576.0),
             "cpuSeconds":cpu.map(|n| n as f64 / 1_000_000_000.0),
             "workerWallSeconds":wall.map(|n| n as f64 / 1_000_000.0),
-            "averageCpuCores":cpu.zip(wall).map(|(cpu, wall)| cpu as f64 / (wall as f64 * 1000.0))},
+            "averageCpuCores":cpu.zip(wall).filter(|_| !short).map(|(cpu, wall)| cpu as f64 / (wall as f64 * 1000.0))},
         "scope":SCOPE
-    })
+    });
+    if short {
+        summary["actual"]["averageCpuCoresReason"] = json!("too_short");
+    }
+    summary
 }
 
 fn number(value: &Value) -> String {
@@ -96,12 +109,15 @@ fn line(job: &Value) -> String {
     let summary = attempt(job);
     let actual = &summary["actual"];
     let declared = &summary["declared"];
+    let average = if actual["averageCpuCoresReason"] == "too_short" {
+        format!("average CPU not given for a worker wall time under 2 s (declared {} cores)", number(&declared["cpuCores"]))
+    } else {
+        format!("average CPU {}/{} cores", number(&actual["averageCpuCores"]), number(&declared["cpuCores"]))
+    };
     format!(
-        "peak memory {}/{} MiB; average CPU {}/{} cores (CPU {} s / worker wall {} s){}",
+        "peak memory {}/{} MiB; {average} (CPU {} s / worker wall {} s){}",
         number(&actual["memoryPeakMiB"]),
         number(&declared["memoryMiB"]),
-        number(&actual["averageCpuCores"]),
-        number(&declared["cpuCores"]),
         number(&actual["cpuSeconds"]),
         number(&actual["workerWallSeconds"]),
         summary["reason"]
