@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { launchBrowser } from "./browser-engine.mjs";
-import { emptyHome, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -58,7 +58,18 @@ const running = [
 ];
 // A second follow-up, sent while the pin is open: it arrives through the event stream and a read.
 const later = { id: "u8c", type: "userMessage", content: [{ type: "text", text: "And list them in the order they appear." }] };
+// With the event stream open, the app also reads each Agent's Codex usage and MCP list, and the backlog
+// (the shapes motion-2d1-check answers).
+const usage = {
+  revision: 1, status: "unknown", account: null, accountId: null,
+  source: { generation: "fixture", label: "Codex", machineId: null, runtimeId: null },
+  checkedAt: null, observedAt: null, ordinaryUsageAllowed: null, error: null, buckets: [],
+};
+const mcp = { state: "observed", reason: "", generation: 1, more: 0, servers: [] };
 const gets = {
+  "/api/agents/c/codex/usage": usage, "/api/agents/a/codex/usage": usage, "/api/agents/c/codex/mcp": mcp, "/api/agents/a/codex/mcp": mcp,
+  "/api/agents/c/conversation/inputs": noConversationInputs, "/api/agents/a/conversation/inputs": noConversationInputs,
+  "/api/backlog": { observedAt: "2026-11-04T00:00:00Z", agents: {} },
   "/api/workspace": { workspace: { id: WORKSPACE }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/fixture" },
   "/api/agents/c": { agent: agents[0], pending: [], messageReceipts: [], artifacts: [], turns },
@@ -105,8 +116,9 @@ function startSampling(span) {
   const read = () => ({
     t: Math.round(performance.now() - t0),
     open: pin.open,
-    // The whole pin, and the list's share of it: its height below the summary (padding and border included).
+    // The whole pin, its summary, and the list's share: its height below the summary (padding and border included).
     whole: Math.round(pin.getBoundingClientRect().height * 10) / 10,
+    summary: Math.round(summary.getBoundingClientRect().height * 10) / 10,
     body: Math.round((pin.getBoundingClientRect().height - summary.getBoundingClientRect().height) * 10) / 10,
     pinned: pin.dataset.pinned,
     top: Math.round(scroller.scrollTop),
