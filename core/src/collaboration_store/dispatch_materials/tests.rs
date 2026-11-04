@@ -490,3 +490,48 @@ fn materials_take_full_shas_of_either_length_and_say_how_to_get_one() {
     assert!(schema["properties"]["baseSha"]["description"].as_str().unwrap().contains("64 in a SHA-256 repository"));
     assert_eq!(schema["properties"]["headSha"]["pattern"], "^([0-9a-fA-F]{4,40}|[0-9a-fA-F]{64})$");
 }
+
+/// T-29: explicit SHAs are checked where they are registered, by the two rules
+/// a dispatch applies to them: a repositoryId, and that repository linked to
+/// the task or its Project. A refusal says which is missing and changes nothing.
+#[test]
+fn shas_are_checked_when_registered_not_first_at_dispatch() {
+    let (_dir, store) = fixture();
+    let elsewhere = store.create_project("Elsewhere", BTreeMap::from([("local".into(), "/private/elsewhere".into())])).unwrap().id;
+    store.github_link_repo(&elsewhere, &Repository { id: 3, full_name: "owner/repo3".into() }).unwrap();
+    let update = |request: &str, patch: Value| {
+        store.collaboration_call(None, "task_update", json!({"requestId":request,"taskId":"T-1",
+            "expectedVersion":task(&store)["task"]["version"],"patch":patch}))
+    };
+    let before = task(&store);
+    let none = update("no-repository", json!({"materials":{"baseSha":"a".repeat(40),"headSha":"b".repeat(40)}})).unwrap_err().to_string();
+    assert_eq!(none, "invalid_input: explicit base/head requires an explicit repositoryId: materials give baseSha and headSha but no \
+        repositoryId. Add the saved repository's id (github_repositories lists them); it must be linked to this task or its Project");
+    let unlinked = update("unlinked", json!({"materials":{"repositoryId":3,"headSha":"b".repeat(40)}})).unwrap_err().to_string();
+    assert_eq!(unlinked, "invalid_input: selected repository must be linked to this task or its Project: repository 3 is in neither. \
+        Link one of its pull requests or issues to this task (github_links), or give the task a Project that has the repository");
+    assert_eq!(task(&store)["task"], before["task"], "refused updates change nothing");
+    let tasks = |store: &Store| store.collaboration_call(None, "task_list", json!({})).unwrap()["tasks"].as_array().unwrap().len();
+    let count = tasks(&store);
+    let created = store.collaboration_call(None, "task_create", json!({"requestId":"create-unlinked","title":"Elsewhere",
+        "materials":{"repositoryId":3,"baseSha":"a".repeat(40)}})).unwrap_err().to_string();
+    assert!(created.starts_with("invalid_input: selected repository must be linked"), "{created}");
+    assert_eq!(tasks(&store), count, "a refused create makes no task");
+
+    // Linked through the Project, given in the same call: accepted.
+    let made = store.collaboration_call(None, "task_create", json!({"requestId":"create-linked","title":"Elsewhere","projectId":elsewhere,
+        "materials":{"repositoryId":3,"baseSha":"a".repeat(40)}})).unwrap();
+    assert_eq!(made["task"]["materials"]["repositoryId"], 3);
+    // A patch that moves the task to that Project is checked as it leaves it.
+    update("moved", json!({"projectId":elsewhere,"materials":{"repositoryId":3,"headSha":"b".repeat(40)}})).unwrap();
+    // Linked through a pull request of this task: accepted too.
+    let pulls = Repository { id: 4, full_name: "owner/repo4".into() };
+    store.github_link_object("T-1", &pulls, "pull", 7, json!({"title":"Ship","state":"open"})).unwrap();
+    update("linked-pr", json!({"materials":{"repositoryId":4,"baseSha":"c".repeat(64)}})).unwrap();
+    assert_eq!(task(&store)["task"]["materials"]["baseSha"], "c".repeat(64));
+    // Without SHAs nothing changes: a repository alone is checked at dispatch.
+    let other = store.create_project("Other", BTreeMap::from([("local".into(), "/private/other".into())])).unwrap().id;
+    store.github_link_repo(&other, &Repository { id: 5, full_name: "owner/repo5".into() }).unwrap();
+    update("repository-only", json!({"materials":{"repositoryId":5}})).unwrap();
+    update("cleared", json!({"materials":null})).unwrap();
+}

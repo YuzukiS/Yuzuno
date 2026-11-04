@@ -806,7 +806,10 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     )?;
     crate::projects::set_task_project(db, &task.id, project.as_deref())?;
     let mut changes = json!({"title":task.title,"status":task.status,"assigneeAgentId":task.assignee_agent_id,"projectId":project});
-    if let Some(materials) = materials { changes["materials"] = materials; }
+    if let Some(materials) = materials {
+        dispatch_materials::check_shas(db, &task.id, &materials)?;
+        changes["materials"] = materials;
+    }
     let event = activity(
         db,
         &task.id,
@@ -853,6 +856,9 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     // Shares this task's version check, version bump and activity record.
     if let Some(project) = project_input(db, patch)? {
         crate::projects::set_task_project(db, &task.id, project.as_deref())?;
+    }
+    if let Some(materials) = changes.get("materials") {
+        dispatch_materials::check_shas(db, &task.id, materials)?;
     }
     if patch.get("title").is_some() {
         task.title = required_text(patch, "title", 300)?;
