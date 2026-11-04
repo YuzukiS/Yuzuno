@@ -389,8 +389,11 @@ test("a draft cleared after a revert's text was saved stays cleared, even when w
 test("a revert dialog's disclosure is not the conversation's: opening its original input does not take over from following", async () => {
   const withTool = turn("t2", "Fix a.txt", "Fixed.");
   withTool.items.splice(1, 0, { id: "prt_1", type: "opencodeTool", name: "bash", callId: "call_1", input: { command: "ls" }, output: "a.txt", status: "completed" });
-  const core = { calls: [], window: true, turns: [turn("t1", "Start", "Started."), withTool], answers: { preview, attempt: { attempt: null } } };
+  // A long original input, which scrolls inside the dialog.
+  const long = { ...preview, draft: Array.from({ length: 60 }, (_, i) => `line ${i + 1} of what was asked`).join("\n") };
+  const core = { calls: [], window: true, turns: [turn("t1", "Start", "Started."), withTool], answers: { preview: long, attempt: { attempt: null } } };
   const page = await mount(core);
+  const w = page.window;
   const reads = () => core.calls.filter((c) => c.path === "/api/agents/a" && c.method === "GET");
   const readAgain = async () => {
     const before = reads().length;
@@ -398,17 +401,32 @@ test("a revert dialog's disclosure is not the conversation's: opening its origin
     await until(() => reads().length > before, "Mori's conversation read again");
     return reads().at(-1);
   };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 80));
   try {
-    // The revert dialog's original input, opened and closed, as a reader of it would.
     page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
     await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    const before = reads().length;
+    // In the dialog: its original input opened, scrolled by wheel, keys and touch, as a reader of it would.
     const input = [...page.dialog().querySelectorAll("summary")].find((el) => el.textContent.trim() === "Original input");
     assert.ok(input, "the dialog's original input");
     input.click();
+    const text = page.dialog().querySelector(".rewind-input");
+    assert.ok(text, "its long text");
+    for (const deltaY of [-120, 120]) text.dispatchEvent(new w.WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
+    for (const key of ["Home", "PageUp", "ArrowUp", "End", "PageDown", "ArrowDown", " "])
+      text.dispatchEvent(new w.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    text.dispatchEvent(new w.Event("touchstart", { bubbles: true }));
+    text.dispatchEvent(new w.Event("pointercancel", { bubbles: true }));
+    text.dispatchEvent(new w.Event("touchend", { bubbles: true }));
+    text.dispatchEvent(new w.Event("touchcancel", { bubbles: true }));
+    await settle();
+    assert.equal(reads().length, before, "nothing in the dialog sends the conversation to its end or anywhere else");
     page.button("Close", page.dialog()).click();
     await until(() => !page.dialog(), "closed");
     assert.equal((await readAgain()).turnId, null, "a dialog's disclosure is not the conversation's: it still follows the latest");
-    // The conversation's own disclosure does take over from following: the reader's window is held.
+    // The conversation's own: a wheel up in it, and its own disclosure, do take over from following.
+    page.d.querySelector('[data-turn-id="t1"]').dispatchEvent(new w.WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
+    assert.equal((await readAgain()).turnId, "t1", "its own wheel holds the reader's window");
     const own = page.d.querySelector('[data-turn-id="t2"] summary');
     assert.ok(own, "the tool row's own disclosure");
     own.click();

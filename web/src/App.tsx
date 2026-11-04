@@ -277,6 +277,17 @@ function readingTop(element: HTMLElement) {
   return (text ?? element).getBoundingClientRect().top;
 }
 
+/**
+ * Whether an event on the conversation's scroller is its own: one whose
+ * target is inside it. A dialog or menu portaled out of it (an OpenCode
+ * revert's, a rewind's) still sends its clicks, wheels, touches and keys
+ * there through React, and they must neither take the conversation from
+ * following nor send it back to the end (T-10, Lead 4153, 4154).
+ */
+function ownEvent(e: { target: EventTarget; currentTarget: EventTarget }): boolean {
+  return e.target instanceof Node && e.currentTarget instanceof Node && e.currentTarget.contains(e.target);
+}
+
 export function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(
     previewMode ? previewWorkspace : null,
@@ -3162,33 +3173,37 @@ export function App() {
                 ref={attachScroll}
                 data-agent-id={selected}
                 onWheel={(e) => {
+                  if (!ownEvent(e)) return;
                   if (e.deltaY < 0) {
                     live.pinWindow();
                     stickToBottom.current = false;
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                onTouchStart={() => {
+                onTouchStart={(e) => {
+                  if (!ownEvent(e)) return;
                   touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
                 }}
                 // The browser's pan: noted, never taken for a cancelled touch.
                 onPointerCancel={(e) => {
-                  if (e.pointerType === "touch" && touch.current) touch.current.panned = true;
+                  if (ownEvent(e) && e.pointerType === "touch" && touch.current) touch.current.panned = true;
                 }}
                 // A touch the system took away ends nothing the reader did.
-                onTouchCancel={() => {
-                  touch.current = null;
+                onTouchCancel={(e) => {
+                  if (ownEvent(e)) touch.current = null;
                 }}
                 // A tap on a disclosure opens or closes it (its click hands the
                 // conversation to the reader); it is not the reader going to the
                 // end. A pan is, wherever it began.
                 onTouchEnd={(e) => {
+                  if (!ownEvent(e)) return;
                   const began = touch.current;
                   touch.current = null;
                   const scrolled = !began || began.panned || Math.abs((scroll.current?.scrollTop ?? began.from) - began.from) >= 1;
                   if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
                 }}
                 onKeyDownCapture={(e) => {
+                  if (!ownEvent(e)) return;
                   if (
                     e.target instanceof HTMLElement &&
                     e.target.closest(
@@ -3212,12 +3227,9 @@ export function App() {
                   // clicked; their window is kept as it is, and where they are
                   // reading is noted, as a scroll would note it, so the
                   // conversation reopens there rather than at the end (T-19).
-                  // Only a disclosure of the conversation itself: a dialog
-                  // portaled out of it (a revert's or a rewind's original
-                  // input) still sends its clicks here through React, and
-                  // leaves the conversation where it was (T-10, Lead 4153).
-                  const summary = (e.target as Element).closest?.("summary");
-                  if (summary && e.currentTarget.contains(summary)) {
+                  // Only a disclosure of the conversation itself (see ownEvent).
+                  if (!ownEvent(e)) return;
+                  if ((e.target as Element).closest?.("summary")) {
                     live.pinWindow();
                     stickToBottom.current = false;
                     noteReading(false);
