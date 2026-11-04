@@ -539,7 +539,7 @@ impl Root {
     pub fn of(folder: &Path) -> Result<Self> {
         let fd = open_root(folder)?;
         let stat = rustix::fs::fstat(&fd)?;
-        Ok(Self { dev: stat.st_dev as u64, ino: stat.st_ino as u64 })
+        Ok(Self::of_stat(&stat))
     }
 }
 
@@ -588,7 +588,7 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
             Err(Errno::NOENT) => break,
             Err(error) => return Err(error).with_context(|| format!("{} cannot be read", at.display())),
         };
-        let id = Root { dev: stat.st_dev as u64, ino: stat.st_ino as u64 };
+        let id = Root::of_stat(&stat);
         let kind = FileType::from_raw_mode(stat.st_mode);
         ensure!(kind != FileType::Symlink, "{} is a symlink", at.display());
         if index + 1 < names.len() {
@@ -627,7 +627,7 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
     ensure!(Root::of_fd(&dir)? == root, "The Agent's folder {} changed while {} was read", folder.display(), file.display());
     for (index, name) in names.iter().enumerate() {
         let now = match rustix::fs::statat(&dir, *name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => Some(Root { dev: stat.st_dev as u64, ino: stat.st_ino as u64 }),
+            Ok(stat) => Some(Root::of_stat(&stat)),
             Err(Errno::NOENT) => None,
             Err(error) => return Err(error).with_context(|| format!("{} cannot be read again", file.display())),
         };
@@ -643,9 +643,15 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
 }
 
 impl Root {
+    // The widths of these fields differ between Linux and macOS.
+    #[allow(clippy::unnecessary_cast)]
+    fn of_stat(stat: &rustix::fs::Stat) -> Self {
+        Self { dev: stat.st_dev as u64, ino: stat.st_ino as u64 }
+    }
+
     fn of_fd(fd: &rustix::fd::OwnedFd) -> Result<Self> {
         let stat = rustix::fs::fstat(fd)?;
-        Ok(Self { dev: stat.st_dev as u64, ino: stat.st_ino as u64 })
+        Ok(Self::of_stat(&stat))
     }
 }
 

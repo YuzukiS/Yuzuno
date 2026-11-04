@@ -383,7 +383,7 @@ async fn a_file_git_would_convert_on_opencodes_checkout_is_refused_before_anythi
     // A configuration that converts every file, as someone's own may.
     run(&store, &work, &["config", "core.autocrlf", "true"]);
     let error = format!("{:#}", unconverted(&store, &work, &HERMETIC, "plain.txt").await.unwrap_err());
-    assert!(error.contains("core.autocrlf true"), "{error}");
+    assert!(error.contains("core.autocrlf \"true\""), "{error}");
 }
 
 #[cfg(target_os = "linux")]
