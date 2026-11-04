@@ -4,8 +4,12 @@
 // - CX-44, the usage-limit notice of a local Claude Agent (Mika) stopped at its limit. Don't continue
 //   (Core answers cancelled), Continue now (sending) and Continue automatically after the reset (waiting,
 //   so Continue now and Don't continue appear) each remove or replace the pressed button: focus is then on
-//   the notice, never on Continue now. Refused, the error shows and the buttons stay. If the person has
-//   gone to the composer while Core's answer is on its way, focus stays there.
+//   the notice, never on Continue now. Refused, the error shows, the buttons stay, and focus is back on the
+//   pressed button. The press gives up focus for good when the person goes elsewhere while Core's answer is
+//   on its way (Lead 4112): focus taken to the composer stays there; focus taken to a control that then goes
+//   (so it falls to the page), with Core's answer or its refusal, is not taken back; nor after a press
+//   outside the notice. Another stopped Agent (Kai) opened meanwhile: its notice is not handed focus by the
+//   old press. Continue now answered as sent with the stop over: the notice goes and nothing takes focus.
 // - CX-65, Answer again on a Codex (Sora), a Claude (Rin) and an OpenCode (Ao) question card, each holding
 //   an answer from this browser that got no reply (its draft kept as attempted, as after a lost reply):
 //   focus is then on that card, its answer can be sent again, and nothing is sent by itself.
@@ -40,6 +44,7 @@ const agents = [
   agent("s", "Sora", "codex", "waiting", 1),
   agent("r", "Rin", "claude", "waiting", 1),
   agent("o", "Ao", "opencode", "waiting", 1),
+  agent("k", "Kai", "claude", "error", 0),
 ];
 const turn = (status, text) => [{ id: "t1", status, items: [
   { id: "u1", type: "userMessage", content: [{ type: "text", text }] },
@@ -72,8 +77,10 @@ const views = {
   cancelled: { workspace: false, agent: true, enabled: true, intent: intent("cancelled", "You chose not to continue automatically"), stopped },
   sending: { workspace: false, agent: true, enabled: true, intent: intent("sending"), stopped },
   off: { workspace: false, agent: false, enabled: false, intent: null, stopped },
-  // Rin, the other Claude Agent, was not stopped: no notice.
+  // Rin, a Claude Agent that was not stopped: no notice.
   none: { workspace: false, agent: false, enabled: false, intent: null, stopped: null },
+  // Sent, and the stop is over: the notice goes.
+  gone: { workspace: false, agent: true, enabled: true, intent: intent("sent"), stopped: null },
 };
 const usage = {
   revision: 1, status: "unknown", account: null, accountId: null,
@@ -90,10 +97,11 @@ const gets = {
   "/api/agents/s": { agent: agents[1], pending: [pending.s], messageReceipts: [], artifacts: [], turns: turn("inProgress", "Pick the smaller one.") },
   "/api/agents/r": { agent: agents[2], pending: [pending.r], messageReceipts: [], artifacts: [], turns: turn("inProgress", "Choose a fruit.") },
   "/api/agents/o": { agent: agents[3], pending: [pending.o], messageReceipts: [], artifacts: [], turns: turn("inProgress", "Choose a fruit.") },
+  "/api/agents/k": { agent: agents[4], pending: [], messageReceipts: [], artifacts: [], turns: turn("failed", "Sort the fixture list.") },
   "/api/agents/s/codex/usage": usage, "/api/agents/s/codex/mcp": mcp,
-  "/api/agents/m/claude/mcp-status": claudeMcp, "/api/agents/r/claude/mcp-status": claudeMcp,
-  "/api/agents/r/claude/auto-continue": views.none,
-  ...Object.fromEntries(["m", "s", "r", "o"].map((id) => [`/api/agents/${id}/conversation/inputs`, noConversationInputs])),
+  "/api/agents/m/claude/mcp-status": claudeMcp, "/api/agents/r/claude/mcp-status": claudeMcp, "/api/agents/k/claude/mcp-status": claudeMcp,
+  "/api/agents/r/claude/auto-continue": views.none, "/api/agents/k/claude/auto-continue": views.waiting,
+  ...Object.fromEntries(["m", "s", "r", "o", "k"].map((id) => [`/api/agents/${id}/conversation/inputs`, noConversationInputs])),
   "/api/backlog": { observedAt: "2026-11-04T00:00:00Z", agents: {} },
   "/api/home": emptyHome, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
   "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
@@ -111,7 +119,7 @@ function server(state) {
     const url = new URL(request.url());
     const method = request.method();
     if (url.pathname.startsWith("/api/")) {
-      if (/^\/api\/agents\/[msro]\/reading$/.test(url.pathname)) {
+      if (/^\/api\/agents\/[msrok]\/reading$/.test(url.pathname)) {
         if (method === "GET") return route.fulfill({ json: { handoff: null } });
         report.readingSaves.push(url.pathname);
         return route.fulfill({ json: { accepted: true, sourceSeq: 0 } });
@@ -169,17 +177,36 @@ const runs = [
   { tag: "phone", width: 390, height: 844, touch: true },
 ];
 const inputs = ["pointer", "Enter"];
+// Each case: the button pressed, Core's answer, what the person does meanwhile, and where focus must be.
+const waitsFor = {
+  cancelled: (n) => n.getByText("Automatic continue was cancelled", { exact: false }),
+  sending: (n) => n.getByText("Continuing after Claude’s usage limit reset", { exact: false }),
+  waiting: (n) => n.getByRole("button", { name: "Continue now", exact: true }),
+  refused: (n) => n.getByRole("alert"),
+};
 const noticeCases = [
-  { tag: "Don't continue", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel",
-    shows: (n) => n.getByText("Automatic continue was cancelled", { exact: false }) },
-  { tag: "Continue now", start: "waiting", button: "Continue now", answer: "sending", action: "/now",
-    shows: (n) => n.getByText("Continuing after Claude’s usage limit reset", { exact: false }) },
-  { tag: "Continue automatically after the reset", start: "off", button: "Continue automatically after the reset", answer: "waiting", action: "/",
-    shows: (n) => n.getByRole("button", { name: "Continue now", exact: true }) },
-  { tag: "refused", start: "waiting", button: "Don’t continue automatically", refuse: true, action: "/cancel",
-    shows: (n) => n.getByRole("alert") },
-  { tag: "composer meanwhile", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel", composer: true,
-    shows: (n) => n.getByText("Automatic continue was cancelled", { exact: false }) },
+  { tag: "Don't continue", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel", expect: "notice" },
+  { tag: "Continue now", start: "waiting", button: "Continue now", answer: "sending", action: "/now", expect: "notice" },
+  { tag: "Continue automatically after the reset", start: "off", button: "Continue automatically after the reset", answer: "waiting",
+    action: "/", expect: "notice, not Continue now" },
+  { tag: "refused", start: "waiting", button: "Don’t continue automatically", refuse: true, action: "/cancel", expect: "pressed" },
+  { tag: "composer meanwhile", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel",
+    meanwhile: "composer", expect: "composer" },
+  // The person takes focus to a control outside the notice, and that control goes again, so focus falls to
+  // the page before Core answers: the hold was given up, and nothing takes focus back.
+  { tag: "a control elsewhere, then gone", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel",
+    meanwhile: "elsewhere", expect: "page" },
+  { tag: "a control elsewhere, then gone, and refused", start: "waiting", button: "Don’t continue automatically", refuse: true,
+    action: "/cancel", meanwhile: "elsewhere", expect: "page, buttons kept" },
+  // A press outside the notice, on the conversation, gives the hold up too.
+  { tag: "a press outside the notice", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel",
+    meanwhile: "outside", expect: "not taken back" },
+  // Another stopped Agent (Kai) opened meanwhile: its notice is another one, and the old press's answer must
+  // not hand it focus.
+  { tag: "another Agent opened meanwhile", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel",
+    meanwhile: "agent", expect: "not Kai's notice" },
+  // Core answers Continue now as sent, with the stop over: the notice goes, and nothing takes focus.
+  { tag: "the notice goes", start: "waiting", button: "Continue now", answer: "gone", action: "/now", expect: "gone" },
 ];
 const cards = [
   { tag: "a Codex question", agent: "s", name: "Sora" },
@@ -247,21 +274,54 @@ try {
         await page.waitForTimeout(100);
         // While Core's answer is on its way the pressed button is disabled: where focus is then.
         const meanwhile = await page.evaluate(focusNow);
-        if (c.composer) await composer.focus();
-        await c.shows(notice).waitFor();
+        if (c.meanwhile === "composer") await composer.focus();
+        else if (c.meanwhile === "elsewhere")
+          await page.evaluate(() => {
+            const away = document.createElement("button");
+            away.textContent = "Elsewhere";
+            document.querySelector(".main-panel").append(away);
+            away.focus();
+            away.remove();
+          });
+        else if (c.meanwhile === "outside") {
+          // The conversation's top corner: nothing there takes focus.
+          const scroller = page.locator(".main-panel .conversation-scroll");
+          const corner = { position: { x: 8, y: 8 } };
+          await (run.touch ? scroller.tap(corner) : scroller.click(corner));
+        } else if (c.meanwhile === "agent") {
+          if (run.touch) await page.locator(".phone-back").click();
+          await page.locator('.agent-row .agent-select[aria-label="Open Kai"]').click();
+          await page.locator('[data-composer-input][aria-label="Message Kai"]').waitFor();
+          await notice.getByRole("button", { name: "Continue now", exact: true }).waitFor();
+        }
+        if (c.expect === "gone") await notice.waitFor({ state: "detached" });
+        else if (c.meanwhile === "agent") {
+          // Mika's press is answered while Kai is open: its answer comes 300 ms after the press.
+          for (let t = 0; !state.actions.length && t < 50; t++) await wait(20);
+          await page.waitForTimeout(state.late + 300);
+        } else await waitsFor[c.refuse ? "refused" : c.answer](notice).waitFor();
         await settle(page);
         const after = await page.evaluate(focusNow);
         const place = await page.evaluate(placeOf, ".main-panel .quota-resume-notice");
-        const left = await notice.getByRole("button").allTextContents();
+        const left = c.expect === "gone" ? [] : await notice.getByRole("button").allTextContents();
         report.cases[name] = { before, meanwhile, after, place, left, actions: state.actions };
         const detail = { meanwhile, after, left, actions: state.actions };
-        ok(`${name}: Core was asked once, and its answer shows`, state.actions.length === 1 && state.actions[0].startsWith(c.action), detail);
-        if (c.composer) ok(`${name}: focus stays in the composer the person went to`, after.composer, detail);
-        else if (c.refuse) ok(`${name}: the buttons stay, and focus is not on the page`, left.includes(c.button) && !after.body, detail);
-        else if (c.answer === "waiting")
+        ok(`${name}: Core was asked once${c.meanwhile === "agent" ? "" : ", and its answer shows"}`,
+          state.actions.length === 1 && state.actions[0].startsWith(c.action), detail);
+        if (c.expect === "notice") ok(`${name}: focus is on the notice`, after.notice, detail);
+        else if (c.expect === "notice, not Continue now")
           ok(`${name}: focus is on the notice, not on Continue now`, after.notice && after.button === null, detail);
-        else ok(`${name}: focus is on the notice`, after.notice, detail);
-        ok(`${name}: the notice is still in view`, inView(place), { before, place });
+        else if (c.expect === "pressed")
+          ok(`${name}: the buttons stay, and focus is back on the pressed button`, left.includes(c.button) && after.button === c.button, detail);
+        else if (c.expect === "composer") ok(`${name}: focus stays in the composer the person went to`, after.composer, detail);
+        else if (c.expect === "page") ok(`${name}: focus is not taken back after the person left: nothing has it`, after.body, detail);
+        else if (c.expect === "page, buttons kept")
+          ok(`${name}: the buttons stay, and focus is not taken back after the person left`, left.includes(c.button) && after.body, detail);
+        else if (c.expect === "not taken back")
+          ok(`${name}: focus is not taken back after the press outside`, !after.notice && after.button === null, detail);
+        else if (c.expect === "not Kai's notice") ok(`${name}: the old press does not hand focus to Kai's notice`, !after.notice, detail);
+        else ok(`${name}: the notice is gone, and nothing took focus`, after.body && (await notice.count()) === 0, detail);
+        if (!["gone", "not Kai's notice"].includes(c.expect)) ok(`${name}: the notice is still in view`, inView(place), { before, place });
       } catch (error) {
         ok(`${name}: the sequence ran to its end`, false, String(error?.message ?? error).slice(0, 400));
       }
