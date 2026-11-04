@@ -133,7 +133,8 @@ try {
   await settings.waitFor();
   const box = () => settings.evaluate((el) => { const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
   const sizes = {};
-  for (const tab of ["updates", "appearance", "review", "appearance"]) {
+  // Settings' tabs are its categories (T-187): Code review is under Agents & runtime.
+  for (const tab of ["updates", "appearance", "agents", "appearance"]) {
     await page.locator(`#settings-tab-${tab}`).click();
     await page.waitForTimeout(150);
     sizes[tab] = await box();
