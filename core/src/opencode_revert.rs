@@ -16,6 +16,7 @@ use super::*;
 use crate::opencode::RevertAnswer;
 use crate::opencode_revert_files::{self as files, Entry, Outcome, Root, BOUNDS};
 use crate::rewind::{Attempt, MAX_ARCHIVE};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
