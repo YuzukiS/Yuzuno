@@ -224,6 +224,13 @@ fn stage_one(cache: &Path, own: &Path, remote: bool, attachment: &Value, hold: O
         ("snapshot", json!(true)), ("mayChange", json!(false)), ("sha256", json!(sha))] {
         entry[field] = value;
     }
+    if kind == "image" {
+        // From the header alone, within a small budget (T-19 HM:B14).
+        if let Some((width, height)) = super::image_header::image_size(&bytes) {
+            entry["width"] = json!(width);
+            entry["height"] = json!(height);
+        }
+    }
     Ok(Ok(Staged { entry, sha: Some(sha), size }))
 }
 
@@ -278,7 +285,8 @@ pub(super) fn snapshot_bytes(db: &Connection, project: &str) -> Result<u64> {
     Ok(bytes as u64)
 }
 
-/// A history entry stops keeping its snapshots: they become references.
+/// A history entry stops keeping its snapshots: they become references,
+/// and the size read from a snapshot no longer holds for the file named.
 fn release(db: &Connection, seq: i64) -> Result<()> {
     db.execute("DELETE FROM project_brief_snapshots WHERE section_seq=?1", [seq])?;
     let data: String = db.query_row("SELECT data FROM project_brief_sections WHERE seq=?1", [seq], |r| r.get(0))?;
@@ -287,7 +295,10 @@ fn release(db: &Connection, seq: i64) -> Result<()> {
         if attachment["snapshot"] == true {
             attachment["snapshot"] = json!(false);
             attachment["mayChange"] = json!(true);
-            attachment.as_object_mut().unwrap().remove("sha256");
+            let entry = attachment.as_object_mut().unwrap();
+            for field in ["sha256", "width", "height"] {
+                entry.remove(field);
+            }
         }
     }
     db.execute("UPDATE project_brief_sections SET data=?2 WHERE seq=?1", params![seq, data.to_string()])?;

@@ -223,11 +223,15 @@ pub(super) fn owner(agent: Option<OwnerAgent>, row: &Row) -> Owner {
 }
 
 /// What Home and Agents see of an attachment. A reference shows the path it
-/// names; a snapshot's origin and file name stay Core's.
+/// names; a snapshot's origin and file name stay Core's. Only a snapshot has
+/// a width and height: Core read them from the bytes it keeps (T-19 HM:B14).
 fn public_attachment(stored: &Value) -> Value {
     let mut shown = json!({});
-    for field in ["name", "kind", "mime", "size", "snapshot", "mayChange", "takenAt", "caption", "url", "path"] {
+    for field in ["name", "kind", "mime", "size", "snapshot", "mayChange", "takenAt", "caption", "url", "path", "width", "height"] {
         if field == "path" && stored["snapshot"] == true {
+            continue;
+        }
+        if matches!(field, "width" | "height") && stored["snapshot"] != true {
             continue;
         }
         if let Some(value) = stored.get(field).filter(|value| !value.is_null()) {
