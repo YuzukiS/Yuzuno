@@ -111,7 +111,7 @@ const text = strings({
   includePreviewsHelp:
     "Single-file HTML previews open on the phone at this same address, each in a sandbox of its own. Left out, the phone opens none, and what it has open stops opening. Turning phone access off keeps this choice.",
   previewsLabel: "Previews on the phone",
-  previewsNow: (included: boolean, available: boolean) =>
+  previewsNow: (included: boolean, available: boolean): string =>
     !included ? "Not included" : available ? "Included" : "Included, once phone access is on",
   legacyPending: (port: number, target: string) =>
     `An older Yuzuno set a Serve entry of its own for phone previews on port ${port} (to ${target}). The next Save and apply or Turn off removes it while it is still exactly that entry; anything else there is left as it is.`,
