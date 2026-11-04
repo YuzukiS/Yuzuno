@@ -1200,6 +1200,7 @@ impl Store {
         crate::delivery::store::migrate(&db)?;
         crate::machines::migrate(&db)?;
         crate::codex_sessions::migrate(&db)?;
+        crate::opencode_agent::fork_migrate(&db)?;
         crate::rewind::migrate(&db)?;
         crate::claude_quota::migrate(&db)?;
         crate::results::migrate(&db)?;
@@ -1636,6 +1637,16 @@ impl Store {
     pub fn scan(&self, id: &str, each: impl FnMut(Value) -> Result<bool>) -> Result<()> {
         self.settle_unwritten(id)?;
         record_rows::scan(&*self.db.read()?, id, false, each)
+    }
+
+    /// Every Turn of the Agent as it is stored (T-10 Fork): payloads
+    /// included, and nothing a read adds for clients (mailbox, results,
+    /// origins), in order. What a fork copies.
+    pub(crate) fn stored_turns(&self, id: &str) -> Result<Vec<Value>> {
+        self.settle_unwritten(id)?;
+        let db = self.db.read()?;
+        let ids = record_rows::turn_ids(&db, id)?;
+        Ok(record_rows::load_turns(&db, id, &ids, true)?.into_iter().map(|(_, turn)| turn).collect())
     }
 
     /// What a rewind keeps of the local Turns it removes: the metadata and
