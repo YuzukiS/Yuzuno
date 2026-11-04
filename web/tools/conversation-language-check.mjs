@@ -15,6 +15,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { savedDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-conversation-language";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -74,7 +76,7 @@ await context.route("**/*", async (route) => {
     return route.fulfill({ status: 500, json: { error: "not answered by this fixture" } });
   }
   const json = {
-    "/api/workspace": { workspace: { id: "ws-conversation-language" }, agents: [agent], projects: [], runtime: { connected: true }, defaultCwd: "/fixture" },
+    "/api/workspace": { workspace: { id: WORKSPACE }, agents: [agent], projects: [], runtime: { connected: true }, defaultCwd: "/fixture" },
     "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns },
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": budget,
     "/api/jobs": { jobs: [job], liveJobs: [job], hasMore: false, nextBefore: null },
@@ -136,7 +138,7 @@ try {
   await chip().waitFor({ timeout: 10_000 });
   await page.keyboard.type(" and a note");
   for (let i = 0; i < 4; i++) await page.keyboard.press("Shift+ArrowLeft");
-  const draft = await savedDraft(page, "a");
+  const draft = await savedDraft(page, WORKSPACE, "a");
   assert.equal(draft, `Draft kept ${PASTED} and a note`);
   const en = await controls();
   assert.equal(en.dock, "Jobs and CI in this conversation");
@@ -158,11 +160,11 @@ try {
   assert.equal(zh.composer, "给 Mori 发消息");
   assert.equal(zh.chip, en.chip.replace(/ · 15 lines$/, " · 15 行"), "the block's label as it came");
   assert.match(zh.chipLabel, /。查看并编辑$/);
-  assert.equal(await savedDraft(page, "a"), draft, "the draft as it was");
+  assert.equal(await savedDraft(page, WORKSPACE, "a"), draft, "the draft as it was");
   const zhSelection = await page.evaluate(() => getSelection().toString());
   // Typing replaces what was selected: the selection was kept.
   await page.keyboard.type("memo");
-  const typed = await savedDraft(page, "a");
+  const typed = await savedDraft(page, WORKSPACE, "a");
   assert.equal(typed, `Draft kept ${PASTED} and a memo`);
   check("in Chinese: the dock, search button, composer and paste block; names, the draft and its selection as they were", { zh, zhSelection, typed: typed.slice(-12) });
 
@@ -179,7 +181,7 @@ try {
   assert.equal(await dialog().locator(".pasted-text-dialog-actions button").allTextContents().then((t) => t.join("|")), "Remove block|Save changes");
   await page.keyboard.press("Escape");
   await dialog().waitFor({ state: "detached", timeout: 10_000 });
-  assert.equal(await savedDraft(page, "a"), typed, "closing the block changed nothing");
+  assert.equal(await savedDraft(page, WORKSPACE, "a"), typed, "closing the block changed nothing");
   await setLanguage("zh-Hans");
   await page.locator('.conversation-search-trigger[aria-label="搜索会话"]').click();
   await dialog().waitFor({ timeout: 10_000 });
@@ -193,7 +195,7 @@ try {
   assert.deepEqual(results, ["You", "Mori · Reply"]);
   await page.keyboard.press("Escape");
   await dialog().waitFor({ state: "detached", timeout: 10_000 });
-  assert.equal(await savedDraft(page, "a"), typed, "the draft as it was");
+  assert.equal(await savedDraft(page, WORKSPACE, "a"), typed, "the draft as it was");
   check("the paste block and the search stayed open with their text across a change back to English", { results });
 
   assert.deepEqual(report.posts, [], "nothing sent");

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-ui-refine";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -12,7 +14,16 @@ const output = resolve(
   process.env.YUZUNO_CHECK_OUTPUT || "../acceptance/ui-refine",
 );
 await mkdir(output, { recursive: true });
-const report = { checks: [], mutations: [], errors: [] };
+const report = {
+  checks: [],
+  mutations: [],
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
+  errors: [],
+};
 const agent = {
   id: "a",
   name: "Mori",
@@ -160,6 +171,10 @@ await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   assert.equal(url.hostname, "yuzuno-ui-refine.test");
+  if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     const input = request.postDataJSON();
     report.mutations.push({ path: url.pathname, input });
@@ -178,8 +193,12 @@ await page.route("**/*", async (route) => {
   }
   if (url.pathname === "/api/workspace")
     return route.fulfill({
-      json: { agents, runtime: { connected: true }, defaultCwd: "/fixture" },
+      json: { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/fixture" },
     });
+  // No Appearance preset shared in this Workspace (appearance-preset.ts reads { workspaceId, preset }).
+  if (url.pathname === "/api/appearance-preset") return route.fulfill({ json: { workspaceId: WORKSPACE, preset: null } });
+  // What the app reads once it knows its Workspace: no reading place held by Core.
+  if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
   if (/^\/api\/agents\/[ab]$/.test(url.pathname))
     return route.fulfill({
       json: {
@@ -194,6 +213,8 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
   if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
   if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: noLiveCi });
+  if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname)) return route.fulfill({ json: noConversationInputs });
   if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
   // Home (T-85, which replaced Catch up): no projects, nothing waiting.
   if (url.pathname === "/api/home")
@@ -215,10 +236,12 @@ await page.route("**/*", async (route) => {
       body: "# Earlier notes\n\nHistory preview still works.",
       contentType: "text/plain",
     });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected request ${url.pathname}`,
-  );
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -241,15 +264,17 @@ const record = (name, extra = {}) => report.checks.push({ name, ...extra });
 const refresh = () =>
   page.evaluate(() => window.testEvents.onmessage({ data: "{}" }));
 const modal = page.getByRole("dialog");
-// Appearance is a category of Settings.
+// Appearance is a category of Settings: its tab, or on a narrow screen (720 px or less, T-189) the
+// category picker that takes the tabs' place.
 async function openAppearance() {
   await page.getByRole("button", { name: "Settings and updates" }).click();
-  await page.locator("#settings-tab-appearance").click();
+  if (page.viewportSize().width <= 720) await modal.locator(".settings-category-picker select").selectOption("appearance");
+  else await page.locator("#settings-tab-appearance").click();
 }
 try {
   await page.goto("https://yuzuno-ui-refine.test/");
   const composer = page.getByRole("textbox", { name: "Message Mori" });
-  const draftOf = () => composerDraft(composer);
+  const draftOf = () => composerDraft(composer, WORKSPACE);
   await composer.fill("保留还未发送的草稿");
   const history = page.locator(".artifact-history");
   await page
@@ -787,9 +812,8 @@ try {
   );
   assert.equal((await pinState()).pinned, false, "Reading an earlier turn");
   assert.equal(await draftOf(), "保留还未发送的草稿");
-  await page
-    .getByRole("button", { name: "Back to latest", exact: true })
-    .click();
+  // The pill; the bar over the conversation since the jump has a Back to latest of its own.
+  await page.locator(".jump-latest").click();
   await page.waitForFunction(() => {
     const el = document.querySelector(".conversation-scroll");
     return el.scrollHeight - el.scrollTop - el.clientHeight < 8;
@@ -876,7 +900,10 @@ try {
     await modal
       .locator(`input[name="appearance-theme"][value="${theme}"]`)
       .check();
-    await modal.locator(".settings-footnote").scrollIntoViewIfNeeded();
+    // To the dialog's end (its footnote went with T-187), then what sticks out.
+    await modal.evaluate((el) => {
+      for (const box of [el, ...el.querySelectorAll("*")]) if (box.scrollHeight > box.clientHeight + 1) box.scrollTop = box.scrollHeight;
+    });
     const fit = await modal.evaluate((el) => {
       const right = el.getBoundingClientRect().left + el.clientWidth;
       return {
@@ -897,8 +924,11 @@ try {
     });
     await page.keyboard.press("Escape");
     await modal.waitFor({ state: "detached" });
+    // A phone shows the turn dock as a panel from its Turns button (PhoneDocks, T-170). Its rows carry their
+    // words, so the hover preview is not shown there (phone-docks.css).
+    await page.locator(".phone-dock-turns").click();
     await dock.locator('[data-turn-choice="current"]').hover();
-    await dock.getByRole("tooltip").waitFor();
+    assert.equal(await dock.locator(".turn-dock-preview").isVisible(), false);
     assert.ok(
       (await page.locator(".conversation-header").boundingBox()).height <= 65,
     );
@@ -934,6 +964,7 @@ try {
       path: `${output}/sunroom-${theme}-turns-390.png`,
     });
     await page.mouse.move(100, 25);
+    await page.getByRole("button", { name: "Close turns" }).click();
   }
   assert.deepEqual(report.mutations, []);
   record("Narrow 390px layout at 20px; Escape does not interrupt or mutate");
@@ -1282,6 +1313,7 @@ try {
     "120 turns: five numbers and ten fading bars; the pointer lens magnifies progressively; the wheel and keyboard walk the dock with gliding rows without moving the conversation, holding while engaged; letting go follows reading again; Home/End reach both ends; reduced motion has no glide, lens or transitions",
   );
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.passed = true;
 } catch (error) {
   report.passed = false;

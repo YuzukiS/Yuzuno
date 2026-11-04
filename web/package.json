@@ -12,7 +12,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -b --noEmit",
     "build:result-validator": "node --experimental-strip-types tools/result-validator.mjs",
-    "test": "node tools/ui.test.mjs && node tools/collaboration-ui.test.mjs && node tools/projects-ui.test.mjs && node tools/machines-ui.test.mjs && node tools/task-filtering-ui.test.mjs && node tools/conversation-time-ui.test.mjs && node --experimental-strip-types tools/artifact-groups.test.mjs && node --experimental-strip-types tools/intelligent-ui.test.mjs && node --experimental-strip-types tools/intelligent-ui-storage.test.mjs && node tools/connection-ui.test.mjs && node tools/output-on-demand-ui.test.mjs && node tools/pr-reviews-ui.test.mjs && node tools/pr-operations-ui.test.mjs && node tools/delivery-flow-ui.test.mjs",
+    "test": "node --expose-gc tools/ui.test.mjs && node tools/collaboration-ui.test.mjs && node tools/projects-ui.test.mjs && node tools/machines-ui.test.mjs && node tools/task-filtering-ui.test.mjs && node tools/conversation-time-ui.test.mjs && node --experimental-strip-types tools/artifact-groups.test.mjs && node --experimental-strip-types tools/intelligent-ui.test.mjs && node --experimental-strip-types tools/intelligent-ui-storage.test.mjs && node tools/connection-ui.test.mjs && node tools/output-on-demand-ui.test.mjs && node tools/pr-reviews-ui.test.mjs && node tools/pr-operations-ui.test.mjs && node tools/delivery-flow-ui.test.mjs",
     "test:pr-operations": "node tools/pr-operations-ui.test.mjs",
     "test:browser": "node tools/browser-check.mjs",
     "test:session-import": "node tools/session-import-ui.test.mjs",

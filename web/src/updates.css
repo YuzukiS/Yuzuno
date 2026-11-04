@@ -520,15 +520,7 @@
     )
     0 0 / 50% 100% no-repeat,
     color-mix(in srgb, var(--accent-ink) 30%, var(--line));
-  animation: update-step-moving 1.6s ease-in-out infinite;
-}
-@keyframes update-step-moving {
-  from {
-    background-position: -100% 0, 0 0;
-  }
-  to {
-    background-position: 200% 0, 0 0;
-  }
+  animation: step-moving 1.6s ease-in-out infinite;
 }
 /* The facts behind the answer, for when they matter. */
 .update-details > summary {

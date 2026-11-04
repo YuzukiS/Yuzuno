@@ -45,7 +45,7 @@ import {
   type ComposerDraft,
   type PastedText,
 } from "./composer-draft";
-import { slashCommands, withCodexSkills, withModelControl, type CommandList, type SlashCommand } from "./slash-commands";
+import { slashCommands, withCodexSkills, withModelControl, withOpencodeControls, type CommandList, type SlashCommand } from "./slash-commands";
 import { api } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
 import "./pasted-text.css";
@@ -223,7 +223,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 () =>
                   api<CommandList>(
                     `/agents/${encodeURIComponent(callbacks.current.agentId)}/opencode/commands`,
-                  ),
+                  ).then(withOpencodeControls),
                 "opencode",
               )
             : [],

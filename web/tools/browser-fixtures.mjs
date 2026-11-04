@@ -42,59 +42,42 @@ export const noCiRuns = { runs: [], subscriptions: [], hasMore: false, nextBefor
 export const noReviews = { reviews: [], hasMore: false, nextBefore: null };
 /** /api/jobs/live (T-70) when no Agent is waiting on a job. */
 export const noLiveJobs = { agents: {} };
+/** /api/ci/live when no Agent is waiting on a CI run (live-ci.ts). */
+export const noLiveCi = { agents: {} };
+/** /api/agents/{id}/conversation/inputs (T-6) when the conversation lists no inputs. */
+export const noConversationInputs = { inputs: [], hasBefore: false, total: 0 };
+/** /api/home with nothing on it, which the app reads once it knows its Workspace. */
+export const emptyHome = { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] };
 
 /**
- * Runs in the page: the key a draft is saved under, found by the Agent it
- * names (T-195). A draft is saved under the Workspace and the Agent, and a
- * fixture page is in one Workspace, so this needs no Workspace id and stays
- * right whatever a fixture calls its own. Returns the identity -- the part
- * after the prefix, which the paste bodies' keys also use -- or null.
+ * The identity a draft is saved under: its Workspace and its Agent, as
+ * composer-draft.ts's draftIdentity spells it (T-195). The paste bodies' keys
+ * use it too. Both parts are needed: a key is never looked for by its Agent
+ * alone, which can be another Workspace's, and a missing part is an error,
+ * not "no draft".
  *
- * Pass it to `page.evaluate(draftIdentityInPage, agentId)`.
+ * Plain, so it runs here or in the page:
+ * `page.evaluate(draftIdentityInPage, [workspaceId, agentId])`.
  */
-export function draftIdentityInPage(agent) {
-  const prefix = "yuzuno.composer.v1:";
-  for (let index = 0; index < localStorage.length; index++) {
-    const key = localStorage.key(index);
-    if (!key || !key.startsWith(prefix)) continue;
-    const identity = key.slice(prefix.length);
-    let parsed;
-    try {
-      parsed = JSON.parse(identity);
-    } catch {
-      continue;
-    }
-    if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === agent) return identity;
-  }
-  return null;
+export function draftIdentityInPage([workspace, agent] = []) {
+  if (typeof workspace !== "string" || !workspace || typeof agent !== "string" || !agent)
+    throw new Error(`A saved draft is found by its Workspace and its Agent, not ${JSON.stringify([workspace, agent])} (T-195)`);
+  return JSON.stringify([workspace, agent]);
 }
 
-/** The draft saved for Agent `id`, pasted blocks included, or null when it
- * has none. Since long pastes became blocks (T-33) the composer saves
- * `yuzuno.composer.v1:<identity>`, and since T-195 that identity is the
- * Workspace and the Agent, so the key is found by the Agent it names: a
- * fixture page is in one Workspace. Drafts saved before Workspaces were
- * recorded are not read here, as the composer no longer reads them either.
- * Runs in the page. */
-function readSavedDraft(id) {
-  const prefix = "yuzuno.composer.v1:";
-  let identity = null;
-  for (let index = 0; index < localStorage.length; index++) {
-    const key = localStorage.key(index);
-    if (!key || !key.startsWith(prefix)) continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(key.slice(prefix.length));
-    } catch {
-      continue;
-    }
-    if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === id) {
-      identity = key.slice(prefix.length);
-      break;
-    }
-  }
-  if (identity === null) return null;
-  return JSON.parse(localStorage.getItem(prefix + identity)).parts
+/** Runs in the page: the draft saved for [Workspace, Agent], pasted blocks
+ * included, or null when there is none. Since long pastes became blocks (T-33)
+ * the composer saves `yuzuno.composer.v1:<identity>`, the identity being the
+ * Workspace and the Agent since T-195 (as draftIdentityInPage; a function
+ * sent to the page takes nothing with it). Drafts saved before Workspaces were
+ * recorded are not read, as the composer no longer reads them either. */
+function readSavedDraft([workspace, agent] = []) {
+  if (typeof workspace !== "string" || !workspace || typeof agent !== "string" || !agent)
+    throw new Error(`A saved draft is found by its Workspace and its Agent, not ${JSON.stringify([workspace, agent])} (T-195)`);
+  const identity = JSON.stringify([workspace, agent]);
+  const saved = localStorage.getItem("yuzuno.composer.v1:" + identity);
+  if (saved === null) return null;
+  return JSON.parse(saved).parts
     .map((part) =>
       part.kind === "text"
         ? part.text
@@ -103,22 +86,33 @@ function readSavedDraft(id) {
     .join("");
 }
 
-/** The draft saved for Agent `id` in `page` (see readSavedDraft). */
-export function savedDraft(page, id) {
-  return page.evaluate(readSavedDraft, id);
+/** The draft saved in `page` for Agent `agentId` of Workspace `workspaceId`
+ * (see readSavedDraft), or null when there is none. */
+export function savedDraft(page, workspaceId, agentId) {
+  return page.evaluate(readSavedDraft, [workspaceId, agentId]);
 }
 
-/** The draft in the message composer on screen (the selected agent's).
- * The composer is a CodeMirror editor that draws only the lines in view, so
- * read the draft it saves on every change, as pasted-text-browser.mjs does.
- * A real form field still reads as its value. */
-export async function composerDraft(locator) {
+/** The draft in the message composer on screen: the open Agent's, in the
+ * Workspace the page is in, which the caller names (its fixture's id, or the
+ * one its lab Core answered with). The composer is a CodeMirror editor that
+ * draws only the lines in view, so this reads the draft it saves on every
+ * change, under the Agent the page keeps open for that Workspace
+ * (`yuzuno.selected.<id>` since T-195; the older unscoped key is not read).
+ * No Workspace, or no open Agent saved for it, is an error: a page that never
+ * learned its Workspace keeps drafts in memory only, and reads as the editor
+ * shows them. A real form field still reads as its value. */
+export async function composerDraft(locator, workspaceId) {
   const field = await locator.evaluate((el) =>
     el.matches("input, textarea, select") ? el.value : null,
   );
   if (field != null) return field;
-  const id = await locator.evaluate(() =>
-    JSON.parse(localStorage.getItem("yuzuno.selected") || '""'),
+  if (typeof workspaceId !== "string" || !workspaceId)
+    throw new Error("composerDraft needs the Workspace the page is in: drafts are saved per Workspace (T-195)");
+  const agent = await locator.evaluate(
+    (_, key) => JSON.parse(localStorage.getItem(key) || "null"),
+    `yuzuno.selected.${workspaceId}`,
   );
-  return (await savedDraft(locator.page(), id)) ?? "";
+  if (typeof agent !== "string" || !agent)
+    throw new Error(`No open Agent is saved for Workspace ${workspaceId} (yuzuno.selected.${workspaceId})`);
+  return (await savedDraft(locator.page(), workspaceId, agent)) ?? "";
 }

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
-import { installConnectionFixture } from "./connection-fixture.mjs";
+import { FIXTURE_WORKSPACE, installConnectionFixture } from "./connection-fixture.mjs";
 import { draftIdentityInPage } from "./browser-fixtures.mjs";
 
 const base = process.env.T33_UI_URL || "http://127.0.0.1:4485";
@@ -118,13 +118,14 @@ await context.addInitScript(() => {
 });
 const page = await context.newPage();
 const input = () => page.locator("[data-composer-input]");
-const chips = () => page.locator(".pasted-text-chip");
+// The composer's own blocks: a message shown in the conversation (a send whose answer was lost, say)
+// draws its blocks with the same paste ids.
+const chips = () => input().locator(".pasted-text-chip");
 const ids = () =>
   chips().evaluateAll((els) => els.map((el) => el.dataset.pasteId));
-// A draft is saved under the Workspace and the Agent (T-195). The key is
-// found by the Agent it names (draftIdentityInPage), so no Workspace id is
-// spelled here and a fixture may call its own whatever it likes.
-const identityOf = (id) => page.evaluate(draftIdentityInPage, id);
+// A draft is saved under the Workspace and the Agent (T-195): the connection
+// fixture's Workspace, which its /api/workspace names.
+const identityOf = (id) => page.evaluate(draftIdentityInPage, [FIXTURE_WORKSPACE, id]);
 const saved = async (id = "a") =>
   page.evaluate((identity) => {
     const draft = JSON.parse(
@@ -139,29 +140,14 @@ const saved = async (id = "a") =>
       .join("");
   }, await identityOf(id));
 async function settled(expected, id = "a") {
-  // The key is looked up inside the waited function: this Agent's draft may
-  // not be saved yet when the wait begins (T-195). Spelled out here rather
-  // than passed in, so nothing depends on the page allowing new Function.
+  // This Agent's draft in the connection fixture's Workspace (T-195), read
+  // inside the waited function: it may not be saved yet when the wait begins.
+  // Spelled out here rather than passed in, so nothing depends on the page
+  // allowing new Function.
   await page.waitForFunction(
-    ({ expected, id }) => {
-      const prefix = "yuzuno.composer.v1:";
-      let identity = null;
-      for (let index = 0; index < localStorage.length; index++) {
-        const key = localStorage.key(index);
-        if (!key || !key.startsWith(prefix)) continue;
-        let parsed;
-        try {
-          parsed = JSON.parse(key.slice(prefix.length));
-        } catch {
-          continue;
-        }
-        if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === id) {
-          identity = key.slice(prefix.length);
-          break;
-        }
-      }
+    ({ expected, identity }) => {
       const draft = JSON.parse(
-        (identity && localStorage.getItem("yuzuno.composer.v1:" + identity)) || '{"parts":[]}',
+        localStorage.getItem("yuzuno.composer.v1:" + identity) || '{"parts":[]}',
       );
       return (
         draft.parts
@@ -173,7 +159,7 @@ async function settled(expected, id = "a") {
           .join("") === expected
       );
     },
-    { expected, id },
+    { expected, identity: JSON.stringify([FIXTURE_WORKSPACE, id]) },
   );
 }
 async function paste(text, native = false) {
@@ -262,7 +248,9 @@ try {
       await page.locator(".pasted-text-preview").waitFor({ state: "hidden" });
       await chips().first().focus();
       await page.keyboard.press("Enter");
-      const full = page.getByLabel("Full pasted text");
+      // In the open dialog: one that closes leaves through an inert, hidden copy (T-19 1b, DialogExitGhost),
+      // which can still be on the page as the block is opened again.
+      const full = page.getByRole("dialog").getByRole("textbox", { name: "Full pasted text", exact: true });
       await full.waitFor();
       assert.equal(await full.inputValue(), raw.replaceAll("\r\n", "\n"));
       await full.press("Control+a");
@@ -294,7 +282,8 @@ try {
       assert.equal(await page.evaluate(() => pasteFixture.sent.length), 0);
       await page.getByLabel("Ask for an interactive result").click();
       await page.locator('[role="dialog"]').waitFor();
-      await page.locator(".modal-overlay").click({ position: { x: 5, y: 5 } });
+      // The open dialog's overlay, not the closing one's copy still fading (DialogExitGhost).
+      await page.locator(".modal-overlay:not(.dialog-exit-ghost *)").click({ position: { x: 5, y: 5 } });
       assert.equal(
         await input().evaluate((el) => document.activeElement === el),
         false,
@@ -364,7 +353,9 @@ try {
           await other.goto(base);
           const field = other.locator("[data-composer-input]");
           await other.locator(".pasted-text-chip").waitFor();
-          if (action === "send") await input().press("Enter");
+          // Ctrl+Enter sends on any keyboard; on a touch screen (this context has touch) Return alone
+          // starts a new line by default (the device's send key, "auto").
+          if (action === "send") await input().press("Control+Enter");
           else {
             await chips().first().click();
             await page.getByRole("button", { name: "Remove block" }).click();
@@ -399,8 +390,8 @@ try {
     "missing body recovery requires confirmation, survives reload and leaves other Agents intact",
     async () => {
       const kept = await saved("b");
-      // The key this Agent's draft is saved under, found by the Agent it
-      // names (T-195); its paste bodies use the same identity.
+      // The key this Agent's draft is saved under, its Workspace's and its
+      // own (T-195); its paste bodies use the same identity.
       const mine = await identityOf("a");
       const read = () =>
         page.evaluate(
@@ -531,7 +522,7 @@ try {
         await page.evaluate(() => {
           pasteFixture.failNext = true;
         });
-        await input().press("Enter");
+        await input().press("Control+Enter");
         await page
           .getByText("Fixture response lost", { exact: false })
           .first()
@@ -553,7 +544,7 @@ try {
           await page.evaluate(() => pasteFixture.outboxReads),
           reads,
         );
-        await input().press("Enter");
+        await input().press("Control+Enter");
         await settled("", id);
         const retry = await page.evaluate(() => pasteFixture.sent.at(-1));
         assert.equal(first.input.text, expected);
@@ -578,7 +569,7 @@ try {
         await paste(oversized);
         await settled(oversized, id);
         const beforeIds = await ids();
-        await input().press("Enter");
+        await input().press("Control+Enter");
         await page
           .getByText("Fixture limit: 100,000 UTF-8 bytes", { exact: false })
           .first()
@@ -773,10 +764,11 @@ try {
           path: new URL(`${theme}-mobile-preview.png`, output).pathname,
         });
         await chips().first().tap();
-        await page.getByLabel("Full pasted text").waitFor();
+        await page.getByRole("dialog").getByRole("textbox", { name: "Full pasted text", exact: true }).waitFor();
         assert.equal(
           await page
-            .getByLabel("Full pasted text")
+            .getByRole("dialog")
+            .getByRole("textbox", { name: "Full pasted text", exact: true })
             .evaluate((el) => getComputedStyle(el).fontSize),
           "20px",
         );

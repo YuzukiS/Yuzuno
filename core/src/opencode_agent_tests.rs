@@ -189,3 +189,44 @@ async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
     let receipt = &ws.store.detail("oc").unwrap().message_receipts[0];
     assert_eq!((receipt.status.as_str(), receipt.error.as_deref()), ("rejected", Some(refused.to_string().as_str())));
 }
+
+/// A compaction request's answer lands only on the attempt it was sent for
+/// (T-10, Lead 3805): one from another process generation or session, under
+/// the same Turn, is never written. Giving up needs that attempt's own ended
+/// answer: one of another generation or session is refused before anything
+/// is asked of OpenCode. On a record alone, with no OpenCode running.
+#[tokio::test]
+async fn a_compaction_answer_is_its_own_attempt_s_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let mut d = agent(&dir.path().to_string_lossy());
+    let attempt = |answer: Value| json!({"id":"compact_1","status":"interrupted","items":[],
+        "_opencodeCompact":{"state":"stopped","nativePending":true,"generation":2,"session":"ses_a","message":"msg_c","part":"prt_c","answer":answer}});
+    d.turns.push(attempt(Value::Null));
+    ws.store.insert(&d).unwrap();
+    let answer = |ws: &Workspace| ws.store.detail("oc").unwrap().turns[0]["_opencodeCompact"]["answer"].clone();
+    ws.opencode_compact_answered("oc", 1, "ses_a", "compact_1", CompactAnswer::Ended).await;
+    assert!(answer(&ws).is_null(), "another process's answer: {}", answer(&ws));
+    ws.opencode_compact_answered("oc", 2, "ses_b", "compact_1", CompactAnswer::Ended).await;
+    assert!(answer(&ws).is_null(), "another session's answer: {}", answer(&ws));
+    ws.opencode_compact_answered("oc", 2, "ses_a", "compact_1", CompactAnswer::Ended).await;
+    assert_eq!((answer(&ws)["kind"].as_str(), answer(&ws)["generation"].as_u64(), answer(&ws)["session"].as_str()), (Some("ended"), Some(2), Some("ses_a")));
+    // An ended answer that is not this attempt's own: refused, nothing removed.
+    for (generation, session) in [(1, "ses_a"), (2, "ses_b")] {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = agent(&dir.path().to_string_lossy());
+        d.turns.push(attempt(json!({"kind":"ended","status":200,"body":true,"generation":generation,"session":session})));
+        ws.store.insert(&d).unwrap();
+        let error = ws.opencode_compact_abandon("oc", "compact_1").await.unwrap_err().to_string();
+        assert!(error.contains("还没有这次压缩的请求已经结束的证据"), "{generation} {session}: {error}");
+    }
+    // Its own: past that check, to the next (no OpenCode connected here).
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let mut d = agent(&dir.path().to_string_lossy());
+    d.turns.push(attempt(json!({"kind":"ended","status":200,"body":true,"generation":2,"session":"ses_a"})));
+    ws.store.insert(&d).unwrap();
+    let error = ws.opencode_compact_abandon("oc", "compact_1").await.unwrap_err().to_string();
+    assert!(error.contains("OpenCode 未连接"), "{error}");
+}

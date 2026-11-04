@@ -6,6 +6,8 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-context-usage";
 
 assert.ok(
   process.env.YUZUNO_UI_DIST,
@@ -46,6 +48,9 @@ const report = {
   dist,
   checks: [],
   browserErrors: errors,
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
 };
 const baseAgent = {
   cwd: "/fixture",
@@ -67,6 +72,13 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://127.0.0.1");
     if (url.pathname.startsWith("/api/")) {
+      if (request.method === "PUT" && /^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) {
+        for await (const _ of request);
+        report.readingSaves++;
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ accepted: true }));
+        return;
+      }
       requests.push({ method: request.method, path: url.pathname });
       assert.equal(request.method, "GET", "UI must not send mutations");
       if (url.pathname === "/api/events") {
@@ -79,7 +91,7 @@ const server = createServer(async (request, response) => {
       const agent = agents.find((a) => url.pathname.endsWith(`/${a.id}`));
       const body =
         url.pathname === "/api/workspace"
-          ? { agents, runtime: { connected: true }, defaultCwd: "/fixture" }
+          ? { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/fixture" }
           : {
               agent,
               artifacts: [],
@@ -168,6 +180,27 @@ try {
         [theme, fontSize],
       );
       await page.goto(`${base}/?preview=1`);
+      // An upright phone shows no context line under the composer (T-170), so there is no ring to
+      // hover; the Agent's settings carry the model and context. Elsewhere its card opens on hover,
+      // fits, and stays open on its contents.
+      const phone = (await page.locator(".app.phone").count()) > 0;
+      assert.equal(phone, width <= 520, `phone layout at ${width}px`);
+      if (phone) {
+        // A phone opens on its Agent list (phoneList): the reader opens Mikan's conversation from it,
+        // the one the wider screens show. Its composer is there, with no context line under it
+        // (styles.css, `.app.phone .composer-footnote`).
+        await page.getByRole("button", { name: "Open Mikan", exact: true }).click();
+        await page.getByRole("textbox", { name: "Message Mikan" }).waitFor();
+        assert.equal(await page.locator(".composer-footnote").isVisible(), false);
+        assert.equal(await page.locator(".context-usage-button").isVisible(), false);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        await page.screenshot({
+          path: resolve(output, `${theme}-${width}-${fontSize}px.png`),
+          animations: "disabled",
+        });
+        report.checks.push({ theme, width, fontSize, noOverflow: true, phone: true, contextLineShown: false });
+        continue;
+      }
       await page.locator(".context-usage-button").hover();
       const tooltip = page.getByRole("tooltip");
       await tooltip.waitFor();
@@ -264,7 +297,7 @@ try {
     await page.keyboard.press("Escape");
     await page.getByRole("tooltip").waitFor({ state: "detached" });
   }
-  assert.equal(await composerDraft(composer), "Keep this draft 保留草稿");
+  assert.equal(await composerDraft(composer, WORKSPACE), "Keep this draft 保留草稿");
   assert.equal(await page.locator(".pending-card").count(), 1);
   await trigger.click();
   await page.getByRole("tooltip").waitFor();
@@ -274,7 +307,7 @@ try {
   await page.locator(".agent-row").filter({ hasText: "Mori" }).click();
   await page.reload();
   await page.locator(".pending-card").waitFor();
-  assert.equal(await composerDraft(composer), "Keep this draft 保留草稿");
+  assert.equal(await composerDraft(composer, WORKSPACE), "Keep this draft 保留草稿");
   await trigger.hover();
   await page.getByRole("tooltip").waitFor();
   await page.screenshot({

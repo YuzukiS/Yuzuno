@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NetworkError } from "./api";
 import { importAppearance, useAppearance, type Appearance } from "./appearance";
 import {
@@ -14,6 +14,7 @@ import { fieldLabel, fieldText } from "./AppearanceSettings";
 import type { SaveOutcome } from "./device-storage";
 import { langTag, strings, useLanguage, type Language } from "./i18n";
 import { saveRefusalReason } from "./SaveStatus";
+import { useRevealIn } from "./surface";
 import "./appearance.css";
 
 const short = (workspaceId: string) => workspaceId.slice(0, 8);
@@ -296,6 +297,30 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
   // An answer to a read or save from before the editor closed is not used.
   const generation = useRef(0);
   const line = useRef<HTMLParagraphElement>(null);
+  // Each preview's button stays enabled while it is open (aria-expanded), so
+  // focus is not lost there; Cancel brings focus back to it (T-19 ST:SA3, SA4).
+  const previewButton = useRef<HTMLButtonElement>(null);
+  const followButton = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useRevealIn(panel, preview);
+  const cancel = () => {
+    (preview === "follow" ? followButton : previewButton).current?.focus();
+    setPreview(false);
+  };
+  // Apply and Follow close the preview once they are done: focus goes back to the button that
+  // opened it, as Cancel's does, or to Stop following once following took that button's place,
+  // unless it has gone elsewhere meanwhile (T-19 ST:SA5). After the commit that closes it: until
+  // then that button is off while the preview's work is busy.
+  const refocus = useRef<"apply" | "follow" | null>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const done = refocus.current;
+    if (!done || busy || preview) return;
+    refocus.current = null;
+    const at = document.activeElement;
+    if (at && at !== document.body) return;
+    (done === "apply" ? previewButton : following.revision !== null ? stopButton : followButton).current?.focus();
+  });
   useEffect(() => {
     if (said?.error) line.current?.scrollIntoView?.({ block: "nearest" });
   }, [said]);
@@ -411,6 +436,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
       say(true, { kind: "notApplied", what: "applied", refused: outcome });
       return;
     }
+    refocus.current = "apply";
     setPreview(false);
     say(false, { kind: "applied", count: fields.length });
   }
@@ -433,6 +459,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
       return;
     }
     const kept = startFollowing(read.workspaceId, read.revision);
+    refocus.current = "follow";
     setPreview(false);
     if (!kept.saved) {
       say(true, { kind: "followUnsaved", revision: read.revision, refused: kept });
@@ -494,8 +521,11 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
             </button>
             <button
               type="button"
-              disabled={!contents || !!busy || !!preview}
+              ref={previewButton}
+              disabled={!contents || !!busy}
+              aria-expanded={preview === "apply"}
               onClick={() => {
+                if (preview === "apply") return setPreview(false);
                 setSaid(null);
                 setChosen(appearanceFields.filter(differs));
                 setPreview("apply");
@@ -523,7 +553,17 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
             </span>
             <span className="settings-row-action appearance-file-buttons">
               {following.revision === null ? (
-                <button type="button" disabled={!contents || !!busy || !!preview} onClick={() => { setSaid(null); setPreview("follow"); }}>
+                <button
+                  type="button"
+                  ref={followButton}
+                  disabled={!contents || !!busy}
+                  aria-expanded={preview === "follow"}
+                  onClick={() => {
+                    if (preview === "follow") return setPreview(false);
+                    setSaid(null);
+                    setPreview("follow");
+                  }}
+                >
                   {t.followPreset}
                 </button>
               ) : (
@@ -533,7 +573,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
                       {t.tryAgain}
                     </button>
                   )}
-                  <button type="button" onClick={() => stopFollowing(read!.workspaceId, "chosen")}>
+                  <button ref={stopButton} type="button" onClick={() => stopFollowing(read!.workspaceId, "chosen")}>
                     {t.stopFollowing}
                   </button>
                 </>
@@ -547,32 +587,36 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
           </p>
         )}
         {preview === "follow" && read?.kind === "preset" && (
-          <div className="appearance-file-preview" role="group" aria-label={t.followPreview}>
-            <p>{t.followPreviewText(read.revision, savedText(t, read.savedAt))}</p>
-            <PresetChoices appearance={appearance} contents={read.contents} chosen={[]} onChosen={() => {}} fixed />
-            {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
-            <div className="appearance-file-buttons">
-              <button type="button" disabled={!!busy} onClick={() => void follow()}>
-                {busy === "follow" ? t.followingBusy : changes ? t.followApply(changes) : t.followNothing}
-              </button>
-              <button type="button" disabled={!!busy} onClick={() => setPreview(false)}>
-                {t.cancel}
-              </button>
+          <div className="reveal" ref={panel}>
+            <div className="appearance-file-preview" role="group" aria-label={t.followPreview}>
+              <p>{t.followPreviewText(read.revision, savedText(t, read.savedAt))}</p>
+              <PresetChoices appearance={appearance} contents={read.contents} chosen={[]} onChosen={() => {}} fixed />
+              {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
+              <div className="appearance-file-buttons">
+                <button type="button" disabled={!!busy} onClick={() => void follow()}>
+                  {busy === "follow" ? t.followingBusy : changes ? t.followApply(changes) : t.followNothing}
+                </button>
+                <button type="button" disabled={!!busy} onClick={cancel}>
+                  {t.cancel}
+                </button>
+              </div>
             </div>
           </div>
         )}
         {preview === "apply" && read?.kind === "preset" && (
-          <div className="appearance-file-preview" role="group" aria-label={t.presetPreview}>
-            <p>{t.applyPreviewText(read.revision, savedText(t, read.savedAt))}</p>
-            <PresetChoices appearance={appearance} contents={read.contents} chosen={chosen} onChosen={setChosen} />
-            {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
-            <div className="appearance-file-buttons">
-              <button type="button" disabled={!selected.length || !!busy} onClick={() => void apply()}>
-                {busy === "apply" ? t.applying : selected.length ? t.applySelected(selected.length) : t.nothingToApply}
-              </button>
-              <button type="button" disabled={!!busy} onClick={() => setPreview(false)}>
-                {t.cancel}
-              </button>
+          <div className="reveal" ref={panel}>
+            <div className="appearance-file-preview" role="group" aria-label={t.presetPreview}>
+              <p>{t.applyPreviewText(read.revision, savedText(t, read.savedAt))}</p>
+              <PresetChoices appearance={appearance} contents={read.contents} chosen={chosen} onChosen={setChosen} />
+              {read.contents.unknown.length > 0 && <p className="settings-row-help">{t.leftOut(read.contents.unknown.join(", "))}</p>}
+              <div className="appearance-file-buttons">
+                <button type="button" disabled={!selected.length || !!busy} onClick={() => void apply()}>
+                  {busy === "apply" ? t.applying : selected.length ? t.applySelected(selected.length) : t.nothingToApply}
+                </button>
+                <button type="button" disabled={!!busy} onClick={cancel}>
+                  {t.cancel}
+                </button>
+              </div>
             </div>
           </div>
         )}

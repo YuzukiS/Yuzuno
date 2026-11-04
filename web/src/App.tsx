@@ -1,3 +1,4 @@
+import { flushSync } from "react-dom";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { SkillChips } from "./SkillChips";
 import { MAX_DRAFT_SKILLS } from "./composer-draft";
@@ -264,6 +265,8 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
+const JOIN_WAIT = 90;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -350,6 +353,69 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // An Agent row this window just added (T-19 SH:R11): one it created, or
+  // forked, or one Core says this import made; never one a read of the
+  // Workspace brings, nor one an import found already there. Once the row is
+  // shown, it is brought into view at once, comes in over small (opacity,
+  // 4 px up) and settles once; under reduced motion it is there at once and
+  // settles. It is this Workspace's, this choice's and this action's only:
+  // - its group folded, opening because the new Agent is chosen: the row is
+  //   kept hidden until the group has opened, then comes in, so it is seen
+  //   coming in once (at most JOIN_WAIT frames; past that it shows still);
+  // - listed already when the answer came (a read after Core said the
+  //   Workspace changed got there first): it was shown then, so it does not
+  //   come in again; it is brought into view and settles;
+  // - not shown at all (a search it does not match, a phone's conversation
+  //   in front of the list, the list hidden): nothing plays, now or later;
+  // - another Agent chosen, or another Workspace, before it shows: dropped.
+  const [joined, setJoined] = useState<{ workspace: string; id: string; n: number; enter: boolean } | null>(null);
+  const joinedRow = useRef<HTMLElement | null>(null);
+  const [entered, setEntered] = useState(0);
+  useLayoutEffect(() => {
+    if (!joined) return;
+    let frame = 0;
+    let waited = 0;
+    let row: HTMLElement | undefined;
+    let settled: (() => void) | null = null;
+    const hide = (hidden: boolean) => row?.toggleAttribute("data-joining", hidden);
+    const land = (later: boolean) => {
+      row = [...document.querySelectorAll<HTMLElement>(".agent-list .agent-row")].find((shown) => shown.dataset.agentId === joined.id);
+      const still = joined.workspace === currentWorkspace.current && currentSelected.current === joined.id;
+      if (!still || !row || !row.getClientRects().length) return hide(false);
+      const body = row.closest<HTMLElement>(".project-group-body");
+      const opening = !!row.closest(".project-group.is-folded") ||
+        (!!body && (Number(getComputedStyle(body).opacity) < 1 || body.getAnimations().some((a) => a.playState === "running")));
+      if (opening) {
+        if (++waited > JOIN_WAIT) return hide(false);
+        hide(joined.enter);
+        frame = requestAnimationFrame(() => land(true));
+        return;
+      }
+      row.scrollIntoView?.({ block: "nearest", behavior: "instant" });
+      joinedRow.current = row;
+      // Its entrance starts before this frame is painted, so the row is
+      // never seen between hidden and coming in.
+      if (joined.enter) {
+        if (later) flushSync(() => setEntered((n) => n + 1));
+        else setEntered((n) => n + 1);
+      }
+      hide(false);
+      settled = settleWhenLanded(row, "data-settle", false, "animation");
+    };
+    land(false);
+    return () => {
+      cancelAnimationFrame(frame);
+      hide(false);
+      settled?.();
+    };
+  }, [joined]);
+  useSurfaceIn(joinedRow, entered, "small", entered > 0, "translateY(4px)");
+  /** `id` is the Agent this window's create, fork or import has just made. */
+  const markJoined = (id: string) => {
+    const workspace = currentWorkspace.current;
+    const enter = !workspaceRef.current?.agents.some((listed) => listed.id === id);
+    setJoined((last) => ({ workspace, id, n: (last?.n ?? 0) + 1, enter }));
+  };
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
@@ -535,12 +601,18 @@ export function App() {
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
+  // A touch on the pane: where the pane was when it began, and whether the
+  // browser took it as a pan (pointercancel, which it sends when a finger
+  // moves the page rather than taps, and after which no click comes). Either
+  // that or the pane having moved makes it the reader scrolling, even when
+  // the pan moved nothing (already at the end) or came back where it began.
+  const touch = useRef<{ from: number; panned: boolean } | null>(null);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
   // or a pane that shrinks under a growing composer, keeps the end in view
   // while the conversation follows it, as an update does. A row the reader
-  // has just opened stays where they clicked it.
+  // opens or closes stops the following (onClickCapture), so it stays where
+  // they clicked it, and what it opens below is theirs to scroll to (T-19).
   const followHeld = useRef(false);
-  const readerToggled = useRef(-Infinity);
   const followGrowth = useCallback((inner: HTMLDivElement | null) => {
     if (!inner || typeof ResizeObserver === "undefined") return;
     let last: { height: number; pane: number } | null = null;
@@ -558,13 +630,14 @@ export function App() {
         grown > 0 &&
         gapBefore < 72 &&
         stickToBottom.current &&
-        !followHeld.current &&
-        performance.now() - readerToggled.current > 600
+        !followHeld.current
       )
         el.scrollTop = el.scrollHeight;
-      // Following, but not moved to the end: said once the frame is done
-      // (by then a conversation that has just opened has been put there).
-      else if (stickToBottom.current) requestAnimationFrame(measureLatest);
+      // Not moved to the end: said once the frame is done (by then a
+      // conversation that has just opened has been put there), so Back to
+      // latest shows once the end is out of view, as after a row the reader
+      // opened there.
+      else requestAnimationFrame(measureLatest);
     });
     observer.observe(inner);
     if (inner.parentElement) observer.observe(inner.parentElement);
@@ -818,6 +891,13 @@ export function App() {
   // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
   useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
   useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // An action's error above the composer fades in as it appears (T-19 SH:X05); the room it takes is
+  // made at once. Another error replacing it while it shows plays nothing; dismissing it stops it.
+  const actionErrorBox = useRef<HTMLDivElement>(null);
+  const actionErrors = useRef({ shown: false, n: 0 });
+  if (actionErrors.current.shown !== !!actionError)
+    actionErrors.current = { shown: !!actionError, n: actionErrors.current.n + (actionError ? 1 : 0) };
+  useSurfaceIn(actionErrorBox, actionErrors.current.n, "small", !!actionError && actionErrors.current.n > 0);
   // On a phone the context panel is a screen of its own: opening it takes focus to its heading
   // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
   useEffect(() => {
@@ -2409,10 +2489,11 @@ export function App() {
         return;
       }
       if (control?.command === "compact") {
-        if (control.args) throw new Error("Codex's own compaction takes no instructions. Send /compact alone; your draft is kept.");
+        const opencode = agent.harness === "opencode";
+        if (control.args) throw new Error(`${opencode ? "OpenCode" : "Codex"}'s own compaction takes no instructions. Send /compact alone; your draft is kept.`);
         await post(`/agents/${encodeURIComponent(target)}/compact`);
         clearIfUnchanged(target, sentDraft);
-        setNotice(shell.compactAccepted);
+        setNotice(opencode ? shell.opencodeCompactAccepted : shell.compactAccepted);
         refresh();
         return;
       }
@@ -3171,7 +3252,26 @@ export function App() {
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                onTouchEnd={readerScrollIntent}
+                onTouchStart={() => {
+                  touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
+                }}
+                // The browser's pan: noted, never taken for a cancelled touch.
+                onPointerCancel={(e) => {
+                  if (e.pointerType === "touch" && touch.current) touch.current.panned = true;
+                }}
+                // A touch the system took away ends nothing the reader did.
+                onTouchCancel={() => {
+                  touch.current = null;
+                }}
+                // A tap on a disclosure opens or closes it (its click hands the
+                // conversation to the reader); it is not the reader going to the
+                // end. A pan is, wherever it began.
+                onTouchEnd={(e) => {
+                  const began = touch.current;
+                  touch.current = null;
+                  const scrolled = !began || began.panned || Math.abs((scroll.current?.scrollTop ?? began.from) - began.from) >= 1;
+                  if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
+                }}
                 onKeyDownCapture={(e) => {
                   if (
                     e.target instanceof HTMLElement &&
@@ -3180,7 +3280,9 @@ export function App() {
                     )
                   )
                     return;
-                  if (["End", "PageDown", "ArrowDown", " "].includes(e.key))
+                  // Space on a disclosure opens or closes it rather than scrolling.
+                  if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
+                    (e.key === " " && !(e.target as Element).closest?.("summary")))
                     readerScrollIntent();
                   if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
                     live.pinWindow();
@@ -3188,8 +3290,17 @@ export function App() {
                   }
                 }}
                 onClickCapture={(e) => {
-                  if ((e.target as Element).closest?.("summary"))
-                    readerToggled.current = performance.now();
+                  // The reader opens or closes a disclosure (by pointer, key or
+                  // touch, which all click it): they take over from following,
+                  // as a wheel up or Home does, so nothing moves what they
+                  // clicked; their window is kept as it is, and where they are
+                  // reading is noted, as a scroll would note it, so the
+                  // conversation reopens there rather than at the end (T-19).
+                  if ((e.target as Element).closest?.("summary")) {
+                    live.pinWindow();
+                    stickToBottom.current = false;
+                    noteReading(false);
+                  }
                 }}
                 onPointerDown={(e) => {
                   // Native scrollbar events target the scroll container itself.
@@ -3494,7 +3605,7 @@ export function App() {
                     </div>
                   )}
                   {actionError && (
-                    <div role="alert" className="inline-error">
+                    <div role="alert" className="inline-error" ref={actionErrorBox}>
                       <CircleAlert size={14} />
                       {actionError}
                       <button
@@ -4048,6 +4159,7 @@ export function App() {
           onForked={(outcome) => {
             const fork = outcome.agent!;
             const sourceId = agent.id;
+            markJoined(fork.id);
             // Draft protection: the unsent text is copied, never sent.
             copyDraft(sourceId, fork.id);
             setWorkspace((w) =>
@@ -4086,7 +4198,9 @@ export function App() {
         disabled={previewMode}
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}
-        onCreated={(a, source) => {
+        onCreated={(a, source, added) => {
+          // A create always makes its Agent; an import says whether it did.
+          if (added ?? !source) markJoined(a.id);
           setWorkspace((w) =>
             w
               ? {

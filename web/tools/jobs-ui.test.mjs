@@ -775,3 +775,196 @@ test("a review's reasons follow a language change in Jobs too; one this version 
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+// T-19 F1: before Core answers, a list or a chosen job or run says it is being
+// read. On main it said there were none, or that nothing was chosen.
+const texts = (p, selector) => [...p.doc.querySelectorAll(selector)].map(el => el.textContent);
+function held() { let answer; const promise = new Promise(r => { answer = r; }); return { promise, answer }; }
+
+test('the job list reads as being read until Core first answers, and only then as empty (T-19 JB-04)', async () => {
+  const list = held();
+  const p = mount(async url => url.startsWith('/api/jobs?') ? (await list.promise, page([])) : page([]));
+  try {
+    await open(p);
+    await until(() => p.doc.querySelector('.jobs-browser .jobs-empty'));
+    await wait();
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('No jobs yet.'), false, 'not "none" before the answer');
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('Reading jobs…'), true);
+    list.answer();
+    await until(() => texts(p, '.jobs-browser .jobs-empty').includes('No jobs yet.'));
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('Reading jobs…'), false);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a chosen job reads as being read until its answer comes; a narrow window brings it into view, at once under reduced motion (T-19 JB-07)', async () => {
+  for (const reduced of [false, true]) {
+    const detail = held();
+    const p = mount(async url => url === '/api/jobs/job-one' ? (await detail.promise, job) : page([job]));
+    const scrolled = [];
+    p.window.matchMedia = query => ({ matches: query === '(max-width: 720px)' || (reduced && query === '(prefers-reduced-motion: reduce)'), addEventListener() {}, removeEventListener() {} });
+    // Only the job's own box is counted: other parts may scroll themselves.
+    p.window.HTMLElement.prototype.scrollIntoView = function (options) { if (this.classList.contains('job-detail')) scrolled.push({ className: this.className, options }); };
+    try {
+      await open(p);
+      await until(() => p.doc.querySelector('.jobs-browser .job-row'));
+      p.doc.querySelector('.jobs-browser .job-row').click();
+      // Its read is on its way (held): what shows meanwhile.
+      await until(() => p.calls.some(c => c.url === '/api/jobs/job-one'));
+      await wait();
+      const box = p.doc.querySelector('.job-detail');
+      assert.doesNotMatch(box.textContent, /Select a job/, 'not "unchosen" while it is read');
+      assert.match(box.textContent, /Reading this job…/);
+      assert.equal(box.getAttribute('aria-busy'), 'true');
+      // The options object is the page's own; compare its values.
+      assert.deepEqual(JSON.parse(JSON.stringify(scrolled)), [{ className: 'job-detail', options: { block: 'start', behavior: reduced ? 'auto' : 'smooth' } }]);
+      detail.answer();
+      await until(() => p.doc.querySelector('.job-log'));
+      assert.equal(p.doc.querySelector('.job-detail').getAttribute('aria-busy'), null);
+      assert.doesNotMatch(p.doc.querySelector('.job-detail').textContent, /Reading this job/);
+      assert.equal(scrolled.length, 1, 'brought into view once, when chosen');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+});
+
+test('a wide window leaves the list where it is when a job is chosen (T-19 JB-07)', async () => {
+  const p = mount(url => url === '/api/jobs/job-one' ? job : page([job]));
+  const scrolled = [];
+  p.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  p.window.HTMLElement.prototype.scrollIntoView = function () { if (this.classList.contains('job-detail')) scrolled.push(this.className); };
+  try {
+    await open(p);
+    await until(() => p.doc.querySelector('.jobs-browser .job-row'));
+    p.doc.querySelector('.jobs-browser .job-row').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    assert.deepEqual(scrolled, []);
+  } finally { p.close(); }
+});
+
+test('Actions runs, a linked run and its jobs and steps read as being read until Core answers (T-19 JB-04, CI-04)', async () => {
+  const list = held(), report = held();
+  const steps = { run: ciRun, error: null, details: { jobs: [{ id: 1, name: 'Build passed', status: 'passed', url: 'https://github.com/o/r/actions/runs/42/job/1', steps: [{ number: 1, name: 'Compile', status: 'completed', conclusion: 'success' }] }], page: 1, hasMore: false, nextPage: null, observedAt: ciRun.observedAt } };
+  const p = mount(async url => url.startsWith('/api/ci/') ? (await report.promise, steps) : url.startsWith('/api/ci?') ? (await list.promise, ciPage) : page([]));
+  try {
+    await until(() => p.doc.querySelector('[aria-label="Jobs"]'));
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { source: 'github_actions', runKey: ciRun.id } }));
+    await until(() => p.doc.querySelector('.ci-jobs .job-detail'));
+    await wait();
+    const ci = () => p.doc.querySelector('.ci-jobs');
+    const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+    assert.doesNotMatch(ci().textContent, /No Actions runs observed yet/, 'not "none" before the answer');
+    assert.match(ci().textContent, /Reading runs…/);
+    assert.doesNotMatch(box().textContent, /Select a run/, 'not "unchosen" while the linked run is read');
+    assert.match(box().textContent, /Reading this run…/);
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    list.answer();
+    await until(() => ci().querySelector('.job-row'));
+    await until(() => /a{40}/.test(box().textContent));
+    assert.match(box().textContent, /Reading its jobs and steps…/, 'the steps card is there, saying it is being read');
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    report.answer();
+    await until(() => p.doc.querySelector('.ci-child-job'));
+    assert.doesNotMatch(box().textContent, /Reading/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.equal(box().querySelectorAll('.job-card').length >= 2, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a job whose read failed keeps its failure; choosing another shows that one being read, without the first one\'s failure (T-19 JB-07)', async () => {
+  const second = { ...job, id: 'job-two', name: 'Second synthetic job', cursor: 2 };
+  const reads = { 'job-one': [], 'job-two': [] };
+  const p = mount(url => {
+    const id = url.match(/^\/api\/jobs\/(job-one|job-two)$/)?.[1];
+    if (!id) return page([job, second]);
+    const read = held();
+    reads[id].push(read);
+    return read.promise;
+  });
+  const row = name => [...p.doc.querySelectorAll('.jobs-browser .job-row')].find(r => r.textContent.includes(name));
+  const alert = () => p.doc.querySelector('[role="dialog"] [role="alert"]')?.textContent || '';
+  const box = () => p.doc.querySelector('.job-detail');
+  try {
+    await open(p);
+    await until(() => row('Second synthetic job'));
+    row('中文 training').click();
+    await until(() => reads['job-one'].length === 1);
+    // As Core answers a failed read: an HTTP error with its reason.
+    reads['job-one'][0].answer({ httpStatus: 500, error: 'The first job could not be read' });
+    await until(() => /could not be read/.test(alert()));
+    assert.doesNotMatch(box().textContent, /Reading this job/, 'a failed read is not still being read');
+    assert.equal(box().getAttribute('aria-busy'), null);
+    row('Second synthetic job').click();
+    await until(() => reads['job-two'].length === 1);
+    await wait();
+    assert.match(box().textContent, /Reading this job…/, 'the second job, held, is being read');
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    assert.doesNotMatch(alert(), /could not be read/, 'the first job\'s failure stays with it');
+    reads['job-two'][0].answer(second);
+    await until(() => p.doc.querySelector('.job-log'));
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.match(box().textContent, /Second synthetic job/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a run whose jobs and steps could not be read keeps saying so when only the runs list is read again (T-19 CI-04)', async () => {
+  const p = mount(url => url.startsWith('/api/ci/') ? { httpStatus: 500, error: 'Steps unavailable for this run' } : url.startsWith('/api/ci?') ? ciPage : page([]));
+  const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+  const alert = () => p.doc.querySelector('.ci-jobs [role="alert"]')?.textContent || '';
+  const reportReads = () => p.calls.filter(c => c.url.startsWith('/api/ci/')).length;
+  const listReads = () => p.calls.filter(c => c.url.startsWith('/api/ci?')).length;
+  try {
+    await open(p); button(p, 'GitHub Actions').click();
+    await until(() => p.doc.querySelector('.ci-jobs .job-row'));
+    p.doc.querySelector('.ci-jobs .job-row').click();
+    await until(() => /Steps unavailable/.test(alert()));
+    assert.doesNotMatch(box().textContent, /Reading its jobs and steps/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    const reads = reportReads(), lists = listReads();
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => listReads() > lists);
+    await wait(); await wait();
+    assert.equal(reportReads(), reads, 'only the list was read again');
+    assert.match(alert(), /Steps unavailable/, 'the list\'s answer does not clear the run\'s failure');
+    assert.doesNotMatch(box().textContent, /Reading its jobs and steps/, 'nor shows the run as being read');
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a run whose jobs and steps could not be read shows them without its failure once a check with GitHub brings them (T-19 CI-04)', async () => {
+  const after = ciRunning('2026-10-15T01:05:00Z', 'completed');
+  let listed = ciRun;
+  const p = mount((url, body) => {
+    if (url === '/api/ci/refresh' && body) { listed = after.run; return { status: 'checked', checkedAt: after.run.observedAt, retryAt: null, error: null, paused: 0, more: 0, runWatched: true, run: after.run, details: [after.details] }; }
+    if (url.startsWith('/api/ci/')) return { httpStatus: 500, error: 'Steps unavailable for this run' };
+    return url.startsWith('/api/ci?') ? { ...ciPage, runs: [listed] } : page([]);
+  });
+  const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+  const alert = () => p.doc.querySelector('.ci-jobs [role="alert"]')?.textContent || '';
+  const reportReads = () => p.calls.filter(c => c.url.startsWith('/api/ci/') && c.url !== '/api/ci/refresh').length;
+  const listReads = () => p.calls.filter(c => c.url.startsWith('/api/ci?')).length;
+  try {
+    await open(p); button(p, 'GitHub Actions').click();
+    await until(() => p.doc.querySelector('.ci-jobs .job-row'));
+    p.doc.querySelector('.ci-jobs .job-row').click();
+    await until(() => /Steps unavailable/.test(alert()));
+    const lists = listReads();
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => listReads() > lists);
+    await wait(); await wait();
+    assert.match(alert(), /Steps unavailable/, 'the list alone read again leaves the run\'s failure');
+    const reads = reportReads();
+    refreshButton(p).click();
+    await until(() => checkLine(p).startsWith('Checked with GitHub at'));
+    await until(() => p.doc.querySelector('.ci-child-job li .ci-step-state')?.textContent === 'success');
+    await wait(); await wait();
+    assert.doesNotMatch(alert(), /Steps unavailable/, 'the steps the check brought end the run\'s failed read');
+    assert.doesNotMatch(box().textContent, /Reading/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.equal(reportReads(), reads, 'its steps came with the check');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});

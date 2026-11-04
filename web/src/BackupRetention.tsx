@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
+import { useRevealIn } from "./surface";
 
 /** T-196: what keeping only the latest backups in one folder would do, as
  * Core previews it (core/src/workspace_backup/retention.rs), and (slice 3)
@@ -161,6 +162,16 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
   const [reading, setReading] = useState(false);
   /** The one backup whose removal is being confirmed. */
   const [confirming, setConfirming] = useState<Entry | null>(null);
+  // The confirmation opens below its backup and takes focus; Cancel gives it
+  // back to the Remove… that opened it (T-19 ST:BR2).
+  const revealBox = useRef<HTMLDivElement>(null);
+  const confirmBox = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const confirmingName = confirming?.name;
+  useRevealIn(revealBox, confirmingName);
+  useLayoutEffect(() => {
+    if (confirmingName) confirmBox.current?.focus({ preventScroll: true });
+  }, [confirmingName]);
   /** The backup whose removal was just asked for, said until the next preview. */
   const [started, setStarted] = useState("");
   const count = Number(keep);
@@ -282,40 +293,55 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                             {t.check}
                           </button>
                           {verdict === "remove" && e.manifestSha256 && preview.unreadableNames === 0 && (
-                            <button type="button" disabled={busy} onClick={() => setConfirming(e)}>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={(event) => {
+                                opener.current = event.currentTarget;
+                                setConfirming(e);
+                              }}
+                            >
                               {t.remove}
                             </button>
                           )}
                         </span>
                       )}
                       {confirming?.name === e.name && e.manifestSha256 && (
-                        <div className="backup-retention-confirm" role="group" aria-label={t.removeLabel(e.name)}>
-                          <p>
-                            {t.confirmBefore}
-                            <code>{e.path}</code>
-                            {t.confirmAfter(e.createdAt ? when(e.createdAt) : null, e.estimateBytes !== undefined ? size(e.estimateBytes) : null)}
-                          </p>
-                          <span className="backup-retention-actions">
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() => {
-                                // Judged again by Core under the same count and budget.
-                                const rule = preview.budget ? { keep: preview.keep, budgetBytes: preview.budget.bytes } : { keep: preview.keep };
-                                onRemove({ folder: preview.folder, ...rule, name: e.name, manifestSha256: e.manifestSha256! });
-                                // The preview is from before the removal; it is read again once that has ended.
-                                setPreview(null);
-                                setConfirming(null);
-                                // Core may still refuse it at once; its answer shows above, with the backup operations.
-                                setStarted(e.name);
-                              }}
-                            >
-                              {t.removeThis}
-                            </button>
-                            <button type="button" onClick={() => setConfirming(null)}>
-                              {t.cancel}
-                            </button>
-                          </span>
+                        <div className="reveal" ref={revealBox}>
+                          <div className="backup-retention-confirm" role="group" aria-label={t.removeLabel(e.name)} ref={confirmBox} tabIndex={-1}>
+                            <p>
+                              {t.confirmBefore}
+                              <code>{e.path}</code>
+                              {t.confirmAfter(e.createdAt ? when(e.createdAt) : null, e.estimateBytes !== undefined ? size(e.estimateBytes) : null)}
+                            </p>
+                            <span className="backup-retention-actions">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => {
+                                  // Judged again by Core under the same count and budget.
+                                  const rule = preview.budget ? { keep: preview.keep, budgetBytes: preview.budget.bytes } : { keep: preview.keep };
+                                  onRemove({ folder: preview.folder, ...rule, name: e.name, manifestSha256: e.manifestSha256! });
+                                  // The preview is from before the removal; it is read again once that has ended.
+                                  setPreview(null);
+                                  setConfirming(null);
+                                  // Core may still refuse it at once; its answer shows above, with the backup operations.
+                                  setStarted(e.name);
+                                }}
+                              >
+                                {t.removeThis}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  opener.current?.focus();
+                                  setConfirming(null);
+                                }}
+                              >
+                                {t.cancel}
+                              </button>
+                            </span>
+                          </div>
                         </div>
                       )}
                     </li>

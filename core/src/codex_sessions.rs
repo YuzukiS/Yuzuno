@@ -436,6 +436,14 @@ impl Workspace {
     }
 
     pub async fn import_codex_session(&self, input: ImportSession) -> Result<Agent> {
+        Ok(self.import_codex_session_outcome(input).await?.0)
+    }
+
+    /// The Agent an import gives, and whether this import made it (true) or
+    /// the session already had one, perhaps adopted by another window's
+    /// import a moment before (false). The fact is the answer's alone; the
+    /// Agent keeps no mark of it (T-19 SH:R11).
+    pub async fn import_codex_session_outcome(&self, input: ImportSession) -> Result<(Agent, bool)> {
         let _admission = self.admission.enter_work()?;
         validate_thread_id(&input.thread_id)?;
         anyhow::ensure!(!input.name.trim().is_empty() && input.name.len() <= 100, "请填写名称（最多 100 字节）");
@@ -445,7 +453,7 @@ impl Workspace {
         let _permit = self.session_reads.try_acquire().context("正在读取另一份原生历史，请稍后重试")?;
         let thread_key = input.thread_id.clone();
         if let Some(agent) = self.stored(move |store| store.local_codex_agent(&thread_key)?
-            .map(|id| store.agent(&id)).transpose()).await? { return Ok(agent); }
+            .map(|id| store.agent(&id)).transpose()).await? { return Ok((agent, false)); }
         let session = ReadSession::open(&self.program).await?;
         let thread = metadata(&session.0, &input.thread_id).await?;
         let mut baseline = baseline(&session.0, &input.thread_id).await?;
@@ -482,9 +490,12 @@ impl Workspace {
             opencode_usage_seen: None,
         };
         detail.refresh_snapshot_evidence();
+        let made = detail.agent.id.clone();
         let agent = self.stored(move |store| store.insert_codex_import(&detail, &baseline)).await?;
         self.changed(&agent.id);
-        Ok(agent)
+        // The insert adopts an Agent a concurrent import made first.
+        let created = agent.id == made;
+        Ok((agent, created))
     }
 
     pub async fn codex_session_history(&self, agent_id: &str, cursor: Option<&str>) -> Result<HistoryPage> {
