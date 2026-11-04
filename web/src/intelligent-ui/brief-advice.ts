@@ -40,19 +40,12 @@ function hint(code: keyof typeof BRIEF_ADVICE_CODES, path: string, reason: strin
   return { code, path, reason, guide: "brief_guide content" };
 }
 
-/** Advice on a section checkBriefSection returned, in rule then body order. */
+/** Advice on a section checkBriefSection returned, in rule then body order; a summary's missing size last. */
 export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
   if (section.kind !== "report" && section.kind !== "status") return [];
   const blocks = reached(section);
   const at = (key: string, tail = "") => `body.elements.${key}${tail}`;
   const advice: BriefAdvice[] = [];
-
-  // A summary whose author named no size: Home can only guess its card's (T-18, Lead 2473).
-  const root = section.body.elements[section.body.root] as unknown as Block | undefined;
-  const named = root?.props?.summary as { size?: unknown } | undefined;
-  if (named && typeof named === "object" && named.size === undefined)
-    advice.push(hint("summary_size_missing", at(section.body.root, ".props.summary"),
-      `The summary names no size, so Home guesses its card's size from its figure. Name the room it takes: "small" (one column), "wide" (two columns, the figure beside the text) or "large" (two columns, two rows), for what the summary shows.`));
 
   // Long Markdown: each long block; otherwise, when all of it is long, the longest.
   const markdown = blocks.filter(([, block]) => block.type === "Markdown")
@@ -101,5 +94,14 @@ export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
   if (refs > A.refs && most)
     advice.push(hint("many_refs", at(most[0], ".props.items"),
       `The section has ${refs} reference entries, each target counted once per block (advice starts above ${A.refs}), the most in "${most[0]}". Those that support its conclusion are easier to find when the rest stay on its Task.`));
+
+  // A summary whose author named no size: Home can only guess its card's (T-18, Lead 2473). Last, so that
+  // under the three an answer carries (limits.advice.items) it never takes the place of advice on what the
+  // section says (review 247a9c8b).
+  const root = section.body.elements[section.body.root] as unknown as Block | undefined;
+  const named = root?.props?.summary as { size?: unknown } | undefined;
+  if (named && typeof named === "object" && named.size === undefined)
+    advice.push(hint("summary_size_missing", at(section.body.root, ".props.summary"),
+      `The summary names no size, so Home guesses its card's size from its figure. Name the room it takes: "small" (one column), "wide" (two columns, the figure beside the text) or "large" (two columns, two rows), for what the summary shows.`));
   return advice;
 }
