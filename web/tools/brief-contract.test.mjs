@@ -628,3 +628,27 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.match(briefGuide("research"), /Neither is a check of the research/);
   assert.match(briefGuide("content"), /- ResearchDesk: see research\./);
 });
+
+// T-29: two rules a desk is refused for are stated in the guide an Agent reads
+// before writing one, as the check applies them: a source's revision is a
+// commit hash, and row and part ids are one namespace across the whole desk.
+test("the research guide states the revision form and the desk-wide row and part ids, as checked (T-29)", () => {
+  const guide = briefGuide("research");
+  assert.match(guide, /revision is a commit hash, 7 to 64 lowercase hexadecimal characters \(not a branch, tag or other name\)/);
+  assert.match(guide, /Row and part ids share one namespace across the whole desk, every plot included: each is used once/);
+  const desk = (change) => {
+    const copy = structuredClone(doseStudy);
+    change(copy.body.elements.desk.props);
+    return copy;
+  };
+  for (const hash of ["0f3a9c1", "a".repeat(40), "b".repeat(64)])
+    assert.ok(checkBriefSection(desk((p) => { p.sources[0].revision = hash; })), hash);
+  for (const name of ["main", "v1.2", "0F3A9C1", "0f3a9c", "a".repeat(65)])
+    assert.equal(first(desk((p) => { p.sources[0].revision = name; })).path, "body.elements.desk.props.sources.0.revision", name);
+  // A part may not take a row's id, in its own plot or in another.
+  for (const [plot, id] of [[0, "high-v2"], [0, "low-v1"]]) {
+    const found = first(desk((p) => { p.plots[plot].rows[0].parts[0].id = id; }));
+    assert.equal(found.code, "duplicate_id", id);
+    assert.match(found.reason, new RegExp(`row and part id "${id}" is used twice`), id);
+  }
+});
