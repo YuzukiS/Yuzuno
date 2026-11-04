@@ -560,7 +560,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
     let mut other = input(&second, "parallel-b");
     other.link_id = "7:pull:2".into();
     let (mut parallel_b, _) = s.create_pr_review(None, &other, "parallel-b").unwrap();
-    let page = s.index_pr_reviews(None, None, None, None).unwrap();
+    let page = s.index_pr_reviews(None, None, None, None, None).unwrap();
     let rows = page["reviews"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["id"], "parallel-b");
@@ -603,7 +603,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
     clean["headSha"] = json!("b".repeat(40));
     s.save_pr_review(&clean, Some("clean")).unwrap();
 
-    let page = s.index_pr_reviews(None, None, None, None).unwrap();
+    let page = s.index_pr_reviews(None, None, None, None, None).unwrap();
     let by_id = |id: &str| {
         page["reviews"]
             .as_array()
@@ -624,7 +624,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
     assert_eq!(by_id("for-dev")["conclusion"], "no_findings");
     assert_eq!(by_id("for-dev")["requestedBy"]["kind"], "user");
 
-    let mine = s.index_pr_reviews(Some("dev"), None, None, None).unwrap();
+    let mine = s.index_pr_reviews(Some("dev"), None, None, None, None).unwrap();
     let ids: Vec<_> = mine["reviews"]
         .as_array()
         .unwrap()
@@ -632,7 +632,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
         .map(|r| r["id"].clone())
         .collect();
     assert_eq!(ids, vec![json!("parallel-a")]);
-    let task = s.index_pr_reviews(None, Some("T-2"), None, None).unwrap();
+    let task = s.index_pr_reviews(None, None, Some("T-2"), None, None).unwrap();
     let ids: Vec<_> = task["reviews"]
         .as_array()
         .unwrap()
@@ -640,16 +640,16 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
         .map(|r| r["id"].clone())
         .collect();
     assert_eq!(ids, vec![json!("parallel-b")]);
-    assert!(s.index_pr_reviews(None, Some("T-99"), None, None).is_err());
+    assert!(s.index_pr_reviews(None, None, Some("T-99"), None, None).is_err());
     // A deep link reads its one review directly, however old, never by paging.
     let one = s
-        .index_pr_reviews(None, Some("T-1"), Some("parallel-a"), None)
+        .index_pr_reviews(None, None, Some("T-1"), Some("parallel-a"), None)
         .unwrap();
     assert_eq!(one["reviews"].as_array().unwrap().len(), 1);
     assert_eq!(one["reviews"][0]["findingsCount"], 2);
     assert_eq!(one["hasMore"], false);
     assert_eq!(
-        s.index_pr_reviews(None, Some("T-2"), Some("parallel-a"), None)
+        s.index_pr_reviews(None, None, Some("T-2"), Some("parallel-a"), None)
             .unwrap()["reviews"],
         json!([])
     );
@@ -658,7 +658,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
         one["reviews"][0]["cursor"]
     );
     assert_eq!(
-        s.index_pr_reviews(Some("nobody"), None, None, None)
+        s.index_pr_reviews(Some("nobody"), None, None, None, None)
             .unwrap()["reviews"],
         json!([])
     );
@@ -672,10 +672,10 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
         )
         .unwrap();
     assert_eq!(
-        s.index_pr_reviews(Some("dev"), None, None, None).unwrap()["reviews"],
+        s.index_pr_reviews(Some("dev"), None, None, None, None).unwrap()["reviews"],
         json!([])
     );
-    let page = s.index_pr_reviews(None, None, None, None).unwrap();
+    let page = s.index_pr_reviews(None, None, None, None, None).unwrap();
     let legacy = page["reviews"]
         .as_array()
         .unwrap()
@@ -693,7 +693,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
         )),
     )
     .unwrap();
-    let page = s.index_pr_reviews(None, None, None, None).unwrap();
+    let page = s.index_pr_reviews(None, None, None, None, None).unwrap();
     let outdated = |id: &str| {
         page["reviews"]
             .as_array()
@@ -714,7 +714,7 @@ fn workspace_index_pages_filters_by_requester_and_keeps_tasks_apart() {
         )),
     )
     .unwrap();
-    let page = s.index_pr_reviews(None, None, None, None).unwrap();
+    let page = s.index_pr_reviews(None, None, None, None, None).unwrap();
     assert_eq!(
         page["reviews"]
             .as_array()
@@ -738,7 +738,7 @@ fn workspace_index_pages_twenty_at_a_time_without_repeats() {
     let mut seen = Vec::new();
     let mut before = None;
     for expected in [20, 20, 5] {
-        let page = s.index_pr_reviews(None, None, None, before).unwrap();
+        let page = s.index_pr_reviews(None, None, None, None, before).unwrap();
         let rows = page["reviews"].as_array().unwrap();
         assert_eq!(rows.len(), expected);
         assert_eq!(page["hasMore"], expected == 20);
@@ -750,7 +750,7 @@ fn workspace_index_pages_twenty_at_a_time_without_repeats() {
     assert_eq!(seen[44], "round-0");
     seen.dedup();
     assert_eq!(seen.len(), 45);
-    let empty = s.index_pr_reviews(None, None, None, Some(1)).unwrap();
+    let empty = s.index_pr_reviews(None, None, None, None, Some(1)).unwrap();
     assert_eq!(empty["reviews"], json!([]));
     assert_eq!(empty["hasMore"], false);
     assert_eq!(empty["nextBefore"], Value::Null);
@@ -1051,4 +1051,73 @@ fn a_review_takes_its_tasks_projects_reviewer_when_created_and_keeps_it() {
     s.clear_project_review_settings(&project).unwrap();
     let (again, _) = s.create_pr_review(None, &input(&task, "again"), "again").unwrap();
     assert_eq!(reviewer(&again), (json!("claude"), json!("workspace-choice")));
+}
+
+// A conversation's work dock lists its Agent's own reviews (T-25): those it
+// requested, those sent to it, and those on a task assigned to it; never
+// another Agent's. The Jobs list's requester scope is unchanged.
+#[test]
+fn an_agents_dock_lists_reviews_it_asked_for_was_sent_or_has_on_its_tasks() {
+    let (_dir, s, first) = setup();
+    for (id, name) in [("dev", "Dev"), ("lead", "Lead"), ("other", "Other")] {
+        let agent: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":name,"cwd":"/workspace","model":"test","color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+        s.insert(&agent).unwrap();
+    }
+    let repo = Repository {
+        id: 7,
+        full_name: "owner/repo".into(),
+    };
+    // Each review on a PR of its own: one task unassigned, one Dev's, one Other's.
+    let task = |key: &str, title: &str, assignee: Option<&str>, number: u64| {
+        let mut create = json!({"requestId":key,"title":title});
+        if let Some(id) = assignee {
+            create["assigneeAgentId"] = json!(id);
+        }
+        let id = s.collaboration_call(None, "task_create", create).unwrap()["task"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        s.github_link_object(&id, &repo, "pull", number,
+            json!({"baseSha":"a".repeat(40),"headSha":"b".repeat(40)}))
+            .unwrap();
+        id
+    };
+    let devs = task("create-dev", "Dev's PR", Some("dev"), 2);
+    let others = task("create-other", "Other's PR", Some("other"), 3);
+    let unassigned = task("create-free", "Nobody's PR", None, 4);
+    let on = |task: &str, number: u64, key: &str| {
+        let mut start = input(task, key);
+        start.link_id = format!("7:pull:{number}");
+        start
+    };
+    // The Lead asks for a review of its own (on the setup task) and one of Dev's PR.
+    s.create_pr_review(Some("lead"), &input(&first, "asked"), "asked").unwrap();
+    s.create_pr_review(Some("lead"), &on(&devs, 2, "on-devs-task"), "on-devs-task").unwrap();
+    // The user asks for one and sends it to Dev; Other asks for one on its own PR.
+    let mut sent = on(&unassigned, 4, "sent-to-dev");
+    sent.notify_agent_id = Some("dev".into());
+    s.create_pr_review(None, &sent, "sent-to-dev").unwrap();
+    s.create_pr_review(Some("other"), &on(&others, 3, "elsewhere"), "elsewhere").unwrap();
+
+    let ids = |agent: Option<&str>, involving: Option<&str>| {
+        s.index_pr_reviews(agent, involving, None, None, None).unwrap()["reviews"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(None, Some("dev")), ["sent-to-dev", "on-devs-task"]);
+    assert_eq!(ids(None, Some("lead")), ["on-devs-task", "asked"]);
+    assert_eq!(ids(None, Some("other")), ["elsewhere"]);
+    assert!(ids(None, Some("nobody")).is_empty());
+    // The requester scope still names only what an Agent itself asked for.
+    assert!(ids(Some("dev"), None).is_empty());
+    assert_eq!(ids(Some("lead"), None), ["on-devs-task", "asked"]);
+    // Rows are the same summaries as the Jobs list's.
+    let row = &s.index_pr_reviews(None, Some("dev"), None, None, None).unwrap()["reviews"][1];
+    assert_eq!(row["taskRef"], "T-2");
+    assert_eq!(row["number"], 2);
+    assert_eq!(row["requestedBy"]["id"], "lead");
+    assert!(row.get("findings").is_none() && row.get("notificationRecipient").is_none());
 }

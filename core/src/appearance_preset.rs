@@ -31,7 +31,8 @@ const KEY: &str = "appearance.preset";
 pub const VERSION: u64 = 1;
 const WORDS: [&str; 4] = ["palette", "theme", "agentList", "projectGroups"];
 const NUMBERS: [&str; 1] = ["fontSize"];
-const GROUPS: [(&str, &[&str]); 2] = [("dock", &["jobs", "actions", "subAgents"]), ("turnDock", &["numbers", "bars"])];
+// `reviews` is the dock's PR reviews (T-25); a preset kept before it has none, and clients show two.
+const GROUPS: [(&str, &[&str]); 2] = [("dock", &["jobs", "actions", "reviews", "subAgents"]), ("turnDock", &["numbers", "bars"])];
 const MAX_WORD: usize = 32;
 const MAX_NUMBER: u64 = 64;
 
@@ -194,13 +195,15 @@ mod tests {
 
     fn appearance() -> Value {
         json!({"palette":"yuzu","theme":"dark","fontSize":18,"agentList":"compact","projectGroups":"cards",
-            "dock":{"jobs":3,"actions":5,"subAgents":5},"turnDock":{"numbers":8,"bars":4}})
+            "dock":{"jobs":3,"actions":5,"reviews":1,"subAgents":5},"turnDock":{"numbers":8,"bars":4}})
     }
 
     #[test]
     fn only_appearance_names_of_their_kind_within_the_bound_are_kept() {
         validate(&appearance()).unwrap();
         validate(&json!({"theme":"light"})).unwrap();
+        // A preset kept before the dock's PR reviews (T-25) is still one.
+        validate(&json!({"dock":{"jobs":3,"actions":5,"subAgents":5}})).unwrap();
         for wrong in [
             json!({}),
             json!("palette=yuzu"),

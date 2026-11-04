@@ -435,6 +435,9 @@ impl Store {
     /// One page of every review in the Workspace, newest first, for the Jobs
     /// list. It can be limited to one task, or to the reviews an Agent itself
     /// requested (its recorded `requestedBy`, never a recipient or assignee).
+    /// `involving` is a conversation's own reviews, for its work dock (T-25):
+    /// those its Agent requested, those sent to it, and those on a task
+    /// assigned to it, so a developer sees the rounds a Lead starts on its PR.
     /// A link to one review reads just that row, however old.
     /// Rows are summaries: the report, findings and source evidence stay with
     /// the task and are read only when opened there. `outdated` comes from
@@ -442,6 +445,7 @@ impl Store {
     pub(crate) fn index_pr_reviews(
         &self,
         agent: Option<&str>,
+        involving: Option<&str>,
         task: Option<&str>,
         review: Option<&str>,
         before: Option<i64>,
@@ -457,11 +461,15 @@ impl Store {
                AND (?3 IS NULL OR (json_extract(r.data,'$.requestedBy.kind')='agent'
                                    AND json_extract(r.data,'$.requestedBy.id')=?3))
                AND (?4 IS NULL OR r.id=?4)
+               AND (?5 IS NULL OR (json_extract(r.data,'$.requestedBy.kind')='agent'
+                                   AND json_extract(r.data,'$.requestedBy.id')=?5)
+                    OR json_extract(r.data,'$.notificationRecipient.id')=?5
+                    OR json_extract(t.data,'$.assigneeAgentId')=?5)
              ORDER BY r.rowid DESC LIMIT 21",
         )?;
         let rows = q
             .query_map(
-                params![before.unwrap_or(i64::MAX), task, agent, review],
+                params![before.unwrap_or(i64::MAX), task, agent, review, involving],
                 |r| {
                     Ok((
                         r.get::<_, i64>(0)?,

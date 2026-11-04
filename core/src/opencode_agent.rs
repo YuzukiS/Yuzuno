@@ -116,6 +116,13 @@ const STOP_LIMIT: Duration = Duration::from_secs(10);
 /// Waits before each attempt to open the event stream again.
 const RESUBSCRIBE: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(500), Duration::from_secs(2)];
 
+/// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
+/// with where its snapshots are known to be kept, or why not.
+pub(crate) struct Started {
+    pub server: Arc<Server>,
+    pub files: std::result::Result<crate::opencode_revert_files::Started, String>,
+}
+
 /// One Agent's live OpenCode process and the session it drives there.
 #[derive(Clone)]
 pub(crate) struct Connection {
@@ -586,6 +593,13 @@ impl Workspace {
     /// Under the Agent gate: the live connection, or a new OpenCode process
     /// for the Agent's session (created on the first connection).
     pub(crate) async fn opencode_ensure(self: &Arc<Self>, id: &str) -> Result<Connection> {
+        self.opencode_ensure_on(id, None).await
+    }
+
+    /// `opencode_ensure`, attaching `started` (a fork's target, T-10 Fork),
+    /// already serving this Agent's folder with its own database, rather
+    /// than starting another process.
+    pub(crate) async fn opencode_ensure_on(self: &Arc<Self>, id: &str, started: Option<Started>) -> Result<Connection> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         crate::model::ensure_not_disconnected(&d.agent)?;
@@ -598,7 +612,11 @@ impl Workspace {
         }
         self.record_meta(id, "opencode/connecting", json!({}), |m| m.agent.connection_state = "connecting".into()).await?;
         self.changed(id);
-        match self.opencode_connect(id, &d).await {
+        let connected = match started {
+            Some(started) => self.opencode_attach(id, &d, started).await,
+            None => self.opencode_connect(id, &d).await,
+        };
+        match connected {
             Ok(c) => Ok(c),
             Err(error) => {
                 let message = error.to_string();
@@ -612,6 +630,15 @@ impl Workspace {
     }
 
     async fn opencode_connect(self: &Arc<Self>, id: &str, d: &AgentDetail) -> Result<Connection> {
+        let started = self.opencode_start(id, &d.agent.cwd).await?;
+        self.opencode_attach(id, d, started).await
+    }
+
+    /// This Agent's OpenCode process, started and nothing else (T-10 Fork):
+    /// its own folder and database, serving `cwd`, from the executable
+    /// `opencode` resolves to now. Until it is attached, the caller is its
+    /// only owner: dropping it ends its process group.
+    pub(crate) async fn opencode_start(&self, id: &str, cwd: &str) -> Result<Started> {
         let folder = self.data_dir.join("opencode").join(id);
         std::fs::create_dir_all(&folder)?;
         #[cfg(unix)]
@@ -627,12 +654,19 @@ impl Workspace {
             Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
             _ => named,
         };
-        let launch = Launch { program: start, directory: d.agent.cwd.clone().into(), database: folder.join("opencode.db") };
-        // Until it is in `opencodes`, this is its only owner: an error below
-        // drops it, which ends its process group.
+        let launch = Launch { program: start, directory: cwd.into(), database: folder.join("opencode.db") };
         let server = Arc::new(Server::start(&launch).await?);
         let files = crate::opencode_revert_files::Started::of(launcher, server.pid(), |name| std::env::var_os(name),
             std::env::vars_os().map(|(name, _)| name), dirs::home_dir);
+        Ok(Started { server, files })
+    }
+
+    /// Wires a started process to the Agent: its session (created on the
+    /// first connection), its Workspace MCP, its events, its record. Until it
+    /// is in `opencodes`, `started` is its only owner: an error below drops
+    /// it, which ends its process group.
+    async fn opencode_attach(self: &Arc<Self>, id: &str, d: &AgentDetail, started: Started) -> Result<Connection> {
+        let Started { server, files } = started;
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
@@ -2545,6 +2579,10 @@ fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
 #[path = "opencode_revert.rs"]
 mod revert;
 pub(crate) use revert::expire_previews as expire_revert_previews;
+
+#[path = "opencode_fork.rs"]
+mod fork;
+pub(crate) use fork::{migrate as fork_migrate, router as fork_router};
 
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]
