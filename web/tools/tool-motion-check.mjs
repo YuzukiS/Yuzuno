@@ -220,8 +220,10 @@ async function checkLiveMotion() {
   await page.waitForTimeout(450);
   const opened = await row.evaluate((el) => Math.round(el.getBoundingClientRect().height));
   assert.ok(opening.middle < opened, JSON.stringify({ opening, opened }));
-  assert.equal(opening.duration, "0.3s");
-  assert.match(opening.chevron, /cubic-bezier\(0\.34, 1\.5/);
+  // T-19 1a (01800f8b, 564db0e4): a tool block opens over --motion-medium and its chevron turns with
+  // --ease-standard, which never overshoots.
+  assert.equal(opening.duration, "0.24s");
+  assert.match(opening.chevron, /^cubic-bezier\(0\.2, 0\.8, 0\.2, 1\)$/);
   assert.equal(await summaryTop(), before, "the reader's row does not move");
   await row.locator(":scope > summary").hover();
   const tint = await row.locator(":scope > summary").evaluate((el) => getComputedStyle(el).backgroundColor);
@@ -230,7 +232,8 @@ async function checkLiveMotion() {
   await row.locator(":scope > summary").click();
   await page.waitForFunction(() => document.getElementById("item-tool-d").open === false);
   const closing = await row.evaluate((el) => getComputedStyle(el, "::details-content").transitionDuration.split(",")[0].trim());
-  assert.equal(closing, "0.22s");
+  // It folds over --motion-exit-medium (T-19 1a).
+  assert.equal(closing, "0.17s");
   await page.waitForTimeout(300);
   await page.mouse.move(5, 400);
   record("Opening and closing by hand ease without moving the reader's row; summaries tint on hover", { opening, opened, closing });
@@ -323,7 +326,10 @@ try {
     assert.equal(await history.evaluate((el) => el.open), false);
     await page.keyboard.press("Enter");
     await page.waitForTimeout(350);
-    assert.equal(await inspected.evaluate((el) => el === window.inspectedHistoryRow && el.open), true);
+    // A windowed history mounts a block's rows only while it is open (ToolActivity), so the row is drawn
+    // anew when its block opens again: what it keeps is that the reader opened it (T-19, Lead 3812).
+    const reopened = await inspected.evaluate((el) => ({ sameElement: el === window.inspectedHistoryRow, open: el.open }));
+    assert.equal(reopened.open, true, "a row the reader opened is open again when its block reopens");
     assert.equal(await composer.textContent(), "history draft A");
     const box = await composer.boundingBox();
     assert.ok(box.width > 100 && box.x >= 0 && box.x + box.width <= width, JSON.stringify(box));
@@ -337,7 +343,7 @@ try {
       assert.equal(await page.locator("#item-old-tool-1").evaluate((el) => el.closest(".tool-activity").open), true);
       await page.waitForFunction(() => !document.querySelector("[data-source-jump]"));
       assert.equal(await page.locator("#item-old-tool-1").evaluate((el) =>
-        getComputedStyle(el.closest(".tool-activity"), "::details-content").transitionDuration.split(",")[0].trim()), "0.3s", "manual disclosure motion resumes after the jump");
+        getComputedStyle(el.closest(".tool-activity"), "::details-content").transitionDuration.split(",")[0].trim()), "0.24s", "manual disclosure motion resumes after the jump");
       assert.doesNotMatch(await page.locator(".source-navigation").textContent(), /unavailable/);
       assert.equal(await page.locator("#item-old-tool-1").evaluate((el) => {
         const target = el.getBoundingClientRect();
@@ -352,6 +358,9 @@ try {
     await page.getByRole("button", { name: "Open Mori", exact: true }).click();
     await composer.waitFor();
     assert.equal(await composer.textContent(), "history draft A");
+    // Mori's conversation is on screen once the pane is his and his live Turn is drawn, as when the page
+    // loads; the composer comes back before that (run cf1ff81e once counted 0 turns there).
+    await page.locator('.conversation-scroll[data-agent-id="a"] [data-turn-id="live"] .tool-item').first().waitFor();
     assert.equal(await page.locator(".turn").count(), 7);
     const choices = page.locator("[data-turn-choice]");
     await choices.first().focus();
@@ -359,7 +368,7 @@ try {
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.activeElement?.getAttribute("data-turn-id") === "old-0");
     assert.equal(await composer.textContent(), "history draft A");
-    record("Deferred history: keyboard inspection, retained nested state, anchor, draft and turn navigation", { theme, fontSize: 20, width, sourceNavigation: width === 1440 });
+    record("Deferred history: keyboard inspection, retained nested state, anchor, draft and turn navigation", { theme, fontSize: 20, width, sourceNavigation: width === 1440, reopened });
   }
   assert.deepEqual(report.errors, []);
   report.passed = true;

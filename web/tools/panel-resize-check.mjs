@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-panel-resize";
 
 // All requests are fulfilled in memory; this never connects to a running Core.
 assert.ok(
@@ -19,6 +21,11 @@ const report = {
   checks: [],
   errors: [],
   mutations: [],
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
 };
 const agents = ["Mori", "Hana"].map((name, i) => ({
   id: String(i),
@@ -75,14 +82,21 @@ await context.route("**/*", async (route) => {
     "yuzuno-resize.test",
     "Unexpected external request",
   );
+  if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     report.mutations.push({ path: url.pathname, method: request.method() });
     return route.fulfill({ json: {} });
   }
   if (url.pathname === "/api/workspace")
     return route.fulfill({
-      json: { agents, runtime: { connected: true }, defaultCwd: "/workspace" },
+      json: { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/workspace" },
     });
+  // What the app reads once it knows its Workspace: no reading place held by Core, and Home with nothing.
+  if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  if (url.pathname === "/api/home") return route.fulfill({ json: emptyHome });
   const agent = agents.find((a) => url.pathname === `/api/agents/${a.id}`);
   if (agent)
     return route.fulfill({
@@ -90,10 +104,21 @@ await context.route("**/*", async (route) => {
     });
   if (url.pathname === "/api/updates")
     return route.fulfill({ json: unmanagedUpdates });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected fixture API ${url.pathname}`,
-  );
+  // What the app reads as it loads: its Jobs budget, no Jobs or CI runs and no Agent waiting on either,
+  // no PR reviews, and no inputs listed.
+  if (url.pathname === "/api/jobs/budget") return route.fulfill({ json: idleJobsBudget });
+  if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
+  if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
+  if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: noLiveCi });
+  if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  if (/^\/api\/agents\/[^/]+\/conversation\/inputs$/.test(url.pathname)) return route.fulfill({ json: noConversationInputs });
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const path = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -152,7 +177,7 @@ try {
   near(await width("rail"), 320);
   near(await width("inspector"), 340);
   assert.equal(
-    await composerDraft(page.getByRole("textbox", { name: "Message Mori" })),
+    await composerDraft(page.getByRole("textbox", { name: "Message Mori" }), WORKSPACE),
     "侧栏测试草稿 — keep me",
   );
   await page.evaluate(() =>
@@ -175,7 +200,7 @@ try {
   near(await width("rail"), 320);
   near(await width("inspector"), 340);
   assert.equal(
-    await composerDraft(page.getByRole("textbox", { name: "Message Mori" })),
+    await composerDraft(page.getByRole("textbox", { name: "Message Mori" }), WORKSPACE),
     "侧栏测试草稿 — keep me",
   );
   await page.locator(".agent-select").filter({ hasText: "Hana" }).click();
@@ -309,6 +334,7 @@ try {
   );
   assert.deepEqual(report.mutations, []);
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.status = "passed";
 } catch (e) {
   report.status = "failed";

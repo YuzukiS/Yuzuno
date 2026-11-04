@@ -5,6 +5,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace the fixture's Core says it is: drafts are saved under it (T-195). With --real, the lab
+// Core's own, read from it.
+const WORKSPACE = "ws-interaction";
 
 const modelCheck = process.argv.includes("--model-check");
 const real = process.argv.includes("--real") || modelCheck;
@@ -151,10 +154,14 @@ async function fixture() {
         const id = url.pathname.split("/")[3];
         if (url.pathname === "/api/workspace")
           result = {
+            workspace: { id: WORKSPACE },
             agents: [a, b],
             runtime: { connected: true },
             defaultCwd: "/fixture",
           };
+        else if (url.pathname === "/api/reviews")
+          // The status bar's read of running reviews, after each burst of events (StatusBar.tsx): none here.
+          result = { reviews: [], hasMore: false, nextBefore: null };
         else if (url.pathname.endsWith("/models")) result = { models };
         else if (url.pathname.endsWith("/settings")) {
           Object.assign(details[id].agent, body);
@@ -212,33 +219,47 @@ async function fixture() {
         theme,
       );
       await page.goto(base);
-      await page.locator(".context-usage-button").hover();
-      await page.getByRole("tooltip").waitFor();
-      assert.match(await page.getByRole("tooltip").innerText(), /76% used/);
+      // An upright phone shows no context line under the composer (T-170): the Agent's settings carry
+      // the model and context. Elsewhere the context ring's card opens on hover and fits.
+      const phone = (await page.locator(".app.phone").count()) > 0;
+      assert.equal(phone, width <= 520, `phone layout at ${width}px`);
+      let tooltipInView = null;
+      if (phone) {
+        // A phone opens on its Agent list (phoneList): the reader opens Mori's conversation from it.
+        await page.getByRole("button", { name: "Open Mori", exact: true }).click();
+        await page.getByRole("textbox", { name: "Message Mori" }).waitFor();
+        // The conversation is open, its composer there, and no context line under it (styles.css,
+        // `.app.phone .composer-footnote`).
+        assert.equal(await page.locator(".composer-footnote").isVisible(), false);
+        assert.equal(await page.locator(".context-usage-button").isVisible(), false);
+      } else {
+        await page.locator(".context-usage-button").hover();
+        await page.getByRole("tooltip").waitFor();
+        assert.match(await page.getByRole("tooltip").innerText(), /76% used/);
+        tooltipInView = await page.evaluate(() => {
+          const card = document.querySelector(".context-usage-card").getBoundingClientRect();
+          return card.x >= 0 && card.right <= innerWidth && card.bottom <= innerHeight;
+        });
+        assert.equal(tooltipInView, true);
+      }
       const layout = await page.evaluate(() => {
         const row = document
           .querySelector(".turn-activity")
           .getBoundingClientRect();
-        const card = document
-          .querySelector(".context-usage-card")
-          .getBoundingClientRect();
         return {
           noOverflow: document.documentElement.scrollWidth <= innerWidth,
           workingHeight: row.height,
-          tooltipInView:
-            card.x >= 0 &&
-            card.right <= innerWidth &&
-            card.bottom <= innerHeight,
         };
       });
       assert.equal(layout.noOverflow, true);
-      assert.equal(layout.tooltipInView, true);
       assert.ok(layout.workingHeight <= 30);
       await page.screenshot({
         path: resolve(output, `${theme}-${width}-context.png`),
         animations: "disabled",
       });
-      await page.keyboard.press("Escape");
+      // Escape closes the context card. With none open (a phone), it would reach the composer of a
+      // working Agent, where it interrupts the Turn.
+      if (!phone) await page.keyboard.press("Escape");
       await page
         .getByRole("button", { name: "Agent settings", exact: true })
         .click();
@@ -258,24 +279,32 @@ async function fixture() {
       });
       await page.keyboard.press("Escape");
       await modal.waitFor({ state: "detached" });
-      check("20px working/context/settings fit", { theme, width, ...layout });
+      check("20px working/context/settings fit", { theme, width, phone, tooltipInView, ...layout });
     }
   assert.equal(requests.filter((r) => r.method === "POST").length, 0);
   await page.setViewportSize({ width: 1440, height: 960 });
   const composer = page.getByRole("textbox", { name: "Message Mori" });
   await composer.fill("Keep my unfinished draft 保留草稿");
-  await page.getByRole("radio", { name: "Sage", exact: true }).check();
-  await page.getByRole("button", { name: "Send answer", exact: true }).click();
+  // A question's only editor is the dock's dialog (PendingQuestions), opened from the questions waiting.
   await page
-    .getByRole("button", { name: "Answer sent", exact: true })
-    .waitFor();
+    .getByRole("region", { name: "Questions to answer" })
+    .getByRole("button", { name: /^Questions to answer/ })
+    .click();
+  const answering = page.getByRole("dialog", { name: "Answer a question", exact: true });
+  await answering.getByRole("radio", { name: "Sage", exact: true }).check();
+  await answering.getByRole("button", { name: "Send answer", exact: true }).click();
+  await answering.getByRole("button", { name: "Answer sent", exact: true }).waitFor();
+  // A sent answer leaves the dialog open; it is closed by hand before the composer is used again.
+  await answering.getByRole("button", { name: "Close dialog" }).click();
+  await answering.waitFor({ state: "detached" });
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, WORKSPACE),
     "Keep my unfinished draft 保留草稿",
   );
   const answer = requests.filter((r) => r.path.endsWith("/messages"));
   assert.equal(answer.length, 1);
   assert.equal(answer[0].body.expectedTurnId, "turn");
+  assert.deepEqual(answer[0].body.question, { turnId: "turn", itemId: "question" });
   check("direct question answer preserves draft and targets active turn");
   await page.getByRole("button", { name: "Send while working" }).click();
   await page.waitForFunction(
@@ -296,9 +325,11 @@ async function fixture() {
       ?.getAttribute("aria-label")
       .includes("unavailable"),
   );
-  assert.equal(
-    requests.filter((r) => /interrupt|review|respond/.test(r.path)).length,
-    0,
+  assert.deepEqual(
+    requests
+      .filter((r) => r.method !== "GET" && /interrupt|review|respond/.test(r.path))
+      .map((r) => `${r.method} ${r.path}`),
+    [],
   );
   check("working send, agent switch, no interrupt/read/pending mutations");
 }
@@ -322,6 +353,8 @@ async function native() {
     model: selected.model || selected.id,
   });
   report.agentId = agent.id;
+  const workspaceId = (await api("/workspace")).workspace?.id;
+  assert.ok(workspaceId, "the lab Core says which Workspace it is");
   const path = `/agents/${agent.id}`;
   await wait(
     async () => (await api(path)).agent.connectionState === "connected",
@@ -427,7 +460,7 @@ async function native() {
     .getByRole("button", { name: "Answer sent", exact: true })
     .waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, workspaceId),
     "This unfinished draft must survive the direct answer.",
   );
   await page.screenshot({
@@ -461,7 +494,7 @@ async function native() {
     .getByRole("button", { name: "Answer sent", exact: true })
     .waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, workspaceId),
     "This unfinished draft must survive the direct answer.",
   );
   await settings.click();
