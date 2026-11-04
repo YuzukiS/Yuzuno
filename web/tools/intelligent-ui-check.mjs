@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, idleJobsBudget, noCiRuns, noJobs, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 import {
   comparisonExample,
   reportExample,
@@ -21,7 +21,16 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve("../acceptance/intelligent-ui/browser");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], mutations: [] };
+const report = {
+  checks: [],
+  errors: [],
+  mutations: [],
+  // The app's own saves of where an Agent was read (T-170): answered, and counted apart from the
+  // mutations this check refuses.
+  readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
+};
 const spec = structuredClone(comparisonExample);
 Object.assign(spec.elements, {
   metrics: reportExample.elements.metrics,
@@ -138,6 +147,10 @@ await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   assert.equal(url.hostname, "yuzuno-intelligent.test");
+  if (request.method() === "PUT" && /^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     report.mutations.push({ path: url.pathname, body: request.postDataJSON() });
     return route.fulfill({ json: {} });
@@ -166,10 +179,20 @@ await page.route("**/*", async (route) => {
     return route.fulfill({ json: idleJobsBudget });
   if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
   if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected API: ${url.pathname}`,
-  );
+  // What the app reads as it loads: no Agent waiting on a Job or a CI run, no PR reviews, no inputs
+  // listed, no reading place held by Core, and Home with nothing.
+  if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: noLiveCi });
+  if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname)) return route.fulfill({ json: noConversationInputs });
+  if (/^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  if (url.pathname === "/api/home") return route.fulfill({ json: emptyHome });
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -715,6 +738,7 @@ try {
     "failed lazy result asset preserves the original reply and working conversation",
   );
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.passed = true;
 } catch (error) {
   report.failure = error.stack;

@@ -261,7 +261,9 @@ try {
       await page.locator(".pasted-text-preview").waitFor({ state: "hidden" });
       await chips().first().focus();
       await page.keyboard.press("Enter");
-      const full = page.getByLabel("Full pasted text");
+      // In the open dialog: one that closes leaves through an inert, hidden copy (T-19 1b, DialogExitGhost),
+      // which can still be on the page as the block is opened again.
+      const full = page.getByRole("dialog").getByLabel("Full pasted text");
       await full.waitFor();
       assert.equal(await full.inputValue(), raw.replaceAll("\r\n", "\n"));
       await full.press("Control+a");
@@ -772,9 +774,10 @@ try {
           path: new URL(`${theme}-mobile-preview.png`, output).pathname,
         });
         await chips().first().tap();
-        await page.getByLabel("Full pasted text").waitFor();
+        await page.getByRole("dialog").getByLabel("Full pasted text").waitFor();
         assert.equal(
           await page
+            .getByRole("dialog")
             .getByLabel("Full pasted text")
             .evaluate((el) => getComputedStyle(el).fontSize),
           "20px",

@@ -180,6 +180,22 @@ try {
         [theme, fontSize],
       );
       await page.goto(`${base}/?preview=1`);
+      // An upright phone shows no context line under the composer (T-170), so there is no ring to
+      // hover; the Agent's settings carry the model and context. Elsewhere its card opens on hover,
+      // fits, and stays open on its contents.
+      const phone = (await page.locator(".app.phone").count()) > 0;
+      assert.equal(phone, width <= 520, `phone layout at ${width}px`);
+      if (phone) {
+        assert.equal(await page.locator(".composer-footnote").isVisible(), false);
+        assert.equal(await page.locator(".context-usage-button").isVisible(), false);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        await page.screenshot({
+          path: resolve(output, `${theme}-${width}-${fontSize}px.png`),
+          animations: "disabled",
+        });
+        report.checks.push({ theme, width, fontSize, noOverflow: true, phone: true, contextLineShown: false });
+        continue;
+      }
       await page.locator(".context-usage-button").hover();
       const tooltip = page.getByRole("tooltip");
       await tooltip.waitFor();

@@ -273,7 +273,8 @@ try {
           turnId,
       { turnId, itemId },
     );
-    assert.equal(await target.getAttribute("data-search-highlight"), "true");
+    // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
+    await page.locator(`[data-turn-id="${turnId}"] [data-item-id="${itemId}"].source-highlight`).waitFor();
     const position = await target.evaluate((el) => {
       const row = el.getBoundingClientRect();
       const view = el.closest(".conversation-scroll").getBoundingClientRect();
@@ -313,10 +314,12 @@ try {
       position,
     });
   }
-  await page.waitForFunction(
-    () => !document.querySelector("[data-search-highlight]"),
-  );
-  check("temporary highlight expires");
+  // Where a jump lands is marked while it is shown; its ring fades once, over settle (T-19 1b).
+  await page.waitForFunction(() => {
+    const mark = document.querySelector(".source-highlight");
+    return !!mark && !mark.getAnimations().some((a) => a.animationName === "settle-ring" && a.playState !== "finished");
+  });
+  check("the landing's ring fades once; the mark stays while it is shown");
 
   // A jump near the bottom must also stay detached from future output.
   await trigger.click();

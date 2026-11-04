@@ -358,6 +358,9 @@ try {
     await page.getByRole("button", { name: "Open Mori", exact: true }).click();
     await composer.waitFor();
     assert.equal(await composer.textContent(), "history draft A");
+    // Mori's conversation is on screen once the pane is his and his live Turn is drawn, as when the page
+    // loads; the composer comes back before that (run cf1ff81e once counted 0 turns there).
+    await page.locator('.conversation-scroll[data-agent-id="a"] [data-turn-id="live"] .tool-item').first().waitFor();
     assert.equal(await page.locator(".turn").count(), 7);
     const choices = page.locator("[data-turn-choice]");
     await choices.first().focus();

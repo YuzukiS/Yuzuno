@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 // The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
 const WORKSPACE = "ws-permissions";
 
@@ -21,6 +21,8 @@ const report = {
   // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
   // counted apart from the mutations this check refuses.
   readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
   errors: [],
 };
 const agent = {
@@ -151,10 +153,8 @@ await page.route("**/*", async (route) => {
         defaultCwd: "/fixture",
       },
     });
-  // What the app reads once it knows its Workspace: no reading place held by Core, and Home with nothing.
+  // What the app reads once it knows its Workspace: no reading place held by Core.
   if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
-  if (url.pathname === "/api/home")
-    return route.fulfill({ json: { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] } });
   if (url.pathname === "/api/agents/a") return route.fulfill({ json: detail });
   if (url.pathname === "/api/agents/a/models")
     return route.fulfill({
@@ -181,6 +181,8 @@ await page.route("**/*", async (route) => {
     "/api/jobs": noJobs,
     "/api/jobs/live": noLiveJobs,
     "/api/ci": noCiRuns,
+    "/api/ci/live": noLiveCi,
+    "/api/agents/a/conversation/inputs": noConversationInputs,
     "/api/reviews": noReviews,
     "/api/home": { generatedAt: "", order: [], needsYou: [], projects: [] },
     "/api/machine-load": {
@@ -192,10 +194,12 @@ await page.route("**/*", async (route) => {
     },
   }[url.pathname];
   if (quiet) return route.fulfill({ json: quiet });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected request ${url.pathname}`,
-  );
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -360,6 +364,7 @@ try {
     report.mutations.every((r) => /\/(settings|messages)$/.test(r.path)),
   );
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   record(
     "Uncertain answer delivery survives reload without automatic resend or Pending/read mutations",
   );

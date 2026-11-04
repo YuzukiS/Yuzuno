@@ -216,27 +216,34 @@ async function fixture() {
         theme,
       );
       await page.goto(base);
-      await page.locator(".context-usage-button").hover();
-      await page.getByRole("tooltip").waitFor();
-      assert.match(await page.getByRole("tooltip").innerText(), /76% used/);
+      // An upright phone shows no context line under the composer (T-170): the Agent's settings carry
+      // the model and context. Elsewhere the context ring's card opens on hover and fits.
+      const phone = (await page.locator(".app.phone").count()) > 0;
+      assert.equal(phone, width <= 520, `phone layout at ${width}px`);
+      let tooltipInView = null;
+      if (phone) {
+        assert.equal(await page.locator(".composer-footnote").isVisible(), false);
+        assert.equal(await page.locator(".context-usage-button").isVisible(), false);
+      } else {
+        await page.locator(".context-usage-button").hover();
+        await page.getByRole("tooltip").waitFor();
+        assert.match(await page.getByRole("tooltip").innerText(), /76% used/);
+        tooltipInView = await page.evaluate(() => {
+          const card = document.querySelector(".context-usage-card").getBoundingClientRect();
+          return card.x >= 0 && card.right <= innerWidth && card.bottom <= innerHeight;
+        });
+        assert.equal(tooltipInView, true);
+      }
       const layout = await page.evaluate(() => {
         const row = document
           .querySelector(".turn-activity")
           .getBoundingClientRect();
-        const card = document
-          .querySelector(".context-usage-card")
-          .getBoundingClientRect();
         return {
           noOverflow: document.documentElement.scrollWidth <= innerWidth,
           workingHeight: row.height,
-          tooltipInView:
-            card.x >= 0 &&
-            card.right <= innerWidth &&
-            card.bottom <= innerHeight,
         };
       });
       assert.equal(layout.noOverflow, true);
-      assert.equal(layout.tooltipInView, true);
       assert.ok(layout.workingHeight <= 30);
       await page.screenshot({
         path: resolve(output, `${theme}-${width}-context.png`),
@@ -262,7 +269,7 @@ async function fixture() {
       });
       await page.keyboard.press("Escape");
       await modal.waitFor({ state: "detached" });
-      check("20px working/context/settings fit", { theme, width, ...layout });
+      check("20px working/context/settings fit", { theme, width, phone, tooltipInView, ...layout });
     }
   assert.equal(requests.filter((r) => r.method === "POST").length, 0);
   await page.setViewportSize({ width: 1440, height: 960 });

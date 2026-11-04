@@ -42,6 +42,12 @@ export const noCiRuns = { runs: [], subscriptions: [], hasMore: false, nextBefor
 export const noReviews = { reviews: [], hasMore: false, nextBefore: null };
 /** /api/jobs/live (T-70) when no Agent is waiting on a job. */
 export const noLiveJobs = { agents: {} };
+/** /api/ci/live when no Agent is waiting on a CI run (live-ci.ts). */
+export const noLiveCi = { agents: {} };
+/** /api/agents/{id}/conversation/inputs (T-6) when the conversation lists no inputs. */
+export const noConversationInputs = { inputs: [], hasBefore: false, total: 0 };
+/** /api/home with nothing on it, which the app reads once it knows its Workspace. */
+export const emptyHome = { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] };
 
 /**
  * The identity a draft is saved under: its Workspace and its Agent, as

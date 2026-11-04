@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 // The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
 const WORKSPACE = "ws-panel-resize";
 
@@ -24,6 +24,8 @@ const report = {
   // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
   // counted apart from the mutations this check refuses.
   readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
 };
 const agents = ["Mori", "Hana"].map((name, i) => ({
   id: String(i),
@@ -94,8 +96,7 @@ await context.route("**/*", async (route) => {
     });
   // What the app reads once it knows its Workspace: no reading place held by Core, and Home with nothing.
   if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
-  if (url.pathname === "/api/home")
-    return route.fulfill({ json: { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] } });
+  if (url.pathname === "/api/home") return route.fulfill({ json: emptyHome });
   const agent = agents.find((a) => url.pathname === `/api/agents/${a.id}`);
   if (agent)
     return route.fulfill({
@@ -103,10 +104,21 @@ await context.route("**/*", async (route) => {
     });
   if (url.pathname === "/api/updates")
     return route.fulfill({ json: unmanagedUpdates });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected fixture API ${url.pathname}`,
-  );
+  // What the app reads as it loads: its Jobs budget, no Jobs or CI runs and no Agent waiting on either,
+  // no PR reviews, and no inputs listed.
+  if (url.pathname === "/api/jobs/budget") return route.fulfill({ json: idleJobsBudget });
+  if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
+  if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
+  if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: noLiveCi });
+  if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  if (/^\/api\/agents\/[^/]+\/conversation\/inputs$/.test(url.pathname)) return route.fulfill({ json: noConversationInputs });
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const path = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -322,6 +334,7 @@ try {
   );
   assert.deepEqual(report.mutations, []);
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.status = "passed";
 } catch (e) {
   report.status = "failed";
