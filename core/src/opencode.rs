@@ -106,6 +106,22 @@ pub enum Submission {
     Unknown(String),
 }
 
+/// What a compaction request (`summarize`) is known to have done (T-10).
+#[derive(Debug, PartialEq)]
+pub enum CompactAnswer {
+    /// 200 with the whole body the JSON `true`: OpenCode's handler returned,
+    /// so its run has ended there, however the compaction went (an abort
+    /// ends it too: the run is cancelled and the waiting request answered,
+    /// `effect/runner.ts`). Not that it compacted anything.
+    Ended,
+    /// A 4xx, as OpenCode gave it.
+    Refused(HttpStatus),
+    /// Anything else: no answer, a lost connection, a 5xx (OpenCode's proxy
+    /// turns a broken upstream into a 500, `middleware/proxy.ts`), another
+    /// body. Whether the run has ended is not known.
+    Unknown(String),
+}
+
 /// An answer to a permission request. OpenCode's third answer, `always`,
 /// is not offered: it would allow later requests of this process by patterns
 /// the tool chooses.
@@ -597,6 +613,56 @@ impl Server {
                 Ok(response) => Submission::Unknown(status(response).await.to_string()),
             }
         })
+    }
+
+    /// The session as OpenCode holds it now (`GET /session/:id`): its
+    /// `revert`, among the rest, set while a revert waits to be applied.
+    pub async fn session(&self, session: &str) -> Result<Value> {
+        self.json(Method::GET, &format!("/session/{}", segment(session)?), None).await
+    }
+
+    /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
+    pub async fn messages(&self, session: &str) -> Result<Value> {
+        let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
+        ensure!(messages.is_array(), "OpenCode's session messages is not a list");
+        Ok(messages)
+    }
+
+    /// The request that compacts the session with `provider`'s `model`
+    /// (T-10), as its own `/compact` does (`POST /session/:id/summarize`,
+    /// `auto: false`). OpenCode 1.19.3 writes the compaction's own user
+    /// message, under an ID of its choosing, then runs the compaction and
+    /// answers only once that run ends (`handlers/session.ts` summarize); it
+    /// takes no variant. So, as a command's, the request has no time limit of
+    /// its own and holds nothing of this server, and its answer alone says
+    /// nothing a caller can wait for.
+    pub fn summarize(&self, session: &str, provider: &str, model: &str) -> Result<impl std::future::Future<Output = CompactAnswer> + Send + 'static> {
+        let path = format!("/session/{}/summarize", segment(session)?);
+        let request = self.request(Method::POST, &path).json(&json!({"providerID": provider, "modelID": model, "auto": false}));
+        Ok(async move {
+            match request.send().await {
+                Err(error) => CompactAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
+                    Ok(body) if serde_json::from_str::<Value>(&body).is_ok_and(|v| v == Value::Bool(true)) => CompactAnswer::Ended,
+                    Ok(body) => CompactAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
+                    Err(error) => CompactAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
+                },
+                Ok(response) if response.status().is_client_error() => CompactAnswer::Refused(status(response).await),
+                Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
+            }
+        })
+    }
+
+    /// Removes one part of a message (`DELETE
+    /// /session/:id/message/:message/part/:part`, T-10). OpenCode 1.19.3 only
+    /// announces the removal (`session.ts` removePart) and deletes the part
+    /// by its ID and session alone (`core/src/session/projector.ts`), with no
+    /// check that it exists, is that message's, or that the session is idle:
+    /// its `true` says none of that. Only a read after it does.
+    pub async fn delete_part(&self, session: &str, message: &str, part: &str) -> Result<()> {
+        let path = format!("/session/{}/message/{}/part/{}", segment(session)?, segment(message)?, segment(part)?);
+        self.json(Method::DELETE, &path, None).await?;
+        Ok(())
     }
 
     /// The sessions OpenCode started under `session` (its `task` tool's
