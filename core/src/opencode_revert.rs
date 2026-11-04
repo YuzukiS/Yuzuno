@@ -56,6 +56,8 @@ pub(crate) fn expire_previews() -> usize {
 /// What a confirm checked before it asked, kept with its attempt: what any
 /// later read is held to (Lead 4109). `ended`, once the one request was
 /// answered whole for this session: OpenCode's handler had ended then.
+/// `held`, when that answer showed the session holding this revert: all that
+/// is left then is to record it.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Plan {
@@ -68,6 +70,8 @@ pub(super) struct Plan {
     pub turns: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
 }
 
 impl Plan {
@@ -92,6 +96,10 @@ async fn hold_answered(attempt: &str) {
     }
 }
 
+/// Tests only: the attempt whose next record write fails, once.
+#[cfg(test)]
+static FAIL_RECORD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// What `rx` gives within `within`: its answer, or none once it is closed
 /// (Lead 4124). An answer sent before the close is taken here, even one sent
 /// as the watch ended; a send after it fails, so its sender keeps the answer
@@ -111,7 +119,7 @@ pub(super) struct Read {
     pub generation: u64,
     pub session: String,
     pub messages: String,
-    /// The Agent's folder.
+    /// The Agent's folder, resolved.
     pub folder: String,
     /// The session's messages from the Turn's own on, as read: what leaves.
     pub leaving: Vec<Value>,
@@ -177,9 +185,13 @@ impl Workspace {
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有预览回退");
         let messages = c.server.messages(&c.session).await.context(unread)?;
         let list = messages.as_array().context(unread)?;
-        let folder = d.agent.cwd.clone();
+        // The same folder however it is written (a link to it, a trailing
+        // slash): OpenCode answers with its own resolved one (R3 of #534).
+        let folder = std::fs::canonicalize(&d.agent.cwd).context("这个 Agent 的目录无法读取；没有预览回退")?
+            .to_str().context("这个 Agent 的目录不是 UTF-8；没有预览回退")?.to_owned();
         let path = c.server.path().await.context(unread)?;
-        ensure!(path["directory"] == folder.as_str(), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
+        let directory = path["directory"].as_str().and_then(|d| std::fs::canonicalize(d).ok());
+        ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
         let worktree = path["worktree"].as_str().context("OpenCode 没有说它的 worktree；没有预览回退")?.to_owned();
         let project = c.server.project().await.context(unread)?;
         let project = project["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
@@ -266,7 +278,7 @@ impl Workspace {
         }).await?;
         let local = local.context("要回退的内容超出可以留存的大小；没有回退")?;
         let plan = Plan { generation: read.generation, messages: read.messages.clone(), entries: read.entries.clone(), root: read.root,
-            folder: read.folder.clone(), turns: leaving, ended: None };
+            folder: read.folder.clone(), turns: leaving, ended: None, held: false };
         let mut attempt = Attempt {
             id: key.into(), agent: id.into(), thread: read.session.clone(), target: p.turn.clone(), kept,
             draft: read.draft.clone(), state: "sending".into(), message: None, files: None, opencode: Some(serde_json::to_value(&plan)?),
@@ -345,9 +357,10 @@ impl Workspace {
         match answer {
             RevertAnswer::Answered(session) if session["id"] == attempt.thread.as_str() => {
                 plan.ended = Some(crate::model::now());
+                plan.held = session["revert"]["messageID"] == attempt.target.as_str();
                 attempt.opencode = Some(serde_json::to_value(&plan)?);
-                if session["revert"]["messageID"] == attempt.target.as_str() {
-                    self.opencode_revert_reverted(id, &mut attempt, &plan).await?;
+                if plan.held {
+                    self.opencode_revert_record(id, &mut attempt, &plan).await;
                 } else {
                     self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
                 }
@@ -366,6 +379,17 @@ impl Workspace {
             }
         }
         self.opencode_revert_saved(id, &attempt).await
+    }
+
+    /// Reverted, and recorded so (R3 of #534): once OpenCode has answered,
+    /// nothing escapes. If the record cannot be written, the attempt is kept
+    /// unknown with its plan's `ended` and `held`, so a later check records
+    /// it then; nothing is asked again.
+    async fn opencode_revert_record(self: &Arc<Self>, id: &str, attempt: &mut Attempt, plan: &Plan) {
+        if let Err(error) = self.opencode_revert_reverted(id, attempt, plan).await {
+            attempt.state = "unknown".into();
+            attempt.message = Some(format!("OpenCode 已确认这次回退，但没能把它记下（{error:#}）；记下之前这个 Agent 不会收到新的内容，重新核对时会再记一次，回退不会再请求一次"));
+        }
     }
 
     /// Reverted: the session holds it. Each file is judged as it is now.
@@ -423,22 +447,36 @@ impl Workspace {
     }
 
     /// An OpenCode attempt checked again (`/rewind/check`, under the gate):
-    /// only one whose request ended with no revert held is read again; one
-    /// whose answer never came stays as it is (Lead 4109 1).
+    /// one whose answer showed the revert held but which was not recorded is
+    /// recorded now; one whose request ended with no revert held is read
+    /// again; one whose answer never came stays as it is (Lead 4109 1).
     pub(crate) async fn opencode_revert_recheck(self: &Arc<Self>, id: &str, mut attempt: Attempt) -> Result<Value> {
         let plan = Plan::of(&attempt)?;
         if attempt.state != "unknown" || plan.ended.is_none() {
             return Ok(attempt.outcome());
         }
-        self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
+        if plan.held {
+            self.opencode_revert_record(id, &mut attempt, &plan).await;
+        } else {
+            self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
+        }
         self.opencode_revert_saved(id, &attempt).await
     }
 
     /// The Turns a revert archived leave this Agent's record, with any
     /// request of theirs: exactly those, whatever else the record holds.
+    /// Once none of them is left there, nothing more is written.
     async fn opencode_revert_project(&self, id: &str, attempt: &Attempt, plan: &Plan) -> Result<()> {
+        #[cfg(test)]
+        if FAIL_RECORD.lock().unwrap().take_if(|key| *key == attempt.id).is_some() {
+            bail!("tests: the record write failed");
+        }
         let (agent, kept, key, removed) = (id.to_owned(), attempt.kept.clone(), attempt.id.clone(), plan.turns.clone());
         self.stored(move |s| {
+            let ids = s.turn_ids(&agent)?;
+            if !removed.iter().any(|t| ids.contains(t)) {
+                return Ok(());
+            }
             let gone = removed.clone();
             s.record_event(&agent, "opencode/reverted", &json!({"attemptId": key, "keptTurnIds": kept}), Sel::Turns(removed), move |d| {
                 let leaves = |turn: Option<&str>| turn.is_some_and(|turn| gone.iter().any(|g| g == turn));

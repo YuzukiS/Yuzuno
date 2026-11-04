@@ -82,7 +82,8 @@ change; then OpenCode is asked once.
 - **Reverted:** the session holds the revert. Each file is reported on its own:
   as the snapshot holds it, still as before (OpenCode only logs a checkout that
   fails), or neither. Nothing is overwritten to fix it. The original text is
-  added to the draft.
+  added to the draft. Until the next message, `/compact` is refused: OpenCode
+  would apply the revert first. Send a message, then compact.
 - **Not reverted:** OpenCode refused before it began (busy, no such session, a
   request it could not read), or its request ended without keeping the revert
   and a new read finds the messages and every file as before. No turn leaves
@@ -90,8 +91,9 @@ change; then OpenCode is asked once.
 - **Not yet confirmed:** new messages, commands, `/compact` and another revert
   wait. **Check outcome** reads again only a request OpenCode answered. One it
   never answered stays unconfirmed: OpenCode's own Git processes may still be
-  changing files. There is no **Keep current history** for OpenCode, and the
-  revert is never asked for again.
+  changing files. A revert OpenCode confirmed but Core could not record is
+  recorded when you check again. There is no **Keep current history** for
+  OpenCode, and the revert is never asked for again.
 
 OpenCode's restore (unrevert) is not offered: it writes back every file of the
 snapshot. This has been checked against Core's stand-in of OpenCode 1.19.3, not
