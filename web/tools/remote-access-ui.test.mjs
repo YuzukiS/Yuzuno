@@ -764,3 +764,52 @@ test("an older Core's own Serve entry for previews is said apart: still to remov
     unreadable.close();
   }
 });
+
+test("with phone access off, an older Core's Serve entry still held for previews is removed by Turn off, tried again as asked; one no longer held or unread offers no Turn off (T-5)", async () => {
+  const kept = "The older phone previews' own Serve port 8445 was not removed: serve config locked; it is kept for the next change";
+  const entry = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" };
+  const off = (legacy, over = {}) => checkedView({
+    saved: { enabled: false, login: "user@example.com", servePort: 8444, localPort: 4318, origin: ENTRY, previews: true, savedAt: "2026-10-24T17:00:02Z", applied: true },
+    previews: included({ available: false, legacy }),
+    ...over,
+  });
+  let current = off({ ...entry, lastAttempt: null });
+  const p = mount((url, method, body) => {
+    if (method === "GET") return { body: current };
+    // Not removed again: the record keeps it, with this try.
+    const operation = op("partial", "cleanup", { requestId: body.requestId, kind: "disable", error: `Phone access is off; ${kept}`, legacy: { state: "partial", detail: kept }, notes: [kept] });
+    current = off({ ...entry, lastAttempt: { state: "partial", detail: kept, at: "x" } }, { operation });
+    return { status: 202, body: { operation } };
+  });
+  try {
+    await waitFor(() => button(p, "Turn off"), "Turn off, with phone access off");
+    assert.equal(button(p, "Turn off").disabled, false, "and it can be pressed");
+    for (const n of [1, 2]) {
+      button(p, "Turn off").click();
+      await waitFor(() => p.applies().length === n, `try ${n}`);
+      assert.deepEqual({ ...p.applies()[n - 1].body, requestId: "" }, { requestId: "", enabled: false }, `try ${n}: Turn off as ever, never phone access on again`);
+      await waitFor(() => p.alerts().includes(`Phone access is off; ${kept}.`), `try ${n}: how it ended`);
+      await waitFor(() => button(p, "Turn off") && !button(p, "Turn off").disabled, `try ${n}: it can be tried again`);
+      assert.ok(p.text().includes(`Last try: ${kept}.`), `try ${n}: with the last try`);
+    }
+    assert.equal(new Set(p.applies().map((c) => c.body.requestId)).size, 2, "each try is a new request");
+    assert.equal(p.writes().length, 2, "and nothing else is asked");
+  } finally {
+    p.close();
+  }
+  // No longer held (gone, removed, or left to others), unreadable, or none: nothing for Turn off to remove.
+  const former = (state) => ({ state, detail: "d", at: "x", formerOwned: entry });
+  for (const [what, legacy] of [
+    ["absent", former("absent")], ["removed", former("removed")], ["foreign", former("foreign")],
+    ["unreadable", { error: "remote-preview.json is not a readable phone previews record" }], ["none", null],
+  ]) {
+    const q = mount(() => ({ body: off(legacy) }));
+    try {
+      await waitFor(() => button(q, "Save and apply"), `${what}: the form`);
+      assert.equal(!!button(q, "Turn off"), false, `${what}: no Turn off`);
+      assert.doesNotMatch(q.text(), /removes it while it is still exactly that entry/, `${what}: not said to be held`);
+    } finally {
+      q.close();
+    }
+  }
+});

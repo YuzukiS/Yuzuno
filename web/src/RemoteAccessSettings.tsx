@@ -476,6 +476,10 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
   const host = view?.support.coreHost;
   const tailscale = view?.tailscale;
   const enabledNow = !!view && (!!view.saved?.enabled || !!view.listening || view.serve.state === "ours");
+  // An older Core's previews entry still held is removed by Turn off too, with
+  // phone access off as well (its note says so); one no longer held, or a
+  // record that cannot be read, gives Turn off nothing to remove.
+  const legacyHeld = !!view?.previews?.legacy && "servePort" in view.previews.legacy;
   const done = operation ? outcome(operation, language) : null;
   const unverified = !!view?.url && !!view.verification && !view.verification.ok;
   // What Save and apply would make, from the node Check read and the typed port.
@@ -748,7 +752,7 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   >
                     {sending ? t.starting : t.apply}
                   </button>
-                  {enabledNow && (
+                  {(enabledNow || legacyHeld) && (
                     <button type="button" className="secondary-button" disabled={sending || busy || !workspaceId} onClick={() => void send(false)}>
                       {t.turnOff}
                     </button>
