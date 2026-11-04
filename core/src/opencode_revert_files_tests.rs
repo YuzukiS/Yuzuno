@@ -32,6 +32,8 @@ fn run(store: &Path, work: &Path, args: &[&str]) -> String {
 fn track(store: &Path, work: &Path) -> String {
     if !store.exists() {
         run(store, work, &["init", "-q"]);
+        // As OpenCode sets up its store (`snapshot/index.ts`).
+        run(store, work, &["config", "core.autocrlf", "false"]);
     }
     run(store, work, &["add", "-A", "."]);
     run(store, work, &["write-tree"]).trim().to_owned()
@@ -55,6 +57,11 @@ fn listing(dir: &Path) -> Vec<(PathBuf, u64, Option<u128>)> {
     found.sort();
     found
 }
+
+/// What these tests give OpenCode's own Git beyond their environment: no global or system configuration of
+/// whoever runs them.
+static HERMETIC: std::sync::LazyLock<Vec<(String, String)>> =
+    std::sync::LazyLock::new(|| vec![("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM".into(), "1".into())]);
 
 fn file(bytes: &[u8], executable: bool) -> State {
     State::File { size: bytes.len() as u64, sha256: sha256(bytes), executable }
@@ -248,7 +255,7 @@ async fn a_plan_is_bounded_its_backup_is_what_was_checked_and_each_file_is_judge
         .collect();
 
     let root_id = Root::of(&work).unwrap();
-    let (entries, kept) = plan(&store, &targets, &work, root_id, BOUNDS).await.unwrap();
+    let (entries, kept) = plan(&store, &work, &HERMETIC, &targets, &work, root_id, BOUNDS).await.unwrap();
     assert_eq!(entries.iter().map(|e| (&e.expected, &e.current)).collect::<Vec<_>>(), vec![
         (&file(b"a0", false), &file(b"a1", false)),
         (&file(b"b0", false), &file(b"b1", false)),
@@ -256,7 +263,7 @@ async fn a_plan_is_bounded_its_backup_is_what_was_checked_and_each_file_is_judge
     ]);
     assert_eq!(kept, vec![Some(b"a1".to_vec()), Some(b"b1".to_vec()), Some(b"n1".to_vec())]);
     for (bounds, said) in [(Bounds { paths: 2, ..BOUNDS }, "more than 2 for Core to check"), (Bounds { total: 5, ..BOUNDS }, "more than 5 bytes")] {
-        let error = plan(&store, &targets, &work, root_id, bounds).await.unwrap_err().to_string();
+        let error = plan(&store, &work, &HERMETIC, &targets, &work, root_id, bounds).await.unwrap_err().to_string();
         assert!(error.contains(said), "{error}");
     }
 
@@ -339,4 +346,38 @@ fn opencodes_checkout_reads_a_path_as_a_pattern_so_such_a_path_is_refused() {
     ];
     let error = targets(&messages, "u1", root.to_str().unwrap(), work.to_str().unwrap()).unwrap_err().to_string();
     assert!(error.contains("a character Git reads as a pattern"), "{error}");
+}
+
+#[tokio::test]
+async fn a_file_git_would_convert_on_opencodes_checkout_is_refused_before_anything_is_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (work, store) = (root.join("work"), root.join("store"));
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join(".gitattributes"), "*.crlf text eol=crlf\n*.id ident\n*.raw -text\n").unwrap();
+    fs::write(work.join("a.crlf"), "a\n").unwrap();
+    fs::write(work.join("b.id"), "$Id$\n").unwrap();
+    fs::write(work.join("c.raw"), "c\n").unwrap();
+    fs::write(work.join("plain.txt"), "p\n").unwrap();
+    let hash = track(&store, &work);
+    // As OpenCode checks it out: the snapshot holds "a\n", the file becomes "a\r\n".
+    let crlf = work.join("a.crlf");
+    fs::write(&crlf, "changed").unwrap();
+    run(&store, &work, &["checkout", hash.as_str(), "--", crlf.to_str().unwrap()]);
+    assert_eq!(fs::read(&crlf).unwrap(), b"a\r\n", "Git converted it on checkout");
+    assert_eq!(expected(&store, &hash, "a.crlf", BOUNDS).await.unwrap(), file(b"a\n", false), "the snapshot's own bytes differ");
+    for (rel, said) in [("a.crlf", "text: set"), ("b.id", "ident: set")] {
+        let error = format!("{:#}", unconverted(&store, &work, &HERMETIC, rel).await.unwrap_err());
+        assert!(error.contains(said), "{rel}: {error}");
+    }
+    unconverted(&store, &work, &HERMETIC, "c.raw").await.unwrap();
+    unconverted(&store, &work, &HERMETIC, "plain.txt").await.unwrap();
+    let targets = vec![Target { file: crlf.to_string_lossy().into_owned(), rel: "a.crlf".into(), hash: hash.clone() }];
+    let root_id = Root::of(&work).unwrap();
+    let error = format!("{:#}", plan(&store, &work, &HERMETIC, &targets, &work, root_id, BOUNDS).await.unwrap_err());
+    assert!(error.contains("Git would convert a.crlf"), "{error}");
+    // A configuration that converts every file, as someone's own may.
+    run(&store, &work, &["config", "core.autocrlf", "true"]);
+    let error = format!("{:#}", unconverted(&store, &work, &HERMETIC, "plain.txt").await.unwrap_err());
+    assert!(error.contains("core.autocrlf true"), "{error}");
 }

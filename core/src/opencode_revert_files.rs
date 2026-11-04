@@ -339,6 +339,69 @@ async fn git(store: &Path, args: &[&str], limit: u64) -> Result<std::result::Res
     Ok(if status.success() { Ok(stdout) } else { Err(String::from_utf8_lossy(&stderr).trim().chars().take(600).collect()) })
 }
 
+/// Git as OpenCode itself runs it on its store for a checkout (`snapshot/index.ts`: its work tree, its own
+/// `core.longpaths` and `core.symlinks`, and the configuration and attributes the environment it was given names,
+/// global and system ones included; `env` is what Core sets for that process beyond its own environment), for
+/// questions whose answer depends on that scope: what such a checkout would do to a file's bytes. Nothing it runs
+/// writes or runs a filter.
+async fn native_git(store: &Path, worktree: &Path, env: &[(String, String)], args: &[&str], limit: u64) -> Result<std::process::Output> {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .arg("--git-dir")
+        .arg(store)
+        .arg("--work-tree")
+        .arg(worktree)
+        .args(["-c", "core.longpaths=true", "-c", "core.symlinks=true", "-c", "core.fsmonitor=false"])
+        .args(args)
+        .current_dir(worktree)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"] {
+        command.env_remove(name);
+    }
+    command.envs(env.iter().map(|(k, v)| (k, v)));
+    let out = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), command.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))?
+        .context("Git could not be started on this Core's host")?;
+    ensure!(out.stdout.len() as u64 <= limit, "Git's answer exceeded {limit} bytes");
+    Ok(out)
+}
+
+fn failed(args: &[&str], out: &std::process::Output) -> anyhow::Error {
+    anyhow::anyhow!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim().chars().take(600).collect::<String>())
+}
+
+/// That OpenCode's checkout of `rel` would write the snapshot's bytes as they are (Lead 4037): no attribute that
+/// converts them (`text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`) and no `core.autocrlf` that
+/// would, as Git reads them for that checkout (`native_git`). Only none of them, or `-text`, lets the snapshot's
+/// bytes be what the file becomes; anything else refuses, and no filter is ever run to find out what it would do.
+pub async fn unconverted(store: &Path, worktree: &Path, env: &[(String, String)], rel: &str) -> Result<()> {
+    let ask = ["check-attr", "-z", "text", "eol", "crlf", "ident", "filter", "working-tree-encoding", "--", rel];
+    let listed = native_git(store, worktree, env, &ask, 64 * 1024).await
+        .with_context(|| format!("What Git would do to {rel} on OpenCode's checkout cannot be read"))?;
+    ensure!(listed.status.success(), failed(&ask, &listed));
+    let fields: Vec<&[u8]> = listed.stdout.split(|b| *b == 0).collect();
+    for answer in fields.chunks(3).filter(|answer| answer.len() == 3) {
+        let (attribute, value) = (String::from_utf8_lossy(answer[1]), String::from_utf8_lossy(answer[2]));
+        let plain = value == "unspecified" || (attribute == "text" && value == "unset");
+        ensure!(plain, "Git would convert {rel} as OpenCode checks it out ({attribute}: {value}), so it would not become the snapshot's bytes");
+    }
+    // Unset is exit 1 with nothing said; any other failure is not an answer.
+    let ask = ["config", "--get", "core.autocrlf"];
+    let setting = native_git(store, worktree, env, &ask, 64).await?;
+    let autocrlf = match setting.status.code() {
+        Some(0) => String::from_utf8_lossy(&setting.stdout).trim().to_ascii_lowercase(),
+        Some(1) if setting.stdout.is_empty() && setting.stderr.is_empty() => String::new(),
+        _ => return Err(failed(&ask, &setting)),
+    };
+    // Only `true` converts on checkout; `input` converts on commit alone.
+    ensure!(autocrlf != "true", "Git would convert line endings as OpenCode checks files out (core.autocrlf true)");
+    Ok(())
+}
+
 async fn git_ok(store: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>> {
     git(store, args, limit).await?.map_err(|why| anyhow::anyhow!("git {} failed: {why}", args.join(" ")))
 }
@@ -464,6 +527,8 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
             .with_context(|| format!("{} cannot be read", at.display()))?;
         let after = rustix::fs::fstat(&handle)?;
         ensure!(bytes.len() as u64 <= bounds.file, "{} grew past {} bytes while it was read", at.display(), bounds.file);
+        // The widths of these fields differ between Linux and macOS.
+        #[allow(clippy::unnecessary_cast)]
         let same = |a: &rustix::fs::Stat| (a.st_dev as u64, a.st_ino as u64, a.st_size as u64, a.st_mtime as i64, a.st_mtime_nsec as i64, a.st_mode);
         ensure!(same(&before) == same(&stat) && same(&after) == same(&stat) && bytes.len() as u64 == stat.st_size as u64,
             "{} changed while it was read", at.display());
@@ -492,12 +557,15 @@ pub struct Entry {
 
 /// Every file a revert sends back, each known, within `bounds`; with the
 /// bytes of each file there now, for the backup.
-pub async fn plan(store: &Path, targets: &[Target], folder: &Path, root: Root, bounds: Bounds) -> Result<(Vec<Entry>, Vec<Option<Vec<u8>>>)> {
+pub async fn plan(store: &Path, worktree: &Path, env: &[(String, String)], targets: &[Target], folder: &Path, root: Root, bounds: Bounds) -> Result<(Vec<Entry>, Vec<Option<Vec<u8>>>)> {
     ensure!(targets.len() <= bounds.paths, "The revert sends back {} files, more than {} for Core to check", targets.len(), bounds.paths);
     check_store(store)?;
     let (mut entries, mut kept, mut total) = (Vec::new(), Vec::new(), 0u64);
     for target in targets {
         let expected = expected(store, &target.hash, &target.rel, bounds).await?;
+        if matches!(expected, State::File { .. }) {
+            unconverted(store, worktree, env, &target.rel).await?;
+        }
         let (current, bytes) = current(Path::new(&target.file), folder, root, bounds)?;
         total += expected.bytes() + current.bytes();
         ensure!(total <= bounds.total, "The revert's files hold more than {} bytes for Core to check", bounds.total);
