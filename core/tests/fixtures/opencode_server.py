@@ -13,10 +13,16 @@ process in a session of its own, as OpenCode's tools run, which only
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
+Its folders are worked out as OpenCode's (XDG_* and HOME), and `GET /path` and `GET /project/current`
+answer them. Snapshots of the work folder go into a real Git store in OpenCode's own layout
+(<data>/snapshot/<project>/<sha1 of the worktree>), only when XDG_DATA_HOME is a folder a test marked
+with a `.yuzuno-fixture` file; otherwise they are off, as with OpenCode's `snapshot: false`.
 """
 import base64
+import hashlib
 import json
 import os
+import pwd
 import queue
 import signal
 import subprocess
@@ -86,9 +92,6 @@ held_reads = []
 late = {}
 # Compactions held open (`summarize` mode `hold`), by session: what ends one.
 held = {}
-# The work folder's contents at each snapshot (T-10), by hash, as OpenCode's
-# snapshot store keeps them (`snapshot/index.ts`): {relative path: text}.
-snapshots = {}
 # Reverts or unreverts held (mode `hold`) or answered late (mode `late`), by session: what lets them go on.
 reverting = {}
 streams = []
@@ -121,8 +124,7 @@ def log(entry):
 
 def save():
     with lock:
-        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
-                                                     'snapshots': snapshots}))
+        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0]}))
 
 
 def load():
@@ -132,7 +134,6 @@ def load():
         sessions.update(state['sessions'])
         messages.update(state['messages'])
         counter[0] = state['counter']
-        snapshots.update(state.get('snapshots', {}))
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -163,11 +164,13 @@ def last_prompt(session):
     return max(users, key=lambda m: m['info']['time']['created'])['info']['id'] if users else None
 
 
-def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None):
+def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None):
     """An assistant message answering the session's last prompt (or `parent`), with a text part.
     `extra` adds to its info what OpenCode reports of an answer: `tokens`, `providerID`/`modelID`, `summary`.
     `files` ({relative path: text, or None to delete}) are changed in the work folder as a run's tools change
-    them, and named in a `patch` part whose hash is the snapshot from before (`session/processor.ts`)."""
+    them, and named in a `patch` part whose hash is the snapshot from before (`session/processor.ts`); with
+    snapshots off, no part. `raw_patches` are patch parts as they are ({hash, files}), such as one whose snapshot
+    is gone."""
     now = int(time.time() * 1000)
     info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent or last_prompt(session),
             'time': {'created': now}, 'finish': 'stop'}
@@ -183,8 +186,11 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
         before = track()
         for rel, content in files.items():
             write(rel, content)
-        parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', 'hash': before,
-                      'files': [str(WORK / rel) for rel in files]})
+        if before:
+            parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', 'hash': before,
+                          'files': [str(WORK / rel) for rel in files]})
+    for patch in raw_patches or []:
+        parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', **patch})
     with lock:
         messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts}
     save()
@@ -194,7 +200,33 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
     return info
 
 
-WORK = Path.cwd()
+WORK = Path.cwd().resolve()
+# OpenCode's own folders (`core/src/global.ts`: xdg-basedir and `os.homedir()`), from the environment it runs with.
+HOME = os.environ['HOME'] if 'HOME' in os.environ else pwd.getpwuid(os.getuid()).pw_dir
+
+
+def xdg(name, *default):
+    return os.path.normpath(os.path.join(os.environ.get(name) or os.path.join(HOME, *default), 'opencode'))
+
+
+DATA, STATE, CONFIG = xdg('XDG_DATA_HOME', '.local', 'share'), xdg('XDG_STATE_HOME', '.local', 'state'), xdg('XDG_CONFIG_HOME', '.config')
+# The project OpenCode names this folder's (`core/src/project.ts`; a fixed one here).
+PROJECT = 'fixtureproject'
+# OpenCode's snapshot store for this worktree (`snapshot/index.ts`: data/snapshot/<project>/<sha1 of the worktree>).
+STORE = Path(DATA) / 'snapshot' / PROJECT / hashlib.sha1(str(WORK).encode()).hexdigest()
+# Snapshots are taken only into a data folder a test made for them (marked `.yuzuno-fixture`), never under anyone's
+# own home; without one they are off, as with OpenCode's `snapshot: false`.
+SNAPSHOTS = bool(os.environ.get('XDG_DATA_HOME')) and (Path(os.environ['XDG_DATA_HOME']) / '.yuzuno-fixture').is_file()
+
+
+def git(*args, check=True):
+    """Git on the snapshot store, with the work folder as its work tree, as OpenCode runs it."""
+    result = subprocess.run(['git', '--git-dir', str(STORE), '--work-tree', str(WORK), '-c', 'core.autocrlf=false',
+                             '-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=true', *args],
+                            cwd=WORK, capture_output=True, env={**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'})
+    if check and result.returncode != 0:
+        raise RuntimeError(f'git {args}: {result.stderr.decode()}')
+    return result
 
 
 def folder():
@@ -212,12 +244,40 @@ def folder():
 
 
 def track():
-    """A snapshot of the whole work folder (`Snapshot.track`): its hash."""
-    hash = new_id('snap')
+    """A snapshot of the work folder (`Snapshot.track`): everything but this stand-in's own files added to the
+    store's index, then the tree written; its ID, or None with snapshots off."""
+    if not SNAPSHOTS:
+        return None
     with lock:
-        snapshots[hash] = folder()
-    save()
-    return hash
+        if not STORE.exists():
+            STORE.parent.mkdir(parents=True, exist_ok=True)
+            git('init', '-q')
+        root = ROOT.resolve()
+        exclude = [f':(exclude){root.relative_to(WORK)}'] if WORK in root.parents else []
+        git('add', '-A', '--', '.', *exclude)
+        return git('write-tree').stdout.decode().strip()
+
+
+def restore(snapshot):
+    """The whole snapshot written back (`Snapshot.restore`: read-tree, then checkout-index -a -f)."""
+    with lock:
+        git('read-tree', snapshot)
+        git('checkout-index', '-a', '-f')
+
+
+def revert_file(hash, file):
+    """One file back as `hash` holds it (`Snapshot.revert`): checked out; if that fails, kept when the snapshot
+    lists it, else deleted. What became of it."""
+    rel = os.path.relpath(file, WORK)
+    with lock:
+        if git('checkout', hash, '--', file, check=False).returncode == 0:
+            return 'restored'
+        listed = git('ls-tree', hash, '--', rel, check=False)
+    if listed.returncode == 0 and listed.stdout.strip():
+        log({'fixture': 'checkout failed, kept', 'file': rel})
+        return 'kept'
+    Path(file).unlink(missing_ok=True)
+    return 'deleted'
 
 
 def write(rel, content):
@@ -315,7 +375,7 @@ def control(name, body):
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
     if name == 'reply':
         info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'),
-                             body.get('info'), body.get('files'))
+                             body.get('info'), body.get('files'), body.get('patches'))
         if body.get('idle', True):
             go_idle(body['sessionID'])
         return info
@@ -493,8 +553,13 @@ class Handler(BaseHTTPRequestHandler):
             if time.time() < modes['refuseEventsUntil']:
                 return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
             return self.stream()
+        if key == ('GET', 'path'):
+            # `handlers/instance.ts` getPath: OpenCode's own folders and the instance's worktree and directory.
+            return self.reply(200, {'home': HOME, 'state': STATE, 'config': CONFIG, 'worktree': str(WORK), 'directory': str(WORK)})
+        if key == ('GET', 'project', 'current'):
+            return self.reply(200, {'id': PROJECT, 'worktree': str(WORK), 'vcs': 'git'})
         if key == ('POST', 'session'):
-            session = {'id': new_id('ses'), 'title': (body or {}).get('title', ''),
+            session = {'id': new_id('ses'), 'projectID': PROJECT, 'title': (body or {}).get('title', ''),
                        'directory': parse_qs(url.query).get('directory', [''])[0]}
             sessions[session['id']] = session
             save()
@@ -793,11 +858,13 @@ class Handler(BaseHTTPRequestHandler):
         """As OpenCode 1.19.3's revert (`session/revert.ts`), refused while the session runs (409): the
         boundary is the message asked for, or the user message before an answer asked for; none found
         answers the session unchanged. A snapshot of the whole folder is taken (a revert already waiting
-        is restored first), each file a later patch names goes back to before its first such change
-        (deleted if it did not exist), and the revert is kept in the session with that snapshot.
-        Mode `revert`: `ok`, `files-fail` (as OpenCode when a file's checkout fails: only logged, the
-        answer the same), `error` (500, nothing done), `drop` (done, then the connection ends with no
-        answer), `late` (done, answered only on `goOn`), `hold` (nothing done until `goOn`)."""
+        is restored first), each file a later patch names is checked out of its first such patch's
+        snapshot (kept if that fails and the snapshot lists it, deleted otherwise, as when it did not exist
+        or the snapshot is gone), and the revert is kept in the session with that snapshot.
+        Mode `revert`: `ok`, `files-fail` (every checkout taken as failed with the snapshot listing the
+        file: only logged, the answer the same), `error` (500, nothing done), `drop` (done, then the
+        connection ends with no answer), `late` (done, answered only on `goOn`), `hold` (nothing done
+        until `goOn`)."""
         if statuses.get(session, {}).get('type') == 'busy':
             return self.reply(409, {'name': 'SessionBusyError', 'data': {'sessionID': session, 'message': f'Session {session} is busy'}})
         mode = modes['revert']
@@ -827,23 +894,23 @@ class Handler(BaseHTTPRequestHandler):
         info = sessions[session]
         if revert:
             waiting = info.get('revert') or {}
-            revert['snapshot'] = waiting.get('snapshot') or track()
+            snapshot = waiting.get('snapshot') or track()
             if waiting.get('snapshot'):
-                for rel, content in snapshots[waiting['snapshot']].items():
-                    write(rel, content)
+                restore(waiting['snapshot'])
             seen, restored = set(), []
             for p in patches:
                 for file in p['files']:
                     if file in seen:
                         continue
                     seen.add(file)
-                    rel = str(Path(file).relative_to(WORK))
                     if mode == 'files-fail':
-                        log({'fixture': 'checkout failed, kept', 'file': rel})
+                        log({'fixture': 'checkout failed, kept', 'file': os.path.relpath(file, WORK)})
                         continue
-                    write(rel, snapshots[p['hash']].get(rel))
-                    restored.append(rel)
-            revert['diff'] = ''.join(f'diff --git a/{rel} b/{rel}\n' for rel in restored)
+                    if revert_file(p['hash'], file) != 'kept':
+                        restored.append(os.path.relpath(file, WORK))
+            if snapshot:
+                revert['snapshot'] = snapshot
+                revert['diff'] = git('diff', snapshot, check=False).stdout.decode(errors='replace')
             info['revert'] = revert
             info['summary'] = {'additions': 0, 'deletions': 0, 'files': len(restored)}
             save()
@@ -874,8 +941,8 @@ class Handler(BaseHTTPRequestHandler):
         info = sessions[session]
         revert = info.get('revert')
         if revert:
-            for rel, content in snapshots.get(revert.get('snapshot'), {}).items():
-                write(rel, content)
+            if revert.get('snapshot'):
+                restore(revert['snapshot'])
             info.pop('revert', None)
             save()
             publish('session.updated', {'sessionID': session, 'info': info})
