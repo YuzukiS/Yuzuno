@@ -157,6 +157,16 @@ export function QuotaResumeNotice({
     autoContinueVersion(detail),
   );
   const [busy, setBusy] = useState<"" | "now" | "cancel" | "on">("");
+  // Core's answer removes or replaces the pressed button: focus that fell to
+  // the page then goes to the notice, never on to Continue now (T-19 CX-44).
+  const notice = useRef<HTMLDivElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (busy || !refocus.current) return;
+    refocus.current = false;
+    if (!document.activeElement || document.activeElement === document.body)
+      notice.current?.focus({ preventScroll: true });
+  }, [busy]);
   const language = useLanguage();
   const t = noticeText(language);
   if (!view) return null;
@@ -167,6 +177,7 @@ export function QuotaResumeNotice({
 
   async function act(kind: "now" | "cancel" | "on") {
     if (busy || disabled) return;
+    refocus.current = !!notice.current?.contains(document.activeElement);
     setBusy(kind);
     setError("");
     try {
@@ -201,7 +212,7 @@ export function QuotaResumeNotice({
     text = t.stopped(limit, at(resets!), view.enabled);
   }
   return (
-    <div className="recovery-notice quota-resume-notice" role="status" lang={langTag(language)}>
+    <div ref={notice} className="recovery-notice quota-resume-notice" role="status" tabIndex={-1} lang={langTag(language)}>
       <Clock size={14} />
       <span>{text}</span>
       <div className="quota-resume-actions">
