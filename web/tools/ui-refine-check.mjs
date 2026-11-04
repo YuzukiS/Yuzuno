@@ -922,10 +922,11 @@ try {
     });
     await page.keyboard.press("Escape");
     await modal.waitFor({ state: "detached" });
-    // A phone shows the turn dock as a panel from its Turns button (PhoneDocks, T-170).
+    // A phone shows the turn dock as a panel from its Turns button (PhoneDocks, T-170). Its rows carry their
+    // words, so the hover preview is not shown there (phone-docks.css).
     await page.locator(".phone-dock-turns").click();
     await dock.locator('[data-turn-choice="current"]').hover();
-    await dock.getByRole("tooltip").waitFor();
+    assert.equal(await dock.locator(".turn-dock-preview").isVisible(), false);
     assert.ok(
       (await page.locator(".conversation-header").boundingBox()).height <= 65,
     );

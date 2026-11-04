@@ -282,13 +282,18 @@ async function fixture() {
   await page.setViewportSize({ width: 1440, height: 960 });
   const composer = page.getByRole("textbox", { name: "Message Mori" });
   await composer.fill("Keep my unfinished draft 保留草稿");
-  // The question's only editor is its dock dialog (QuestionAnchor), opened from the question itself.
-  await page.getByRole("button", { name: "View question and answer", exact: true }).click();
-  await page.getByRole("radio", { name: "Sage", exact: true }).check();
-  await page.getByRole("button", { name: "Send answer", exact: true }).click();
+  // A question's only editor is the dock's dialog (PendingQuestions), opened from the questions waiting.
   await page
-    .getByRole("button", { name: "Answer sent", exact: true })
-    .waitFor();
+    .getByRole("region", { name: "Questions to answer" })
+    .getByRole("button", { name: /^Questions to answer/ })
+    .click();
+  const answering = page.getByRole("dialog", { name: "Answer a question", exact: true });
+  await answering.getByRole("radio", { name: "Sage", exact: true }).check();
+  await answering.getByRole("button", { name: "Send answer", exact: true }).click();
+  await answering.getByRole("button", { name: "Answer sent", exact: true }).waitFor();
+  // A sent answer leaves the dialog open; it is closed by hand before the composer is used again.
+  await answering.getByRole("button", { name: "Close dialog" }).click();
+  await answering.waitFor({ state: "detached" });
   assert.equal(
     await composerDraft(composer, WORKSPACE),
     "Keep my unfinished draft 保留草稿",
@@ -296,6 +301,7 @@ async function fixture() {
   const answer = requests.filter((r) => r.path.endsWith("/messages"));
   assert.equal(answer.length, 1);
   assert.equal(answer[0].body.expectedTurnId, "turn");
+  assert.deepEqual(answer[0].body.question, { turnId: "turn", itemId: "question" });
   check("direct question answer preserves draft and targets active turn");
   await page.getByRole("button", { name: "Send while working" }).click();
   await page.waitForFunction(
