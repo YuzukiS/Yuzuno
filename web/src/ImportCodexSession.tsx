@@ -263,6 +263,18 @@ export function ImportCodexSession({
             {t.codexHandoff}
             {!preview.existingAgentId && t.codexAddsNothing}
           </p>
+          {/* The error's line is kept while empty: a failure fills it instead of pushing the
+              buttons down under the pointer. Below them it could fall out of this dialog's
+              scrolled view (T-19 SX-35). */}
+          {errorShown ? (
+            <p key="error" role="alert" className="remote-field-error">
+              {errorShown}
+            </p>
+          ) : (
+            <p key="line" className="remote-field-error" aria-hidden="true" style={{ visibility: "hidden" }}>
+              &nbsp;
+            </p>
+          )}
           <div className="modal-actions">
             <button
               className="secondary-button"
@@ -286,12 +298,6 @@ export function ImportCodexSession({
               {busy ? t.opening : preview.existingAgentId ? t.openAgent : t.addToWorkspace}
             </button>
           </div>
-          {/* Below the buttons, so a failure does not move them under the pointer (T-19 SX-35). */}
-          {errorShown && (
-            <p role="alert" className="remote-field-error">
-              {errorShown}
-            </p>
-          )}
         </form>
       )}
       {!preview && errorShown && (
