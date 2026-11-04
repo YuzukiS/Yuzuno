@@ -233,7 +233,7 @@ async fn turn_on(ws: &Arc<Workspace>, data: &Path, agent: &str, text: &str, answ
 }
 
 fn request(id: &str, turn: &str, name: &str) -> Request {
-    Request { request_id: id.into(), turn_id: turn.into(), name: name.into(), abandon_unconfirmed: false }
+    Request { request_id: id.into(), turn_id: turn.into(), name: name.into() }
 }
 
 /// A lab with three answered Turns: the Workspace, its data folder, the work folder and the Turns.
@@ -298,7 +298,19 @@ async fn a_fork_through_a_turn_is_a_new_agent_in_the_same_folder_and_the_source_
     assert_eq!(ws.store.turn_ids("oc").unwrap(), vec![first, second, third]);
     turn_on(&ws, &data, &target, "next", json!({})).await;
     assert_eq!(ws.store.turn_ids(&target).unwrap().len(), 3);
-    ws.close_agent(&target).await.unwrap();
+    // Read without a write: that fork, done, by its Turn; another request for the Turn is that one.
+    let seen = ws.opencode_fork_seen("oc", Which { request_id: None, turn_id: Some(second.clone()) }).await.unwrap();
+    assert_eq!((&seen["state"], &seen["agent"]["id"]), (&json!("completed"), &json!(target)), "{seen}");
+    let other = uuid::Uuid::new_v4().to_string();
+    assert_eq!(ws.opencode_fork("oc", request(&other, &second, "Forked")).await.unwrap()["agent"]["id"], json!(target));
+    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1);
+    // Its Agent deleted, the Turn can be forked anew.
+    ws.delete_agent(&target).await.unwrap();
+    let anew = ws.opencode_fork("oc", request(&other, &second, "Forked")).await.unwrap();
+    assert_eq!(anew["state"], "completed", "{anew}");
+    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 2);
+    assert_eq!(ws.store.opencode_fork_row(&key).unwrap().unwrap().state, "released");
+    ws.close_agent(anew["agent"]["id"].as_str().unwrap()).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 
@@ -327,23 +339,11 @@ async fn a_fork_whose_answer_never_came_is_uncertain_never_asked_again_and_holds
     assert_eq!(ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap()["state"], "uncertain");
     let other = uuid::Uuid::new_v4().to_string();
     assert_eq!(ws.opencode_fork("oc", request(&other, &first, "F")).await.unwrap()["state"], "uncertain");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1);
-    // Only the user's own choice gives it up.
-    let given = ws.opencode_fork("oc", Request { abandon_unconfirmed: true, ..request(&other, &first, "F") }).await.unwrap();
-    assert_eq!(given["state"], "completed", "{given}");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 2);
-    assert_eq!(ws.store.opencode_fork_row(&key).unwrap().unwrap().state, "abandoned");
-    let target = given["agent"]["id"].as_str().unwrap().to_owned();
-    let seen = ws.opencode_fork_seen("oc", by(None, Some(&first))).await.unwrap();
-    assert_eq!((&seen["state"], &seen["agent"]["id"]), (&json!("completed"), &json!(target)), "{seen}");
-    // Its Agent deleted, the Turn can be forked anew, by a new request.
-    ws.delete_agent(&target).await.unwrap();
-    let again = uuid::Uuid::new_v4().to_string();
-    let anew = ws.opencode_fork("oc", request(&again, &first, "F")).await.unwrap();
-    assert_eq!(anew["state"], "completed", "{anew}");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 3);
-    assert_eq!(ws.store.opencode_fork_row(&other).unwrap().unwrap().state, "released");
-    ws.close_agent(anew["agent"]["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "never asked again");
+    // Nothing gives it up (Lead 4195): a request that asks to is refused as it is read.
+    let refused = serde_json::from_value::<Request>(json!({"requestId": other, "turnId": first, "name": "F", "abandonUnconfirmed": true}));
+    assert!(refused.unwrap_err().to_string().contains("abandonUnconfirmed"));
+    assert_eq!(ws.store.opencode_fork_row(&key).unwrap().unwrap().state, "uncertain");
     ws.close_agent("oc").await.unwrap();
 }
 

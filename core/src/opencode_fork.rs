@@ -14,10 +14,11 @@
 //! database is not deleted, and nothing shows it.
 //!
 //! One request, kept in `opencode_forks` from before it is asked, is never
-//! asked again: an answer that never came leaves it uncertain, given up only
-//! by the user's own choice. That uncertainty is the attempt's alone: the
-//! source Agent goes on. Everything after the answer is checked or replayed
-//! again from what was fixed, never forked again and never registered twice.
+//! asked again: an answer that never came leaves it uncertain, and no fork
+//! is asked anew from that Turn (Lead 4195), by this request or another.
+//! That uncertainty is the attempt's alone: the source Agent goes on.
+//! Everything after the answer is checked or replayed again from what was
+//! fixed, never forked again and never registered twice.
 use super::*;
 use crate::opencode::ForkAnswer;
 use crate::opencode_fork_check as check;
@@ -53,10 +54,6 @@ pub(crate) struct Request {
     request_id: String,
     turn_id: String,
     name: String,
-    /// The user's own choice to give up an attempt whose answer never came,
-    /// or one that cannot go on, for a new one.
-    #[serde(default)]
-    abandon_unconfirmed: bool,
 }
 
 /// One fork attempt as kept.
@@ -140,7 +137,7 @@ impl Workspace {
         Ok(match row.state.as_str() {
             "sending" | "uncertain" => outcome(&row, "uncertain", row.error.clone().unwrap_or_else(||
                 "OpenCode 还没有回答这次 fork；结果确认之前不会再请求一次，原 Agent 照常可用".into())),
-            "failed" | "abandoned" | "released" => outcome(&row, "failed", row.error.clone().unwrap_or_else(|| "fork 没有完成".into())),
+            "failed" | "released" => outcome(&row, "failed", row.error.clone().unwrap_or_else(|| "fork 没有完成".into())),
             "completed" => match self.listed(&row.target_agent_id).await {
                 Ok(agent) => json!({"state":"completed","requestId":row.request_id,"connected":agent.connection_state == "connected","agent":agent,"warnings":[]}),
                 Err(_) => outcome(&row, "failed", "fork 出的 Agent 已删除".into()),
@@ -234,7 +231,7 @@ impl Workspace {
             match row.state.as_str() {
                 "sending" | "uncertain" => return Ok(outcome(&row, "uncertain", row.error.clone().unwrap_or_else(||
                     "OpenCode 没有回答这次 fork；结果确认之前不会再请求一次，原 Agent 照常可用".into()))),
-                "failed" | "abandoned" => return Ok(outcome(&row, "failed", row.error.clone().unwrap_or_else(|| "fork 没有完成".into()))),
+                "failed" | "released" => return Ok(outcome(&row, "failed", row.error.clone().unwrap_or_else(|| "fork 没有完成".into()))),
                 "forked" => self.opencode_fork_verify(&mut row).await?,
                 "verified" => self.opencode_fork_chain(&mut row).await?,
                 "chained" => self.opencode_fork_target(&mut row, &mut warnings).await?,
@@ -248,20 +245,20 @@ impl Workspace {
     }
 
     /// The attempt's start, under the source's gate (contract 3): another
-    /// live attempt for the same Turn is answered as it stands, unless the
-    /// user gives it up; otherwise the source is read, what it holds is
-    /// fixed and kept, and OpenCode is asked once, watched for WATCH.
+    /// live attempt for the same Turn is answered as it stands, whatever
+    /// request asks; otherwise the source is read, what it holds is fixed and
+    /// kept, and OpenCode is asked once, watched for WATCH.
     async fn opencode_fork_begin(self: &Arc<Self>, id: &str, request: &Request) -> Result<Row> {
         let gate = self.gate(id).await;
         let held = gate.lock().await;
         let (source, turn) = (id.to_owned(), request.turn_id.clone());
         if let Some(earlier) = self.stored(move |s| s.opencode_live_fork(&source, &turn)).await? {
             // Its Agent deleted, a completed fork no longer continues anything (as with Codex).
-            let gone = earlier.state == "completed" && self.listed(&earlier.target_agent_id).await.is_err();
-            let ended = matches!(earlier.state.as_str(), "sending" | "uncertain" | "forked" | "verified" | "chained");
-            let given = if gone { "released" } else if request.abandon_unconfirmed && ended { "abandoned" } else { return Ok(earlier) };
-            let (key, error) = (earlier.request_id.clone(), earlier.error.clone());
-            self.stored(move |s| s.opencode_set_fork(&key, given, None, error.as_deref())).await?;
+            if !(earlier.state == "completed" && self.listed(&earlier.target_agent_id).await.is_err()) {
+                return Ok(earlier);
+            }
+            let key = earlier.request_id.clone();
+            self.stored(move |s| s.opencode_set_fork(&key, "released", None, Some("fork 出的 Agent 已删除"))).await?;
         }
         let read = self.opencode_fork_read(id, &request.turn_id).await?;
         let index = read.detail.turns.iter().position(|t| t["id"] == request.turn_id.as_str()).unwrap_or_default();
