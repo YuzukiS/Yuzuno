@@ -84,7 +84,9 @@ impl Workspace {
     /// it was started, its `/path` agrees with that, the session is its
     /// project's, and every file comes out known (`opencode_revert_files::plan`).
     pub(super) async fn opencode_revert_read(self: &Arc<Self>, id: &str, turn: &str) -> Result<Read> {
-        let d = self.send_view(id).await?;
+        // What a send checks, with this Turn among the Turns read; and where it is among all of them.
+        let (agent, wanted) = (id.to_owned(), turn.to_owned());
+        let d = self.stored(move |store| store.view(&agent, Sel::Turns(vec![wanted]))).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(d.agent.harness == "opencode", "Agent 不是 OpenCode");
         if let Some(blocked) = compaction_blocks(&d, "没有预览回退") {
@@ -93,6 +95,8 @@ impl Workspace {
         ensure!(!d.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")),
             "上一条消息的发送结果尚未确认，请先重连核对；没有预览回退");
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；回退只在空闲时进行，没有预览回退");
+        let (agent, wanted) = (id.to_owned(), turn.to_owned());
+        let (kept, total) = self.stored(move |store| store.turns_around(&agent, &wanted)).await?.context("这个 Agent 没有这个 Turn；没有预览回退")?;
         let index = d.turns.iter().position(|t| t["id"] == turn).context("这个 Agent 没有这个 Turn；没有预览回退")?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能回退")?;
         let unread = "没有读到 OpenCode 会话现在的状态；没有预览回退";
@@ -130,7 +134,7 @@ impl Workspace {
             .unwrap_or_default();
         let digest: String = Sha256::digest(serde_json::to_vec(&messages)?).iter().map(|b| format!("{b:02x}")).collect();
         Ok(Read { generation: c.generation, session: c.session.clone(), messages: digest, entries, root,
-            removed: d.turns.len() - index, kept: index, draft })
+            removed: total - kept, kept, draft })
     }
 }
 
