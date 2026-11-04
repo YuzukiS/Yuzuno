@@ -1,0 +1,207 @@
+// T-19 SH:N12 and CV:CP-02, the current-turn pin's body (M5): in Chromium on a production build of
+// the app with a synthetic Workspace that is never written to. Sora's Turn is running, and its
+// request, with a follow-up, has gone up out of view, so the pin holds it at the conversation's top.
+// A press on the pin's summary (a tap on a phone), or Enter on it, opens the pin: the request's list
+// unfolds over frames as the excerpt goes. A second press, or Escape, folds it again; Escape gives
+// focus back to the summary. Under reduced motion the list is there, or gone, in the first frame.
+// Throughout, the conversation does not scroll and the pin stays pinned. Desktop 1280×860 and phone
+// 390×844, each with normal and reduced motion. Each toggle is sampled every frame: the pin's height
+// below its summary, its open state, whether it is pinned, and the conversation's scrollTop.
+// Writes: only the app's own saves of where an Agent was read. Reads the fixture does not know are
+// answered {} and listed. Chromium is not Safari.
+//   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-current-pin-check.mjs
+import assert from "node:assert/strict";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { extname, resolve } from "node:path";
+import { launchBrowser } from "./browser-engine.mjs";
+import { emptyHome, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+
+assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
+const dist = resolve(process.env.YUZUNO_UI_DIST);
+assert.notEqual(dist, resolve("dist"));
+const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/motion-current-pin");
+await mkdir(output, { recursive: true });
+const report = { checks: [], failures: [], errors: [], writes: [], readingSaves: [], unknownGets: [], frames: {} };
+const ok = (name, cond, detail) => {
+  (cond ? report.checks : report.failures).push({ name, detail });
+  console.log(`${cond ? "PASS" : "FAIL"} ${name}${cond ? "" : ` ${JSON.stringify(detail)}`}`);
+};
+
+const WORKSPACE = "ws-current-pin";
+const agent = (id, name, status) => ({ id, name, status, goal: "", cwd: "/fixture", model: "m", color: "sage", createdAt: "", updatedAt: "",
+  unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", harness: "codex", connectionState: "connected" });
+const agents = [agent("c", "Sora", "working"), agent("a", "Mori", "idle")];
+const request = "Check the phone layout again: run the layout check, then tell me which parts still run off the side and why.";
+const followUp = "Also note which of them only run off the side with the larger reading size.";
+const work = (n) => `Step ${n} of the layout check. ${"The check measures each part against the side of the window and notes what runs off. ".repeat(6)}`;
+// Eight finished Turns, then the running one: its request and follow-up, and far more work below them,
+// so at the latest both are out of view above and the pin holds them.
+const turns = [
+  ...Array.from({ length: 8 }, (_, n) => ({ id: `t${n}`, status: "completed", items: [
+    { id: `u${n}`, type: "userMessage", content: [{ type: "text", text: `Earlier question ${n + 1}` }] },
+    { id: `r${n}`, type: "agentMessage", text: `Earlier answer ${n + 1}.` },
+  ] })),
+  { id: "t8", status: "inProgress", items: [
+    { id: "u8", type: "userMessage", content: [{ type: "text", text: request }] },
+    { id: "w1", type: "agentMessage", phase: "commentary", text: work(1) },
+    { id: "u8b", type: "userMessage", content: [{ type: "text", text: followUp }] },
+    ...Array.from({ length: 6 }, (_, n) => ({ id: `w${n + 2}`, type: "agentMessage", phase: "commentary", text: work(n + 2) })),
+  ] },
+];
+const gets = {
+  "/api/workspace": { workspace: { id: WORKSPACE }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
+    runtime: { connected: true }, defaultCwd: "/fixture" },
+  "/api/agents/c": { agent: agents[0], pending: [], messageReceipts: [], artifacts: [], turns },
+  "/api/agents/a": { agent: agents[1], pending: [], messageReceipts: [], artifacts: [], turns: turns.slice(0, 2) },
+  "/api/home": emptyHome, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
+  "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+  "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
+};
+const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
+  ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json" };
+async function serve(route) {
+  const request = route.request();
+  const url = new URL(request.url());
+  const method = request.method();
+  if (url.pathname.startsWith("/api/")) {
+    if (/^\/api\/agents\/[ac]\/reading$/.test(url.pathname)) {
+      if (method === "GET") return route.fulfill({ json: { handoff: null } });
+      report.readingSaves.push(url.pathname);
+      return route.fulfill({ json: { accepted: true, sourceSeq: 0 } });
+    }
+    // Home reads the repositories linked to its projects through a POST that changes nothing.
+    if (method === "POST" && url.pathname === "/api/collaboration/github_repositories")
+      return route.fulfill({ json: { repositories: [], links: [] } });
+    if (method !== "GET") {
+      report.writes.push(`${method} ${url.pathname}`);
+      return route.fulfill({ status: 400, json: { error: "this check writes nothing" } });
+    }
+    const json = gets[url.pathname];
+    if (json) return route.fulfill({ json });
+    report.unknownGets.push(url.pathname);
+    return route.fulfill({ json: {} });
+  }
+  const file = resolve(dist, `.${url.pathname === "/" ? "/index.html" : url.pathname}`);
+  assert.ok(file.startsWith(dist + "/"));
+  return route.fulfill({ body: await readFile(file), contentType: types[extname(file)] || "application/octet-stream" });
+}
+
+/** Samples the pin every frame from now until `span` ms have passed. */
+function startSampling(span) {
+  const pin = document.querySelector(".main-panel .current-turn-prompt");
+  const summary = pin.querySelector(":scope > summary");
+  const scroller = document.querySelector(".main-panel .conversation-scroll");
+  const t0 = performance.now();
+  const read = () => ({
+    t: Math.round(performance.now() - t0),
+    open: pin.open,
+    // The list's share of the pin: its height below the summary (padding and border included).
+    body: Math.round((pin.getBoundingClientRect().height - summary.getBoundingClientRect().height) * 10) / 10,
+    pinned: pin.dataset.pinned,
+    top: Math.round(scroller.scrollTop),
+  });
+  window.__pinFrames = [read()];
+  window.__pinDone = false;
+  const frame = () => {
+    window.__pinFrames.push(read());
+    if (performance.now() - t0 < span) requestAnimationFrame(frame);
+    else window.__pinDone = true;
+  };
+  requestAnimationFrame(frame);
+}
+
+const browser = await launchBrowser();
+const runs = [
+  { tag: "desktop", width: 1280, height: 860, touch: false, reduced: false },
+  { tag: "desktop-reduced", width: 1280, height: 860, touch: false, reduced: true },
+  { tag: "phone", width: 390, height: 844, touch: true, reduced: false },
+  { tag: "phone-reduced", width: 390, height: 844, touch: true, reduced: true },
+];
+try {
+  for (const run of runs) {
+    const context = await browser.newContext({ viewport: { width: run.width, height: run.height }, hasTouch: run.touch, isMobile: run.touch,
+      reducedMotion: run.reduced ? "reduce" : "no-preference" });
+    const page = await context.newPage();
+    await page.addInitScript(() => {
+      window.EventSource = class { close() {} };
+      localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
+    });
+    page.on("pageerror", (error) => report.errors.push(`${run.tag}: ${error.message}`));
+    await page.route("http://yuzuno-current-pin.test/**", serve);
+    try {
+      await page.goto("http://yuzuno-current-pin.test/");
+      const composer = page.locator('[data-composer-input][aria-label="Message Sora"]');
+      if (!(await composer.isVisible().catch(() => false))) {
+        if (run.touch && !(await page.locator(".app.phone-list").count())) await page.locator(".phone-back").click();
+        await page.locator('.agent-row .agent-select[aria-label="Open Sora"]').click();
+      }
+      await composer.waitFor();
+      // At the latest, the request and its follow-up are up out of view: the pin holds them.
+      const scroller = page.locator(".main-panel .conversation-scroll");
+      await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      const pin = page.locator('.main-panel .current-turn-prompt[data-pinned="true"]');
+      await pin.waitFor();
+      await page.waitForTimeout(400);
+      const summary = pin.locator(":scope > summary");
+      const press = run.touch ? "tap" : "press";
+      const closedBody = await pin.evaluate((el) => el.getBoundingClientRect().height - el.querySelector(":scope > summary").getBoundingClientRect().height);
+      const all = [];
+
+      /** One toggle, sampled: what the pin was before, every frame after, and where it settled. */
+      async function toggle(what, act) {
+        const before = await pin.evaluate((el) => el.open);
+        await page.evaluate(startSampling, 700);
+        await act();
+        await page.waitForFunction(() => window.__pinDone);
+        const frames = await page.evaluate(() => window.__pinFrames);
+        report.frames[`${run.tag}: ${what}`] = frames;
+        all.push(...frames);
+        const after = frames.filter((f) => f.open !== before);
+        const first = after[0];
+        const final = after.at(-1);
+        const between = after.filter((f) => f.body > Math.min(first.body, final.body) + 1 && f.body < Math.max(first.body, final.body) - 1);
+        return { before, after: after.length, first: first?.body, final: final?.body, between: between.length, settledOpen: final && final.open };
+      }
+      const overFrames = (seen, opening) => seen.after > 0 && seen.settledOpen === opening && seen.between >= 2
+        && (opening ? seen.final - seen.first > 20 : seen.first - seen.final > 20);
+      const atOnce = (seen, opening) => seen.after > 0 && seen.settledOpen === opening && Math.abs(seen.final - seen.first) <= 1
+        && (opening ? seen.final - closedBody > 20 : Math.abs(seen.final - closedBody) <= 1);
+      const judge = (name, seen, opening) => run.reduced
+        ? ok(`${run.tag}: ${name}, in the first frame`, atOnce(seen, opening), seen)
+        : ok(`${run.tag}: ${name}, over frames`, overFrames(seen, opening), seen);
+
+      const opened = await toggle(`${press} opens`, () => (run.touch ? summary.tap() : summary.click()));
+      judge(`a ${press} on the pin opens it, its request unfolding`, opened, true);
+      const listed = await pin.locator(".current-turn-messages").innerText();
+      ok(`${run.tag}: the open pin reads the request and its follow-up`,
+        listed.includes("run the layout check") && listed.includes("larger reading size"), listed.slice(0, 200));
+      const closed = await toggle(`${press} closes`, () => (run.touch ? summary.tap() : summary.click()));
+      judge(`a second ${press} closes it, folding`, closed, false);
+      const entered = await toggle("Enter opens", async () => {
+        await summary.focus();
+        await page.keyboard.press("Enter");
+      });
+      judge("Enter on its summary opens it", entered, true);
+      const escaped = await toggle("Escape closes", () => page.keyboard.press("Escape"));
+      const focusBack = await summary.evaluate((el) => document.activeElement === el);
+      if (run.reduced) ok(`${run.tag}: Escape closes it in the first frame, and focus is back on the summary`, atOnce(escaped, false) && focusBack, { ...escaped, focusBack });
+      else ok(`${run.tag}: Escape closes it over frames, and focus is back on the summary`, overFrames(escaped, false) && focusBack, { ...escaped, focusBack });
+      const tops = [...new Set(all.map((f) => f.top))];
+      const pinnedAll = all.every((f) => f.pinned === "true");
+      ok(`${run.tag}: throughout, the conversation does not scroll and the pin stays pinned`,
+        Math.max(...tops) - Math.min(...tops) <= 1 && pinnedAll, { tops, pinnedAll, frames: all.length });
+      await page.screenshot({ path: resolve(output, `${run.tag}-closed.png`) });
+    } catch (error) {
+      ok(`${run.tag}: the sequence ran to its end`, false, String(error?.message ?? error).slice(0, 400));
+    }
+    await context.close();
+  }
+  ok("no page errors", report.errors.length === 0, report.errors);
+  ok("writes: none but the app's own saves of where an Agent was read", report.writes.length === 0, report.writes);
+} finally {
+  await browser.close();
+  report.unknownGets = [...new Set(report.unknownGets)];
+  await writeFile(resolve(output, "motion-current-pin-check.json"), JSON.stringify(report, null, 2));
+}
+console.log(`${report.checks.length} passed, ${report.failures.length} failed; unanswered reads: ${JSON.stringify(report.unknownGets)}; report in ${output}`);
+if (report.failures.length) process.exitCode = 1;
