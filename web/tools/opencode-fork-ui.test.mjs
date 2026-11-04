@@ -210,6 +210,34 @@ test("a fork Core refused before keeping anything keeps the preview and its name
   } finally { page.close(); }
 });
 
+test("a fork opened on an attempt Core then says it never kept gets its preview and suggested name back, ready to fork", async () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  let kept = true;
+  const asked = [];
+  const core = { calls: [], fork: (body) => {
+    asked.push(body);
+    if (asked.length === 1) { kept = false; return { status: 400, body: { error: "fixture: OpenCode is busy; nothing forked" } }; }
+    return { ...completed, requestId: body.requestId };
+  },
+  // The request kept from before is pending, as Core holds it; once refused, Core holds nothing of it.
+  seen: (params) => kept && params.get("requestId") === id ? { state: "pending", requestId: id, message: "" } : { state: "none" } };
+  const page = await mount(core, { [storageKey]: JSON.stringify({ [key]: id }) });
+  try {
+    page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
+    await until(() => page.button("Continue this fork", page.dialog()), "the pending attempt is shown to go on");
+    page.button("Continue this fork", page.dialog()).click();
+    await until(() => page.dialog()?.textContent.includes("fixture: OpenCode is busy") && page.dialog().querySelector("input"),
+      "the refusal is said and the preview is back");
+    assert.equal(page.dialog().querySelector("input").value, "Mori (fork)", "its suggested name, as when the dialog opens");
+    await until(() => !page.button("Fork", page.dialog())?.disabled, "the fork can be asked again without typing");
+    page.button("Fork", page.dialog()).click();
+    await until(() => page.shown() === "c", "the new Agent opens");
+    assert.deepEqual(asked.map((body) => body.name), ["Mori", "Mori (fork)"], "first the Agent's own name, as a pending attempt goes on; then the suggestion");
+    assert.notEqual(asked[1].requestId, id, "a new request: the refused one kept nothing");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("a name longer than Core takes, counted in bytes as Core counts it, is said and never sent", async () => {
   const core = { calls: [], fork: (body) => ({ ...completed, requestId: body.requestId }) };
   const page = await mount(core);

@@ -227,8 +227,11 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
         // Refused before anything was kept, or it ended: the preview and its name stay, to change and fork again.
         setOutcome(seen.state === "failed" ? seen : undefined);
         if (!preview) {
-          try { const value = await post<OpenCodeForkPreview>(`${base}/preview`, { turnId }); if (shown.current) setPreview(value); }
-          catch (again) { if (shown.current) setError(errorText(again)); }
+          // Read again as when the dialog opens, its suggested name with it unless one was typed (R1 57ed7974 of #564).
+          try {
+            const value = await post<OpenCodeForkPreview>(`${base}/preview`, { turnId });
+            if (shown.current) { setPreview(value); setName((typed) => typed.trim() ? typed : value.name); }
+          } catch (again) { if (shown.current) setError(errorText(again)); }
         }
       } else {
         // It may have reached Core: the same request goes on next time, never a new one.
