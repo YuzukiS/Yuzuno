@@ -1,5 +1,7 @@
 .rewind-open { display: inline-flex; align-items: center; gap: 4px; font-size: calc(9px + var(--font-adjust, 3px)); white-space: nowrap; }
 .reply-actions > .rewind-open { margin-left: auto; }
+/* OpenCode's Fork (T-10), beside Rewind and as it is. */
+.fork-open { display: inline-flex; align-items: center; gap: 4px; font-size: calc(9px + var(--font-adjust, 3px)); white-space: nowrap; }
 .rewind-dialog { display: grid; gap: 12px; }
 .rewind-dialog h3, .rewind-dialog p { margin: 0; }
 .rewind-dialog p { line-height: 1.5; }

@@ -88,8 +88,10 @@ fn receipt(value: &Value) -> Value {
         }
         out["message"] = kept;
     }
-    if let Some(notice) = value.get("projectNotice") {
-        out["projectNotice"] = notice.clone();
+    for key in ["projectNotice", "claimNotice"] {
+        if let Some(notice) = value.get(key) {
+            out[key] = notice.clone();
+        }
     }
     // A content editor's advice where an outcome goes on Home (T-154), and
     // how the user prefers it presented (T-175).

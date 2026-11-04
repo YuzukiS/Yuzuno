@@ -158,11 +158,28 @@ def group_empty(group):
 def unit_empty(state):
     return state.get('MainPID') in ('0', None) and state.get('ActiveState') in ('inactive', 'failed') and group_empty(state.get('ControlGroup'))
 
+# The input guard's bounds: guarded inputs are small files.
+INPUT_FILE_LIMIT = 2 * 1024 * 1024
+INPUT_TOTAL_LIMIT = 16 * 1024 * 1024
+INPUT_COUNT_LIMIT = 128
+# How a refused snapshot reaches Core (T-29): one line on stderr, this prefix
+# and a JSON object, read by host.rs instead of a traceback naming this file.
+INPUT_GUARD_LINE = 'yuzuno-input-guard '
+
+class InputGuard(RuntimeError):
+    """The input guard refuses these inputs. A RuntimeError, so the wrapper's
+    check before the command starts fails exactly as it always did."""
+    def __init__(self, problem, **detail):
+        super().__init__(problem)
+        self.detail = {'problem': problem, **detail}
+
 def snapshot(spec):
     cwd = Path(spec['cwd']).resolve(strict=True)
     if not cwd.is_dir():
-        raise RuntimeError('cwd must be a directory')
+        raise InputGuard('cwd must be a directory')
     files = set(spec.get('inputs', []))
+    # The changed tracked files guardGit adds, which count like any input.
+    tracked = set()
     # A run's stage leaves out the artifacts its earlier stages declare: they
     # are verified by digest before it starts, and writing them is expected.
     excluded = {str(Path(p).parent.resolve() / Path(p).name) for p in spec.get('guardExclude') or []}
@@ -186,7 +203,8 @@ def snapshot(spec):
                         while len(status) <= 64 * 1024:
                             left = deadline - time.monotonic()
                             if left <= 0 or not poll.select(left):
-                                raise RuntimeError('Git input guard exceeded its eight-second limit')
+                                raise InputGuard('Git input guard exceeded its eight-second limit; use explicit inputs and guardGit=false',
+                                                 limit='gitTime')
                             chunk = os.read(process.stdout.fileno(), min(8192, 65537 - len(status)))
                             if not chunk:
                                 complete = True
@@ -202,10 +220,10 @@ def snapshot(spec):
                         process.wait()
                         raise
                 if complete and process.returncode:
-                    raise RuntimeError("Git status could not verify the input guard")
+                    raise InputGuard("Git status could not verify the input guard")
             status = bytes(status)
             if len(status) > 64 * 1024:
-                raise RuntimeError('Git change list exceeds 64 KiB; use explicit inputs and guardGit=false')
+                raise InputGuard('Git change list exceeds 64 KiB; use explicit inputs and guardGit=false', limit='gitStatus')
             paths = []
             kept = []
             entries = iter(status.split(b'\0'))
@@ -222,31 +240,56 @@ def snapshot(spec):
                     continue
                 paths.append(name)
                 kept.append(b'\0'.join(record))
-            files.update(str(root / p) for p in paths)
+            tracked = {str(root / p) for p in paths}
+            files.update(tracked)
             # Without exclusions the digest is the one every earlier job recorded.
             listed = b'\0'.join(kept) if excluded else status
             git = {'root': str(root), 'head': head, 'statusSha256': hashlib.sha256(listed).hexdigest()}
-    if len(files) > 128:
-        raise RuntimeError('At most 128 guarded input files are supported')
+    if len(files) > INPUT_COUNT_LIMIT:
+        counted = len(tracked & files)
+        why = f' ({counted} of them changed tracked Git files, guarded because guardGit is true)' if counted else ''
+        raise InputGuard(f'At most {INPUT_COUNT_LIMIT} guarded input files are supported; these are {len(files)}{why}',
+                         limit='count', count=len(files), limitCount=INPUT_COUNT_LIMIT, changedTrackedFiles=counted)
     total = 0
+    tracked_bytes = 0
     hashes = []
     for name in sorted(files):
         path = Path(name)
         if not path.is_absolute():
             path = cwd / path
+        # Named as the caller knows it: relative to cwd when inside it.
+        try:
+            shown = str(path.relative_to(cwd))
+        except ValueError:
+            shown = str(path)
+        from_git = name in tracked
         if not path.exists():
             hashes.append({'path': str(path), 'sha256': None})
             continue
         if not path.is_file():
-            raise RuntimeError('Guarded inputs must be files: ' + str(path))
+            raise InputGuard('Guarded inputs must be files: ' + shown, limit='notFile', path=shown, changedTrackedFile=from_git)
         size = path.stat().st_size
         total += size
-        if size > 2 * 1024 * 1024 or total > 16 * 1024 * 1024:
-            raise RuntimeError('Input guard is bounded to 2 MiB/file and 16 MiB total; large data is not snapshotted')
+        tracked_bytes += size if from_git else 0
+        if size > INPUT_FILE_LIMIT or total > INPUT_TOTAL_LIMIT:
+            each = size > INPUT_FILE_LIMIT
+            what = (f'{shown} is {size} bytes, over the 2 MiB per-file limit' if each else
+                    f'guarded inputs reach {total} bytes with {shown}, over the 16 MiB total limit')
+            if from_git:
+                why = ' It is a changed tracked Git file, guarded because guardGit is true: commit it, or submit with guardGit=false and list the inputs the command reads.'
+            elif tracked_bytes:
+                why = f' Changed tracked Git files, guarded because guardGit is true, are {tracked_bytes} bytes of that.'
+            else:
+                why = ''
+            raise InputGuard(f'{what}: guarded inputs are at most 2 MiB each and 16 MiB together, and large data is not snapshotted.{why}',
+                             limit='file' if each else 'total', limitBytes=INPUT_FILE_LIMIT if each else INPUT_TOTAL_LIMIT,
+                             path=shown, bytes=size, totalBytes=total, changedTrackedFile=from_git,
+                             changedTrackedBytes=tracked_bytes)
         with path.open('rb') as f:
-            value = f.read(2 * 1024 * 1024 + 1)
-        if len(value) > 2 * 1024 * 1024:
-            raise RuntimeError('Guarded input grew beyond the size limit')
+            value = f.read(INPUT_FILE_LIMIT + 1)
+        if len(value) > INPUT_FILE_LIMIT:
+            raise InputGuard('Guarded input grew beyond the size limit: ' + shown, limit='file', limitBytes=INPUT_FILE_LIMIT,
+                             path=shown, changedTrackedFile=from_git)
         hashes.append({'path': str(path), 'sha256': hashlib.sha256(value).hexdigest()})
     value = {'cwd': str(cwd), 'git': git, 'files': hashes,
              'scope': 'Frozen argv/env/resources; optional Git HEAD and changed tracked files plus explicit small inputs. Untracked/ignored data, submodule contents and changes after launch are not frozen.'}
@@ -1243,7 +1286,12 @@ def main():
         print(json.dumps(capabilities()))
         return
     if mode == 'snapshot':
-        print(json.dumps(snapshot(json.load(sys.stdin))))
+        try:
+            value = snapshot(json.load(sys.stdin))
+        except InputGuard as refused:
+            print(INPUT_GUARD_LINE + json.dumps(refused.detail), file=sys.stderr)
+            sys.exit(3)
+        print(json.dumps(value))
         return
     if mode == 'verify':
         request = json.load(sys.stdin)

@@ -1976,7 +1976,7 @@ test("legacy appearance preferences keep their font size and palettes apply with
       assert.equal(root.dataset.fontSize, "20");
       // Saved again with the choices it lacked at their defaults.
       assert.deepEqual(JSON.parse(page.window.localStorage.getItem("yuzuno.appearance")), { theme: "dark", fontSize: 20, palette, agentList: "detailed", projectGroups: "headers",
-        dock: { jobs: 5, actions: 2, subAgents: 5 }, turnDock: { numbers: 5, bars: 5 } });
+        dock: { jobs: 5, actions: 2, reviews: 2, subAgents: 5 }, turnDock: { numbers: 5, bars: 5 } });
     }
     // Sliders: text size from 10 to 24 px, and how many of each kind the
     // conversation dock shows, where 0 is shown as Hidden.
@@ -1998,7 +1998,9 @@ test("legacy appearance preferences keep their font size and palettes apply with
     assert.equal(jobs.getAttribute("aria-valuetext"), "Hidden");
     assert.equal(jobs.closest(".dock-limit").querySelector("output").textContent, "Hidden");
     await slide("appearance-dock-subAgents", 8);
-    assert.deepEqual(JSON.parse(page.window.localStorage.getItem("yuzuno.appearance")).dock, { jobs: 0, actions: 2, subAgents: 8 });
+    const reviews = await slide("appearance-dock-reviews", 0);
+    assert.equal(reviews.getAttribute("aria-valuetext"), "Hidden");
+    assert.deepEqual(JSON.parse(page.window.localStorage.getItem("yuzuno.appearance")).dock, { jobs: 0, actions: 2, reviews: 0, subAgents: 8 });
     page.document.querySelector('[role="dialog"]').dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await pause();
     assert.ok(page.document.querySelector('[role="dialog"]') === null, '[role="dialog"] is absent');

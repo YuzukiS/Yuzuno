@@ -74,8 +74,10 @@ fn a_result_keeps_its_report_identity_context_and_suggested_owner_across_updates
         "An output passes its stated checks"
     );
     assert_eq!(original["acceptanceContext"]["source"], "registration");
-    assert!(
-        first["task"]["assigneeAgentId"].is_null(),
+    // The result claims the task nobody held for its author (T-29); the
+    // suggested next Agent is never assigned.
+    assert_eq!(
+        first["task"]["assigneeAgentId"], "author",
         "a suggestion never assigns"
     );
     assert_eq!(counts(&store).3, 0, "a suggestion never sends mail");

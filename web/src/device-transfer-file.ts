@@ -100,7 +100,7 @@ export function exportDevicePreferences(
         fontSize,
         agentList,
         projectGroups,
-        dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
+        dock: { jobs: dock.jobs, actions: dock.actions, reviews: dock.reviews, subAgents: dock.subAgents },
         turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
       },
       sending: { sendKey: sending.sendKey },
