@@ -3,18 +3,24 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "An isolated build is required");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_CHECK_OUTPUT || "../acceptance/turn-flow");
 await mkdir(output, { recursive: true });
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "fixture";
 const report = {
   mode: "isolated-event-fixtures",
   checks: [],
   errors: [],
   mutations: [],
+  // The app's own saves of where an Agent was read, kept apart from the check's writes.
+  readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
 };
 const agent = {
   id: "a",
@@ -96,6 +102,10 @@ await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   assert.equal(url.hostname, "yuzuno-turn-flow.test");
+  if (request.method() === "PUT" && /^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     report.mutations.push({ path: url.pathname, method: request.method() });
     assert.equal(url.pathname, "/api/agents/a/messages");
@@ -113,6 +123,7 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
+        workspace: { id: WORKSPACE },
         agents: [agent, otherAgent],
         runtime: { connected: true },
         defaultCwd: "/fixture",
@@ -123,10 +134,27 @@ await page.route("**/*", async (route) => {
     return route.fulfill({ json: { agent: otherAgent, turns: [], pending: [], artifacts: [] } });
   if (url.pathname === "/api/updates")
     return route.fulfill({ json: unmanagedUpdates });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected request: ${url.pathname}`,
-  );
+  // What the app reads as it loads, answered as having nothing (T-19): Jobs and CI waiting on no
+  // Agent, no jobs or runs for the conversation's dock, and no PR reviews for the bottom bar.
+  if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
+  if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: { agents: {} } });
+  if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
+  if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  // Its Jobs budget, no inputs in the conversation's inputs list, and no reading place held by Core.
+  if (url.pathname === "/api/jobs/budget") return route.fulfill({ json: idleJobsBudget });
+  if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname))
+    return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
+  if (/^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  // Home, which the app reads once its Workspace is known: nothing on it.
+  if (url.pathname === "/api/home")
+    return route.fulfill({ json: { generatedAt: "2026-10-12T12:00:00Z", order: [], needsYou: [], projects: [] } });
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -262,8 +290,8 @@ try {
         open: el.open,
       };
     });
-    // Opening unfolds a little slower than closing folds (tool-activity.css).
-    assert.equal(animation.duration, opening ? 300 : 220, JSON.stringify(animation));
+    // Opening unfolds over --motion-medium, closing folds over --motion-exit-medium (T-19 1a).
+    assert.equal(animation.duration, opening ? 240 : 170, JSON.stringify(animation));
     assert.equal(animation.open, opening);
     assert.ok(
       animation.middle > Math.min(animation.before, animation.after) &&
@@ -287,10 +315,14 @@ try {
   await page.waitForTimeout(250);
   turn.items.at(-1).status = "completed";
   await refresh();
-  await page
-    .locator("#item-tool-b .tool-result")
-    .filter({ hasText: "returned" })
-    .waitFor({ state: "attached" });
+  // A block the reader closed mounts no rows in a windowed conversation (T-6), so its own summary
+  // says when its tools are done: the spinner stops.
+  await page.waitForFunction(() => {
+    const spinner = document
+      .querySelectorAll('[data-turn-id="live"] .tool-activity')[1]
+      ?.querySelector(":scope > summary .tool-spinner");
+    return !!spinner && !spinner.hasAttribute("data-on");
+  });
   assert.equal(await isOpen(second), false);
   await group.locator(":scope > summary").click();
   await page.waitForTimeout(250);
@@ -312,22 +344,21 @@ try {
   await page
     .getByRole("searchbox", { name: "Search loaded messages" })
     .fill("SteeringMarker");
-  await page.locator(".conversation-search-result").click();
-  await page
-    .locator('[data-item-id="steering"][data-search-highlight="true"]')
-    .waitFor();
+  // The result in the open dialog: a dialog that closes leaves through an inert, hidden copy (T-19 1b,
+  // DialogExitGhost), so the previous search's results can still be on the page while it fades.
+  await page.getByRole("dialog", { name: "Search conversation" }).locator(".conversation-search-result").click();
+  // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
+  await page.locator('[data-item-id="steering"].source-highlight').waitFor();
   assert.equal(
-    await composerDraft(page.getByRole("textbox", { name: "Message Mori" })),
+    await composerDraft(page.getByRole("textbox", { name: "Message Mori" }), WORKSPACE),
     "下一条草稿保留",
   );
   await page.getByRole("button", { name: "Search conversation" }).click();
   await page
     .getByRole("searchbox", { name: "Search loaded messages" })
     .fill("HistoryMarker1");
-  await page.locator(".conversation-search-result").click();
-  await page
-    .locator('[data-item-id="old-1"][data-search-highlight="true"]')
-    .waitFor();
+  await page.getByRole("dialog", { name: "Search conversation" }).locator(".conversation-search-result").click();
+  await page.locator('[data-item-id="old-1"].source-highlight').waitFor();
   const top = await page
     .locator(".conversation-scroll")
     .evaluate((el) => el.scrollTop);
@@ -491,6 +522,7 @@ try {
     { path: "/api/agents/a/messages", method: "POST" },
   ]);
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";

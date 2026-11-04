@@ -1,6 +1,14 @@
 .conversation-window {
   overflow-anchor: none;
 }
+/* Nor the browser's own scroll anchoring on the pane: with the rows out of
+   it, it took the 1px end marker after them and kept the end in view as a row
+   the reader opened there grew, carrying that row up (T-19). Following the
+   end, and holding a place while reading, are the app's alone (App.tsx's
+   followGrowth, ReadingAnchor, ConversationRows). */
+.conversation-scroll {
+  overflow-anchor: none;
+}
 .conversation-window-row {
   display: flow-root;
 }
