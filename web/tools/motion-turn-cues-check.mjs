@@ -318,10 +318,10 @@ for (const run of runs) {
     const docked = asked.frames.filter((f) => f.dock);
     const dockCalls = asked.calls.filter((c) => c.part === "dock");
     const end = asked.frames.at(-1)?.fromEnd;
-    if (reduced) ok(`${tag}: under reduced motion, a question arrives while the dock is not there: the dock shows with nothing playing, and the conversation's end is kept (${end} px from it)`,
+    if (reduced) ok(`${tag}: under reduced motion, a question arrives while the dock is not there: the dock shows with nothing playing, and the conversation's end is kept`,
       !asked.frames[0].dock && docked.length > 5 && docked.every((f) => !f.dock.plays.length) && dockCalls.length === 0 && end !== null && end <= 1,
       { at: docked[0]?.dock, end });
-    else ok(`${tag}: a question arrives while the dock is not there: the dock comes in once over small, its opacity only (its height at once), and the conversation's end is kept (${end} px from it)`,
+    else ok(`${tag}: a question arrives while the dock is not there: the dock comes in once over small, its opacity only (its height at once), and the conversation's end is kept`,
       !asked.frames[0].dock && docked.length > 5 && fadeOf(docked[0].dock.plays) && docked[0].dock.opacity < 1 && dockCalls.length === 1
         && docked.every((f) => f.dock.height === docked[0].dock.height) && end !== null && end <= 1,
       { at: docked[0]?.dock, heights: [...new Set(docked.map((f) => f.dock.height))], end, dockCalls });
