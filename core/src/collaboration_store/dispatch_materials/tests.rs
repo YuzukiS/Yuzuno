@@ -524,11 +524,14 @@ fn shas_are_checked_when_registered_not_first_at_dispatch() {
     assert_eq!(made["task"]["materials"]["repositoryId"], 3);
     // A patch that moves the task to that Project is checked as it leaves it.
     update("moved", json!({"projectId":elsewhere,"materials":{"repositoryId":3,"headSha":"b".repeat(40)}})).unwrap();
-    // Linked through a pull request of this task: accepted too.
+    // Linked through a pull request of the task itself: accepted too. A task
+    // in a Project links only its Project's repositories, so this is a task in none.
+    let loose = store.collaboration_call(None, "task_create", json!({"requestId":"loose","title":"No Project"})).unwrap()["task"]["id"].clone();
     let pulls = Repository { id: 4, full_name: "owner/repo4".into() };
-    store.github_link_object("T-1", &pulls, "pull", 7, json!({"title":"Ship","state":"open"})).unwrap();
-    update("linked-pr", json!({"materials":{"repositoryId":4,"baseSha":"c".repeat(64)}})).unwrap();
-    assert_eq!(task(&store)["task"]["materials"]["baseSha"], "c".repeat(64));
+    store.github_link_object(loose.as_str().unwrap(), &pulls, "pull", 7, json!({"title":"Ship","state":"open"})).unwrap();
+    let linked = store.collaboration_call(None, "task_update", json!({"requestId":"linked-pr","taskId":loose,"expectedVersion":1,
+        "patch":{"materials":{"repositoryId":4,"baseSha":"c".repeat(64)}}})).unwrap();
+    assert_eq!(linked["task"]["materials"]["baseSha"], "c".repeat(64));
     // Without SHAs nothing changes: a repository alone is checked at dispatch.
     let other = store.create_project("Other", BTreeMap::from([("local".into(), "/private/other".into())])).unwrap().id;
     store.github_link_repo(&other, &Repository { id: 5, full_name: "owner/repo5".into() }).unwrap();
