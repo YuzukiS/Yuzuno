@@ -46,7 +46,7 @@ const GIT_SECONDS: u64 = 30;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Launcher {
-    Native { path: PathBuf, size: u64, modified: Option<u128>, inode: u64 },
+    Native { path: PathBuf, size: u64, modified: Option<u128>, dev: u64, inode: u64 },
     Other { path: PathBuf, why: String },
 }
 
@@ -84,7 +84,7 @@ impl Launcher {
         if read < 4 || !native(&head) {
             return Ok(Self::Other { path: real, why: "it is not a native executable (a script or another launcher)".into() });
         }
-        Ok(Self::Native { path: real, size: metadata.len(), modified: modified(&metadata), inode: inode(&metadata) })
+        Ok(Self::Native { path: real, size: metadata.len(), modified: modified(&metadata), dev: std::os::unix::fs::MetadataExt::dev(&metadata), inode: inode(&metadata) })
     }
 
     /// The native executable it still is, the very file it was; why not otherwise.
@@ -93,13 +93,52 @@ impl Launcher {
             Self::Other { path, why } => {
                 bail!("OpenCode was started through {}, and {why}: where it keeps its snapshots is not known", path.display())
             }
-            Self::Native { path, size, modified: was, inode: number } => {
+            Self::Native { path, size, modified: was, dev, inode: number } => {
                 let now = std::fs::metadata(path).with_context(|| format!("{} cannot be read now", path.display()))?;
-                ensure!(now.len() == *size && modified(&now) == *was && inode(&now) == *number,
+                ensure!(now.len() == *size && modified(&now) == *was && std::os::unix::fs::MetadataExt::dev(&now) == *dev && inode(&now) == *number,
                     "{} has changed since OpenCode was started from it", path.display());
                 Ok(())
             }
         }
+    }
+
+    /// That the process `pid` runs this very file (`/proc/<pid>/exe`: the
+    /// file it executes, however it was named), as a check of what was
+    /// started, not only of what was resolved (Lead 4037). Linux only.
+    pub fn bound(&self, pid: u32) -> Result<()> {
+        let Self::Native { path, size, dev, inode: number, .. } = self else {
+            return self.check();
+        };
+        ensure!(cfg!(target_os = "linux"), "What OpenCode's process runs can be checked only on Linux");
+        let running = std::fs::metadata(format!("/proc/{pid}/exe")).context("What OpenCode's process runs cannot be read")?;
+        ensure!(std::os::unix::fs::MetadataExt::dev(&running) == *dev && inode(&running) == *number && running.len() == *size,
+            "OpenCode's process does not run {}", path.display());
+        Ok(())
+    }
+}
+
+/// Where a connection's OpenCode keeps its snapshots can be known from how
+/// Core started it: the launcher it resolved, ran and bound to the process,
+/// and OpenCode's folders from the environment it gave it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Started {
+    pub launcher: Launcher,
+    pub roots: Roots,
+}
+
+impl Started {
+    /// For the process `pid` started from `launcher`, with the environment
+    /// `var` gives (and `passwd` for an account's home when it has no HOME):
+    /// what is known, or why it is not.
+    pub fn of(launcher: Result<Launcher>, pid: Option<u32>, var: impl Fn(&str) -> Option<std::ffi::OsString>, passwd: impl FnOnce() -> Option<PathBuf>)
+        -> std::result::Result<Self, String> {
+        let known = || -> Result<Self> {
+            let launcher = launcher?;
+            launcher.check()?;
+            launcher.bound(pid.context("OpenCode's process has no ID")?)?;
+            Ok(Self { launcher, roots: Roots::of(var, passwd)? })
+        };
+        known().map_err(|error| format!("{error:#}"))
     }
 }
 

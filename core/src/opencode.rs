@@ -402,6 +402,11 @@ impl Server {
         Ok(server)
     }
 
+    /// OpenCode's process ID, while it is not yet reaped.
+    pub fn pid(&self) -> Option<u32> {
+        self.group.0
+    }
+
     /// Ends OpenCode and its own children: `dispose` (at most DISPOSE_LIMIT),
     /// then SIGTERM to the group, up to GRACE for OpenCode to finish, then
     /// SIGKILL to whatever of it is left. A refused or unanswered dispose only

@@ -381,3 +381,29 @@ async fn a_file_git_would_convert_on_opencodes_checkout_is_refused_before_anythi
     let error = format!("{:#}", unconverted(&store, &work, &HERMETIC, "plain.txt").await.unwrap_err());
     assert!(error.contains("core.autocrlf true"), "{error}");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launcher_is_bound_to_the_process_that_runs_it_and_its_folders_come_with_it() {
+    let sleep = Launcher::resolve(Path::new("sleep"), std::env::var_os("PATH").as_deref()).unwrap();
+    let Launcher::Native { path, .. } = &sleep else { panic!("{sleep:?}") };
+    let mut child = std::process::Command::new(path).arg("30").spawn().unwrap();
+    sleep.bound(child.id()).unwrap();
+    let ours = Launcher::resolve(&std::env::current_exe().unwrap(), None).unwrap();
+    let error = ours.bound(child.id()).unwrap_err().to_string();
+    assert!(error.contains("does not run"), "another file than the one started: {error}");
+
+    let started = Started::of(Ok(sleep.clone()), Some(child.id()), env(&[("HOME", "/h")]), || None).unwrap();
+    assert_eq!((&started.launcher, started.roots.data.as_str()), (&sleep, "/h/.local/share/opencode"));
+    for (launcher, pid, pairs, said) in [
+        (Ok(ours), Some(child.id()), &[("HOME", "/h")][..], "does not run"),
+        (Ok(sleep.clone()), None, &[("HOME", "/h")][..], "no ID"),
+        (Ok(sleep.clone()), Some(child.id()), &[("HOME", "")][..], "HOME is empty"),
+        (Err(anyhow::anyhow!("opencode is not on the PATH")), Some(child.id()), &[("HOME", "/h")][..], "not on the PATH"),
+    ] {
+        let why = Started::of(launcher, pid, env(pairs), || None).unwrap_err();
+        assert!(why.contains(said), "{why}");
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+}

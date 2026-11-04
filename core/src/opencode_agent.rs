@@ -132,6 +132,9 @@ pub(crate) struct Connection {
     /// (T-10, giving up a compaction): a whole read begun before the latest
     /// is never published (`opencode_resync`), so it never undoes one.
     removals: Arc<std::sync::atomic::AtomicU64>,
+    /// Where this OpenCode keeps its snapshots can be known from how it was
+    /// started (T-10 Revert), or why not.
+    pub files: Arc<std::result::Result<crate::opencode_revert_files::Started, String>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -175,8 +178,10 @@ impl Usage {
 }
 
 impl Connection {
-    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
-        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default() }
+    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
+        files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
+        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
+            files: Arc::new(files) }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -614,10 +619,19 @@ impl Workspace {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
         }
-        let launch = Launch { program: program(), directory: d.agent.cwd.clone().into(), database: folder.join("opencode.db") };
+        // What `opencode` resolves to now: a native executable is started by
+        // that very file, so what was checked is what runs (T-10 Revert).
+        let named = program();
+        let launcher = crate::opencode_revert_files::Launcher::resolve(&named, std::env::var_os("PATH").as_deref());
+        let start = match &launcher {
+            Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
+            _ => named,
+        };
+        let launch = Launch { program: start, directory: d.agent.cwd.clone().into(), database: folder.join("opencode.db") };
         // Until it is in `opencodes`, this is its only owner: an error below
         // drops it, which ends its process group.
         let server = Arc::new(Server::start(&launch).await?);
+        let files = crate::opencode_revert_files::Started::of(launcher, server.pid(), |name| std::env::var_os(name), dirs::home_dir);
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
@@ -640,7 +654,7 @@ impl Workspace {
         let children = sub_agents(&server, &session).await?;
         let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection::new(generation, server.clone(), session.clone(), children.clone());
+        let c = Connection::new(generation, server.clone(), session.clone(), children.clone(), files);
         // Each listed model's context window, read once as it connects (T-10).
         if let Ok(models) = server.models().await {
             c.windows(&models);
