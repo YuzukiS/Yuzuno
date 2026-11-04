@@ -270,6 +270,8 @@ function writeStorage(key: string, value: unknown) {
 const EMPTY_TURNS: never[] = [];
 /** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
 const JOIN_WAIT = 90;
+/** A Turn still working, as its own view tells (components.tsx `running`). */
+const RUNNING_TURN = /inProgress|running/;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -1348,6 +1350,16 @@ export function App() {
   const previewsShown = useCallback((scope: string, ids: ReadonlySet<string>) => {
     shownPreviews.current = { scope, ids };
   }, []);
+  // A shown Turn's own change, live (T-19 CV:T-04, CV:T-09; Lead 2 4591): its working indicator
+  // comes in once where the Turn itself does not (a Turn whose message was shown before, now
+  // confirmed; a shown Turn running again), and a Turn Core records completed brings its reply
+  // actions and files in once. Told apart as the arrivals above: in the latest window, after Core
+  // streamed or announced a change to this Agent, never what a first read, a window, a reconnect,
+  // poll or reset brings. Interrupted and failed Turns keep their own words with no cue, and the
+  // working indicator always goes at once. Read before the arrivals below take the announcement.
+  const turnAnnounced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>; started: string[]; completed: string[] } | null>(null);
+  const handedRunning: string[] = [];
   // Left (the settle mark is the requests' above): the next detail is a new baseline.
   if (!turnScope && turnsSeen.current) {
     turnsSeen.current = null;
@@ -1378,19 +1390,46 @@ export function App() {
         return !!currentDetail.messageReceipts?.some((receipt) => receipt.binding?.turnId === turn.id
           && turn.items.some((item) => item.id === receipt.binding!.itemId) && shown(receipt.input.clientMessageId));
       };
+      if (announced) for (const turn of fresh) if (handedOver(turn) && RUNNING_TURN.test(turn.status)) handedRunning.push(turn.id);
       turnsSeen.current = { scope: turnScope, latest, ids: new Set([...seen.ids, ...ids].slice(-500)),
         arrived: announced ? [...seen.arrived, ...fresh.filter((turn) => !handedOver(turn)).map((turn) => turn.id)].slice(-20) : seen.arrived };
     }
   }
+  if (!turnScope) turnCues.current = null;
+  else if (currentDetail) {
+    const was = turnCues.current?.scope === turnScope ? turnCues.current : null;
+    const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
+    const now = !!was?.latest && latest && turnAnnounced;
+    const started = [...(was?.started ?? []), ...handedRunning];
+    const completed = [...(was?.completed ?? [])];
+    const status = new Map<string, string>();
+    for (const turn of currentDetail.turns) {
+      status.set(turn.id, turn.status);
+      const before = was?.status.get(turn.id);
+      if (!now || before === undefined) continue;
+      const runs = RUNNING_TURN.test(turn.status);
+      if (runs && !RUNNING_TURN.test(before)) started.push(turn.id);
+      else if (RUNNING_TURN.test(before) && turn.status === "completed") completed.push(turn.id);
+    }
+    turnCues.current = { scope: turnScope, latest, status, started: started.slice(-20), completed: completed.slice(-20) };
+  }
+  // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
+  const shownTurn = (key: string) => {
+    const id = key.slice(key.lastIndexOf("\n") + 1);
+    return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;
+  };
   useArrivalsIn(
     turnsSeen.current?.scope === turnScope ? turnsSeen.current.arrived.map((id) => `${turnScope}\n${id}`) : [],
-    (key) => {
-      // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
-      const id = key.slice(key.lastIndexOf("\n") + 1);
-      return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;
-    },
+    shownTurn,
     "small",
   );
+  const cues = turnScope && turnCues.current?.scope === turnScope ? turnCues.current : null;
+  useArrivalsIn(cues ? cues.started.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".turn-activity") ?? null, "small");
+  useArrivalsIn(cues ? cues.completed.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".reply-actions") ?? null, "small");
+  useArrivalsIn(cues ? cues.completed.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".turn-files") ?? null, "small");
   // New Claude messages this window shows sending in their Turn, as of this commit. Read by the next
   // render's Turn arrivals above, with the previews (`previewsShown`).
   useLayoutEffect(() => {
@@ -3626,7 +3665,7 @@ export function App() {
             </div>
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}
               detail={detail?.agent.id === selected ? detail : null} shown={currentDetail} known={coreQuestions}
-              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude}
+              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude} live={turnAnnounced}
               onSend={sendQuestionAnswer} onAdd={turnAnswer} onSource={showQuestionSource}
               onCheck={() => reconnectAgent(selected).then(refresh)} />
             {closed ? (
