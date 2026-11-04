@@ -14,7 +14,8 @@
 //   (Lead 3882); the pane is measured, since the bar that says where they left off comes in above it;
 // - on a phone, a tap on the summary holds the reader's window, and a real swipe (touch moves the browser
 //   takes as a pan) begun on that summary that brings the end into view lets it go: the next read is of the
-//   latest window, and a row that arrives then is followed (Lead 3882);
+//   latest window, and a row that arrives then is followed (Lead 3882); and so does one that moves nothing,
+//   begun on the summary toward the end with the end already in view, where a tap would not (Lead 3920);
 // - guards for following itself: a row that arrives while nothing was pressed keeps the end in view, and so
 //   does a composer that grows by three lines.
 // Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Writes: none but the app's own
@@ -196,6 +197,34 @@ for (const run of runs) {
     await page.locator(SUMMARY).waitFor({ timeout: 10_000 });
     await page.waitForTimeout(900);
   };
+  /** A finger's swipe toward the end, begun on the row's summary: touch moves through Chromium's input
+   * pipeline, which pans the pane as a finger would. (Input.synthesizeScrollGesture sent the page no
+   * moves and scrolled nothing: diagnosis 7.) What the pane saw, and where it was before and after. */
+  const touchSwipe = async (page) => {
+    const box = await page.locator(SUMMARY).boundingBox();
+    await page.evaluate(() => {
+      window.touchSeen = { start: null, moves: 0, end: false, pointercancel: 0 };
+      const pane = document.querySelector(".conversation-scroll");
+      pane.addEventListener("touchstart", (e) => { window.touchSeen.start ??= !!e.target.closest?.("summary"); }, { capture: true });
+      pane.addEventListener("touchmove", () => { window.touchSeen.moves++; }, { capture: true });
+      pane.addEventListener("touchend", () => { window.touchSeen.end = true; }, { capture: true });
+      pane.addEventListener("pointercancel", () => { window.touchSeen.pointercancel++; }, { capture: true });
+    });
+    const where = () => page.locator(".conversation-scroll").evaluate((el) => ({ top: Math.round(el.scrollTop), gap: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) }));
+    const before = await where();
+    const cdp = await context.newCDPSession(page);
+    const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let i = 1; i <= 12; i++) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - i * 30 }] });
+      await page.waitForTimeout(16);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await cdp.detach();
+    await page.waitForTimeout(700);
+    const after = await where();
+    return { ...(await page.evaluate(() => window.touchSeen)), gap: [before.gap, after.gap], scrolled: after.top - before.top };
+  };
   try {
     // Guard: following itself, with nothing pressed.
     {
@@ -264,28 +293,7 @@ for (const run of runs) {
       await arrive(page, shell("tool-d", "npm run typecheck"));
       const held = reads.at(-1);
       ok(`${tag}: a tap on a summary holds the reader's window (the read after it: ${held})`, held === "turnId=old-0", { reads: [...reads] });
-      const box = await page.locator(SUMMARY).boundingBox();
-      await page.evaluate(() => {
-        window.touchSeen = { start: null, moves: 0, end: false };
-        const pane = document.querySelector(".conversation-scroll");
-        pane.addEventListener("touchstart", (e) => { window.touchSeen.start ??= !!e.target.closest?.("summary"); }, { capture: true });
-        pane.addEventListener("touchmove", () => { window.touchSeen.moves++; }, { capture: true });
-        pane.addEventListener("touchend", () => { window.touchSeen.end = true; }, { capture: true });
-      });
-      // Touch moves through Chromium's input pipeline, which pans the pane as a finger would.
-      // (Input.synthesizeScrollGesture sent no moves to the page here and scrolled nothing: diagnosis 7.)
-      const from = await gap(page);
-      const cdp = await context.newCDPSession(page);
-      const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
-      for (let i = 1; i <= 12; i++) {
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - i * 30 }] });
-        await page.waitForTimeout(16);
-      }
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      await cdp.detach();
-      await page.waitForTimeout(700);
-      const touch = { ...(await page.evaluate(() => window.touchSeen)), gap: [from, await gap(page)] };
+      const touch = await touchSwipe(page);
       ok(`${tag}: the swipe is a touch begun on the summary that brings the end into view (${JSON.stringify(touch)})`,
         touch.start === true && touch.moves > 0 && touch.end === true && touch.gap[1] <= 1, touch);
       const atEnd = await gap(page);
@@ -294,6 +302,29 @@ for (const run of runs) {
       report.measures[`${tag}: swipe`] = swiped;
       ok(`${tag}: a swipe begun on a summary that reaches the end lets the window go: the next read is of the latest window, and the row it brings is followed (${JSON.stringify({ atEnd, read: swiped.read, followed: swiped.followed })})`,
         atEnd <= 1 && swiped.read === "latest" && swiped.followed <= 1, swiped);
+      await page.close();
+    }
+    // A pan that moves nothing (Lead 3920): the reader's window held and the end already in view, a swipe
+    // toward the end begun on the summary is clamped there. It is still the reader scrolling, and lets the
+    // window go, where a tap would not.
+    if (run.phone) {
+      const page = await open();
+      await press(page, "touch");
+      await page.waitForTimeout(700);
+      await arrive(page, shell("tool-d", "npm run typecheck"));
+      const held = reads.at(-1);
+      // To the end with no gesture of the reader's, so the window stays held.
+      await page.locator(".conversation-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await page.waitForTimeout(400);
+      const touch = await touchSwipe(page);
+      ok(`${tag}: a swipe toward the end begun on the summary, with the end already in view, is a touch that moves nothing (${JSON.stringify(touch)})`,
+        held === "turnId=old-0" && touch.start === true && touch.moves > 0 && touch.end === true && touch.gap[0] <= 1 && touch.gap[1] <= 1 && touch.scrolled === 0,
+        { held, ...touch });
+      await arrive(page, shell("tool-e", "npm run format"));
+      const clamped = { read: reads.at(-1), followed: await gap(page), reads: [...reads], pointercancel: touch.pointercancel };
+      report.measures[`${tag}: clamped swipe`] = clamped;
+      ok(`${tag}: that swipe still lets the window go: the next read is of the latest window, and the row it brings is followed (${JSON.stringify({ read: clamped.read, followed: clamped.followed })})`,
+        clamped.read === "latest" && clamped.followed <= 1, clamped);
       await page.close();
     }
     // Guard: a composer that grows keeps the followed end in view.
