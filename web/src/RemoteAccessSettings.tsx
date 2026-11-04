@@ -53,6 +53,7 @@ const text = strings({
   turnedOff: "Turned off.",
   sentence: (said: string) => `${said}.`,
   notVerified: "Set up, but not verified.",
+  partial: "Phone access changed, but the older phone previews' Serve entry was not removed.",
   stopped: (what: string, at: string, why: string) => `${what} stopped at ${at}${why}.`,
   undone: (what: string, at: string, why: string) => `${what} stopped at ${at} and was undone${why}.`,
   uncertain: (at: string, why: string) => `Core could not confirm how ${at} ended${why}. Check, or apply again: Core compares with what is there first.`,
@@ -136,6 +137,7 @@ const text = strings({
   turnedOff: "已关闭。",
   sentence: (said) => `${said}。`,
   notVerified: "已设置，但未验证。",
+  partial: "手机访问已更改，但旧版手机预览的 Serve 入口没有移除。",
   stopped: (what, at, why) => `${what}在${at}停止${why}。`,
   undone: (what, at, why) => `${what}在${at}停止并已撤销${why}。`,
   uncertain: (at, why) => `Core 无法确认${at}的结果${why}。请检查，或再次应用：Core 会先与现有配置比较。`,
@@ -274,6 +276,9 @@ function outcome(op: RemoteAccessOperation, language: Language): string | null {
       return t.uncertain(at, why);
     case "interrupted":
       return t.interrupted(at);
+    case "partial":
+      // Core's own sentence says what is on and what of an older Core's previews was left.
+      return error ? t.sentence(error) : t.partial;
   }
 }
 
@@ -463,7 +468,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
     view && typed && !("badPort" in typed)
       ? previewUrl(tailscale?.dnsName, typed.servePort ?? view.defaults.servePort)
       : null;
-  const stepIndex = operation ? operationSteps.indexOf(operation.step) : -1;
+  // A change at an older Core's previews entry shows that step too (T-5).
+  const steps: RemoteAccessOperation["step"][] = operation?.step === "cleanup" ? [...operationSteps, "cleanup"] : operationSteps;
+  const stepIndex = operation ? steps.indexOf(operation.step) : -1;
   return (
     <section id="settings-remote" className="settings-section remote-access" aria-label={t.section}>
       <header className="settings-section-heading">
@@ -602,7 +609,7 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
             <div className="remote-access-operation" aria-label={t.latest}>
               {busy && (
                 <ol className="remote-access-steps">
-                  {operationSteps.map((step, index) => (
+                  {steps.map((step, index) => (
                     <li key={step} data-state={index < stepIndex ? "done" : index === stepIndex ? "running" : "pending"}>
                       {labels.operation[step]}
                       {index === stepIndex && <span className="step-moving" aria-hidden="true" />}
@@ -618,12 +625,10 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   {done}
                 </p>
               )}
-              {/* An older Core's previews entry, apart from how phone access ended (T-5). */}
-              {!busy && operation.legacy && (
-                <p
-                  className={["removed", "absent", "foreign"].includes(operation.legacy.state) ? "settings-row-help" : "updates-error"}
-                  role={["removed", "absent", "foreign"].includes(operation.legacy.state) ? "status" : "alert"}
-                >
+              {/* An older Core's previews entry gone or left to others, apart from how phone access ended (T-5);
+                  one not removed is how the change ended, said above. */}
+              {!busy && operation.legacy && ["removed", "absent", "foreign"].includes(operation.legacy.state) && (
+                <p className="settings-row-help" role="status">
                   {t.legacyOutcome(operation.legacy.detail.replace(/[.。]\s*$/, ""))}
                 </p>
               )}

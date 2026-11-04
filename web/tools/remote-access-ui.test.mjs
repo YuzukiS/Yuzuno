@@ -695,19 +695,47 @@ test("an older Core's own Serve entry for previews is said apart: still to remov
   }
   const removed = "The older phone previews' own Serve port 8445 was removed";
   const kept = "The older phone previews' own Serve port 8445 was not removed: serve config locked; it is kept for the next change";
-  for (const [state, detail, role] of [["removed", removed, "status"], ["foreign", "The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is", "status"], ["partial", kept, "alert"], ["uncertain", kept, "alert"]]) {
+  // Gone, or left to others: phone access's change succeeded, and a line says what became of theirs.
+  for (const [state, detail] of [["removed", removed], ["foreign", "The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is"]]) {
     const operation = op("succeeded", "done", { url: `${ENTRY}/`, legacy: { state, detail }, notes: ["The earlier entry on port 8443 was removed.", detail] });
-    const p = mount(() => ({ body: on({ previews: included({ legacy: state === "partial" || state === "uncertain" ? { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" } : null }), operation }) }));
+    const p = mount(() => ({ body: on({ previews: included(), operation }) }));
     try {
       await waitFor(() => p.doc.querySelector(".remote-access-operation"), `${state}: the change`);
       assert.match(p.text(), /Applied\. The status above is what Core reports now\./, `${state}: phone access, as it ended`);
-      const line = [...p.doc.querySelectorAll(`.remote-access-operation [role="${role}"]`)].find((el) => el.textContent.startsWith("Older phone previews:"));
+      const line = [...p.doc.querySelectorAll('.remote-access-operation [role="status"]')].find((el) => el.textContent.startsWith("Older phone previews:"));
       assert.equal(line?.textContent, `Older phone previews: ${detail}.`, `${state}: ${p.text()}`);
       const notes = [...p.doc.querySelectorAll(".remote-access-notes li")].map((li) => li.textContent);
       assert.deepEqual(notes, ["The earlier entry on port 8443 was removed."], `${state}: said once`);
     } finally {
       p.close();
     }
+  }
+  // Not removed: that is how the change ended, at its own step, never "Applied".
+  const left = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" };
+  for (const [state, said] of [
+    ["partial", `Phone access is on; ${kept}.`],
+    ["uncertain", `Core could not confirm how “Remove the older phone previews' Serve entry” ended: Phone access is on; ${kept}. Check, or apply again: Core compares with what is there first.`],
+  ]) {
+    const operation = op(state, "cleanup", { url: `${ENTRY}/`, error: `Phone access is on; ${kept}`, legacy: { state, detail: kept }, notes: [kept] });
+    const p = mount(() => ({ body: on({ previews: included({ legacy: left }), operation }) }));
+    try {
+      await waitFor(() => p.doc.querySelector(".remote-access-operation"), `${state}: the change`);
+      assert.doesNotMatch(p.text(), /Applied\./, `${state}: not said to have succeeded`);
+      assert.ok(p.alerts().includes(said), `${state}: ${p.alerts().join(" | ")}`);
+      assert.equal([...p.doc.querySelectorAll(".remote-access-operation p")].filter((el) => el.textContent.startsWith("Older phone previews:")).length, 0, `${state}: said once`);
+      assert.equal(p.doc.querySelector(".remote-access-notes"), null, `${state}: its note is the sentence above`);
+      assert.match(p.text(), /The next Save and apply or Turn off removes it while it is still exactly that entry/, `${state}: still left to remove`);
+    } finally {
+      p.close();
+    }
+  }
+  // Running at that step: the steps show it.
+  const cleaning = mount(() => ({ body: on({ previews: included({ legacy: left }), operation: op("running", "cleanup") }) }));
+  try {
+    await waitFor(() => cleaning.doc.querySelector(".remote-access-steps"), "the steps");
+    assert.equal(cleaning.doc.querySelector('.remote-access-steps [data-state="running"]').textContent, "Remove the older phone previews' Serve entry");
+  } finally {
+    cleaning.close();
   }
   const unreadable = mount(() => ({ body: on({ previews: included({ legacy: { error: "remote-preview.json is not a readable phone previews record" } }) }) }));
   try {

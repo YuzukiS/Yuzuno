@@ -553,8 +553,8 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     }
     // The states and steps Core can report, as the page lists them.
     let list = |name: &str| fixtures[name].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect::<Vec<_>>();
-    assert_eq!(list("operationStates"), ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted"]);
-    assert_eq!(list("operationSteps"), ["validate", "save", "listen", "serve", "verify", "done"]);
+    assert_eq!(list("operationStates"), ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted", "partial"]);
+    assert_eq!(list("operationSteps"), ["validate", "save", "listen", "serve", "verify", "cleanup", "done"]);
     assert_eq!(list("serveStates"), ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"]);
     // Through the phone entry: read-only, with its reason.
     let remote = view(&lab.ws, false).await.unwrap();
@@ -1125,8 +1125,16 @@ async fn an_older_cores_entry_is_removed_only_while_it_is_still_exactly_its_own(
         lab.set_fake(|s| if let Value::Object(fault) = &fault { s.as_object_mut().unwrap().extend(fault.clone()) });
         let before = lab.fake()["serve"]["Web"][format!("{DNS}:8445")].clone();
         let op = lab.apply(json!({"requestId": "next", "enabled": true, "localPort": phone})).await.unwrap();
-        // Phone access works however theirs ended, and says so apart.
-        assert_eq!((op["state"].as_str(), op["legacy"]["state"].as_str()), (Some("succeeded"), Some(ends)), "{case}: {op}");
+        // Phone access works however theirs ended, and says so apart; theirs
+        // not removed is this change's own end, at its own step.
+        let (state, step) = match ends {
+            "partial" | "uncertain" => (ends, "cleanup"),
+            _ => ("succeeded", "done"),
+        };
+        assert_eq!((op["state"].as_str(), op["step"].as_str(), op["legacy"]["state"].as_str()), (Some(state), Some(step), Some(ends)), "{case}: {op}");
+        if state != "succeeded" {
+            assert!(op["error"].as_str().unwrap().starts_with("Phone access is on; "), "{case}: {op}");
+        }
         assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "{case}");
         let now = lab.fake()["serve"]["Web"][format!("{DNS}:8445")].clone();
         assert_eq!(!now.is_null(), served, "{case}: {now}");
@@ -1170,10 +1178,69 @@ async fn an_older_cores_entry_goes_with_phone_access_turned_off_and_an_unreadabl
     lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
     assert!(lab.view().await["previews"]["legacy"]["error"].as_str().unwrap().contains("not a readable phone previews record"));
     let op = lab.apply(json!({"requestId": "next", "enabled": true, "localPort": phone})).await.unwrap();
-    assert_eq!((op["state"].as_str(), op["legacy"]["state"].as_str()), (Some("succeeded"), Some("partial")), "{op}");
+    assert_eq!((op["state"].as_str(), op["step"].as_str(), op["legacy"]["state"].as_str()), (Some("partial"), Some("cleanup"), Some("partial")), "{op}");
     assert_eq!(std::fs::read_to_string(lab.ws.data_dir.join("remote-preview.json")).unwrap(), "{not json");
     assert!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")].is_object(), "nothing removed it cannot read as its own");
     assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+}
+
+#[tokio::test]
+async fn phone_access_takes_neither_port_of_an_older_cores_previews_entry_until_it_is_gone() {
+    let (phone, local) = (free_port(), free_port());
+    let lab = lab_with(|lab| older(lab, phone, local, true, theirs(local)));
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let serve = lab.fake()["serve"].clone();
+    let before = lab.calls().len();
+    // Their very mapping, their Serve port, their local port: each refused before anything changes.
+    for (id, request, said) in [
+        ("theirs", json!({"servePort": 8445, "localPort": local}), "Serve port 8445 is still the older phone previews' own entry".to_owned()),
+        ("serve", json!({"servePort": 8445, "localPort": phone}), "Serve port 8445 is still the older phone previews' own entry".to_owned()),
+        ("local", json!({"localPort": local}), format!("Port {local} is still where the older phone previews' own Serve entry points")),
+    ] {
+        let mut request = request;
+        request["requestId"] = json!(id);
+        request["enabled"] = json!(true);
+        let op = lab.apply(request).await.unwrap();
+        assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("failed"), Some("validate")), "{id}: {op}");
+        assert!(op["error"].as_str().unwrap().contains(&said) && op["error"].as_str().unwrap().ends_with("nothing was changed"), "{id}: {op}");
+    }
+    assert!(lab.calls()[before..].iter().all(|c| !c.starts_with("serve --")), "{:?}", &lab.calls()[before..]);
+    assert_eq!(lab.fake()["serve"], serve, "Serve unchanged: the phone entry and theirs");
+    assert_eq!(get(phone, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200, "the phone entry works on");
+    assert!(!lab.legacy_record()["owned"].is_null(), "theirs is still theirs to remove");
+    // Once a change has removed theirs, both ports are phone access's.
+    let off = lab.apply(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    assert_eq!((off["state"].as_str(), off["legacy"]["state"].as_str()), (Some("succeeded"), Some("removed")), "{off}");
+    let on = lab.apply(json!({"requestId": "now", "enabled": true, "servePort": 8445, "localPort": local})).await.unwrap();
+    assert_eq!((on["state"].as_str(), on.get("legacy")), (Some("succeeded"), None), "{on}");
+    assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8445")], json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{local}")}}}));
+    assert_eq!(get(local, "/api/health", Some(OWNER), &format!("{DNS}:8445")).await.0, 200, "phone access on what were their ports");
+}
+
+#[tokio::test]
+async fn an_older_cores_entry_on_phone_access_s_own_serve_port_is_never_removed_for_them() {
+    // Records that already meet there (from before phone access was kept off their ports): phone access holds 8445.
+    let (local, theirs_local) = (free_port(), free_port());
+    let lab = lab_with(|lab| {
+        older(lab, free_port(), theirs_local, true, None);
+        let mut saved = lab.saved();
+        saved.owned = Some(Owned { serve_port: 8445, host: DNS.into(), target: format!("http://127.0.0.1:{local}") });
+        crate::updates::package::atomic_json(&path(&lab.ws), &saved).unwrap();
+    });
+    lab.set_fake(|s| {
+        s["serve"]["TCP"]["8445"] = json!({"HTTPS": true});
+        s["serve"]["Web"][format!("{DNS}:8445")] = json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{theirs_local}")}}});
+    });
+    let mut record = lab.legacy_record();
+    record["owned"]["target"] = json!(format!("http://127.0.0.1:{theirs_local}"));
+    std::fs::write(lab.ws.data_dir.join("remote-preview.json"), record.to_string()).unwrap();
+    let before = lab.fake()["serve"].clone();
+    let said = preview::clear(&lab.ws, &lab.ws.remote_access.host(false), Some(8445)).await.unwrap();
+    assert_eq!(said["state"], "foreign", "{said}");
+    assert!(said["detail"].as_str().unwrap().contains("is phone access's own now"), "{said}");
+    assert_eq!(lab.fake()["serve"], before, "nothing removed");
+    assert!(lab.calls().iter().all(|c| !c.starts_with("serve --")), "{:?}", lab.calls());
+    assert!(lab.legacy_record()["owned"].is_null(), "theirs no more");
 }
 
 #[tokio::test]

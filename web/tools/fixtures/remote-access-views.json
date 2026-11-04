@@ -73,8 +73,8 @@
     "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true,
     "previews": {"included": true, "available": true, "legacy": {"servePort": 8445, "host": "pc.tail0.ts.net", "target": "http://127.0.0.1:4319"}}
   },
-  "operationStates": ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted"],
-  "operationSteps": ["validate", "save", "listen", "serve", "verify", "done"],
+  "operationStates": ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted", "partial"],
+  "operationSteps": ["validate", "save", "listen", "serve", "verify", "cleanup", "done"],
   "serveStates": ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"],
   "errors": {"busy": "400 {\"error\":\"remote_access_busy: another phone access change is running; wait for it to finish\"}", "idempotency": "400 {\"error\":\"idempotency_conflict: requestId already names a different phone access change\"}"}
 }

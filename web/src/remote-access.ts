@@ -16,8 +16,10 @@ export type RemoteAccessOperation = {
   id: string;
   requestId: string;
   kind: "apply" | "disable";
-  state: "running" | "succeeded" | "failed" | "rolledBack" | "uncertain" | "interrupted";
-  step: "validate" | "save" | "listen" | "serve" | "verify" | "done";
+  /** `partial`: phone access changed as asked, an older Core's previews entry was not removed (T-5). */
+  state: "running" | "succeeded" | "failed" | "rolledBack" | "uncertain" | "interrupted" | "partial";
+  /** `cleanup`: removing an older Core's own Serve entry for phone previews (T-5). */
+  step: "validate" | "save" | "listen" | "serve" | "verify" | "cleanup" | "done";
   error?: string;
   /** Sentences Core adds about what it did, such as an entry it took over. */
   notes?: string[];
@@ -121,6 +123,7 @@ const words = strings({
     listen: "Core listens on the phone's port",
     serve: "Tailscale Serve points to it",
     verify: "Reach it from the tailnet",
+    cleanup: "Remove the older phone previews' Serve entry",
     done: "Done",
   } as Record<RemoteAccessOperation["step"], string>,
   verificationSteps: {
@@ -164,6 +167,7 @@ const words = strings({
     listen: "Core 在手机端口上监听",
     serve: "Tailscale Serve 指向它",
     verify: "从 tailnet 访问它",
+    cleanup: "移除旧版手机预览的 Serve 入口",
     done: "完成",
   },
   verificationSteps: {

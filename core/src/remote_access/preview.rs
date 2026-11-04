@@ -42,6 +42,18 @@ fn left(ws: &Workspace) -> Result<Option<(Value, Owned)>> {
     Ok(owned(&record)?.map(|owned| (record, owned)))
 }
 
+/// The Serve entry an older Core's record still says it set for its phone
+/// previews, while that record is readable.
+pub(super) fn held(ws: &Workspace) -> Option<Owned> {
+    left(ws).ok().flatten().map(|(_, owned)| owned)
+}
+
+/// Whether a change has anything of an older Core's phone previews to look at:
+/// an entry its record still holds, or a record it cannot read.
+pub(super) fn pending(ws: &Workspace) -> bool {
+    !matches!(left(ws), Ok(None))
+}
+
 /// Whether an older Core's phone previews were turned on.
 pub(super) fn legacy_on(ws: &Workspace) -> bool {
     record(ws).ok().flatten().is_some_and(|record| record["desired"]["enabled"] == true)
@@ -62,12 +74,14 @@ fn timed_out(error: &anyhow::Error) -> bool {
 }
 
 /// Remove an older Core's Serve entry for phone previews, as a change of
-/// phone access does (the change holds the one-change lock). Says what
+/// phone access does (the change holds the one-change lock). Never the one on
+/// `phone`, the Serve port phone access holds as its own now. Says what
 /// became of it, none when nothing was left: `removed`, or `absent` (gone
-/// already), or `foreign` (changed outside Yuzuno: left as it is) — each of
-/// which forgets it — or `partial` (refused, or not readable) and
-/// `uncertain` (no answer), which keep it for the next change to look again.
-pub(super) async fn clear(ws: &Workspace, host: &Host) -> Option<Value> {
+/// already), or `foreign` (changed outside Yuzuno, or phone access's port:
+/// left as it is) — each of which forgets it — or `partial` (refused, or
+/// not readable) and `uncertain` (no answer), which keep it for the next
+/// change to look again.
+pub(super) async fn clear(ws: &Workspace, host: &Host, phone: Option<u16>) -> Option<Value> {
     let said = |state: &str, detail: String| Some(json!({"state": state, "detail": detail}));
     let owned = match left(ws) {
         Ok(Some((_, owned))) => owned,
@@ -75,6 +89,14 @@ pub(super) async fn clear(ws: &Workspace, host: &Host) -> Option<Value> {
         Err(error) => return said("partial", format!("The older phone previews' record could not be read ({error:#}); it is kept as it is")),
     };
     let port = owned.serve_port;
+    if phone == Some(port) {
+        // Phone access serves there now (refused while theirs is held, so only
+        // records from before can meet): never removed for them.
+        if let Err(error) = forget(ws, &owned) {
+            return said("partial", format!("The older phone previews' Serve port {port} is phone access's own now, but their record could not be updated: {error:#}"));
+        }
+        return said("foreign", format!("The older phone previews' Serve port {port} is phone access's own now; it is left as it is"));
+    }
     if !host.supported {
         return said("partial", format!("Serve could not be changed on this host; the older phone previews' port {port} may still be served"));
     }

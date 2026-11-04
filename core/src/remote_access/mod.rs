@@ -805,6 +805,15 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     let local_port = op.request.local_port.unwrap_or(DEFAULT_LOCAL_PORT);
     anyhow::ensure!(serve_port != 0 && local_port != 0, "Ports must be 1–65535");
     anyhow::ensure!(local_port != context.core_port, "The local port must differ from Core's own port {}", context.core_port);
+    // An older Core's own Serve entry for phone previews, until a change has
+    // removed it: neither of its ports is phone access's, so that removing it
+    // can never take phone access's entry.
+    if let Some(held) = preview::held(ws) {
+        let first = "Save and apply once with other ports, or Turn off, to remove it first; nothing was changed";
+        anyhow::ensure!(serve_port != held.serve_port, "Serve port {serve_port} is still the older phone previews' own entry. {first}");
+        let held_local = held.target.strip_prefix("http://127.0.0.1:").and_then(|p| p.parse::<u16>().ok());
+        anyhow::ensure!(held_local != Some(local_port), "Port {local_port} is still where the older phone previews' own Serve entry points. {first}");
+    }
     let origin = if serve_port == 443 { format!("https://{dns}") } else { format!("https://{dns}:{serve_port}") };
     RemoteEntry::new(&origin, &login)?;
     let entry = Entry { port: local_port, origin: origin.clone(), login: login.clone() };
@@ -956,17 +965,35 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
         return Ok("failed");
     }
     // An older Core's own Serve entry for phone previews, once this one is
-    // known to work: what became of it is said apart from phone access.
-    legacy(ws, host, op).await;
+    // known to work: what became of it is said apart from phone access, and
+    // not removed is this change's own end.
+    if let Some(state) = legacy(ws, host, op, Some(serve_port)).await {
+        op.error = Some(format!("Phone access is on; {}", op.legacy.as_ref().and_then(|l| l["detail"].as_str()).unwrap_or("the older phone previews' Serve entry was not removed")));
+        return Ok(state);
+    }
     Ok("succeeded")
 }
 
 /// What an older Core's Serve entry for phone previews comes to in `op`
-/// (`preview::clear`), in its own field and in words.
-async fn legacy(ws: &Workspace, host: &Host, op: &mut Operation) {
-    op.legacy = preview::clear(ws, host).await;
+/// (`preview::clear`), at a step of its own, never on `phone`, the Serve port
+/// phone access holds: in its own field and in words. With it not removed
+/// (`partial`, `uncertain`), the change ends so, at that step.
+async fn legacy(ws: &Workspace, host: &Host, op: &mut Operation, phone: Option<u16>) -> Option<&'static str> {
+    if !preview::pending(ws) {
+        return None;
+    }
+    at(ws, op, "cleanup");
+    op.legacy = preview::clear(ws, host, phone).await;
     if let Some(said) = op.legacy.as_ref().and_then(|l| l["detail"].as_str()) {
         op.notes.push(said.to_owned());
+    }
+    match op.legacy.as_ref().and_then(|l| l["state"].as_str()) {
+        Some("partial") => Some("partial"),
+        Some("uncertain") => Some("uncertain"),
+        _ => {
+            op.step = "done".into();
+            None
+        }
     }
 }
 
@@ -1027,15 +1054,23 @@ async fn disable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result
         Ok(())
     })?;
     // Previews went with the listener (`mirror`); an older Core's own Serve
-    // entry for them goes with phone access too.
-    legacy(ws, host, op).await;
+    // entry for them goes with phone access too, never phone access's own
+    // that could not be removed.
     op.step = "done".into();
+    let left = legacy(ws, host, op, keep_owned.as_ref().map(|o| o.serve_port)).await;
+    if uncertain || keep_owned.is_some() {
+        // Phone access's own entry is what this change says of first.
+        op.step = "done".into();
+    }
     let state = if uncertain {
         op.error = Some("Phone access is off in Core; whether Serve still lists its port is unknown. Disable again to check".into());
         "uncertain"
     } else if keep_owned.is_some() {
         op.error = Some(op.notes.join("; "));
         "failed"
+    } else if let Some(state) = left {
+        op.error = Some(format!("Phone access is off; {}", op.legacy.as_ref().and_then(|l| l["detail"].as_str()).unwrap_or("the older phone previews' Serve entry was not removed")));
+        state
     } else {
         "succeeded"
     };
