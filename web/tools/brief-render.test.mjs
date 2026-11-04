@@ -450,6 +450,53 @@ test("T-9 a Home picture leads with itself and its caption; its file details fol
   assert.deepEqual(page.errors, []);
 });
 
+test("T-19 HM:B14 a kept image's box has the size Core read before the picture loads, and keeps it when it fails; one without a size, or with a side past 65,535, has the fixed box; the picture is hidden until loaded; a file only referenced draws no box; an Agent cannot claim a size", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = {
+    op: "put", key: "shots", kind: "report", title: "Screens",
+    attachments: ["sized.png", "plain.png", "ref.png", "huge.png"].map((name) => ({ name, path: `/runs/${name}` })),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["files"] },
+      files: { type: "Attachments", props: { items: [{ name: "sized.png" }, { name: "plain.png" }, { name: "ref.png" }, { name: "huge.png" }] } },
+    } },
+  };
+  const attachments = [
+    attachment("sized.png", "image", "image/png", { width: 640, height: 400 }),
+    attachment("plain.png", "image", "image/png"),
+    attachment("ref.png", "image", "image/png", { snapshot: false, mayChange: true, path: "/runs/ref.png", width: 640, height: 400 }),
+    attachment("huge.png", "image", "image/png", { width: 70_000, height: 400 }),
+  ];
+  window.renderSection(readSection(page, put, { attachments }), PROJECT);
+  const item = (name) => [...document.querySelectorAll(".brief-attachments > li")].find((li) => li.textContent.includes(name));
+  const sized = item("sized.png").querySelector("button.brief-image");
+  assert.equal(sized.dataset.shape, "known");
+  assert.deepEqual([sized.style.getPropertyValue("--image-width"), sized.style.getPropertyValue("--image-height")], ["640", "400"]);
+  const plain = item("plain.png").querySelector("button.brief-image");
+  assert.equal(plain.dataset.shape, "unknown");
+  assert.equal(plain.style.getPropertyValue("--image-width"), "", "no size is made up");
+  // A side past the 65,535 Core gives a size up to: the box for an unknown size.
+  const huge = item("huge.png").querySelector("button.brief-image");
+  assert.deepEqual([huge.dataset.shape, huge.style.getPropertyValue("--image-width")], ["unknown", ""]);
+  // Hidden until it has loaded; then shown.
+  const picture = sized.querySelector("img");
+  assert.ok(picture.hasAttribute("data-loading"));
+  picture.dispatchEvent(new window.Event("load"));
+  await until(() => !picture.hasAttribute("data-loading"), "the loaded picture is shown");
+  assert.ok(plain.querySelector("img").hasAttribute("data-loading"), "the other picture still waits for its own");
+  // One that cannot load says so in the same box.
+  plain.querySelector("img").dispatchEvent(new window.Event("error"));
+  const failed = await until(() => item("plain.png").querySelector('.brief-image[data-failed][data-shape="unknown"] .brief-image-failed[role="status"]'), "the failure in its box");
+  assert.equal(failed.textContent, "This image couldn't be loaded from this Core.");
+  // A file only referenced has no bytes Core read: no picture box, whatever its entry says.
+  assert.equal(item("ref.png").querySelector(".brief-image"), null);
+  assert.equal(item("ref.png").querySelector(".brief-attachment-note").textContent, "Not kept by Yuzuno, so there is nothing to preview.");
+  // The size is Core's alone: an Agent's write cannot carry one.
+  assert.throws(() => window.checkBriefSection({ ...put, attachments: [{ name: "sized.png", path: "/runs/sized.png", width: 900, height: 900 }] }));
+  assert.deepEqual(page.errors, []);
+});
+
 test("Mark up on a Brief image tells Point & Fix the image shown and its card, kept at that version (T-177)", async (t) => {
   const page = mount(() => ({ text: "png-bytes" }));
   t.after(page.close);

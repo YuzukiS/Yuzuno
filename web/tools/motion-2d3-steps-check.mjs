@@ -1,9 +1,9 @@
 // T-19 slice 2d-3, running steps (M14: ST:R3, ST:RP1, ST:B2), in Chromium on a production build of
 // the app, through the real Settings, with every API answered here (no Core, no Tailscale, no backup).
-// - Phone access and its phone previews, while Core reports a change running: the running step has
-//   the update steps' moving segment under its words, in the gap below, hidden from assistive tech.
-//   It takes no room, follows the change to its next step without moving any step, and is gone once
-//   the change has ended (phone access succeeded, previews failed).
+// - Phone access, while Core reports a change running: the running step has the update steps'
+//   moving segment under its words, in the gap below, hidden from assistive tech. It takes no room,
+//   follows the change to its next step without moving any step, and is gone once the change has
+//   ended. (Phone previews had steps of their own until they went with phone access, T-5.)
 // - A backup while it runs: the same segment along the bottom of its box, inside the padding, taking
 //   no room; gone once it has stopped.
 // - Under reduced motion the segment is there and stands still; the step's words carry it.
@@ -40,12 +40,10 @@ const backupOperation = (step, state = "running") => ({ id: "op-b", requestId: "
   request: { to: "/backups/manual" }, startedAt: "2026-11-03T09:00:00Z", finishedAt: state === "running" ? null : "2026-11-03T09:01:00Z",
   error: null, result: null });
 // What Core answers now; each run sets it as it goes.
-let remote, remoteOp, previewOp, backup, backupOp;
+let remote, remoteOp, backup, backupOp;
 function reset() {
   remoteOp = operation("op-r", "listen");
-  previewOp = operation("op-p", "done", "succeeded");
   remote = { ...structuredClone(examples.appliedVerified), operation: remoteOp };
-  remote.preview = { ...remote.preview, operation: previewOp };
   backupOp = backupOperation("database");
   backup = { canChange: true, workspaceId: "fixture", canBackUp: true, refusals: [], unfinishedJobs: [], estimateBytes: 3 * 1024 * 1024,
     current: backupOp, recent: [], notCovered: [], replaceRunningWorkspace: "Replacing the Workspace this Core uses needs Core stopped" };
@@ -60,7 +58,6 @@ const gets = () => ({
   "/api/home": { generatedAt: new Date().toISOString(), order: ["p"], needsYou: [], projects: [] },
   "/api/remote-access": remote,
   "/api/remote-access/operations/op-r": remoteOp,
-  "/api/remote-access/preview/operations/op-p": previewOp,
   "/api/workspace/backup": backup,
   "/api/workspace/backup/operations/op-b": backupOp,
 });
@@ -139,7 +136,6 @@ const runs = [
   { name: "phone-reduced", viewport: { width: 390, height: 844 }, reducedMotion: "reduce", phone: true },
 ];
 const OWN = "#settings-editor-remote .remote-access-operation:not(.remote-access-previews *) .remote-access-steps";
-const PREVIEWS = "#settings-editor-remote .remote-access-previews .remote-access-steps";
 const BACKUP = "#settings-editor-backup .workspace-backup-operation";
 for (const run of runs) {
   const tag = run.name;
@@ -208,35 +204,6 @@ for (const run of runs) {
     const ended = await page.evaluate(() => ({ segments: document.querySelectorAll("#settings-editor-remote .remote-access-operation:not(.remote-access-previews *) .step-moving").length,
       said: document.querySelector("#settings-editor-remote .remote-access-operation:not(.remote-access-previews *) [role=status]")?.textContent ?? null }));
     ok(`${tag}: phone access ends (succeeded): no segment is left (${ended.segments}), and it says how it ended`, ended.segments === 0 && !!ended.said, ended);
-
-    // Its phone previews, their change running at its second step, after a reload of the page.
-    previewOp = operation("op-p", "save");
-    remote.preview = { ...remote.preview, operation: previewOp };
-    await page.reload();
-    await page.locator(".agent-row").first().waitFor();
-    await openEditor("phone", "Phone & remote access", "remote");
-    await page.locator(PREVIEWS).waitFor({ timeout: 10_000 });
-    const listenP = await steps(PREVIEWS, "previews at save");
-    ok(`${tag}: phone previews running at "Save them": one segment, in that step alone, hidden from assistive tech (${listenP?.segments ?? 0} segments)`,
-      under(listenP, 1, "Save them"), listenP && { items: listenP.items.map((i) => [i.state, i.segment]), segment: listenP.segment });
-    ok(`${tag}: phone previews: the segment moves under normal motion and stands still under reduced motion (${listenP?.segment?.animation ?? "no segment"})`,
-      moving(listenP, reduced), listenP?.segment);
-    const previewsWithout = await without(PREVIEWS);
-    ok(`${tag}: phone previews: the segment lies in the gap under its step's words and takes no room (the list is as it is without it)`,
-      gap(listenP, 1) && same(previewsWithout?.before, previewsWithout?.after), { segment: listenP?.segment?.box, step: at(listenP, 1)?.box, previewsWithout });
-    previewOp = operation("op-p", "listen");
-    await until(PREVIEWS, 2);
-    const listenNext = await steps(PREVIEWS, "previews at listen");
-    ok(`${tag}: phone previews go to their next step: the segment is in "Core listens on the previews' port" alone, and no step moved`,
-      under(listenNext, 2, "Core listens on the previews' port") && listenNext.items.every((item, i) => Math.abs(item.box.top - listenP.items[i].box.top) <= 0.5),
-      listenNext && { tops: [listenP?.items.map((i) => i.box.top), listenNext.items.map((i) => i.box.top)], items: listenNext.items.map((i) => [i.state, i.segment]) });
-    previewOp = operation("op-p", "listen", "failed");
-    remote.preview = { ...remote.preview, operation: previewOp };
-    await until(PREVIEWS, -1);
-    const previewsEnded = await page.evaluate(() => ({ segments: document.querySelectorAll("#settings-editor-remote .remote-access-previews .step-moving").length,
-      said: document.querySelector("#settings-editor-remote .remote-access-previews [role=alert]")?.textContent ?? null }));
-    ok(`${tag}: phone previews end (failed): no segment is left (${previewsEnded.segments}), and they say how it ended`,
-      previewsEnded.segments === 0 && !!previewsEnded.said, previewsEnded);
 
     // A backup, running.
     await openEditor("backup", "Workspace backup & restore", "backup");

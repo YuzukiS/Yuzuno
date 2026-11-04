@@ -87,6 +87,21 @@ test("a click brings an open Yuzuno window forward and tells it where to go, or 
   assert.equal(opened, href);
 });
 
+test("a previewed page's window on this origin is never taken for Yuzuno's (T-5)", async () => {
+  const { openOrFocus } = functions();
+  const href = `${scope}#/home?w=w-1`;
+  const origin = new URL(scope).origin;
+  const preview = { url: `${origin}/__yuzuno/preview/v/${"a".repeat(64)}`, focused: true,
+    focus: async () => assert.fail("not a preview"), postMessage: () => assert.fail("not a preview") };
+  const told = [];
+  const mine = { url: `${scope}#/home`, focused: false, focus: async function () { return this; }, postMessage: (message) => told.push(message) };
+  await openOrFocus({ matchAll: async () => [preview, mine], openWindow: async () => assert.fail("a window is open") }, href);
+  assert.deepEqual(JSON.parse(JSON.stringify(told)), [{ type: "yuzuno:open", href }], "Yuzuno's window, though the preview's has focus");
+  let opened = null;
+  await openOrFocus({ matchAll: async () => [preview], openWindow: async (url) => { opened = url; } }, href);
+  assert.equal(opened, href, "with only a preview open, Yuzuno opens anew");
+});
+
 test("a click closes the notification and opens what it names", async () => {
   const w = worker();
   let closed = false;
