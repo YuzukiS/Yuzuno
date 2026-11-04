@@ -1073,11 +1073,12 @@ test('the dock keeps to Settings for its PR reviews (0 removes the group and its
     // The panel's other sources keep Mori's scope, never `involving`.
     const jobReads = () => p.calls.filter(c => c.url === '/api/jobs?agentId=a').length;
     const jobsBefore = jobReads();
-    button(p, 'Local').click();
+    // The source tabs by their ids: Local's own name carries its queue count.
+    p.doc.getElementById('jobs-tab-local').click();
     await until(() => jobReads() > jobsBefore);
     assert.equal(p.calls.some(c => c.url.startsWith('/api/jobs?') && c.url.includes('involving')), false);
     // Mori's own button is the requester scope again, as before.
-    button(p, 'Reviews').click();
+    p.doc.getElementById('jobs-tab-reviews').click();
     await until(() => p.doc.querySelector('.review-jobs'));
     button(p, 'Mori').click();
     await until(() => p.calls.some(c => c.url === '/api/reviews?agentId=a'));
