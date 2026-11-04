@@ -601,9 +601,12 @@ export function App() {
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
-  // Where the pane was when a touch on it began: a touch that moved it is the
-  // reader scrolling, one that did not is a tap.
-  const touchFrom = useRef<number | null>(null);
+  // A touch on the pane: where the pane was when it began, and whether the
+  // browser took it as a pan (pointercancel, which it sends when a finger
+  // moves the page rather than taps, and after which no click comes). Either
+  // that or the pane having moved makes it the reader scrolling, even when
+  // the pan moved nothing (already at the end) or came back where it began.
+  const touch = useRef<{ from: number; panned: boolean } | null>(null);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
   // or a pane that shrinks under a growing composer, keeps the end in view
   // while the conversation follows it, as an update does. A row the reader
@@ -3161,15 +3164,23 @@ export function App() {
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
                 onTouchStart={() => {
-                  touchFrom.current = scroll.current?.scrollTop ?? null;
+                  touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
+                }}
+                // The browser's pan: noted, never taken for a cancelled touch.
+                onPointerCancel={(e) => {
+                  if (e.pointerType === "touch" && touch.current) touch.current.panned = true;
+                }}
+                // A touch the system took away ends nothing the reader did.
+                onTouchCancel={() => {
+                  touch.current = null;
                 }}
                 // A tap on a disclosure opens or closes it (its click hands the
                 // conversation to the reader); it is not the reader going to the
-                // end. A touch that scrolled the pane is, wherever it began.
+                // end. A pan is, wherever it began.
                 onTouchEnd={(e) => {
-                  const from = touchFrom.current;
-                  touchFrom.current = null;
-                  const scrolled = from === null || Math.abs((scroll.current?.scrollTop ?? from) - from) >= 1;
+                  const began = touch.current;
+                  touch.current = null;
+                  const scrolled = !began || began.panned || Math.abs((scroll.current?.scrollTop ?? began.from) - began.from) >= 1;
                   if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
                 }}
                 onKeyDownCapture={(e) => {
