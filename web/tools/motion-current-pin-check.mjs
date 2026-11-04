@@ -288,9 +288,10 @@ try {
       await page.keyboard.press("Enter");
       await page.waitForTimeout(500);
       await page.evaluate(startSampling, 900);
+      const held = await pin.locator(".current-turn-messages > li").count();
       turns[8].items.push(later);
       await page.evaluate(() => window.__announce());
-      await pin.locator(".current-turn-messages > li").nth(2).waitFor();
+      await pin.locator(".current-turn-messages > li").nth(held).waitFor();
       await page.waitForFunction(() => window.__pinDone);
       const arrival = await page.evaluate(() => window.__pinFrames);
       report.frames[`${run.tag}: a follow-up arrives`] = arrival;
@@ -326,11 +327,12 @@ try {
           return { open: pin.open, pinned: pin.dataset.pinned, pinBottom: Math.round(p.bottom * 10) / 10,
             targetTop: Math.round(r.top * 10) / 10, onTop: !!hit && target.contains(hit) };
         });
-        // Still opening: its list had not yet reached its height (a short request's whole pin changes little).
+        // Still opening: its list had not yet reached its height (a short request's whole pin changes little,
+        // and its list only a few lines, so there any real change left counts).
         const detail = { atJump: landed >= 0 ? jump[landed].whole : null, final, listAtJump: landed >= 0 ? jump[landed].body : null,
           listFinal: jump.at(-1).body, ...seen };
         if (!run.reduced)
-          ok(`${run.tag}: the jump came while the pin was still opening`, landed > 0 && jump[landed].body < jump.at(-1).body - 5, detail);
+          ok(`${run.tag}: the jump came while the pin was still opening`, landed > 0 && jump[landed].body < jump.at(-1).body - (run.short ? 1 : 5), detail);
         ok(`${run.tag}: a turn jump made as the pin opens ends below the open pin, with nothing over it`,
           landed > 0 && seen.open && seen.pinned === "true" && seen.targetTop >= seen.pinBottom - 1 && seen.onTop, detail);
       }
