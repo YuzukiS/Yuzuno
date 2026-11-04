@@ -209,6 +209,7 @@ import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
+import { OpenCodeRevertHost } from "./Rewind";
 
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
@@ -3205,6 +3206,8 @@ export function App() {
               >
                 <div className="conversation-inner" ref={followGrowth}>
                   <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
+                  {/* OpenCode's revert, held for the Agent, not for the turn it removes (T-10). */}
+                  <OpenCodeRevertHost agent={agent} onDraft={previewMode || closed ? undefined : rewindDraft}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpHere ? { turnId: jumpHere, itemId: jumpItem.current ?? undefined } : pageTarget}>
@@ -3341,6 +3344,7 @@ export function App() {
                   {pageSpace === "after" && currentDetail?.conversation?.hasAfter &&
                     <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   </ConversationWindow>
+                  </OpenCodeRevertHost>
                   </InputReading.Provider>
                 </div>
               </div>

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { LoaderCircle, RotateCcw } from "lucide-react";
-import { post, errorText } from "./api";
+import { api, post, errorText } from "./api";
 import { Modal } from "./components";
 import { RestoreDialog } from "./ClaudeCheckpoint";
 import type { Agent, NativeTurn } from "./types";
@@ -12,16 +12,17 @@ type Preview = { available: boolean; reason?: string; previewId?: string; remove
 /** No native history/checkpoint reads until the user opens this turn's action. */
 export function RewindButton({ agent, turn, onDraft }: { agent: Agent; turn: NativeTurn; onDraft?: (agentId: string, text: string) => void }) {
   const [open, setOpen] = useState(false);
+  const openRevert = useContext(RevertHost);
   const blocked = !!agent.closedAt || ["working", "waiting"].includes(agent.status) || turn.status === "inProgress";
   const opencode = agent.harness === "opencode";
+  // OpenCode's revert is held by the Agent's own host, not by this turn, which it removes.
+  if (opencode && !openRevert) return null;
   return <>
     <button type="button" className="quiet-button rewind-open" disabled={blocked || !onDraft}
       title={blocked ? "Finish the active turn and pending answers before rewinding"
         : opencode ? "Preview reverting to before this turn, with its files" : "Preview going back to before this turn"}
-      onClick={() => setOpen(true)}><RotateCcw size={12} />Rewind</button>
-    {open && (opencode
-      ? <RevertDialog agent={agent} turn={turn} onDraft={onDraft} onClose={() => setOpen(false)} />
-      : <RewindDialog agent={agent} turn={turn} onDraft={onDraft} onClose={() => setOpen(false)} />)}
+      onClick={() => opencode ? openRevert?.(agent.id, turn.id) : setOpen(true)}><RotateCcw size={12} />Rewind</button>
+    {open && <RewindDialog agent={agent} turn={turn} onDraft={onDraft} onClose={() => setOpen(false)} />}
   </>;
 }
 
@@ -99,70 +100,142 @@ function RewindDialog({ agent, turn, onDraft, onClose }: { agent: Agent; turn: N
   </Modal>;
 }
 
+
 type FileState = { state: "absent" } | { state: "file"; size: number; sha256: string; executable: boolean };
 type RevertFile = { path: string; expected: FileState; current: FileState };
 type RevertPreview = { previewId: string; removedTurns: number; keptTurns: number; draft: string; files: RevertFile[] };
 type FileOutcome = { path: string; outcome: "verified" | "notRestored" | "drifted"; why?: string | null };
 type RevertOutcome = { attemptId: string; status: "sending" | "unknown" | "failed" | "completed" | "unchanged"; message?: string; draft: string; files?: FileOutcome[] };
+/** One Agent's revert as this window holds it: the turn asked about, its preview, its outcome. */
+type Revert = { turnId?: string; preview?: RevertPreview; outcome?: RevertOutcome; error?: string; busy?: boolean; open: boolean };
+
+const unsettled = (outcome?: RevertOutcome) => !!outcome && ["sending", "unknown"].includes(outcome.status);
+
+/**
+ * Each OpenCode Agent's revert, kept outside any component (Lead 4128): an
+ * answer that comes after its turn left, the host was mounted again or
+ * another Agent was shown still settles the Agent it is for.
+ */
+const reverts = new Map<string, Revert>();
+const listeners = new Set<() => void>();
+let version = 0;
+function put(agentId: string, change: Partial<Revert> | undefined) {
+  if (change) reverts.set(agentId, { ...(reverts.get(agentId) ?? { open: false }), ...change });
+  else reverts.delete(agentId);
+  version++;
+  for (const listener of listeners) listener();
+}
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
+/** Where a kept revert's text goes: the mounted host's, last given. */
+let giveDraft: ((agentId: string, text: string) => void) | undefined;
+
+// The attempts whose text went back to a draft, so none goes back twice: for
+// this window, and across reloads (the draft itself is kept as drafts are).
+const GIVEN = "yuzuno.revert.given.v1";
+function given(attemptId: string): boolean {
+  try { return (JSON.parse(localStorage.getItem(GIVEN) ?? "[]") as string[]).includes(attemptId); } catch { return false; }
+}
+function markGiven(attemptId: string) {
+  let ids: string[] = [];
+  try { ids = JSON.parse(localStorage.getItem(GIVEN) ?? "[]") as string[]; } catch { ids = []; }
+  try { localStorage.setItem(GIVEN, JSON.stringify([...ids.filter(id => id !== attemptId), attemptId].slice(-50))); } catch { /* kept for this window only */ }
+}
+const givenHere = new Set<string>();
+
+function settle(agentId: string, value: RevertOutcome) {
+  // Only a revert OpenCode keeps gives the original text back, once, to the Agent it is for.
+  if (value.status === "completed" && value.draft && !givenHere.has(value.attemptId) && !given(value.attemptId)) {
+    givenHere.add(value.attemptId); markGiven(value.attemptId);
+    giveDraft?.(agentId, value.draft);
+  }
+  put(agentId, { outcome: value, preview: undefined, busy: false });
+}
+
+async function preview(agentId: string, turnId: string) {
+  put(agentId, { turnId, preview: undefined, outcome: undefined, error: "", busy: true, open: true });
+  try {
+    const value = await post<RevertPreview>(`/agents/${encodeURIComponent(agentId)}/rewind/preview`, { turnId });
+    if (reverts.get(agentId)?.turnId === turnId) put(agentId, { preview: value, busy: false });
+  } catch (e) {
+    if (reverts.get(agentId)?.turnId === turnId) put(agentId, { error: errorText(e), busy: false });
+  }
+}
+
+async function act(agentId: string, action: "confirm" | "check") {
+  const revert = reverts.get(agentId);
+  if (!revert || revert.busy) return;
+  const attemptId = action === "check" ? revert.outcome?.attemptId : revert.preview?.previewId;
+  if (!attemptId) return;
+  put(agentId, { busy: true, error: "" });
+  try {
+    settle(agentId, await post<RevertOutcome>(`/agents/${encodeURIComponent(agentId)}/rewind/${action}`,
+      action === "check" ? { attemptId } : { previewId: attemptId }));
+  } catch (e) {
+    put(agentId, { error: errorText(e), busy: false, preview: undefined,
+      outcome: action === "confirm" || !revert.outcome ? { attemptId, status: "unknown", draft: "",
+        message: "The request did not return a confirmed result. Check this attempt or reconnect; the revert is not repeated." } : revert.outcome });
+  }
+}
+
+/** Opens the shown Agent's revert for one of its turns. */
+const RevertHost = createContext<((agentId: string, turnId: string) => void) | null>(null);
+
+/**
+ * OpenCode's own revert (T-10), held at the Agent's level (Lead 4128): the
+ * dialog and its result stay when the reverted turn leaves the conversation,
+ * and an outcome not yet confirmed is read again from Core whenever the Agent
+ * is shown, so its check is never lost with a window, a reload or another
+ * Agent. Reading it asks OpenCode nothing; it is only ever checked.
+ */
+export function OpenCodeRevertHost({ agent, onDraft, children }: { agent?: Agent; onDraft?: (agentId: string, text: string) => void; children: ReactNode }) {
+  useSyncExternalStore(subscribe, () => version);
+  useEffect(() => { giveDraft = onDraft; }, [onDraft]);
+  const id = agent?.harness === "opencode" ? agent.id : undefined;
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    void api<{ attempt: RevertOutcome | null }>(`/agents/${encodeURIComponent(id)}/rewind/attempt`).then(({ attempt }) => {
+      const held = reverts.get(id);
+      if (live && attempt && unsettled(attempt) && !held?.busy && held?.outcome?.attemptId !== attempt.attemptId) put(id, { outcome: attempt, preview: undefined });
+    }).catch(() => { /* shown again on the next check */ });
+    return () => { live = false; };
+  }, [id]);
+  const open = useCallback((agentId: string, turnId: string) => {
+    // One not yet confirmed is shown again, never asked about anew.
+    if (unsettled(reverts.get(agentId)?.outcome)) put(agentId, { open: true });
+    else void preview(agentId, turnId);
+  }, []);
+  const revert = id ? reverts.get(id) : undefined;
+  const close = () => { if (!id) return; if (unsettled(revert?.outcome)) put(id, { open: false }); else put(id, undefined); };
+  return <RevertHost.Provider value={id && onDraft ? open : null}>
+    {children}
+    {id && revert && !revert.open && unsettled(revert.outcome) && <div className="revert-dock" role="status">
+      <span>OpenCode’s revert is not yet confirmed: new messages to {agent?.name} wait.</span>
+      <button type="button" className="secondary-button" onClick={() => put(id, { open: true })}>Check outcome</button>
+    </div>}
+    {id && revert?.open && <RevertDialog revert={revert} onConfirm={() => void act(id, "confirm")} onCheck={() => void act(id, "check")} onClose={close} />}
+  </RevertHost.Provider>;
+}
 
 function stateText(state: FileState) {
   return state.state === "absent" ? "no file" : `${state.size} bytes${state.executable ? ", executable" : ""}`;
 }
 
-const fileOutcomeText: Record<FileOutcome["outcome"], string> = {
-  verified: "as OpenCode's snapshot holds it",
-  notRestored: "still as before: OpenCode did not send it back",
-  drifted: "neither as before nor as the snapshot holds it",
-};
+function fileOutcomeText(file: FileOutcome) {
+  if (file.outcome === "verified") return "as OpenCode’s snapshot holds it";
+  if (file.outcome === "notRestored") return "still as before: OpenCode did not send it back";
+  // A read that failed says nothing of its content.
+  return file.why ? `could not be checked: ${file.why}` : "neither as before nor as the snapshot holds it";
+}
 
-/**
- * OpenCode's own revert (T-10): the turn and later ones leave the session,
- * and the files their changes touched go back as OpenCode's snapshots hold
- * them. Core reads it all first, keeps a copy of each file, and asks OpenCode
- * once; an outcome it cannot confirm holds the Agent back, never repeated.
- */
-function RevertDialog({ agent, turn, onDraft, onClose }: { agent: Agent; turn: NativeTurn; onDraft?: (agentId: string, text: string) => void; onClose: () => void }) {
-  const [preview, setPreview] = useState<RevertPreview>();
-  const [outcome, setOutcome] = useState<RevertOutcome>();
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(true);
-  const pending = useRef(false);
-  const copied = useRef(false);
-  const base = `/agents/${encodeURIComponent(agent.id)}/rewind`;
-  useEffect(() => {
-    let live = true;
-    void post<RevertPreview>(`${base}/preview`, { turnId: turn.id }).then(value => {
-      if (live) setPreview(value);
-    }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setBusy(false); });
-    return () => { live = false; };
-  }, [base, turn.id]);
-  const settled = (value: RevertOutcome) => {
-    // Only a revert OpenCode keeps gives the original text back, once.
-    if (value.status === "completed" && !copied.current && value.draft) { copied.current = true; onDraft?.(agent.id, value.draft); }
-    setOutcome(value); setPreview(undefined);
-    if (value.status === "completed" && (value.files ?? []).every(file => file.outcome === "verified")) onClose();
-  };
-  const run = async (action: "confirm" | "check") => {
-    if (pending.current) return;
-    const attemptId = action === "check" ? outcome?.attemptId : preview?.previewId;
-    if (!attemptId) return;
-    pending.current = true; setBusy(true); setError("");
-    try {
-      settled(await post<RevertOutcome>(`${base}/${action}`, action === "check" ? { attemptId } : { previewId: attemptId }));
-    } catch (e) {
-      setError(errorText(e));
-      if (action === "confirm") {
-        setPreview(undefined);
-        setOutcome({ attemptId, status: "unknown", draft: "", message: "The request did not return a confirmed result. Check this attempt or reconnect; the revert is not repeated." });
-      }
-    } finally { pending.current = false; setBusy(false); }
-  };
+function RevertDialog({ revert, onConfirm, onCheck, onClose }: { revert: Revert; onConfirm: () => void; onCheck: () => void; onClose: () => void }) {
+  const { preview, outcome, error, busy } = revert;
   const files = preview?.files ?? [];
   return <Modal open confirm onOpenChange={next => !next && !busy && onClose()} title="Revert"
     description="Go back to before this turn, in OpenCode’s conversation and in the files its changes touched.">
     <div className="rewind-dialog">
-      {busy && <p role="status"><LoaderCircle size={14} className="spin" /> Reading OpenCode’s session and snapshots…</p>}
-      {preview && <>
+      {busy && <p role="status"><LoaderCircle size={14} className="spin" /> {outcome ? "Checking with OpenCode…" : preview ? "Reverting…" : "Reading OpenCode’s session and snapshots…"}</p>}
+      {preview && !outcome && <>
         <p>This turn and {Math.max(0, preview.removedTurns - 1)} later turns leave the conversation; {preview.keptTurns} earlier turns stay. OpenCode removes them from its session with the next message it gets.</p>
         {files.length === 0
           ? <p>No file is sent back: no change of these turns went through OpenCode’s snapshots.</p>
@@ -177,15 +250,15 @@ function RevertDialog({ agent, turn, onDraft, onClose }: { agent: Agent; turn: N
       </>}
       {outcome && <p role="status">{outcome.status === "completed" ? "Reverted. " : ["failed", "unchanged"].includes(outcome.status) ? "Not reverted. " : "The revert is not yet confirmed. "}{outcome.message}</p>}
       {outcome?.files && outcome.files.length > 0 && <ul className="revert-files">
-        {outcome.files.map(file => <li key={file.path}><code>{file.path}</code>: {fileOutcomeText[file.outcome]}{file.why ? ` (${file.why})` : ""}</li>)}
+        {outcome.files.map(file => <li key={file.path}><code>{file.path}</code>: {fileOutcomeText(file)}</li>)}
       </ul>}
-      {outcome && ["sending", "unknown"].includes(outcome.status) && <p>New messages to this Agent wait until the outcome is confirmed. The revert is never asked for again.</p>}
+      {unsettled(outcome) && <p>New messages to this Agent wait until the outcome is confirmed. The revert is never asked for again.</p>}
       <p className="rewind-note">Only files OpenCode’s snapshots recorded go back. Commands, submitted Jobs, PRs and approvals are not undone. Yuzuno keeps the removed history and execution records.</p>
       {error && <p role="alert" className="checkpoint-problem">{error}</p>}
       <div className="modal-actions">
         <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>Close</button>
-        {outcome && ["sending", "unknown"].includes(outcome.status) && <button type="button" className="primary-button" disabled={busy} onClick={() => void run("check")}>Check outcome</button>}
-        {preview?.previewId && !outcome && <button type="button" className="primary-button" disabled={busy} onClick={() => void run("confirm")}>Revert</button>}
+        {unsettled(outcome) && <button type="button" className="primary-button" disabled={busy} onClick={onCheck}>Check outcome</button>}
+        {preview?.previewId && !outcome && <button type="button" className="primary-button" disabled={busy} onClick={onConfirm}>Revert</button>}
       </div>
     </div>
   </Modal>;

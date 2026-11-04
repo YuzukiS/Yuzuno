@@ -24,11 +24,15 @@ import {createRoot} from 'react-dom/client';
 import {RemoteCreateAgent} from ${JSON.stringify(path.join(root, "src/RemoteCreateAgent.tsx"))};
 import {PendingCard, Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 import {AgentSettings} from ${JSON.stringify(path.join(root, "src/AgentSettings.tsx"))};
+import {OpenCodeRevertHost} from ${JSON.stringify(path.join(root, "src/Rewind.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.renderSettings=(props)=>root.render(<AgentSettings {...props}/>);
 window.renderCreate=(props)=>root.render(<RemoteCreateAgent {...props}/>);
 window.renderPending=(props)=>root.render(<PendingCard onViewChanges={()=>{}} {...props}/>);
-window.renderTurn=(props)=>root.render(<Turn {...props}/>);`,
+// An OpenCode turn as the app shows it: inside its Agent's revert host.
+window.renderTurn=(props)=>root.render(props.agent.harness==='opencode'
+  ? <OpenCodeRevertHost agent={props.agent} onDraft={props.onRewindDraft}><Turn {...props}/></OpenCodeRevertHost>
+  : <Turn {...props}/>);`,
   );
   const result = await build({
     root,
@@ -374,13 +378,16 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay/);
     assert.match(text, /\/work\/a\.txt: now 3 bytes, becomes no file/);
     assert.match(text, /Any change made since, by you or another Agent, is overwritten; Core keeps a copy of each first/);
-    assert.equal(button(kept.page, "Keep current history"), undefined, "no way to keep the current history");
-    assert.equal(button(kept.page, "Preview file restore…"), undefined);
+    assert.ok(!button(kept.page, "Keep current history"), "no way to keep the current history");
+    assert.ok(!button(kept.page, "Preview file restore…"), "no Claude file restore");
     assert.deepEqual(kept.drafts, [], "nothing given back before the revert is confirmed");
     button(kept.page, "Revert").click(); await tick(); await tick();
     assert.deepEqual(sent(kept.page, "/rewind/confirm"), [{ previewId: "revert_1" }], "asked once, for that preview");
     assert.deepEqual(kept.drafts, [["a", "Fix a.txt"]]);
-    assert.doesNotMatch(kept.page.document.body.textContent, /in OpenCode’s conversation and in the files/, "closed once kept");
+    assert.match(kept.page.document.body.textContent, /Reverted\. 已回退/);
+    assert.match(kept.page.document.body.textContent, /\/work\/a\.txt: as OpenCode’s snapshot holds it/);
+    button(kept.page, "Close").click(); await tick();
+    assert.doesNotMatch(kept.page.document.body.textContent, /in OpenCode’s conversation and in the files/, "closed");
     assert.deepEqual(kept.page.errors, []);
   } finally { kept.page.close(); }
 
@@ -397,7 +404,7 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     let text = unsure.page.document.body.textContent;
     assert.match(text, /The revert is not yet confirmed/);
     assert.match(text, /New messages to this Agent wait until the outcome is confirmed\. The revert is never asked for again/);
-    assert.equal(button(unsure.page, "Keep current history"), undefined, "an unknown outcome is never kept by choice");
+    assert.ok(!button(unsure.page, "Keep current history"), "an unknown outcome is never kept by choice");
     assert.deepEqual(unsure.drafts, [], "no text back while not confirmed");
     button(unsure.page, "Check outcome").click(); await tick(); await tick();
     assert.deepEqual(unsure.drafts, []);
@@ -411,9 +418,9 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     assert.deepEqual(unsure.page.errors, []);
   } finally { unsure.page.close(); }
 
-  // Ended with nothing kept: no text back.
+  // Ended with nothing kept: no text back, even were one given.
   const none = await open({ "/rewind/preview": preview,
-    "/rewind/confirm": { attemptId: "revert_1", status: "unchanged", draft: "", message: "没有保留回退的结果" } });
+    "/rewind/confirm": { attemptId: "revert_1", status: "unchanged", draft: "Fix a.txt", message: "没有保留回退的结果" } });
   try {
     button(none.page, "Revert").click(); await tick(); await tick();
     assert.match(none.page.document.body.textContent, /Not reverted\. 没有保留回退的结果/);
