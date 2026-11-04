@@ -6,9 +6,12 @@
 //! send back must come out known before anything is shown as revertable,
 //! or nothing is. A preview lasts TTL and is what a confirm must read again
 //! unchanged. A confirm keeps its attempt as a rewind's is kept
-//! (`rewind::Attempt`), so that from before its one request until its
-//! outcome is known nothing new reaches the Agent; then backs up each file
-//! and asks OpenCode once.
+//! (`rewind::Attempt`), with what it checked (`Plan`), so that from before
+//! its one request until its outcome is known nothing new reaches the Agent;
+//! then backs up each file and asks OpenCode once. Its outcome comes only
+//! from that request's own answer (Lead 4109): no later read, reconnect or
+//! restart settles a request whose answer never came, as OpenCode's Git may
+//! go on in processes of its own (`cross-spawn-spawner.ts`, detached).
 use super::*;
 use crate::opencode::RevertAnswer;
 use crate::opencode_revert_files::{self as files, Entry, Outcome, Root, BOUNDS};
@@ -49,6 +52,27 @@ pub(crate) fn expire_previews() -> usize {
     before - previews.len()
 }
 
+/// What a confirm checked before it asked, kept with its attempt: what any
+/// later read is held to (Lead 4109). `ended`, once the one request was
+/// answered whole for this session: OpenCode's handler had ended then.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Plan {
+    pub generation: u64,
+    pub messages: String,
+    pub entries: Vec<Entry>,
+    pub root: Option<Root>,
+    pub folder: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
+}
+
+impl Plan {
+    fn of(attempt: &Attempt) -> Result<Self> {
+        Ok(serde_json::from_value(attempt.opencode.clone().context("The attempt keeps no plan")?)?)
+    }
+}
+
 /// What a revert to before a Turn would do, as read now.
 pub(super) struct Read {
     pub generation: u64,
@@ -73,6 +97,7 @@ impl Workspace {
     /// what it is now. Kept for TTL under the ID it answers with.
     pub async fn opencode_revert_preview(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
         let _permit = self.admission.enter_work()?;
+        self.ensure_rewind_settled(id).await?;
         let read = self.opencode_revert_read(id, turn).await?;
         let preview = format!("revert_{}", uuid::Uuid::new_v4().simple());
         let view = json!({
@@ -99,7 +124,6 @@ impl Workspace {
     /// file comes out known (`opencode_revert_files::plan`).
     pub(super) async fn opencode_revert_read(self: &Arc<Self>, id: &str, turn: &str) -> Result<Read> {
         // What a send checks, with this Turn among the Turns read; and where it is among all of them.
-        self.ensure_rewind_settled(id).await?;
         let (agent, wanted) = (id.to_owned(), turn.to_owned());
         let d = self.stored(move |store| store.view(&agent, Sel::Turns(vec![wanted]))).await?;
         ensure_agent_open(&d.agent)?;
@@ -192,9 +216,11 @@ impl Workspace {
             Ok((ids[..at].to_vec(), s.archive(&agent, &ids[at..], room)?))
         }).await?;
         let local = local.context("要回退的内容超出可以留存的大小；没有回退")?;
+        let plan = Plan { generation: read.generation, messages: read.messages.clone(), entries: read.entries.clone(), root: read.root,
+            folder: read.folder.clone(), ended: None };
         let mut attempt = Attempt {
             id: key.into(), agent: id.into(), thread: read.session.clone(), target: p.turn.clone(), kept,
-            draft: read.draft.clone(), state: "sending".into(), message: None, files: None,
+            draft: read.draft.clone(), state: "sending".into(), message: None, files: None, opencode: Some(serde_json::to_value(&plan)?),
         };
         let saved = attempt.clone();
         self.stored(move |s| s.begin_rewind(&saved, &native, &local)).await?;
@@ -218,19 +244,19 @@ impl Workspace {
 
         // One request, watched for WATCH. An answer after that settles the attempt when it comes.
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (owner, agent, key_owned, entries, root, at) = (Arc::downgrade(self), id.to_owned(), key.to_owned(), read.entries.clone(), read.root, folder.clone());
+        let (owner, agent, key_owned) = (Arc::downgrade(self), id.to_owned(), key.to_owned());
         tokio::spawn(async move {
             let answer = request.await;
             if let Err(answer) = tx.send(answer) {
                 if let Some(ws) = owner.upgrade() {
-                    if let Err(error) = ws.opencode_revert_late(&agent, &key_owned, answer, &entries, root, &at).await {
+                    if let Err(error) = ws.opencode_revert_late(&agent, &key_owned, answer).await {
                         eprintln!("Workspace OpenCode revert {key_owned} of {agent} answered late, not recorded: {error:#}");
                     }
                 }
             }
         });
         match tokio::time::timeout(WATCH, rx).await {
-            Ok(Ok(answer)) => self.opencode_revert_answered(id, attempt, answer, &read.entries, read.root, &folder).await,
+            Ok(Ok(answer)) => self.opencode_revert_answered(id, attempt, answer).await,
             _ => {
                 attempt.state = "unknown".into();
                 attempt.message = Some(format!("OpenCode 在 {} 秒内没有回答这次回退；结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次", WATCH.as_secs()));
@@ -241,7 +267,7 @@ impl Workspace {
 
     /// An answer that came after its confirm stopped watching: it settles
     /// the attempt, under the Agent's gate, if nothing else has.
-    async fn opencode_revert_late(self: &Arc<Self>, id: &str, key: &str, answer: RevertAnswer, entries: &[Entry], root: Option<Root>, folder: &Path) -> Result<Value> {
+    async fn opencode_revert_late(self: &Arc<Self>, id: &str, key: &str, answer: RevertAnswer) -> Result<Value> {
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         let (agent, attempt) = (id.to_owned(), key.to_owned());
@@ -249,55 +275,109 @@ impl Workspace {
         if !matches!(attempt.state.as_str(), "sending" | "unknown") {
             return Ok(attempt.outcome());
         }
-        self.opencode_revert_answered(id, attempt, answer, entries, root, folder).await
+        self.opencode_revert_answered(id, attempt, answer).await
     }
 
-    /// The attempt as OpenCode's answer settles it (Lead 3990). Reverted
-    /// only when the session it answers holds this revert: then the Turns it
-    /// removes leave this Agent's record too (they are in the attempt's
-    /// archive), and each file is judged as it is now against what it should
-    /// be and what it was. Failed only when OpenCode refused before doing
-    /// anything. Anything else leaves it unknown: its files may have been
-    /// sent back in part or whole, and nothing new reaches the Agent.
-    async fn opencode_revert_answered(self: &Arc<Self>, id: &str, mut attempt: Attempt, answer: RevertAnswer, entries: &[Entry], root: Option<Root>, folder: &Path) -> Result<Value> {
+    /// The attempt as the one request's own answer settles it (Lead 3990,
+    /// 4109). Answered whole for this session, OpenCode's handler has ended,
+    /// which the plan keeps. Reverted when that session holds this revert:
+    /// then the Turns it removes leave this Agent's record too (they are in
+    /// the attempt's archive), and each file is judged on its own, as it is
+    /// now against what it should be and what it was. Holding none, see
+    /// `opencode_revert_unmarked`. Failed only when OpenCode refused before
+    /// doing anything. Anything else leaves it unknown: its files may have
+    /// been sent back in part or whole, and nothing new reaches the Agent.
+    async fn opencode_revert_answered(self: &Arc<Self>, id: &str, mut attempt: Attempt, answer: RevertAnswer) -> Result<Value> {
+        let mut plan = Plan::of(&attempt)?;
         match answer {
-            RevertAnswer::Answered(session) if session["revert"]["messageID"] == attempt.target.as_str() => {
-                let outcomes = match root {
-                    Some(root) => {
-                        let (entries, folder) = (entries.to_vec(), folder.to_path_buf());
-                        tokio::task::spawn_blocking(move || files::outcomes(&entries, &folder, root, BOUNDS)).await?
-                    }
-                    None => Vec::new(),
-                };
-                let mut listed = Vec::new();
-                for (entry, outcome) in entries.iter().zip(&outcomes) {
-                    let mut file = serde_json::to_value(outcome)?;
-                    file["path"] = entry.target.file.clone().into();
-                    listed.push(file);
-                }
-                attempt.files = Some(Value::Array(listed));
-                self.opencode_revert_project(id, &attempt).await?;
-                let unverified = outcomes.iter().filter(|o| !matches!(o, Outcome::Verified)).count();
-                attempt.state = "completed".into();
-                attempt.message = Some(if unverified == 0 {
-                    "已回退；OpenCode 会在这个会话收到下一条消息时删去这些消息".into()
+            RevertAnswer::Answered(session) if session["id"] == attempt.thread.as_str() => {
+                plan.ended = Some(crate::model::now());
+                attempt.opencode = Some(serde_json::to_value(&plan)?);
+                if session["revert"]["messageID"] == attempt.target.as_str() {
+                    self.opencode_revert_reverted(id, &mut attempt, &plan).await?;
                 } else {
-                    format!("已回退，但有 {unverified} 个文件不是快照里的内容；没有自动覆盖，请查看每个文件的结果")
-                });
+                    self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
+                }
             }
             RevertAnswer::Answered(_) => {
                 attempt.state = "unknown".into();
-                attempt.message = Some("OpenCode 回答了，但会话里没有这次回退；它是否改动了文件无法确认，回退不会再请求一次".into());
+                attempt.message = Some("OpenCode 的回答不是这个会话的；这次回退的结果无法确认，回退不会再请求一次".into());
             }
             RevertAnswer::Refused(status) => {
                 attempt.state = "failed".into();
-                attempt.message = Some(format!("OpenCode 没有接受这次回退，什么也没有做：{status}"));
+                attempt.message = Some(format!("OpenCode 在开始回退之前拒绝了它，什么也没有做：{status}"));
             }
             RevertAnswer::Unknown(why) => {
                 attempt.state = "unknown".into();
                 attempt.message = Some(format!("这次回退的结果无法确认（{why}）；结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次"));
             }
         }
+        self.opencode_revert_saved(id, &attempt).await
+    }
+
+    /// Reverted: the session holds it. Each file is judged as it is now.
+    async fn opencode_revert_reverted(self: &Arc<Self>, id: &str, attempt: &mut Attempt, plan: &Plan) -> Result<()> {
+        let outcomes = match plan.root {
+            Some(root) => {
+                let (entries, folder) = (plan.entries.clone(), PathBuf::from(&plan.folder));
+                tokio::task::spawn_blocking(move || files::outcomes(&entries, &folder, root, BOUNDS)).await?
+            }
+            None => Vec::new(),
+        };
+        let mut listed = Vec::new();
+        for (entry, outcome) in plan.entries.iter().zip(&outcomes) {
+            let mut file = serde_json::to_value(outcome)?;
+            file["path"] = entry.target.file.clone().into();
+            listed.push(file);
+        }
+        attempt.files = Some(Value::Array(listed));
+        self.opencode_revert_project(id, attempt).await?;
+        let unverified = outcomes.iter().filter(|o| !matches!(o, Outcome::Verified)).count();
+        attempt.state = "completed".into();
+        attempt.message = Some(if unverified == 0 {
+            "已回退；OpenCode 会在这个会话收到下一条消息时删去这些消息".into()
+        } else {
+            format!("已回退，但有 {unverified} 个文件不是快照里的内容；没有自动覆盖，请查看每个文件的结果")
+        });
+        Ok(())
+    }
+
+    /// The request ended, yet the session holds no revert (Lead 4109 3):
+    /// that alone does not say it changed nothing, since OpenCode changes the
+    /// files before it keeps the revert. Read again, whole, under the gate:
+    /// only if the Agent passes every check a preview makes, the session's
+    /// messages are as the plan read them and every file is as it was before
+    /// the request, nothing is kept of the revert and the attempt holds the
+    /// Agent back no longer (no Turn leaves, no draft comes back). Otherwise
+    /// it stays unknown, with what differs.
+    async fn opencode_revert_unmarked(self: &Arc<Self>, id: &str, attempt: &mut Attempt, plan: &Plan) {
+        let differs = match self.opencode_revert_read(id, &attempt.target).await {
+            Ok(read) if read.session == attempt.thread && read.messages == plan.messages && read.entries == plan.entries && read.root == plan.root => None,
+            Ok(read) if read.session != attempt.thread || read.messages != plan.messages => Some("会话或它的消息与执行前不同".to_owned()),
+            Ok(_) => Some("要送回的文件与执行前不同".to_owned()),
+            Err(error) => Some(format!("没能再次核对：{error:#}")),
+        };
+        match differs {
+            None => {
+                attempt.state = "unchanged".into();
+                attempt.message = Some("OpenCode 的请求已结束，但没有确认回退；再次读到的会话消息和每个文件都与执行前一致，没有保留回退的结果，这个 Agent 可以照常使用".into());
+            }
+            Some(why) => {
+                attempt.state = "unknown".into();
+                attempt.message = Some(format!("OpenCode 的请求已结束，但没有确认回退；{why}。结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次"));
+            }
+        }
+    }
+
+    /// An OpenCode attempt checked again (`/rewind/check`, under the gate):
+    /// only one whose request ended with no revert held is read again; one
+    /// whose answer never came stays as it is (Lead 4109 1).
+    pub(crate) async fn opencode_revert_recheck(self: &Arc<Self>, id: &str, mut attempt: Attempt) -> Result<Value> {
+        let plan = Plan::of(&attempt)?;
+        if attempt.state != "unknown" || plan.ended.is_none() {
+            return Ok(attempt.outcome());
+        }
+        self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
         self.opencode_revert_saved(id, &attempt).await
     }
 

@@ -300,6 +300,11 @@ def write(rel, content):
         path.write_text(content)
 
 
+def busy(session):
+    """OpenCode 1.19.3's 409 for a busy session (`SessionBusyError`, `packages/sdk/openapi.json`)."""
+    return {'_tag': 'SessionBusyError', 'sessionID': session, 'message': f'Session is busy: {session}'}
+
+
 def ordered(session):
     return sorted(messages.get(session, {}).values(), key=lambda m: (m['info']['time']['created'], m['info']['id']))
 
@@ -880,14 +885,20 @@ class Handler(BaseHTTPRequestHandler):
         file: only logged, the answer the same), `refuse` (409 as when busy, nothing done), `error` (500,
         nothing done), `drop` (done, then the
         connection ends with no answer), `late` (done, answered only on `goOn`), `hold` (nothing done
-        until `goOn`)."""
+        until `goOn`), `conflict` (409 with another body, nothing done), `unmarked` (200 with the session
+        unchanged, nothing done, as when no message matches), `unmarked-files` (the files checked out,
+        then 200 with no revert kept)."""
         if statuses.get(session, {}).get('type') == 'busy':
-            return self.reply(409, {'name': 'SessionBusyError', 'data': {'sessionID': session, 'message': f'Session {session} is busy'}})
+            return self.reply(409, busy(session))
         mode = modes['revert']
         if mode == 'refuse':
-            return self.reply(409, {'name': 'SessionBusyError', 'data': {'sessionID': session, 'message': f'Session {session} is busy'}})
+            return self.reply(409, busy(session))
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: revert failed'}})
+        if mode == 'conflict':
+            return self.reply(409, {'_tag': 'ConflictError', 'message': 'fixture: not a busy session'})
+        if mode == 'unmarked':
+            return self.reply(200, sessions[session])
         if mode == 'hold':
             go_on = threading.Event()
             reverting[session] = go_on
@@ -926,6 +937,8 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     if revert_file(p['hash'], file) != 'kept':
                         restored.append(os.path.relpath(file, WORK))
+            if mode == 'unmarked-files':
+                return self.reply(200, info)
             if snapshot:
                 revert['snapshot'] = snapshot
                 revert['diff'] = git('diff', snapshot, check=False).stdout.decode(errors='replace')
@@ -948,7 +961,7 @@ class Handler(BaseHTTPRequestHandler):
         to the revert's snapshot (every file it holds written again, none deleted) and the revert is cleared.
         Mode `unrevert`: `ok`, `error`, `drop`, `late`, `hold`, as for a revert."""
         if statuses.get(session, {}).get('type') == 'busy':
-            return self.reply(409, {'name': 'SessionBusyError', 'data': {'sessionID': session, 'message': f'Session {session} is busy'}})
+            return self.reply(409, busy(session))
         mode = modes['unrevert']
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: unrevert failed'}})

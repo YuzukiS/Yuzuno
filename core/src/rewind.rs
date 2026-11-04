@@ -74,6 +74,10 @@ pub(crate) struct Attempt {
     /// Codex rewind, which sends none back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) files: Option<Value>,
+    /// What an OpenCode revert checked before it asked, and whether its one
+    /// request was answered whole (`opencode_revert::Plan`); none for Codex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) opencode: Option<Value>,
 }
 impl Attempt {
     pub(crate) fn outcome(&self) -> Value {
@@ -440,6 +444,7 @@ impl Workspace {
             state: "sending".into(),
             message: None,
             files: None,
+            opencode: None,
         };
         // The local archive: the metadata and the Turns the rewind removes
         // (every local Turn the kept native prefix lacks), with their
@@ -653,8 +658,11 @@ impl Workspace {
                 json!({"attemptId":key_id,"status":"failed","draft":"","message":"No native command was admitted for this preview. Close and preview again."}),
             );
         };
-        // An OpenCode revert's is settled by OpenCode's answer alone (T-10 Revert).
-        if matches!(a.state.as_str(), "sending" | "unknown") && self.listed(id).await?.harness != "opencode" {
+        // An OpenCode revert's own check (T-10 Revert).
+        if matches!(a.state.as_str(), "sending" | "unknown") && self.listed(id).await?.harness == "opencode" {
+            return self.opencode_revert_recheck(id, a).await;
+        }
+        if matches!(a.state.as_str(), "sending" | "unknown") {
             let c = self.ensure(id).await?;
             if let Err(e) = self.finish_rewind(id, &c, &mut a).await {
                 a.state = "unknown".into();

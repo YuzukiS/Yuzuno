@@ -277,6 +277,8 @@ async fn a_revert_whose_outcome_is_unknown_holds_back_every_new_input_and_is_nev
         assert!(error.to_string().contains("rewind is unconfirmed"), "{what}: {error:#}");
     }
     assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap()["status"], "unknown");
+    assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["status"], "unknown",
+        "a request with no answer stays unknown whatever a later read finds");
     assert_eq!(reverts(&data), 1, "never asked again");
     assert_eq!(turn_ids(&ws), vec![first], "nothing removed");
     ws.close_agent("oc").await.unwrap();
@@ -296,7 +298,7 @@ async fn a_revert_opencode_refuses_before_doing_anything_has_failed_and_holds_no
     let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
     let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
     assert_eq!(outcome["status"], "failed", "{outcome}");
-    assert!(outcome["message"].as_str().unwrap().contains("409"), "{outcome}");
+    assert!(outcome["message"].as_str().unwrap().contains("SessionBusyError"), "{outcome}");
     assert_eq!(turn_ids(&ws), vec![first]);
     turn(&ws, &data, "next", json!({})).await;
     ws.close_agent("oc").await.unwrap();
@@ -334,19 +336,19 @@ async fn an_answer_after_the_confirm_stopped_watching_settles_its_attempt_when_i
     ws.close_agent("oc").await.unwrap();
 }
 
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn each_file_is_backed_up_before_the_revert_is_asked_and_judged_after() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+/// A lab whose stand-in keeps its snapshots in this test's own data folder
+/// (as OpenCode would with that XDG_DATA_HOME), with `a.txt` changed by its
+/// first Turn's patch from `a0` to `a1`, and a Started injected as if Core
+/// had started a native OpenCode (see each_file_to_send_back_is_read_...).
+/// The Workspace, its data folder, the work folder, the file and the Turn.
+async fn files_lab(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::PathBuf, String, String) {
     let cwd = root.join("work");
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::write(cwd.join("a.txt"), "a0\n").unwrap();
-    // The stand-in keeps its snapshots in this test's own data folder, as OpenCode would with that XDG_DATA_HOME.
     let xdg = root.join("xdg-data");
     std::fs::create_dir_all(&xdg).unwrap();
     std::fs::write(xdg.join(".yuzuno-fixture"), "").unwrap();
-    let ws = lab_with(&root, &cwd, &[("xdg-data", xdg.to_str().unwrap())]).await;
+    let ws = lab_with(root, &cwd, &[("xdg-data", xdg.to_str().unwrap())]).await;
     let data = root.join("data");
     let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
     let path = c.server.path().await.unwrap();
@@ -366,12 +368,19 @@ async fn each_file_is_backed_up_before_the_revert_is_asked_and_judged_after() {
     std::fs::write(cwd.join("a.txt"), "a1\n").unwrap();
     let file = cwd.join("a.txt").to_string_lossy().into_owned();
     let first = turn(&ws, &data, "first", json!({"patches": [{"hash": tree, "files": [file]}]})).await;
-    // As if Core had started a native OpenCode (see each_file_to_send_back_is_read_from_opencodes_own_snapshot_...).
     let launcher = Launcher::resolve(Path::new("/usr/bin/python3"), None).unwrap();
     let roots = Roots { home: path["home"].as_str().unwrap().into(), state: path["state"].as_str().unwrap().into(),
         config: path["config"].as_str().unwrap().into(), data: opencode_data.to_string_lossy().into_owned() };
     ws.opencodes.lock().unwrap().get_mut("oc").unwrap().files = Arc::new(Ok(Started { launcher, roots }));
+    (ws, data, cwd, file, first)
+}
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn each_file_is_backed_up_before_the_revert_is_asked_and_judged_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, cwd, file, first) = files_lab(&root).await;
     let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
     let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
     assert_eq!((&outcome["status"], &outcome["files"]), (&json!("completed"), &json!([{"path": file, "outcome": "verified"}])), "{outcome}");
@@ -380,6 +389,64 @@ async fn each_file_is_backed_up_before_the_revert_is_asked_and_judged_after() {
     let kept: Value = serde_json::from_str(&std::fs::read_to_string(backup.join("backup.json")).expect("a backup kept before the revert")).unwrap();
     assert_eq!(kept["files"], json!(["0.bin"]), "{kept}");
     assert_eq!(std::fs::read_to_string(backup.join("0.bin")).unwrap(), "a1\n", "what it was, kept before");
+    // What it checked is kept with the attempt, and that its request ended.
+    let plan = ws.store.rewind_attempt("oc", Some(&key)).unwrap().unwrap().opencode.unwrap();
+    assert_eq!((&plan["entries"][0]["file"], plan["ended"].is_string()), (&json!(file), true), "{plan}");
     assert_eq!(reverts(&data), 1);
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_request_that_ended_with_no_revert_kept_lets_the_agent_go_on_only_once_all_is_as_before() {
+    // With no file to send back: read again, all as before, nothing kept, the Agent goes on.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    control(&data, "mode", json!({"revert": "unmarked"})).await;
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "unchanged", "{outcome}");
+    assert_eq!(turn_ids(&ws), vec![first.clone()], "no Turn leaves");
+    turn(&ws, &data, "next", json!({})).await;
+    ws.close_agent("oc").await.unwrap();
+
+    // Its files sent back with no revert kept: held back, until they are as before again.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, cwd, _, first) = files_lab(&root).await;
+    control(&data, "mode", json!({"revert": "unmarked-files"})).await;
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "unknown", "files changed by the request are not taken as unchanged: {outcome}");
+    assert!(outcome["message"].as_str().unwrap().contains("请求已结束，但没有确认回退"), "{outcome}");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
+    assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["status"], "unknown", "read again, still not as before");
+    std::fs::write(cwd.join("a.txt"), "a1\n").unwrap();
+    assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["status"], "unchanged", "read again, all as before");
+    assert_eq!(turn_ids(&ws), vec![first]);
+    assert_eq!(reverts(&data), 1, "never asked again");
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_409_that_is_not_opencodes_busy_refusal_says_nothing_of_what_it_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    control(&data, "mode", json!({"revert": "conflict"})).await;
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "unknown", "a 409 that is not OpenCode's busy refusal says nothing of what it did: {outcome}");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
     ws.close_agent("oc").await.unwrap();
 }
