@@ -7,8 +7,8 @@
 // - SX-47: Add to workspace for an existing Claude session, after its preview; Core refuses the import.
 // For each, Cancel and the pressed button keep their places, the alert shows (role="alert") and is wholly in
 // view, the refused write happens once, and focus does not fall to the page. New agent and its two import tabs
-// scroll, so there the alert keeps its line above the buttons; the draft dialog does not, so there it comes
-// below them. Desktop 1280×860 (a click) and phone 390×844 (a tap), and Enter on the focused button in each. Writes other than the refused ones and the app's
+// scroll, so there the alert keeps two lines above the buttons (a longer one is clamped to them, whole in its
+// title: refused at length, on a phone); the draft dialog does not, so there it comes below them. Desktop 1280×860 (a click) and phone 390×844 (a tap), and Enter on the focused button in each. Writes other than the refused ones and the app's
 // own saves of where an Agent was read are refused and listed. Reads the fixture does not know are answered
 // {} and listed. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/error-below-actions-check.mjs
@@ -63,6 +63,12 @@ const gets = {
   "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
   "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
 };
+// A refusal long enough to wrap onto many lines in a phone's dialog (R1 6f669986): it is clamped to the
+// two kept lines, whole in the alert's title and text.
+const LONG = "Core refused this: the folder /fixture/projects/a-rather-long-project-name/with/a/deep/path is not on the " +
+  "machine Core host, the machine did not answer the last check in time, and nothing was created or imported. Check the " +
+  "folder and the machine, then try again; if it keeps failing, the machine's own log has the full reason (fixture).";
+let long = false;
 // The writes each case expects, all refused as Core would refuse them; previews only read.
 const refusals = {
   "POST /api/agents": "Core refused to create this Agent (fixture).",
@@ -88,7 +94,7 @@ async function serve(route) {
     const refusal = refusals[`${method} ${url.pathname}`];
     if (refusal) {
       report.refused.push(`${method} ${url.pathname}`);
-      return route.fulfill({ status: 409, json: { error: refusal } });
+      return route.fulfill({ status: 409, json: { error: long ? LONG : refusal } });
     }
     if (method !== "GET") {
       report.writes.push(`${method} ${url.pathname}`);
@@ -123,6 +129,8 @@ function measure([cancel, pressed]) {
     pressed: box(button(pressed)),
     alert: box(alert),
     alertText: alert?.textContent.trim().slice(0, 120) ?? null,
+    alertFull: alert?.textContent.trim() ?? null,
+    alertTitle: alert?.getAttribute("title") ?? null,
     // In view: the whole alert inside both the dialog's visible box and the window.
     alertInView: !!a && a.top >= Math.max(frame.top, 0) - 0.5 && a.bottom <= Math.min(frame.bottom, innerHeight) + 0.5,
     dialog: { top: Math.round(frame.top), bottom: Math.round(frame.bottom), scrollTop: Math.round(scroller.scrollTop),
@@ -147,6 +155,13 @@ const cases = [
     write: "POST /api/codex/sessions/import" },
   { key: "SX-47", tag: "an existing Claude session's Add to workspace", cancel: "Cancel", pressed: "Add to workspace",
     write: "POST /api/claude/sessions/import" },
+  // The same three refused with a long message, on a phone: it wraps onto many lines there.
+  { key: "SX-25", tag: "New agent's Create agent, refused at length", cancel: "Cancel", pressed: "Create agent",
+    write: "POST /api/agents", long: true },
+  { key: "SX-35", tag: "an existing Codex session's Add to workspace, refused at length", cancel: "Cancel", pressed: "Add to workspace",
+    write: "POST /api/codex/sessions/import", long: true },
+  { key: "SX-47", tag: "an existing Claude session's Add to workspace, refused at length", cancel: "Cancel", pressed: "Add to workspace",
+    write: "POST /api/claude/sessions/import", long: true },
 ];
 
 /** A click (a tap on a phone), or Enter on the button once it has focus. */
@@ -162,6 +177,8 @@ try {
   for (const run of runs) for (const input of inputs) {
     const how = `${run.tag}, ${input === "Enter" ? "Enter" : run.touch ? "a tap" : "a click"}`;
     for (const c of cases) {
+      if (c.long && !run.touch) continue;
+      long = !!c.long;
       const context = await browser.newContext({ viewport: { width: run.width, height: run.height }, hasTouch: run.touch, isMobile: run.touch });
       const page = await context.newPage();
       await page.addInitScript(({ draft, broken }) => {
@@ -241,6 +258,9 @@ try {
         ok(`${name}: Cancel and ${c.pressed} stay where they were`, same(before.cancel, after.cancel) && same(before.pressed, after.pressed), detail);
         ok(`${name}: the alert is in view`, after.alertInView, detail);
         ok(`${name}: focus does not fall to the page`, after.focus !== "page", detail);
+        if (c.long)
+          ok(`${name}: the whole message can be read, in the alert's text and its title`,
+            after.alertFull === LONG && after.alertTitle === LONG, { full: after.alertFull?.length, title: after.alertTitle?.length });
         await page.screenshot({ path: resolve(output, `${run.tag}-${input}-${c.key}.png`) });
       } catch (error) {
         ok(`${name}: the sequence ran to its end`, false, String(error?.message ?? error).slice(0, 400));
