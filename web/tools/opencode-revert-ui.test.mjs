@@ -127,9 +127,10 @@ test("a revert's result stays readable once Core's record drops the turn it reve
 
 test("an outcome not yet confirmed is found again however the Agent is left, only checked, its text given once", async () => {
   let checks = 0;
+  let confirmed = false;
   const core = { calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
-    // As Core answers it: not yet known, whether asked for by its ID or as the one pending.
-    preview, confirm: unknown, attempt: () => ({ attempt: unknown }),
+    // As Core answers it: none before it is confirmed; then not yet known, whether asked for by its ID or as the one pending.
+    preview, confirm: () => { confirmed = true; return unknown; }, attempt: () => ({ attempt: confirmed ? unknown : null }),
     check: () => (++checks < 2 ? { ...unknown, message: "第一次核对：仍无法确认" } : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] }),
   } };
   const page = await mount(core);
