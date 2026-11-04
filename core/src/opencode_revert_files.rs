@@ -128,18 +128,32 @@ pub struct Started {
 
 impl Started {
     /// For the process `pid` started from `launcher`, with the environment
-    /// `var` gives (and `passwd` for an account's home when it has no HOME):
-    /// what is known, or why it is not.
-    pub fn of(launcher: Result<Launcher>, pid: Option<u32>, var: impl Fn(&str) -> Option<std::ffi::OsString>, passwd: impl FnOnce() -> Option<PathBuf>)
-        -> std::result::Result<Self, String> {
+    /// `var` gives and whose variables are `names` (and `passwd` for an
+    /// account's home when it has no HOME): what is known, or why it is not.
+    pub fn of(launcher: Result<Launcher>, pid: Option<u32>, var: impl Fn(&str) -> Option<std::ffi::OsString>,
+        names: impl IntoIterator<Item = std::ffi::OsString>, passwd: impl FnOnce() -> Option<PathBuf>) -> std::result::Result<Self, String> {
         let known = || -> Result<Self> {
             let launcher = launcher?;
             launcher.check()?;
             launcher.bound(pid.context("OpenCode's process has no ID")?)?;
+            let set: Vec<String> = names.into_iter().filter_map(|name| name.into_string().ok()).filter(|name| git_scope(name)).collect();
+            ensure!(set.is_empty(), "Core's environment sets {}, which OpenCode's own Git takes up: what its checkout reads cannot be read the same way",
+                set.join(", "));
             Ok(Self { launcher, roots: Roots::of(var, passwd)? })
         };
         known().map_err(|error| format!("{error:#}"))
     }
+}
+
+/// A variable that changes what Git reads for OpenCode's own checkout (its
+/// store, index, objects, configuration, attributes, or how it reads a path).
+/// OpenCode passes its environment on to Git, so one set means Core cannot
+/// read what that checkout reads the same way (Lead 4051).
+fn git_scope(name: &str) -> bool {
+    name.starts_with("GIT_CONFIG")
+        || matches!(name, "GIT_DIR" | "GIT_WORK_TREE" | "GIT_INDEX_FILE" | "GIT_OBJECT_DIRECTORY" | "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+            | "GIT_COMMON_DIR" | "GIT_NAMESPACE" | "GIT_ATTR_NOSYSTEM" | "GIT_ATTR_SOURCE" | "GIT_NO_REPLACE_OBJECTS" | "GIT_REPLACE_REF_BASE"
+            | "GIT_LITERAL_PATHSPECS" | "GIT_GLOB_PATHSPECS" | "GIT_NOGLOB_PATHSPECS" | "GIT_ICASE_PATHSPECS")
 }
 
 fn native(head: &[u8; 4]) -> bool {
@@ -310,6 +324,9 @@ fn inside(file: &str, worktree: &str, folder: &str) -> Result<String> {
     // OpenCode checks the file out by its path as a Git pathspec (`snapshot/index.ts:427,496`), where these are
     // patterns: it could restore files of other names too, which Core neither lists nor backs up (Lead 4036).
     ensure!(!file.contains(['*', '?', '[', '\\']), "{file} has a character Git reads as a pattern (* ? [ \\): OpenCode could restore more than this file");
+    // Put back, it could change how Git writes every other file (Lead 4051).
+    ensure!(Path::new(file).file_name() != Some(OsStr::new(".gitattributes")),
+        "{file} is a .gitattributes file: putting it back could change how Git writes the others");
     Ok(file[worktree.len() + 1..].to_owned())
 }
 
@@ -354,6 +371,15 @@ async fn git(store: &Path, args: &[&str], limit: u64) -> Result<std::result::Res
     for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG_PARAMETERS"] {
         command.env_remove(name);
     }
+    let (status, stdout, said) = capture(command, limit).await?;
+    Ok(if status.success() { Ok(stdout) } else { Err(said) })
+}
+
+/// `command` run with its answer kept, at most `limit` bytes of it: more ends
+/// it at once (killed and reaped), as does GIT_SECONDS without an end. What
+/// it says on error is kept from its start and the rest read away, so it
+/// never waits on a full pipe.
+async fn capture(mut command: tokio::process::Command, limit: u64) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -361,29 +387,38 @@ async fn git(store: &Path, args: &[&str], limit: u64) -> Result<std::result::Res
         .kill_on_drop(true)
         .spawn()
         .context("Git could not be started on this Core's host")?;
-    let mut out = child.stdout.take().context("Missing Git output")?.take(limit + 1);
-    let mut err = child.stderr.take().context("Missing Git errors")?.take(4096);
+    let mut out = child.stdout.take().context("Missing Git output")?;
+    let mut err = child.stderr.take().context("Missing Git errors")?;
+    let said = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        (&mut err).take(4096).read_to_end(&mut kept).await?;
+        tokio::io::copy(&mut err, &mut tokio::io::sink()).await?;
+        Ok::<_, std::io::Error>(String::from_utf8_lossy(&kept).trim().chars().take(600).collect::<String>())
+    });
     let run = async {
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let (a, b, status) = tokio::join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr), child.wait());
-        a?;
-        b?;
-        Ok::<_, anyhow::Error>((status?, stdout, stderr))
+        (&mut out).take(limit + 1).read_to_end(&mut stdout).await?;
+        if stdout.len() as u64 > limit {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            bail!("Git's answer exceeded {limit} bytes");
+        }
+        Ok::<_, anyhow::Error>((child.wait().await?, stdout))
     };
-    let (status, stdout, stderr) = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), run)
+    let (status, stdout) = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), run)
         .await
         .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))??;
-    ensure!(stdout.len() as u64 <= limit, "Git's answer exceeded {limit} bytes");
-    Ok(if status.success() { Ok(stdout) } else { Err(String::from_utf8_lossy(&stderr).trim().chars().take(600).collect()) })
+    let said = said.await.context("What Git said was not read")??;
+    Ok((status, stdout, said))
 }
 
 /// Git as OpenCode itself runs it on its store for a checkout (`snapshot/index.ts`: its work tree, its own
 /// `core.longpaths` and `core.symlinks`, and the configuration and attributes the environment it was given names,
 /// global and system ones included; `env` is what Core sets for that process beyond its own environment), for
-/// questions whose answer depends on that scope: what such a checkout would do to a file's bytes. Nothing it runs
-/// writes or runs a filter.
-async fn native_git(store: &Path, worktree: &Path, env: &[(String, String)], args: &[&str], limit: u64) -> Result<std::process::Output> {
+/// questions whose answer depends on that scope: what such a checkout would do to a file's bytes. The environment
+/// is passed on as it is: one that changes Git's scope refuses where OpenCode was started (`Started`). Nothing it
+/// runs writes or runs a filter.
+async fn native_git(store: &Path, worktree: &Path, env: &[(String, String)], args: &[&str], limit: u64) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
     let mut command = tokio::process::Command::new("git");
     command
         .arg("--git-dir")
@@ -395,22 +430,8 @@ async fn native_git(store: &Path, worktree: &Path, env: &[(String, String)], arg
         .current_dir(worktree)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
-    for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"] {
-        command.env_remove(name);
-    }
-    command.envs(env.iter().map(|(k, v)| (k, v)));
-    let out = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), command.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))?
-        .context("Git could not be started on this Core's host")?;
-    ensure!(out.stdout.len() as u64 <= limit, "Git's answer exceeded {limit} bytes");
-    Ok(out)
-}
-
-fn failed(args: &[&str], out: &std::process::Output) -> anyhow::Error {
-    anyhow::anyhow!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim().chars().take(600).collect::<String>())
+        .envs(env.iter().map(|(k, v)| (k, v)));
+    capture(command, limit).await
 }
 
 /// That OpenCode's checkout of `rel` would write the snapshot's bytes as they are (Lead 4037): no attribute that
@@ -418,26 +439,38 @@ fn failed(args: &[&str], out: &std::process::Output) -> anyhow::Error {
 /// would, as Git reads them for that checkout (`native_git`). Only none of them, or `-text`, lets the snapshot's
 /// bytes be what the file becomes; anything else refuses, and no filter is ever run to find out what it would do.
 pub async fn unconverted(store: &Path, worktree: &Path, env: &[(String, String)], rel: &str) -> Result<()> {
-    let ask = ["check-attr", "-z", "text", "eol", "crlf", "ident", "filter", "working-tree-encoding", "--", rel];
-    let listed = native_git(store, worktree, env, &ask, 64 * 1024).await
-        .with_context(|| format!("What Git would do to {rel} on OpenCode's checkout cannot be read"))?;
-    ensure!(listed.status.success(), failed(&ask, &listed));
-    let fields: Vec<&[u8]> = listed.stdout.split(|b| *b == 0).collect();
-    for answer in fields.chunks(3).filter(|answer| answer.len() == 3) {
-        let (attribute, value) = (String::from_utf8_lossy(answer[1]), String::from_utf8_lossy(answer[2]));
-        let plain = value == "unspecified" || (attribute == "text" && value == "unset");
-        ensure!(plain, "Git would convert {rel} as OpenCode checks it out ({attribute}: {value}), so it would not become the snapshot's bytes");
+    // Both views of the attributes: the work tree's `.gitattributes` first, and the index's alone. Which one a
+    // checkout reads first depends on how Git does it (Git 2.56's `checkout <tree> -- <path>` took the work tree's,
+    // checked by hand), so either one that converts refuses (Lead 4051).
+    for cached in [false, true] {
+        let mut ask = vec!["check-attr", "-z"];
+        if cached {
+            ask.push("--cached");
+        }
+        ask.extend(["text", "eol", "crlf", "ident", "filter", "working-tree-encoding", "--", rel]);
+        let (status, listed, said) = native_git(store, worktree, env, &ask, 64 * 1024).await
+            .with_context(|| format!("What Git would do to {rel} on OpenCode's checkout cannot be read"))?;
+        ensure!(status.success(), "git {} failed: {said}", ask.join(" "));
+        let fields: Vec<&[u8]> = listed.split(|b| *b == 0).collect();
+        for answer in fields.chunks(3).filter(|answer| answer.len() == 3) {
+            let (attribute, value) = (String::from_utf8_lossy(answer[1]), String::from_utf8_lossy(answer[2]));
+            let plain = value == "unspecified" || (attribute == "text" && value == "unset");
+            ensure!(plain, "Git would convert {rel} as OpenCode checks it out ({attribute}: {value}{}), so it would not become the snapshot's bytes",
+                if cached { ", by the index's attributes" } else { "" });
+        }
     }
-    // Unset is exit 1 with nothing said; any other failure is not an answer.
+    // Unset is exit 1 with nothing said; any other failure is not an answer. Only what Git reads as false, or
+    // `input` (which converts on commit alone), leaves a checkout's bytes as they are: anything else, a key with no
+    // value (true) included, refuses.
     let ask = ["config", "--get", "core.autocrlf"];
-    let setting = native_git(store, worktree, env, &ask, 64).await?;
-    let autocrlf = match setting.status.code() {
-        Some(0) => String::from_utf8_lossy(&setting.stdout).trim().to_ascii_lowercase(),
-        Some(1) if setting.stdout.is_empty() && setting.stderr.is_empty() => String::new(),
-        _ => return Err(failed(&ask, &setting)),
+    let (status, value, said) = native_git(store, worktree, env, &ask, 64).await?;
+    let autocrlf = match status.code() {
+        Some(0) => String::from_utf8_lossy(&value).trim().to_ascii_lowercase(),
+        Some(1) if value.is_empty() && said.is_empty() => "false".into(),
+        _ => bail!("git {} failed: {said}", ask.join(" ")),
     };
-    // Only `true` converts on checkout; `input` converts on commit alone.
-    ensure!(autocrlf != "true", "Git would convert line endings as OpenCode checks files out (core.autocrlf true)");
+    ensure!(matches!(autocrlf.as_str(), "false" | "no" | "off" | "0" | "input"),
+        "Git would convert line endings as OpenCode checks files out (core.autocrlf {autocrlf:?})");
     Ok(())
 }
 
@@ -518,11 +551,18 @@ fn open_root(folder: &Path) -> Result<rustix::fd::OwnedFd> {
 
 /// What is at `file` now: nothing, or a regular file and its bytes; anything
 /// else refuses. It is reached from `folder`, which must still be `root`, one
-/// component at a time, each opened from the one before and never through a
-/// symlink; its kind is checked before it is opened, so a FIFO or a device is
-/// never opened. Its bytes are read from that open file, at most `bounds.file`
-/// of them, and it must not have changed while they were read. A folder that
-/// is gone, or no longer `root`, refuses: it never reads as nothing there.
+/// name at a time, each opened from the folder before it and never through a
+/// symlink. Its kind is read before it is opened, so a FIFO or a device found
+/// there is not opened; one put there between that read and the open is
+/// opened without waiting (non-blocking) and refused by the check of the open
+/// file made before any byte is read: the same file (device and inode),
+/// regular, within `bounds.file`. At most that many bytes are read, and the
+/// file must not change meanwhile. Before it answers, the path is walked
+/// again from `folder`: every name must still be what was opened (and a
+/// missing one still missing), so a file renamed away meanwhile is never
+/// taken for what is at the path. A folder that is gone, or no longer `root`,
+/// refuses: it never reads as nothing there. What is written there after it
+/// answers, before OpenCode's revert, cannot be excluded.
 pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result<(State, Option<Vec<u8>>)> {
     use rustix::fs::{AtFlags, FileType, Mode, OFlags};
     use rustix::io::Errno;
@@ -538,20 +578,25 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
     let mut dir = open_root(folder)?;
     ensure!(Root::of_fd(&dir)? == root, "The Agent's folder {} is no longer the folder it was", folder.display());
     let mut at = folder.to_path_buf();
+    // What each name was as it was opened, to walk the path again with.
+    let mut seen: Vec<Root> = Vec::new();
+    let mut found = (State::Absent, None);
     for (index, name) in names.iter().enumerate() {
         at.push(name);
         let stat = match rustix::fs::statat(&dir, *name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => stat,
-            Err(Errno::NOENT) => return Ok((State::Absent, None)),
+            Err(Errno::NOENT) => break,
             Err(error) => return Err(error).with_context(|| format!("{} cannot be read", at.display())),
         };
+        let id = Root { dev: stat.st_dev as u64, ino: stat.st_ino as u64 };
         let kind = FileType::from_raw_mode(stat.st_mode);
         ensure!(kind != FileType::Symlink, "{} is a symlink", at.display());
         if index + 1 < names.len() {
             ensure!(kind == FileType::Directory, "{} is not a folder", at.display());
             let next = rustix::fs::openat(&dir, *name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
                 .with_context(|| format!("{} cannot be opened as a folder", at.display()))?;
-            ensure!(Root::of_fd(&next)? == (Root { dev: stat.st_dev as u64, ino: stat.st_ino as u64 }), "{} changed while it was read", at.display());
+            ensure!(Root::of_fd(&next)? == id, "{} changed while it was read", at.display());
+            seen.push(id);
             dir = next;
             continue;
         }
@@ -560,6 +605,8 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
         let opened = rustix::fs::openat(&dir, *name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC, Mode::empty())
             .with_context(|| format!("{} cannot be opened", at.display()))?;
         let before = rustix::fs::fstat(&opened)?;
+        ensure!(Root::of_fd(&opened)? == id && FileType::from_raw_mode(before.st_mode) == FileType::RegularFile && before.st_size as u64 <= bounds.file,
+            "{} changed before it was read", at.display());
         let mut handle = std::fs::File::from(opened);
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(&mut handle, bounds.file + 1), &mut bytes)
@@ -571,10 +618,28 @@ pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result
         let same = |a: &rustix::fs::Stat| (a.st_dev as u64, a.st_ino as u64, a.st_size as u64, a.st_mtime as i64, a.st_mtime_nsec as i64, a.st_mode);
         ensure!(same(&before) == same(&stat) && same(&after) == same(&stat) && bytes.len() as u64 == stat.st_size as u64,
             "{} changed while it was read", at.display());
+        seen.push(id);
         let executable = stat.st_mode & 0o100 != 0;
-        return Ok((State::File { size: bytes.len() as u64, sha256: sha256(&bytes), executable }, Some(bytes)));
+        found = (State::File { size: bytes.len() as u64, sha256: sha256(&bytes), executable }, Some(bytes));
     }
-    unreachable!("the last name returned")
+    // The path walked again: the folder, every name as it was opened, and the one missing still missing.
+    let mut dir = open_root(folder)?;
+    ensure!(Root::of_fd(&dir)? == root, "The Agent's folder {} changed while {} was read", folder.display(), file.display());
+    for (index, name) in names.iter().enumerate() {
+        let now = match rustix::fs::statat(&dir, *name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => Some(Root { dev: stat.st_dev as u64, ino: stat.st_ino as u64 }),
+            Err(Errno::NOENT) => None,
+            Err(error) => return Err(error).with_context(|| format!("{} cannot be read again", file.display())),
+        };
+        ensure!(now == seen.get(index).copied(), "{} changed while it was read", file.display());
+        if now.is_none() || index + 1 == names.len() {
+            break;
+        }
+        dir = rustix::fs::openat(&dir, *name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+            .with_context(|| format!("{} cannot be read again", file.display()))?;
+        ensure!(Some(Root::of_fd(&dir)?) == now, "{} changed while it was read", file.display());
+    }
+    Ok(found)
 }
 
 impl Root {
@@ -623,16 +688,17 @@ pub struct Backup {
     pub files: Vec<Option<String>>,
 }
 
-/// The bytes of each file before the revert, in `dir` (new): each is read
-/// again and must still be what `entries` say, else nothing is kept and the
-/// revert must not be asked. Each copy is on disk (synced) before the list,
-/// which is written last and synced with its folder; the folder's own entry
-/// is synced too. Any failure means no backup, so no revert.
+/// The bytes of each file before the revert, in `dir`, made here in a parent
+/// folder that is already there and on disk (the caller's to ensure): each is
+/// read again and must still be what `entries` say, else nothing is kept and
+/// the revert must not be asked. Each copy is on disk (synced) before the
+/// list, which is written last and synced with its folder; the parent's entry
+/// for `dir` is synced too. Any failure means no backup, so no revert.
 pub fn backup(dir: &Path, entries: &[Entry], folder: &Path, root: Root, bounds: Bounds) -> Result<Backup> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let parent = dir.parent().context("The backup has no parent folder")?;
-    std::fs::create_dir_all(parent)?;
+    ensure!(std::fs::symlink_metadata(parent).is_ok_and(|m| m.is_dir()), "{} is not a folder to keep a backup in", parent.display());
     std::fs::create_dir(dir).with_context(|| format!("{} cannot be made for the backup", dir.display()))?;
     let mut files = Vec::new();
     for (index, entry) in entries.iter().enumerate() {

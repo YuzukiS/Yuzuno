@@ -631,7 +631,8 @@ impl Workspace {
         // Until it is in `opencodes`, this is its only owner: an error below
         // drops it, which ends its process group.
         let server = Arc::new(Server::start(&launch).await?);
-        let files = crate::opencode_revert_files::Started::of(launcher, server.pid(), |name| std::env::var_os(name), dirs::home_dir);
+        let files = crate::opencode_revert_files::Started::of(launcher, server.pid(), |name| std::env::var_os(name),
+            std::env::vars_os().map(|(name, _)| name), dirs::home_dir);
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {

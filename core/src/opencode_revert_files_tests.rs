@@ -141,6 +141,7 @@ fn a_revert_sends_back_each_file_of_a_later_patch_to_its_first_patchs_snapshot()
         (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x?"])]))], "u1", "a character Git reads as a pattern"),
         (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/[ab]"])]))], "u1", "a character Git reads as a pattern"),
         (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x\\y"])]))], "u1", "a character Git reads as a pattern"),
+        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/sub/.gitattributes"])]))], "u1", "is a .gitattributes file"),
     ] {
         let error = targets(&messages, boundary, "/w", "/w/f").unwrap_err().to_string();
         assert!(error.contains(said), "{boundary}: {error}");
@@ -267,6 +268,9 @@ async fn a_plan_is_bounded_its_backup_is_what_was_checked_and_each_file_is_judge
         assert!(error.contains(said), "{error}");
     }
 
+    let error = backup(&root.join("attempt/files"), &entries, &work, root_id, BOUNDS).unwrap_err().to_string();
+    assert!(error.contains("is not a folder to keep a backup in"), "its parent is the caller's: {error}");
+    fs::create_dir(root.join("attempt")).unwrap();
     let kept = backup(&root.join("attempt/files"), &entries, &work, root_id, BOUNDS).unwrap();
     assert_eq!(fs::read(root.join("attempt/files").join(kept.files[0].as_ref().unwrap())).unwrap(), b"a1");
     let listed: Backup = serde_json::from_slice(&fs::read(root.join("attempt/files/backup.json")).unwrap()).unwrap();
@@ -393,17 +397,65 @@ fn a_launcher_is_bound_to_the_process_that_runs_it_and_its_folders_come_with_it(
     let error = ours.bound(child.id()).unwrap_err().to_string();
     assert!(error.contains("does not run"), "another file than the one started: {error}");
 
-    let started = Started::of(Ok(sleep.clone()), Some(child.id()), env(&[("HOME", "/h")]), || None).unwrap();
+    let none = || Vec::<std::ffi::OsString>::new();
+    let started = Started::of(Ok(sleep.clone()), Some(child.id()), env(&[("HOME", "/h")]), vec!["GIT_EDITOR".into(), "PATH".into()], || None).unwrap();
     assert_eq!((&started.launcher, started.roots.data.as_str()), (&sleep, "/h/.local/share/opencode"));
-    for (launcher, pid, pairs, said) in [
-        (Ok(ours), Some(child.id()), &[("HOME", "/h")][..], "does not run"),
-        (Ok(sleep.clone()), None, &[("HOME", "/h")][..], "no ID"),
-        (Ok(sleep.clone()), Some(child.id()), &[("HOME", "")][..], "HOME is empty"),
-        (Err(anyhow::anyhow!("opencode is not on the PATH")), Some(child.id()), &[("HOME", "/h")][..], "not on the PATH"),
+    for (launcher, pid, pairs, names, said) in [
+        (Ok(ours), Some(child.id()), &[("HOME", "/h")][..], none(), "does not run"),
+        (Ok(sleep.clone()), None, &[("HOME", "/h")][..], none(), "no ID"),
+        (Ok(sleep.clone()), Some(child.id()), &[("HOME", "")][..], none(), "HOME is empty"),
+        (Err(anyhow::anyhow!("opencode is not on the PATH")), Some(child.id()), &[("HOME", "/h")][..], none(), "not on the PATH"),
+        (Ok(sleep.clone()), Some(child.id()), &[("HOME", "/h")][..], vec!["GIT_CONFIG_GLOBAL".into()], "sets GIT_CONFIG_GLOBAL"),
+        (Ok(sleep.clone()), Some(child.id()), &[("HOME", "/h")][..], vec!["GIT_INDEX_FILE".into(), "GIT_ATTR_SOURCE".into()], "sets GIT_INDEX_FILE, GIT_ATTR_SOURCE"),
     ] {
-        let why = Started::of(launcher, pid, env(pairs), || None).unwrap_err();
+        let why = Started::of(launcher, pid, env(pairs), names, || None).unwrap_err();
         assert!(why.contains(said), "{why}");
     }
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+#[tokio::test]
+async fn either_view_of_the_attributes_that_converts_refuses_and_core_autocrlf_counts_only_as_git_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (work, store) = (root.join("work"), root.join("store"));
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join(".gitattributes"), "*.txt text eol=crlf\n").unwrap();
+    fs::write(work.join("a.txt"), "a\n").unwrap();
+    track(&store, &work);
+    // The work tree's own says nothing converts now; the index still holds the one that does.
+    fs::write(work.join(".gitattributes"), "*.txt -text\n").unwrap();
+    let error = format!("{:#}", unconverted(&store, &work, &HERMETIC, "a.txt").await.unwrap_err());
+    assert!(error.contains("by the index's attributes"), "{error}");
+    fs::write(work.join(".gitattributes"), "").unwrap();
+    track(&store, &work);
+    unconverted(&store, &work, &HERMETIC, "a.txt").await.unwrap();
+    for (value, converts) in [("yes", true), ("on", true), ("1", true), ("TRUE", true), ("input", false), ("off", false), ("no", false), ("0", false)] {
+        run(&store, &work, &["config", "core.autocrlf", value]);
+        let answer = unconverted(&store, &work, &HERMETIC, "a.txt").await;
+        assert_eq!(answer.is_err(), converts, "core.autocrlf {value}: {answer:?}");
+    }
+    // A key with no value is true to Git.
+    run(&store, &work, &["config", "--unset", "core.autocrlf"]);
+    let mut config = fs::read_to_string(store.join("config")).unwrap();
+    config.push_str("[core]\n\tautocrlf\n");
+    fs::write(store.join("config"), config).unwrap();
+    let error = format!("{:#}", unconverted(&store, &work, &HERMETIC, "a.txt").await.unwrap_err());
+    assert!(error.contains("core.autocrlf \"\""), "{error}");
+}
+
+#[tokio::test]
+async fn a_git_answer_past_its_bound_ends_git_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (work, store) = (root.join("work"), root.join("store"));
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("big"), vec![b'x'; 4 << 20]).unwrap();
+    track(&store, &work);
+    let object = run(&store, &work, &["hash-object", "big"]).trim().to_owned();
+    let started = std::time::Instant::now();
+    let error = git_ok(&store, &["cat-file", "blob", object.as_str()], 10).await.unwrap_err().to_string();
+    assert!(error.contains("exceeded 10 bytes"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(10), "ended at once, not at the time limit: {:?}", started.elapsed());
 }
