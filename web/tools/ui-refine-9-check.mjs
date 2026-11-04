@@ -125,8 +125,9 @@ const designSection = {
   key: "home-layout", kind: "status", title: "Interface design", version: 2, owner: { agentId: "dev-5", name: "Dev 5", state: "active" },
   updatedAt: ago(3), updatedTurnId: "t2", body: designBody, refs: {}, seen: { version: 2, at: ago(30) }, history: false,
   status: { asOf: ago(3), validFor: 86400, stale: false },
+  // With the size Core reads from a kept picture's header (T-19 HM:B14, #521), so its box has the picture's own shape.
   attachments: Object.entries(images).map(([name, bytes]) => ({ name, kind: "image", mime: "image/png", size: bytes.length,
-    snapshot: true, mayChange: false, takenAt: ago(3), caption: name })),
+    snapshot: true, mayChange: false, takenAt: ago(3), caption: name, width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) })),
 };
 const home = {
   generatedAt: ago(0),
