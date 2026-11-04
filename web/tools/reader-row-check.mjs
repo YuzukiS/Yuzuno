@@ -1,12 +1,19 @@
 // T-19, a row the reader opens at the end of a followed conversation stays where they pressed it (Lead 3812,
 // B), in Chromium on a production build of the app, with no Core: the reads this check knows are answered
-// here; any other gets {} and is listed in the report (unknownGets).
+// here; any other gets {} and is listed in the report (unknownGets). The conversation is a window, as Core
+// sends it (conversation metadata), so the reader's window is held and let go as it is with Core; every read
+// of it is logged with its query. Two Agents: Mori, whose Turn is running, and Hana.
 // The conversation scrolls and is followed: its end is in view. Then:
 // - a tool row near the end is opened by a pointer (desktop) or a tap (phone), by Enter and by Space on its
 //   focused summary: the row stays where it was, however much it grows below;
 // - once a pointer or a tap has opened it, a live update to the Turn does not move it either; Back to latest
 //   shows, since the end is out of view; pressed, the end is in view again, and a row that arrives after
 //   that is followed;
+// - once a pointer or a tap has opened it and a live update has come, switching to Hana and back to Mori
+//   reopens the conversation where the reader was, with the row where it was, not at its end (Lead 3882);
+// - on a phone, a tap on the summary holds the reader's window, and a real swipe (a touch scroll gesture)
+//   begun on that summary that reaches the end lets it go: the next read is of the latest window, and a row
+//   that arrives then is followed (Lead 3882);
 // - guards for following itself: a row that arrives while nothing was pressed keeps the end in view, and so
 //   does a composer that grows by three lines.
 // Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Writes: none but the app's own
@@ -31,10 +38,14 @@ const ok = (name, cond, detail) => {
 
 const agent = { id: "a", name: "Mori", goal: "", cwd: "/w", model: "m", color: "green", status: "working", createdAt: "", updatedAt: "",
   unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: null, harness: "codex", connectionState: "connected" };
+const hana = { ...agent, id: "b", name: "Hana", status: "idle", color: "blue" };
 const shell = (id, command, status = "completed") => ({ id, type: "commandExecution", command, status, ...(status === "completed" ? { exitCode: 0 } : {}),
   aggregatedOutput: `$ ${command}\n` + Array.from({ length: 6 }, (_, i) => `line ${i + 1}`).join("\n") });
 let live;
+/** Each read of Mori's conversation on the page now open: "latest", or the Turn its window starts at. */
+let reads = [];
 const fresh = () => {
+  reads = [];
   live = { id: "live", status: "inProgress", items: [
     { id: "ask", type: "userMessage", content: [{ type: "text", text: "Check the build, then run the tests again." }] },
     { id: "progress", type: "agentMessage", phase: "commentary", text: "Reading the build first." },
@@ -42,19 +53,38 @@ const fresh = () => {
     shell("tool-b", "npm test"),
   ] };
 };
-const detail = () => ({ agent, pending: [], messageReceipts: [], artifacts: [], turns: [
-  ...Array.from({ length: 6 }, (_, i) => ({ id: `old-${i}`, status: "completed", items: [
-    { id: `old-ask-${i}`, type: "userMessage", content: [{ type: "text", text: `Round ${i + 1}` }] },
-    { id: `old-reply-${i}`, type: "agentMessage", text: "Checked.\n\n" + "Tool activity and the reading place stay steady. ".repeat(10) },
-  ] })),
-  live,
-] });
+/** Mori's conversation as Core sends it: the whole of it is one window, with its metadata. */
+const detail = () => {
+  const turns = [
+    ...Array.from({ length: 6 }, (_, i) => ({ id: `old-${i}`, status: "completed", items: [
+      { id: `old-ask-${i}`, type: "userMessage", content: [{ type: "text", text: `Round ${i + 1}` }] },
+      { id: `old-reply-${i}`, type: "agentMessage", text: "Checked.\n\n" + "Tool activity and the reading place stay steady. ".repeat(10) },
+    ] })),
+    live,
+  ];
+  return { agent, pending: [], messageReceipts: [], artifacts: [], turns, conversation: {
+    index: turns.map((turn, i) => ({ ...turn, number: i + 1, itemCount: turn.items.length, items: [turn.items[0]] })),
+    questions: [], nativeClientIds: [],
+    start: JSON.stringify([turns[0].id, turns[0].items[0].id]),
+    end: JSON.stringify([turns.at(-1).id, turns.at(-1).items.at(-1).id]),
+    hasBefore: false, hasAfter: false, totalItems: turns.reduce((n, turn) => n + turn.items.length, 0),
+  } };
+};
+const hanaDetail = { agent: hana, pending: [], messageReceipts: [], artifacts: [], turns: [{ id: "h-0", status: "completed", items: [
+  { id: "h-ask", type: "userMessage", content: [{ type: "text", text: "Read the notes." }] },
+  { id: "h-reply", type: "agentMessage", text: "Read." },
+] }] };
+const noInputs = { inputs: [], hasBefore: false, total: 0 };
 const gets = () => ({
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs/live": noLiveJobs, "/api/jobs": noJobs,
   "/api/ci": noCiRuns, "/api/ci/live": { agents: {} }, "/api/reviews": noReviews,
-  "/api/workspace": { workspace: { id: "fixture" }, agents: [agent], projects: [], runtime: { connected: true }, defaultCwd: "/w" },
+  "/api/workspace": { workspace: { id: "fixture" }, agents: [agent, hana], projects: [], runtime: { connected: true }, defaultCwd: "/w" },
   "/api/agents/a": detail(),
+  "/api/agents/b": hanaDetail,
   "/api/agents/a/reading": { handoff: null },
+  "/api/agents/b/reading": { handoff: null },
+  "/api/agents/a/conversation/inputs": noInputs,
+  "/api/agents/b/conversation/inputs": noInputs,
   "/api/home": { generatedAt: new Date().toISOString(), order: [], needsYou: [], projects: [] },
   "/api/machines": { machines: [] },
 });
@@ -75,6 +105,7 @@ async function serve(route) {
       report.writes.push(`${request.method()} ${path}`);
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
+    if (path === "/api/agents/a") reads.push(url.searchParams.get("turnId") ? `turnId=${url.searchParams.get("turnId")}` : "latest");
     const known = gets()[path];
     if (known !== undefined) return route.fulfill({ json: known });
     if (!report.unknownGets.includes(path)) report.unknownGets.push(path);
@@ -109,9 +140,15 @@ for (const run of runs) {
     page.on("pageerror", (e) => report.errors.push(`${tag}: ${String(e).slice(0, 300)}`));
     page.on("console", (m) => { if (m.type() === "error") report.console.push(`${tag}: ${m.text().slice(0, 300)}`); });
     await page.route("**/*", serve);
+    // Each page starts from nothing saved: the pages of a run share their storage, and a place the reader
+    // left in one would reopen the next there. Mori is the open Agent (kept per Workspace since T-195).
     await page.addInitScript(() => {
       window.EventSource = class { constructor() { window.testEvents = this; } addEventListener() {} close() {} };
-      localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+      if (!sessionStorage.getItem("reader-row-started")) {
+        localStorage.clear();
+        sessionStorage.setItem("reader-row-started", "1");
+      }
+      localStorage.setItem("yuzuno.selected.fixture", JSON.stringify("a"));
     });
     await page.goto("http://127.0.0.1:4322/");
     // A phone may open on the Agent list: open Mori's conversation from it.
@@ -127,7 +164,7 @@ for (const run of runs) {
   /** Core says the Turn changed (the app reads it again), and `item` is in it. */
   const arrive = async (page, item) => {
     live.items.push(item);
-    const read = page.waitForResponse((r) => r.url().endsWith("/api/agents/a"));
+    const read = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/agents/a");
     await page.evaluate(() => window.testEvents.onmessage?.({ data: "{}" }));
     await read;
     await page.locator(`#item-${item.id}`).waitFor({ state: "attached", timeout: 10_000 });
@@ -142,6 +179,19 @@ for (const run of runs) {
     await page.keyboard.press(how === "Enter" ? "Enter" : " ");
   };
   const hows = run.phone ? ["touch", "Enter", "Space"] : ["pointer", "Enter", "Space"];
+  /** To Hana and back to Mori, as the reader does: by the Agent list, which a phone shows through Back. */
+  const switchAndBack = async (page) => {
+    const pick = async (id, name) => {
+      if (run.phone) await page.locator(".phone-back").click();
+      await page.locator(`.agent-row[data-agent-id="${id}"] .agent-select`).click();
+      await page.getByRole("textbox", { name: `Message ${name}` }).waitFor();
+    };
+    await pick("b", "Hana");
+    await page.waitForTimeout(300);
+    await pick("a", "Mori");
+    await page.locator(SUMMARY).waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(900);
+  };
   try {
     // Guard: following itself, with nothing pressed.
     {
@@ -181,6 +231,55 @@ for (const run of runs) {
         ok(`${tag}: Back to latest shows; pressed, the end is in view and a row that arrives then is followed (${JSON.stringify({ shown, back })})`,
           shown && !!back && back.atEnd <= 1 && back.followed <= 1, { shown, back });
       }
+      await page.close();
+    }
+    // Switching Agents and back after the reader opened a row and a live update came (Lead 3882): the
+    // conversation reopens where they were reading, so the row is where it was, not carried up to the end.
+    {
+      const page = await open();
+      const before = await top(page, SUMMARY);
+      await press(page, run.phone ? "touch" : "pointer");
+      await page.waitForTimeout(700);
+      await arrive(page, shell("tool-d", "npm run typecheck"));
+      const held = await top(page, SUMMARY);
+      await switchAndBack(page);
+      const after = await top(page, SUMMARY);
+      const state = { before, held, after, gap: await gap(page), openAgain: await page.locator("#item-tool-b").evaluate((el) => el.open) };
+      report.measures[`${tag}: switch back`] = state;
+      ok(`${tag}: after the reader opened a row and a live update came, switching to Hana and back keeps the row where it was (top ${before} -> ${held} -> ${after} px)`,
+        Math.abs(held - before) <= 1 && Math.abs(after - before) <= 1, state);
+      await page.close();
+    }
+    // On a phone: a tap on a summary holds the reader's window; a real swipe begun on that summary that
+    // reaches the end lets it go, as any scroll to the end does (Lead 3882).
+    if (run.phone) {
+      const page = await open();
+      await press(page, "touch");
+      await page.waitForTimeout(700);
+      await arrive(page, shell("tool-d", "npm run typecheck"));
+      const held = reads.at(-1);
+      ok(`${tag}: a tap on a summary holds the reader's window (the read after it: ${held})`, held === "turnId=old-0", { reads: [...reads] });
+      const box = await page.locator(SUMMARY).boundingBox();
+      await page.evaluate(() => {
+        window.touchSeen = { start: null, end: false };
+        const pane = document.querySelector(".conversation-scroll");
+        pane.addEventListener("touchstart", (e) => { window.touchSeen.start ??= !!e.target.closest?.("summary"); }, { capture: true });
+        pane.addEventListener("touchend", () => { window.touchSeen.end = true; }, { capture: true });
+      });
+      // A touch scroll gesture through Chromium's input pipeline: touch events, then the pane scrolls.
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Input.synthesizeScrollGesture", { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2),
+        yDistance: -500, gestureSourceType: "touch", speed: 1200, preventFling: true });
+      await cdp.detach();
+      await page.waitForTimeout(700);
+      const touch = await page.evaluate(() => window.touchSeen);
+      ok(`${tag}: the swipe is a touch begun on the summary (${JSON.stringify(touch)})`, touch.start === true && touch.end === true, touch);
+      const atEnd = await gap(page);
+      await arrive(page, shell("tool-e", "npm run format"));
+      const swiped = { atEnd, read: reads.at(-1), followed: await gap(page), reads: [...reads] };
+      report.measures[`${tag}: swipe`] = swiped;
+      ok(`${tag}: a swipe begun on a summary that reaches the end lets the window go: the next read is of the latest window, and the row it brings is followed (${JSON.stringify({ atEnd, read: swiped.read, followed: swiped.followed })})`,
+        atEnd <= 1 && swiped.read === "latest" && swiped.followed <= 1, swiped);
       await page.close();
     }
     // Guard: a composer that grows keeps the followed end in view.
