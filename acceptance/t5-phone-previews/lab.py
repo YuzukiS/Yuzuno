@@ -365,13 +365,16 @@ class Lab:
         log = [json.loads(line) for line in self.requests.read_text().splitlines()]
         probes = [e for e in log if "probe=t5" in e.get("path", "")]
         self.check("no request of the previewed page's probes reached the stand-in Serve", probes == [], probes[:5])
-        # The proof, as Chromium itself sent it from the phone page: never typed here.
+        # The proof, as Chromium itself sent it from the phone page: never typed here. A browser's
+        # request carries Sec-Fetch-*; browser.mjs's own asking again, with headers it set, does not.
         proofs = [e for e in log if e.get("method") == "POST" and e.get("path", "").startswith("/__yuzuno/preview/proof/")]
         sent = [{k: e.get(k) for k in ("status", "origin", "client", "fetchMode", "fetchSite", "referer")} for e in proofs]
         self.report["facts"]["proofRequests"] = sent
+        browser, again = [e for e in sent if e["fetchMode"] is not None], [e for e in sent if e["fetchMode"] is None]
         self.check("the browser's own proof requests: POST from the phone page's origin, same-origin CORS, with the client header",
-                   bool(sent) and all(e["origin"] == f"https://{DNS}:{phone}" and e["client"] == "desktop" and e["fetchMode"] == "cors"
-                                      and e["fetchSite"] == "same-origin" for e in sent) and any(e["status"] == 200 for e in sent), sent)
+                   bool(browser) and all(e["origin"] == f"https://{DNS}:{phone}" and e["client"] == "desktop" and e["fetchMode"] == "cors"
+                                         and e["fetchSite"] == "same-origin" for e in browser) and any(e["status"] == 200 for e in browser), browser)
+        self.check("asked again with the same proof, by hand, it was refused", bool(again) and all(e["status"] == 404 for e in again), again)
         pages = [e for e in log if e.get("method") == "GET" and e.get("path", "").startswith("/__yuzuno/preview/v/")]
         self.report["facts"]["pageRequests"] = [{k: e.get(k) for k in ("status", "fetchDest", "fetchSite", "referer")} for e in pages]
         self.check("the older previews' port was never served again", not any(e.get("listening") == self.serve_ports[1] and e["at"] > self.started for e in log), self.serve_ports[1])
