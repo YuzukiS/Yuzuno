@@ -198,7 +198,8 @@ const noticeCases = [
     meanwhile: "elsewhere", expect: "page" },
   { tag: "a control elsewhere, then gone, and refused", start: "waiting", button: "Don’t continue automatically", refuse: true,
     action: "/cancel", meanwhile: "elsewhere", expect: "page, buttons kept" },
-  // A press outside the notice, on the conversation, gives the hold up too.
+  // A press outside the notice, on a spot of the conversation that takes no focus, gives the hold up too:
+  // focus stays on the page.
   { tag: "a press outside the notice", start: "waiting", button: "Don’t continue automatically", answer: "cancelled", action: "/cancel",
     meanwhile: "outside", expect: "not taken back" },
   // Another stopped Agent (Kai) opened meanwhile: its notice is another one, and the old press's answer must
@@ -274,6 +275,7 @@ try {
         await page.waitForTimeout(100);
         // While Core's answer is on its way the pressed button is disabled: where focus is then.
         const meanwhile = await page.evaluate(focusNow);
+        let spot;
         if (c.meanwhile === "composer") await composer.focus();
         else if (c.meanwhile === "elsewhere")
           await page.evaluate(() => {
@@ -284,10 +286,20 @@ try {
             away.remove();
           });
         else if (c.meanwhile === "outside") {
-          // The conversation's top corner: nothing there takes focus.
-          const scroller = page.locator(".main-panel .conversation-scroll");
-          const corner = { position: { x: 8, y: 8 } };
-          await (run.touch ? scroller.tap(corner) : scroller.click(corner));
+          // A spot on the conversation where nothing takes focus (a Turn does: it is a jump target).
+          spot = await page.evaluate(() => {
+            const scroller = document.querySelector(".main-panel .conversation-scroll");
+            const r = scroller.getBoundingClientRect();
+            const takes = "a, button, input, textarea, select, summary, [tabindex], [contenteditable]";
+            for (let y = r.top + 4; y < r.bottom - 4; y += 8)
+              for (let x = r.left + 4; x < r.right - 4; x += 8) {
+                const at = document.elementFromPoint(x, y);
+                if (at && scroller.contains(at) && !at.closest(takes))
+                  return { x, y, what: `${at.tagName.toLowerCase()}.${String(at.className).trim().split(/\s+/).join(".")}` };
+              }
+            return null;
+          });
+          if (spot) await (run.touch ? page.touchscreen.tap(spot.x, spot.y) : page.mouse.click(spot.x, spot.y));
         } else if (c.meanwhile === "agent") {
           if (run.touch) await page.locator(".phone-back").click();
           await page.locator('.agent-row .agent-select[aria-label="Open Kai"]').click();
@@ -305,7 +317,7 @@ try {
         const place = await page.evaluate(placeOf, ".main-panel .quota-resume-notice");
         const left = c.expect === "gone" ? [] : await notice.getByRole("button").allTextContents();
         report.cases[name] = { before, meanwhile, after, place, left, actions: state.actions };
-        const detail = { meanwhile, after, left, actions: state.actions };
+        const detail = { meanwhile, after, left, actions: state.actions, ...(spot !== undefined ? { spot } : {}) };
         ok(`${name}: Core was asked once${c.meanwhile === "agent" ? "" : ", and its answer shows"}`,
           state.actions.length === 1 && state.actions[0].startsWith(c.action), detail);
         if (c.expect === "notice") ok(`${name}: focus is on the notice`, after.notice, detail);
@@ -317,8 +329,10 @@ try {
         else if (c.expect === "page") ok(`${name}: focus is not taken back after the person left: nothing has it`, after.body, detail);
         else if (c.expect === "page, buttons kept")
           ok(`${name}: the buttons stay, and focus is not taken back after the person left`, left.includes(c.button) && after.body, detail);
-        else if (c.expect === "not taken back")
-          ok(`${name}: focus is not taken back after the press outside`, !after.notice && after.button === null, detail);
+        else if (c.expect === "not taken back") {
+          ok(`${name}: the press outside landed on the conversation, where nothing takes focus`, !!spot, detail);
+          ok(`${name}: focus is not taken back after the press outside`, !!spot && after.body, detail);
+        }
         else if (c.expect === "not Kai's notice") ok(`${name}: the old press does not hand focus to Kai's notice`, !after.notice, detail);
         else ok(`${name}: the notice is gone, and nothing took focus`, after.body && (await notice.count()) === 0, detail);
         if (!["gone", "not Kai's notice"].includes(c.expect)) ok(`${name}: the notice is still in view`, inView(place), { before, place });
