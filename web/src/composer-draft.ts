@@ -52,7 +52,8 @@ export const textDraft = (text: string): ComposerDraft => ({
 /** A draft copied to another Agent (a fork): its text and images, never
  * the skills chosen here, which this Agent's own Codex listed. */
 export function copiedDraft(draft: ComposerDraft): ComposerDraft {
-  const { skills: _chosen, ...copied } = draft;
+  // Nor where its text came from: that is this Agent's, not the copy's.
+  const { skills: _chosen, origins: _from, ...copied } = draft;
   return copied;
 }
 export const draftText = (draft: ComposerDraft) =>
@@ -85,6 +86,17 @@ export function pastedText(
       .slice(0, 6)
       .join("\n"),
   };
+}
+/**
+ * `next` with every origin `before` had (Lead 4142): an edit, a clear or a
+ * send rebuilds a draft without them, and the text they stand for must not
+ * be added again. Its parts are kept as they are, so an editor sees no change
+ * of its text; and an origin alone is no content (`hasDraftContent`).
+ */
+export function keepOrigins(before: ComposerDraft | undefined, next: ComposerDraft): ComposerDraft {
+  const had = before?.origins ?? [];
+  if (!had.length || had.every((origin) => next.origins?.includes(origin))) return next;
+  return { ...next, origins: [...had, ...(next.origins ?? []).filter((origin) => !had.includes(origin))].slice(-MAX_DRAFT_ORIGINS) };
 }
 /** `text` added once from `origin`: a draft that holds it already is the same draft. */
 export function appendDraftOnce(draft: ComposerDraft, text: string, origin: string): ComposerDraft {

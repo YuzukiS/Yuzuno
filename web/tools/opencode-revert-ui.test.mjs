@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { composerText, savedDraftText } from "./composer-driver.mjs";
+import { composerText, savedDraftText, setComposerText } from "./composer-driver.mjs";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 
 // OpenCode's revert in the app itself (T-10, Lead 4128): held for the Agent,
@@ -295,6 +295,83 @@ test("a draft that cannot be saved keeps the text once here, saves that one when
     await until(() => core.calls.some((c) => c.path === "/api/agents/a/rewind/attempt" && c.query === "revert_1"), "read again by its ID");
     await until(() => (again.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "").includes("revert_1"), "now counted as given");
     assert.equal(occurrences(savedDraftText(again.window.localStorage, "a"), "Fix a.txt"), 1, "never added twice");
+    assert.deepEqual(again.errors, []);
+  } finally { again.close(); }
+});
+
+/** Storage that refuses writes as a full one does, to the draft or to what was given, while `full` says so. */
+function refusing(full) {
+  return (window) => {
+    const write = window.Storage.prototype.setItem;
+    window.Storage.prototype.setItem = function (key, value) {
+      if ((full.draft && key.startsWith("yuzuno.composer.v1:")) || (full.given && key === "yuzuno.revert.given.v1"))
+        throw new window.DOMException("The quota has been exceeded.", "QuotaExceededError");
+      return write.call(this, key, value);
+    };
+  };
+}
+const keptRevert = { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] };
+const keptCore = () => ({ calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
+  preview, confirm: keptRevert, attempt: (id) => ({ attempt: id === "revert_1" ? keptRevert : null }),
+} });
+const settleTyping = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+test("text typed after a revert's text, before it could be saved, is kept; the revert's text is saved once", async () => {
+  const core = keptCore();
+  const full = { draft: true, given: false };
+  const page = await mount(core, {}, "t2", refusing(full));
+  let stored;
+  try {
+    page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
+    await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    page.button("Revert", page.dialog()).click();
+    await until(() => /The original text could not be added to the draft/.test(page.text()), "not saved, said so");
+    // Ordinary input, through the editor, while it is not saved.
+    setComposerText(page.composer(), `${composerText(page.composer())}\n\nand more`);
+    await settleTyping();
+    full.draft = false;
+    page.button("Add to draft", page.dialog()).click();
+    await until(() => !/could not be added/.test(page.text()), "saved");
+    const saved = savedDraftText(page.window.localStorage, "a");
+    assert.equal(occurrences(saved, "Fix a.txt"), 1, "the revert's text saved once");
+    assert.match(saved, /and more/, "what was typed after it is kept");
+    stored = Object.fromEntries(Object.entries(page.window.localStorage));
+  } finally { page.close(); }
+  const again = await mount(core, stored);
+  try {
+    await until(() => core.calls.some((c) => c.query === "revert_1"), "read again by its ID");
+    await settleTyping();
+    const saved = savedDraftText(again.window.localStorage, "a");
+    assert.equal(occurrences(saved, "Fix a.txt"), 1, "not added again after a reload");
+    assert.match(saved, /and more/);
+    assert.deepEqual(again.errors, []);
+  } finally { again.close(); }
+});
+
+test("a draft cleared after a revert's text was saved stays cleared, even when what was given could not be saved", async () => {
+  const core = keptCore();
+  const full = { draft: false, given: true };
+  const page = await mount(core, {}, "t2", refusing(full));
+  let stored;
+  try {
+    page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
+    await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    page.button("Revert", page.dialog()).click();
+    await until(() => occurrences(savedDraftText(page.window.localStorage, "a"), "Fix a.txt") === 1, "saved once");
+    assert.doesNotMatch(page.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "", /revert_1/, "what was given was not saved");
+    // The user clears the draft.
+    setComposerText(page.composer(), "");
+    await settleTyping();
+    assert.equal(savedDraftText(page.window.localStorage, "a"), "", "cleared");
+    stored = Object.fromEntries(Object.entries(page.window.localStorage));
+  } finally { page.close(); }
+  // Reloaded before the result was closed: read again by its ID, and the cleared draft not refilled.
+  const again = await mount(core, stored);
+  try {
+    await until(() => core.calls.some((c) => c.query === "revert_1"), "read again by its ID");
+    await until(() => (again.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "").includes("revert_1"), "now counted as given");
+    assert.equal(savedDraftText(again.window.localStorage, "a"), "", "a cleared draft is not refilled");
+    assert.equal(composerText(again.composer()), "", "nor shown as holding text");
     assert.deepEqual(again.errors, []);
   } finally { again.close(); }
 });

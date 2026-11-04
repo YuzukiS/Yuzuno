@@ -4,12 +4,14 @@ import { EditorState } from "@codemirror/state";
 import { history, undo, redo, isolateHistory } from "@codemirror/commands";
 import {
   DraftStorage,
+  appendDraftOnce,
   copiedDraft,
   draftIdentity,
   draftIdentityParts,
   draftText,
   emptyDraft,
   hasDraftContent,
+  keepOrigins,
   lineCount,
   pastedText,
   savedDraftAgents,
@@ -557,4 +559,31 @@ test("a draft copied to a fork keeps its text and images, never the skills chose
   assert.deepEqual(copied.images, [image]);
   assert.equal("skills" in copied, false);
   assert.equal(draft.skills.length, 1, "the original draft is not changed");
+});
+
+test("text added from elsewhere is added once, and where it came from outlives edits, clears and reloads but not a fork", () => {
+  const origin = "opencode-revert:revert_1";
+  const added = appendDraftOnce(textDraft("mine"), "Fix a.txt", origin);
+  assert.equal(draftText(added), "mine\n\nFix a.txt");
+  assert.equal(appendDraftOnce(added, "Fix a.txt", origin), added, "a draft that holds it already is the same draft");
+  // An editor rebuilds the draft without it; the write keeps it, and the text it shows is the same object.
+  const typed = { version: 1, nextNumber: added.nextNumber, parts: [{ kind: "text", text: "mine and more" }] };
+  const kept = keepOrigins(added, typed);
+  assert.deepEqual(kept.origins, [origin]);
+  assert.equal(kept.parts, typed.parts, "its parts unchanged, so the editor sees no change of its text");
+  assert.equal(keepOrigins(textDraft("x"), typed), typed, "nothing to keep: the same draft");
+  const cleared = keepOrigins(added, emptyDraft());
+  assert.deepEqual(cleared.origins, [origin]);
+  assert.equal(hasDraftContent(cleared), false, "where text came from is no content");
+  // Saved with the draft itself, and read back with it.
+  const disk = memory();
+  const at = draftIdentity("ws-1", "a");
+  new DraftStorage(disk).save(at, cleared);
+  const loaded = new DraftStorage(disk).load(at);
+  assert.deepEqual(loaded.origins, [origin]);
+  assert.equal(appendDraftOnce(loaded, "Fix a.txt", origin), loaded, "after a reload it is still not added again");
+  assert.equal("origins" in copiedDraft(added), false, "a fork's copy is not where it came from");
+  // A saved draft whose origins are not ours to read is not taken as one.
+  disk.setItem(`yuzuno.composer.v1:${at}`, JSON.stringify({ version: 1, nextNumber: 1, parts: [], origins: [42] }));
+  assert.throws(() => new DraftStorage(disk).load(at), /Invalid saved draft origins/);
 });

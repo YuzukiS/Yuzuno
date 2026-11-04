@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { DraftStorage, copiedDraft, draftIdentity, emptyDraft, type ComposerDraft } from "./composer-draft";
+import { DraftStorage, copiedDraft, draftIdentity, emptyDraft, keepOrigins, type ComposerDraft } from "./composer-draft";
 
 /**
  * The composer's drafts, per Workspace and Agent (T-195).
@@ -91,6 +91,17 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
       );
     }
   }
+  /** What is saved under `at` (its own Workspace), or none if nothing can be read there. */
+  function savedAt(at: string, id: string): ComposerDraft | undefined {
+    try {
+      const [workspace] = JSON.parse(at) as [string, string];
+      if (!workspace || !id) return undefined;
+      storage.current ||= new DraftStorage(localStorage);
+      return storage.current.load(draftIdentity(workspace, id));
+    } catch {
+      return undefined;
+    }
+  }
   function saved(agent: string): ComposerDraft | null {
     const key = disk(agent);
     if (!key) return null;
@@ -102,11 +113,15 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
    * one this render has. A send that started before the Workspace was known
    * is settled by the render that started it, while the draft itself has
    * since moved to the Workspace that arrived. So the storage key comes from
-   * `at`, never from the current `workspaceId`.
+   * `at`, never from the current `workspaceId`. Says whether the draft was
+   * saved: not if its saved draft is damaged, it has no Workspace to be saved
+   * under, or saving failed.
    */
-  /** Whether the draft was saved: not if its saved draft is damaged, it has no Workspace to be saved under, or saving failed. */
-  function write(at: string, id: string, draft: ComposerDraft): boolean {
+  function write(at: string, id: string, written: ComposerDraft): boolean {
     if (broken.current.has(at)) return false;
+    // Whatever writes it -- an edit, a clear after a send, a removal -- it
+    // keeps where text added to it came from (T-10, Lead 4142).
+    const draft = keepOrigins(drafts.current.get(at) ?? savedAt(at, id), written);
     let saved = false;
     const [workspace] = JSON.parse(at) as [string, string];
     drafts.current.set(at, draft);
