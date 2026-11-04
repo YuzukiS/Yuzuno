@@ -348,6 +348,48 @@ async fn an_answer_after_the_confirm_stopped_watching_settles_its_attempt_when_i
     ws.close_agent("oc").await.unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_confirm_whose_client_goes_away_once_its_answer_came_still_settles_its_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let (reached_tx, reached) = tokio::sync::oneshot::channel();
+    let (proceed, proceed_rx) = tokio::sync::oneshot::channel();
+    *HOLD_ANSWERED.lock().unwrap() = Some((key.clone(), reached_tx, proceed_rx));
+    let request = {
+        let (ws, key) = (ws.clone(), key.clone());
+        tokio::spawn(async move { ws.opencode_revert_confirm("oc", &key).await })
+    };
+    // OpenCode has answered, and its answer has reached the confirm: nothing of it is settled yet.
+    tokio::time::timeout(Duration::from_secs(20), reached).await.expect("the answer reached the confirm").unwrap();
+    assert_eq!(ws.store.rewind_attempt("oc", Some(&key)).unwrap().unwrap().state, "sending");
+    // Its client goes away, which drops the request's handler.
+    request.abort();
+    let _ = request.await;
+    let _ = proceed.send(());
+    let mut state = String::new();
+    for _ in 0..400 {
+        state = ws.store.rewind_attempt("oc", Some(&key)).unwrap().unwrap().state;
+        if state != "sending" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(state, "completed", "settled by its answer though its client went away");
+    assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["draft"], "second", "the text back once kept");
+    ws.ensure_rewind_settled("oc").await.expect("the Agent is not held back");
+    assert_eq!(reverts(&data), 1, "asked once");
+    assert_eq!(turn_ids(&ws), vec![first]);
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// A lab whose stand-in keeps its snapshots in this test's own data folder
 /// (as OpenCode would with that XDG_DATA_HOME), with `a.txt` changed by its
 /// first Turn's patch from `a0` to `a1`, and a Started injected as if Core

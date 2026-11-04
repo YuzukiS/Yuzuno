@@ -76,6 +76,22 @@ impl Plan {
     }
 }
 
+/// Tests only: holds the confirm of one attempt once its answer has reached
+/// it, before anything of that answer is settled, until the test lets it go.
+#[cfg(test)]
+type Hold = (String, tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>);
+#[cfg(test)]
+static HOLD_ANSWERED: std::sync::Mutex<Option<Hold>> = std::sync::Mutex::new(None);
+#[cfg(test)]
+async fn hold_answered(attempt: &str) {
+    let hold = HOLD_ANSWERED.lock().unwrap().take_if(|hold| hold.0 == attempt);
+    if let Some((_, reached, proceed)) = hold {
+        let _ = reached.send(());
+        // Also goes on when the test drops its sender.
+        let _ = proceed.await;
+    }
+}
+
 /// What `rx` gives within `within`: its answer, or none once it is closed
 /// (Lead 4124). An answer sent before the close is taken here, even one sent
 /// as the watch ended; a send after it fails, so its sender keeps the answer
@@ -201,8 +217,24 @@ impl Workspace {
     /// backed up into this Agent's folder (if it cannot be, nothing is asked);
     /// and OpenCode is asked once, watched for WATCH. Asked again for the
     /// same preview, it answers that attempt as it stands and asks nothing.
+    ///
+    /// It runs in a task of its own. A client that goes away drops its
+    /// request's handler, not the confirm: once the attempt is kept, its
+    /// backup, its one request and the outcome that request's answer settles
+    /// still end and are kept. Otherwise an answer that had reached it could
+    /// be lost, leaving the attempt `sending` for good (R2 of #534).
     pub async fn opencode_revert_confirm(self: &Arc<Self>, id: &str, key: &str) -> Result<Value> {
-        let _permit = self.admission.enter_work()?;
+        let permit = self.admission.enter_work()?;
+        let (ws, id, key) = (self.clone(), id.to_owned(), key.to_owned());
+        tokio::spawn(async move {
+            let _permit = permit;
+            ws.opencode_revert_run(&id, &key).await
+        })
+        .await?
+    }
+
+    /// `opencode_revert_confirm`, in its own task.
+    async fn opencode_revert_run(self: &Arc<Self>, id: &str, key: &str) -> Result<Value> {
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         let (agent, attempt) = (id.to_owned(), key.to_owned());
@@ -273,7 +305,11 @@ impl Workspace {
             }
         });
         match watched(&mut rx, WATCH, || ()).await {
-            Some(answer) => self.opencode_revert_answered(id, attempt, answer).await,
+            Some(answer) => {
+                #[cfg(test)]
+                hold_answered(key).await;
+                self.opencode_revert_answered(id, attempt, answer).await
+            }
             None => {
                 attempt.state = "unknown".into();
                 attempt.message = Some(format!("OpenCode 在 {} 秒内没有回答这次回退；结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次", WATCH.as_secs()));
