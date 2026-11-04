@@ -326,7 +326,10 @@ try {
     assert.equal(await history.evaluate((el) => el.open), false);
     await page.keyboard.press("Enter");
     await page.waitForTimeout(350);
-    assert.equal(await inspected.evaluate((el) => el === window.inspectedHistoryRow && el.open), true);
+    // A windowed history mounts a block's rows only while it is open (ToolActivity), so the row is drawn
+    // anew when its block opens again: what it keeps is that the reader opened it (T-19, Lead 3812).
+    const reopened = await inspected.evaluate((el) => ({ sameElement: el === window.inspectedHistoryRow, open: el.open }));
+    assert.equal(reopened.open, true, "a row the reader opened is open again when its block reopens");
     assert.equal(await composer.textContent(), "history draft A");
     const box = await composer.boundingBox();
     assert.ok(box.width > 100 && box.x >= 0 && box.x + box.width <= width, JSON.stringify(box));
@@ -362,7 +365,7 @@ try {
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.activeElement?.getAttribute("data-turn-id") === "old-0");
     assert.equal(await composer.textContent(), "history draft A");
-    record("Deferred history: keyboard inspection, retained nested state, anchor, draft and turn navigation", { theme, fontSize: 20, width, sourceNavigation: width === 1440 });
+    record("Deferred history: keyboard inspection, retained nested state, anchor, draft and turn navigation", { theme, fontSize: 20, width, sourceNavigation: width === 1440, reopened });
   }
   assert.deepEqual(report.errors, []);
   report.passed = true;

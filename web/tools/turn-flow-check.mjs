@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "An isolated build is required");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -15,6 +15,8 @@ const report = {
   checks: [],
   errors: [],
   mutations: [],
+  // The app's own saves of where an Agent was read, kept apart from the check's writes.
+  readingSaves: 0,
   // Reads this fixture does not answer: refused, and the check fails on them at its end.
   unexpected: [],
 };
@@ -98,6 +100,10 @@ await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   assert.equal(url.hostname, "yuzuno-turn-flow.test");
+  if (request.method() === "PUT" && /^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     report.mutations.push({ path: url.pathname, method: request.method() });
     assert.equal(url.pathname, "/api/agents/a/messages");
@@ -115,6 +121,8 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
+        // Drafts are saved per Workspace once it is known (T-195): the draft checks read them there.
+        workspace: { id: "fixture" },
         agents: [agent, otherAgent],
         runtime: { connected: true },
         defaultCwd: "/fixture",
@@ -132,6 +140,11 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/ci/live") return route.fulfill({ json: { agents: {} } });
   if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
   if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  // Its Jobs budget, no inputs in the conversation's inputs list, and no reading place held by Core.
+  if (url.pathname === "/api/jobs/budget") return route.fulfill({ json: idleJobsBudget });
+  if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname))
+    return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
+  if (/^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
   // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
   // whole check at the first one.
   if (url.pathname.startsWith("/api/")) {
@@ -339,9 +352,7 @@ try {
     .getByRole("searchbox", { name: "Search loaded messages" })
     .fill("HistoryMarker1");
   await page.locator(".conversation-search-result").click();
-  await page
-    .locator('[data-item-id="old-1"][data-search-highlight="true"]')
-    .waitFor();
+  await page.locator('[data-item-id="old-1"].source-highlight').waitFor();
   const top = await page
     .locator(".conversation-scroll")
     .evaluate((el) => el.scrollTop);
