@@ -497,15 +497,29 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
 /// held at OpenCode's permission list, after it read the messages with the
 /// part still in them; the removal and its own read after it come in
 /// between. The stale read is read again, and what it finds then is published.
+/// Nothing else reads meanwhile: the read after the request's answer is
+/// published first, and the stand-in says when the one read is held (Lead 3916).
 #[tokio::test]
 async fn a_read_from_before_a_removal_never_undoes_it() {
     let lab = lab(true).await;
     let turn = lab.stopped().await;
-    let held = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/permission").count();
-    let (resynced, reads) = (lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), held(&lab));
+    lab.until("the read after the request's answer, published", |_| {
+        let kinds = lab.kinds();
+        kinds.iter().rposition(|k| k == "opencode/compactAnswered").is_some_and(|at| kinds[at + 1..].iter().any(|k| k == "opencode/resynced"))
+    }).await;
+    let reads = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/permission").count();
+    let (resynced, before) = (lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), reads(&lab));
     lab.control("mode", json!({"holdPermission": true})).await;
     lab.control("drop", json!({})).await;
-    lab.until("a whole read held at the permission list", |_| held(&lab) > reads).await;
+    let mut held = json!(0);
+    for _ in 0..400 {
+        held = lab.control("held", json!({})).await;
+        if held == json!(1) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(held, json!(1), "the one whole read held at the permission list, its messages read");
     let done = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
     assert_eq!(done["abandoned"], true, "{done}");
     let given_up = |d: &AgentDetail| (compaction(d)["_opencodeCompact"]["state"].clone(), compaction(d)["_opencodeCompact"]["nativePending"].clone());
@@ -514,7 +528,7 @@ async fn a_read_from_before_a_removal_never_undoes_it() {
     lab.control("release", json!({})).await;
     lab.until("the read published", |_| lab.kinds().iter().filter(|k| *k == "opencode/resynced").count() > resynced).await;
     assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)), "the stale read did not undo it");
-    assert!(held(&lab) >= reads + 2, "read again after the removal");
+    assert!(reads(&lab) >= before + 2, "read again after the removal");
     lab.send("after", "Anything new?").await.unwrap();
     assert_eq!(lab.sent().len(), 1);
     assert_eq!(lab.removals().len(), 1);

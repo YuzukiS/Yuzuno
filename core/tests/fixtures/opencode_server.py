@@ -282,6 +282,10 @@ def control(name, body):
         # A compaction message in the session (T-10): one asked for, or OpenCode's own (`auto`).
         return compaction(body['sessionID'], body.get('model', {'providerID': 'deepseek', 'modelID': 'deepseek-flash'}),
                           body.get('auto', True))
+    if name == 'held':
+        # How many reads wait at the permission list now: ready to be released.
+        with lock:
+            return len(held_reads)
     if name == 'release':
         with lock:
             for waiter in held_reads:
