@@ -1,11 +1,13 @@
 //! A Job or run named by its whole ID or by a unique prefix of it (T-30).
 //!
 //! Core gives each Job and run a UUID; mail and notes name them by their
-//! first eight characters. The Jobs tools take either: the whole ID, as
-//! before, or at least MIN_PREFIX hexadecimal characters from its start
-//! (with its hyphens where it has them), which must name exactly one. A
-//! prefix that names none or several says so and never lists the IDs it
-//! matched. IDs are made and stored as before.
+//! first eight characters. job_get, job_logs, job_cancel and job_provenance
+//! (jobId and runId) take either: the whole ID, as before, or at least
+//! MIN_PREFIX hexadecimal characters from its start (with its hyphens where
+//! it has them), which must name exactly one. A prefix that names none or
+//! several says so and never lists the IDs it matched. The other Jobs tools
+//! that name a Job or run, such as job_pause or job_run_get, still take the
+//! whole ID. IDs are made and stored as before.
 use crate::store::Store;
 use anyhow::{bail, ensure, Result};
 use rusqlite::{Connection, OptionalExtension};

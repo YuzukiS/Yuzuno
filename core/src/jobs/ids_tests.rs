@@ -1,6 +1,7 @@
-//! T-30: the Jobs tools name a Job or run by its whole ID or by a unique
-//! prefix of at least eight hexadecimal characters, and a prefix that names
-//! none or several says which without listing them. Synthetic records only.
+//! T-30: job_get, job_logs, job_cancel and job_provenance name a Job or run
+//! by its whole ID or by a unique prefix of at least eight hexadecimal
+//! characters, and a prefix that names none or several says which without
+//! listing them. Synthetic records only.
 use super::ids::Kind;
 use super::*;
 use crate::{model::AgentDetail, store::Store};
@@ -111,7 +112,7 @@ fn a_run_prefix_is_matched_among_runs_alone() {
 }
 
 #[tokio::test]
-async fn every_jobs_tool_that_names_a_job_or_run_takes_its_prefix() {
+async fn job_get_logs_cancel_and_provenance_take_a_prefix() {
     let (_dir, ws) = setup();
     let s = &ws.store;
     // One run of one stage, finished, as provenance_tests makes it.
