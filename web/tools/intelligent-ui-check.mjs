@@ -460,7 +460,9 @@ try {
     await composerDraft(
       page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
-    /Please include an interactive data report/,
+    // What the request adds since it became one editable line of intent (examples.ts, interactiveRequest);
+    // the long template is kept only for replies written to it.
+    /If it helps, show the data as an interactive result: key metrics and a chart\./,
   );
   assert.equal(report.mutations.length, 0);
   check(

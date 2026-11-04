@@ -118,7 +118,9 @@ await context.addInitScript(() => {
 });
 const page = await context.newPage();
 const input = () => page.locator("[data-composer-input]");
-const chips = () => page.locator(".pasted-text-chip");
+// The composer's own blocks: a message shown in the conversation (a send whose answer was lost, say)
+// draws its blocks with the same paste ids.
+const chips = () => input().locator(".pasted-text-chip");
 const ids = () =>
   chips().evaluateAll((els) => els.map((el) => el.dataset.pasteId));
 // A draft is saved under the Workspace and the Agent (T-195): the connection

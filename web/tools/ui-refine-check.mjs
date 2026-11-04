@@ -898,7 +898,10 @@ try {
     await modal
       .locator(`input[name="appearance-theme"][value="${theme}"]`)
       .check();
-    await modal.locator(".settings-footnote").scrollIntoViewIfNeeded();
+    // To the dialog's end (its footnote went with T-187), then what sticks out.
+    await modal.evaluate((el) => {
+      for (const box of [el, ...el.querySelectorAll("*")]) if (box.scrollHeight > box.clientHeight + 1) box.scrollTop = box.scrollHeight;
+    });
     const fit = await modal.evaluate((el) => {
       const right = el.getBoundingClientRect().left + el.clientWidth;
       return {

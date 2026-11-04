@@ -306,10 +306,9 @@ try {
       "Keep this unsent draft 保留草稿",
     );
     assert.equal(await page.locator(".pending-card").count(), 1);
-    assert.equal(
-      await page.getByRole("button", { name: "Back to latest" }).isVisible(),
-      true,
-    );
+    // The pill: since search lands as a source (onLocate), the bar over the conversation has a Back to
+    // latest of its own.
+    assert.equal(await page.locator(".jump-latest").isVisible(), true);
     check("exact jump and reading position survive execution events", {
       turnId,
       itemId,
@@ -348,7 +347,7 @@ try {
     ) <= 1,
     `Near-bottom jump moved from ${nearBottom} to ${await conversation.evaluate((el) => el.scrollTop)}`,
   );
-  await page.getByRole("button", { name: "Back to latest" }).click();
+  await page.locator(".jump-latest").click();
   await page.waitForFunction(() => {
     const el = document.querySelector(".conversation-scroll");
     return el.scrollHeight - el.scrollTop - el.clientHeight < 2;
