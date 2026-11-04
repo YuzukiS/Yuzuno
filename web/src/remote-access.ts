@@ -100,9 +100,14 @@ export type RemoteAccessPreviews = {
   included: boolean;
   /** Whether a phone can open them now: included, with phone access on. */
   available: boolean;
-  /** An older Core's own Serve entry for them, still to remove; or why its record cannot be read. */
-  legacy: null | { servePort: number; host: string; target: string } | { error: string };
+  /** An older Core's own Serve entry for them: still to remove (with the
+   * last change's try at it, if one could not); or no longer held, with what
+   * became of it; or why its record cannot be read. */
+  legacy: null | LegacyHeld | LegacyFormer | { error: string };
 };
+export type LegacyEntry = { servePort: number; host: string; target: string };
+export type LegacyHeld = LegacyEntry & { lastAttempt: null | { state: LegacyCleanup["state"]; detail: string; at: string } };
+export type LegacyFormer = { state: LegacyCleanup["state"]; detail: string; at: string; formerOwned: LegacyEntry };
 
 /** What Save and apply sends besides its request ID; `previews` only to a Core that takes it. */
 export type RemoteAccessDraft = { enabled: boolean; login?: string; servePort?: number; localPort?: number; previews?: boolean };

@@ -711,7 +711,7 @@ test("an older Core's own Serve entry for previews is said apart: still to remov
     }
   }
   // Not removed: that is how the change ended, at its own step, never "Applied".
-  const left = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" };
+  const left = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319", lastAttempt: { state: "partial", detail: kept, at: "x" } };
   for (const [state, said] of [
     ["partial", `Phone access is on; ${kept}.`],
     ["uncertain", `Core could not confirm how “Remove the older phone previews' Serve entry” ended: Phone access is on; ${kept}. Check, or apply again: Core compares with what is there first.`],
@@ -725,6 +725,25 @@ test("an older Core's own Serve entry for previews is said apart: still to remov
       assert.equal([...p.doc.querySelectorAll(".remote-access-operation p")].filter((el) => el.textContent.startsWith("Older phone previews:")).length, 0, `${state}: said once`);
       assert.equal(p.doc.querySelector(".remote-access-notes"), null, `${state}: its note is the sentence above`);
       assert.match(p.text(), /The next Save and apply or Turn off removes it while it is still exactly that entry/, `${state}: still left to remove`);
+      assert.ok(p.text().includes(`Last try: ${kept}.`), `${state}: with the last try`);
+    } finally {
+      p.close();
+    }
+  }
+  // No longer held: one left to others says so, never as removed; one removed or gone says nothing more.
+  const former = (state, detail) => ({ state, detail, at: "x", formerOwned: { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" } });
+  for (const [state, detail, said] of [
+    ["foreign", "The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is",
+      "An older Yuzuno's Serve entry for phone previews on port 8445 is no longer Yuzuno's: The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is."],
+    ["removed", removed, null],
+  ]) {
+    const p = mount(() => ({ body: on({ previews: included({ legacy: former(state, detail) }) }) }));
+    try {
+      await waitFor(() => previewsLine(p), `${state}: the line`);
+      const notes = [...p.doc.querySelectorAll('.remote-access-note[role="note"]')].map((n) => n.textContent);
+      if (said) assert.ok(notes.includes(said), `${state}: ${notes.join(" | ")}`);
+      else assert.ok(!notes.some((n) => /older Yuzuno/.test(n)), `${state}: ${notes.join(" | ")}`);
+      assert.doesNotMatch(p.text(), /removes it while it is still exactly that entry/, `${state}: not still to remove`);
     } finally {
       p.close();
     }
@@ -740,7 +759,7 @@ test("an older Core's own Serve entry for previews is said apart: still to remov
   const unreadable = mount(() => ({ body: on({ previews: included({ legacy: { error: "remote-preview.json is not a readable phone previews record" } }) }) }));
   try {
     await waitFor(() => previewsLine(unreadable), "the line");
-    assert.match(unreadable.text(), /An older Yuzuno's phone previews record could not be read \(remote-preview\.json is not a readable phone previews record\); it is kept as it is\./);
+    assert.match(unreadable.text(), /An older Yuzuno's phone previews record could not be read \(remote-preview\.json is not a readable phone previews record\); it is kept as it is\. Until it can be, phone access stays on the ports it serves on now\./);
   } finally {
     unreadable.close();
   }

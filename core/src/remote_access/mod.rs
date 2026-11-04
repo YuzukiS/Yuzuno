@@ -808,11 +808,22 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     // An older Core's own Serve entry for phone previews, until a change has
     // removed it: neither of its ports is phone access's, so that removing it
     // can never take phone access's entry.
-    if let Some(held) = preview::held(ws) {
-        let first = "Save and apply once with other ports, or Turn off, to remove it first; nothing was changed";
-        anyhow::ensure!(serve_port != held.serve_port, "Serve port {serve_port} is still the older phone previews' own entry. {first}");
-        let held_local = held.target.strip_prefix("http://127.0.0.1:").and_then(|p| p.parse::<u16>().ok());
-        anyhow::ensure!(held_local != Some(local_port), "Port {local_port} is still where the older phone previews' own Serve entry points. {first}");
+    match preview::held(ws) {
+        Ok(None) => {}
+        Ok(Some(held)) => {
+            let first = "Save and apply once with other ports, or Turn off, to remove it first; nothing was changed";
+            anyhow::ensure!(serve_port != held.serve_port, "Serve port {serve_port} is still the older phone previews' own entry. {first}");
+            let held_local = held.target.strip_prefix("http://127.0.0.1:").and_then(|p| p.parse::<u16>().ok());
+            anyhow::ensure!(held_local != Some(local_port), "Port {local_port} is still where the older phone previews' own Serve entry points. {first}");
+        }
+        // Which ports theirs holds is unknown: only the entry phone access
+        // serves now, on its ports as they are, may be applied again.
+        Err(error) => {
+            let applied = read(&path(ws)).ok().and_then(|saved| saved.effective).and_then(|e| e.listen.zip(e.serve_port));
+            let serving = current(ws).is_some_and(|entry| applied.as_ref().is_some_and(|(listen, port)| listen.port == entry.port && *port == serve_port && entry.port == local_port));
+            anyhow::ensure!(serving, "The older phone previews' record ({}) cannot be read: {error:#}. Which ports it still holds is unknown, so phone access moves to no other port until it can be read: repair that file or move it out of the data folder, or Save and apply with the ports phone access serves now; nothing was changed",
+                preview::record_path(ws).display());
+        }
     }
     let origin = if serve_port == 443 { format!("https://{dns}") } else { format!("https://{dns}:{serve_port}") };
     RemoteEntry::new(&origin, &login)?;

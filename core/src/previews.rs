@@ -428,12 +428,8 @@ fn phone_open(ws: &Workspace, entry: &RemoteEntry) -> bool {
 
 /// A snapshot through the phone entry, by its exact address, as it was
 /// taken: with every header P's answer has, and its own policy on framing,
-/// marked so (`PreviewDocument`). Never for a request that asks to change
-/// protocol.
+/// marked so (`PreviewDocument`).
 async fn phone_page(State(ws): State<Arc<Workspace>>, Extension(entry): Extension<Arc<RemoteEntry>>, request: Request) -> Response {
-    if request.headers().contains_key(header::UPGRADE) {
-        return refusal(StatusCode::BAD_REQUEST, "A preview is a page, never another protocol");
-    }
     if !phone_open(&ws, &entry) {
         return refusal(StatusCode::FORBIDDEN, "Phone access does not include previews");
     }
@@ -491,11 +487,16 @@ async fn phone_proof(State(ws): State<Arc<Workspace>>, Extension(entry): Extensi
 /// The phone entry's guard for its reserved path (`server::remote_router`),
 /// before any route: a path that is under it only once decoded, normalized
 /// or read without case (`/%5F_yuzuno/…`, `//__yuzuno/…`, `/x/../__yuzuno/…`,
-/// `/__YUZUNO/…`) is refused, never served as Yuzuno's page.
+/// `/__YUZUNO/…`) is refused, never served as Yuzuno's page; and anything
+/// there that asks to change protocol is refused before any handler, so it
+/// takes nothing (a proof's challenge stays unused).
 pub(crate) async fn reserved(request: Request, next: Next) -> Response {
     let path = request.uri().path();
     if aims_at_reserved(path) && !plainly_reserved(path) {
         return no_such().await;
+    }
+    if aims_at_reserved(path) && request.headers().contains_key(header::UPGRADE) {
+        return refusal(StatusCode::BAD_REQUEST, "A preview is a page, never another protocol");
     }
     next.run(request).await
 }

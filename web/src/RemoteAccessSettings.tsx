@@ -16,6 +16,7 @@ import {
   type Pending,
   type RemoteAccessDraft,
   type RemoteAccessOperation,
+  type RemoteAccessPreviews,
   type RemoteAccessView,
 } from "./remote-access";
 import "./remote-access.css";
@@ -116,7 +117,10 @@ const text = strings({
     !included ? "Not included" : available ? "Included" : "Included, once phone access is on",
   legacyPending: (port: number, target: string) =>
     `An older Yuzuno set a Serve entry of its own for phone previews on port ${port} (to ${target}). The next Save and apply or Turn off removes it while it is still exactly that entry; anything else there is left as it is.`,
-  legacyUnreadable: (error: string) => `An older Yuzuno's phone previews record could not be read (${error}); it is kept as it is.`,
+  legacyUnreadable: (error: string) =>
+    `An older Yuzuno's phone previews record could not be read (${error}); it is kept as it is. Until it can be, phone access stays on the ports it serves on now.`,
+  legacyLastTry: (detail: string) => ` Last try: ${detail}.`,
+  legacyForeign: (port: number, detail: string) => `An older Yuzuno's Serve entry for phone previews on port ${port} is no longer Yuzuno's: ${detail}.`,
   legacyOutcome: (detail: string) => `Older phone previews: ${detail}.`,
   checking: "Checking…",
   check: "Check",
@@ -196,7 +200,9 @@ const text = strings({
   previewsNow: (included, available) => (!included ? "未包含" : available ? "已包含" : "已包含，手机访问开启后可用"),
   legacyPending: (port, target) =>
     `旧版 Yuzuno 曾为手机预览单独设置了 Serve 端口 ${port}（指向 ${target}）。下一次“保存并应用”或“关闭”会在它仍完全是那个入口时移除它；那里的其他配置保持不变。`,
-  legacyUnreadable: (error) => `无法读取旧版 Yuzuno 的手机预览记录（${error}），已原样保留。`,
+  legacyUnreadable: (error) => `无法读取旧版 Yuzuno 的手机预览记录（${error}），已原样保留。在能读取之前，手机访问保持在它现在使用的端口上。`,
+  legacyLastTry: (detail) => ` 上次尝试：${detail}。`,
+  legacyForeign: (port, detail) => `旧版 Yuzuno 为手机预览设置的 Serve 端口 ${port} 已不再属于 Yuzuno：${detail}。`,
   legacyOutcome: (detail) => `旧版手机预览：${detail}。`,
   checking: "正在检查…",
   check: "检查",
@@ -228,6 +234,16 @@ function fieldsOf(draft: RemoteAccessDraft | undefined, view: RemoteAccessView):
     login: draft?.login ?? saved?.login ?? "",
     previews: draft?.previews ?? saved?.previews ?? view.previews?.included ?? false,
   };
+}
+
+/** What the page says of an older Core's own previews entry (T-5): one still
+ * to remove, one left to others, or a record it cannot read; nothing of one
+ * removed or gone. */
+function legacyNote(legacy: RemoteAccessPreviews["legacy"] | null, t: ReturnType<typeof text>): string | null {
+  if (!legacy) return null;
+  if ("error" in legacy) return t.legacyUnreadable(legacy.error);
+  if ("formerOwned" in legacy) return legacy.state === "foreign" ? t.legacyForeign(legacy.formerOwned.servePort, legacy.detail.replace(/[.。]\s*$/, "")) : null;
+  return t.legacyPending(legacy.servePort, legacy.target) + (legacy.lastAttempt ? t.legacyLastTry(legacy.lastAttempt.detail.replace(/[.。]\s*$/, "")) : "");
 }
 
 /** Core refuses a change with `<code>: <sentence>`; the page shows the sentence. */
@@ -557,11 +573,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
               <span>{t.previewsNow(view.previews.included, view.previews.available)}</span>
             </p>
           )}
-          {view.previews?.legacy && (
+          {legacyNote(view.previews?.legacy ?? null, t) && (
             <p className="remote-access-note" role="note">
-              {"error" in view.previews.legacy
-                ? t.legacyUnreadable(view.previews.legacy.error)
-                : t.legacyPending(view.previews.legacy.servePort, view.previews.legacy.target)}
+              {legacyNote(view.previews?.legacy ?? null, t)}
             </p>
           )}
           {view.verification && !view.verification.ok && (

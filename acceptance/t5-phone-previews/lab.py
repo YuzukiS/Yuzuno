@@ -279,8 +279,11 @@ class Lab:
         self.check("Serve keeps the phone entry and someone else's, and nothing on the older previews' port",
                    sorted(web) == sorted([f"{DNS}:443", f"{DNS}:{self.serve_ports[0]}"]), sorted(web))
         record = json.loads((self.out / "data/remote-preview.json").read_text())
-        self.check("their record is kept, with only its entry forgotten",
-                   record["owned"] is None and {k: v for k, v in record.items() if k != "owned"} == {k: v for k, v in self.legacy_record.items() if k != "owned"}, record)
+        moved = ("owned", "formerOwned", "disposition")
+        self.check("their record is kept: their entry no longer held, kept as theirs before, with what became of it",
+                   record["owned"] is None and record.get("formerOwned") == self.legacy_record["owned"]
+                   and (record.get("disposition") or {}).get("state") == "removed"
+                   and {k: v for k, v in record.items() if k not in moved} == {k: v for k, v in self.legacy_record.items() if k not in moved}, record)
         calls = (self.out / "bin/tailscale.exe.log").read_text().splitlines()
         self.check("Serve was never reset", not any("reset" in c for c in calls), calls)
 

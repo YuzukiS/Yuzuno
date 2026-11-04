@@ -71,7 +71,7 @@
     "serve": {"state": "unchecked", "otherEntries": 0},
     "tailscale": null, "verification": null, "operation": null, "url": null, "startupError": null, "qr": null,
     "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true,
-    "previews": {"included": true, "available": true, "legacy": {"servePort": 8445, "host": "pc.tail0.ts.net", "target": "http://127.0.0.1:4319"}}
+    "previews": {"included": true, "available": true, "legacy": {"servePort": 8445, "host": "pc.tail0.ts.net", "target": "http://127.0.0.1:4319", "lastAttempt": null}}
   },
   "operationStates": ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted", "partial"],
   "operationSteps": ["validate", "save", "listen", "serve", "verify", "cleanup", "done"],
