@@ -851,8 +851,9 @@ async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
 }
 
 /// The first line `<program> --version` prints, within VERSION_LIMIT: 1.x
-/// prints `1.19.3`, 2.x `opencode v2.0.16`. It runs with the Agent's
-/// `OPENCODE_DB`, as the server would, and nothing else of its environment.
+/// prints `1.19.3`, 2.x `opencode v2.0.16`. It inherits Core's
+/// environment, as the server does, with the Agent's `OPENCODE_DB` added;
+/// the server's username and password are not given to it.
 async fn installed(launch: &Launch) -> Option<String> {
     let mut command = Command::new(&launch.program);
     command.arg("--version").current_dir(&launch.directory).env("OPENCODE_DB", &launch.database)
