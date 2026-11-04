@@ -36,7 +36,11 @@ const check = (name, extra = {}) => {
 };
 const HOST = "yuzuno-home-language.test";
 
-const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+// Every time the fixture names is counted back from one moment, and the pages' clocks stand at it (their
+// timers still run): Home rounds a time to the nearest minute, so "5 min ago" read against the real clock
+// turned into "6 min ago" half a minute into a run (Jobs e2 a27d9daa, e4 6b888d59).
+const NOW = Date.now();
+const ago = (minutes) => new Date(NOW - minutes * 60_000).toISOString();
 const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture", model: "gpt-6", projectId: "p1", color: "sage",
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected" };
 const projects = [
@@ -138,6 +142,7 @@ await context.route("**/*", async (route) => {
     await route.fulfill({ status: 404, body: "" });
   }
 });
+await context.clock.setFixedTime(new Date(NOW));
 const page = await context.newPage();
 page.on("pageerror", (error) => report.errors.push(error.message));
 const other = await context.newPage();
