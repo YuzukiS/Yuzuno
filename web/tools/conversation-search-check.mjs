@@ -213,6 +213,8 @@ try {
   // The open dialog's results: one that closes leaves through an inert, aria-hidden copy (T-19 1b,
   // DialogExitGhost) whose results are still in the page while it fades.
   const matches = dialog.locator(".conversation-search-result");
+  // The side panel's files of the latest Turn (ArtifactsPanel), always shown at this width.
+  const latestFiles = page.getByRole("group", { name: "Latest turn artifacts", exact: true });
   const conversation = page.locator(".conversation-scroll");
   const composer = page.getByRole("textbox", { name: "Message Mori" });
   await composer.fill("Keep this unsent draft 保留草稿");
@@ -293,11 +295,18 @@ try {
       phase: "commentary",
       text: `New execution progress ${liveId}. ${filler}`,
     });
-    // The update arrives while an earlier Turn is read. The latest Turn is not mounted that far away
-    // (T-77's window), so the conversation's read after it is its arrival; then two frames to draw.
-    const reread = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/agents/a");
+    // The same update writes a file, which Core lists with the item that wrote it.
+    detail.a.artifacts.push({ path: `/fixture/${liveId}.md`, name: `${liveId}.md`, kind: "text", sourceItemId: liveId });
+    // The update arrives while an earlier Turn is read, and the latest Turn is not mounted that far away
+    // (T-77's window). So wait for the read that brings this update, not any read of Mori, and then for
+    // the app to hold it: its file is listed with the latest Turn's only once that Turn has this item
+    // (artifact-groups.ts). Nothing is opened for it. Then two frames to draw.
+    const reread = page.waitForResponse(
+      async (r) => new URL(r.url()).pathname === "/api/agents/a" && (await r.text()).includes(liveId),
+    );
     emit();
     await reread;
+    await latestFiles.getByText(`${liveId}.md`, { exact: true }).waitFor();
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
     assert.ok(
       Math.abs((await conversation.evaluate((el) => el.scrollTop)) - before) <=
