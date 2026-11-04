@@ -470,6 +470,11 @@ for (const run of runs) {
     await page.goto("http://127.0.0.1:4323/");
     await openHome();
     await showAll();
+    // Before any picture is waited for, so an empty card fails here and not only by a timeout.
+    await card.locator(".brief-attachments > li").nth(4).waitFor({ timeout: 5000 }).catch(() => {});
+    const listed = await card.locator(".brief-attachments > li").count();
+    ok(`${tag}: the shots card (an Ask, its whole body shown) lists its five attachments, so what follows measures them (${listed} listed)`,
+      listed === 5, { listed });
     await complete("known.png");
     await complete("unknown.png");
     await complete("turned.jpg");
@@ -477,9 +482,6 @@ for (const run of runs) {
     await card.locator(".brief-image-failed").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(800);
     const first = record("first view", await framesSince(0));
-    const listed = await card.locator(".brief-attachments > li").count();
-    ok(`${tag}: the shots card (an Ask, its whole body shown) lists its five attachments, so what follows measures them (${listed} listed)`,
-      listed === 5, { listed });
 
     const known = of(first, "known.png");
     const shape = (f) => f.box.content[0] / f.box.content[1];
@@ -552,6 +554,7 @@ for (const run of runs) {
     await openHome();
     await trialsCard.waitFor({ timeout: 10_000 });
     if ((await trialsMore.count()) && (await trialsMore.getAttribute("aria-expanded")) === "false") await trialsMore.click();
+    await trialsCard.locator(".brief-attachments > li").nth(4).waitFor({ timeout: 5000 }).catch(() => {});
     const trialsListed = await trialsCard.locator(".brief-attachments > li").count();
     ok(`${tag}: the trials card (an Ask, its whole body shown) lists its five attachments, so what follows measures them (${trialsListed} listed)`,
       trialsListed === 5, { listed: trialsListed });
