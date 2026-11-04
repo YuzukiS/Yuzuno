@@ -295,7 +295,7 @@ async fn a_fork_through_a_turn_is_a_new_agent_in_the_same_folder_and_the_source_
     assert_eq!(asked(&data, &target, "GET", "/event").len(), 1);
     assert_eq!(ws.listed(&target).await.unwrap().connection_state, "connected");
     // The source as it was; the new Agent goes on by itself.
-    assert_eq!(ws.store.turn_ids("oc").unwrap(), vec![first, second, third]);
+    assert_eq!(ws.store.turn_ids("oc").unwrap(), vec![first, second.clone(), third]);
     turn_on(&ws, &data, &target, "next", json!({})).await;
     assert_eq!(ws.store.turn_ids(&target).unwrap().len(), 3);
     // Read without a write: that fork, done, by its Turn; another request for the Turn is that one.
@@ -342,7 +342,7 @@ async fn a_fork_whose_answer_never_came_is_uncertain_never_asked_again_and_holds
     assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "never asked again");
     // Nothing gives it up (Lead 4195): a request that asks to is refused as it is read.
     let refused = serde_json::from_value::<Request>(json!({"requestId": other, "turnId": first, "name": "F", "abandonUnconfirmed": true}));
-    assert!(refused.unwrap_err().to_string().contains("abandonUnconfirmed"));
+    assert!(refused.err().map(|e| e.to_string()).unwrap_or_default().contains("abandonUnconfirmed"), "refused as it is read");
     assert_eq!(ws.store.opencode_fork_row(&key).unwrap().unwrap().state, "uncertain");
     ws.close_agent("oc").await.unwrap();
 }
