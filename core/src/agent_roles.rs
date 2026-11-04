@@ -77,6 +77,8 @@ pub(crate) fn listed_kind(db: &Connection, agent: &str) -> Result<Option<String>
 }
 
 /// Whether `agent` leads `project`: marked as a lead and a member of it.
+/// Phase 1's template dispatch is its first caller outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn leads(db: &Connection, agent: &str, project: &str) -> Result<bool> {
     Ok(kind(db, agent)? == LEAD && crate::projects::agent_project(db, agent)?.as_deref() == Some(project))
 }
@@ -158,6 +160,7 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
 /// `task_dispatch.executor`; reserved here, not called yet): the user, or an
 /// Agent that leads the task's Project, read from its `project_tasks` row.
 /// A task in no Project is dispatched from a template by the user only.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn may_dispatch_from_template(db: &Connection, actor: &TaskActor, task: &str) -> Result<()> {
     if actor.kind != "agent" {
         return Ok(());
