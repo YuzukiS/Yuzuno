@@ -116,6 +116,13 @@ const STOP_LIMIT: Duration = Duration::from_secs(10);
 /// Waits before each attempt to open the event stream again.
 const RESUBSCRIBE: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(500), Duration::from_secs(2)];
 
+/// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
+/// with where its snapshots are known to be kept, or why not.
+pub(crate) struct Started {
+    pub server: Arc<Server>,
+    pub files: std::result::Result<crate::opencode_revert_files::Started, String>,
+}
+
 /// One Agent's live OpenCode process and the session it drives there.
 #[derive(Clone)]
 pub(crate) struct Connection {
@@ -132,6 +139,9 @@ pub(crate) struct Connection {
     /// (T-10, giving up a compaction): a whole read begun before the latest
     /// is never published (`opencode_resync`), so it never undoes one.
     removals: Arc<std::sync::atomic::AtomicU64>,
+    /// Where this OpenCode keeps its snapshots can be known from how it was
+    /// started (T-10 Revert), or why not.
+    pub files: Arc<std::result::Result<crate::opencode_revert_files::Started, String>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -175,8 +185,10 @@ impl Usage {
 }
 
 impl Connection {
-    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
-        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default() }
+    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
+        files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
+        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
+            files: Arc::new(files) }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -581,6 +593,13 @@ impl Workspace {
     /// Under the Agent gate: the live connection, or a new OpenCode process
     /// for the Agent's session (created on the first connection).
     pub(crate) async fn opencode_ensure(self: &Arc<Self>, id: &str) -> Result<Connection> {
+        self.opencode_ensure_on(id, None).await
+    }
+
+    /// `opencode_ensure`, attaching `started` (a fork's target, T-10 Fork),
+    /// already serving this Agent's folder with its own database, rather
+    /// than starting another process.
+    pub(crate) async fn opencode_ensure_on(self: &Arc<Self>, id: &str, started: Option<Started>) -> Result<Connection> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         crate::model::ensure_not_disconnected(&d.agent)?;
@@ -593,7 +612,11 @@ impl Workspace {
         }
         self.record_meta(id, "opencode/connecting", json!({}), |m| m.agent.connection_state = "connecting".into()).await?;
         self.changed(id);
-        match self.opencode_connect(id, &d).await {
+        let connected = match started {
+            Some(started) => self.opencode_attach(id, &d, started).await,
+            None => self.opencode_connect(id, &d).await,
+        };
+        match connected {
             Ok(c) => Ok(c),
             Err(error) => {
                 let message = error.to_string();
@@ -607,6 +630,15 @@ impl Workspace {
     }
 
     async fn opencode_connect(self: &Arc<Self>, id: &str, d: &AgentDetail) -> Result<Connection> {
+        let started = self.opencode_start(id, &d.agent.cwd).await?;
+        self.opencode_attach(id, d, started).await
+    }
+
+    /// This Agent's OpenCode process, started and nothing else (T-10 Fork):
+    /// its own folder and database, serving `cwd`, from the executable
+    /// `opencode` resolves to now. Until it is attached, the caller is its
+    /// only owner: dropping it ends its process group.
+    pub(crate) async fn opencode_start(&self, id: &str, cwd: &str) -> Result<Started> {
         let folder = self.data_dir.join("opencode").join(id);
         std::fs::create_dir_all(&folder)?;
         #[cfg(unix)]
@@ -614,10 +646,27 @@ impl Workspace {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
         }
-        let launch = Launch { program: program(), directory: d.agent.cwd.clone().into(), database: folder.join("opencode.db") };
-        // Until it is in `opencodes`, this is its only owner: an error below
-        // drops it, which ends its process group.
+        // What `opencode` resolves to now: a native executable is started by
+        // that very file, so what was checked is what runs (T-10 Revert).
+        let named = program();
+        let launcher = crate::opencode_revert_files::Launcher::resolve(&named, std::env::var_os("PATH").as_deref());
+        let start = match &launcher {
+            Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
+            _ => named,
+        };
+        let launch = Launch { program: start, directory: cwd.into(), database: folder.join("opencode.db") };
         let server = Arc::new(Server::start(&launch).await?);
+        let files = crate::opencode_revert_files::Started::of(launcher, server.pid(), |name| std::env::var_os(name),
+            std::env::vars_os().map(|(name, _)| name), dirs::home_dir);
+        Ok(Started { server, files })
+    }
+
+    /// Wires a started process to the Agent: its session (created on the
+    /// first connection), its Workspace MCP, its events, its record. Until it
+    /// is in `opencodes`, `started` is its only owner: an error below drops
+    /// it, which ends its process group.
+    async fn opencode_attach(self: &Arc<Self>, id: &str, d: &AgentDetail, started: Started) -> Result<Connection> {
+        let Started { server, files } = started;
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
@@ -640,7 +689,7 @@ impl Workspace {
         let children = sub_agents(&server, &session).await?;
         let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection::new(generation, server.clone(), session.clone(), children.clone());
+        let c = Connection::new(generation, server.clone(), session.clone(), children.clone(), files);
         // Each listed model's context window, read once as it connects (T-10).
         if let Ok(models) = server.models().await {
             c.windows(&models);
@@ -1178,6 +1227,8 @@ impl Workspace {
 
     /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
     async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], commands: bool, sent: &mut bool) -> Result<Value> {
+        // Also what a send that does not come through `send_message` meets (T-10 Revert).
+        self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         if let Some(blocked) = compaction_blocks(&d, "这条消息没有发送") {
@@ -1371,6 +1422,8 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
+        // A revert whose outcome is not known may still be applied by it (T-10 Revert).
+        self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(d.agent.harness == "opencode", "Agent 不是 OpenCode");
@@ -1384,8 +1437,11 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能压缩，没有执行 /compact")?;
         let unread = "没有读到 OpenCode 会话现在的状态；没有执行 /compact";
         let session = c.server.session(&c.session).await.context(unread)?;
+        // A revert the session holds is applied with its next message, and a
+        // compaction would apply it first: only a message clears it from
+        // here (R3 of #534).
         ensure!(session["revert"].is_null(),
-            "OpenCode 会话里有一次尚未处理的回退，压缩会先把它应用掉（删除被回退的消息）；没有执行 /compact。请先在 OpenCode 中处理这次回退");
+            "OpenCode 会话里的回退要到这个会话收到下一条消息时才会删去被回退的消息，压缩会先把它应用掉；请先发一条消息，再压缩。没有执行 /compact");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有执行 /compact");
         let messages = c.server.messages(&c.session).await.context(unread)?;
         let (provider, model) = compact_model(&c.server, &d, &messages).await?;
@@ -2519,6 +2575,14 @@ fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
         _ => bail!("不是可以回答的 OpenCode 请求"),
     }
 }
+
+#[path = "opencode_revert.rs"]
+mod revert;
+pub(crate) use revert::expire_previews as expire_revert_previews;
+
+#[path = "opencode_fork.rs"]
+mod fork;
+pub(crate) use fork::{migrate as fork_migrate, router as fork_router};
 
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]

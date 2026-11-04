@@ -14,6 +14,13 @@
   --result-wash: color-mix(in srgb, var(--green) 8%, var(--paper));
   --result-bar: color-mix(in srgb, var(--green) 45%, var(--paper));
   --brief-mono: "SFMono-Regular", Consolas, monospace;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+/* The series slots: a section's charts, and a chart drawn as a card's figure on Home (T-18). */
+.brief-body,
+.home-card-chart {
   --brief-series-1: #2a78d6;
   --brief-series-2: #eb6834;
   --brief-series-3: #1baf7a;
@@ -22,11 +29,8 @@
   --brief-series-6: #008300;
   --brief-series-7: #4a3aa7;
   --brief-series-8: #e34948;
-  min-width: 0;
-  color: var(--ink);
-  font-size: 0.88rem;
 }
-:root[data-theme="dark"] .brief-body {
+:root[data-theme="dark"] :is(.brief-body, .home-card-chart) {
   --brief-series-1: #3987e5;
   --brief-series-2: #d95926;
   --brief-series-3: #199e70;

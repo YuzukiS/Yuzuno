@@ -768,9 +768,16 @@ export function RemoteCreateAgent({
           {disabled && (
             <p className="field-hint">{t.createDisabled}</p>
           )}
-          {error && (
-            <p role="alert" className="inline-error">
-              {error}
+          {/* The error's two lines are kept while empty: a failure fills them instead of
+              pushing the buttons down under the pointer. Below them it could fall out of this
+              dialog's scrolled view (T-19 SX-25). */}
+          {error ? (
+            <p key="error" role="alert" className="inline-error kept-error" title={error}>
+              <span>{error}</span>
+            </p>
+          ) : (
+            <p key="line" className="inline-error kept-error is-empty" aria-hidden="true">
+              <span>&nbsp;</span>
             </p>
           )}
           <div className="modal-actions">

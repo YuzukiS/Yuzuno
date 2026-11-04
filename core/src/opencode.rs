@@ -131,6 +131,43 @@ pub enum CompactAnswer {
     Unknown(String),
 }
 
+/// What a revert request is known to have done (T-10 Revert, Lead 3990).
+#[derive(Debug, PartialEq)]
+pub enum RevertAnswer {
+    /// 200 with the session as OpenCode answered it. Whether it reverted
+    /// anything is that session's `revert`, not the status: a message it
+    /// does not find also answers 200, the session unchanged.
+    Answered(Value),
+    /// Refused before OpenCode did anything, as only its own refusals
+    /// before the revert begins answer (see `refused_before`).
+    Refused(HttpStatus),
+    /// Anything else: no answer, a lost connection, a 5xx, any other 4xx or
+    /// body. Its files may have been sent back in part or whole.
+    Unknown(String),
+}
+
+/// What a fork request is known to have done (T-10 Fork, Lead 3525).
+#[derive(Debug, PartialEq)]
+pub enum ForkAnswer {
+    /// 200 with the whole body a session: OpenCode's handler made it and
+    /// copied what it copies (`session/session.ts` fork). Whether it is the
+    /// fork asked for is for the caller to check.
+    Answered(Value),
+    /// Anything else: no answer, a lost connection, any other status or
+    /// body. A new session may have been written, in part or whole: the
+    /// session is made first, then each message, and a 400 or 404 of this
+    /// route can come after that too (`mapStorageNotFound` covers the copy).
+    Unknown(String),
+}
+
+/// At most this much of `/sync/history` is read (T-10 Fork): it lists the
+/// durable events of every session in the database, with no paging.
+pub const HISTORY_BYTES: usize = if cfg!(test) { 1 << 20 } else { 64 << 20 };
+pub const HISTORY_EVENTS: usize = 200_000;
+const HISTORY_LIMIT: Duration = Duration::from_secs(60);
+/// How long a replay may take: each event is its own transaction.
+const REPLAY_LIMIT: Duration = Duration::from_secs(120);
+
 /// An answer to a permission request. OpenCode's third answer, `always`,
 /// is not offered: it would allow later requests of this process by patterns
 /// the tool chooses.
@@ -443,6 +480,11 @@ impl Server {
         Ok(server)
     }
 
+    /// OpenCode's process ID, while it is not yet reaped.
+    pub fn pid(&self) -> Option<u32> {
+        self.group.0
+    }
+
     /// Ends OpenCode and its own children: `dispose` (at most DISPOSE_LIMIT),
     /// then SIGTERM to the group, up to GRACE for OpenCode to finish, then
     /// SIGKILL to whatever of it is left. A refused or unanswered dispose only
@@ -662,6 +704,18 @@ impl Server {
         self.json(Method::GET, &format!("/session/{}", segment(session)?), None).await
     }
 
+    /// OpenCode's own folders and this instance's worktree and directory
+    /// (`GET /path`, `handlers/instance.ts`): `home`, `state`, `config`,
+    /// `worktree`, `directory`.
+    pub async fn path(&self) -> Result<Value> {
+        self.json(Method::GET, "/path", None).await
+    }
+
+    /// The project OpenCode holds this instance's folder for (`GET /project/current`).
+    pub async fn project(&self) -> Result<Value> {
+        self.json(Method::GET, "/project/current", None).await
+    }
+
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
     pub async fn messages(&self, session: &str) -> Result<Value> {
         let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
@@ -692,6 +746,104 @@ impl Server {
                 Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
             }
         })
+    }
+
+    /// The request that reverts the session to before `message` (T-10
+    /// Revert), as OpenCode 1.19.3's own (`POST /session/:id/revert`,
+    /// `session/revert.ts`): it checks the files of every later patch out of
+    /// OpenCode's snapshots, then keeps the revert in the session, to apply at
+    /// its next prompt, and answers once that is done. So it has no time
+    /// limit of its own and holds nothing of this server; sent once.
+    pub fn revert(&self, session: &str, message: &str) -> Result<impl std::future::Future<Output = RevertAnswer> + Send + 'static> {
+        let path = format!("/session/{}/revert", segment(session)?);
+        let request = self.request(Method::POST, &path).json(&json!({"messageID": message}));
+        let session = session.to_owned();
+        Ok(async move {
+            match request.send().await {
+                Err(error) => RevertAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
+                    Ok(body) => match serde_json::from_str::<Value>(&body) {
+                        Ok(session) if session.is_object() => RevertAnswer::Answered(session),
+                        _ => RevertAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
+                    },
+                    Err(error) => RevertAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
+                },
+                Ok(response) => {
+                    let status = status(response).await;
+                    if refused_before(&status, &session) { RevertAnswer::Refused(status) } else { RevertAnswer::Unknown(status.to_string()) }
+                }
+            }
+        })
+    }
+
+    /// The request that forks `session` (`POST /session/:id/fork`, T-10
+    /// Fork), with every message before `before` copied into a new session,
+    /// or every message without it. OpenCode 1.19.3 checks nothing: one it
+    /// does not hold copies every message, and a busy session is copied as it
+    /// is (`session/session.ts` fork). So `before` must be one just read in
+    /// the session, under its gate. Sent once, with no time limit of its own.
+    pub fn fork(&self, session: &str, before: Option<&str>) -> Result<impl std::future::Future<Output = ForkAnswer> + Send + 'static> {
+        let path = format!("/session/{}/fork", segment(session)?);
+        let body = match before { Some(message) => json!({"messageID": message}), None => json!({}) };
+        let request = self.request(Method::POST, &path).json(&body);
+        Ok(async move {
+            match request.send().await {
+                Err(error) => ForkAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
+                    Ok(body) => match serde_json::from_str::<Value>(&body) {
+                        Ok(session) if session["id"].is_string() => ForkAnswer::Answered(session),
+                        _ => ForkAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
+                    },
+                    Err(error) => ForkAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
+                },
+                Ok(response) => ForkAnswer::Unknown(status(response).await.to_string()),
+            }
+        })
+    }
+
+    /// One session's durable events (T-10 Fork), as `POST /sync/history`
+    /// lists them: in 1.19.3 that is every durable event in this OpenCode's
+    /// database, by sequence number across sessions, but those `known` cuts
+    /// at the sequence it gives (`handlers/sync.ts`). Read up to
+    /// HISTORY_BYTES within HISTORY_LIMIT, and at most HISTORY_EVENTS events
+    /// in all, refused past any; of them only `aggregate`'s are kept, in the
+    /// order listed. Nothing else read is kept, logged or written.
+    pub async fn history_of(&self, aggregate: &str, known: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
+        Ok(self.history(known).await?.into_iter().filter(|event| event["aggregate_id"] == aggregate).collect())
+    }
+
+    /// Every durable event `/sync/history` lists but those `known` cuts, as
+    /// `history_of` reads them, all kept: for a database that should hold
+    /// little or nothing (T-10 Fork).
+    pub async fn history(&self, known: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
+        let read = async {
+            let mut response = success(self.request(Method::POST, "/sync/history").json(known).send().await
+                .context("OpenCode did not answer /sync/history")?).await?;
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.context("OpenCode's /sync/history broke off")? {
+                ensure!(body.len() + chunk.len() <= HISTORY_BYTES, "OpenCode's event history is larger than {} MiB; nothing was forked from it", HISTORY_BYTES >> 20);
+                body.extend_from_slice(&chunk);
+            }
+            Ok::<_, anyhow::Error>(body)
+        };
+        let body = timeout(HISTORY_LIMIT, read).await
+            .map_err(|_| anyhow!("OpenCode's event history took longer than {:?}", HISTORY_LIMIT))??;
+        let listed: Vec<Value> = serde_json::from_slice(&body).context("OpenCode's /sync/history is not a list")?;
+        drop(body);
+        ensure!(listed.len() <= HISTORY_EVENTS, "OpenCode's event history holds more than {HISTORY_EVENTS} events");
+        Ok(listed)
+    }
+
+    /// Replays `events`, one session's durable events, into this OpenCode
+    /// (`POST /sync/replay`, T-10 Fork): each is committed on its own, and
+    /// one already stored at its sequence number is passed over only if it
+    /// is the same (`core/src/event.ts` replayAll). So the same events may be
+    /// replayed again; whatever its answer, only a read says what is stored.
+    pub async fn replay(&self, events: &[Value]) -> Result<Value> {
+        let body = json!({"directory": self.directory, "events": events});
+        let response = self.request(Method::POST, "/sync/replay").timeout(REPLAY_LIMIT).json(&body).send().await
+            .context("OpenCode did not answer /sync/replay")?;
+        success(response).await?.json().await.context("OpenCode's answer to /sync/replay is not JSON")
     }
 
     /// Removes one part of a message (`DELETE
@@ -973,6 +1125,31 @@ async fn success(response: Response) -> Result<Response> {
     Err(status(response).await.into())
 }
 
+/// Whether a revert's answer is one OpenCode 1.19.3 gives only before it
+/// does anything (Lead 4109), its status and whole body together, as its own
+/// API declares them (`packages/sdk/openapi.json`): 409 `SessionBusyError`
+/// of `session` itself, from `assertNotBusy`, the revert's first step
+/// (`session/revert.ts`); 404
+/// `NotFoundError`, from `requireSession`, the handler's own first step
+/// (`handlers/session.ts`); 400 `BadRequest` of a parameter, query or
+/// payload that could not be decoded, before the handler runs
+/// (`middleware/schema-error.ts`). Not one of kind `Body`: OpenCode answers
+/// so too when it cannot encode its own response, after the handler ran
+/// (`test/server/httpapi-schema-error-body.test.ts`, Lead 4121). Nor any
+/// other answer: a 401 or 403, any other body for those statuses, or one
+/// cut short.
+fn refused_before(status: &HttpStatus, session: &str) -> bool {
+    let Ok(body) = serde_json::from_str::<Value>(&status.body) else { return false };
+    let text = |value: &Value| value.is_string();
+    match status.code {
+        409 => body["_tag"] == "SessionBusyError" && body["sessionID"] == session && text(&body["message"]),
+        404 => body["name"] == "NotFoundError" && text(&body["data"]["message"]),
+        400 => body["name"] == "BadRequest" && text(&body["data"]["message"])
+            && matches!(body["data"]["kind"].as_str(), Some("Params" | "Query" | "Payload")),
+        _ => false,
+    }
+}
+
 async fn status(response: Response) -> HttpStatus {
     let code = response.status().as_u16();
     let mut body = response.text().await.unwrap_or_default();
@@ -990,6 +1167,29 @@ async fn status(response: Response) -> HttpStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_opencodes_own_refusals_before_a_revert_begins_count_as_refused() {
+        let refused = |code: u16, body: Value| refused_before(&HttpStatus { code, body: body.to_string() }, "ses_1");
+        assert!(refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_1", "message": "Session is busy: ses_1"})));
+        assert!(refused(404, json!({"name": "NotFoundError", "data": {"message": "Session not found: ses_1"}})));
+        assert!(refused(400, json!({"name": "BadRequest", "data": {"message": "Expected string", "kind": "Payload"}})));
+        for (code, body) in [
+            (409, json!({"name": "SessionBusyError", "data": {"sessionID": "ses_1", "message": "busy"}})),
+            (409, json!({"_tag": "ConflictError", "message": "conflict"})),
+            (404, json!({"_tag": "SessionNotFoundError", "sessionID": "ses_1", "message": "gone"})),
+            (400, json!({"name": "BadRequest", "data": {"message": "no", "kind": "Headers"}})),
+            (400, json!({"name": "BadRequest", "data": {"message": "Expected a session", "kind": "Body"}})),
+            (401, json!({"_tag": "UnauthorizedError", "message": "no"})),
+            (403, json!({"_tag": "ForbiddenError", "message": "no"})),
+            (500, json!({"name": "UnknownError", "data": {"message": "no"}})),
+        ] {
+            assert!(!refused(code, body.clone()), "{code} {body}");
+        }
+        assert!(!refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_2", "message": "Session is busy: ses_2"})),
+            "a busy answer of another session is no refusal of this one");
+        assert!(!refused_before(&HttpStatus { code: 409, body: "{\"_tag\":\"SessionBusyError\",\"sessionID\":\"ses_1\",…".into() }, "ses_1"), "cut short");
+    }
 
     #[test]
     fn only_a_loopback_listening_line_gives_an_address() {

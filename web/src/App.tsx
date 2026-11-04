@@ -192,7 +192,7 @@ import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
-import { appendDraft, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
+import { appendDraft, appendDraftOnce, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
 import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
 import { handoffLabel, handoffNotices, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
@@ -210,6 +210,8 @@ import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
+import { OpenCodeRevertHost } from "./Rewind";
+import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
 
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
@@ -275,6 +277,17 @@ const JOIN_WAIT = 90;
 function readingTop(element: HTMLElement) {
   const text = Array.from(element.children).find(child => !child.classList.contains("message-time"));
   return (text ?? element).getBoundingClientRect().top;
+}
+
+/**
+ * Whether an event on the conversation's scroller is its own: one whose
+ * target is inside it. A dialog or menu portaled out of it (an OpenCode
+ * revert's, a rewind's) still sends its clicks, wheels, touches and keys
+ * there through React, and they must neither take the conversation from
+ * following nor send it back to the end (T-10, Lead 4153, 4154).
+ */
+function ownEvent(e: { target: EventTarget; currentTarget: EventTarget }): boolean {
+  return e.target instanceof Node && e.currentTarget instanceof Node && e.currentTarget.contains(e.target);
 }
 
 export function App() {
@@ -2597,10 +2610,28 @@ export function App() {
     (text: string) => turnHandlers.current.appendToDraft(text),
     [],
   );
-  const rewindDraft = useCallback((agentId: string, text: string) => {
-    setDraft(agentId, current => appendDraft(current, text));
-    setNotice(shellNow.current.rewindSaved);
+  // Whether the text was added and saved (an OpenCode revert counts its text as given only then).
+  // With an `origin`, once: a draft that holds it already is saved again as it is, not added to.
+  const rewindDraft = useCallback((agentId: string, text: string, origin?: string) => {
+    const saved = setDraft(agentId, current => origin ? appendDraftOnce(current, text, origin) : appendDraft(current, text));
+    if (saved) setNotice(shellNow.current.rewindSaved);
+    return saved;
   }, [setDraft]);
+  // An OpenCode fork (T-10 Fork): its new Agent shown and opened. The source
+  // Agent stays as it is, its draft too: nothing is copied or sent.
+  function openForked(outcome: OpenCodeForkOutcome) {
+    const fork = outcome.agent;
+    if (!fork) return;
+    markJoined(fork.id);
+    setWorkspace((w) => w ? { ...w, agents: [...w.agents.filter((a) => a.id !== fork.id), fork] } : w);
+    revealAgent(fork);
+    setSelected(fork.id);
+    setAgentScope(fork.closedAt ? "closed" : "active");
+    refresh();
+    setNotice(fork.closedAt ? shell.forkClosed(fork.name)
+      : outcome.connected ? shell.forkContinuing(fork.name)
+      : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" ")));
+  }
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It
    * only adds to that Agent's draft, after what is there, and opens it: the
@@ -3305,33 +3336,37 @@ export function App() {
                 ref={attachScroll}
                 data-agent-id={selected}
                 onWheel={(e) => {
+                  if (!ownEvent(e)) return;
                   if (e.deltaY < 0) {
                     live.pinWindow();
                     stickToBottom.current = false;
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                onTouchStart={() => {
+                onTouchStart={(e) => {
+                  if (!ownEvent(e)) return;
                   touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
                 }}
                 // The browser's pan: noted, never taken for a cancelled touch.
                 onPointerCancel={(e) => {
-                  if (e.pointerType === "touch" && touch.current) touch.current.panned = true;
+                  if (ownEvent(e) && e.pointerType === "touch" && touch.current) touch.current.panned = true;
                 }}
                 // A touch the system took away ends nothing the reader did.
-                onTouchCancel={() => {
-                  touch.current = null;
+                onTouchCancel={(e) => {
+                  if (ownEvent(e)) touch.current = null;
                 }}
                 // A tap on a disclosure opens or closes it (its click hands the
                 // conversation to the reader); it is not the reader going to the
                 // end. A pan is, wherever it began.
                 onTouchEnd={(e) => {
+                  if (!ownEvent(e)) return;
                   const began = touch.current;
                   touch.current = null;
                   const scrolled = !began || began.panned || Math.abs((scroll.current?.scrollTop ?? began.from) - began.from) >= 1;
                   if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
                 }}
                 onKeyDownCapture={(e) => {
+                  if (!ownEvent(e)) return;
                   if (
                     e.target instanceof HTMLElement &&
                     e.target.closest(
@@ -3355,6 +3390,8 @@ export function App() {
                   // clicked; their window is kept as it is, and where they are
                   // reading is noted, as a scroll would note it, so the
                   // conversation reopens there rather than at the end (T-19).
+                  // Only a disclosure of the conversation itself (see ownEvent).
+                  if (!ownEvent(e)) return;
                   if ((e.target as Element).closest?.("summary")) {
                     live.pinWindow();
                     stickToBottom.current = false;
@@ -3391,6 +3428,10 @@ export function App() {
               >
                 <div className="conversation-inner" ref={followGrowth}>
                   <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
+                  {/* OpenCode's revert, held for the Agent, not for the turn it removes (T-10). */}
+                  <OpenCodeRevertHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onDraft={previewMode || closed ? undefined : rewindDraft}>
+                  {/* OpenCode's fork into a new Agent, also held for the Agent (T-10 Fork). */}
+                  <OpenCodeForkHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onForked={openForked}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpHere ? { turnId: jumpHere, itemId: jumpItem.current ?? undefined } : pageTarget}>
@@ -3529,6 +3570,8 @@ export function App() {
                   {pageSpace === "after" && currentDetail?.conversation?.hasAfter &&
                     <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   </ConversationWindow>
+                  </OpenCodeForkHost>
+                  </OpenCodeRevertHost>
                   </InputReading.Provider>
                 </div>
               </div>
