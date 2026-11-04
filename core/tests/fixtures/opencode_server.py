@@ -78,7 +78,10 @@ counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
-         'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False}
+         'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
+         'holdPermission': False}
+# Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
+held_reads = []
 # Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
 late = {}
 # Compactions held open (`summarize` mode `hold`), by session: what ends one.
@@ -279,6 +282,12 @@ def control(name, body):
         # A compaction message in the session (T-10): one asked for, or OpenCode's own (`auto`).
         return compaction(body['sessionID'], body.get('model', {'providerID': 'deepseek', 'modelID': 'deepseek-flash'}),
                           body.get('auto', True))
+    if name == 'release':
+        with lock:
+            for waiter in held_reads:
+                waiter.set()
+            held_reads.clear()
+        return True
     if name == 'answerLate':
         late.pop(body['sessionID']).set()
         return True
@@ -398,6 +407,14 @@ class Handler(BaseHTTPRequestHandler):
         if key == ('GET', 'session', 'status'):
             return self.reply(200, statuses)
         if key == ('GET', 'permission'):
+            if modes['holdPermission']:
+                # Once: this read waits for `release`, after the reads before it in a whole
+                # session read (its messages, its status) have answered.
+                modes['holdPermission'] = False
+                waiter = threading.Event()
+                with lock:
+                    held_reads.append(waiter)
+                waiter.wait(30)
             return self.reply(200, permissions)
         if key == ('GET', 'question'):
             return self.reply(200, questions)

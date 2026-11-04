@@ -492,6 +492,34 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
     assert_eq!(lab.summarized().len(), 1);
 }
 
+/// A whole read begun before a compaction was given up, and published only
+/// after it was (Lead 3895): it never makes it pending again. The read is
+/// held at OpenCode's permission list, after it read the messages with the
+/// part still in them; the removal and its own read after it come in
+/// between. The stale read is read again, and what it finds then is published.
+#[tokio::test]
+async fn a_read_from_before_a_removal_never_undoes_it() {
+    let lab = lab(true).await;
+    let turn = lab.stopped().await;
+    let held = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/permission").count();
+    let (resynced, reads) = (lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), held(&lab));
+    lab.control("mode", json!({"holdPermission": true})).await;
+    lab.control("drop", json!({})).await;
+    lab.until("a whole read held at the permission list", |_| held(&lab) > reads).await;
+    let done = lab.ws.opencode_compact_abandon(ID, &turn).await.unwrap();
+    assert_eq!(done["abandoned"], true, "{done}");
+    let given_up = |d: &AgentDetail| (compaction(d)["_opencodeCompact"]["state"].clone(), compaction(d)["_opencodeCompact"]["nativePending"].clone());
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)));
+    assert_eq!(lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), resynced, "the held read is not published yet");
+    lab.control("release", json!({})).await;
+    lab.until("the read published", |_| lab.kinds().iter().filter(|k| *k == "opencode/resynced").count() > resynced).await;
+    assert_eq!(given_up(&lab.detail()), (json!("abandoned"), json!(false)), "the stale read did not undo it");
+    assert!(held(&lab) >= reads + 2, "read again after the removal");
+    lab.send("after", "Anything new?").await.unwrap();
+    assert_eq!(lab.sent().len(), 1);
+    assert_eq!(lab.removals().len(), 1);
+}
+
 /// A stopped compaction whose part is still in the record, but no longer
 /// one OpenCode takes up: a later answer finished after it (as OpenCode's
 /// `latest` reads the session). A whole read lets new messages in, with no

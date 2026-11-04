@@ -128,6 +128,10 @@ pub(crate) struct Connection {
     pub children: Arc<std::sync::Mutex<BTreeMap<String, Value>>>,
     /// What measuring the Agent's context needs from this connection (T-10).
     usage: Arc<std::sync::Mutex<Usage>>,
+    /// Removals asked of OpenCode on this connection's session and recorded
+    /// (T-10, giving up a compaction): a whole read begun before the latest
+    /// is never published (`opencode_resync`), so it never undoes one.
+    removals: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -172,7 +176,7 @@ impl Usage {
 
 impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
-        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default() }
+        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -728,9 +732,23 @@ impl Workspace {
         for (child, info) in sub_agents(&c.server, &c.session).await? {
             c.adopt(&child, &c.session, info);
         }
-        let snapshot = c.server.snapshot(&c.session, &c.known_children()).await?;
+        // A read begun before a removal was recorded is stale: it is read
+        // again, never published over what that removal found (Lead 3895).
+        // The removal is recorded with the ownership lock held, as this is
+        // published, so the two never cross.
+        let mut tries = 0;
+        let (snapshot, owned) = loop {
+            let mark = c.removals.load(std::sync::atomic::Ordering::SeqCst);
+            let snapshot = c.server.snapshot(&c.session, &c.known_children()).await?;
+            let owned = self.owner(id).await;
+            if c.removals.load(std::sync::atomic::Ordering::SeqCst) == mark {
+                break (snapshot, owned);
+            }
+            drop(owned);
+            tries += 1;
+            ensure!(tries < 3, "OpenCode's record changed while it was read, each time");
+        };
         let children = c.children.lock().unwrap().clone();
-        let owned = self.owner(id).await;
         if self.opencode_current(id, c.generation).is_none() {
             return Ok(());
         }
@@ -1485,15 +1503,21 @@ impl Workspace {
         };
         let (attempted, settled) = (turn.to_owned(), outcome.clone());
         let data = json!({"turnId":turn,"removal":removal,"error":outcome.as_ref().err()});
-        self.record_update(id, if outcome.is_ok() { "opencode/compactAbandoned" } else { "opencode/compactAbandonUnconfirmed" }, data,
-            Sel::Turns(vec![turn.to_owned()]), move |d| {
+        let kind = if outcome.is_ok() { "opencode/compactAbandoned" } else { "opencode/compactAbandonUnconfirmed" };
+        // Recorded with the ownership lock held, after marking the removal:
+        // a whole read begun before it is then never published over this
+        // (`opencode_resync`), and one published already is followed by this.
+        let owned = self.owner(id).await;
+        c.removals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let agent = id.to_owned();
+        self.stored_owned(owned, move |store| store.record_event(&agent, kind, &data, Sel::Turns(vec![attempted.clone()]), move |d| {
             let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == attempted.as_str()) else { return };
             if settled.is_ok() {
                 entry["_opencodeCompact"]["state"] = "abandoned".into();
                 entry["_opencodeCompact"]["nativePending"] = false.into();
                 entry["_opencodeCompact"]["abandonedAt"] = now().into();
             }
-        }).await?;
+        }).map(drop)).await?;
         self.changed(id);
         match outcome {
             Ok(()) => Ok(json!({"abandoned":true,"turnId":turn})),

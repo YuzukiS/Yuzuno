@@ -793,28 +793,38 @@ function ToolActivity({
   );
 }
 /** Giving up an OpenCode compaction that OpenCode still holds unfinished
- * (T-10): the user's own act, run by Core, which removes only its part. */
+ * (T-10): the user's own act, run by Core, which removes only its part.
+ * Asked once per press, never again by itself: a second press while one is
+ * out asks nothing. Core's answer alone never says it was given up; this
+ * waits for Core's record of the Turn, which then shows no button. A refusal
+ * is said here, for the user to try again or not. One per Agent and Turn
+ * (keyed so), so nothing of it shows on another Agent. */
 function CompactionGiveUp({ agentId, turn }: { agentId: string; turn: NativeTurn }) {
   const t = useStrings(turnWords);
-  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "asking" | "answered">("idle");
+  const out = useRef(false);
   const [error, setError] = useState("");
   const attempt = turn._opencodeCompact;
   if (!attempt || !attempt.message || !attempt.part || !(attempt.nativePending === true || attempt.state === "unknown")) return null;
   async function giveUp() {
-    setBusy(true);
+    // Set before React renders the press: presses in the same moment ask once.
+    if (out.current) return;
+    out.current = true;
+    setPhase("asking");
     setError("");
     try {
       await post(`/agents/${encodeURIComponent(agentId)}/compact/abandon`, { turnId: turn.id });
+      setPhase("answered");
     } catch (e) {
+      out.current = false;
       setError(errorText(e));
-    } finally {
-      setBusy(false);
+      setPhase("idle");
     }
   }
   return (
     <div className="turn-compaction-give-up">
-      <button type="button" className="secondary-button" disabled={busy} title={t.giveUpCompactionHelp} onClick={() => void giveUp()}>
-        {busy ? t.givingUpCompaction : t.giveUpCompaction}
+      <button type="button" className="secondary-button" disabled={phase !== "idle"} title={t.giveUpCompactionHelp} onClick={() => void giveUp()}>
+        {phase === "asking" ? t.givingUpCompaction : phase === "answered" ? t.compactionRecordAwaited : t.giveUpCompaction}
       </button>
       {error && <p role="alert" className="inline-error" lang="">{error}</p>}
     </div>
@@ -1258,7 +1268,7 @@ export function Turn({
               : errorText(turn.error)}
           </div>
         )}
-        {agent.harness === "opencode" && <CompactionGiveUp agentId={agent.id} turn={turn} />}
+        {agent.harness === "opencode" && <CompactionGiveUp key={`${agent.id}:${turn.id}`} agentId={agent.id} turn={turn} />}
         {turn.status === "interrupted" && (
           <div className="turn-interrupted">
             {turn.missingNative ? (
