@@ -65,7 +65,7 @@ const text = strings({
   } as Record<ProjectGroupStyle, [string, string]>,
   dock: "Conversation dock",
   dockHelp: "The most of each the left edge of a conversation shows, what is running or queued first. 0 hides that group there; the Jobs panel still lists everything.",
-  docks: { jobs: "Local jobs", actions: "GitHub Actions", subAgents: "Sub-agents" } as Record<keyof DockLimits, string>,
+  docks: { jobs: "Local jobs", actions: "GitHub Actions", reviews: "PR reviews", subAgents: "Sub-agents" } as Record<keyof DockLimits, string>,
   turnDock: "Turn dock",
   turnDockHelp: "The right edge of a conversation: how many turns around the one you are reading show their number, and how many short bars lead on to further turns on each side. 0 numbered turns hides the dock; scrolling and Back to latest still work.",
   numbered: "Numbered turns",
@@ -97,7 +97,7 @@ const text = strings({
   },
   dock: "会话侧栏",
   dockHelp: "会话左侧每类最多显示几项，正在运行或排队的排在前面。0 会在那里隐藏这一组；Jobs 面板仍会列出全部。",
-  docks: { jobs: "本地 Job", actions: "GitHub Actions", subAgents: "子 Agent" },
+  docks: { jobs: "本地 Job", actions: "GitHub Actions", reviews: "PR 审查", subAgents: "子 Agent" },
   turnDock: "Turn 栏",
   turnDockHelp: "会话右侧：你正在阅读的 Turn 周围有几个显示编号，以及两侧各有几条通往更多 Turn 的短条。编号 Turn 为 0 时隐藏此栏；滚动和 Back to latest 仍然可用。",
   numbered: "编号 Turn",
@@ -113,7 +113,7 @@ const agentLists: { value: AgentListDensity; icon: typeof Sun; rows: number }[] 
   { value: "detailed", icon: Rows2, rows: 2 },
   { value: "compact", icon: Rows4, rows: 3 },
 ];
-const dockOrder: (keyof DockLimits)[] = ["jobs", "actions", "subAgents"];
+const dockOrder: (keyof DockLimits)[] = ["jobs", "actions", "reviews", "subAgents"];
 /** One count on a slider, its name before it and its value, or what 0
  * means, after. */
 function CountSlider({
@@ -435,6 +435,7 @@ export function fieldLabel(field: AppearanceField, language: Language = "en"): s
     projectGroups: t.projectGroups,
     "dock.jobs": `${t.dock}: ${t.docks.jobs}`,
     "dock.actions": `${t.dock}: ${t.docks.actions}`,
+    "dock.reviews": `${t.dock}: ${t.docks.reviews}`,
     "dock.subAgents": `${t.dock}: ${t.docks.subAgents}`,
     "turnDock.numbers": `${t.turnDock}: ${t.numbered}`,
     "turnDock.bars": `${t.turnDock}: ${t.bars}`,

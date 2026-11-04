@@ -33,7 +33,7 @@ export const projectGroupStyles = ["headers", "cards", "bands", "none"] as const
 export type ProjectGroupStyle = (typeof projectGroupStyles)[number];
 /** The most of each kind the conversation's left dock shows; 0 hides that
  * group there (the Jobs panel and the conversation still list them all). */
-export type DockLimits = { jobs: number; actions: number; subAgents: number };
+export type DockLimits = { jobs: number; actions: number; reviews: number; subAgents: number };
 export const MAX_DOCK_LIMIT = 10;
 /** The conversation's right dock: how many Turns show their number (0 hides
  * the dock) and how many shorter bars lead on to further Turns each side. */
@@ -57,7 +57,7 @@ export const defaultAppearance: Appearance = {
   palette: "garden",
   agentList: "detailed",
   projectGroups: "headers",
-  dock: { jobs: 5, actions: 2, subAgents: 5 },
+  dock: { jobs: 5, actions: 2, reviews: 2, subAgents: 5 },
   turnDock: { numbers: 5, bars: 5 },
 };
 /** A saved count from 0 to `max`, or the default when it is anything else. */
@@ -101,6 +101,8 @@ export function appearanceFrom(saved: any): Appearance {
     dock: {
       jobs: dockLimit(saved?.dock?.jobs, defaultAppearance.dock.jobs),
       actions: dockLimit(saved?.dock?.actions, defaultAppearance.dock.actions),
+      // PR reviews (T-25); an Appearance saved before them shows two.
+      reviews: dockLimit(saved?.dock?.reviews, defaultAppearance.dock.reviews),
       subAgents: dockLimit(
         saved?.dock?.subAgents,
         defaultAppearance.dock.subAgents,

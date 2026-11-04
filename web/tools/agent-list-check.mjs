@@ -94,7 +94,7 @@ const seededAppearance = {
   theme: "light",
   fontSize: 16,
   palette: "garden",
-  dock: { jobs: 3, actions: 4, subAgents: 1 },
+  dock: { jobs: 3, actions: 4, reviews: 1, subAgents: 1 },
   turnDock: { numbers: 8, bars: 2 },
 };
 const browser = await chromium.launch({
