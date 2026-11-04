@@ -166,7 +166,9 @@ test("a fork whose answer was lost goes on with the same request, never a new on
   const core = { calls: [], fork: (body) => {
     asked.push(body.requestId);
     return asked.length === 1 ? { status: 502, body: { error: "fixture: the answer was lost" } } : { ...completed, requestId: body.requestId };
-  } };
+  },
+  // As Core: the attempt it kept before the answer was lost, not finished.
+  seen: (params) => asked.length && params.get("requestId") === asked[0] ? { state: "pending", requestId: asked[0], message: "" } : { state: "none" } };
   const page = await mount(core);
   try {
     page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
@@ -177,6 +179,56 @@ test("a fork whose answer was lost goes on with the same request, never a new on
     page.button("Continue this fork", page.dialog()).click();
     await until(() => page.shown() === "c", "the new Agent opens");
     assert.deepEqual(asked, [asked[0], asked[0]], "the same request both times");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// R2 of #535: Core answers every refusal alike, so the dialog asks it what it kept of the request.
+test("a fork Core refused before keeping anything keeps the preview and its name, and forks again with a new request", async () => {
+  const asked = [];
+  const core = { calls: [], fork: (body) => {
+    asked.push(body);
+    return asked.length === 1 ? { status: 400, body: { error: "fixture: OpenCode is busy; nothing forked" } } : { ...completed, requestId: body.requestId };
+  } };
+  const page = await mount(core);
+  try {
+    page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
+    await until(() => page.button("Fork", page.dialog()), "the preview offers the fork");
+    page.name("Mori, first try");
+    page.button("Fork", page.dialog()).click();
+    await until(() => page.dialog()?.textContent.includes("fixture: OpenCode is busy") && !page.dialog().querySelector("fieldset[disabled]"),
+      "the refusal is said");
+    assert.ok(!page.button("Continue this fork", page.dialog()), "nothing to go on with: Core kept nothing of it");
+    assert.equal(page.dialog().querySelector("input")?.value, "Mori, first try", "the name stays, to change");
+    assert.deepEqual(page.saved(), {}, "no request kept for it");
+    page.name("Mori, second try");
+    page.button("Fork", page.dialog()).click();
+    await until(() => page.shown() === "c", "the new Agent opens");
+    assert.deepEqual(asked.map((body) => body.name), ["Mori, first try", "Mori, second try"]);
+    assert.notEqual(asked[1].requestId, asked[0].requestId, "a new request: the refused one kept nothing");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a name longer than Core takes, counted in bytes as Core counts it, is said and never sent", async () => {
+  const core = { calls: [], fork: (body) => ({ ...completed, requestId: body.requestId }) };
+  const page = await mount(core);
+  try {
+    page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
+    await until(() => page.button("Fork", page.dialog()), "the preview offers the fork");
+    // 34 characters of 3 bytes each: within 60 characters, over Core's 100 bytes.
+    page.name("森".repeat(34));
+    await until(() => page.dialog().textContent.includes("at most 100 bytes"), "the limit is said");
+    assert.ok(page.button("Fork", page.dialog()).disabled, "not offered");
+    page.dialog().querySelector("form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(page.forks().length, 0, "nothing asked, not even by Enter");
+    page.name("森".repeat(33));
+    await until(() => !page.button("Fork", page.dialog()).disabled, "a name of 99 bytes is offered");
+    assert.doesNotMatch(page.dialog().textContent, /at most 100 bytes/);
+    page.button("Fork", page.dialog()).click();
+    await until(() => page.shown() === "c", "the new Agent opens");
+    assert.equal(page.forks()[0].body.name, "森".repeat(33));
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

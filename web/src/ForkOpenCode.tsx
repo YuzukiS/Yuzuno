@@ -55,6 +55,10 @@ function keep(key: string, requestId: string | undefined) {
   }
 }
 
+/** The longest name Core takes for the new agent, in UTF-8 bytes, as it counts them. */
+const NAME_BYTES = 100;
+const nameBytes = (value: string) => new TextEncoder().encode(value.trim()).length;
+
 const text = strings({
   fork: "Fork",
   forkTitle: "Fork a new agent from here",
@@ -67,6 +71,7 @@ const text = strings({
   later: (turns: number) => `${turns} later ${turns === 1 ? "turn stays" : "turns stay"} only here`,
   model: (model: string, variant: string | null) => `${model || "OpenCode’s default model"}${variant ? ` · ${variant}` : ""}`,
   name: "New agent name",
+  nameTooLong: `The name is too long: at most ${NAME_BYTES} bytes, about 33 Chinese characters.`,
   note: "The new agent works in this same folder with its own OpenCode session; this agent and its session are not changed and stay open. Files are not restored: the new agent sees the folder as it is now. Your draft and any running sub-agents are not copied, and nothing is sent.",
   uncertain: "OpenCode has not confirmed this fork yet. It is never asked again; this agent can go on meanwhile. ",
   pending: "This fork is not finished yet. ",
@@ -91,6 +96,7 @@ const text = strings({
   later: (turns) => `之后的 ${turns} 个 Turn 只留在这里`,
   model: (model, variant) => `${model || "OpenCode 的默认模型"}${variant ? ` · ${variant}` : ""}`,
   name: "新 Agent 名称",
+  nameTooLong: `名称太长：最多 ${NAME_BYTES} 字节，约 33 个汉字。`,
   note: "新 Agent 在同一个文件夹工作，有自己的 OpenCode 会话；这个 Agent 和它的会话不会改变，也保持打开。文件不会被还原：新 Agent 看到的是文件夹现在的样子。草稿和运行中的子 Agent 不会复制，也不会发送任何内容。",
   uncertain: "OpenCode 还没有确认这次分叉。不会再请求一次；这个 Agent 可以照常继续。",
   pending: "这次分叉还没有完成。",
@@ -204,7 +210,7 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
   // The one request: its ID kept before it is sent, and kept until Core says how it ended.
   async function fork() {
     const going = outcome?.state === "pending";
-    if (running.current || (!going && !name.trim())) return;
+    if (running.current || (!going && (!name.trim() || nameBytes(name) > NAME_BYTES))) return;
     running.current = true; setBusy(true); setError("");
     const requestId = requests()[key] || outcome?.requestId || crypto.randomUUID();
     keep(key, requestId);
@@ -212,8 +218,23 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
       // One going on keeps the name it was asked with; Core reads it from the attempt.
       settled(await post<OpenCodeForkOutcome>(base, { requestId, turnId, name: name.trim() || agent.name }));
     } catch (e) {
-      // It may have reached Core: the same request goes on next time, never a new one.
-      if (shown.current) { setError(errorText(e)); setOutcome({ state: "pending", requestId, message: "" }); setPreview(undefined); }
+      // Core answers every refusal the same way, so it is asked what it holds of this request (R2 of #535).
+      const seen = await look().catch(() => undefined);
+      if (seen?.state === "completed") { settled(seen); return; }
+      if (!shown.current) return;
+      setError(errorText(e));
+      if (seen?.state === "none" || seen?.state === "failed") {
+        // Refused before anything was kept, or it ended: the preview and its name stay, to change and fork again.
+        setOutcome(seen.state === "failed" ? seen : undefined);
+        if (!preview) {
+          try { const value = await post<OpenCodeForkPreview>(`${base}/preview`, { turnId }); if (shown.current) setPreview(value); }
+          catch (again) { if (shown.current) setError(errorText(again)); }
+        }
+      } else {
+        // It may have reached Core: the same request goes on next time, never a new one.
+        setOutcome(seen ?? { state: "pending", requestId, message: "" });
+        setPreview(undefined);
+      }
     } finally { running.current = false; if (shown.current) setBusy(false); }
   }
 
@@ -227,6 +248,7 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
 
   const state = outcome?.state;
   const asking = state === "pending" || state === "uncertain";
+  const tooLong = nameBytes(name) > NAME_BYTES;
   return <Modal open confirm onOpenChange={next => !next && !busy && onClose()} title={t.title} description={t.description}>
     <form className="session-import create-form codex-fork-dialog opencode-fork-dialog" onSubmit={event => {
       event.preventDefault();
@@ -244,8 +266,9 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
           <p className="session-preview-model">{t.model(preview.model, preview.variant)}</p>
         </section>
         <fieldset className="remote-form-fields" disabled={busy}>
-          <label>{t.name}<input value={name} onChange={event => setName(event.target.value)} required maxLength={60} autoFocus /></label>
+          <label>{t.name}<input value={name} onChange={event => setName(event.target.value)} required aria-invalid={tooLong} autoFocus /></label>
         </fieldset>
+        {tooLong && <p role="alert" className="remote-field-error">{t.nameTooLong}</p>}
         <p className="session-handoff-note">{t.note}</p>
       </>}
       {outcome && state !== "none" && state !== "completed" && <p role="alert" className="remote-field-error">
@@ -262,7 +285,7 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
         ) : state === "pending" ? (
           <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <GitFork size={15} />}{busy ? t.forking : t.carryOn}</button>
         ) : (
-          <button className="primary-button" disabled={busy || !preview || !name.trim()}>{busy && preview ? <LoaderCircle size={15} className="spin" /> : <GitFork size={15} />}{busy && preview ? t.forking : t.confirm}</button>
+          <button className="primary-button" disabled={busy || !preview || !name.trim() || tooLong}>{busy && preview ? <LoaderCircle size={15} className="spin" /> : <GitFork size={15} />}{busy && preview ? t.forking : t.confirm}</button>
         )}
       </div>
     </form>

@@ -600,6 +600,43 @@ async fn each_file_is_backed_up_before_the_revert_is_asked_and_judged_after() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn a_new_backup_keeps_the_newest_settled_ones_and_leaves_what_is_not_a_settled_attempts() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, _, _, first) = files_lab(&root).await;
+    let backups = data.join("opencode/oc/revert");
+    std::fs::create_dir_all(&backups).unwrap();
+    // Earlier reverts, oldest first, each settled: four with a backup, then a newer one that sent no file back.
+    let settled = |id: &str, state: &str, backed: bool| {
+        let attempt = Attempt { id: id.into(), agent: "oc".into(), thread: "ses".into(), target: "msg".into(), kept: Vec::new(),
+            draft: String::new(), state: "sending".into(), message: None, files: None, opencode: Some(json!({})) };
+        ws.store.begin_rewind(&attempt, "[]", "[]").unwrap();
+        ws.store.save_rewind(&Attempt { state: state.into(), ..attempt }).unwrap();
+        if backed {
+            std::fs::create_dir(backups.join(id)).unwrap();
+            std::fs::write(backups.join(id).join("0.bin"), "kept").unwrap();
+        }
+    };
+    for (id, state) in [("old1", "completed"), ("old2", "failed"), ("old3", "unchanged"), ("old4", "completed")] {
+        settled(id, state, true);
+    }
+    settled("nofiles", "completed", false);
+    // A name no attempt of this Agent has.
+    std::fs::create_dir(backups.join("stray")).unwrap();
+
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    let left: std::collections::BTreeSet<String> = std::fs::read_dir(&backups).unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+    let wanted: std::collections::BTreeSet<String> = ["old2", "old3", "old4", "stray", key.as_str()].into_iter().map(String::from).collect();
+    assert_eq!(left, wanted, "the newest three settled backups, the new one and the stray folder stay; the oldest goes");
+    assert!(backups.join(&key).join("backup.json").is_file(), "the new backup is whole");
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn a_request_that_ended_with_no_revert_kept_lets_the_agent_go_on_only_once_all_is_as_before() {
     // With no file to send back: read again, all as before, nothing kept, the Agent goes on.
     let dir = tempfile::tempdir().unwrap();
