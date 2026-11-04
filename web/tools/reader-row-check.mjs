@@ -10,10 +10,11 @@
 //   shows, since the end is out of view; pressed, the end is in view again, and a row that arrives after
 //   that is followed;
 // - once a pointer or a tap has opened it and a live update has come, switching to Hana and back to Mori
-//   reopens the conversation where the reader was, with the row where it was, not at its end (Lead 3882);
-// - on a phone, a tap on the summary holds the reader's window, and a real swipe (a touch scroll gesture)
-//   begun on that summary that reaches the end lets it go: the next read is of the latest window, and a row
-//   that arrives then is followed (Lead 3882);
+//   reopens the conversation where the reader was, with the row where it was in the pane, not at its end
+//   (Lead 3882); the pane is measured, since the bar that says where they left off comes in above it;
+// - on a phone, a tap on the summary holds the reader's window, and a real swipe (touch moves the browser
+//   takes as a pan) begun on that summary that brings the end into view lets it go: the next read is of the
+//   latest window, and a row that arrives then is followed (Lead 3882);
 // - guards for following itself: a row that arrives while nothing was pressed keeps the end in view, and so
 //   does a composer that grows by three lines.
 // Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Writes: none but the app's own
@@ -161,6 +162,9 @@ for (const run of runs) {
   };
   const gap = (page) => page.locator(".conversation-scroll").evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
   const top = (page, selector) => page.locator(selector).evaluate((el) => Math.round(el.getBoundingClientRect().top * 10) / 10);
+  /** The row's summary from the top of the conversation pane, which a bar above it can move down. */
+  const inPane = (page) => page.locator(SUMMARY).evaluate((el) =>
+    Math.round((el.getBoundingClientRect().top - document.querySelector(".conversation-scroll").getBoundingClientRect().top) * 10) / 10);
   /** Core says the Turn changed (the app reads it again), and `item` is in it. */
   const arrive = async (page, item) => {
     live.items.push(item);
@@ -237,16 +241,17 @@ for (const run of runs) {
     // conversation reopens where they were reading, so the row is where it was, not carried up to the end.
     {
       const page = await open();
-      const before = await top(page, SUMMARY);
+      const before = await inPane(page);
       await press(page, run.phone ? "touch" : "pointer");
       await page.waitForTimeout(700);
       await arrive(page, shell("tool-d", "npm run typecheck"));
-      const held = await top(page, SUMMARY);
+      const held = await inPane(page);
       await switchAndBack(page);
-      const after = await top(page, SUMMARY);
-      const state = { before, held, after, gap: await gap(page), openAgain: await page.locator("#item-tool-b").evaluate((el) => el.open) };
+      const after = await inPane(page);
+      const state = { before, held, after, gap: await gap(page), openAgain: await page.locator("#item-tool-b").evaluate((el) => el.open),
+        bar: await page.locator(".source-navigation").textContent().catch(() => null) };
       report.measures[`${tag}: switch back`] = state;
-      ok(`${tag}: after the reader opened a row and a live update came, switching to Hana and back keeps the row where it was (top ${before} -> ${held} -> ${after} px)`,
+      ok(`${tag}: after the reader opened a row and a live update came, switching to Hana and back keeps the row where it was in the pane (${before} -> ${held} -> ${after} px from its top)`,
         Math.abs(held - before) <= 1 && Math.abs(after - before) <= 1, state);
       await page.close();
     }
@@ -261,19 +266,28 @@ for (const run of runs) {
       ok(`${tag}: a tap on a summary holds the reader's window (the read after it: ${held})`, held === "turnId=old-0", { reads: [...reads] });
       const box = await page.locator(SUMMARY).boundingBox();
       await page.evaluate(() => {
-        window.touchSeen = { start: null, end: false };
+        window.touchSeen = { start: null, moves: 0, end: false };
         const pane = document.querySelector(".conversation-scroll");
         pane.addEventListener("touchstart", (e) => { window.touchSeen.start ??= !!e.target.closest?.("summary"); }, { capture: true });
+        pane.addEventListener("touchmove", () => { window.touchSeen.moves++; }, { capture: true });
         pane.addEventListener("touchend", () => { window.touchSeen.end = true; }, { capture: true });
       });
-      // A touch scroll gesture through Chromium's input pipeline: touch events, then the pane scrolls.
+      // Touch moves through Chromium's input pipeline, which pans the pane as a finger would.
+      // (Input.synthesizeScrollGesture sent no moves to the page here and scrolled nothing: diagnosis 7.)
+      const from = await gap(page);
       const cdp = await context.newCDPSession(page);
-      await cdp.send("Input.synthesizeScrollGesture", { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2),
-        yDistance: -500, gestureSourceType: "touch", speed: 1200, preventFling: true });
+      const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+      for (let i = 1; i <= 12; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - i * 30 }] });
+        await page.waitForTimeout(16);
+      }
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       await cdp.detach();
       await page.waitForTimeout(700);
-      const touch = await page.evaluate(() => window.touchSeen);
-      ok(`${tag}: the swipe is a touch begun on the summary (${JSON.stringify(touch)})`, touch.start === true && touch.end === true, touch);
+      const touch = { ...(await page.evaluate(() => window.touchSeen)), gap: [from, await gap(page)] };
+      ok(`${tag}: the swipe is a touch begun on the summary that brings the end into view (${JSON.stringify(touch)})`,
+        touch.start === true && touch.moves > 0 && touch.end === true && touch.gap[1] <= 1, touch);
       const atEnd = await gap(page);
       await arrive(page, shell("tool-e", "npm run format"));
       const swiped = { atEnd, read: reads.at(-1), followed: await gap(page), reads: [...reads] };
