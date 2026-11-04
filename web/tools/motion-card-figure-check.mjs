@@ -8,8 +8,8 @@
 // - "bad": the picture loads but its decode is refused: the frame says it could not be loaded, keeps its
 //   size, and the picture is never shown.
 // - "held": its decode is held 1.5 s: hidden all that while, then in once.
-// - "shot" moved to version 2, its caption only changed (the same snapshot): the picture stays shown and
-//   plays nothing.
+// - "shot" moved to version 2, its caption only changed (the same snapshot): while its newer address
+//   loads, the same picture stays painted (screenshots of its middle compared), and nothing plays.
 // - "shot"'s report page, opened from its card after the card showed it: the page's picture plays no
 //   second arrival (one window, one snapshot shown).
 // Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Writes: none; Home's list read
@@ -289,19 +289,31 @@ for (const run of runs) {
     ok(`${tag}: a picture whose decode is held: hidden, though loaded, until the decode succeeds, then in once (under reduced motion, at once)`,
       hidden >= 20 && cameIn(held, reduced), { hidden, last: held.at(-1)?.picture });
 
-    // "shot" moves to version 2, its caption only changed: the same snapshot.
+    // "shot" moves to version 2, its caption only changed: the same snapshot. Its newer address is
+    // read again (700 ms), and while it loads the element may report no picture (naturalWidth 0), so
+    // what is painted is compared: the middle of the picture before, and again while the newer
+    // address is still loading (the same bytes from the same encoder mean the same pixels).
     await into("shot");
+    const shotImg = '.home-main [data-section-key="shot"] .home-card-frame-body img';
+    const at = await page.locator(shotImg).boundingBox();
+    const clip = at && { x: at.x + at.width / 4, y: at.y + at.height / 4, width: at.width / 2, height: at.height / 2 };
+    const paintedBefore = clip && (await page.screenshot({ clip }));
     const before = await frameAt();
     await page.evaluate(() => window.__caption());
-    await page.waitForFunction(() => document.querySelector('.home-main [data-section-key="shot"] .home-card-frame-body img')?.getAttribute("src")?.includes("version=2"),
-      null, { timeout: 10_000 });
+    await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("src")?.includes("version=2"), shotImg, { timeout: 10_000 });
+    const loadingWhenShot = await page.evaluate((sel) => !document.querySelector(sel)?.complete, shotImg);
+    const paintedDuring = clip && (await page.screenshot({ clip }));
+    const stillLoading = await page.evaluate((sel) => !document.querySelector(sel)?.complete, shotImg);
     await settled("shot");
     await page.waitForTimeout(DELAY + 400);
     const again = of(record("caption changed", await framesSince(before)), "shot");
-    ok(`${tag}: a newer version that changes only the caption: the picture stays shown, the same picture, and plays nothing`,
-      again.length > 0 && again.every((f) => f.picture && f.picture.natural > 0 && !f.picture.loading && f.picture.opacity === 1 && !f.picture.entries)
-        && spread(again.map((f) => f.picture.element)) === 0,
-      { elements: [...new Set(again.map((f) => f.picture?.element))], unseen: again.filter((f) => !f.picture || !f.picture.natural || f.picture.loading).length });
+    const painted = !!paintedBefore && !!paintedDuring && paintedBefore.equals(paintedDuring);
+    if (paintedDuring) await writeFile(join(output, `${tag}-caption-during.png`), paintedDuring);
+    ok(`${tag}: a newer version that changes only the caption: the same picture stays painted while the newer address loads, and plays nothing`,
+      again.length > 0 && again.every((f) => f.picture && !f.picture.loading && f.picture.opacity === 1 && !f.picture.entries)
+        && spread(again.map((f) => f.picture.element)) === 0 && loadingWhenShot && stillLoading && painted,
+      { elements: [...new Set(again.map((f) => f.picture?.element))], painted, loadingWhenShot, stillLoading,
+        withoutPicture: again.filter((f) => !f.picture?.natural).length, unseen: again.filter((f) => !f.picture || f.picture.loading || f.picture.opacity !== 1).length });
 
     // Its report page, opened from the card that showed it: one window, one snapshot shown.
     const opened = await frameAt();
