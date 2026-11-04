@@ -41,12 +41,20 @@ function linkFor(scope, data) {
   return base;
 }
 
+/** Where the phone entry serves previews (T-5): a window there is a
+ * previewed page on this origin, never Yuzuno. */
+const PREVIEWS = "/__yuzuno/";
+
 /** An open Yuzuno window of this origin is brought forward and told where
- * to go, as a link it opens itself; otherwise a new one opens there. */
+ * to go, as a link it opens itself; otherwise a new one opens there. A
+ * previewed page's window is never taken for Yuzuno's. */
 async function openOrFocus(clients, href) {
   const origin = new URL(href).origin;
   const open = (await clients.matchAll({ type: "window", includeUncontrolled: true }))
-    .filter((client) => new URL(client.url).origin === origin);
+    .filter((client) => {
+      const url = new URL(client.url);
+      return url.origin === origin && !url.pathname.startsWith(PREVIEWS);
+    });
   const client = open.find((one) => one.focused) || open[0];
   if (client) {
     const focused = await client.focus().catch(() => client);
