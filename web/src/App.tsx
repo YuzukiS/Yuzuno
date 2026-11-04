@@ -174,6 +174,7 @@ import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
 import { Jobs, ConversationJobs, openJobs } from "./Jobs";
+import { WorkActivityEntry, WorkActivityProvider } from "./WorkDock";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
@@ -3019,6 +3020,7 @@ export function App() {
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
+       <WorkActivityProvider>
         {(workspaceError || core.browser) && (
           <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
             <WifiOff size={15} />
@@ -3104,6 +3106,10 @@ export function App() {
                         ? shell.compacting
                         : shell.status[agent.status]}
                   </span>
+                  {/* One line for the Jobs, runs and sub-agents this
+                      conversation has, where there is room to read it; the
+                      dock keeps the detail (T-15). */}
+                  <WorkActivityEntry onOpen={() => openJobs({ agentId: agent.id })} />
                 </div>
               </div>
               <div
@@ -3915,6 +3921,7 @@ export function App() {
             </div>
           </div>
         )}
+      </WorkActivityProvider>
       </main>
       </ClarificationHost.Provider>
 

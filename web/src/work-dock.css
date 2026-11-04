@@ -399,3 +399,47 @@
     animation: none;
   }
 }
+
+/* One line for everything the conversation has running, beside its name:
+   what needs a look first, then what is going on. The dock's own column
+   keeps the detail, so this says the counts and opens the list (T-15). */
+.work-activity-entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 24px;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 11px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.work-activity-entry:hover,
+.work-activity-entry:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  color: var(--ink);
+}
+.work-activity-entry:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.work-activity-name {
+  font-weight: 600;
+}
+/* Something went wrong, or stopped and is waiting: the reason to look. */
+.work-activity-entry[data-needs-look] {
+  border-color: color-mix(in srgb, var(--error-ink, var(--coral)) 45%, transparent);
+  color: var(--error-ink, var(--coral));
+}
+/* A finger needs more than a line of text is tall. */
+@media (hover: none) and (pointer: coarse) {
+  .work-activity-entry {
+    min-height: 40px;
+    padding-inline: 11px;
+  }
+}

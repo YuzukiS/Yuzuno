@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, useMemo } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import {
@@ -45,7 +45,8 @@ import {
   type CiOpen,
   type Run,
 } from "./CiJobs";
-import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
+import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity } from "./WorkDock";
+import { jobWork, runWork, type WorkItem } from "./work-activity.ts";
 import { useAppearance } from "./appearance";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { jobsText, type JobsText } from "./jobs-text";
@@ -358,6 +359,16 @@ export function ConversationJobs({
   // A running job's time so far, as a finished one shows how long it took.
   const now = useNow(shown.some(live));
   const runs = first(ci.runs, runActive, (run) => time(run.updatedAt), dock.actions);
+  // Every Job and run the conversation knows about, not only the few drawn
+  // as marks: the entry above counts the work, the marks show the newest.
+  // A Job held at a checkpoint is an exception that is waiting, not broken.
+  const work = useMemo<WorkItem[]>(() => [
+    ...jobs.map((job) => ({ id: job.id, kind: "job" as const, state: jobWork(job.status),
+      resumable: checkpointed(job) || stoppingAtCheckpoint(job) })),
+    ...ci.runs.map((run) => ({ id: run.id, kind: "run" as const, state: runWork(run.status, run.conclusion) })),
+  ].filter((item) => item.state !== "uncounted") as WorkItem[], [jobs, ci.runs]);
+  useWorkActivity("job", work.filter((item: WorkItem) => item.kind === "job"));
+  useWorkActivity("run", work.filter((item: WorkItem) => item.kind === "run"));
   // Jobs, then CI, as marks on the conversation's left edge (WorkDock.tsx).
   // A kind set to 0 has no group here at all.
   return (

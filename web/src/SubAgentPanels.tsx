@@ -13,7 +13,8 @@ import {
 } from "./subagents";
 import type { NativeItem } from "./types";
 import { useConversationReveal, useConversationWindowed } from "./ConversationWindow";
-import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
+import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity } from "./WorkDock";
+import { subAgentWork, type WorkItem } from "./work-activity.ts";
 import { useLanguage, useStrings, type Language } from "./i18n";
 import { cardWords } from "./subagent-text";
 import "./subagents.css";
@@ -142,6 +143,15 @@ export function SubAgentDock({
   const group = given ?? subAgentsGroup(language);
   const codex = useMemo(() => conversationSubAgents(turns), [turns]);
   const all = useMemo(() => [...codexEntries(agentId, codex, language), ...entries], [agentId, codex, entries, language]);
+  // Every sub-agent the conversation knows about, for the dock's one entry,
+  // whatever the limit draws here.
+  const work = useMemo<WorkItem[]>(
+    () => all
+      .map((child) => ({ id: child.key, kind: "subAgent" as const, state: subAgentWork(child.status) }))
+      .filter((item) => item.state !== "uncounted") as WorkItem[],
+    [all],
+  );
+  useWorkActivity("subAgent", work);
   const [card, setCard] = useState<{ key: string | null; from: HTMLElement } | null>(null);
   if (!all.length || limit <= 0) return null;
   const shown = all

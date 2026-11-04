@@ -4,7 +4,7 @@
 // reads its status, and its name once the pointer or focus comes to the dock;
 // otherwise it names itself in a small tip. Jobs and runs open their details
 // in the Jobs panel; sub-agents open a card beside the dock.
-import type { ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Check,
   CircleHelp,
@@ -16,9 +16,27 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { byAttention, workActivity, type WorkItem, type WorkKind } from "./work-activity.ts";
 import "./work-dock.css";
 
 // The dock's own words (T-189); labels and names come from its callers.
+const entry = strings({
+  label: "Work activity",
+  // Each kind says its own thing; there is never a total across them.
+  running: (n: number) => `${n} running`,
+  needsLook: (n: number) => `${n} need a look`,
+  unknown: (n: number) => `${n} not recognised`,
+  quiet: "nothing running",
+  open: "Open the list",
+}, {
+  label: "工作活动",
+  running: (n) => `${n} 个在进行`,
+  needsLook: (n) => `${n} 个待查看`,
+  unknown: (n) => `${n} 个无法识别`,
+  quiet: "没有在进行的工作",
+  open: "打开列表",
+});
+
 const text = strings({
   open: (label: string) => `${label} · open the list`,
   openLabel: (label: string) => `${label}: open the list`,
@@ -77,6 +95,51 @@ export function StatusMark({
   );
 }
 
+/**
+ * What each kind of work the dock holds has to say about itself (T-15). The
+ * dock nests its groups -- jobs and runs hold the sub-agents as children --
+ * so no one of them can see the others. They leave their work here instead,
+ * and the dock says it once, rather than each kind summing itself and the
+ * reader counting three summaries as one.
+ */
+type Register = (kind: WorkKind, items: readonly WorkItem[]) => void;
+const Registry = createContext<Register | null>(null);
+
+/** Hands this kind's work to the dock, and takes it back when it goes. */
+export function useWorkActivity(kind: WorkKind, items: readonly WorkItem[]) {
+  const register = useContext(Registry);
+  // The identity of the array changes on every render; what it says does not.
+  const key = JSON.stringify(items);
+  useEffect(() => {
+    register?.(kind, items);
+    return () => register?.(kind, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [register, kind, key]);
+}
+
+/**
+ * Holds what the dock's kinds report, above both the dock and the head of
+ * the conversation, so the one entry can stand where there is room to read
+ * it rather than in the dock's own narrow column (T-15).
+ */
+const Activity = createContext<ReturnType<typeof workActivity> | null>(null);
+
+export function WorkActivityProvider({ children }: { children: ReactNode }) {
+  const [work, setWork] = useState<Partial<Record<WorkKind, readonly WorkItem[]>>>({});
+  const register = useCallback<Register>((kind, items) => {
+    setWork((was) => (was[kind] === items ? was : { ...was, [kind]: items }));
+  }, []);
+  const activity = useMemo(
+    () => workActivity(byAttention([...(work.job ?? []), ...(work.run ?? []), ...(work.subAgent ?? [])])),
+    [work],
+  );
+  return (
+    <Registry.Provider value={register}>
+      <Activity.Provider value={activity}>{children}</Activity.Provider>
+    </Registry.Provider>
+  );
+}
+
 export function WorkDock({
   label,
   children,
@@ -88,6 +151,36 @@ export function WorkDock({
     <nav className="work-dock" aria-label={label} lang={langTag(useLanguage())}>
       {children}
     </nav>
+  );
+}
+
+/**
+ * One line for everything the conversation has running, instead of a column
+ * of every piece of it. What needs a look is named first and always, even
+ * with nothing running: it is the reason the entry is there. The list behind
+ * it is unchanged, and is where the detail stays.
+ */
+export function WorkActivityEntry({ onOpen }: { onOpen: (from: HTMLElement) => void }) {
+  const t = useStrings(entry);
+  const activity = useContext(Activity);
+  if (!activity?.any) return null;
+  // Said apart, never added up: these are different kinds of fact.
+  const parts = [
+    activity.exception > 0 ? t.needsLook(activity.exception) : null,
+    activity.current > 0 ? t.running(activity.current) : null,
+    activity.unrecognized > 0 ? t.unknown(activity.unrecognized) : null,
+  ].filter(Boolean);
+  return (
+    <button
+      type="button"
+      className="work-activity-entry"
+      data-needs-look={activity.exception > 0 || undefined}
+      aria-label={`${t.label}: ${parts.join(" · ") || t.quiet} · ${t.open}`}
+      onClick={(event) => onOpen(event.currentTarget)}
+    >
+      <span className="work-activity-name">{t.label}</span>
+      <span className="work-activity-counts">{parts.join(" · ") || t.quiet}</span>
+    </button>
   );
 }
 
