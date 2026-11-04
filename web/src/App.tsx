@@ -825,7 +825,7 @@ export function App() {
                   : listed.lastSeq > old.lastSeq;
               if (!newer) return w;
               const agents = w.agents.slice();
-              agents[index] = { ...listed, projectId: old.projectId };
+              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind };
               return { ...w, agents };
             });
           }

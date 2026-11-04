@@ -122,6 +122,16 @@
   line-height: 1.3;
   opacity: 0.72;
 }
+/* A Project's lead (T-33): a small label under the name. */
+.agent-identity > .agent-kind-badge {
+  align-self: flex-start;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.4;
+  opacity: 0.72;
+}
 .agent-identity > .remote-machine-badge > svg {
   flex-shrink: 0;
   width: 11px;
