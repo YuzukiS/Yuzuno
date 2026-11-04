@@ -262,10 +262,12 @@ const record = (name, extra = {}) => report.checks.push({ name, ...extra });
 const refresh = () =>
   page.evaluate(() => window.testEvents.onmessage({ data: "{}" }));
 const modal = page.getByRole("dialog");
-// Appearance is a category of Settings.
+// Appearance is a category of Settings: its tab, or on a narrow screen (720 px or less, T-189) the
+// category picker that takes the tabs' place.
 async function openAppearance() {
   await page.getByRole("button", { name: "Settings and updates" }).click();
-  await page.locator("#settings-tab-appearance").click();
+  if (page.viewportSize().width <= 720) await modal.locator(".settings-category-picker select").selectOption("appearance");
+  else await page.locator("#settings-tab-appearance").click();
 }
 try {
   await page.goto("https://yuzuno-ui-refine.test/");

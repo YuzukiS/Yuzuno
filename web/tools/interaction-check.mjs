@@ -222,6 +222,11 @@ async function fixture() {
       assert.equal(phone, width <= 520, `phone layout at ${width}px`);
       let tooltipInView = null;
       if (phone) {
+        // A phone opens on its Agent list (phoneList): the reader opens Mori's conversation from it.
+        await page.getByRole("button", { name: "Open Mori", exact: true }).click();
+        await page.getByRole("textbox", { name: "Message Mori" }).waitFor();
+        // The conversation is open, its composer there, and no context line under it (styles.css,
+        // `.app.phone .composer-footnote`).
         assert.equal(await page.locator(".composer-footnote").isVisible(), false);
         assert.equal(await page.locator(".context-usage-button").isVisible(), false);
       } else {

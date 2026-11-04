@@ -263,7 +263,7 @@ try {
       await page.keyboard.press("Enter");
       // In the open dialog: one that closes leaves through an inert, hidden copy (T-19 1b, DialogExitGhost),
       // which can still be on the page as the block is opened again.
-      const full = page.getByRole("dialog").getByLabel("Full pasted text");
+      const full = page.getByRole("dialog").getByRole("textbox", { name: "Full pasted text", exact: true });
       await full.waitFor();
       assert.equal(await full.inputValue(), raw.replaceAll("\r\n", "\n"));
       await full.press("Control+a");
@@ -295,7 +295,8 @@ try {
       assert.equal(await page.evaluate(() => pasteFixture.sent.length), 0);
       await page.getByLabel("Ask for an interactive result").click();
       await page.locator('[role="dialog"]').waitFor();
-      await page.locator(".modal-overlay").click({ position: { x: 5, y: 5 } });
+      // The open dialog's overlay, not the closing one's copy still fading (DialogExitGhost).
+      await page.locator(".modal-overlay:not(.dialog-exit-ghost *)").click({ position: { x: 5, y: 5 } });
       assert.equal(
         await input().evaluate((el) => document.activeElement === el),
         false,
@@ -774,11 +775,11 @@ try {
           path: new URL(`${theme}-mobile-preview.png`, output).pathname,
         });
         await chips().first().tap();
-        await page.getByRole("dialog").getByLabel("Full pasted text").waitFor();
+        await page.getByRole("dialog").getByRole("textbox", { name: "Full pasted text", exact: true }).waitFor();
         assert.equal(
           await page
             .getByRole("dialog")
-            .getByLabel("Full pasted text")
+            .getByRole("textbox", { name: "Full pasted text", exact: true })
             .evaluate((el) => getComputedStyle(el).fontSize),
           "20px",
         );

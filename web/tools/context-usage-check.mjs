@@ -186,6 +186,11 @@ try {
       const phone = (await page.locator(".app.phone").count()) > 0;
       assert.equal(phone, width <= 520, `phone layout at ${width}px`);
       if (phone) {
+        // A phone opens on its Agent list (phoneList): the reader opens Mikan's conversation from it,
+        // the one the wider screens show. Its composer is there, with no context line under it
+        // (styles.css, `.app.phone .composer-footnote`).
+        await page.getByRole("button", { name: "Open Mikan", exact: true }).click();
+        await page.getByRole("textbox", { name: "Message Mikan" }).waitFor();
         assert.equal(await page.locator(".composer-footnote").isVisible(), false);
         assert.equal(await page.locator(".context-usage-button").isVisible(), false);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
