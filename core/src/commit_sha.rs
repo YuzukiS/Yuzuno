@@ -235,14 +235,17 @@ print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr
         let dir = tempfile::tempdir().unwrap();
         let ws = lab(dir.path());
         let full = "e".repeat(40);
-        let created = ws.collaboration_call(None, "task_create", json!({"requestId":"c","title":"Short SHAs",
+        // Explicit SHAs need their repository linked to the task or its Project (T-29).
+        let project = ws.store.create_project("Short SHAs", Default::default()).unwrap().id;
+        ws.store.github_link_repo(&project, &crate::github::client::Repository { id: 123, full_name: "o/r".into() }).unwrap();
+        let created = ws.collaboration_call(None, "task_create", json!({"requestId":"c","title":"Short SHAs","projectId":project,
             "materials":{"repositoryId":123,"baseSha":"abc1234","headSha":full}})).await.unwrap();
         // The answer shows what was saved: the full SHA; a full one is not looked up.
         assert_eq!(created["task"]["materials"]["baseSha"], FULL);
         assert_eq!(created["task"]["materials"]["headSha"], full);
         assert_eq!(requests(dir.path()), ["repos/o/r/commits/abc1234"]);
         // A retry of the same request replays it.
-        let again = ws.collaboration_call(None, "task_create", json!({"requestId":"c","title":"Short SHAs",
+        let again = ws.collaboration_call(None, "task_create", json!({"requestId":"c","title":"Short SHAs","projectId":project,
             "materials":{"repositoryId":123,"baseSha":"ABC1234","headSha":full}})).await.unwrap();
         assert_eq!(again["task"]["id"], created["task"]["id"]);
         let task = created["task"]["id"].as_str().unwrap().to_owned();

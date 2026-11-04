@@ -202,6 +202,11 @@
     height: 118px;
   }
 }
+/* A kept image is unseen until it is decoded; then it fades in over small, or under reduced motion is
+   there at once (T-19 HM:B14, as on its report page). */
+.home-card-frame-body img[data-loading] {
+  opacity: 0;
+}
 /* On the deck and the widgets, a figure's frame follows its card's size (Dev 7's v12, v19):
    - wide: beside the text, as tall as the body, 140 px where it stacks;
    - large: the room its rows leave, never under 260 px, 200 px where it stacks.

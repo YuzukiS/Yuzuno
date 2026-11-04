@@ -478,8 +478,9 @@ def control(name, body):
         return True
     if name == 'print':
         # Output that is not UTF-8, more than a pipe holds; it fails if Core stopped draining.
-        sys.stdout.buffer.write(b'\xff' * body['bytes'] + b'\n')
-        sys.stdout.buffer.flush()
+        out = sys.stderr if body.get('stderr') else sys.stdout
+        out.buffer.write(b'\xff' * body['bytes'] + b'\n')
+        out.buffer.flush()
         return True
     if name == 'drop':
         with lock:
@@ -1270,6 +1271,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     argv = sys.argv[1:]
+    if argv == ['--version']:
+        # As `opencode --version`: 1.x prints its version, 2.x `opencode v2.0.16` (switch `versionLine`).
+        print(switch('versionLine') or switch('version') or '1.19.3')
+        return
     new = not (ROOT / 'state.json').exists()
     load()
     modes['mcp'] = switch('mcp') or 'connected'
@@ -1299,6 +1304,10 @@ def main():
         seen['tool'] = tool.pid
     if switch('exit'):
         (ROOT / 'start.json').write_text(json.dumps(seen))
+        # What it says on stderr as it goes (switch `exitStderr`), as 2.x does for a flag it does not know.
+        if switch('exitStderr'):
+            sys.stderr.write(switch('exitStderr') + '\n')
+            sys.stderr.flush()
         sys.exit(3)
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True

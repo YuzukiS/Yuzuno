@@ -49,6 +49,21 @@ window.unmount=()=>root.render(null);`,
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
+/** `ready()`'s first truthy value, checked every 10 ms for at most 3 s: a wait for the state a step needs, where a
+ * count of ticks is only a guess at how long rendering takes (#548's CI 41920749507 rendered later than two). */
+async function until(ready, what) {
+  for (let tries = 0; tries < 300; tries++) {
+    const value = ready();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+/** The revert host's effects have run `times` times: each run sets the Workspace shown, then reads what Core keeps
+ * (`/rewind/attempt` without `?id=`). A Rewind clicked before them asks for a preview of a Workspace not yet shown,
+ * which the host drops when it comes, so the preview never opens. */
+const hostShown = (page, times = 1) =>
+  until(() => page.calls.filter((call) => call.url.endsWith("/rewind/attempt")).length >= times, "the revert host to be shown");
 const local = { id: "local", name: "Core host", kind: "local", defaultCwd: "/workspace" };
 const remote = { id: "mini", name: "Mac mini", kind: "ssh", target: "mac-mini", defaultCwd: "/Users/test/projects" };
 
@@ -365,8 +380,8 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     });
     page.window.renderTurn({ turn, index: 0, agent: { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" },
       onFile() {}, onRewindDraft(agent, text) { drafts.push([agent, text]); return true; } });
-    await tick();
-    button(page, "Rewind").click(); await tick(); await tick();
+    await hostShown(page);
+    button(page, "Rewind").click(); await until(() => button(page, "Revert"), "the preview");
     return { page, drafts };
   };
   const sent = (page, end) => page.calls.filter((call) => call.url.endsWith(end)).map((call) => call.body);
@@ -445,18 +460,23 @@ function revertPage(answer) {
     const route = pathname.match(/\/rewind\/(\w+)$/)?.[1];
     return route ? answer(route, new URLSearchParams(search)) : undefined;
   });
-  const show = (workspaceId, onRewindDraft) => page.window.renderTurn({ turn: fixTurn, index: 0, agent: ocAgent, workspaceId, onFile() {}, onRewindDraft });
-  return { page, show };
+  // Every show in these tests mounts the host anew or changes its Workspace, so each one reads once.
+  let shows = 0;
+  const show = (workspaceId, onRewindDraft) => {
+    shows++;
+    page.window.renderTurn({ turn: fixTurn, index: 0, agent: ocAgent, workspaceId, onFile() {}, onRewindDraft });
+  };
+  return { page, show, ready: () => hostShown(page, shows) };
 }
 
 test("a late answer is given to its own Workspace's draft, once that Workspace is shown again, never to another's", async () => {
   const confirm = later();
-  const { page, show } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
+  const { page, show, ready } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
     : route === "attempt" ? { attempt: query.get("id") === "revert_1" ? kept : null } : undefined);
   const first = [], second = [];
   try {
     show("ws-1", (agent, text) => { first.push([agent, text]); return true; }); await tick();
-    button(page, "Rewind").click(); await tick(); await tick();
+    await ready(); button(page, "Rewind").click(); await until(() => button(page, "Revert"), "the preview");
     button(page, "Revert").click(); await tick();
     // Another Workspace, with an Agent of the same ID, is shown while the answer is on its way.
     show("ws-2", (agent, text) => { second.push([agent, text]); return true; }); await tick();
@@ -471,14 +491,14 @@ test("a late answer is given to its own Workspace's draft, once that Workspace i
 });
 
 test("a text the draft did not take is not counted as given: it is offered again, then given once", async () => {
-  const { page, show } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? kept
+  const { page, show, ready } = revertPage((route, query) => route === "preview" ? shownPreview : route === "confirm" ? kept
     : route === "attempt" ? { attempt: query.get("id") === "revert_1" ? kept : null } : undefined);
   const tries = [];
   let takes = false;
   const draft = (agent, text) => { tries.push([agent, text]); return takes; };
   try {
     show("ws-1", draft); await tick();
-    button(page, "Rewind").click(); await tick(); await tick();
+    await ready(); button(page, "Rewind").click(); await until(() => button(page, "Revert"), "the preview");
     button(page, "Revert").click(); await tick(); await tick();
     assert.equal(tries.length, 1);
     assert.match(page.document.body.textContent, /The original text could not be added to the draft/, "said, not counted as given");
@@ -497,10 +517,10 @@ test("a text the draft did not take is not counted as given: it is offered again
 
 test("a read begun before the Agent's revert was opened does not undo it", async () => {
   const pending = later();
-  const { page, show } = revertPage((route) => route === "preview" ? shownPreview : route === "attempt" ? pending.promise : undefined);
+  const { page, show, ready } = revertPage((route) => route === "preview" ? shownPreview : route === "attempt" ? pending.promise : undefined);
   try {
     show("ws-1", () => true); await tick();
-    button(page, "Rewind").click(); await tick(); await tick();
+    await ready(); button(page, "Rewind").click(); await until(() => button(page, "Revert"), "the preview");
     assert.ok(button(page, "Revert"), "the preview is shown");
     pending.settle({ attempt: { attemptId: "revert_0", status: "unknown", draft: "", message: "old" } }); await tick(); await tick();
     assert.ok(button(page, "Revert"), "an older read does not take the preview's place");
@@ -512,16 +532,16 @@ test("a read begun before the Agent's revert was opened does not undo it", async
 test("a preview left for another Workspace leaves nothing waiting when its own is shown again", async () => {
   const first = later();
   let previews = 0;
-  const { page, show } = revertPage((route) => route === "preview" ? (++previews === 1 ? first.promise : shownPreview)
+  const { page, show, ready } = revertPage((route) => route === "preview" ? (++previews === 1 ? first.promise : shownPreview)
     : route === "attempt" ? { attempt: null } : undefined);
   try {
     show("ws-1", () => true); await tick();
-    button(page, "Rewind").click(); await tick();
+    await ready(); button(page, "Rewind").click(); await tick();
     show("ws-2", () => true); await tick();
     first.settle(shownPreview); await tick(); await tick();
     show("ws-1", () => true); await tick(); await tick();
     assert.doesNotMatch(page.document.body.textContent, /Reading OpenCode’s session/, "nothing left waiting");
-    button(page, "Rewind").click(); await tick(); await tick();
+    await ready(); button(page, "Rewind").click(); await until(() => button(page, "Revert"), "the preview");
     assert.ok(button(page, "Revert"), "a new preview is shown");
     assert.equal(previews, 2);
     assert.deepEqual(page.errors, []);
@@ -532,11 +552,11 @@ test("an answer taken is not undone by a read begun before it", async () => {
   const confirm = later();
   const read = later();
   let reads = 0;
-  const { page, show } = revertPage((route) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
+  const { page, show, ready } = revertPage((route) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
     : route === "attempt" ? (++reads === 1 ? { attempt: null } : read.promise) : undefined);
   try {
     show("ws-1", () => true); await tick();
-    button(page, "Rewind").click(); await tick(); await tick();
+    await ready(); button(page, "Rewind").click(); await until(() => button(page, "Revert"), "the preview");
     button(page, "Revert").click(); await tick();
     // Shown again while the confirm is on its way: a read of what Core keeps begins.
     page.window.unmount(); await tick();

@@ -168,6 +168,40 @@ async fn a_server_elsewhere_of_another_version_or_that_exits_early_is_refused_an
     }
 }
 
+/// A start that fails says why, as far as OpenCode says (T-32): its first
+/// lines on stderr, without their escape codes, and which OpenCode it is when
+/// `--version` names another. A supported one that says nothing adds nothing.
+#[tokio::test]
+async fn a_start_that_fails_says_what_opencode_said_and_which_one_it_is() {
+    // As 2.0.16 refuses `--mdns`: two lines on stderr, the first coloured, then it exits.
+    let refused = lab();
+    refused.switch("exit", "1");
+    refused.switch("exitStderr", "\u{1b}[31mERROR\u{1b}[0m\nUnrecognized flag: --mdns in command opencode serve");
+    refused.switch("versionLine", "opencode v2.0.16");
+    let error = Server::start(&refused.launch).await.err().expect("not started").to_string();
+    assert_eq!(error, "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.0.16\u{201d}; \
+        Yuzuno speaks the server protocol of OpenCode 1.19.3): ERROR / Unrecognized flag: --mdns in command opencode serve",
+        "says what it said and which OpenCode it is");
+    let (pid, child) = refused.pids();
+    assert!(ends(pid).await && ends(child).await, "what it started has ended");
+
+    // The supported version, gone without a word: nothing more to say.
+    let quiet = lab();
+    quiet.switch("exit", "1");
+    let error = Server::start(&quiet.launch).await.err().expect("not started").to_string();
+    assert_eq!(error, "OpenCode exited before it was listening");
+}
+
+#[tokio::test]
+async fn output_on_stderr_never_blocks_the_server() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    // More than a pipe holds, on stderr: written only while Core keeps draining it.
+    assert_eq!(lab.control("print", json!({"bytes": 1 << 20, "stderr": true})).await, true);
+    session(&server).await;
+    server.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
     let lab = lab();
