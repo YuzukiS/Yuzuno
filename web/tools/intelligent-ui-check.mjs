@@ -120,7 +120,8 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
 page.on("pageerror", (error) => report.errors.push(error.message));
-await page.addInitScript(() => {
+// The init script runs in the page: the Workspace is handed to it.
+await page.addInitScript((workspace) => {
   window.EventSource = class {
     constructor() {
       window.testEvents = this;
@@ -133,16 +134,16 @@ await page.addInitScript(() => {
       JSON.stringify({ theme: "light", fontSize: 20, palette: "garden" }),
     );
   // A draft is saved under the Workspace and the Agent it was written in
-  // (T-195); this fixture's /api/workspace says WORKSPACE.
+  // (T-195); this fixture's /api/workspace names WORKSPACE.
   for (const [agent, text] of [["a", "保留这段原草稿。"], ["b", "Hana's own draft."]]) {
-    const key = `yuzuno.composer.v1:${JSON.stringify([WORKSPACE, agent])}`;
+    const key = `yuzuno.composer.v1:${JSON.stringify([workspace, agent])}`;
     if (!localStorage.getItem(key))
       localStorage.setItem(
         key,
         JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] }),
       );
   }
-});
+}, WORKSPACE);
 await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
@@ -596,7 +597,7 @@ try {
   assert.ok(afterPressure.startsWith(storageDraft + "\n\n"));
   // Saved where the composer keeps drafts since T-33, paste blocks included,
   // under the Workspace and the Agent it was written in (T-195); this
-  // fixture's /api/workspace says WORKSPACE.
+  // fixture's /api/workspace names WORKSPACE.
   const mine = JSON.stringify([WORKSPACE, "a"]);
   await page.waitForFunction(({ text, identity }) => {
     const saved = localStorage.getItem("yuzuno.composer.v1:" + identity);

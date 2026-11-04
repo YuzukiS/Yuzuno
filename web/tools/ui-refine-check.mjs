@@ -810,9 +810,8 @@ try {
   );
   assert.equal((await pinState()).pinned, false, "Reading an earlier turn");
   assert.equal(await draftOf(), "保留还未发送的草稿");
-  await page
-    .getByRole("button", { name: "Back to latest", exact: true })
-    .click();
+  // The pill; the bar over the conversation since the jump has a Back to latest of its own.
+  await page.locator(".jump-latest").click();
   await page.waitForFunction(() => {
     const el = document.querySelector(".conversation-scroll");
     return el.scrollHeight - el.scrollTop - el.clientHeight < 8;

@@ -291,10 +291,12 @@ try {
       phase: "commentary",
       text: `New execution progress ${liveId}. ${filler}`,
     });
+    // The update arrives while an earlier Turn is read. The latest Turn is not mounted that far away
+    // (T-77's window), so the conversation's read after it is its arrival; then two frames to draw.
+    const reread = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/agents/a");
     emit();
-    await page
-      .locator(`[data-item-id="${liveId}"]`)
-      .waitFor({ state: "attached" });
+    await reread;
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
     assert.ok(
       Math.abs((await conversation.evaluate((el) => el.scrollTop)) - before) <=
         1,

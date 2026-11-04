@@ -138,29 +138,14 @@ const saved = async (id = "a") =>
       .join("");
   }, await identityOf(id));
 async function settled(expected, id = "a") {
-  // The key is looked up inside the waited function: this Agent's draft may
-  // not be saved yet when the wait begins (T-195). Spelled out here rather
-  // than passed in, so nothing depends on the page allowing new Function.
+  // This Agent's draft in the connection fixture's Workspace (T-195), read
+  // inside the waited function: it may not be saved yet when the wait begins.
+  // Spelled out here rather than passed in, so nothing depends on the page
+  // allowing new Function.
   await page.waitForFunction(
-    ({ expected, id }) => {
-      const prefix = "yuzuno.composer.v1:";
-      let identity = null;
-      for (let index = 0; index < localStorage.length; index++) {
-        const key = localStorage.key(index);
-        if (!key || !key.startsWith(prefix)) continue;
-        let parsed;
-        try {
-          parsed = JSON.parse(key.slice(prefix.length));
-        } catch {
-          continue;
-        }
-        if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === id) {
-          identity = key.slice(prefix.length);
-          break;
-        }
-      }
+    ({ expected, identity }) => {
       const draft = JSON.parse(
-        (identity && localStorage.getItem("yuzuno.composer.v1:" + identity)) || '{"parts":[]}',
+        localStorage.getItem("yuzuno.composer.v1:" + identity) || '{"parts":[]}',
       );
       return (
         draft.parts
@@ -172,7 +157,7 @@ async function settled(expected, id = "a") {
           .join("") === expected
       );
     },
-    { expected, id },
+    { expected, identity: JSON.stringify([FIXTURE_WORKSPACE, id]) },
   );
 }
 async function paste(text, native = false) {
@@ -366,7 +351,9 @@ try {
           await other.goto(base);
           const field = other.locator("[data-composer-input]");
           await other.locator(".pasted-text-chip").waitFor();
-          if (action === "send") await input().press("Enter");
+          // Ctrl+Enter sends on any keyboard; on a touch screen (this context has touch) Return alone
+          // starts a new line by default (the device's send key, "auto").
+          if (action === "send") await input().press("Control+Enter");
           else {
             await chips().first().click();
             await page.getByRole("button", { name: "Remove block" }).click();
@@ -533,7 +520,7 @@ try {
         await page.evaluate(() => {
           pasteFixture.failNext = true;
         });
-        await input().press("Enter");
+        await input().press("Control+Enter");
         await page
           .getByText("Fixture response lost", { exact: false })
           .first()
@@ -555,7 +542,7 @@ try {
           await page.evaluate(() => pasteFixture.outboxReads),
           reads,
         );
-        await input().press("Enter");
+        await input().press("Control+Enter");
         await settled("", id);
         const retry = await page.evaluate(() => pasteFixture.sent.at(-1));
         assert.equal(first.input.text, expected);
@@ -580,7 +567,7 @@ try {
         await paste(oversized);
         await settled(oversized, id);
         const beforeIds = await ids();
-        await input().press("Enter");
+        await input().press("Control+Enter");
         await page
           .getByText("Fixture limit: 100,000 UTF-8 bytes", { exact: false })
           .first()

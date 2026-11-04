@@ -254,7 +254,9 @@ async function fixture() {
         path: resolve(output, `${theme}-${width}-context.png`),
         animations: "disabled",
       });
-      await page.keyboard.press("Escape");
+      // Escape closes the context card. With none open (a phone), it would reach the composer of a
+      // working Agent, where it interrupts the Turn.
+      if (!phone) await page.keyboard.press("Escape");
       await page
         .getByRole("button", { name: "Agent settings", exact: true })
         .click();
