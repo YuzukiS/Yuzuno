@@ -268,6 +268,9 @@ fn inside(file: &str, worktree: &str, folder: &str) -> Result<String> {
     ensure!(file.starts_with('/') && join(file, &[]) == file.trim_end_matches('/') && !file.ends_with('/'),
         "{file} is not a plain absolute path");
     ensure!(file.starts_with(&format!("{folder}/")), "{file} is outside the Agent's folder");
+    // OpenCode checks the file out by its path as a Git pathspec (`snapshot/index.ts:427,496`), where these are
+    // patterns: it could restore files of other names too, which Core neither lists nor backs up (Lead 4036).
+    ensure!(!file.contains(['*', '?', '[', '\\']), "{file} has a character Git reads as a pattern (* ? [ \\): OpenCode could restore more than this file");
     Ok(file[worktree.len() + 1..].to_owned())
 }
 
@@ -387,34 +390,94 @@ pub async fn expected(store: &Path, hash: &str, rel: &str, bounds: Bounds) -> Re
     Ok(State::File { size, sha256: sha256(&bytes), executable })
 }
 
-/// What is at `file` now, no symlink followed (the file itself, and every
-/// folder from `folder` down to it): nothing, a regular file and its bytes,
-/// or a refusal.
-pub fn current(file: &Path, folder: &Path, bounds: Bounds) -> Result<(State, Option<Vec<u8>>)> {
-    use std::os::unix::fs::PermissionsExt;
+/// The Agent's folder, held by what it is (device and inode), not by its
+/// path: every read of a file below it starts from it, and stops if it is
+/// no longer that folder (Lead 4036).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Root {
+    pub dev: u64,
+    pub ino: u64,
+}
+
+impl Root {
+    /// `folder` as it is now: a folder, itself no symlink.
+    pub fn of(folder: &Path) -> Result<Self> {
+        let fd = open_root(folder)?;
+        let stat = rustix::fs::fstat(&fd)?;
+        Ok(Self { dev: stat.st_dev as u64, ino: stat.st_ino as u64 })
+    }
+}
+
+fn open_root(folder: &Path) -> Result<rustix::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags};
+    rustix::fs::open(folder, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+        .with_context(|| format!("The Agent's folder {} cannot be opened as a folder", folder.display()))
+}
+
+/// What is at `file` now: nothing, or a regular file and its bytes; anything
+/// else refuses. It is reached from `folder`, which must still be `root`, one
+/// component at a time, each opened from the one before and never through a
+/// symlink; its kind is checked before it is opened, so a FIFO or a device is
+/// never opened. Its bytes are read from that open file, at most `bounds.file`
+/// of them, and it must not have changed while they were read. A folder that
+/// is gone, or no longer `root`, refuses: it never reads as nothing there.
+pub fn current(file: &Path, folder: &Path, root: Root, bounds: Bounds) -> Result<(State, Option<Vec<u8>>)> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    use rustix::io::Errno;
     let below = file.strip_prefix(folder).with_context(|| format!("{} is outside the Agent's folder", file.display()))?;
+    let names: Vec<&OsStr> = below
+        .components()
+        .map(|part| match part {
+            std::path::Component::Normal(name) => Ok(name),
+            _ => bail!("{} is not a plain path", file.display()),
+        })
+        .collect::<Result<_>>()?;
+    ensure!(!names.is_empty(), "{} is the Agent's folder itself", file.display());
+    let mut dir = open_root(folder)?;
+    ensure!(Root::of_fd(&dir)? == root, "The Agent's folder {} is no longer the folder it was", folder.display());
     let mut at = folder.to_path_buf();
-    let mut parts = below.components().peekable();
-    while let Some(part) = parts.next() {
-        at.push(part);
-        let metadata = match std::fs::symlink_metadata(&at) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((State::Absent, None)),
+    for (index, name) in names.iter().enumerate() {
+        at.push(name);
+        let stat = match rustix::fs::statat(&dir, *name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(Errno::NOENT) => return Ok((State::Absent, None)),
             Err(error) => return Err(error).with_context(|| format!("{} cannot be read", at.display())),
         };
-        ensure!(!metadata.file_type().is_symlink(), "{} is a symlink", at.display());
-        if parts.peek().is_some() {
-            ensure!(metadata.is_dir(), "{} is not a folder", at.display());
+        let kind = FileType::from_raw_mode(stat.st_mode);
+        ensure!(kind != FileType::Symlink, "{} is a symlink", at.display());
+        if index + 1 < names.len() {
+            ensure!(kind == FileType::Directory, "{} is not a folder", at.display());
+            let next = rustix::fs::openat(&dir, *name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+                .with_context(|| format!("{} cannot be opened as a folder", at.display()))?;
+            ensure!(Root::of_fd(&next)? == (Root { dev: stat.st_dev as u64, ino: stat.st_ino as u64 }), "{} changed while it was read", at.display());
+            dir = next;
             continue;
         }
-        ensure!(metadata.is_file(), "{} is not a regular file", at.display());
-        ensure!(metadata.len() <= bounds.file, "{} is {} bytes, more than {} for Core to keep", at.display(), metadata.len(), bounds.file);
-        let bytes = std::fs::read(&at).with_context(|| format!("{} cannot be read", at.display()))?;
-        ensure!(bytes.len() as u64 == metadata.len(), "{} changed while it was read", at.display());
-        let executable = metadata.permissions().mode() & 0o100 != 0;
+        ensure!(kind == FileType::RegularFile, "{} is not a regular file", at.display());
+        ensure!(stat.st_size as u64 <= bounds.file, "{} is {} bytes, more than {} for Core to keep", at.display(), stat.st_size, bounds.file);
+        let opened = rustix::fs::openat(&dir, *name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC, Mode::empty())
+            .with_context(|| format!("{} cannot be opened", at.display()))?;
+        let before = rustix::fs::fstat(&opened)?;
+        let mut handle = std::fs::File::from(opened);
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(&mut handle, bounds.file + 1), &mut bytes)
+            .with_context(|| format!("{} cannot be read", at.display()))?;
+        let after = rustix::fs::fstat(&handle)?;
+        ensure!(bytes.len() as u64 <= bounds.file, "{} grew past {} bytes while it was read", at.display(), bounds.file);
+        let same = |a: &rustix::fs::Stat| (a.st_dev as u64, a.st_ino as u64, a.st_size as u64, a.st_mtime as i64, a.st_mtime_nsec as i64, a.st_mode);
+        ensure!(same(&before) == same(&stat) && same(&after) == same(&stat) && bytes.len() as u64 == stat.st_size as u64,
+            "{} changed while it was read", at.display());
+        let executable = stat.st_mode & 0o100 != 0;
         return Ok((State::File { size: bytes.len() as u64, sha256: sha256(&bytes), executable }, Some(bytes)));
     }
-    bail!("{} is the Agent's folder itself", file.display())
+    unreachable!("the last name returned")
+}
+
+impl Root {
+    fn of_fd(fd: &rustix::fd::OwnedFd) -> Result<Self> {
+        let stat = rustix::fs::fstat(fd)?;
+        Ok(Self { dev: stat.st_dev as u64, ino: stat.st_ino as u64 })
+    }
 }
 
 /// One file a revert sends back: what it should become, and what it is.
@@ -429,13 +492,13 @@ pub struct Entry {
 
 /// Every file a revert sends back, each known, within `bounds`; with the
 /// bytes of each file there now, for the backup.
-pub async fn plan(store: &Path, targets: &[Target], folder: &Path, bounds: Bounds) -> Result<(Vec<Entry>, Vec<Option<Vec<u8>>>)> {
+pub async fn plan(store: &Path, targets: &[Target], folder: &Path, root: Root, bounds: Bounds) -> Result<(Vec<Entry>, Vec<Option<Vec<u8>>>)> {
     ensure!(targets.len() <= bounds.paths, "The revert sends back {} files, more than {} for Core to check", targets.len(), bounds.paths);
     check_store(store)?;
     let (mut entries, mut kept, mut total) = (Vec::new(), Vec::new(), 0u64);
     for target in targets {
         let expected = expected(store, &target.hash, &target.rel, bounds).await?;
-        let (current, bytes) = current(Path::new(&target.file), folder, bounds)?;
+        let (current, bytes) = current(Path::new(&target.file), folder, root, bounds)?;
         total += expected.bytes() + current.bytes();
         ensure!(total <= bounds.total, "The revert's files hold more than {} bytes for Core to check", bounds.total);
         entries.push(Entry { target: target.clone(), expected, current });
@@ -455,18 +518,25 @@ pub struct Backup {
 
 /// The bytes of each file before the revert, in `dir` (new): each is read
 /// again and must still be what `entries` say, else nothing is kept and the
-/// revert must not be asked. The list is written last.
-pub fn backup(dir: &Path, entries: &[Entry], folder: &Path, bounds: Bounds) -> Result<Backup> {
-    std::fs::create_dir_all(dir.parent().context("The backup has no parent folder")?)?;
+/// revert must not be asked. Each copy is on disk (synced) before the list,
+/// which is written last and synced with its folder; the folder's own entry
+/// is synced too. Any failure means no backup, so no revert.
+pub fn backup(dir: &Path, entries: &[Entry], folder: &Path, root: Root, bounds: Bounds) -> Result<Backup> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = dir.parent().context("The backup has no parent folder")?;
+    std::fs::create_dir_all(parent)?;
     std::fs::create_dir(dir).with_context(|| format!("{} cannot be made for the backup", dir.display()))?;
     let mut files = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        let (now, bytes) = current(Path::new(&entry.target.file), folder, bounds)?;
+        let (now, bytes) = current(Path::new(&entry.target.file), folder, root, bounds)?;
         ensure!(now == entry.current, "{} has changed since it was checked", entry.target.file);
         files.push(match bytes {
             Some(bytes) => {
                 let name = format!("{index}.bin");
-                std::fs::write(dir.join(&name), &bytes)?;
+                let mut copy = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(dir.join(&name))?;
+                copy.write_all(&bytes)?;
+                copy.sync_all()?;
                 Some(name)
             }
             None => None,
@@ -474,6 +544,7 @@ pub fn backup(dir: &Path, entries: &[Entry], folder: &Path, bounds: Bounds) -> R
     }
     let kept = Backup { entries: entries.to_vec(), files };
     crate::updates::package::atomic_json(&dir.join("backup.json"), &kept)?;
+    std::fs::File::open(parent)?.sync_all()?;
     Ok(kept)
 }
 
@@ -490,10 +561,10 @@ pub enum Outcome {
 }
 
 /// Each file as it is now, against what it should be and what it was.
-pub fn outcomes(entries: &[Entry], folder: &Path, bounds: Bounds) -> Vec<Outcome> {
+pub fn outcomes(entries: &[Entry], folder: &Path, root: Root, bounds: Bounds) -> Vec<Outcome> {
     entries
         .iter()
-        .map(|entry| match current(Path::new(&entry.target.file), folder, bounds) {
+        .map(|entry| match current(Path::new(&entry.target.file), folder, root, bounds) {
             Ok((now, _)) if now == entry.expected => Outcome::Verified,
             Ok((now, _)) if now == entry.current => Outcome::NotRestored,
             Ok((now, _)) => Outcome::Drifted { now: Some(now), why: None },

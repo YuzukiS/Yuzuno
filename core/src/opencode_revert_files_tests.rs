@@ -130,6 +130,10 @@ fn a_revert_sends_back_each_file_of_a_later_patch_to_its_first_patchs_snapshot()
         (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/other/x"])]))], "u1", "outside the Agent's folder"),
         (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/../other"])]))], "u1", "not a plain absolute path"),
         (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch("HEAD", &["/w/f/a"])]))], "u1", "not an object ID"),
+        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x*"])]))], "u1", "a character Git reads as a pattern"),
+        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x?"])]))], "u1", "a character Git reads as a pattern"),
+        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/[ab]"])]))], "u1", "a character Git reads as a pattern"),
+        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x\\y"])]))], "u1", "a character Git reads as a pattern"),
     ] {
         let error = targets(&messages, boundary, "/w", "/w/f").unwrap_err().to_string();
         assert!(error.contains(said), "{boundary}: {error}");
@@ -188,18 +192,41 @@ fn what_is_there_now_follows_no_symlink_and_is_a_regular_file_or_nothing() {
     fs::write(work.join("dir/inner.txt"), "i").unwrap();
     std::os::unix::fs::symlink("a.txt", work.join("ln")).unwrap();
     std::os::unix::fs::symlink("dir", work.join("sd")).unwrap();
+    let made = std::process::Command::new("mkfifo").arg(work.join("fifo")).status().unwrap();
+    assert!(made.success());
+    let root = Root::of(&work).unwrap();
 
-    let state = |rel: &str| current(&work.join(rel), &work, BOUNDS).map(|(state, _)| state);
-    assert_eq!(current(&work.join("a.txt"), &work, BOUNDS).unwrap(), (file(b"a1", false), Some(b"a1".to_vec())));
+    let state = |rel: &str| current(&work.join(rel), &work, root, BOUNDS).map(|(state, _)| state);
+    assert_eq!(current(&work.join("a.txt"), &work, root, BOUNDS).unwrap(), (file(b"a1", false), Some(b"a1".to_vec())));
     assert_eq!(state("exe").unwrap(), file(b"x", true));
     assert_eq!(state("missing").unwrap(), State::Absent);
     assert_eq!(state("missing/x").unwrap(), State::Absent);
-    for (rel, said) in [("ln", "is a symlink"), ("sd/inner.txt", "is a symlink"), ("dir", "is not a regular file"), ("a.txt/x", "is not a folder")] {
+    for (rel, said) in [
+        ("ln", "is a symlink"),
+        ("sd/inner.txt", "is a symlink"),
+        ("dir", "is not a regular file"),
+        ("a.txt/x", "is not a folder"),
+        ("fifo", "is not a regular file"),
+    ] {
         let error = state(rel).unwrap_err().to_string();
         assert!(error.contains(said), "{rel}: {error}");
     }
-    assert!(current(Path::new("/elsewhere/a"), &work, BOUNDS).is_err(), "outside the Agent's folder");
-    assert!(current(&work.join("a.txt"), &work, Bounds { file: 1, ..BOUNDS }).is_err(), "past the bound");
+    assert!(current(Path::new("/elsewhere/a"), &work, root, BOUNDS).is_err(), "outside the Agent's folder");
+    let error = current(&work.join("a.txt"), &work, root, Bounds { file: 1, ..BOUNDS }).unwrap_err().to_string();
+    assert!(error.contains("more than 1 for Core to keep"), "past the bound: {error}");
+
+    // The folder itself: another one in its place, a symlink to it, or none at all never reads as nothing there.
+    let other = tempfile::tempdir().unwrap();
+    let elsewhere = Root::of(other.path()).unwrap();
+    let error = format!("{:#}", current(&work.join("missing"), &work, elsewhere, BOUNDS).unwrap_err());
+    assert!(error.contains("no longer the folder it was"), "{error}");
+    let linked = other.path().join("linked");
+    std::os::unix::fs::symlink(&work, &linked).unwrap();
+    let error = format!("{:#}", current(&linked.join("missing"), &linked, root, BOUNDS).unwrap_err());
+    assert!(error.contains("cannot be opened as a folder"), "{error}");
+    let gone = other.path().join("gone");
+    let error = format!("{:#}", current(&gone.join("missing"), &gone, root, BOUNDS).unwrap_err());
+    assert!(error.contains("cannot be opened as a folder"), "{error}");
 }
 
 #[tokio::test]
@@ -220,7 +247,8 @@ async fn a_plan_is_bounded_its_backup_is_what_was_checked_and_each_file_is_judge
         .map(|rel| Target { file: work.join(rel).to_string_lossy().into_owned(), rel: (*rel).into(), hash: hash.clone() })
         .collect();
 
-    let (entries, kept) = plan(&store, &targets, &work, BOUNDS).await.unwrap();
+    let root_id = Root::of(&work).unwrap();
+    let (entries, kept) = plan(&store, &targets, &work, root_id, BOUNDS).await.unwrap();
     assert_eq!(entries.iter().map(|e| (&e.expected, &e.current)).collect::<Vec<_>>(), vec![
         (&file(b"a0", false), &file(b"a1", false)),
         (&file(b"b0", false), &file(b"b1", false)),
@@ -228,31 +256,31 @@ async fn a_plan_is_bounded_its_backup_is_what_was_checked_and_each_file_is_judge
     ]);
     assert_eq!(kept, vec![Some(b"a1".to_vec()), Some(b"b1".to_vec()), Some(b"n1".to_vec())]);
     for (bounds, said) in [(Bounds { paths: 2, ..BOUNDS }, "more than 2 for Core to check"), (Bounds { total: 5, ..BOUNDS }, "more than 5 bytes")] {
-        let error = plan(&store, &targets, &work, bounds).await.unwrap_err().to_string();
+        let error = plan(&store, &targets, &work, root_id, bounds).await.unwrap_err().to_string();
         assert!(error.contains(said), "{error}");
     }
 
-    let kept = backup(&root.join("attempt/files"), &entries, &work, BOUNDS).unwrap();
+    let kept = backup(&root.join("attempt/files"), &entries, &work, root_id, BOUNDS).unwrap();
     assert_eq!(fs::read(root.join("attempt/files").join(kept.files[0].as_ref().unwrap())).unwrap(), b"a1");
     let listed: Backup = serde_json::from_slice(&fs::read(root.join("attempt/files/backup.json")).unwrap()).unwrap();
     assert_eq!(listed, kept, "its list, written last");
-    assert!(backup(&root.join("attempt/files"), &entries, &work, BOUNDS).is_err(), "never into a backup already there");
+    assert!(backup(&root.join("attempt/files"), &entries, &work, root_id, BOUNDS).is_err(), "never into a backup already there");
     fs::write(work.join("b.txt"), "changed").unwrap();
-    let error = backup(&root.join("again"), &entries, &work, BOUNDS).unwrap_err().to_string();
+    let error = backup(&root.join("again"), &entries, &work, root_id, BOUNDS).unwrap_err().to_string();
     assert!(error.contains("has changed since it was checked"), "{error}");
     fs::write(work.join("b.txt"), "b1").unwrap();
 
     // After the revert: a.txt back as the snapshot holds it, b.txt left as a failed checkout leaves it, new.txt neither.
     fs::write(work.join("a.txt"), "a0").unwrap();
     fs::write(work.join("new.txt"), "other").unwrap();
-    assert_eq!(outcomes(&entries, &work, BOUNDS), vec![
+    assert_eq!(outcomes(&entries, &work, root_id, BOUNDS), vec![
         Outcome::Verified,
         Outcome::NotRestored,
         Outcome::Drifted { now: Some(file(b"other", false)), why: None },
     ]);
     fs::remove_file(work.join("new.txt")).unwrap();
     fs::set_permissions(work.join("a.txt"), fs::Permissions::from_mode(0o755)).unwrap();
-    let after = outcomes(&entries, &work, BOUNDS);
+    let after = outcomes(&entries, &work, root_id, BOUNDS);
     assert_eq!(after[2], Outcome::Verified, "deleted, as the snapshot did not hold it");
     assert!(matches!(after[0], Outcome::Drifted { .. }), "the same bytes, but executable: not what the snapshot holds");
 }
@@ -287,4 +315,28 @@ fn only_a_native_executable_is_a_launcher_whose_environment_is_known() {
 
     fs::write(&elf, b"\x7fELF\x02\x01\x01\0rest and more").unwrap();
     assert!(launcher.check().unwrap_err().to_string().contains("has changed since"));
+}
+
+#[test]
+fn opencodes_checkout_reads_a_path_as_a_pattern_so_such_a_path_is_refused() {
+    // As `Snapshot.revert` checks a file out (`git checkout <hash> -- <absolute file>`): "x*" brings "xa" back too,
+    // a file no patch named, which Core would neither list nor back up.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (work, store) = (root.join("work"), root.join("store"));
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("x*"), "s0").unwrap();
+    fs::write(work.join("xa"), "a0").unwrap();
+    let hash = track(&store, &work);
+    fs::write(work.join("x*"), "s1").unwrap();
+    fs::write(work.join("xa"), "a1").unwrap();
+    let pattern = work.join("x*");
+    run(&store, &work, &["checkout", hash.as_str(), "--", pattern.to_str().unwrap()]);
+    assert_eq!(fs::read_to_string(work.join("xa")).unwrap(), "a0", "Git matched xa by the pattern x*");
+    let messages = vec![
+        json!({"info": {"id": "u1", "role": "user"}, "parts": [{"id": "t", "type": "text", "text": "x"}]}),
+        json!({"info": {"id": "a1", "role": "assistant"}, "parts": [{"id": "p", "type": "patch", "hash": hash, "files": [work.join("x*")]}]}),
+    ];
+    let error = targets(&messages, "u1", root.to_str().unwrap(), work.to_str().unwrap()).unwrap_err().to_string();
+    assert!(error.contains("a character Git reads as a pattern"), "{error}");
 }
