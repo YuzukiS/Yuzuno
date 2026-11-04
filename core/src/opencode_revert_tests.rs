@@ -288,7 +288,7 @@ async fn a_revert_whose_outcome_is_unknown_holds_back_every_new_input_and_is_nev
     }
     assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap()["status"], "unknown");
     assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["status"], "unknown",
-        "a request with no answer stays unknown whatever a later read finds");
+        "a request with no answer and no revert held stays unknown");
     assert_eq!(reverts(&data), 1, "never asked again");
     assert_eq!(turn_ids(&ws), vec![first], "nothing removed");
     assert_eq!(reverts(&data), 1, "reading it asks nothing");
@@ -456,6 +456,88 @@ async fn a_folder_written_through_a_link_is_the_agents_own_and_another_folder_is
     ws.close_agent("oc").await.unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_confirm_core_stopped_before_its_request_went_out_fails_when_checked_and_asks_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    *STOP.lock().unwrap() = Some((key.clone(), Stop::BeforeSent));
+    ws.opencode_revert_confirm("oc", &key).await.expect_err("the confirm ends where Core stopped");
+    let kept = ws.store.rewind_attempt("oc", Some(&key)).unwrap().unwrap();
+    assert_eq!((kept.state.as_str(), Plan::of(&kept).unwrap().sent), ("sending", false), "kept as Core had it");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
+    let checked = ws.rewind_check("oc", &key).await.unwrap();
+    assert_eq!(checked["status"], "failed", "never sent, so failed when checked: {checked}");
+    assert!(checked["message"].as_str().unwrap().contains("没有被请求"), "{checked}");
+    assert_eq!(checked["draft"], "", "no text back");
+    assert_eq!(reverts(&data), 0, "nothing asked");
+    assert_eq!(turn_ids(&ws), vec![first, second]);
+    ws.ensure_rewind_settled("oc").await.expect("the Agent is not held back");
+    turn(&ws, &data, "next", json!({})).await;
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_confirm_core_stopped_after_its_request_went_out_is_reverted_once_the_session_holds_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    *STOP.lock().unwrap() = Some((key.clone(), Stop::AfterSent));
+    ws.opencode_revert_confirm("oc", &key).await.expect_err("the confirm ends where Core stopped");
+    // OpenCode reverted; Core kept no answer.
+    let kept = ws.store.rewind_attempt("oc", Some(&key)).unwrap().unwrap();
+    assert_eq!((kept.state.as_str(), Plan::of(&kept).unwrap().sent), ("sending", true), "kept as Core had it");
+    assert_eq!(reverts(&data), 1, "asked once");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
+    let checked = ws.rewind_check("oc", &key).await.unwrap();
+    assert_eq!((&checked["status"], &checked["draft"]), (&json!("completed"), &json!("second")),
+        "reverted when the session holds it: {checked}");
+    assert_eq!(turn_ids(&ws), vec![first]);
+    ws.ensure_rewind_settled("oc").await.expect("the Agent is not held back");
+    assert_eq!(ws.rewind_check("oc", &key).await.unwrap(), checked, "checked once more, it stays as it was settled");
+    assert_eq!(reverts(&data), 1, "never asked again");
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_request_with_no_answer_kept_and_no_revert_held_stays_unknown_when_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    // OpenCode does nothing of it (a 500), and Core keeps no answer: nothing tells whether it changed files.
+    control(&data, "mode", json!({"revert": "error"})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    *STOP.lock().unwrap() = Some((key.clone(), Stop::AfterSent));
+    ws.opencode_revert_confirm("oc", &key).await.expect_err("the confirm ends where Core stopped");
+    let checked = ws.rewind_check("oc", &key).await.unwrap();
+    assert_eq!(checked["status"], "unknown", "a request with no answer kept and no revert held stays unknown: {checked}");
+    assert!(checked["message"].as_str().unwrap().contains("无从得知"), "{checked}");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
+    assert_eq!(reverts(&data), 1, "never asked again");
+    assert_eq!(turn_ids(&ws), vec![first, second], "nothing removed");
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// A lab whose stand-in keeps its snapshots in this test's own data folder
 /// (as OpenCode would with that XDG_DATA_HOME), with `a.txt` changed by its
 /// first Turn's patch from `a0` to `a1`, and a Started injected as if Core
@@ -590,9 +672,12 @@ async fn a_400_that_may_come_after_the_revert_ran_says_nothing_of_what_it_did() 
     assert_eq!(outcome["status"], "unknown", "a 400 that may come after the revert ran says nothing of what it did: {outcome}");
     assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
     assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap()["status"], "unknown");
-    assert_eq!(ws.rewind_check("oc", &key).await.unwrap()["status"], "unknown");
+    assert_eq!(turn_ids(&ws), vec![first.clone(), second], "nothing removed while unknown");
+    // Checked: the session holds this revert, which OpenCode keeps only once its files are sent back (R4 of #534).
+    let checked = ws.rewind_check("oc", &key).await.unwrap();
+    assert_eq!((&checked["status"], &checked["draft"]), (&json!("completed"), &json!("second")), "{checked}");
     assert_eq!(reverts(&data), 1, "never asked again");
-    assert_eq!(turn_ids(&ws), vec![first, second], "nothing removed while unknown");
+    assert_eq!(turn_ids(&ws), vec![first]);
     ws.close_agent("oc").await.unwrap();
 }
 
