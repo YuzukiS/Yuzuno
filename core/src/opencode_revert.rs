@@ -56,6 +56,9 @@ pub(crate) fn expire_previews() -> usize {
 /// What a confirm checked before it asked, kept with its attempt: what any
 /// later read is held to (Lead 4109). `ended`, once the one request was
 /// answered whole for this session: OpenCode's handler had ended then.
+/// `held`, when that answer showed the session holding this revert: all that
+/// is left then is to record it. `sent`, kept just before the one request goes
+/// out: until then OpenCode was never asked (R4 of #534).
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Plan {
@@ -68,6 +71,10 @@ pub(super) struct Plan {
     pub turns: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
 }
 
 impl Plan {
@@ -92,6 +99,25 @@ async fn hold_answered(attempt: &str) {
     }
 }
 
+/// Tests only: the attempt whose next record write fails, once.
+#[cfg(test)]
+static FAIL_RECORD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Tests only: where one attempt's confirm ends as if Core had stopped
+/// there, once, leaving it as Core had kept it.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq)]
+enum Stop {
+    BeforeSent,
+    AfterSent,
+}
+#[cfg(test)]
+static STOP: std::sync::Mutex<Option<(String, Stop)>> = std::sync::Mutex::new(None);
+#[cfg(test)]
+fn stop_at(attempt: &str, at: Stop) -> bool {
+    STOP.lock().unwrap().take_if(|stop| stop.0 == attempt && stop.1 == at).is_some()
+}
+
 /// What `rx` gives within `within`: its answer, or none once it is closed
 /// (Lead 4124). An answer sent before the close is taken here, even one sent
 /// as the watch ended; a send after it fails, so its sender keeps the answer
@@ -111,7 +137,7 @@ pub(super) struct Read {
     pub generation: u64,
     pub session: String,
     pub messages: String,
-    /// The Agent's folder.
+    /// The Agent's folder, resolved.
     pub folder: String,
     /// The session's messages from the Turn's own on, as read: what leaves.
     pub leaving: Vec<Value>,
@@ -177,9 +203,13 @@ impl Workspace {
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有预览回退");
         let messages = c.server.messages(&c.session).await.context(unread)?;
         let list = messages.as_array().context(unread)?;
-        let folder = d.agent.cwd.clone();
+        // The same folder however it is written (a link to it, a trailing
+        // slash): OpenCode answers with its own resolved one (R3 of #534).
+        let folder = std::fs::canonicalize(&d.agent.cwd).context("这个 Agent 的目录无法读取；没有预览回退")?
+            .to_str().context("这个 Agent 的目录不是 UTF-8；没有预览回退")?.to_owned();
         let path = c.server.path().await.context(unread)?;
-        ensure!(path["directory"] == folder.as_str(), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
+        let directory = path["directory"].as_str().and_then(|d| std::fs::canonicalize(d).ok());
+        ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
         let worktree = path["worktree"].as_str().context("OpenCode 没有说它的 worktree；没有预览回退")?.to_owned();
         let project = c.server.project().await.context(unread)?;
         let project = project["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
@@ -265,8 +295,8 @@ impl Workspace {
             Ok((ids[..at].to_vec(), ids[at..].to_vec(), s.archive(&agent, &ids[at..], room)?))
         }).await?;
         let local = local.context("要回退的内容超出可以留存的大小；没有回退")?;
-        let plan = Plan { generation: read.generation, messages: read.messages.clone(), entries: read.entries.clone(), root: read.root,
-            folder: read.folder.clone(), turns: leaving, ended: None };
+        let mut plan = Plan { generation: read.generation, messages: read.messages.clone(), entries: read.entries.clone(), root: read.root,
+            folder: read.folder.clone(), turns: leaving, ended: None, held: false, sent: false };
         let mut attempt = Attempt {
             id: key.into(), agent: id.into(), thread: read.session.clone(), target: p.turn.clone(), kept,
             draft: read.draft.clone(), state: "sending".into(), message: None, files: None, opencode: Some(serde_json::to_value(&plan)?),
@@ -289,6 +319,22 @@ impl Workspace {
                 attempt.message = Some(format!("没有备份好要送回的文件，没有请求回退：{error:#}"));
                 return self.opencode_revert_saved(id, &attempt).await;
             }
+        }
+
+        // Kept before the one request goes out: from here on OpenCode may have it,
+        // and a Core that stops before here asked nothing (R4 of #534).
+        #[cfg(test)]
+        if stop_at(key, Stop::BeforeSent) {
+            bail!("tests: Core ended before the request went out");
+        }
+        plan.sent = true;
+        attempt.opencode = Some(serde_json::to_value(&plan)?);
+        let saved = attempt.clone();
+        self.stored(move |s| s.save_rewind(&saved)).await?;
+        #[cfg(test)]
+        if stop_at(key, Stop::AfterSent) {
+            let _ = request.await;
+            bail!("tests: Core ended once the request was out, before its answer was kept");
         }
 
         // One request, watched for WATCH. An answer after that settles the attempt when it comes.
@@ -345,9 +391,10 @@ impl Workspace {
         match answer {
             RevertAnswer::Answered(session) if session["id"] == attempt.thread.as_str() => {
                 plan.ended = Some(crate::model::now());
+                plan.held = session["revert"]["messageID"] == attempt.target.as_str();
                 attempt.opencode = Some(serde_json::to_value(&plan)?);
-                if session["revert"]["messageID"] == attempt.target.as_str() {
-                    self.opencode_revert_reverted(id, &mut attempt, &plan).await?;
+                if plan.held {
+                    self.opencode_revert_record(id, &mut attempt, &plan).await;
                 } else {
                     self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
                 }
@@ -366,6 +413,17 @@ impl Workspace {
             }
         }
         self.opencode_revert_saved(id, &attempt).await
+    }
+
+    /// Reverted, and recorded so (R3 of #534): once OpenCode has answered,
+    /// nothing escapes. If the record cannot be written, the attempt is kept
+    /// unknown with its plan's `ended` and `held`, so a later check records
+    /// it then; nothing is asked again.
+    async fn opencode_revert_record(self: &Arc<Self>, id: &str, attempt: &mut Attempt, plan: &Plan) {
+        if let Err(error) = self.opencode_revert_reverted(id, attempt, plan).await {
+            attempt.state = "unknown".into();
+            attempt.message = Some(format!("OpenCode 已确认这次回退，但没能把它记下（{error:#}）；记下之前这个 Agent 不会收到新的内容，重新核对时会再记一次，回退不会再请求一次"));
+        }
     }
 
     /// Reverted: the session holds it. Each file is judged as it is now.
@@ -422,23 +480,88 @@ impl Workspace {
         }
     }
 
-    /// An OpenCode attempt checked again (`/rewind/check`, under the gate):
-    /// only one whose request ended with no revert held is read again; one
-    /// whose answer never came stays as it is (Lead 4109 1).
+    /// An OpenCode attempt checked again (`/rewind/check`, under the gate,
+    /// which a confirm holds while it runs: one still `sending` here is one
+    /// whose confirm ended without settling it, as when Core stopped).
+    /// - Never sent: nothing was asked, so it failed (R4 of #534).
+    /// - Answered holding the revert but not recorded: recorded now.
+    /// - Answered with no revert held: read again (`opencode_revert_unmarked`).
+    /// - Sent with no answer kept: settled only by a session that holds this
+    ///   revert (`opencode_revert_held`); otherwise it stays unknown.
     pub(crate) async fn opencode_revert_recheck(self: &Arc<Self>, id: &str, mut attempt: Attempt) -> Result<Value> {
-        let plan = Plan::of(&attempt)?;
-        if attempt.state != "unknown" || plan.ended.is_none() {
-            return Ok(attempt.outcome());
+        let mut plan = Plan::of(&attempt)?;
+        let answered = plan.ended.is_some();
+        match attempt.state.as_str() {
+            "sending" if !plan.sent => {
+                let backup = self.data_dir.join("opencode").join(id).join("revert").join(&attempt.id);
+                attempt.state = "failed".into();
+                attempt.message = Some(if plan.root.is_some() {
+                    format!("Core 在请求回退之前停止了，OpenCode 没有被请求，什么也没有做；要送回的文件的备份（如果已写下）在 {}", backup.display())
+                } else {
+                    "Core 在请求回退之前停止了，OpenCode 没有被请求，什么也没有做".into()
+                });
+            }
+            "unknown" if answered && plan.held => self.opencode_revert_record(id, &mut attempt, &plan).await,
+            "unknown" if answered => self.opencode_revert_unmarked(id, &mut attempt, &plan).await,
+            "sending" | "unknown" => self.opencode_revert_held(id, &mut attempt, &mut plan).await,
+            _ => return Ok(attempt.outcome()),
         }
-        self.opencode_revert_unmarked(id, &mut attempt, &plan).await;
         self.opencode_revert_saved(id, &attempt).await
+    }
+
+    /// Sent, with no answer of it kept (Core stopped while it was out, or it
+    /// never came or could not be read): the session read now. OpenCode keeps
+    /// a revert only once it has sent the files back (`session/revert.ts`
+    /// 71-79: `snap.revert`, then `setRevert`), so a session holding this one
+    /// is recorded as reverted. Holding none, or not read, it stays unknown:
+    /// OpenCode may have changed files before it stopped, and its Git may
+    /// still be going on (Lead 4109); nothing is guessed or asked again.
+    async fn opencode_revert_held(self: &Arc<Self>, id: &str, attempt: &mut Attempt, plan: &mut Plan) {
+        let c = self.opencodes.lock().unwrap().get(id).cloned();
+        let read = match c {
+            Some(c) => c.server.session(&attempt.thread).await,
+            None => Err(anyhow!("OpenCode Agent 尚未连接")),
+        };
+        match read {
+            Ok(session) if session["id"] == attempt.thread.as_str() && session["revert"]["messageID"] == attempt.target.as_str() => {
+                plan.ended = Some(crate::model::now());
+                plan.held = true;
+                match serde_json::to_value(&*plan) {
+                    Ok(value) => {
+                        attempt.opencode = Some(value);
+                        self.opencode_revert_record(id, attempt, plan).await;
+                    }
+                    Err(error) => {
+                        attempt.state = "unknown".into();
+                        attempt.message = Some(format!("OpenCode 的会话保留着这次回退，但没能把它记下（{error:#}）；回退不会再请求一次"));
+                    }
+                }
+            }
+            Ok(_) => {
+                attempt.state = "unknown".into();
+                attempt.message = Some("这次回退的请求没有留下回答，OpenCode 的会话现在也没有保留它；它是否改过文件无从得知。这个 Agent 不会收到新的内容，回退也不会再请求一次".into());
+            }
+            Err(error) => {
+                attempt.state = "unknown".into();
+                attempt.message = Some(format!("没有读到 OpenCode 会话（{error:#}）；连接后再核对。回退不会再请求一次"));
+            }
+        }
     }
 
     /// The Turns a revert archived leave this Agent's record, with any
     /// request of theirs: exactly those, whatever else the record holds.
+    /// Once none of them is left there, nothing more is written.
     async fn opencode_revert_project(&self, id: &str, attempt: &Attempt, plan: &Plan) -> Result<()> {
+        #[cfg(test)]
+        if FAIL_RECORD.lock().unwrap().take_if(|key| *key == attempt.id).is_some() {
+            bail!("tests: the record write failed");
+        }
         let (agent, kept, key, removed) = (id.to_owned(), attempt.kept.clone(), attempt.id.clone(), plan.turns.clone());
         self.stored(move |s| {
+            let ids = s.turn_ids(&agent)?;
+            if !removed.iter().any(|t| ids.contains(t)) {
+                return Ok(());
+            }
             let gone = removed.clone();
             s.record_event(&agent, "opencode/reverted", &json!({"attemptId": key, "keptTurnIds": kept}), Sel::Turns(removed), move |d| {
                 let leaves = |turn: Option<&str>| turn.is_some_and(|turn| gone.iter().any(|g| g == turn));

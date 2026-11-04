@@ -518,6 +518,17 @@
     opacity: 0;
   }
 }
+/* The list as cards or as rows, taking over from the other as a task opens
+   or has gone (CollaborationBoard.tsx). It starts part-way, so the list is
+   never gone while the column beside it moves (Dev 7). */
+.collab-list-flip {
+  animation: collab-list-flip var(--motion-small) var(--ease-standard) both;
+}
+@keyframes collab-list-flip {
+  from {
+    opacity: 0.4;
+  }
+}
 @keyframes collab-detail-switch {
   from {
     opacity: 0;

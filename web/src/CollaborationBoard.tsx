@@ -5,7 +5,7 @@ import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -266,6 +266,53 @@ function call<T>(operation: string, body: unknown, signal?: AbortSignal) {
     body: JSON.stringify(body),
     signal,
   });
+}
+
+/**
+ * One read at a time, for a view that each Workspace revision reads again
+ * (T-19 F4). A read the reader asks for (the first, Refresh, other
+ * conditions, a page, the one after a save) starts at once and supersedes
+ * the read in flight, whose answer is then ignored. A revision never
+ * cancels a read in flight: it is remembered, and when that read ends one
+ * more follows, so the latest revision shows, however slow the answers, with
+ * at most one request on its way.
+ */
+class ReadSlot {
+  private generation = 0;
+  private busy = false;
+  private again = false;
+  private controller?: AbortController;
+  /** `covers`: it reads what a revision would (not a later page). */
+  begin(covers = true) {
+    this.controller?.abort();
+    this.controller = new AbortController();
+    this.again = covers ? false : this.again || this.busy;
+    this.busy = true;
+    return { generation: ++this.generation, signal: this.controller.signal };
+  }
+  current(generation: number) {
+    return generation === this.generation;
+  }
+  /** A revision: true when its read may start now; false while one is in flight. */
+  revision() {
+    if (this.busy) this.again = true;
+    return !this.busy;
+  }
+  /** A read has ended: true when a revision came meanwhile, and one more read is due. */
+  end(generation: number) {
+    if (generation !== this.generation) return false;
+    this.busy = false;
+    const again = this.again;
+    this.again = false;
+    return again;
+  }
+  /** What is in flight no longer counts: the view closed, or its conditions changed. */
+  drop() {
+    this.generation++;
+    this.controller?.abort();
+    this.busy = false;
+    this.again = false;
+  }
 }
 
 /** Keep one request ID after a lost answer; a changed intention gets a new ID. */
@@ -573,23 +620,24 @@ export function CollaborationBoard({
   const conditions = JSON.stringify(
     listConditions(status, owner, projectFilter),
   );
-  const taskLoad = useRef<{ generation: number; controller?: AbortController }>(
-    { generation: 0 },
-  );
+  const [taskReads] = useState(() => new ReadSlot());
+  // Reads a revision: at once, or after the read on its way (catchUpAfter).
+  const catchUp = useRef(() => {});
+  const [catchUpAfter, setCatchUpAfter] = useState<number | null>(null);
   const pageRef = useRef(page);
   pageRef.current = page;
-  const loadingRef = useRef(loading);
-  loadingRef.current = loading;
   const loadTasks = useCallback(
-    async (afterSeq?: number) => {
+    async (afterSeq?: number, quiet = false) => {
       // A newer request (other conditions, or a reload) supersedes this one:
       // its response, error and completion are all ignored.
-      taskLoad.current.controller?.abort();
-      const controller = new AbortController();
-      const generation = ++taskLoad.current.generation;
-      taskLoad.current.controller = controller;
-      setLoading(true);
-      setError("");
+      const { generation, signal } = taskReads.begin(afterSeq === undefined);
+      // A background reload (a Workspace revision) shows nothing: Refresh
+      // neither spins nor turns off, and an error stays until an answer
+      // replaces it (T-19 CB-04).
+      if (!quiet) {
+        setLoading(true);
+        setError("");
+      }
       try {
         const next = await call<TaskPage>(
           "task_list",
@@ -598,9 +646,9 @@ export function CollaborationBoard({
             ...(afterSeq === undefined ? {} : { afterSeq }),
             limit: 100,
           },
-          controller.signal,
+          signal,
         );
-        if (generation !== taskLoad.current.generation) return;
+        if (!taskReads.current(generation)) return;
         setPage((previous) =>
           afterSeq === undefined || !previous
             ? { ...next, pages: 1 }
@@ -616,47 +664,48 @@ export function CollaborationBoard({
               },
         );
         if (afterSeq === undefined) setOutdated(false);
+        setError("");
       } catch (error) {
-        if (generation === taskLoad.current.generation)
-          setError(errorText(error));
+        if (taskReads.current(generation)) setError(errorText(error));
       } finally {
-        if (generation === taskLoad.current.generation) setLoading(false);
+        if (taskReads.current(generation)) setLoading(false);
+        if (taskReads.end(generation)) setCatchUpAfter(generation);
       }
     },
-    [conditions],
+    [conditions, taskReads],
   );
   useEffect(() => {
     // New conditions start from nothing: no page from older conditions shows.
     setPage(null);
     setOutdated(false);
     if (open && tab === "tasks" && !disabled) void loadTasks();
-    return () => {
-      taskLoad.current.generation++;
-      taskLoad.current.controller?.abort();
-    };
-  }, [open, tab, disabled, loadTasks]);
+    return () => taskReads.drop();
+  }, [open, tab, disabled, loadTasks, taskReads]);
   /**
    * Workspace revisions arrive every few seconds, changed or not. With only
    * the first page loaded it is simply reloaded. Later pages are kept, and
    * the user is told only when Core's counts or the first 200 matching
    * tasks (Core's largest page, one request) differ from what is loaded.
-   * Edits to tasks beyond the first 200 show after Refresh.
+   * Edits to tasks beyond the first 200 show after Refresh. One read at a
+   * time: a revision during one is read once it ends (ReadSlot).
    */
   const checkForChanges = useCallback(async () => {
+    if (!taskReads.revision()) return;
     const loaded = pageRef.current;
-    if (!loaded || loadingRef.current) return;
+    if (!loaded) return;
     if ((loaded.pages || 1) <= 1) {
-      void loadTasks();
+      void loadTasks(undefined, true);
       return;
     }
-    const generation = taskLoad.current.generation;
+    const { generation, signal } = taskReads.begin();
     try {
-      const first = await call<TaskPage>("task_list", {
-        ...JSON.parse(conditions),
-        limit: 200,
-      });
+      const first = await call<TaskPage>(
+        "task_list",
+        { ...JSON.parse(conditions), limit: 200 },
+        signal,
+      );
       const current = pageRef.current;
-      if (generation !== taskLoad.current.generation || !current) return;
+      if (!taskReads.current(generation) || !current) return;
       const versions = new Map(current.tasks.map((t) => [t.id, t.version]));
       const changed =
         JSON.stringify(first.counts || {}) !==
@@ -665,16 +714,41 @@ export function CollaborationBoard({
       if (changed) setOutdated(true);
     } catch {
       /* A failed background check changes nothing; Refresh is still there. */
+    } finally {
+      if (taskReads.end(generation)) setCatchUpAfter(generation);
     }
-  }, [conditions, loadTasks]);
+  }, [conditions, loadTasks, taskReads]);
+  catchUp.current = () => void checkForChanges();
+  // A revision that came during a read is read once that read's answer is on
+  // the board: after the render that shows it, so what it reads (pageRef: no
+  // page yet, one page or more) is that answer's. Not once the board has
+  // closed, turned to other conditions or started another read.
   useEffect(() => {
-    if (!open || disabled) return;
+    if (catchUpAfter === null) return;
+    setCatchUpAfter(null);
+    if (open && !disabled && taskReads.current(catchUpAfter)) catchUp.current();
+  }, [catchUpAfter, open, disabled, taskReads]);
+  // Only a Workspace revision is read again: other conditions, opening the
+  // board or another tab read for themselves, and once is enough.
+  const seenWorkspaceRevision = useRef(workspaceRevision);
+  const revisionDue = useRef(false);
+  useEffect(() => {
+    if (seenWorkspaceRevision.current !== workspaceRevision) {
+      seenWorkspaceRevision.current = workspaceRevision;
+      revisionDue.current = true;
+    }
+    if (!open || disabled) {
+      revisionDue.current = false;
+      return;
+    }
+    if (!revisionDue.current) return;
     const timer = window.setTimeout(() => {
+      revisionDue.current = false;
       setRevision((n) => n + 1);
-      if (tab === "tasks") void checkForChanges();
+      if (tab === "tasks") catchUp.current();
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [workspaceRevision, open, disabled, tab, checkForChanges]);
+  }, [workspaceRevision, open, disabled, tab]);
   const refresh = () => {
     setRevision((n) => n + 1);
     void loadTasks();
@@ -703,7 +777,10 @@ export function CollaborationBoard({
     });
     // With only the first page loaded, Core's own answer replaces the estimate.
     if ((pageRef.current?.pages || 1) <= 1) void loadTasks();
-    setEntry("switch");
+    // A save of the task already open leaves its pane as it is: changing
+    // the entry would play the switch again (T-19 CB-13). A task just
+    // created takes the place of the New task pane.
+    if (creating || selected !== task.id) setEntry("switch");
     stay();
     setCreating(false);
     setSelected(task.id);
@@ -714,6 +791,19 @@ export function CollaborationBoard({
    * keep the same order: what waits on someone first, newest change first. */
   const groups = groupTasks(tasks);
   const listAsRows = detailOpen || leaving;
+  // Cards become rows beside an open task, and come back once it has gone:
+  // the list that takes over fades in, rather than swapping under the
+  // moving column (T-19 CB-09). Set before the paint that shows it.
+  const [listFlip, setListFlip] = useState(false);
+  const listMode = useRef(listAsRows);
+  useLayoutEffect(() => {
+    if (listMode.current === listAsRows) return;
+    listMode.current = listAsRows;
+    setListFlip(true);
+  }, [listAsRows]);
+  const flipEnded = (event: React.AnimationEvent) => {
+    if (event.target === event.currentTarget) setListFlip(false);
+  };
   const taskButton = (task: SharedTask, card: boolean) => {
     const agent = agents.find(
       (agent) => agent.id === task.assigneeAgentId,
@@ -959,7 +1049,7 @@ export function CollaborationBoard({
                     </div>
                   )}
                   {listAsRows ? (
-                    <div className="collab-groups">
+                    <div className={`collab-groups${listFlip ? " collab-list-flip" : ""}`} onAnimationEnd={flipEnded}>
                       {groups.map((group) => (
                         <section
                           key={group.status}
@@ -979,7 +1069,7 @@ export function CollaborationBoard({
                       ))}
                     </div>
                   ) : (
-                    <div className="collab-cards">
+                    <div className={`collab-cards${listFlip ? " collab-list-flip" : ""}`} onAnimationEnd={flipEnded}>
                       {groups.flatMap((group) => group.tasks).map((task) => taskButton(task, true))}
                     </div>
                   )}
@@ -1222,7 +1312,9 @@ function TaskPane({
   // Linking, PR operations, review and delivery setup: shown on request.
   const [managing, setManaging] = useState(false);
   const mutation = useMutation();
-  const loadGeneration = useRef(0);
+  const [reads] = useState(() => new ReadSlot());
+  // A revision that came during a read, read once that read ends.
+  const catchUp = useRef(() => {});
   // An answer arriving after this pane closed (another task or Workspace)
   // reports nothing to the board.
   const alive = useRef(true);
@@ -1230,21 +1322,27 @@ function TaskPane({
     alive.current = true;
     return () => {
       alive.current = false;
-      loadGeneration.current++;
+      reads.drop();
     };
-  }, []);
+  }, [reads]);
   const load = useCallback(
-    async (afterSeq?: number) => {
-      const generation = ++loadGeneration.current;
-      setLoading(true);
-      setReadError("");
+    async (afterSeq?: number, quiet = false) => {
+      const { generation } = reads.begin(afterSeq === undefined);
+      // A background reload (each Workspace revision) shows nothing: Refresh
+      // neither spins nor turns off, and an error stays until an answer
+      // replaces it (T-19 TD-01). The latest load ends the spin, whichever.
+      if (!quiet) {
+        setLoading(true);
+        setReadError("");
+      }
       try {
         const next = await call<TaskDetail>("task_get", {
           taskId: id,
           ...(afterSeq === undefined ? {} : { afterSeq }),
           limit: 50,
         });
-        if (generation === loadGeneration.current)
+        if (reads.current(generation)) setReadError("");
+        if (reads.current(generation))
           setDetail((previous) =>
             afterSeq === undefined
               ? next
@@ -1262,20 +1360,26 @@ function TaskPane({
                 },
           );
       } catch (error) {
-        if (generation === loadGeneration.current)
-          setReadError(errorText(error));
+        if (reads.current(generation)) setReadError(errorText(error));
       } finally {
-        if (generation === loadGeneration.current) setLoading(false);
+        if (reads.current(generation)) setLoading(false);
+        if (reads.end(generation)) catchUp.current();
       }
     },
-    [id],
+    [id, reads],
   );
+  catchUp.current = () => void load(undefined, true);
+  // Its first read is shown; each revision after it is read again quietly,
+  // one read at a time (ReadSlot).
   useEffect(() => {
     void load();
-    return () => {
-      loadGeneration.current++;
-    };
-  }, [load, revision]);
+  }, [load]);
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (seenRevision.current === revision) return;
+    seenRevision.current = revision;
+    if (reads.revision()) void load(undefined, true);
+  }, [revision, load, reads]);
   const task = detail?.task;
   const owner = agents.find((agent) => agent.id === task?.assigneeAgentId);
   const changed = (next: SharedTask) => {
@@ -1972,19 +2076,26 @@ function Messages({
   const [page, setPage] = useState<MessagePage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const generation = useRef(0);
+  const [reads] = useState(() => new ReadSlot());
+  // A revision that came during a read, read once that read ends.
+  const catchUp = useRef(() => {});
   const load = useCallback(
-    async (afterSeq?: number) => {
-      const request = ++generation.current;
-      setLoading(true);
-      setError("");
+    async (afterSeq?: number, quiet = false) => {
+      const { generation: request } = reads.begin(afterSeq === undefined);
+      // As the board's list and a task's detail: a revision's reload shows
+      // nothing, and an error stays until an answer replaces it (T-19 MS-01).
+      if (!quiet) {
+        setLoading(true);
+        setError("");
+      }
       try {
         const next = await call<MessagePage>("peer_read", {
           ...(mailbox ? { agentId: mailbox } : {}),
           ...(afterSeq === undefined ? {} : { afterSeq }),
           limit: 50,
         });
-        if (request === generation.current)
+        if (reads.current(request)) setError("");
+        if (reads.current(request))
           setPage((previous) =>
             afterSeq === undefined
               ? next
@@ -2002,23 +2113,27 @@ function Messages({
                 },
           );
       } catch (error) {
-        if (request === generation.current) setError(errorText(error));
+        if (reads.current(request)) setError(errorText(error));
       } finally {
-        if (request === generation.current) setLoading(false);
+        if (reads.current(request)) setLoading(false);
+        if (reads.end(request)) catchUp.current();
       }
     },
-    [mailbox],
+    [mailbox, reads],
   );
+  catchUp.current = () => void load(undefined, true);
   useEffect(() => {
     setPage(null);
     void load();
-    return () => {
-      generation.current++;
-    };
-  }, [load]);
+    return () => reads.drop();
+  }, [load, reads]);
+  // Each revision is read again quietly, one read at a time (ReadSlot).
+  const seenRevision = useRef(revision);
   useEffect(() => {
-    if (revision) void load();
-  }, [revision, load]);
+    if (seenRevision.current === revision) return;
+    seenRevision.current = revision;
+    if (reads.revision()) void load(undefined, true);
+  }, [revision, load, reads]);
   return (
     <section
       id="collab-messages"

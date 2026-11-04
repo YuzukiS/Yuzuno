@@ -230,7 +230,7 @@ async fn nothing_is_asked_for_without_a_known_model_or_a_readable_idle_session_w
     lab.ws.opencode_set_model(ID, MODEL.into()).await.unwrap();
     lab.control("revert", json!({"sessionID":session})).await;
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-    assert!(error.contains("尚未处理的回退"), "{error}");
+    assert!(error.contains("请先发一条消息"), "{error}");
 
     let lab = self::lab(true).await;
     let session = lab.session();

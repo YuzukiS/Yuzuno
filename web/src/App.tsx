@@ -18,6 +18,7 @@ import {
 } from "react";
 import { settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
+import { animates } from "./motion";
 import {
   Archive,
   ArchiveRestore,
@@ -203,7 +204,7 @@ import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
 import { useArrivalsIn, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
-import type { HomeReplyOrigin, QuestionSource } from "./types";
+import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
 import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
@@ -557,7 +558,62 @@ export function App() {
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
     "home",
   );
-  const [atBottom, setAtBottom] = useState(true);
+  const [atBottom, setAtBottomState] = useState(true);
+  // Whether Back to latest shows (T-19 SH:C19, CV:CW-05). Set with `atBottom`
+  // wherever the app decides, but a scroll shows it only 96 px or more from
+  // the end and hides it only under 48 px, so it does not flicker while a
+  // stream grows the page. `atBottom` (follow, reading) keeps its 72 px.
+  const [latestAway, setLatestAway] = useState(false);
+  const setAtBottom = useCallback((at: boolean) => {
+    setAtBottomState(at);
+    setLatestAway(!at);
+  }, []);
+  const latestShown = latestAway || historyReading;
+  // Back to latest leaves through a copy (T-19): aria-hidden, inert and not
+  // hit by the pointer, it fades out where the button was, while the button
+  // itself is gone at once. Only within one conversation: another one shown
+  // takes it away at once, and what showed for the one before is not a
+  // baseline it can leave from (some ways of opening an Agent reset `atBottom`
+  // only after it is shown). None under reduced motion or without Web
+  // Animations; reduced motion turned on, or the copy's fade cancelled, takes
+  // it away.
+  const [latestLeaving, setLatestLeaving] = useState(0);
+  const latestWas = useRef({ shown: latestShown, scope: "" });
+  useLayoutEffect(() => {
+    const scope = `${workspaceId}\n${selected}`;
+    const was = latestWas.current;
+    const sameScope = was.scope === scope;
+    latestWas.current = { shown: latestShown && sameScope, scope };
+    if (latestShown || !sameScope) {
+      setLatestLeaving(0);
+      return;
+    }
+    if (!was.shown || !animates()) return;
+    setLatestLeaving((n) => n + 1);
+    const gone = setTimeout(() => setLatestLeaving(0), 400);
+    return () => clearTimeout(gone);
+  }, [latestShown, workspaceId, selected]);
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!query?.addEventListener) return;
+    const change = () => {
+      if (query.matches) setLatestLeaving(0);
+    };
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+  const latestLeavingCopy = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const cancelled = () => setLatestLeaving(0);
+    el.addEventListener("animationcancel", cancelled);
+    return () => el.removeEventListener("animationcancel", cancelled);
+  }, []);
+  // Each time it shows, it comes in, rising 4 px as it fades in over small.
+  const latestButton = useRef<HTMLButtonElement>(null);
+  const latestShows = useRef({ shown: false, n: 0 });
+  if (latestShows.current.shown !== latestShown)
+    latestShows.current = { shown: latestShown, n: latestShows.current.n + (latestShown ? 1 : 0) };
+  useSurfaceIn(latestButton, latestShows.current.n, "small", true, "translateY(4px)");
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
@@ -610,7 +666,10 @@ export function App() {
   // that (a scroll says the rest) and moves nothing.
   const measureLatest = useCallback(() => {
     const el = scroll.current;
-    if (el && el.clientHeight > 0 && el.scrollHeight - el.scrollTop - el.clientHeight >= 72) setAtBottom(false);
+    if (!el || el.clientHeight <= 0) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (gap >= 72) setAtBottomState(false);
+    if (gap >= 96) setLatestAway(true);
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
@@ -691,12 +750,16 @@ export function App() {
   // (`drain`), only the end of what it replays (`drained`) or a reset ends the
   // wait: no read starts for it, and no timer guesses it (Lead 3356).
   const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
+  // Core streamed or announced a change to the open Agent since the stream
+  // last reset: a Turn the next detail adds after the shown ones arrived live
+  // (T-19 CV:T-01).
+  const liveTurn = useRef<{ workspace: string; agent: string } | null>(null);
   // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
   const [, setDrains] = useState(0);
   // Told in the stream's order, so a reset that follows always wins (R1 276d4a1d; Lead 3356).
   const onReplay = useCallback((state: "resumed" | "drained") => {
     if (state === "resumed") {
-      liveChange.current = null;
+      liveChange.current = liveTurn.current = null;
       arrivalsSettle.current = { after: Infinity, drain: true };
       return;
     }
@@ -730,13 +793,16 @@ export function App() {
         case "agent.item":
         case "agent.context":
           // Only the shown Agent's detail is kept; others are read when opened.
-          if (event.agentId === currentSelected.current) live.sync.push(event);
+          if (event.agentId === currentSelected.current) {
+            if (event.type !== "agent.context") liveTurn.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.push(event);
+          }
           return;
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
           if (event.agentId === currentSelected.current) {
-            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            liveChange.current = liveTurn.current = { workspace: currentWorkspace.current, agent: event.agentId };
             live.sync.refetch();
           }
           return;
@@ -789,8 +855,8 @@ export function App() {
           else refresh();
           return;
         case "reset":
-          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
-          liveChange.current = null;
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01, CV:T-01).
+          liveChange.current = liveTurn.current = null;
           arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
@@ -810,7 +876,7 @@ export function App() {
   if (lastConnection.current !== eventConnection) {
     lastConnection.current = eventConnection;
     if (eventConnection !== "open") {
-      liveChange.current = null;
+      liveChange.current = liveTurn.current = null;
       arrivalsSettle.current = { after: Infinity };
     }
   }
@@ -897,6 +963,13 @@ export function App() {
   // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
   useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
   useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // An action's error above the composer fades in as it appears (T-19 SH:X05); the room it takes is
+  // made at once. Another error replacing it while it shows plays nothing; dismissing it stops it.
+  const actionErrorBox = useRef<HTMLDivElement>(null);
+  const actionErrors = useRef({ shown: false, n: 0 });
+  if (actionErrors.current.shown !== !!actionError)
+    actionErrors.current = { shown: !!actionError, n: actionErrors.current.n + (actionError ? 1 : 0) };
+  useSurfaceIn(actionErrorBox, actionErrors.current.n, "small", !!actionError && actionErrors.current.n > 0);
   // On a phone the context panel is a screen of its own: opening it takes focus to its heading
   // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
   useEffect(() => {
@@ -1088,6 +1161,8 @@ export function App() {
   // it and any after it are done.
   const mark = arrivalsSettle.current;
   let settles = !!mark && (mark.drain ? !!mark.drained && current && !!pendingScope : readNumber > mark.after);
+  // Nothing arrives live in this render, requests or Turns (T-19 CV:T-01 too).
+  const arrivalsQuiet = !!mark;
   if (pendingScope) {
     const seen = pendingSeen.current;
     if (!seen || seen.scope !== pendingScope) {
@@ -1099,14 +1174,14 @@ export function App() {
     } else {
       const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
       if (fresh.length) {
-        const announced = !arrivalsSettle.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        const announced = !arrivalsQuiet && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
         if (announced) liveChange.current = null;
         pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
           arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
       }
     }
   }
-  if (settles) arrivalsSettle.current = liveChange.current = null;
+  if (settles) arrivalsSettle.current = liveChange.current = liveTurn.current = null;
   useArrivalsIn(
     pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
     (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
@@ -1256,6 +1331,78 @@ export function App() {
   // same, so a streamed change does not draw every Turn again.
   const inTurnKey = [...sendingInTurn(currentDetail, selected, outgoing)].sort().join("\n");
   const inTurn = useMemo<ReadonlySet<string>>(() => new Set(inTurnKey ? inTurnKey.split("\n") : []), [inTurnKey]);
+  // A Turn that arrives live while its conversation is open fades in, once (T-19 CV:T-01, Lead
+  // 3250): one a detail adds after the Turns shown, both at the latest window, after Core streamed
+  // or announced a change to the Agent. The first detail of a Workspace, Agent or native session,
+  // a window being read, and what a reconnect, poll or reset brings only become what was shown; as
+  // for requests, nothing arrives live until arrivals settle after a reconnect, reset or leaving
+  // the conversation (Lead 3299, 3301). A Turn whose message this window showed as a preview, or
+  // sending in its Turn, the frame before does not play: it is that message, confirmed. Matched by
+  // its exact ID, never by its text.
+  const turnScope = pendingScope;
+  const turnsSeen = useRef<{ scope: string; latest: boolean; ids: Set<string>; arrived: string[] } | null>(null);
+  // New Claude messages sending in their Turn, as of App's last commit (the layout effect below);
+  // previews, as of their own last commit, for the conversation they were shown in.
+  const shownMessages = useRef<ReadonlySet<string>>(new Set());
+  const shownPreviews = useRef<{ scope: string; ids: ReadonlySet<string> }>({ scope: "", ids: new Set() });
+  const previewsShown = useCallback((scope: string, ids: ReadonlySet<string>) => {
+    shownPreviews.current = { scope, ids };
+  }, []);
+  // Left (the settle mark is the requests' above): the next detail is a new baseline.
+  if (!turnScope && turnsSeen.current) {
+    turnsSeen.current = null;
+    liveTurn.current = null;
+  }
+  if (turnScope && currentDetail) {
+    const seen = turnsSeen.current;
+    const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
+    const ids = currentDetail.turns.map((turn) => turn.id);
+    let last = -1;
+    if (seen?.scope === turnScope) ids.forEach((id, index) => { if (seen.ids.has(id)) last = index; });
+    // A conversation already shown with no Turns takes its first ones as added after nothing; one
+    // whose Turns no longer overlap the shown ones (another window, a jump) is a new baseline.
+    if (!seen || seen.scope !== turnScope || !seen.latest || !latest || (last < 0 && seen.ids.size > 0)) {
+      turnsSeen.current = { scope: turnScope, latest, ids: new Set(ids.slice(-500)), arrived: seen?.scope === turnScope ? seen.arrived : [] };
+      if (seen?.scope !== turnScope) liveTurn.current = null;
+    } else if (ids.some((id) => !seen.ids.has(id))) {
+      const fresh = currentDetail.turns.slice(last + 1).filter((turn) => !seen.ids.has(turn.id));
+      const announced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+      if (announced && fresh.length) liveTurn.current = null;
+      const handedOver = (turn: NativeTurn) => {
+        const first = turn.items.find((item) => item.type === "userMessage");
+        const id = typeof first?.clientId === "string" ? first.clientId
+          : typeof first?._yuzunoClientMessageId === "string" && inTurn.has(first._yuzunoClientMessageId) ? first._yuzunoClientMessageId : null;
+        const previews = shownPreviews.current.scope === turnScope ? shownPreviews.current.ids : null;
+        const shown = (message: string) => shownMessages.current.has(message) || !!previews?.has(message);
+        if (id && shown(id)) return true;
+        return !!currentDetail.messageReceipts?.some((receipt) => receipt.binding?.turnId === turn.id
+          && turn.items.some((item) => item.id === receipt.binding!.itemId) && shown(receipt.input.clientMessageId));
+      };
+      turnsSeen.current = { scope: turnScope, latest, ids: new Set([...seen.ids, ...ids].slice(-500)),
+        arrived: announced ? [...seen.arrived, ...fresh.filter((turn) => !handedOver(turn)).map((turn) => turn.id)].slice(-20) : seen.arrived };
+    }
+  }
+  useArrivalsIn(
+    turnsSeen.current?.scope === turnScope ? turnsSeen.current.arrived.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => {
+      // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
+      const id = key.slice(key.lastIndexOf("\n") + 1);
+      return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;
+    },
+    "small",
+  );
+  // New Claude messages this window shows sending in their Turn, as of this commit. Read by the next
+  // render's Turn arrivals above, with the previews (`previewsShown`).
+  useLayoutEffect(() => {
+    const shown = new Set<string>();
+    const sending = (currentDetail?.turns ?? []).flatMap((turn) => turn.items.filter((item) =>
+      typeof item._yuzunoClientMessageId === "string" && inTurn.has(item._yuzunoClientMessageId)));
+    if (sending.length) {
+      const drawn = new Set([...document.querySelectorAll<HTMLElement>("[data-item-id]")].map((el) => el.dataset.itemId));
+      for (const item of sending) if (drawn.has(item.id)) shown.add(item._yuzunoClientMessageId as string);
+    }
+    shownMessages.current = shown;
+  });
   // A message this tab is still sending is on its way, not unconfirmed: Core
   // records its receipt before the harness answers, and a read in between
   // shows it sending (T-120). Only that same message, while its request runs.
@@ -3267,11 +3414,13 @@ export function App() {
                       setHistoryReading(false);
                       searchReading.current = false;
                     }
-                    const bottom =
-                      el.scrollHeight - el.scrollTop - el.clientHeight < 72;
+                    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+                    const bottom = gap < 72;
                     if (!bottom && stickToBottom.current) live.pinWindow();
-                    const latest = bottom && !searchReading.current && !currentDetail?.conversation?.hasAfter;
-                    setAtBottom(latest);
+                    const elsewhere = searchReading.current || !!currentDetail?.conversation?.hasAfter;
+                    const latest = bottom && !elsewhere;
+                    setAtBottomState(latest);
+                    setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
                     stickToBottom.current = latest;
                     noteReading(latest);
                   }
@@ -3386,6 +3535,8 @@ export function App() {
                     agentId={agent.id}
                     messages={outgoing}
                     detail={currentDetail}
+                    scope={turnScope ?? ""}
+                    onShown={previewsShown}
                   />
                   {pending.map((request) => (
                     <PendingCard
@@ -3459,11 +3610,18 @@ export function App() {
                   inputs={readingBy === "inputs"}
                 />
               )}
-              {(!atBottom || historyReading) && (
-                <button className="jump-latest" onClick={backToLatest}>
+              {latestShown && (
+                <button className="jump-latest" ref={latestButton} onClick={backToLatest}>
                   <ArrowDown size={13} />
                   Back to latest
                 </button>
+              )}
+              {latestLeaving > 0 && (
+                <div key={latestLeaving} className="jump-latest-leaving" aria-hidden="true" inert ref={latestLeavingCopy}
+                  onAnimationEnd={() => setLatestLeaving(0)}>
+                  <ArrowDown size={13} />
+                  Back to latest
+                </div>
               )}
             </div>
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}
@@ -3558,7 +3716,7 @@ export function App() {
                     </div>
                   )}
                   {actionError && (
-                    <div role="alert" className="inline-error">
+                    <div role="alert" className="inline-error" ref={actionErrorBox}>
                       <CircleAlert size={14} />
                       {actionError}
                       <button

@@ -88,7 +88,8 @@ sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], 
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
-         'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'fork': 'ok', 'history': 'ok', 'replay': 'ok'}
+         'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
+         'replay': 'ok'}
 # Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
 held_reads = []
 # Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
@@ -631,8 +632,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
             return self.stream()
         if key == ('GET', 'path'):
-            # `handlers/instance.ts` getPath: OpenCode's own folders and the instance's worktree and directory.
-            return self.reply(200, {'home': HOME, 'state': STATE, 'config': CONFIG, 'worktree': str(WORK), 'directory': str(WORK)})
+            # `handlers/instance.ts` getPath: OpenCode's own folders and the instance's worktree and directory
+            # (mode `directory`: another one, as if the instance were another folder's).
+            return self.reply(200, {'home': HOME, 'state': STATE, 'config': CONFIG, 'worktree': str(WORK),
+                                    'directory': modes['directory'] or str(WORK)})
         if key == ('GET', 'project', 'current'):
             return self.reply(200, {'id': current_project[0], 'worktree': str(WORK), 'vcs': 'git'})
         if key == ('POST', 'session'):

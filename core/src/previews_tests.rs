@@ -249,21 +249,80 @@ async fn a_snapshot_taken_for_the_phone_entry_never_opens_on_this_port() {
     lab.write("proto.html", PAGE.as_bytes());
     let view = lab.open("proto.html", Some(CORE)).await.unwrap();
     let port = view["port"].as_u64().unwrap() as u16;
-    // As the phone previews' entry would have minted it (remote_access's tests mint it so).
-    let door = Door { host: "pc.tail0.ts.net:8445".into(), origin: "https://pc.tail0.ts.net:8444".into(), login: "owner@github".into() };
+    // As the phone entry would have taken it (remote_access's tests take it so).
+    let origin = "https://pc.tail0.ts.net:8444";
     {
         let mut kept = lab.ws.previews.kept.lock().unwrap();
         kept.snapshots.insert("phone".into(), Snapshot {
-            bytes: Arc::new(PAGE.as_bytes().to_vec()), ancestor: Some(door.origin.clone()), until: Instant::now() + LIFETIME, via: Via::Phone(door.clone()),
+            bytes: Arc::new(PAGE.as_bytes().to_vec()), ancestor: Some(origin.into()), until: Instant::now() + LIFETIME, via: Via::Phone(7),
         });
         kept.proofs.insert("phone".into(), Proof {
-            answer: "a".into(), origin: Some(door.origin.clone()), until: Instant::now() + PROOF_TTL, used: false, via: Via::Phone(door.clone()),
+            answer: "a".into(), origin: Some(origin.into()), until: Instant::now() + PROOF_TTL, used: false, via: Via::Phone(7),
         });
     }
     assert_eq!(ask(port, "GET", "/v/phone", None, None).await.0, 404);
-    assert_eq!(ask(port, "GET", &format!("{PROOF_PATH}phone"), None, Some(&door.origin)).await.0, 404);
+    assert_eq!(ask(port, "GET", &format!("{PROOF_PATH}phone"), None, Some(origin)).await.0, 404);
     // This port's own snapshot still opens.
     assert_eq!(ask(port, "GET", &path_of(&view["url"]), None, None).await.0, 200);
+}
+
+#[tokio::test]
+async fn revoking_the_phones_previews_keeps_this_ports_and_another_runs_only_when_asked() {
+    let lab = lab();
+    lab.write("proto.html", PAGE.as_bytes());
+    let view = lab.open("proto.html", Some(CORE)).await.unwrap();
+    let local = path_of(&view["url"]).trim_start_matches(PAGE_PATH).to_owned();
+    {
+        let mut kept = lab.ws.previews.kept.lock().unwrap();
+        for (token, run) in [("one", 1), ("two", 2)] {
+            kept.snapshots.insert(token.into(), Snapshot {
+                bytes: Arc::new(PAGE.as_bytes().to_vec()), ancestor: None, until: Instant::now() + LIFETIME, via: Via::Phone(run),
+            });
+            kept.order.push_back(token.into());
+            kept.proofs.insert(token.into(), Proof { answer: "a".into(), origin: None, until: Instant::now() + PROOF_TTL, used: false, via: Via::Phone(run) });
+        }
+    }
+    let left = |lab: &Lab| {
+        let kept = lab.ws.previews.kept.lock().unwrap();
+        let mut snapshots: Vec<String> = kept.snapshots.keys().cloned().collect();
+        snapshots.sort();
+        let mut proofs: Vec<String> = kept.proofs.keys().filter(|k| ["one", "two"].contains(&k.as_str())).cloned().collect();
+        proofs.sort();
+        (snapshots, proofs, kept.order.len())
+    };
+    lab.ws.previews.revoke_phone(Some(2));
+    let mut want = vec![local.clone(), "two".to_owned()];
+    want.sort();
+    assert_eq!(left(&lab), (want, vec!["two".to_owned()], 2));
+    lab.ws.previews.revoke_phone(None);
+    assert_eq!(left(&lab), (vec![local], vec![], 1));
+}
+
+#[test]
+fn the_phone_entrys_reserved_path_is_reached_only_as_it_was_sent() {
+    for plain in ["/__yuzuno", "/__yuzuno/", "/__yuzuno/preview/v/abc", "/__yuzuno/preview/proof/abc", "/__yuzuno/anything/else"] {
+        assert!(aims_at_reserved(plain) && plainly_reserved(plain), "{plain}");
+    }
+    for odd in [
+        "/%5F%5Fyuzuno/preview/v/a", "/%5f_yuzuno/preview", "/%255F%255Fyuzuno/x", "//__yuzuno/preview", "/./__yuzuno/", "/x/../__yuzuno/preview",
+        "/__yuzuno/./preview", "/__yuzuno/preview/../preview/v/a", "/__YUZUNO/preview", "/__Yuzuno", "\\__yuzuno/preview", "/\\__yuzuno",
+        "/__yuzuno%2Fpreview", "/__yuzuno/preview/v/%61", "/__yuzuno//preview",
+    ] {
+        assert!(aims_at_reserved(odd) && !plainly_reserved(odd), "{odd}");
+    }
+    for other in ["/", "/api/health", "/__yuzunox/a", "/__yuzuno-not", "/assets/__yuzuno", "/x/__yuzuno", "/%5F%5Fyuzunox", "/__yuzuno/../api"] {
+        assert!(!aims_at_reserved(other), "{other}");
+    }
+}
+
+#[test]
+fn a_phone_preview_is_named_by_its_token_alone_as_it_was_sent() {
+    let token = "0123456789abcdef".repeat(4);
+    assert_eq!(named(&format!("{PHONE_PAGE}{token}"), PHONE_PAGE), Some(token.as_str()));
+    for odd in [String::new(), token.to_uppercase(), format!("%30{}", &token[1..]), format!("{token}/x"), format!("{token}?"), "zz".into(), "1".repeat(129)] {
+        assert_eq!(named(&format!("{PHONE_PAGE}{odd}"), PHONE_PAGE), None, "{odd:?}");
+    }
+    assert_eq!(named(&format!("{PHONE_PROOF}{token}"), PHONE_PAGE), None, "a proof is not a page");
 }
 
 /// Bytes sent as they are, in one write: status, head and body of the answer.

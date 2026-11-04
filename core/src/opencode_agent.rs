@@ -1437,8 +1437,11 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能压缩，没有执行 /compact")?;
         let unread = "没有读到 OpenCode 会话现在的状态；没有执行 /compact";
         let session = c.server.session(&c.session).await.context(unread)?;
+        // A revert the session holds is applied with its next message, and a
+        // compaction would apply it first: only a message clears it from
+        // here (R3 of #534).
         ensure!(session["revert"].is_null(),
-            "OpenCode 会话里有一次尚未处理的回退，压缩会先把它应用掉（删除被回退的消息）；没有执行 /compact。请先在 OpenCode 中处理这次回退");
+            "OpenCode 会话里的回退要到这个会话收到下一条消息时才会删去被回退的消息，压缩会先把它应用掉；请先发一条消息，再压缩。没有执行 /compact");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有执行 /compact");
         let messages = c.server.messages(&c.session).await.context(unread)?;
         let (provider, model) = compact_model(&c.server, &d, &messages).await?;

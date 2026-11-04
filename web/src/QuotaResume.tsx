@@ -139,6 +139,40 @@ export const autoContinueVersion = (detail: AgentDetail) =>
       ].join("|")
     : detail.agent.status;
 
+/** A press's hold on focus while Core answers it (T-19 CX-44). The answer
+ * may remove or replace the pressed button; once it is drawn, focus that fell
+ * to the page goes back to that button if it is still there, otherwise to the
+ * notice, never on to a button the answer brought (Continue now). Only for the
+ * notice it was pressed in, still drawn and showing the same Agent's same
+ * stop. Given up for good when the person goes elsewhere meanwhile: focus or
+ * a press outside the notice. */
+function holdFocus(notice: HTMLElement, pressed: Element | null, shows: string) {
+  let kept = true;
+  const leave = (event: Event) => {
+    if (!(event.target instanceof Node && notice.contains(event.target))) kept = false;
+  };
+  document.addEventListener("focusin", leave, true);
+  document.addEventListener("pointerdown", leave, true);
+  return {
+    release() {
+      document.removeEventListener("focusin", leave, true);
+      document.removeEventListener("pointerdown", leave, true);
+    },
+    /** `drawn`: the notice now; `now`: the Agent and stop it shows now. */
+    restore(drawn: HTMLElement | null, now: string) {
+      const active = document.activeElement;
+      if (!kept || now !== shows || drawn !== notice || !notice.isConnected) return;
+      if (notice.closest("[inert]") || !notice.getClientRects().length) return;
+      if (active && active !== document.body) return;
+      const back =
+        pressed instanceof HTMLButtonElement && pressed.isConnected && notice.contains(pressed) && !pressed.disabled
+          ? pressed
+          : notice;
+      back.focus({ preventScroll: true });
+    },
+  };
+}
+
 /**
  * In the conversation: why a Claude agent stopped at its usage limit, and
  * what happens next. Nothing is shown unless the limit stopped its latest
@@ -157,6 +191,18 @@ export function QuotaResumeNotice({
     autoContinueVersion(detail),
   );
   const [busy, setBusy] = useState<"" | "now" | "cancel" | "on">("");
+  const notice = useRef<HTMLDivElement>(null);
+  const hold = useRef<ReturnType<typeof holdFocus> | null>(null);
+  const shows = `${agentId} ${view?.intent?.turnId ?? view?.stopped?.turnId ?? ""}`;
+  useEffect(() => () => hold.current?.release(), []);
+  // Core's answer is drawn: the press made in this notice may take focus back.
+  useEffect(() => {
+    const held = hold.current;
+    if (busy || !held) return;
+    hold.current = null;
+    held.release();
+    held.restore(notice.current, shows);
+  }, [busy]);
   const language = useLanguage();
   const t = noticeText(language);
   if (!view) return null;
@@ -167,6 +213,9 @@ export function QuotaResumeNotice({
 
   async function act(kind: "now" | "cancel" | "on") {
     if (busy || disabled) return;
+    hold.current?.release();
+    const drawn = notice.current;
+    hold.current = drawn?.contains(document.activeElement) ? holdFocus(drawn, document.activeElement, shows) : null;
     setBusy(kind);
     setError("");
     try {
@@ -201,7 +250,7 @@ export function QuotaResumeNotice({
     text = t.stopped(limit, at(resets!), view.enabled);
   }
   return (
-    <div className="recovery-notice quota-resume-notice" role="status" lang={langTag(language)}>
+    <div ref={notice} className="recovery-notice quota-resume-notice" role="status" tabIndex={-1} lang={langTag(language)}>
       <Clock size={14} />
       <span>{text}</span>
       <div className="quota-resume-actions">

@@ -3,7 +3,7 @@ import { ArrowUpRight, ChevronDown, LoaderCircle, PanelRight } from "lucide-reac
 import { errorText } from "../api";
 import { strings, useStrings } from "../i18n";
 import { useOpenWith, type OpenWith } from "./portal-preference";
-import { mintPreview, openInPortal, openOutside, phonePreviewsOff, reaches, type PortalTarget } from "./index";
+import { mintPreview, openInPortal, openOutside, phonePreviewsOff, provesPreview, type PortalTarget } from "./index";
 import "./portal.css";
 
 // The entry's own words (T-189).
@@ -87,7 +87,7 @@ export function OpenChoice({
     setBusy(true);
     try {
       const at = await mintPreview(chosen.source);
-      if (!(await reaches(at.proof.url, at.proof.answer))) {
+      if (!(await provesPreview(at.proof))) {
         openInPortal(chosen, from);
         onOpened?.();
       } else {

@@ -61,9 +61,10 @@ goes back as OpenCode's snapshot holds it. It is not a conversation-only
 rewind.
 
 The preview lists each such file: what it is now and what it becomes. A change
-made to it since, by you or another Agent, is overwritten. Core keeps a copy of
-each file in the Agent's folder before it asks OpenCode. Files can be sent back
-only when Core can tell exactly what OpenCode will write:
+made to it since, by you or another Agent, is overwritten. Before it asks
+OpenCode, Core keeps a copy of each file in its own data folder, under
+`opencode/<agent>/revert/<attempt>`, not in the Agent's folder. Files can be
+sent back only when Core can tell exactly what OpenCode will write:
 
 - OpenCode was started by Core from its native executable, not a script or
   wrapper, and Core's environment sets no Git variables;
@@ -82,16 +83,26 @@ change; then OpenCode is asked once.
 - **Reverted:** the session holds the revert. Each file is reported on its own:
   as the snapshot holds it, still as before (OpenCode only logs a checkout that
   fails), or neither. Nothing is overwritten to fix it. The original text is
-  added to the draft.
+  added to the draft. Until the next message, `/compact` is refused: OpenCode
+  would apply the revert first. Send a message, then compact.
 - **Not reverted:** OpenCode refused before it began (busy, no such session, a
   request it could not read), or its request ended without keeping the revert
   and a new read finds the messages and every file as before. No turn leaves
   and no text is added.
 - **Not yet confirmed:** new messages, commands, `/compact` and another revert
-  wait. **Check outcome** reads again only a request OpenCode answered. One it
-  never answered stays unconfirmed: OpenCode's own Git processes may still be
-  changing files. There is no **Keep current history** for OpenCode, and the
-  revert is never asked for again.
+  wait. **Check outcome** settles what can be told:
+  - a revert OpenCode confirmed but Core could not record is recorded;
+  - a request OpenCode answered without keeping the revert is read again, and
+    is not reverted only if the messages and every file are as before;
+  - if Core stopped before the request went out, nothing was asked, and it is
+    not reverted (the copies stay where they were kept);
+  - a request with no answer kept is reverted if OpenCode's session now holds
+    the revert, which OpenCode keeps only once its files are sent back.
+    Otherwise it stays unconfirmed: OpenCode may have changed files before it
+    stopped, and its own Git processes may still be changing them.
+
+  There is no **Keep current history** for OpenCode, and the revert is never
+  asked for again.
 
 OpenCode's restore (unrevert) is not offered: it writes back every file of the
 snapshot. This has been checked against Core's stand-in of OpenCode 1.19.3, not

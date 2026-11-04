@@ -16,15 +16,27 @@ export type RemoteAccessOperation = {
   id: string;
   requestId: string;
   kind: "apply" | "disable";
-  state: "running" | "succeeded" | "failed" | "rolledBack" | "uncertain" | "interrupted";
-  step: "validate" | "save" | "listen" | "serve" | "verify" | "done";
+  /** `partial`: phone access changed as asked, an older Core's previews entry was not removed (T-5). */
+  state: "running" | "succeeded" | "failed" | "rolledBack" | "uncertain" | "interrupted" | "partial";
+  /** `cleanup`: removing an older Core's own Serve entry for phone previews (T-5). */
+  step: "validate" | "save" | "listen" | "serve" | "verify" | "cleanup" | "done";
   error?: string;
   /** Sentences Core adds about what it did, such as an entry it took over. */
   notes?: string[];
   startedAt: string;
   finishedAt?: string;
   url?: string;
+  /** What became of an older Core's own Serve entry for phone previews, when
+   * this change looked (T-5): said apart from how phone access ended. */
+  legacy?: LegacyCleanup;
+  /** What the change was asked with; `previews` only when its page sent one (T-5). */
+  request?: { previews?: boolean };
 };
+
+/** An older Core's Serve entry for phone previews, as a change left it (T-5):
+ * removed, gone already, or changed outside Yuzuno (left as it is) — all of
+ * which forget it — or kept for the next change to look again. */
+export type LegacyCleanup = { state: "removed" | "absent" | "foreign" | "partial" | "uncertain"; detail: string };
 
 export type RemoteAccessView = {
   support: {
@@ -39,6 +51,8 @@ export type RemoteAccessView = {
     servePort: number;
     localPort: number;
     origin: string | null;
+    /** Whether phone access includes previews (T-5); null in a saving from before. */
+    previews?: boolean | null;
     savedAt: string;
     /** false: saved, but its last apply failed or is still running. */
     applied: boolean;
@@ -74,32 +88,29 @@ export type RemoteAccessView = {
   canChange: boolean;
   /** Why it cannot be changed here, when `canChange` is false. */
   readOnlyReason?: string | null;
-  /** Phone previews (T-5); a Core from before them sends none. */
-  preview?: RemoteAccessPreview;
+  /** Phone access including previews (T-5); a Core from before sends none,
+   * and takes no `previews` with a change. */
+  previews?: RemoteAccessPreviews;
 };
 
-/** Phone previews (T-5): single-file HTML previews opened through the
- * phone entry are served by an entry of their own, another Serve port of
- * the same tailnet name. The same four facts as the phone entry's. */
-export type PreviewStep = { id: "listener" | "hop" | "serve" | "endToEnd"; state: "ok" | "failed" | "skipped"; detail: string };
-export type RemoteAccessPreview = {
-  saved: null | { enabled: boolean; servePort: number; localPort: number; savedAt: string; applied: boolean };
-  listening: null | { port: number; servePort: number; since: string };
-  serve: { state: RemoteAccessView["serve"]["state"]; port?: number; target?: string; detail?: string; observedAt?: string };
-  verification: null | { ok: boolean; at: string; steps: PreviewStep[] };
-  operation: RemoteAccessOperation | null;
-  /** Only while they listen, their Serve entry is Yuzuno's and phone access is on. */
-  url: string | null;
-  startupError?: string | null;
-  defaults: { servePort: number; localPort: number };
-  /** Whether phone access is on, which previews go through. */
+/** Single-file HTML previews through the phone entry (T-5): on its own
+ * address, under a path it keeps for them. */
+export type RemoteAccessPreviews = {
+  /** Whether phone access includes them, as it applies. */
+  included: boolean;
+  /** Whether a phone can open them now: included, with phone access on. */
   available: boolean;
+  /** An older Core's own Serve entry for them: still to remove (with the
+   * last change's try at it, if one could not); or no longer held, with what
+   * became of it; or why its record cannot be read. */
+  legacy: null | LegacyHeld | LegacyFormer | { error: string };
 };
-/** What turning previews on or off sends besides its request ID. */
-export type PreviewDraft = { enabled: boolean; servePort?: number; localPort?: number };
+export type LegacyEntry = { servePort: number; host: string; target: string };
+export type LegacyHeld = LegacyEntry & { lastAttempt: null | { state: LegacyCleanup["state"]; detail: string; at: string } };
+export type LegacyFormer = { state: LegacyCleanup["state"]; detail: string; at: string; formerOwned: LegacyEntry };
 
-/** What Save and apply sends besides its request ID. */
-export type RemoteAccessDraft = { enabled: boolean; login?: string; servePort?: number; localPort?: number };
+/** What Save and apply sends besides its request ID; `previews` only to a Core that takes it. */
+export type RemoteAccessDraft = { enabled: boolean; login?: string; servePort?: number; localPort?: number; previews?: boolean };
 
 export function running(operation: RemoteAccessOperation | null | undefined): boolean {
   return operation?.state === "running";
@@ -117,6 +128,7 @@ const words = strings({
     listen: "Core listens on the phone's port",
     serve: "Tailscale Serve points to it",
     verify: "Reach it from the tailnet",
+    cleanup: "Remove the older phone previews' Serve entry",
     done: "Done",
   } as Record<RemoteAccessOperation["step"], string>,
   verificationSteps: {
@@ -160,6 +172,7 @@ const words = strings({
     listen: "Core 在手机端口上监听",
     serve: "Tailscale Serve 指向它",
     verify: "从 tailnet 访问它",
+    cleanup: "移除旧版手机预览的 Serve 入口",
     done: "完成",
   },
   verificationSteps: {
@@ -295,79 +308,6 @@ export function stateLines(view: RemoteAccessView, language: Language = "en"): S
   ];
 }
 
-const previewWords = strings({
-  steps: {
-    listener: "Core's previews port",
-    hop: "From Windows to Core",
-    serve: "Tailscale Serve",
-    endToEnd: "The whole way",
-  } as Record<PreviewStep["id"], string>,
-  savedOn: (servePort: number, applied: boolean) => `On · Serve port ${servePort}${applied ? "" : " · not applied"}`,
-  listeningOn: (port: number, servePort: number) => `On, port ${port} for Serve port ${servePort}`,
-  notListening: "Not listening for previews",
-}, {
-  steps: {
-    listener: "Core 的预览端口",
-    hop: "从 Windows 到 Core",
-    serve: "Tailscale Serve",
-    endToEnd: "完整链路",
-  },
-  savedOn: (servePort, applied) => `开启 · Serve 端口 ${servePort}${applied ? "" : " · 未应用"}`,
-  listeningOn: (port, servePort) => `开启，端口 ${port}，用于 Serve 端口 ${servePort}`,
-  notListening: "未为预览监听",
-});
-
-export const previewStepLabels = (language: Language = "en") => previewWords(language).steps;
-
-/** Phone previews' facts, one per line, as the phone entry's are shown. */
-export function previewLines(preview: RemoteAccessPreview, language: Language = "en"): StateLine[] {
-  const w = words(language);
-  const p = previewWords(language);
-  const { saved, listening, serve, verification } = preview;
-  const failed = verification?.steps.find((step) => step.state === "failed");
-  const setUp = !!listening || (!!saved?.enabled && saved.applied);
-  const port = String(serve.port ?? "?");
-  return [
-    {
-      label: w.savedLabel,
-      text: !saved ? w.nothingSaved : !saved.enabled ? w.savedOff : p.savedOn(saved.servePort, saved.applied),
-      tone: !saved || !saved.enabled ? "off" : saved.applied ? "on" : "warn",
-    },
-    {
-      label: w.listeningLabel,
-      text: listening ? p.listeningOn(listening.port, listening.servePort) : p.notListening,
-      tone: listening ? "on" : "off",
-    },
-    {
-      label: w.serveLabel,
-      text:
-        serve.state === "conflict"
-          ? serve.detail ?? w.conflict(port)
-          : {
-              unchecked: w.notChecked,
-              absent: w.absent,
-              ours: w.ours(port, serve.target),
-              sameTargetNotRecorded: w.sameTarget(port),
-              error: w.serveError(serve.detail),
-            }[serve.state],
-      tone: serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unchecked" ? "unknown" : "warn",
-    },
-    {
-      label: w.verificationLabel,
-      // Before they are set up, the listener and the whole way fail by
-      // design; only a Serve port someone else holds is worth saying.
-      text: !verification
-        ? w.notChecked
-        : verification.ok
-          ? w.reached
-          : !setUp
-            ? serve.state === "conflict" ? w.portTaken(port) : w.notSetUp
-            : w.failedAt(failed ? p.steps[failed.id] ?? failed.id : null, failed?.detail ?? ""),
-      tone: !verification ? "unknown" : verification.ok ? "on" : !setUp && serve.state !== "conflict" ? "off" : "warn",
-    },
-  ];
-}
-
 /** The QR code's dark modules as one SVG path, with a four-module margin. */
 export function qrPath(qr: { size: number; rows: string[] }): string {
   let d = "";
@@ -386,26 +326,24 @@ export function qrPath(qr: { size: number; rows: string[] }): string {
  * An empty Workspace (not known yet) keeps none. A request saved before
  * requests were kept per Workspace, under `yuzuno.remoteAccess.pending`
  * alone, is left where it is and never asked again. */
-const store = (workspace: string, kind: PendingKind) => `yuzuno.remoteAccess.${kind}:${encodeURIComponent(workspace)}`;
+const store = (workspace: string) => `yuzuno.remoteAccess.pending:${encodeURIComponent(workspace)}`;
 export type Pending = { requestId: string; draft: RemoteAccessDraft };
-/** Phone access's change, or phone previews' (T-5), kept apart. */
-export type PendingKind = "pending" | "previewPending";
 
-export function loadPending(workspace: string, kind: PendingKind = "pending"): Pending | null {
+export function loadPending(workspace: string): Pending | null {
   if (!workspace) return null;
   try {
-    const value = JSON.parse(window.localStorage.getItem(store(workspace, kind)) || "null");
+    const value = JSON.parse(window.localStorage.getItem(store(workspace)) || "null");
     return value && typeof value.requestId === "string" && value.draft ? value : null;
   } catch {
     return null;
   }
 }
 
-export function savePending(workspace: string, pending: Pending | null, kind: PendingKind = "pending") {
+export function savePending(workspace: string, pending: Pending | null) {
   if (!workspace) return;
   try {
-    if (pending) window.localStorage.setItem(store(workspace, kind), JSON.stringify(pending));
-    else window.localStorage.removeItem(store(workspace, kind));
+    if (pending) window.localStorage.setItem(store(workspace), JSON.stringify(pending));
+    else window.localStorage.removeItem(store(workspace));
   } catch {
     // Storage may be unavailable; the operation itself is Core's record.
   }
