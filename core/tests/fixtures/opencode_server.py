@@ -26,6 +26,7 @@ import json
 import os
 import pwd
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -87,7 +88,7 @@ sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], 
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
-         'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok'}
+         'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'fork': 'ok', 'history': 'ok', 'replay': 'ok'}
 # Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
 held_reads = []
 # Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
@@ -96,6 +97,11 @@ late = {}
 held = {}
 # Reverts or unreverts held (mode `hold`) or answered late (mode `late`), by session: what lets them go on.
 reverting = {}
+# OpenCode's durable events (T-10 Fork), as its database keeps them (`core/src/event.ts`): every v1
+# session, message and part event, under its session (the aggregate), numbered from 0 in each.
+DURABLE = {'session.created', 'session.updated', 'session.deleted', 'message.updated', 'message.removed',
+           'message.part.updated', 'message.part.removed'}
+durable, aggregates = [], {}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 tools = []
@@ -117,6 +123,15 @@ def publish(kind, properties):
     with lock:
         for stream in streams:
             stream.put(event)
+        kept = kind in DURABLE and isinstance(properties.get('sessionID'), str)
+        if kept:
+            aggregate = properties['sessionID']
+            seq = aggregates.get(aggregate, -1) + 1
+            aggregates[aggregate] = seq
+            durable.append({'id': event['id'], 'aggregate_id': aggregate, 'seq': seq, 'type': kind + '.1',
+                            'data': json.loads(json.dumps(properties))})
+    if kept:
+        save()
 
 
 def log(entry):
@@ -126,7 +141,8 @@ def log(entry):
 
 def save():
     with lock:
-        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0]}))
+        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
+                                                     'durable': durable, 'aggregates': aggregates}))
 
 
 def load():
@@ -136,6 +152,8 @@ def load():
         sessions.update(state['sessions'])
         messages.update(state['messages'])
         counter[0] = state['counter']
+        durable.extend(state.get('durable', []))
+        aggregates.update(state.get('aggregates', {}))
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -166,13 +184,13 @@ def last_prompt(session):
     return max(users, key=lambda m: m['info']['time']['created'])['info']['id'] if users else None
 
 
-def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None):
+def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None, raw_parts=None):
     """An assistant message answering the session's last prompt (or `parent`), with a text part.
     `extra` adds to its info what OpenCode reports of an answer: `tokens`, `providerID`/`modelID`, `summary`.
     `files` ({relative path: text, or None to delete}) are changed in the work folder as a run's tools change
     them, and named in a `patch` part whose hash is the snapshot from before (`session/processor.ts`); with
     snapshots off, no part. `raw_patches` are patch parts as they are ({hash, files}), such as one whose snapshot
-    is gone."""
+    is gone; `raw_parts` any other parts, as they are (such as a `task` tool's, naming its sub-agent)."""
     now = int(time.time() * 1000)
     info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent or last_prompt(session),
             'time': {'created': now}, 'finish': 'stop'}
@@ -193,6 +211,8 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
                           'files': [str(WORK / rel) for rel in files]})
     for patch in raw_patches or []:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', **patch})
+    for part in raw_parts or []:
+        parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], **part})
     with lock:
         messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts}
     save()
@@ -309,6 +329,41 @@ def ordered(session):
     return sorted(messages.get(session, {}).values(), key=lambda m: (m['info']['time']['created'], m['info']['id']))
 
 
+def forked_title(title):
+    # `session/session.ts` getForkedTitle.
+    found = re.match(r'^(.+) \(fork #(\d+)\)$', title)
+    return f'{found.group(1)} (fork #{int(found.group(2)) + 1})' if found else f'{title} (fork #1)'
+
+
+def project(event):
+    """What OpenCode's v1 projectors make of a replayed durable event (T-10 Fork): here only the events a fork
+    writes. Called with `lock` held. Afterwards this process's own IDs come after every ID it took in."""
+    kind, data = event['type'], event['data']
+    session = data['sessionID']
+    if kind == 'session.created.1':
+        sessions[session] = data['info']
+        taken = [session]
+    elif kind == 'message.updated.1':
+        found = messages.setdefault(session, {}).get(data['info']['id'])
+        messages[session][data['info']['id']] = {'info': data['info'], 'parts': found['parts'] if found else []}
+        taken = [data['info']['id']]
+    elif kind == 'message.part.updated.1':
+        part = data['part']
+        message = messages.setdefault(session, {}).setdefault(part['messageID'], {'info': None, 'parts': []})
+        at = next((i for i, p in enumerate(message['parts']) if p['id'] == part['id']), None)
+        if at is None:
+            message['parts'].append(part)
+        else:
+            message['parts'][at] = part
+        taken = [part['id']]
+    else:
+        raise ValueError(f'Unknown durable event type {kind}')
+    for id in taken:
+        tail = id.rsplit('_', 1)[-1]
+        if tail.isdigit():
+            counter[0] = max(counter[0], int(tail))
+
+
 def cleanup(session):
     """As OpenCode 1.19.3 applies a revert waiting in the session at its next prompt, command or summarize
     (`session/revert.ts` cleanup): the messages from its boundary on are deleted, each announced, and the
@@ -391,7 +446,7 @@ def control(name, body):
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
     if name == 'reply':
         info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'),
-                             body.get('info'), body.get('files'), body.get('patches'))
+                             body.get('info'), body.get('files'), body.get('patches'), body.get('parts'))
         if body.get('idle', True):
             go_idle(body['sessionID'])
         return info
@@ -557,6 +612,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, control(parts[1], body or {}))
         authorized = self.headers.get('authorization') == AUTHORIZATION
         log({'method': method, 'path': url.path, 'query': parse_qs(url.query), 'body': body, 'authorized': authorized})
+        # The instance the request names (`?directory=`), as OpenCode routes one.
+        self.directory = parse_qs(url.query).get('directory', [''])[0]
         if not authorized:
             return self.reply(401)
         # A route that answers late (T-10), as a busy OpenCode might.
@@ -611,6 +668,10 @@ class Handler(BaseHTTPRequestHandler):
                 status['error'] = 'fixture: connection refused'
             mcp[body['name']] = status
             return self.reply(200, {body['name']: status})
+        if key == ('POST', 'sync', 'history'):
+            return self.history(body)
+        if key == ('POST', 'sync', 'replay'):
+            return self.replay(body)
         if len(parts) >= 2 and parts[0] == 'session':
             return self.session(method, parts[1], parts[2:], body)
         if method == 'POST' and len(parts) == 3 and parts[0] == 'permission' and parts[2] == 'reply':
@@ -636,6 +697,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.revert(session, body)
         if (method, *rest) == ('POST', 'unrevert'):
             return self.unrevert(session)
+        if (method, *rest) == ('POST', 'fork'):
+            return self.fork(session, body)
         if method == 'DELETE' and len(rest) == 4 and rest[0] == 'message' and rest[2] == 'part':
             return self.delete_part(session, rest[1], rest[3])
         if (method, *rest) == ('GET', 'message'):
@@ -959,6 +1022,143 @@ class Handler(BaseHTTPRequestHandler):
             go_on.wait(60)
         return self.reply(200, info)
 
+    def fork(self, session, body):
+        """As OpenCode 1.19.3's `Session.fork` (`session/session.ts`, `handlers/session.ts`): a new session in
+        the instance the request names, holding a copy of every message before `messageID` under new IDs, each
+        part under a new ID, an answer's `parentID` mapped to its copied parent (kept as it was if that is not
+        copied), a compaction part's `tail_start_id` mapped (dropped if not copied). Nothing is checked: a
+        `messageID` the session does not hold copies every message, and a busy session or a waiting revert is
+        copied as it is. The new session has no parent, agent, model, permission or revert. Modes (`fork`):
+        `lost` (done, then no answer), `fail` (the session and its first message written, then a 500),
+        `unmapped` (the first answer keeps its old `parentID`), `hold` (held until `goOn`, then done)."""
+        cutoff = (body or {}).get('messageID')
+        if cutoff is not None and not (isinstance(cutoff, str) and cutoff.startswith('msg')):
+            return self.reply(400, {'name': 'BadRequest', 'data': {}})
+        mode = modes['fork']
+        if mode == 'hold':
+            # Held before anything is written, until the test lets it go (`goOn`).
+            waiter = threading.Event()
+            with lock:
+                reverting[session] = waiter
+            waiter.wait(30)
+        original = sessions[session]
+        now = int(time.time() * 1000)
+        info = {'id': new_id('ses'), 'projectID': PROJECT, 'directory': self.directory,
+                'title': forked_title(original.get('title', '')), 'time': {'created': now, 'updated': now}}
+        for name in ('workspaceID', 'metadata'):
+            if original.get(name) is not None:
+                info[name] = json.loads(json.dumps(original[name]))
+        with lock:
+            sessions[info['id']] = info
+        save()
+        publish('session.created', {'sessionID': info['id'], 'info': info})
+        stored = ordered(session)
+        target = next((i for i, m in enumerate(stored) if m['info']['id'] == cutoff), len(stored))
+        ids, unmapped = {}, mode == 'unmapped'
+        for index, message in enumerate(stored[:target]):
+            copied = json.loads(json.dumps(message['info']))
+            copied.update({'id': new_id('msg'), 'sessionID': info['id']})
+            ids[message['info']['id']] = copied['id']
+            parent = message['info'].get('parentID')
+            if copied['role'] == 'assistant' and parent in ids:
+                if unmapped:
+                    unmapped = False
+                else:
+                    copied['parentID'] = ids[parent]
+            parts = []
+            for part in message['parts']:
+                part = json.loads(json.dumps(part))
+                part.update({'id': new_id('prt'), 'messageID': copied['id'], 'sessionID': info['id']})
+                if part.get('type') == 'compaction' and part.get('tail_start_id'):
+                    if part['tail_start_id'] in ids:
+                        part['tail_start_id'] = ids[part['tail_start_id']]
+                    else:
+                        del part['tail_start_id']
+                parts.append(part)
+            with lock:
+                messages.setdefault(info['id'], {})[copied['id']] = {'info': copied, 'parts': parts}
+            save()
+            publish('message.updated', {'sessionID': info['id'], 'info': copied})
+            for part in parts:
+                publish('message.part.updated', {'sessionID': info['id'], 'part': part, 'time': now})
+            if mode == 'fail':
+                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: fork failed part way'}})
+        if mode == 'lost':
+            self.close_connection = True
+            return None
+        return self.reply(200, info)
+
+    def history(self, body):
+        """As OpenCode 1.19.3's `/sync/history` (`handlers/sync.ts`): every durable event in the database, by
+        sequence number across aggregates, but those at or before the sequence the body gives for their
+        aggregate. Modes (`history`): `fail` (a 500), `{'noise': n}` (also an event of another session holding
+        n bytes)."""
+        known = body or {}
+        if not isinstance(known, dict) or any(not isinstance(v, int) or v < 0 for v in known.values()):
+            return self.reply(400, {'name': 'BadRequest', 'data': {}})
+        mode = modes['history']
+        if mode == 'fail':
+            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: history failed'}})
+        with lock:
+            rows = [r for r in durable if not (r['aggregate_id'] in known and r['seq'] <= known[r['aggregate_id']])]
+        if isinstance(mode, dict) and mode.get('noise'):
+            rows = [{'id': 'evt_noise', 'aggregate_id': 'ses_noise', 'seq': 0, 'type': 'session.updated.1',
+                     'data': {'sessionID': 'ses_noise', 'info': {'title': 'n' * mode['noise']}}}] + rows
+        return self.reply(200, sorted(rows, key=lambda r: r['seq']))
+
+    def replay(self, body):
+        """As OpenCode 1.19.3's `/sync/replay` (`handlers/sync.ts`, `core/src/event.ts` replayAll): one
+        aggregate's events, numbered on from the first with no gap; each committed on its own, projected first.
+        One already stored at its number is passed over if it is the same event (ID, type, data); otherwise
+        the replay ends there ("diverged"), as does a gap after what is stored or an event ID stored before.
+        Modes (`replay`): `{'failAfter': k}` (k events committed, then a 500), `lost` (all committed, then no
+        answer), `tamper` (each text part kept with other text, as a projection that went wrong)."""
+        events = (body or {}).get('events')
+        if not isinstance((body or {}).get('directory'), str) or not isinstance(events, list) or not events:
+            return self.reply(400, {'name': 'BadRequest', 'data': {}})
+        def fail(message):
+            return self.reply(500, {'name': 'UnknownError', 'data': {'message': message}})
+        source = events[0]['aggregateID']
+        if any(e['aggregateID'] != source for e in events):
+            return fail('Replay events must belong to the same aggregate')
+        if any(e['seq'] != events[0]['seq'] + i for i, e in enumerate(events)):
+            return fail('Replay sequence mismatch')
+        mode = modes['replay']
+        for index, event in enumerate(events):
+            if isinstance(mode, dict) and index == mode.get('failAfter'):
+                return fail('fixture: replay failed part way')
+            refused = None
+            with lock:
+                latest = aggregates.get(source, -1)
+                if event['seq'] <= latest:
+                    stored = next((r for r in durable if r['aggregate_id'] == source and r['seq'] == event['seq']), None)
+                    if not (stored and stored['id'] == event['id'] and stored['type'] == event['type']
+                            and stored['data'] == event['data']):
+                        refused = f"Replay diverged at aggregate {source} sequence {event['seq']}"
+                elif event['seq'] != latest + 1:
+                    refused = f"Sequence mismatch for aggregate {source}: expected {latest + 1}, got {event['seq']}"
+                elif any(r['id'] == event['id'] for r in durable):
+                    refused = f"Event {event['id']} already exists"
+                else:
+                    try:
+                        if mode == 'tamper' and event['type'] == 'message.part.updated.1' and event['data']['part'].get('type') == 'text':
+                            event = json.loads(json.dumps(event))
+                            event['data']['part']['text'] = 'tampered'
+                        project(event)
+                    except ValueError as error:
+                        refused = str(error)
+                    else:
+                        aggregates[source] = event['seq']
+                        durable.append({'id': event['id'], 'aggregate_id': source, 'seq': event['seq'],
+                                        'type': event['type'], 'data': event['data']})
+            if refused:
+                return fail(refused)
+            save()
+        if mode == 'lost':
+            self.close_connection = True
+            return None
+        return self.reply(200, {'sessionID': source})
+
     def unrevert(self, session):
         """As OpenCode 1.19.3's unrevert, refused while the session runs (409): the whole folder goes back
         to the revert's snapshot (every file it holds written again, none deleted) and the revert is cleared.
@@ -1067,8 +1267,16 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     argv = sys.argv[1:]
+    new = not (ROOT / 'state.json').exists()
     load()
     modes['mcp'] = switch('mcp') or 'connected'
+    # Modes for a process started on a new database (T-10 Fork), as a fork's target is: a test cannot leave
+    # a switch in a folder it does not know yet, so it leaves them beside every Agent's.
+    planned = ROOT.parent / 'fixture-new.json'
+    if new and planned.exists():
+        modes.update(json.loads(planned.read_text()))
+    with (ROOT / 'starts.jsonl').open('a') as out:
+        out.write(json.dumps({'pid': os.getpid(), 'new': new}) + '\n')
     # Stands in for OpenCode's own children (language servers, MCP servers).
     child = subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
