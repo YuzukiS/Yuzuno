@@ -474,11 +474,6 @@ fn reaped(pid: i32) -> bool {
 async fn a_capture_ends_within_its_deadline_and_reaps_what_it_started_however_it_ends() {
     let dir = tempfile::tempdir().unwrap();
     let pid = |name: &str| -> i32 { std::fs::read_to_string(dir.path().join(name)).unwrap().trim().parse().unwrap() };
-    let sh = |script: String| {
-        let mut command = tokio::process::Command::new("/bin/sh");
-        command.arg("-c").arg(script);
-        command
-    };
     let within = Duration::from_secs(2);
 
     // What it says held open by a process it started in turn: its answer and its own end came, what it says
@@ -511,4 +506,114 @@ async fn a_capture_ends_within_its_deadline_and_reaps_what_it_started_however_it
     // And an ordinary end: its answer, what it said, how it ended.
     let (status, answer, said) = capture(sh("echo answer; echo trouble >&2; exit 3".into()), 100, within).await.unwrap();
     assert_eq!((status.code(), answer, said.as_str()), (Some(3), b"answer\n".to_vec(), "trouble"));
+}
+
+/// A pipe that fails once it has given its first bytes, as a read can.
+struct FailsAfterFirst<R>(R, bool);
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for FailsAfterFirst<R> {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        if self.1 {
+            return std::task::Poll::Ready(Err(std::io::Error::other("a read that fails")));
+        }
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.0).poll_read(cx, buf);
+        self.1 = matches!(polled, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before;
+        polled
+    }
+}
+
+/// A pipe that says when it is dropped.
+struct Dropped<R>(R, std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Dropped<R> {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl<R> Drop for Dropped<R> {
+    fn drop(&mut self) {
+        self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn sh(script: String) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.arg("-c").arg(script);
+    command
+}
+
+/// The process ID a script wrote to `file`, once it has.
+async fn written(file: &Path) -> i32 {
+    for _ in 0..400 {
+        if let Some(pid) = fs::read_to_string(file).ok().and_then(|pid| pid.trim().parse().ok()) {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no process ID in {}", file.display());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_read_that_fails_is_the_captures_error_with_its_cause_and_what_it_started_is_reaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let within = Duration::from_secs(10);
+
+    // What it says fails to be read after its answer and its own end came: that failure, not a panic.
+    let quick = dir.path().join("quick");
+    let error = capture_through(sh(format!("echo $$ > {}; echo trouble >&2; echo answer", quick.display())), 100, within,
+        |out, err| (out, FailsAfterFirst(err, false))).await.unwrap_err();
+    let error = format!("{error:#}");
+    assert!(error.contains("What Git said could not be read"), "{error}");
+    assert!(error.contains("a read that fails"), "the cause is kept: {error}");
+    assert!(reaped(written(&quick).await), "what it started is reaped");
+
+    // Its answer fails to be read while it runs on: that failure at once, and what it started killed and reaped.
+    let stuck = dir.path().join("stuck");
+    let started = std::time::Instant::now();
+    let error = capture_through(sh(format!("echo $$ > {}; echo answer; exec sleep 30", stuck.display())), 100, within,
+        |out, err| (FailsAfterFirst(out, false), err)).await.unwrap_err();
+    let error = format!("{error:#}");
+    assert!(error.contains("Git's answer could not be read"), "{error}");
+    assert!(error.contains("a read that fails"), "the cause is kept: {error}");
+    assert!(started.elapsed() < within / 2, "ended at once: {:?}", started.elapsed());
+    assert!(reaped(written(&stuck).await), "killed and reaped when its answer could not be read");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_capture_dropped_before_it_ends_ends_its_reads_with_it_and_kills_what_it_started() {
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    let dir = tempfile::tempdir().unwrap();
+    let (me, held) = (dir.path().join("self"), dir.path().join("held"));
+    let (answer, saying) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let (a, s) = (answer.clone(), saying.clone());
+    // It runs on, and so does a process it started in turn, holding what it says open.
+    let mut capture = Box::pin(capture_through(
+        sh(format!("echo $$ > {}; sh -c 'echo $$ > {}; exec sleep 30 >/dev/null' & exec sleep 30", me.display(), held.display())),
+        100, Duration::from_secs(30), move |out, err| (Dropped(out, a), Dropped(err, s))));
+    let started = tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(written(&me), written(&held)) });
+    let (me, descendant) = tokio::select! {
+        ended = &mut capture => panic!("it ended before it was dropped: {ended:?}"),
+        pids = started => pids.expect("it started"),
+    };
+    drop(capture);
+    assert!(answer.load(Ordering::SeqCst), "its answer is read no longer once it is dropped");
+    assert!(saying.load(Ordering::SeqCst), "what it says is read no longer once it is dropped");
+    // Killed: nothing here waits for it, so it may stay unreaped until Tokio reaps it.
+    let state = |pid: i32| fs::read_to_string(format!("/proc/{pid}/stat")).ok()
+        .and_then(|stat| stat.rsplit(')').next().and_then(|rest| rest.split_whitespace().next()).map(str::to_owned));
+    let mut ended = false;
+    for _ in 0..200 {
+        ended = matches!(state(me).as_deref(), None | Some("Z" | "X"));
+        if ended {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(ended, "what it started is killed: {:?}", state(me));
+    assert!(!reaped(descendant), "a process it did not start is not its to end");
+    unsafe { libc::kill(descendant, libc::SIGKILL) };
 }

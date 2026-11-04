@@ -377,14 +377,32 @@ async fn git(store: &Path, args: &[&str], limit: u64) -> Result<std::result::Res
 
 /// `command` run with its answer kept, at most `limit` bytes of it, and the
 /// start of what it says on error (the rest read away, so it never waits on
-/// a full pipe). Its answer, what it says and its end all come within one
-/// deadline, `within` from its start (Lead 4081): past it, more than `limit`
-/// bytes, or a read that fails, and it is ended as it is: the process this
-/// started is killed and reaped, and the reader of what it says is stopped
-/// and waited for. A process it started in turn, and still holding a pipe,
-/// is not this one's to end: the reads stop at the deadline all the same.
-/// Each such end is its own error, never an answer.
-async fn capture(mut command: tokio::process::Command, limit: u64, within: Duration) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
+/// a full pipe). Both are read side by side in this one future, and its end
+/// waited for, all within one deadline, `within` from its start (Lead 4081,
+/// 4091): past it, more than `limit` bytes, or a read that fails, and the
+/// process this started is killed and waited for; each is its own error,
+/// never an answer, a failed read keeping its cause. Nothing of the reads
+/// outlives this future: they are part of it, so they end with it, also
+/// when it is dropped before it ends. Then nothing here waits for the
+/// process: it gets the kill kill_on_drop sends, and its reaping is left to
+/// Tokio, best effort. A process it started in turn, and still holding a
+/// pipe, is not this one's to end.
+async fn capture(command: tokio::process::Command, limit: u64, within: Duration) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
+    capture_through(command, limit, within, |out, err| (out, err)).await
+}
+
+/// `capture`, reading through what `through` makes of the process's pipes:
+/// the pipes themselves, but for a test's reader that fails.
+async fn capture_through<O, E>(
+    mut command: tokio::process::Command,
+    limit: u64,
+    within: Duration,
+    through: impl FnOnce(tokio::process::ChildStdout, tokio::process::ChildStderr) -> (O, E),
+) -> Result<(std::process::ExitStatus, Vec<u8>, String)>
+where
+    O: tokio::io::AsyncRead + Unpin,
+    E: tokio::io::AsyncRead + Unpin,
+{
     let deadline = tokio::time::Instant::now() + within;
     let mut child = command
         .stdin(std::process::Stdio::null())
@@ -393,36 +411,36 @@ async fn capture(mut command: tokio::process::Command, limit: u64, within: Durat
         .kill_on_drop(true)
         .spawn()
         .context("Git could not be started on this Core's host")?;
-    let mut out = child.stdout.take().context("Missing Git output")?;
-    let mut err = child.stderr.take().context("Missing Git errors")?;
-    let mut said = tokio::spawn(async move {
-        let mut kept = Vec::new();
-        (&mut err).take(4096).read_to_end(&mut kept).await?;
-        tokio::io::copy(&mut err, &mut tokio::io::sink()).await?;
-        Ok::<_, std::io::Error>(String::from_utf8_lossy(&kept).trim().chars().take(600).collect::<String>())
+    let (mut out, mut err) = through(child.stdout.take().context("Missing Git output")?, child.stderr.take().context("Missing Git errors")?);
+    // Which reads had ended when the deadline came, to say what did not.
+    let (mut answered, mut said) = (false, false);
+    let outcome = tokio::time::timeout_at(deadline, async {
+        let answer = async {
+            let mut stdout = Vec::new();
+            (&mut out).take(limit + 1).read_to_end(&mut stdout).await.context("Git's answer could not be read")?;
+            ensure!(stdout.len() as u64 <= limit, "Git's answer exceeded {limit} bytes");
+            answered = true;
+            Ok::<_, anyhow::Error>(stdout)
+        };
+        let saying = async {
+            let mut kept = Vec::new();
+            (&mut err).take(4096).read_to_end(&mut kept).await.context("What Git said could not be read")?;
+            tokio::io::copy(&mut err, &mut tokio::io::sink()).await.context("What Git said could not be read")?;
+            said = true;
+            Ok::<_, anyhow::Error>(String::from_utf8_lossy(&kept).trim().chars().take(600).collect::<String>())
+        };
+        let (stdout, text) = tokio::try_join!(answer, saying)?;
+        let status = child.wait().await.context("How Git ended could not be read")?;
+        Ok::<_, anyhow::Error>((status, stdout, text))
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let what = if !answered { "Git did not answer" } else if !said { "What Git said did not end" } else { "Git did not end" };
+        Err(anyhow::anyhow!("{what} within {} s", within.as_secs_f32()))
     });
-    let late = |what: &str| anyhow::anyhow!("{what} within {} s", within.as_secs_f32());
-    let outcome: Result<(std::process::ExitStatus, Vec<u8>, String)> = async {
-        let mut stdout = Vec::new();
-        tokio::time::timeout_at(deadline, (&mut out).take(limit + 1).read_to_end(&mut stdout))
-            .await
-            .map_err(|_| late("Git did not answer"))?
-            .context("Git's answer could not be read")?;
-        ensure!(stdout.len() as u64 <= limit, "Git's answer exceeded {limit} bytes");
-        let status = tokio::time::timeout_at(deadline, child.wait()).await.map_err(|_| late("Git did not end"))??;
-        let text = tokio::time::timeout_at(deadline, &mut said)
-            .await
-            .map_err(|_| late("What Git said did not end"))?
-            .context("What Git said was not read")?
-            .context("What Git said could not be read")?;
-        Ok((status, stdout, text))
-    }
-    .await;
     if outcome.is_err() {
         let _ = child.start_kill();
         let _ = child.wait().await;
-        said.abort();
-        let _ = said.await;
     }
     outcome
 }
