@@ -343,7 +343,9 @@ try {
   await page
     .getByRole("searchbox", { name: "Search loaded messages" })
     .fill("SteeringMarker");
-  await page.locator(".conversation-search-result").click();
+  // The result in the open dialog: a dialog that closes leaves through an inert, hidden copy (T-19 1b,
+  // DialogExitGhost), so the previous search's results can still be on the page while it fades.
+  await page.getByRole("dialog", { name: "Search conversation" }).locator(".conversation-search-result").click();
   // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
   await page.locator('[data-item-id="steering"].source-highlight').waitFor();
   // Mori's draft as saved. Since T-195 the open Agent is kept per Workspace (yuzuno.selected.<id>), so
@@ -353,7 +355,7 @@ try {
   await page
     .getByRole("searchbox", { name: "Search loaded messages" })
     .fill("HistoryMarker1");
-  await page.locator(".conversation-search-result").click();
+  await page.getByRole("dialog", { name: "Search conversation" }).locator(".conversation-search-result").click();
   await page.locator('[data-item-id="old-1"].source-highlight').waitFor();
   const top = await page
     .locator(".conversation-scroll")
