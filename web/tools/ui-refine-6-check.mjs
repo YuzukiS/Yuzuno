@@ -133,7 +133,8 @@ try {
   await settings.waitFor();
   const box = () => settings.evaluate((el) => { const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
   const sizes = {};
-  for (const tab of ["updates", "appearance", "review", "appearance"]) {
+  // Settings' tabs are its categories (T-187): Code review is under Agents & runtime.
+  for (const tab of ["updates", "appearance", "agents", "appearance"]) {
     await page.locator(`#settings-tab-${tab}`).click();
     await page.waitForTimeout(150);
     sizes[tab] = await box();
@@ -159,7 +160,8 @@ try {
   await dock.scrollIntoViewIfNeeded();
   await settings.locator('input[name="appearance-dock-jobs"]').fill("2");
   await settings.locator('input[name="appearance-dock-actions"]').fill("0");
-  assert.deepEqual(await dock.locator("output").allTextContents(), ["2", "Hidden", "5"]);
+  // Local jobs, GitHub Actions, PR reviews (T-25, two until chosen), Sub-agents.
+  assert.deepEqual(await dock.locator("output").allTextContents(), ["2", "Hidden", "2", "5"]);
   await shot("settings-dock-limits.png");
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "detached" });

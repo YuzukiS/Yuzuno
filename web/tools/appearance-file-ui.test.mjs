@@ -124,7 +124,7 @@ test("the export is a versioned file of the Appearance fields in effect, and not
   assert.equal(data.format, "yuzuno-appearance");
   assert.equal(data.version, 1);
   assert.deepEqual(Object.keys(data.appearance).sort(), ["agentList", "dock", "fontSize", "palette", "projectGroups", "theme", "turnDock"]);
-  assert.deepEqual(Object.keys(data.appearance.dock).sort(), ["actions", "jobs", "subAgents"]);
+  assert.deepEqual(Object.keys(data.appearance.dock).sort(), ["actions", "jobs", "reviews", "subAgents"]);
   assert.deepEqual(Object.keys(data.appearance.turnDock).sort(), ["bars", "numbers"]);
   assert.equal(data.appearance.palette, "pine");
   page.close();
@@ -195,7 +195,7 @@ test("values Yuzuno does not accept and names it does not know are shown and lef
   await until(() => page.said()?.startsWith("Imported"), "the import");
   const saved = JSON.parse(page.storage.getItem(KEY));
   assert.deepEqual(Object.keys(saved).sort(), ["agentList", "dock", "fontSize", "palette", "projectGroups", "theme", "turnDock"]);
-  assert.deepEqual(Object.keys(saved.dock).sort(), ["actions", "jobs", "subAgents"]);
+  assert.deepEqual(Object.keys(saved.dock).sort(), ["actions", "jobs", "reviews", "subAgents"]);
   assert.deepEqual([saved.palette, saved.theme, saved.fontSize, saved.dock.jobs], ["garden", "dark", 16, 2]);
   page.close();
 });
