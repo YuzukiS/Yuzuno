@@ -5,6 +5,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, savedDraft } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-agent-management";
 const output = resolve(
   process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/agent-management/browser",
 );
@@ -123,6 +125,7 @@ const server = createServer(async (req, res) => {
       let result = {};
       if (url.pathname === "/api/workspace")
         result = {
+          workspace: { id: WORKSPACE },
           agents,
           runtime: { connected: true },
           defaultCwd: "/fixture/project",
@@ -315,7 +318,7 @@ try {
   assert.ok(
     await page.getByText("Saved reply from Mori", { exact: true }).count(),
   );
-  assert.equal(await savedDraft(page, "a"), "Keep this unfinished draft 保留草稿");
+  assert.equal(await savedDraft(page, WORKSPACE, "a"), "Keep this unfinished draft 保留草稿");
   check(
     "Failed close preserves agent; successful close hides composer and keeps history and draft",
   );
@@ -333,7 +336,7 @@ try {
     .click();
   await page.getByRole("textbox", { name: "Message Mori" }).waitFor();
   assert.equal(
-    await composerDraft(page.getByRole("textbox", { name: "Message Mori" })),
+    await composerDraft(page.getByRole("textbox", { name: "Message Mori" }), WORKSPACE),
     "Keep this unfinished draft 保留草稿",
   );
   assert.equal(
@@ -362,7 +365,7 @@ try {
   await dialog.getByRole("alert").waitFor();
   assert.match(await dialog.innerText(), /Delete could not finish/);
   assert.ok(agents.some((a) => a.id === "a"));
-  assert.equal(await savedDraft(page, "a"), "Keep this unfinished draft 保留草稿");
+  assert.equal(await savedDraft(page, WORKSPACE, "a"), "Keep this unfinished draft 保留草稿");
   await dialog
     .getByRole("button", { name: "Delete agent", exact: true })
     .click();
@@ -370,7 +373,7 @@ try {
   await page.getByRole("textbox", { name: "Message Hana" }).waitFor();
   assert.equal(calls.filter((c) => c.method === "DELETE").length, 2);
   // Nothing of the deleted Agent's draft remains.
-  assert.equal((await savedDraft(page, "a")) ?? "", "");
+  assert.equal((await savedDraft(page, WORKSPACE, "a")) ?? "", "");
   check(
     "Delete requires confirmation, keeps the agent and draft on failure, then removes only the target",
   );

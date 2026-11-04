@@ -5,6 +5,8 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-conversation-search";
 
 const dist = await realpath(
   process.env.YUZUNO_UI_DIST || "/tmp/yuzuno-conversation-search-dist",
@@ -132,11 +134,21 @@ const report = {
   dist,
   checks: [],
   browserErrors: errors,
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
 };
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://127.0.0.1");
     if (url.pathname.startsWith("/api/")) {
+      if (request.method === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+        for await (const _ of request);
+        report.readingSaves++;
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ accepted: true }));
+        return;
+      }
       requests.push({ method: request.method, path: url.pathname });
       if (url.pathname === "/api/events") {
         response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -147,7 +159,7 @@ const server = createServer(async (request, response) => {
       }
       const body =
         url.pathname === "/api/workspace"
-          ? { agents, runtime: { connected: true }, defaultCwd: "/fixture" }
+          ? { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/fixture" }
           : detail[url.pathname.split("/").at(-1)] || {};
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(body));
@@ -198,7 +210,11 @@ try {
   });
   const input = page.getByRole("searchbox", { name: "Search loaded messages" });
   const dialog = page.getByRole("dialog", { name: "Search conversation" });
-  const matches = page.locator(".conversation-search-result");
+  // The open dialog's results: one that closes leaves through an inert, aria-hidden copy (T-19 1b,
+  // DialogExitGhost) whose results are still in the page while it fades.
+  const matches = dialog.locator(".conversation-search-result");
+  // The side panel's files of the latest Turn (ArtifactsPanel), always shown at this width.
+  const latestFiles = page.getByRole("group", { name: "Latest turn artifacts", exact: true });
   const conversation = page.locator(".conversation-scroll");
   const composer = page.getByRole("textbox", { name: "Message Mori" });
   await composer.fill("Keep this unsent draft 保留草稿");
@@ -261,7 +277,8 @@ try {
           turnId,
       { turnId, itemId },
     );
-    assert.equal(await target.getAttribute("data-search-highlight"), "true");
+    // The app locates a search result as a source (onLocate, App.tsx), which marks where it lands.
+    await page.locator(`[data-turn-id="${turnId}"] [data-item-id="${itemId}"].source-highlight`).waitFor();
     const position = await target.evaluate((el) => {
       const row = el.getBoundingClientRect();
       const view = el.closest(".conversation-scroll").getBoundingClientRect();
@@ -278,33 +295,43 @@ try {
       phase: "commentary",
       text: `New execution progress ${liveId}. ${filler}`,
     });
+    // The same update writes a file, which Core lists with the item that wrote it.
+    detail.a.artifacts.push({ path: `/fixture/${liveId}.md`, name: `${liveId}.md`, kind: "text", sourceItemId: liveId });
+    // The update arrives while an earlier Turn is read, and the latest Turn is not mounted that far away
+    // (T-77's window). So wait for the read that brings this update, not any read of Mori, and then for
+    // the app to hold it: its file is listed with the latest Turn's only once that Turn has this item
+    // (artifact-groups.ts). Nothing is opened for it. Then two frames to draw.
+    const reread = page.waitForResponse(
+      async (r) => new URL(r.url()).pathname === "/api/agents/a" && (await r.text()).includes(liveId),
+    );
     emit();
-    await page
-      .locator(`[data-item-id="${liveId}"]`)
-      .waitFor({ state: "attached" });
+    await reread;
+    await latestFiles.getByText(`${liveId}.md`, { exact: true }).waitFor();
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
     assert.ok(
       Math.abs((await conversation.evaluate((el) => el.scrollTop)) - before) <=
         1,
     );
     assert.equal(
-      await composerDraft(composer),
+      await composerDraft(composer, WORKSPACE),
       "Keep this unsent draft 保留草稿",
     );
     assert.equal(await page.locator(".pending-card").count(), 1);
-    assert.equal(
-      await page.getByRole("button", { name: "Back to latest" }).isVisible(),
-      true,
-    );
+    // The pill: since search lands as a source (onLocate), the bar over the conversation has a Back to
+    // latest of its own.
+    assert.equal(await page.locator(".jump-latest").isVisible(), true);
     check("exact jump and reading position survive execution events", {
       turnId,
       itemId,
       position,
     });
   }
-  await page.waitForFunction(
-    () => !document.querySelector("[data-search-highlight]"),
-  );
-  check("temporary highlight expires");
+  // Where a jump lands is marked while it is shown; its ring fades once, over settle (T-19 1b).
+  await page.waitForFunction(() => {
+    const mark = document.querySelector(".source-highlight");
+    return !!mark && !mark.getAnimations().some((a) => a.animationName === "settle-ring" && a.playState !== "finished");
+  });
+  check("the landing's ring fades once; the mark stays while it is shown");
 
   // A jump near the bottom must also stay detached from future output.
   await trigger.click();
@@ -331,7 +358,7 @@ try {
     ) <= 1,
     `Near-bottom jump moved from ${nearBottom} to ${await conversation.evaluate((el) => el.scrollTop)}`,
   );
-  await page.getByRole("button", { name: "Back to latest" }).click();
+  await page.locator(".jump-latest").click();
   await page.waitForFunction(() => {
     const el = document.querySelector(".conversation-scroll");
     return el.scrollHeight - el.scrollTop - el.clientHeight < 2;

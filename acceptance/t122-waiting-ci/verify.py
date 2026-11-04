@@ -32,7 +32,7 @@ elif phase == 'web':
     run('typecheck', ['node','node_modules/typescript/bin/tsc','-b','--noEmit'], root/'web')
     run('bundle', ['node','node_modules/vite/bin/vite.js','build','--outDir',str(out/'web')], root/'web')
     run('live-labels', ['node','--test','tools/live-jobs-ui.test.mjs','tools/live-ci-ui.test.mjs'], root/'web')
-    run('app-updates', ['node','--test','--test-name-pattern=CI rail|idle Agent with unfinished jobs','tools/ui.test.mjs'], root/'web')
+    run('app-updates', ['node','--expose-gc','--test','--test-name-pattern=CI rail|idle Agent with unfinished jobs','tools/ui.test.mjs'], root/'web')
 elif phase == 'browser':
     run('browser', ['node','web/tools/waiting-ci-browser.mjs'])
 else:

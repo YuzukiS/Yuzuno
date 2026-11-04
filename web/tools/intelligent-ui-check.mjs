@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, idleJobsBudget, noCiRuns, noJobs, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 import {
   comparisonExample,
   reportExample,
@@ -13,13 +13,24 @@ import {
   VIEW_MAX_ENTRIES,
   resultFingerprint,
 } from "../src/intelligent-ui/view-storage.ts";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "fixture";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated production build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve("../acceptance/intelligent-ui/browser");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], mutations: [] };
+const report = {
+  checks: [],
+  errors: [],
+  mutations: [],
+  // The app's own saves of where an Agent was read (T-170): answered, and counted apart from the
+  // mutations this check refuses.
+  readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
+};
 const spec = structuredClone(comparisonExample);
 Object.assign(spec.elements, {
   metrics: reportExample.elements.metrics,
@@ -109,7 +120,8 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
 page.on("pageerror", (error) => report.errors.push(error.message));
-await page.addInitScript(() => {
+// The init script runs in the page: the Workspace is handed to it.
+await page.addInitScript((workspace) => {
   window.EventSource = class {
     constructor() {
       window.testEvents = this;
@@ -122,20 +134,24 @@ await page.addInitScript(() => {
       JSON.stringify({ theme: "light", fontSize: 20, palette: "garden" }),
     );
   // A draft is saved under the Workspace and the Agent it was written in
-  // (T-195); this fixture's /api/workspace says "fixture".
+  // (T-195); this fixture's /api/workspace names WORKSPACE.
   for (const [agent, text] of [["a", "保留这段原草稿。"], ["b", "Hana's own draft."]]) {
-    const key = `yuzuno.composer.v1:${JSON.stringify(["fixture", agent])}`;
+    const key = `yuzuno.composer.v1:${JSON.stringify([workspace, agent])}`;
     if (!localStorage.getItem(key))
       localStorage.setItem(
         key,
         JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] }),
       );
   }
-});
+}, WORKSPACE);
 await page.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   assert.equal(url.hostname, "yuzuno-intelligent.test");
+  if (request.method() === "PUT" && /^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     report.mutations.push({ path: url.pathname, body: request.postDataJSON() });
     return route.fulfill({ json: {} });
@@ -143,7 +159,7 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
-        workspace: { id: "fixture" },
+        workspace: { id: WORKSPACE },
         agents,
         runtime: { connected: true },
         defaultCwd: "/fixture",
@@ -164,10 +180,20 @@ await page.route("**/*", async (route) => {
     return route.fulfill({ json: idleJobsBudget });
   if (url.pathname === "/api/jobs") return route.fulfill({ json: noJobs });
   if (url.pathname === "/api/ci") return route.fulfill({ json: noCiRuns });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected API: ${url.pathname}`,
-  );
+  // What the app reads as it loads: no Agent waiting on a Job or a CI run, no PR reviews, no inputs
+  // listed, no reading place held by Core, and Home with nothing.
+  if (url.pathname === "/api/jobs/live") return route.fulfill({ json: noLiveJobs });
+  if (url.pathname === "/api/ci/live") return route.fulfill({ json: noLiveCi });
+  if (url.pathname === "/api/reviews") return route.fulfill({ json: noReviews });
+  if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname)) return route.fulfill({ json: noConversationInputs });
+  if (/^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
+  if (url.pathname === "/api/home") return route.fulfill({ json: emptyHome });
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -251,7 +277,7 @@ try {
     .getByRole("button", { name: "Continue with selection", exact: true })
     .click();
   const draft = await composerDraft(
-    page.getByRole("textbox", { name: "Message Mori", exact: true }),
+    page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
   );
   assert.ok(draft.startsWith("保留这段原草稿。\n\n"));
   assert.match(draft, /Selected:\n- Options: Option: Turn dock/);
@@ -280,7 +306,7 @@ try {
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   assert.equal(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     draft,
   );
@@ -309,7 +335,7 @@ try {
     .click();
   assert.match(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     /Update latency: Snapshot — 120 ms/,
   );
@@ -338,7 +364,7 @@ try {
     .waitFor();
   assert.equal(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Hana", exact: true }),
+      page.getByRole("textbox", { name: "Message Hana", exact: true }), WORKSPACE,
     ),
     "Hana's own draft.",
   );
@@ -432,9 +458,11 @@ try {
     .click();
   assert.match(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
-    /Please include an interactive data report/,
+    // What the request adds since it became one editable line of intent (examples.ts, interactiveRequest);
+    // the long template is kept only for replies written to it.
+    /If it helps, show the data as an interactive result: key metrics and a chart\./,
   );
   assert.equal(report.mutations.length, 0);
   check(
@@ -510,7 +538,7 @@ try {
   );
 
   const beforePressure = await composerDraft(
-    page.getByRole("textbox", { name: "Message Mori", exact: true }),
+    page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
   );
   const pressure = await page.evaluate(({ prefix }) => {
     let added = 0,
@@ -546,7 +574,7 @@ try {
     exact: true,
   });
   await composer.waitFor();
-  assert.equal(await composerDraft(composer), beforePressure);
+  assert.equal(await composerDraft(composer, WORKSPACE), beforePressure);
   assert.equal(
     await page.evaluate(
       (prefix) =>
@@ -567,12 +595,12 @@ try {
   await page
     .getByRole("button", { name: "Continue with selection", exact: true })
     .click();
-  const afterPressure = await composerDraft(composer);
+  const afterPressure = await composerDraft(composer, WORKSPACE);
   assert.ok(afterPressure.startsWith(storageDraft + "\n\n"));
   // Saved where the composer keeps drafts since T-33, paste blocks included,
   // under the Workspace and the Agent it was written in (T-195); this
-  // fixture's /api/workspace says "fixture".
-  const mine = JSON.stringify(["fixture", "a"]);
+  // fixture's /api/workspace names WORKSPACE.
+  const mine = JSON.stringify([WORKSPACE, "a"]);
   await page.waitForFunction(({ text, identity }) => {
     const saved = localStorage.getItem("yuzuno.composer.v1:" + identity);
     return (
@@ -588,7 +616,7 @@ try {
   }, { text: afterPressure, identity: mine });
   await page.reload();
   await page.locator(".interactive-result").waitFor();
-  assert.equal(await composerDraft(composer), afterPressure);
+  assert.equal(await composerDraft(composer, WORKSPACE), afterPressure);
   assert.ok(
     await page
       .getByRole("checkbox", { name: "Select Turn dock", exact: true })
@@ -651,7 +679,7 @@ try {
   await page.reload();
   await page.locator(".interactive-result").waitFor();
   assert.equal(
-    await composerDraft(composer),
+    await composerDraft(composer, WORKSPACE),
     storageDraft + " After a failed preference write.",
   );
   assert.equal(
@@ -705,7 +733,7 @@ try {
   );
   assert.match(
     await composerDraft(
-      page.getByRole("textbox", { name: "Message Mori", exact: true }),
+      page.getByRole("textbox", { name: "Message Mori", exact: true }), WORKSPACE,
     ),
     /存储压力后的新草稿/,
   );
@@ -713,6 +741,7 @@ try {
     "failed lazy result asset preserves the original reply and working conversation",
   );
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   report.passed = true;
 } catch (error) {
   report.failure = error.stack;

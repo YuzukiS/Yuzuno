@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
 import type { Model } from "./types";
@@ -48,6 +48,7 @@ const text = strings({
   introProject:
     "For Agents created in this project. A setting left to inherit uses the Workspace’s choice, or the built-in. Existing Agents keep their own settings.",
   intro: "Used when an Agent is created, here or by another client. Existing Agents keep their own settings; change those from each Agent.",
+  reading: "Reading the defaults…",
   current: "What a new Agent gets now",
   harness: "Harness",
   harnessHelp: (source: string, harness: string) =>
@@ -97,6 +98,7 @@ const text = strings({
   title: "新 Agent 默认值",
   introProject: "用于在此项目中创建的 Agent。设为继承的项使用 Workspace 的选择或内置值。现有 Agent 保留各自的设置。",
   intro: "在这里或其他客户端创建 Agent 时使用。现有 Agent 保留各自的设置；请在各个 Agent 中更改。",
+  reading: "正在读取默认值…",
   current: "新 Agent 现在会得到的设置",
   harness: "Harness",
   harnessHelp: (source, harness) => `${source}：${harness}。创建对话框会以它开始；你可以为每个 Agent 另选。`,
@@ -228,13 +230,14 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
   const chosenClaude = draft?.claudeModel ? claudeModels?.find((m) => modelName(m) === draft.claudeModel) : undefined;
   const claudeStale = !!draft?.claudeModel && claudeModels !== null && !chosenClaude;
   const anySaved = !!savedDraft && FIELDS.some((field) => savedDraft[field]);
-  async function save(change: AgentDefaultsChange) {
+  async function save(change: AgentDefaultsChange, pressed: HTMLElement) {
     if (saving) return;
     setSaving(true);
     setError("");
     setStatus(false);
     try {
       adopt(await (projectId ? changeProjectAgentDefaults(projectId, change) : changeAgentDefaults(change)));
+      afterSave.current = pressed;
       setStatus(true);
     } catch (e) {
       // The choice stays as made, to save again or change.
@@ -243,6 +246,17 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
       setSaving(false);
     }
   }
+  // A save that took away the button pressed (nothing left to save) gives focus to the line that
+  // says it was saved, unless focus has gone elsewhere meanwhile (T-19 ST:AD4).
+  const afterSave = useRef<HTMLElement | null>(null);
+  const savedLine = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const pressed = afterSave.current;
+    afterSave.current = null;
+    if (!status || !pressed || pressed.isConnected) return;
+    const at = document.activeElement;
+    if (!at || at === document.body) savedLine.current?.focus();
+  }, [status]);
   const effective = view?.effective;
   // What "no choice here" means: the built-in for the Workspace, what the project inherits for a project.
   const inherited = projectId ? view?.project?.inherited : undefined;
@@ -284,6 +298,12 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
           </span>
         )}
       </header>
+      {/* Until Core answers, the section says it is reading (T-19 ST:AD1). */}
+      {active && !view && !error && (
+        <p className="settings-row-help" role="status">
+          {t.reading}
+        </p>
+      )}
       {draft && view && effective && (
         <div className="settings-group">
           <label className="settings-row">
@@ -482,7 +502,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
                     type="button"
                     className="secondary-button"
                     disabled={locked}
-                    onClick={() =>
+                    onClick={(event) =>
                       void save({
                         harness: null,
                         codexPermissionPreset: null,
@@ -490,14 +510,14 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
                         // Only to a Core that has them: an older one refuses fields it doesn't know.
                         ...(modelDefaults ? { codexModel: null, codexReasoningEffort: null } : {}),
                         ...(claudeModelDefaults ? { claudeModel: null } : {}),
-                      })
+                      }, event.currentTarget)
                     }
                   >
                     {projectId ? t.inheritAll : t.builtInAll}
                   </button>
                 )}
                 {changed && (
-                  <button type="button" className="primary-button" disabled={locked} onClick={() => void save(changes)}>
+                  <button type="button" className="primary-button" disabled={locked} onClick={(event) => void save(changes, event.currentTarget)}>
                     {saving ? t.saving : t.save}
                   </button>
                 )}
@@ -507,7 +527,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
         </div>
       )}
       {status && (
-        <p className="settings-row-help" role="status">
+        <p ref={savedLine} className="settings-row-help" role="status" tabIndex={-1}>
           {t.saved(!!projectId)}
         </p>
       )}

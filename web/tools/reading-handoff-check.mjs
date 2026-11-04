@@ -105,6 +105,9 @@ const coreProcess = spawn(coreBin, ["--port", String(port), "--data-dir", join(l
 let browser;
 try {
   await until(async () => coreProcess.exitCode === null && (await core("GET", "/api/health")), "the lab Core to answer");
+  // Drafts are saved under the Workspace the lab Core says it is (T-195).
+  const workspaceId = (await core("GET", "/api/workspace")).workspace?.id;
+  assert.ok(workspaceId, "the lab Core says which Workspace it is");
   check("the lab Core runs on its own port and data folder, without the caller's YUZUNO_* settings", { port });
 
   // ---- A synthetic conversation: short and long replies, no model ----------
@@ -267,7 +270,7 @@ try {
   assert.ok(Math.abs(landed.into - expected) <= 3, `into ${landed.into}, expected ${expected}`);
   assert.ok(landed.visible >= 48, "the message is in view");
   assert.ok(landed.height > deskPlace.height * 1.3, "the phone's message is taller: a pixel offset would land elsewhere");
-  assert.equal(await composerDraft(composer(phone.page, "Mori")), "Draft on the phone before Continue.");
+  assert.equal(await composerDraft(composer(phone.page, "Mori"), workspaceId), "Draft on the phone before Continue.");
   assert.deepEqual(await localPlaces(phone.page), placesBefore, "Continue does not save this browser's place");
   const after = (await detail()).agent;
   assert.deepEqual([after.reviewedSeq, after.unreadCount], [review.reviewedSeq, review.unreadCount]);
@@ -378,7 +381,7 @@ try {
   await openAgent(old.page, "Mori");
   const back = await where(old.page, long[1]);
   assert.ok(Math.abs(back.into - oldPlace.into) <= 2, `local place restored: ${back.into} vs ${oldPlace.into}`);
-  assert.equal(await composerDraft(composer(old.page, "Mori")), "Draft kept without the endpoint.");
+  assert.equal(await composerDraft(composer(old.page, "Mori"), workspaceId), "Draft kept without the endpoint.");
   await shot(old.page, "9-old-core");
   check("against a Core without the endpoint (404) the page reads as before: local place and draft kept, one write attempt, no offer");
 

@@ -45,7 +45,7 @@ Build and test this slice separately from the daily UI, from `web/`:
 node_modules/.bin/tsc --noEmit
 node_modules/.bin/vite build --outDir /tmp/yuzuno-conversation-search-dist --emptyOutDir
 node --experimental-strip-types tools/conversation-search.test.mjs
-YUZUNO_UI_DIST=/tmp/yuzuno-conversation-search-dist node tools/ui.test.mjs
+YUZUNO_UI_DIST=/tmp/yuzuno-conversation-search-dist node --expose-gc tools/ui.test.mjs
 YUZUNO_UI_DIST=/tmp/yuzuno-conversation-search-dist node tools/conversation-search-check.mjs
 ```
 

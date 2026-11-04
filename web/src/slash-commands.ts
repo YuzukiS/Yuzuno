@@ -126,6 +126,16 @@ export function withCodexSkills(skills: CommandList): CommandList {
   };
 }
 
+/** `/compact` for an OpenCode Agent (T-10): its OpenCode's own compaction, run by Yuzuno, never a prompt. */
+const opencodeCompact = control("compact", "Compacts this conversation now with OpenCode's own compaction, a model run, not a prompt");
+
+/** OpenCode's own list, with `/compact` as the Yuzuno control it is here, in place of any command of that name. */
+export function withOpencodeControls(list: CommandList): CommandList {
+  if (list.state !== "ready") return list;
+  const others = list.commands.filter((c) => c.name !== opencodeCompact.name);
+  return { ...list, commands: [...others, opencodeCompact], total: list.total - (list.commands.length - others.length) + 1 };
+}
+
 /** Yuzuno's controls for a Claude Agent, in place of Claude Code's commands of those names. */
 const claudeControls = [modelControl, permissionsControl, newControl, resumeControl];
 
@@ -141,9 +151,10 @@ export function withModelControl(list: CommandList): CommandList {
 /** Which harnesses each of Yuzuno's controls is for. Claude Code runs its
  * own `/compact`, `/review`, `/status`, `/usage` and `/mcp`; a goal, a mode (`/plan`) and a fork are a
  * Codex session's, and a Claude Agent's `/plan` stays Claude Code's own. An
- * OpenCode Agent's model and settings are OpenCode's own: no control. */
+ * OpenCode Agent's model and settings are OpenCode's own: no control; its
+ * `/compact` is OpenCode's own compaction (T-10). */
 const controlHarnesses = {
-  compact: ["codex"],
+  compact: ["codex", "opencode"],
   review: ["codex"],
   goal: ["codex"],
   plan: ["codex"],
@@ -448,10 +459,11 @@ function createMenuView(view: EditorView): TooltipView {
       if (current.skillsNote) note(current.skillsNote, "is-failed");
       else if (current.truncated) note(`${current.total} in all; the first ${current.commands.length} shown.`, "is-source");
     } else if (opencode) {
-      if (current.commands.length) note(
-        `Listed by this Agent's OpenCode${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in; Send runs it as that command.`,
-        "is-source",
-      );
+      const own = current.commands.filter((c) => c.source !== "control").length;
+      note(own
+        ? `Listed by this Agent's OpenCode${current.truncated ? `; ${current.total - (current.commands.length - own)} in all, the first ${own} shown` : ""}. Choosing one only fills it in; Send runs it as that command.`
+        : "This Agent's OpenCode lists no commands.", "is-source");
+      if (own < current.commands.length) note("/compact is Yuzuno's control: Send runs OpenCode's own compaction, a model run, never a prompt.", "is-source");
     } else {
       note(
         `${current.source === "session" ? "Listed by this conversation's Claude Code" : "Listed by Claude Code for this folder; the conversation may add more once it runs"}${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in.`,
