@@ -91,6 +91,9 @@ export const SummaryCard = memo(function SummaryCard({
   // pinned report the user marks seen keeps its Reply and the reply being written (Lead 2655).
   const replyable = !readOnly && section.kind !== "ask" && (!section.history || referable);
   const [replying, setReplying] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
+  // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
+  const [replyOpened, setReplyOpened] = useState(false);
+  const replyButton = useRef<HTMLButtonElement>(null);
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => rememberSeenBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
@@ -152,10 +155,14 @@ export const SummaryCard = memo(function SummaryCard({
             <button
               type="button"
               className="icon-button home-reply-open"
+              ref={replyButton}
               aria-expanded={replying}
               aria-label={home.replyLabel(section.title)}
               title={home.replyTitle(section.owner.name)}
-              onClick={() => setReplying((value) => !value)}
+              onClick={() => {
+                setReplyOpened(true);
+                setReplying((value) => !value);
+              }}
             >
               <MessageSquareReply size={14} />
             </button>
@@ -226,7 +233,17 @@ export const SummaryCard = memo(function SummaryCard({
         )}
       </footer>
       {replyable && replying && (
-        <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setReplying(false)} />
+        <CardReply
+          section={section}
+          projectId={projectId}
+          workspaceId={workspaceId}
+          agents={agents}
+          opened={replyOpened}
+          onClose={() => {
+            replyButton.current?.focus();
+            setReplying(false);
+          }}
+        />
       )}
       {error && (
         <p className="inline-error" role="alert">
