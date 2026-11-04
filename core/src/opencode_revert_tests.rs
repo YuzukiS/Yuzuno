@@ -44,11 +44,31 @@ fn asked(data: &Path) -> Vec<(String, String)> {
 
 /// A Workspace with an OpenCode Agent in `cwd`, connected to the stand-in.
 async fn lab(dir: &Path, cwd: &Path) -> Arc<Workspace> {
+    lab_with(dir, cwd, &[]).await
+}
+
+/// `lab`, with the stand-in's switches left before it starts.
+async fn lab_with(dir: &Path, cwd: &Path, switches: &[(&str, &str)]) -> Arc<Workspace> {
     program();
     let ws = Workspace::new(dir.join("data"), dir.to_string_lossy().into(), "unused".into()).unwrap();
     ws.store.insert(&agent(&cwd.to_string_lossy())).unwrap();
+    let own = dir.join("data/opencode/oc");
+    std::fs::create_dir_all(&own).unwrap();
+    for (name, value) in switches {
+        std::fs::write(own.join(name), value).unwrap();
+    }
     ws.reconnect("oc").await.unwrap();
     ws
+}
+
+/// How many reverts the stand-in was asked for.
+fn reverts(data: &Path) -> usize {
+    asked(data).iter().filter(|(method, path)| method == "POST" && path.ends_with("/revert")).count()
+}
+
+/// The Agent's Turns, by ID.
+fn turn_ids(ws: &Workspace) -> Vec<String> {
+    ws.store.turn_ids("oc").unwrap()
 }
 
 /// A Turn sent and answered (with `answer`'s extra fields, such as patch
@@ -180,5 +200,186 @@ async fn each_file_to_send_back_is_read_from_opencodes_own_snapshot_and_from_the
     assert_eq!(preview["files"], json!([{"path": file, "expected": state(b"a0\n"), "current": state(b"a1\n")}]), "{preview}");
     assert_eq!(std::fs::read_to_string(cwd.join("a.txt")).unwrap(), "a1\n", "nothing written");
     assert!(!asked(&data).iter().any(|(method, path)| method == "POST" && path.ends_with("/revert")));
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_confirm_reads_again_keeps_its_attempt_asks_once_and_the_turns_it_reverts_leave() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    let preview = ws.opencode_revert_preview("oc", &second).await.unwrap();
+    let key = preview["previewId"].as_str().unwrap().to_owned();
+
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!((&outcome["status"], &outcome["draft"], &outcome["files"]), (&json!("completed"), &json!("second"), &json!([])), "{outcome}");
+    assert_eq!(reverts(&data), 1, "asked once");
+    assert_eq!(turn_ids(&ws), vec![first.clone()], "the Turn it reverts leaves");
+    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    assert_eq!(session.server.session(&session.session).await.unwrap()["revert"]["messageID"], json!(second), "kept in the session");
+    // Asked again for the same preview: that attempt as it stands, nothing asked.
+    assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap(), outcome);
+    assert_eq!(reverts(&data), 1, "never asked again");
+    // The next message goes on, and OpenCode applies the revert then.
+    let third = turn(&ws, &data, "third", json!({})).await;
+    assert_eq!(turn_ids(&ws), vec![first, third]);
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_confirm_refuses_what_changed_since_its_preview_asks_nothing_and_a_preview_is_used_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let preview = ws.opencode_revert_preview("oc", &first).await.unwrap();
+    let key = preview["previewId"].as_str().unwrap().to_owned();
+    turn(&ws, &data, "second", json!({})).await;
+    let error = ws.opencode_revert_confirm("oc", &key).await.expect_err("a session changed since its preview is not reverted").to_string();
+    assert!(error.contains("消息在预览之后变了"), "{error}");
+    let error = ws.opencode_revert_confirm("oc", &key).await.unwrap_err().to_string();
+    assert!(error.contains("已用过或已过期"), "{error}");
+    assert_eq!(reverts(&data), 0, "nothing asked");
+    assert!(ws.store.rewind_attempt("oc", None).unwrap().is_none(), "no attempt kept");
+    assert_eq!(turn_ids(&ws).len(), 2, "nothing removed");
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_revert_whose_outcome_is_unknown_holds_back_every_new_input_and_is_never_asked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    control(&data, "mode", json!({"revert": "error"})).await;
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "unknown", "a 500 says nothing of what it did: {outcome}");
+    for (what, error) in [
+        ("send", ws.opencode_send("oc", "next".into()).await.expect_err("a send is held back")),
+        ("compact", ws.opencode_compact("oc").await.expect_err("a compaction is held back")),
+        ("preview", ws.opencode_revert_preview("oc", &first).await.expect_err("another revert is held back")),
+    ] {
+        assert!(error.to_string().contains("rewind is unconfirmed"), "{what}: {error:#}");
+    }
+    assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap()["status"], "unknown");
+    assert_eq!(reverts(&data), 1, "never asked again");
+    assert_eq!(turn_ids(&ws), vec![first], "nothing removed");
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_revert_opencode_refuses_before_doing_anything_has_failed_and_holds_nothing_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    control(&data, "mode", json!({"revert": "refuse"})).await;
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(outcome["message"].as_str().unwrap().contains("409"), "{outcome}");
+    assert_eq!(turn_ids(&ws), vec![first]);
+    turn(&ws, &data, "next", json!({})).await;
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_answer_after_the_confirm_stopped_watching_settles_its_attempt_when_it_comes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    control(&data, "mode", json!({"revert": "late"})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!(outcome["status"], "unknown", "no answer within the watch: {outcome}");
+    assert!(ws.opencode_send("oc", "next".into()).await.unwrap_err().to_string().contains("rewind is unconfirmed"));
+    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
+    control(&data, "goOn", json!({"sessionID": session})).await;
+    let mut settled = Value::Null;
+    for _ in 0..400 {
+        settled = ws.rewind_check("oc", &key).await.unwrap();
+        if settled["status"] != "unknown" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(settled["status"], "completed", "settled by its answer: {settled}");
+    assert_eq!(reverts(&data), 1, "asked once");
+    assert_eq!(turn_ids(&ws), vec![first]);
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn each_file_is_backed_up_before_the_revert_is_asked_and_judged_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(cwd.join("a.txt"), "a0\n").unwrap();
+    // The stand-in keeps its snapshots in this test's own data folder, as OpenCode would with that XDG_DATA_HOME.
+    let xdg = root.join("xdg-data");
+    std::fs::create_dir_all(&xdg).unwrap();
+    std::fs::write(xdg.join(".yuzuno-fixture"), "").unwrap();
+    let ws = lab_with(&root, &cwd, &[("xdg-data", xdg.to_str().unwrap())]).await;
+    let data = root.join("data");
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    let path = c.server.path().await.unwrap();
+    let opencode_data = xdg.join("opencode");
+    let store = crate::opencode_revert_files::store(opencode_data.to_str().unwrap(), "fixtureproject", path["worktree"].as_str().unwrap()).unwrap();
+    std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(&cwd).arg("--git-dir").arg(&store).arg("--work-tree").arg(&cwd)
+            .args(args).env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "core.autocrlf", "false"]);
+    git(&["add", "-A", "."]);
+    let tree = git(&["write-tree"]).trim().to_owned();
+    std::fs::write(cwd.join("a.txt"), "a1\n").unwrap();
+    let file = cwd.join("a.txt").to_string_lossy().into_owned();
+    let first = turn(&ws, &data, "first", json!({"patches": [{"hash": tree, "files": [file]}]})).await;
+    // As if Core had started a native OpenCode (see each_file_to_send_back_is_read_from_opencodes_own_snapshot_...).
+    let launcher = Launcher::resolve(Path::new("/usr/bin/python3"), None).unwrap();
+    let roots = Roots { home: path["home"].as_str().unwrap().into(), state: path["state"].as_str().unwrap().into(),
+        config: path["config"].as_str().unwrap().into(), data: opencode_data.to_string_lossy().into_owned() };
+    ws.opencodes.lock().unwrap().get_mut("oc").unwrap().files = Arc::new(Ok(Started { launcher, roots }));
+
+    let key = ws.opencode_revert_preview("oc", &first).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    let outcome = ws.opencode_revert_confirm("oc", &key).await.unwrap();
+    assert_eq!((&outcome["status"], &outcome["files"]), (&json!("completed"), &json!([{"path": file, "outcome": "verified"}])), "{outcome}");
+    assert_eq!(std::fs::read_to_string(cwd.join("a.txt")).unwrap(), "a0\n", "sent back");
+    let backup = data.join("opencode/oc/revert").join(&key);
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(backup.join("backup.json")).expect("a backup kept before the revert")).unwrap();
+    assert_eq!(kept["files"], json!(["0.bin"]), "{kept}");
+    assert_eq!(std::fs::read_to_string(backup.join("0.bin")).unwrap(), "a1\n", "what it was, kept before");
+    assert_eq!(reverts(&data), 1);
     ws.close_agent("oc").await.unwrap();
 }

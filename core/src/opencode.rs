@@ -122,6 +122,21 @@ pub enum CompactAnswer {
     Unknown(String),
 }
 
+/// What a revert request is known to have done (T-10 Revert, Lead 3990).
+#[derive(Debug, PartialEq)]
+pub enum RevertAnswer {
+    /// 200 with the session as OpenCode answered it. Whether it reverted
+    /// anything is that session's `revert`, not the status: a message it
+    /// does not find also answers 200, the session unchanged.
+    Answered(Value),
+    /// Refused before OpenCode did anything: busy (409), no such session
+    /// (404), a body it does not take (400), wrong credentials (401, 403).
+    Refused(HttpStatus),
+    /// Anything else: no answer, a lost connection, a 5xx, another 4xx,
+    /// another body. Its files may have been sent back in part or whole.
+    Unknown(String),
+}
+
 /// An answer to a permission request. OpenCode's third answer, `always`,
 /// is not offered: it would allow later requests of this process by patterns
 /// the tool chooses.
@@ -666,6 +681,31 @@ impl Server {
                 },
                 Ok(response) if response.status().is_client_error() => CompactAnswer::Refused(status(response).await),
                 Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
+            }
+        })
+    }
+
+    /// The request that reverts the session to before `message` (T-10
+    /// Revert), as OpenCode 1.19.3's own (`POST /session/:id/revert`,
+    /// `session/revert.ts`): it checks the files of every later patch out of
+    /// OpenCode's snapshots, then keeps the revert in the session, to apply at
+    /// its next prompt, and answers once that is done. So it has no time
+    /// limit of its own and holds nothing of this server; sent once.
+    pub fn revert(&self, session: &str, message: &str) -> Result<impl std::future::Future<Output = RevertAnswer> + Send + 'static> {
+        let path = format!("/session/{}/revert", segment(session)?);
+        let request = self.request(Method::POST, &path).json(&json!({"messageID": message}));
+        Ok(async move {
+            match request.send().await {
+                Err(error) => RevertAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
+                    Ok(body) => match serde_json::from_str::<Value>(&body) {
+                        Ok(session) if session.is_object() => RevertAnswer::Answered(session),
+                        _ => RevertAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
+                    },
+                    Err(error) => RevertAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
+                },
+                Ok(response) if matches!(response.status().as_u16(), 400 | 401 | 403 | 404 | 409) => RevertAnswer::Refused(status(response).await),
+                Ok(response) => RevertAnswer::Unknown(status(response).await.to_string()),
             }
         })
     }

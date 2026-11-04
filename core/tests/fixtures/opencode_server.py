@@ -8,15 +8,17 @@ version it reports), `exit` (exit before listening), `noise` (a long line
 that is not UTF-8 before listening), `mcp` (the MCP status it reports),
 `stubborn` (it and a child of its own ignore SIGTERM), `tool` (it starts a
 process in a session of its own, as OpenCode's tools run, which only
-/global/dispose ends) or `dispose` (`refuse`: it answers that with 500;
-`hang`: it answers only after 30 s, ending nothing).
+/global/dispose ends), `dispose` (`refuse`: it answers that with 500;
+`hang`: it answers only after 30 s, ending nothing) or `xdg-data` (a folder
+it takes as its XDG_DATA_HOME, as if started with it).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
 Its folders are worked out as OpenCode's (XDG_* and HOME), and `GET /path` and `GET /project/current`
 answer them. Snapshots of the work folder go into a real Git store in OpenCode's own layout
 (<data>/snapshot/<project>/<sha1 of the worktree>), only when XDG_DATA_HOME is a folder a test marked
-with a `.yuzuno-fixture` file; otherwise they are off, as with OpenCode's `snapshot: false`.
+with a `.yuzuno-fixture` file; otherwise they are off, as with OpenCode's `snapshot: false`, and no Git
+runs on any store (a revert then deletes each file it would send back, as OpenCode does with no store).
 """
 import base64
 import hashlib
@@ -209,6 +211,9 @@ def xdg(name, *default):
     return os.path.normpath(os.path.join(os.environ.get(name) or os.path.join(HOME, *default), 'opencode'))
 
 
+XDG_DATA = switch('xdg-data') or os.environ.get('XDG_DATA_HOME')
+if XDG_DATA:
+    os.environ['XDG_DATA_HOME'] = XDG_DATA
 DATA, STATE, CONFIG = xdg('XDG_DATA_HOME', '.local', 'share'), xdg('XDG_STATE_HOME', '.local', 'state'), xdg('XDG_CONFIG_HOME', '.config')
 # The project OpenCode names this folder's (`core/src/project.ts`; a fixed one here).
 PROJECT = 'fixtureproject'
@@ -218,7 +223,7 @@ current_project = [PROJECT]
 STORE = Path(DATA) / 'snapshot' / PROJECT / hashlib.sha1(str(WORK).encode()).hexdigest()
 # Snapshots are taken only into a data folder a test made for them (marked `.yuzuno-fixture`), never under anyone's
 # own home; without one they are off, as with OpenCode's `snapshot: false`.
-SNAPSHOTS = bool(os.environ.get('XDG_DATA_HOME')) and (Path(os.environ['XDG_DATA_HOME']) / '.yuzuno-fixture').is_file()
+SNAPSHOTS = bool(XDG_DATA) and (Path(XDG_DATA) / '.yuzuno-fixture').is_file()
 
 
 def git(*args, check=True):
@@ -271,6 +276,10 @@ def revert_file(hash, file):
     """One file back as `hash` holds it (`Snapshot.revert`): checked out; if that fails, kept when the snapshot
     lists it, else deleted. What became of it."""
     rel = os.path.relpath(file, WORK)
+    if not SNAPSHOTS:
+        # No store a test made: as OpenCode with none, the checkout and the listing fail.
+        Path(file).unlink(missing_ok=True)
+        return 'deleted'
     with lock:
         if git('checkout', hash, '--', file, check=False).returncode == 0:
             return 'restored'
@@ -868,12 +877,15 @@ class Handler(BaseHTTPRequestHandler):
         snapshot (kept if that fails and the snapshot lists it, deleted otherwise, as when it did not exist
         or the snapshot is gone), and the revert is kept in the session with that snapshot.
         Mode `revert`: `ok`, `files-fail` (every checkout taken as failed with the snapshot listing the
-        file: only logged, the answer the same), `error` (500, nothing done), `drop` (done, then the
+        file: only logged, the answer the same), `refuse` (409 as when busy, nothing done), `error` (500,
+        nothing done), `drop` (done, then the
         connection ends with no answer), `late` (done, answered only on `goOn`), `hold` (nothing done
         until `goOn`)."""
         if statuses.get(session, {}).get('type') == 'busy':
             return self.reply(409, {'name': 'SessionBusyError', 'data': {'sessionID': session, 'message': f'Session {session} is busy'}})
         mode = modes['revert']
+        if mode == 'refuse':
+            return self.reply(409, {'name': 'SessionBusyError', 'data': {'sessionID': session, 'message': f'Session {session} is busy'}})
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: revert failed'}})
         if mode == 'hold':

@@ -24,7 +24,7 @@ use std::{
 
 const TTL: Duration = Duration::from_secs(600);
 const MAX_TURNS: usize = 1000;
-const MAX_ARCHIVE: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE: usize = 32 * 1024 * 1024;
 struct Preview {
     owner: Weak<Workspace>,
     agent: String,
@@ -56,20 +56,32 @@ pub(crate) fn expire_previews() -> usize {
     expired.len()
 }
 
+/// A rewind's attempt, kept from before its one native request until its
+/// outcome is known; while it is `sending` or `unknown`, nothing new reaches
+/// the Agent (`ensure_no_pending_rewind`). An OpenCode revert's too (T-10
+/// Revert): `thread` its session, `target` the Turn it reverts to before.
 #[derive(Clone, Serialize, Deserialize)]
-struct Attempt {
-    id: String,
-    agent: String,
-    thread: String,
-    target: String,
-    kept: Vec<String>,
-    draft: String,
-    state: String,
-    message: Option<String>,
+pub(crate) struct Attempt {
+    pub(crate) id: String,
+    pub(crate) agent: String,
+    pub(crate) thread: String,
+    pub(crate) target: String,
+    pub(crate) kept: Vec<String>,
+    pub(crate) draft: String,
+    pub(crate) state: String,
+    pub(crate) message: Option<String>,
+    /// What became of each file an OpenCode revert sent back; none for a
+    /// Codex rewind, which sends none back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) files: Option<Value>,
 }
 impl Attempt {
-    fn outcome(&self) -> Value {
-        json!({"attemptId":self.id,"status":self.state,"message":self.message,"draft":self.draft})
+    pub(crate) fn outcome(&self) -> Value {
+        let mut outcome = json!({"attemptId":self.id,"status":self.state,"message":self.message,"draft":self.draft});
+        if let Some(files) = &self.files {
+            outcome["files"] = files.clone();
+        }
+        outcome
     }
 }
 
@@ -82,7 +94,7 @@ pub(crate) fn migrate(db: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 impl Store {
-    fn rewind_attempt(&self, agent: &str, id: Option<&str>) -> Result<Option<Attempt>> {
+    pub(crate) fn rewind_attempt(&self, agent: &str, id: Option<&str>) -> Result<Option<Attempt>> {
         let value: Option<String> = if let Some(id) = id {
             self.db
                 .read()?
@@ -98,10 +110,19 @@ impl Store {
         value.map(|v| Ok(serde_json::from_str(&v)?)).transpose()
     }
     pub(crate) fn ensure_no_pending_rewind(&self, agent: &str) -> Result<()> {
-        ensure!(self.rewind_attempt(agent, None)?.is_none(), "A conversation rewind is unconfirmed. Reconnect to check its outcome before sending; it will not be repeated.");
+        ensure!(self.rewind_attempt(agent, None)?.is_none(), "A rewind is unconfirmed. Reconnect to check its outcome before sending; it will not be repeated.");
         Ok(())
     }
-    fn save_rewind(&self, attempt: &Attempt) -> Result<()> {
+    /// A new attempt, `sending`, with what it removes: as the native side
+    /// holds it (`native`) and as this Agent's record does (`local`).
+    pub(crate) fn begin_rewind(&self, attempt: &Attempt, native: &str, local: &str) -> Result<()> {
+        self.db.write()?.execute(
+            "INSERT INTO conversation_rewinds(id,agent_id,state,attempt,native_archive,local_archive,created_at) VALUES(?1,?2,'sending',?3,?4,?5,?6)",
+            params![attempt.id, attempt.agent, serde_json::to_string(attempt)?, native, local, now()],
+        )?;
+        Ok(())
+    }
+    pub(crate) fn save_rewind(&self, attempt: &Attempt) -> Result<()> {
         self.db.write()?.execute(
             "UPDATE conversation_rewinds SET state=?2,attempt=?3 WHERE id=?1",
             params![attempt.id, attempt.state, serde_json::to_string(attempt)?],
@@ -418,6 +439,7 @@ impl Workspace {
             draft: p.draft,
             state: "sending".into(),
             message: None,
+            files: None,
         };
         // The local archive: the metadata and the Turns the rewind removes
         // (every local Turn the kept native prefix lacks), with their
@@ -433,10 +455,7 @@ impl Workspace {
             bail!("Rewind archive exceeds the safe size; nothing was sent");
         };
         let saved = attempt.clone();
-        self.stored(move |s| {
-            s.db.write()?.execute("INSERT INTO conversation_rewinds(id,agent_id,state,attempt,native_archive,local_archive,created_at) VALUES(?1,?2,'sending',?3,?4,?5,?6)", params![saved.id,saved.agent,serde_json::to_string(&saved)?,native,local,now()])?;
-            Ok(())
-        }).await?;
+        self.stored(move |s| s.begin_rewind(&saved, &native, &local)).await?;
         // A single native mutation. A timeout/disconnect leaves this durable
         // attempt blocking new input until a read verifies the exact prefix.
         let native = c
@@ -634,7 +653,8 @@ impl Workspace {
                 json!({"attemptId":key_id,"status":"failed","draft":"","message":"No native command was admitted for this preview. Close and preview again."}),
             );
         };
-        if matches!(a.state.as_str(), "sending" | "unknown") {
+        // An OpenCode revert's is settled by OpenCode's answer alone (T-10 Revert).
+        if matches!(a.state.as_str(), "sending" | "unknown") && self.listed(id).await?.harness != "opencode" {
             let c = self.ensure(id).await?;
             if let Err(e) = self.finish_rewind(id, &c, &mut a).await {
                 a.state = "unknown".into();
@@ -663,11 +683,19 @@ struct Confirmation {
 struct Check {
     attempt_id: String,
 }
+/// Whether the Agent is an OpenCode one, whose rewind is OpenCode's own
+/// revert (`opencode_revert`, T-10 Revert).
+async fn is_opencode(ws: &Workspace, id: &str) -> Result<bool> {
+    Ok(ws.listed(id).await?.harness == "opencode")
+}
 async fn preview(
     State(ws): State<Arc<Workspace>>,
     Path(id): Path<String>,
     Json(p): Json<Target>,
 ) -> Result<Json<Value>, ApiError> {
+    if is_opencode(&ws, &id).await? {
+        return Ok(Json(ws.opencode_revert_preview(&id, &p.turn_id).await?));
+    }
     Ok(Json(ws.rewind_preview(&id, &p.turn_id).await?))
 }
 async fn confirm(
@@ -675,7 +703,12 @@ async fn confirm(
     Path(id): Path<String>,
     Json(p): Json<Confirmation>,
 ) -> Result<Json<Value>, ApiError> {
-    match ws.rewind_confirm(&id, &p.preview_id).await {
+    let confirmed = if is_opencode(&ws, &id).await? {
+        ws.opencode_revert_confirm(&id, &p.preview_id).await
+    } else {
+        ws.rewind_confirm(&id, &p.preview_id).await
+    };
+    match confirmed {
         Ok(value) => Ok(Json(value)),
         Err(error) => {
             // No durable attempt means admission refused before any wire write.

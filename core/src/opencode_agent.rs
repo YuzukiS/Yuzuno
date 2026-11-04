@@ -1193,6 +1193,8 @@ impl Workspace {
 
     /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
     async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], commands: bool, sent: &mut bool) -> Result<Value> {
+        // Also what a send that does not come through `send_message` meets (T-10 Revert).
+        self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         if let Some(blocked) = compaction_blocks(&d, "这条消息没有发送") {
@@ -1386,6 +1388,8 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
+        // A revert whose outcome is not known may still be applied by it (T-10 Revert).
+        self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(d.agent.harness == "opencode", "Agent 不是 OpenCode");
