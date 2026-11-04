@@ -9,7 +9,7 @@ use crate::{
 };
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -283,8 +283,15 @@ impl Workspace {
     /// stands (`/rewind/attempt`): what a client opening the Agent again
     /// shows, to check it (Lead 4128). It reads only: no check, no request.
     pub async fn pending_rewind(&self, id: &str) -> Result<Value> {
-        let agent = id.to_owned();
-        let attempt = self.stored(move |s| s.rewind_attempt(&agent, None)).await?;
+        self.rewind_attempt_view(id, None).await
+    }
+    /// The Agent's attempt `attempt`, in whatever state it is now, or with
+    /// none the one not yet known (`/rewind/attempt?id=`): what a client that
+    /// asked for it reads to find its outcome again, also one that settled
+    /// while that client was away (Lead 4133). It reads only.
+    pub async fn rewind_attempt_view(&self, id: &str, attempt: Option<&str>) -> Result<Value> {
+        let (agent, attempt) = (id.to_owned(), attempt.map(str::to_owned));
+        let attempt = self.stored(move |s| s.rewind_attempt(&agent, attempt.as_deref())).await?;
         Ok(json!({"attempt": attempt.map(|a| a.outcome())}))
     }
     pub(crate) async fn ensure_rewind_settled(&self, id: &str) -> Result<()> {
@@ -749,8 +756,13 @@ async fn check(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.rewind_check(&id, &p.attempt_id).await?))
 }
-async fn pending(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(ws.pending_rewind(&id).await?))
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Which {
+    id: Option<String>,
+}
+async fn pending(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Query(which): Query<Which>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(ws.rewind_attempt_view(&id, which.id.as_deref()).await?))
 }
 async fn resolve(
     State(ws): State<Arc<Workspace>>,

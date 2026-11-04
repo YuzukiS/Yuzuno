@@ -222,6 +222,8 @@ async fn a_confirm_reads_again_keeps_its_attempt_asks_once_and_the_turns_it_reve
     assert_eq!(reverts(&data), 1, "asked once");
     assert_eq!(turn_ids(&ws), vec![first.clone()], "the Turn it reverts leaves");
     assert!(ws.pending_rewind("oc").await.unwrap()["attempt"].is_null(), "none left to check once kept");
+    // Asked for by its own ID, as a client that asked for it finds it again: as it settled, its text with it.
+    assert_eq!(ws.rewind_attempt_view("oc", Some(&key)).await.unwrap()["attempt"], outcome, "a settled attempt is found by its ID");
     let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
     assert_eq!(session.server.session(&session.session).await.unwrap()["revert"]["messageID"], json!(second), "kept in the session");
     // Asked again for the same preview: that attempt as it stands, nothing asked.
