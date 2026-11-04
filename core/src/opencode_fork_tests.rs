@@ -579,3 +579,37 @@ fn a_turn_is_carried_only_as_far_as_every_field_of_it_is_known() {
     pasted["items"][0]["content"][1]["path"] = json!(root.join(format!("input-images/else/{hash}.png")));
     assert!(remap(&[pasted], &ids, "ses_b", &mut images()).unwrap_err().to_string().contains("不是原 Agent 保存的"));
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_fork_answered_after_its_watch_settles_that_attempt_and_the_same_request_goes_on_from_what_was_fixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, _, [first, ..]) = three(&root).await;
+    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
+    control(&data, "oc", "mode", json!({"fork": "hold"})).await;
+    let key = uuid::Uuid::new_v4().to_string();
+    // No answer within the watch: uncertain, and the source goes on meanwhile.
+    let outcome = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
+    assert_eq!(outcome["state"], "uncertain", "{outcome}");
+    turn_on(&ws, &data, "oc", "meanwhile", json!({})).await;
+    // Its answer comes now: it settles that very attempt.
+    control(&data, "oc", "goOn", json!({"sessionID": session})).await;
+    let mut state = String::new();
+    for _ in 0..400 {
+        state = ws.store.opencode_fork_row(&key).unwrap().unwrap().state;
+        if state != "uncertain" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(state, "forked", "settled by its late answer");
+    // The same request goes on from there, against what was fixed before the source went on.
+    let done = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
+    assert_eq!(done["state"], "completed", "{done}");
+    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "asked once");
+    let target = done["agent"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(ws.store.turn_ids(&target).unwrap().len(), 1, "only the Turn it was asked through");
+    ws.close_agent(&target).await.unwrap();
+    ws.close_agent("oc").await.unwrap();
+}
