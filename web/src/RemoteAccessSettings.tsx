@@ -115,8 +115,8 @@ const text = strings({
   previewsLabel: "Previews on the phone",
   previewsNow: (included: boolean, available: boolean): string =>
     !included ? "Not included" : available ? "Included" : "Included, once phone access is on",
-  legacyPending: (port: number, target: string) =>
-    `An older Yuzuno set a Serve entry of its own for phone previews on port ${port} (to ${target}). The next Save and apply or Turn off removes it while it is still exactly that entry; anything else there is left as it is.`,
+  legacyPending: (port: number, target: string, on: boolean) =>
+    `An older Yuzuno set a Serve entry of its own for phone previews on port ${port} (to ${target}). ${on ? "The next Save and apply or Turn off" : "“Remove the older entry” or the next Save and apply"} removes it while it is still exactly that entry; anything else there is left as it is.`,
   legacyUnreadable: (error: string) =>
     `An older Yuzuno's phone previews record could not be read (${error}); it is kept as it is. Until it can be, phone access stays on the ports it serves on now.`,
   legacyLastTry: (detail: string) => ` Last try: ${detail}.`,
@@ -128,6 +128,8 @@ const text = strings({
   starting: "Starting…",
   apply: "Save and apply",
   turnOff: "Turn off",
+  legacyRemove: "Remove the older entry",
+  legacyRetry: "Try removing it again",
 }, {
   badPort: (field) => `${field === "servePort" ? "Serve 端口" : "Core 的手机端口"}必须是 1 到 65535 之间的端口。`,
   checkFailed: (detail) => `检查失败：${detail}`,
@@ -198,8 +200,8 @@ const text = strings({
   includePreviewsHelp: "单文件 HTML 预览在手机上通过同一地址打开，各自在独立的沙箱中运行。不包含时，手机打不开预览，已打开的也会失效。关闭手机访问会保留这个选择。",
   previewsLabel: "手机上的预览",
   previewsNow: (included, available) => (!included ? "未包含" : available ? "已包含" : "已包含，手机访问开启后可用"),
-  legacyPending: (port, target) =>
-    `旧版 Yuzuno 曾为手机预览单独设置了 Serve 端口 ${port}（指向 ${target}）。下一次“保存并应用”或“关闭”会在它仍完全是那个入口时移除它；那里的其他配置保持不变。`,
+  legacyPending: (port, target, on) =>
+    `旧版 Yuzuno 曾为手机预览单独设置了 Serve 端口 ${port}（指向 ${target}）。${on ? "下一次“保存并应用”或“关闭”" : "“移除旧入口”或下一次“保存并应用”"}会在它仍完全是那个入口时移除它；那里的其他配置保持不变。`,
   legacyUnreadable: (error) => `无法读取旧版 Yuzuno 的手机预览记录（${error}），已原样保留。在能读取之前，手机访问保持在它现在使用的端口上。`,
   legacyLastTry: (detail) => ` 上次尝试：${detail}。`,
   legacyForeign: (port, detail) => `旧版 Yuzuno 为手机预览设置的 Serve 端口 ${port} 已不再属于 Yuzuno：${detail}。`,
@@ -210,6 +212,8 @@ const text = strings({
   starting: "正在开始…",
   apply: "保存并应用",
   turnOff: "关闭",
+  legacyRemove: "移除旧入口",
+  legacyRetry: "再次尝试移除",
 });
 
 /** `previews`: Core takes the choice with phone access (T-5). */
@@ -239,11 +243,11 @@ function fieldsOf(draft: RemoteAccessDraft | undefined, view: RemoteAccessView):
 /** What the page says of an older Core's own previews entry (T-5): one still
  * to remove, one left to others, or a record it cannot read; nothing of one
  * removed or gone. */
-function legacyNote(legacy: RemoteAccessPreviews["legacy"] | null, t: ReturnType<typeof text>): string | null {
+function legacyNote(legacy: RemoteAccessPreviews["legacy"] | null, t: ReturnType<typeof text>, on: boolean): string | null {
   if (!legacy) return null;
   if ("error" in legacy) return t.legacyUnreadable(legacy.error);
   if ("formerOwned" in legacy) return legacy.state === "foreign" ? t.legacyForeign(legacy.formerOwned.servePort, legacy.detail.replace(/[.。]\s*$/, "")) : null;
-  return t.legacyPending(legacy.servePort, legacy.target) + (legacy.lastAttempt ? t.legacyLastTry(legacy.lastAttempt.detail.replace(/[.。]\s*$/, "")) : "");
+  return t.legacyPending(legacy.servePort, legacy.target, on) + (legacy.lastAttempt ? t.legacyLastTry(legacy.lastAttempt.detail.replace(/[.。]\s*$/, "")) : "");
 }
 
 /** Core refuses a change with `<code>: <sentence>`; the page shows the sentence. */
@@ -476,10 +480,12 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
   const host = view?.support.coreHost;
   const tailscale = view?.tailscale;
   const enabledNow = !!view && (!!view.saved?.enabled || !!view.listening || view.serve.state === "ours");
-  // An older Core's previews entry still held is removed by Turn off too, with
-  // phone access off as well (its note says so); one no longer held, or a
-  // record that cannot be read, gives Turn off nothing to remove.
-  const legacyHeld = !!view?.previews?.legacy && "servePort" in view.previews.legacy;
+  // What an older Core's phone previews left and is not settled yet (an entry
+  // still held, or a record that cannot be read) is what a Turn off cleans up,
+  // with phone access off as well; one no longer held leaves nothing to.
+  const legacy = view?.previews?.legacy ?? null;
+  const legacyLeft = !!legacy && !("formerOwned" in legacy);
+  const legacyTried = !!legacy && ("error" in legacy || ("lastAttempt" in legacy && !!legacy.lastAttempt));
   const done = operation ? outcome(operation, language) : null;
   const unverified = !!view?.url && !!view.verification && !view.verification.ok;
   // What Save and apply would make, from the node Check read and the typed port.
@@ -577,9 +583,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
               <span>{t.previewsNow(view.previews.included, view.previews.available)}</span>
             </p>
           )}
-          {legacyNote(view.previews?.legacy ?? null, t) && (
+          {legacyNote(view.previews?.legacy ?? null, t, enabledNow) && (
             <p className="remote-access-note" role="note">
-              {legacyNote(view.previews?.legacy ?? null, t)}
+              {legacyNote(view.previews?.legacy ?? null, t, enabledNow)}
             </p>
           )}
           {view.verification && !view.verification.ok && (
@@ -752,9 +758,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   >
                     {sending ? t.starting : t.apply}
                   </button>
-                  {(enabledNow || legacyHeld) && (
+                  {(enabledNow || legacyLeft) && (
                     <button type="button" className="secondary-button" disabled={sending || busy || !workspaceId} onClick={() => void send(false)}>
-                      {t.turnOff}
+                      {enabledNow ? t.turnOff : legacyTried ? t.legacyRetry : t.legacyRemove}
                     </button>
                   )}
                 </div>

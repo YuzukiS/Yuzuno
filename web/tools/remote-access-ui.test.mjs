@@ -765,49 +765,104 @@ test("an older Core's own Serve entry for previews is said apart: still to remov
   }
 });
 
-test("with phone access off, an older Core's Serve entry still held for previews is removed by Turn off, tried again as asked; one no longer held or unread offers no Turn off (T-5)", async () => {
-  const kept = "The older phone previews' own Serve port 8445 was not removed: serve config locked; it is kept for the next change";
-  const entry = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" };
-  const off = (legacy, over = {}) => checkedView({
-    saved: { enabled: false, login: "user@example.com", servePort: 8444, localPort: 4318, origin: ENTRY, previews: true, savedAt: "2026-10-24T17:00:02Z", applied: true },
-    previews: included({ available: false, legacy }),
-    ...over,
-  });
+// With phone access off: an older Core's phone previews left an entry still held, or a record Core cannot read (T-5).
+const kept = "The older phone previews' own Serve port 8445 was not removed: serve config locked; it is kept for the next change";
+const entry = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" };
+const off = (legacy, over = {}) => checkedView({
+  saved: { enabled: false, login: "user@example.com", servePort: 8444, localPort: 4318, origin: ENTRY, previews: true, savedAt: "2026-10-24T17:00:02Z", applied: true },
+  previews: included({ available: false, legacy }),
+  ...over,
+});
+const former = (state, detail = "d") => ({ state, detail, at: "x", formerOwned: entry });
+const cleanups = (p) => ["Turn off", "Remove the older entry", "Try removing it again"].filter((label) => button(p, label));
+
+test("with phone access off, an older Core's entry still held is removed by a button of its own: Turn off as ever, tried again as asked, gone once it is no longer held (T-5)", async () => {
+  const removed = "The older phone previews' own Serve port 8445 was removed";
+  // As Core answers: the change starts, its progress is read until it ends, then the whole view.
   let current = off({ ...entry, lastAttempt: null });
+  let ended = null;
+  let tries = 0;
   const p = mount((url, method, body) => {
+    if (method === "GET" && url.includes("/remote-access/operations/")) return { body: ended };
     if (method === "GET") return { body: current };
-    // Not removed again: the record keeps it, with this try.
-    const operation = op("partial", "cleanup", { requestId: body.requestId, kind: "disable", error: `Phone access is off; ${kept}`, legacy: { state: "partial", detail: kept }, notes: [kept] });
-    current = off({ ...entry, lastAttempt: { state: "partial", detail: kept, at: "x" } }, { operation });
-    return { status: 202, body: { operation } };
+    tries += 1;
+    if (tries === 2) throw new TypeError("the answer never arrived");
+    const id = `op-${tries}`;
+    ended = tries === 1
+      // Not removed: the record keeps it, with this try.
+      ? op("partial", "cleanup", { id, requestId: body.requestId, kind: "disable", error: `Phone access is off; ${kept}`, legacy: { state: "partial", detail: kept }, notes: [kept] })
+      : op("succeeded", "done", { id, requestId: body.requestId, kind: "disable", legacy: { state: "removed", detail: removed }, notes: [removed] });
+    current = tries === 1 ? off({ ...entry, lastAttempt: { state: "partial", detail: kept, at: "x" } }, { operation: ended }) : off(former("removed", removed), { operation: ended });
+    return { status: 202, body: { operation: op("running", "save", { id, requestId: body.requestId, kind: "disable" }) } };
   });
   try {
-    await waitFor(() => button(p, "Turn off"), "Turn off, with phone access off");
-    assert.equal(button(p, "Turn off").disabled, false, "and it can be pressed");
-    for (const n of [1, 2]) {
-      button(p, "Turn off").click();
-      await waitFor(() => p.applies().length === n, `try ${n}`);
-      assert.deepEqual({ ...p.applies()[n - 1].body, requestId: "" }, { requestId: "", enabled: false }, `try ${n}: Turn off as ever, never phone access on again`);
-      await waitFor(() => p.alerts().includes(`Phone access is off; ${kept}.`), `try ${n}: how it ended`);
-      await waitFor(() => button(p, "Turn off") && !button(p, "Turn off").disabled, `try ${n}: it can be tried again`);
-      assert.ok(p.text().includes(`Last try: ${kept}.`), `try ${n}: with the last try`);
-    }
-    assert.equal(new Set(p.applies().map((c) => c.body.requestId)).size, 2, "each try is a new request");
-    assert.equal(p.writes().length, 2, "and nothing else is asked");
+    await waitFor(() => button(p, "Remove the older entry"), "its own button, with phone access off");
+    assert.deepEqual(cleanups(p), ["Remove the older entry"], "never Turn off for phone access already off");
+    assert.equal(button(p, "Remove the older entry").disabled, false, "pressed without a Check");
+    assert.equal(button(p, "Save and apply").disabled, true, "while Save and apply still waits for one");
+    assert.match(p.text(), /“Remove the older entry” or the next Save and apply removes it while it is still exactly that entry/);
+    button(p, "Remove the older entry").click();
+    await waitFor(() => p.applies().length === 1, "try 1");
+    await waitFor(() => p.alerts().includes(`Phone access is off; ${kept}.`), "try 1: how it ended");
+    await waitFor(() => button(p, "Try removing it again") && !button(p, "Try removing it again").disabled, "try 1: it can be tried again");
+    assert.ok(p.text().includes(`Last try: ${kept}.`), "try 1: with the last try");
+    button(p, "Try removing it again").click();
+    await waitFor(() => p.applies().length === 2, "try 2");
+    await waitFor(() => p.alerts().some((a) => /^Core's answer did not arrive/.test(a)), "try 2: its answer lost");
+    await waitFor(() => !button(p, "Try removing it again").disabled, "try 2: it can be asked again");
+    button(p, "Try removing it again").click();
+    await waitFor(() => p.applies().length === 3, "try 3");
+    const sent = p.applies().map((c) => c.body);
+    for (const body of sent) assert.deepEqual({ ...body, requestId: "" }, { requestId: "", enabled: false }, "Turn off as ever: no port, no login, never phone access on");
+    assert.notEqual(sent[1].requestId, sent[0].requestId, "after an ending, a new request");
+    assert.equal(sent[2].requestId, sent[1].requestId, "after a lost answer, the same request");
+    await waitFor(() => cleanups(p).length === 0, "no longer held: nothing left to remove");
+    assert.doesNotMatch(p.text(), /removes it while it is still exactly that entry/, "and not said to be held");
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/check")).length, 0, "no Check was asked");
+    assert.equal(p.writes().length, 3, "nothing else was asked");
   } finally {
     p.close();
   }
-  // No longer held (gone, removed, or left to others), unreadable, or none: nothing for Turn off to remove.
-  const former = (state) => ({ state, detail: "d", at: "x", formerOwned: entry });
-  for (const [what, legacy] of [
-    ["absent", former("absent")], ["removed", former("removed")], ["foreign", former("foreign")],
-    ["unreadable", { error: "remote-preview.json is not a readable phone previews record" }], ["none", null],
+});
+
+test("with phone access off, a record Core cannot read can be tried again; one no longer held, none, an earlier partial change, or the phone entry itself offers nothing to remove (T-5)", async () => {
+  const unreadable = { error: "remote-preview.json is not a readable phone previews record" };
+  const p = mount((url, method, body) => {
+    if (method === "GET") return { body: off(unreadable) };
+    const operation = op("partial", "cleanup", { requestId: body.requestId, kind: "disable", error: "Phone access is off; the record could not be read", legacy: { state: "partial", detail: "x" } });
+    return { status: 202, body: { operation } };
+  });
+  try {
+    await waitFor(() => button(p, "Try removing it again"), "unreadable: its own button");
+    assert.deepEqual(cleanups(p), ["Try removing it again"]);
+    button(p, "Try removing it again").click();
+    await waitFor(() => p.applies().length === 1, "unreadable: tried");
+    assert.deepEqual({ ...p.applies()[0].body, requestId: "" }, { requestId: "", enabled: false });
+  } finally {
+    p.close();
+  }
+  const earlier = op("partial", "cleanup", { kind: "disable", error: `Phone access is off; ${kept}`, legacy: { state: "partial", detail: kept } });
+  for (const [what, shown] of [
+    ["removed", off(former("removed"))], ["absent", off(former("absent"))], ["foreign", off(former("foreign"))],
+    ["none", off(null)], ["none, after an earlier partial change", off(null, { operation: earlier })],
   ]) {
-    const q = mount(() => ({ body: off(legacy) }));
+    const q = mount(() => ({ body: shown }));
     try {
       await waitFor(() => button(q, "Save and apply"), `${what}: the form`);
-      assert.equal(!!button(q, "Turn off"), false, `${what}: no Turn off`);
+      assert.deepEqual(cleanups(q), [], `${what}: nothing to remove`);
       assert.doesNotMatch(q.text(), /removes it while it is still exactly that entry/, `${what}: not said to be held`);
+    } finally {
+      q.close();
+    }
+  }
+  for (const [what, legacy] of [["held", { ...entry, lastAttempt: null }], ["unreadable", unreadable]]) {
+    const q = mount(() => ({ body: off(legacy, { canChange: false, readOnlyReason: "Phone access is changed from Yuzuno on the computer that runs Core, not through the phone entry." }) }));
+    try {
+      await waitFor(() => /not through the phone entry/.test(q.text()), `phone entry, ${what}: read only`);
+      assert.deepEqual(cleanups(q), [], `phone entry, ${what}: nothing to press`);
+      assert.equal(!!button(q, "Save and apply") || !!button(q, "Check"), false, `phone entry, ${what}: no change at all`);
+      await tick();
+      assert.deepEqual(q.writes(), [], `phone entry, ${what}: nothing written`);
     } finally {
       q.close();
     }
