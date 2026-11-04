@@ -203,7 +203,8 @@ test("through the phone entry (T-5): not included says where to choose it; inclu
   on.click(on.document.querySelector(".open-choice-split .primary-button"));
   const frame = await until(on.frame, "the snapshot framed from the phone entry's own origin");
   assert.deepEqual(on.requests.slice(0, 2).map((r) => [r.method, r.url]), [["POST", "/api/previews"], ["POST", phone.proof.url]]);
-  assert.deepEqual(on.requests[1].way, { mode: "cors", redirect: "error", headers: { "X-Yuzuno-Client": "desktop" }, credentials: undefined, referrerPolicy: undefined },
+  // Made in the page's realm: compared by value (no credentials or referrer policy of its own: the defaults).
+  assert.deepEqual(JSON.parse(JSON.stringify(on.requests[1].way)), { mode: "cors", redirect: "error", headers: { "X-Yuzuno-Client": "desktop" } },
     "from this page, so the browser sends its Origin; never redirected");
   assert.equal(frame.getAttribute("src"), phone.url);
   assert.equal(frame.getAttribute("sandbox"), "allow-scripts", "scripts only: never this page's origin, though its address is");
