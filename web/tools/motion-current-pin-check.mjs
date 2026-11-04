@@ -8,7 +8,12 @@
 // comes, so it never first dips or jumps. Throughout, the conversation does not scroll and the pin stays
 // pinned. Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Each toggle is sampled
 // every frame: the whole pin's height and its height below the summary, its open state, whether it is
-// pinned, and the conversation's scrollTop.
+// pinned, and the conversation's scrollTop. Two more things a reader may meet (Lead 4056):
+// - while the pin is open, a follow-up arrives through the event stream (this check speaks it for Core)
+//   and a read: the pin takes it in one step, and nothing in it plays again;
+// - on a desktop, a jump made as the pin opens (Turn 8 from the turn dock, 40 ms after the press): the
+//   pane's scroll padding follows the pin, and the jumped-to Turn must end below the open pin, with
+//   nothing over it.
 // Writes: only the app's own saves of where an Agent was read. Reads the fixture does not know are
 // answered {} and listed. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/motion-current-pin-check.mjs
@@ -43,13 +48,16 @@ const turns = [
     { id: `u${n}`, type: "userMessage", content: [{ type: "text", text: `Earlier question ${n + 1}` }] },
     { id: `r${n}`, type: "agentMessage", text: `Earlier answer ${n + 1}.` },
   ] })),
-  { id: "t8", status: "inProgress", items: [
-    { id: "u8", type: "userMessage", content: [{ type: "text", text: request }] },
-    { id: "w1", type: "agentMessage", phase: "commentary", text: work(1) },
-    { id: "u8b", type: "userMessage", content: [{ type: "text", text: followUp }] },
-    ...Array.from({ length: 6 }, (_, n) => ({ id: `w${n + 2}`, type: "agentMessage", phase: "commentary", text: work(n + 2) })),
-  ] },
+  { id: "t8", status: "inProgress", items: [] },
 ];
+const running = [
+  { id: "u8", type: "userMessage", content: [{ type: "text", text: request }] },
+  { id: "w1", type: "agentMessage", phase: "commentary", text: work(1) },
+  { id: "u8b", type: "userMessage", content: [{ type: "text", text: followUp }] },
+  ...Array.from({ length: 6 }, (_, n) => ({ id: `w${n + 2}`, type: "agentMessage", phase: "commentary", text: work(n + 2) })),
+];
+// A second follow-up, sent while the pin is open: it arrives through the event stream and a read.
+const later = { id: "u8c", type: "userMessage", content: [{ type: "text", text: "And list them in the order they appear." }] };
 const gets = {
   "/api/workspace": { workspace: { id: WORKSPACE }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/fixture" },
@@ -102,6 +110,8 @@ function startSampling(span) {
     body: Math.round((pin.getBoundingClientRect().height - summary.getBoundingClientRect().height) * 10) / 10,
     pinned: pin.dataset.pinned,
     top: Math.round(scroller.scrollTop),
+    // Animations and transitions playing in the pin that the browser reports (not ::details-content's).
+    playing: pin.getAnimations({ subtree: true }).filter((a) => a.playState === "running").length,
   });
   window.__pinFrames = [read()];
   window.__pinDone = false;
@@ -125,8 +135,28 @@ try {
     const context = await browser.newContext({ viewport: { width: run.width, height: run.height }, hasTouch: run.touch, isMobile: run.touch,
       reducedMotion: run.reduced ? "reduce" : "no-preference" });
     const page = await context.newPage();
+    turns[8].items = [...running];
     await page.addInitScript(() => {
-      window.EventSource = class { close() {} };
+      // The event stream, spoken for Core by this check: a fresh one starts with `reset`, and
+      // __announce says Sora's conversation changed, which the app answers with a read.
+      let id = 0;
+      const streams = [];
+      window.EventSource = class {
+        constructor() {
+          this.readyState = 0;
+          streams.push(this);
+          setTimeout(() => {
+            if (this.readyState === 2) return;
+            this.readyState = 1;
+            this.onopen?.({});
+            this.onmessage?.({ data: JSON.stringify({ type: "reset", reason: "new" }), lastEventId: String(++id) });
+          }, 0);
+        }
+        addEventListener() {}
+        close() { this.readyState = 2; }
+      };
+      window.__announce = () => streams.findLast((s) => s.readyState === 1)
+        ?.onmessage?.({ data: JSON.stringify({ type: "agent.changed", agentId: "c" }), lastEventId: String(++id) });
       localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
     });
     page.on("pageerror", (error) => report.errors.push(`${run.tag}: ${error.message}`));
@@ -204,6 +234,56 @@ try {
       ok(`${run.tag}: throughout, the conversation does not scroll and the pin stays pinned`,
         Math.max(...tops) - Math.min(...tops) <= 1 && pinnedAll, { tops, pinnedAll, frames: all.length });
       await page.screenshot({ path: resolve(output, `${run.tag}-closed.png`) });
+
+      // Open, a follow-up arrives: the pin takes it in one step, and nothing in it plays again.
+      await summary.focus();
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(500);
+      await page.evaluate(startSampling, 900);
+      turns[8].items.push(later);
+      await page.evaluate(() => window.__announce());
+      await pin.locator(".current-turn-messages > li").nth(2).waitFor();
+      await page.waitForFunction(() => window.__pinDone);
+      const arrival = await page.evaluate(() => window.__pinFrames);
+      report.frames[`${run.tag}: a follow-up arrives`] = arrival;
+      const from = arrival[0].whole, to = arrival.at(-1).whole;
+      const midway = arrival.filter((f) => f.whole > Math.min(from, to) + 1 && f.whole < Math.max(from, to) - 1).length;
+      ok(`${run.tag}: while it is open, a follow-up that arrives grows the pin in one step, and nothing in it plays`,
+        to > from + 5 && midway === 0 && arrival.every((f) => f.open && f.playing === 0), { from, to, midway,
+          playing: Math.max(...arrival.map((f) => f.playing)) });
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(500);
+
+      // A jump made as the pin opens: Turn 8 from the turn dock, 40 ms after the press. The pane's scroll
+      // padding follows the pin's height, so the jump must still end below the pin once it has opened.
+      if (!run.touch) {
+        await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+        await page.waitForTimeout(400);
+        await page.locator('.turn-dock-stop[data-turn-choice="t7"]').waitFor({ state: "attached" });
+        await page.evaluate(startSampling, 900);
+        await page.evaluate(() => {
+          document.querySelector(".main-panel .current-turn-prompt > summary").click();
+          setTimeout(() => document.querySelector('.turn-dock-stop[data-turn-choice="t7"]').click(), 40);
+        });
+        await page.waitForFunction(() => window.__pinDone);
+        const jump = await page.evaluate(() => window.__pinFrames);
+        report.frames[`${run.tag}: a jump as it opens`] = jump;
+        const landed = jump.findIndex((f) => f.top !== jump[0].top);
+        const final = jump.at(-1).whole;
+        const seen = await page.evaluate(() => {
+          const pin = document.querySelector(".main-panel .current-turn-prompt");
+          const target = document.getElementById("turn-t7");
+          const p = pin.getBoundingClientRect(), r = target.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + 6);
+          return { open: pin.open, pinned: pin.dataset.pinned, pinBottom: Math.round(p.bottom * 10) / 10,
+            targetTop: Math.round(r.top * 10) / 10, onTop: !!hit && target.contains(hit) };
+        });
+        const detail = { atJump: landed >= 0 ? jump[landed].whole : null, final, ...seen };
+        if (!run.reduced)
+          ok(`${run.tag}: the jump came while the pin was still opening`, landed > 0 && jump[landed].whole < final - 10, detail);
+        ok(`${run.tag}: a turn jump made as the pin opens ends below the open pin, with nothing over it`,
+          landed > 0 && seen.open && seen.pinned === "true" && seen.targetTop >= seen.pinBottom - 1 && seen.onTop, detail);
+      }
     } catch (error) {
       ok(`${run.tag}: the sequence ran to its end`, false, String(error?.message ?? error).slice(0, 400));
     }
