@@ -9,7 +9,7 @@ use crate::{collaboration_store::TaskActor, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Result};
 use axum::{
     extract::{Path, State},
-    routing::get,
+    routing,
     Json, Router,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -176,7 +176,7 @@ pub(crate) fn may_dispatch_from_template(db: &Connection, actor: &TaskActor, tas
 }
 
 pub fn router() -> Router<Arc<Workspace>> {
-    Router::new().route("/api/projects/{id}/leads", get(get_leads).put(put_leads))
+    Router::new().route("/api/projects/{id}/leads", routing::get(get_leads).put(put_leads))
 }
 
 async fn get_leads(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> Result<Json<Value>, crate::server::ApiError> {
