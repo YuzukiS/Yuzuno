@@ -714,7 +714,9 @@ async fn mint(port: u16, login: &str) -> (u16, Value) {
     (code, response.json().await.unwrap_or(Value::Null))
 }
 
-/// One request on the phone entry as Serve passes it: the path and header lines as given.
+/// One request on the phone entry as Serve passes it: the path and header
+/// lines as given. Its answer's status, head and body, a chunked one put
+/// together (every answer there is a stream, `end_on_revoke`).
 async fn raw(port: u16, method: &str, path: &str, headers: &str) -> (u16, String, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -723,7 +725,22 @@ async fn raw(port: u16, method: &str, path: &str, headers: &str) -> (u16, String
     let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut text)).await;
     let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    (status, head.to_owned(), body.to_owned())
+    let body = if has(head, "Transfer-Encoding", "chunked") { unchunked(body) } else { body.to_owned() };
+    (status, head.to_owned(), body)
+}
+
+/// A chunked body's bytes, as text.
+fn unchunked(mut rest: &str) -> String {
+    let mut body = String::new();
+    while let Some((size, after)) = rest.split_once("\r\n") {
+        let size = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16).unwrap_or(0);
+        if size == 0 || after.len() < size {
+            break;
+        }
+        body.push_str(&after[..size]);
+        rest = after[size..].strip_prefix("\r\n").unwrap_or(&after[size..]);
+    }
+    body
 }
 
 /// What follows the phone entry's origin in `url`.
@@ -1093,7 +1110,8 @@ fn lab_with(prepare: impl FnOnce(&Lab)) -> Lab {
 #[tokio::test]
 async fn an_older_cores_entry_is_removed_only_while_it_is_still_exactly_its_own() {
     // (case, Serve's entry on 8445, a fault, how it ends, whether Serve keeps 8445, whether the record keeps it)
-    let cases: [(&str, fn(u16) -> Option<Value>, Value, &str, bool, bool); 5] = [
+    type Case = (&'static str, fn(u16) -> Option<Value>, Value, &'static str, bool, bool);
+    let cases: [Case; 5] = [
         ("absent", |_| None, Value::Null, "absent", false, false),
         ("foreign", |_| Some(json!({"Handlers": {"/": {"Proxy": "http://127.0.0.1:9999"}}})), Value::Null, "foreign", true, false),
         ("another handler", |local| Some(json!({"Handlers": {"/": {"Proxy": format!("http://127.0.0.1:{local}")}, "/x": {"Path": "/srv"}}})), Value::Null, "foreign", true, false),

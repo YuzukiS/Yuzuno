@@ -66,14 +66,14 @@ const PROOF = "http://127.0.0.1:4383/.well-known/yuzuno-preview/ch";
 const minted = { name: "pomodoro.html", size: 6200, sha256: "ab", takenAt: "2026-10-28T22:14:00Z", expiresAt: "2026-10-28T23:14:00Z",
   port: 4383, url: PREVIEW, proof: { challenge: "ch", answer: "ans", url: PROOF } };
 
-function mount({ respond, width = 1440, storage = true } = {}) {
+function mount({ respond, width = 1440, storage = true, origin = "http://isolated.test" } = {}) {
   const errors = [];
   const requests = [];
   const opened = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
+    url: `${origin}/`, runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
   });
   const { window } = dom;
   Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
@@ -85,7 +85,8 @@ function mount({ respond, width = 1440, storage = true } = {}) {
     Object.defineProperty(window, "localStorage", { value: { getItem: () => null, setItem: refuse, removeItem: refuse }, configurable: true });
   }
   window.fetch = async (url, init = {}) => {
-    const request = { url: String(url), method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined };
+    const request = { url: String(url), method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined,
+      way: { mode: init.mode, redirect: init.redirect, headers: init.headers, credentials: init.credentials, referrerPolicy: init.referrerPolicy } };
     requests.push(request);
     const answer = (await respond?.(request)) ?? (request.url === PROOF ? { text: "ans" } : request.url.endsWith("/api/previews") ? { body: minted } : { body: {} });
     const { status = 200, body = {}, text } = answer;
@@ -120,6 +121,8 @@ test("a prototype opens beside the chat only once this browser proves it reaches
     ["POST", "/api/previews", { kind: "artifact", agentId: "a", path: "pomodoro.html" }],
     ["GET", PROOF, undefined],
   ], "kept as a snapshot, then its port proven, before any frame");
+  assert.deepEqual(page.requests[1].way, { mode: undefined, redirect: undefined, headers: undefined, credentials: "omit", referrerPolicy: "no-referrer" },
+    "the previews' port is proven as before (T-5): GET, no credentials, no referrer");
   assert.equal(frame.getAttribute("src"), PREVIEW);
   assert.equal(frame.getAttribute("sandbox"), "allow-scripts", "scripts only: no same-origin, forms, popups or top navigation");
   assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
@@ -168,56 +171,77 @@ test("without a proven port, or when Core refuses the file, no page is framed an
   assert.ok(!refused.requests.some((r) => r.url === PROOF), "nothing is proven for a refused file");
 });
 
-test("through the phone entry (T-5): previews off say where to turn them on; on, their own address is proven before it is framed, and closing leaves an opened tab alone", async (t) => {
-  const off = mount({ respond: (r) => (r.url.endsWith("/api/previews")
-    ? { status: 400, body: { error: "preview_unavailable_remote: previews are not served through the phone entry; turn on phone previews in Settings → Phone access, on the computer that runs Core" } }
+test("through the phone entry (T-5): not included says where to choose it; included, the snapshot on this page's own origin is proven by POST from this page before it is framed, and closing leaves an opened tab alone", async (t) => {
+  const PHONE = "https://pc.tail0.ts.net:8444";
+  const off = mount({ origin: PHONE, respond: (r) => (r.url.endsWith("/api/previews")
+    ? { status: 400, body: { error: "preview_unavailable_remote: phone access does not include previews; choose Phone access includes previews in Settings → Phone access, on the computer that runs Core, and Save and apply" } }
     : undefined) });
   t.after(off.close);
   off.window.renderChoice(snapshot);
   off.click(off.document.querySelector(".open-choice-split .primary-button"));
   await until(() => off.panel()?.querySelector('[role="alert"]'), "why previews don't open");
-  assert.match(off.panel().textContent, /open through the phone entry once Previews on the phone is turned on, in Settings → Phone access/);
+  assert.match(off.panel().textContent, /open through the phone entry once Phone access includes previews, in Settings → Phone access/);
   assert.equal(off.frame(), null);
-  assert.ok(!off.requests.some((r) => r.url.includes("/.well-known/")), "nothing is proven");
+  assert.ok(!off.requests.some((r) => r.url.includes("/proof/")), "nothing is proven");
   // Asked for in the browser: no tab; the Portal says why.
-  const offBrowser = mount({ respond: (r) => (r.url.endsWith("/api/previews") ? { status: 400, body: { error: "preview_unavailable_remote: off" } } : undefined) });
+  const offBrowser = mount({ origin: PHONE, respond: (r) => (r.url.endsWith("/api/previews") ? { status: 400, body: { error: "preview_unavailable_remote: off" } } : undefined) });
   t.after(offBrowser.close);
   offBrowser.window.portal.saveOpenWith("browser");
   offBrowser.window.renderChoice(snapshot);
   offBrowser.click(offBrowser.document.querySelector(".open-choice-split .primary-button"));
   await until(() => offBrowser.panel()?.querySelector('[role="alert"]'), "the Portal's explanation");
   assert.deepEqual(offBrowser.opened, [], "no broken tab");
-  assert.match(offBrowser.panel().textContent, /Previews on the phone is turned on/);
+  assert.match(offBrowser.panel().textContent, /Phone access includes previews/);
 
-  // On: the previews' own entry, another HTTPS port of the same name.
-  const ENTRY = "https://pc.tail0.ts.net:8445";
-  const phone = { ...minted, port: 8445, url: `${ENTRY}/v/tok`, proof: { challenge: "ch", answer: "ans", url: `${ENTRY}/.well-known/yuzuno-preview/ch` } };
-  const on = mount({ respond: (r) => (r.url === phone.proof.url ? { text: "ans" } : r.url.endsWith("/api/previews") ? { body: phone } : undefined) });
+  // Included: on the phone entry's own origin, its proof by POST.
+  const phone = { ...minted, port: 8444, url: `${PHONE}/__yuzuno/preview/v/tok`,
+    proof: { challenge: "ch", answer: "ans", url: `${PHONE}/__yuzuno/preview/proof/ch`, method: "POST" } };
+  const answers = (answer) => (r) => (r.url === phone.proof.url ? (r.method === "POST" ? { text: answer } : { status: 405, text: "no" }) : r.url.endsWith("/api/previews") ? { body: phone } : undefined);
+  const on = mount({ origin: PHONE, respond: answers("ans") });
   t.after(on.close);
   on.window.renderChoice(snapshot);
   on.click(on.document.querySelector(".open-choice-split .primary-button"));
-  const frame = await until(on.frame, "the snapshot framed from the previews' entry");
-  assert.deepEqual(on.requests.slice(0, 2).map((r) => [r.method, r.url]), [["POST", "/api/previews"], ["GET", phone.proof.url]]);
+  const frame = await until(on.frame, "the snapshot framed from the phone entry's own origin");
+  assert.deepEqual(on.requests.slice(0, 2).map((r) => [r.method, r.url]), [["POST", "/api/previews"], ["POST", phone.proof.url]]);
+  assert.deepEqual(on.requests[1].way, { mode: "cors", redirect: "error", headers: { "X-Yuzuno-Client": "desktop" }, credentials: undefined, referrerPolicy: undefined },
+    "from this page, so the browser sends its Origin; never redirected");
   assert.equal(frame.getAttribute("src"), phone.url);
-  assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
+  assert.equal(frame.getAttribute("sandbox"), "allow-scripts", "scripts only: never this page's origin, though its address is");
   // Opened in the browser too, then the Portal closed: the page is unmounted,
   // and nothing is asked of Core that would end the opened tab.
   on.click(on.button("Open in browser", on.panel()));
-  assert.deepEqual(on.opened.map(([url]) => url), [phone.url]);
+  assert.deepEqual(on.opened.map(([url, , features]) => [url, features]), [[phone.url, "noopener,noreferrer"]]);
   const asked = on.requests.length;
   on.click(on.button("Close preview"));
   await until(() => !on.panel(), "the panel closed");
   assert.equal(on.frame(), null);
   assert.deepEqual(on.requests.slice(asked), [], "closing asks Core nothing");
 
+  // A proof elsewhere than this page's own origin and path, or a way this page does not know, is never asked.
+  for (const proof of [
+    { ...phone.proof, url: "https://pc.tail0.ts.net:8445/__yuzuno/preview/proof/ch" },
+    { ...phone.proof, url: `${PHONE}/api/health` },
+    { ...phone.proof, url: `${PHONE}/__yuzuno/preview/proof/ch?then=elsewhere` },
+    { ...phone.proof, method: "PUT" },
+  ]) {
+    const odd = mount({ origin: PHONE, respond: (r) => (r.url.endsWith("/api/previews") ? { body: { ...phone, proof } } : { text: "ans" }) });
+    t.after(odd.close);
+    odd.window.renderChoice(snapshot);
+    odd.click(odd.document.querySelector(".open-choice-split .primary-button"));
+    await until(() => odd.panel()?.querySelector('[role="alert"]'), "the explanation");
+    assert.equal(odd.frame(), null, JSON.stringify(proof));
+    assert.deepEqual(odd.requests.map((r) => r.url), ["/api/previews"], `nothing else is asked: ${JSON.stringify(proof)}`);
+    assert.deepEqual(odd.errors, []);
+  }
+
   // Not reached from this device: says which address.
-  const unreached = mount({ respond: (r) => (r.url === phone.proof.url ? { text: "other" } : r.url.endsWith("/api/previews") ? { body: phone } : undefined) });
+  const unreached = mount({ origin: PHONE, respond: answers("other") });
   t.after(unreached.close);
   unreached.window.renderChoice(snapshot);
   unreached.click(unreached.document.querySelector(".open-choice-split .primary-button"));
   await until(() => unreached.panel()?.querySelector('[role="alert"]'), "the explanation");
   assert.equal(unreached.frame(), null);
-  assert.match(unreached.panel().textContent, /doesn't reach Core's previews at https:\/\/pc\.tail0\.ts\.net:8445\. Check Previews on the phone/);
+  assert.match(unreached.panel().textContent, /doesn't reach Core's previews at https:\/\/pc\.tail0\.ts\.net:8444\. Check Phone access includes previews/);
   assert.deepEqual([...off.errors, ...on.errors, ...unreached.errors], []);
 });
 
