@@ -5,9 +5,10 @@
 // - SX-25: Create agent in New agent; Core refuses the create.
 // - SX-35: Add to workspace for an existing Codex session, after its preview; Core refuses the import.
 // - SX-47: Add to workspace for an existing Claude session, after its preview; Core refuses the import.
-// For each, Cancel and the pressed button keep their places, the alert shows (role="alert") and is in view,
-// the refused write happens once, and focus does not fall to the page. Desktop 1280×860 (a click) and phone
-// 390×844 (a tap), and Enter on the focused button in each. Writes other than the refused ones and the app's
+// For each, Cancel and the pressed button keep their places, the alert shows (role="alert") and is wholly in
+// view, the refused write happens once, and focus does not fall to the page. New agent and its two import tabs
+// scroll, so there the alert keeps its line above the buttons; the draft dialog does not, so there it comes
+// below them. Desktop 1280×860 (a click) and phone 390×844 (a tap), and Enter on the focused button in each. Writes other than the refused ones and the app's
 // own saves of where an Agent was read are refused and listed. Reads the fixture does not know are answered
 // {} and listed. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/error-below-actions-check.mjs
@@ -122,8 +123,8 @@ function measure([cancel, pressed]) {
     pressed: box(button(pressed)),
     alert: box(alert),
     alertText: alert?.textContent.trim().slice(0, 120) ?? null,
-    // In view: its first line inside both the dialog's visible box and the window.
-    alertInView: !!a && a.top < Math.min(frame.bottom, innerHeight) - 8 && a.bottom > Math.max(frame.top, 0) + 8,
+    // In view: the whole alert inside both the dialog's visible box and the window.
+    alertInView: !!a && a.top >= Math.max(frame.top, 0) - 0.5 && a.bottom <= Math.min(frame.bottom, innerHeight) + 0.5,
     dialog: { top: Math.round(frame.top), bottom: Math.round(frame.bottom), scrollTop: Math.round(scroller.scrollTop),
       scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight },
     focus: !a11y || a11y === document.body ? "page" : a11y.tagName === "BUTTON" ? `button: ${a11y.textContent.trim()}`
