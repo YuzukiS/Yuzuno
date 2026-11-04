@@ -32,8 +32,10 @@ export type PortalTarget =
       where: string;
     };
 
-/** Core's reply to a preview: the snapshot's address on the previews' own
- * origin, and the proof that this browser reaches it (core/src/previews.rs). */
+/** Core's reply to a preview: the snapshot's address, and the proof that
+ * this browser reaches it (core/src/previews.rs). On Core's own port it is
+ * the previews' port, proven by GET; through the phone entry, that entry's
+ * own origin, proven by POST from this page (T-5). */
 export type Minted = {
   name: string;
   size: number;
@@ -42,7 +44,8 @@ export type Minted = {
   expiresAt: string;
   port: number;
   url: string;
-  proof: { challenge: string; answer: string; url: string };
+  /** `method` left out (Core's own port, an older Core) means GET. */
+  proof: { challenge: string; answer: string; url: string; method?: string };
 };
 
 type Shown = { target: PortalTarget; key: number; opener: HTMLElement | null };
@@ -82,7 +85,7 @@ export function closePortal() {
 export const mintPreview = (source: PreviewSource) => post<Minted>("/previews", source);
 
 /** Core's refusal of a preview asked for through the phone entry while
- * previews on the phone are off (Settings → Phone access, T-5). */
+ * phone access does not include previews (Settings → Phone access, T-5). */
 export const phonePreviewsOff = (error: unknown) => error instanceof HttpError && error.message.startsWith("preview_unavailable_remote:");
 
 /** Whether this browser reaches the address Core gave, proven by the answer
@@ -93,6 +96,45 @@ export async function reaches(url: string, answer: string): Promise<boolean> {
   try {
     const response = await fetch(url, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: controller.signal });
     return response.ok && (await response.text()) === answer;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** The path of a phone preview's proof on the phone entry (core/src/previews.rs). */
+const PHONE_PROOF = "/__yuzuno/preview/proof/";
+
+/** Whether this browser reaches the snapshot Core kept, proven as Core says
+ * to (T-5). GET, or no `method`: as `reaches`, for the previews' port. POST:
+ * the phone entry's own proof, only at this page's own origin and that path,
+ * from this page with its client header, in CORS mode with the default
+ * referrer policy so that the browser sends this page's Origin; never
+ * redirected. Any other way fails, and is never tried another way. */
+export async function provesPreview(proof: Minted["proof"]): Promise<boolean> {
+  const method = proof.method ?? "GET";
+  if (method === "GET") return reaches(proof.url, proof.answer);
+  if (method !== "POST") return false;
+  let url: URL;
+  try {
+    url = new URL(proof.url);
+  } catch {
+    return false;
+  }
+  if (url.origin !== window.location.origin || !url.pathname.startsWith(PHONE_PROOF) || url.search || url.hash) return false;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch(url.href, {
+      method: "POST",
+      mode: "cors",
+      cache: "no-store",
+      redirect: "error",
+      headers: { "X-Yuzuno-Client": "desktop" },
+      signal: controller.signal,
+    });
+    return response.ok && !response.redirected && (await response.text()) === proof.answer;
   } catch {
     return false;
   } finally {

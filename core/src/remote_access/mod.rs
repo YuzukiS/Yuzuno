@@ -17,8 +17,15 @@
 //! Serve entry Core created, or adopted because it was exactly the wanted
 //! one, is ever changed, and only while it is still exactly that.
 //!
-//! Phone previews (T-5) are a second such entry, of their own, beside this
-//! one: see `preview`.
+//! Phone previews (T-5) go through this entry too: on its own origin and
+//! Serve entry, under a path it keeps for them (`previews::phone_router`).
+//! Whether phone access includes them is one choice saved with it
+//! (`previews`, off unless chosen), applied as Save and apply saves it:
+//! turning it off, or phone access off, revokes what a phone was given. An
+//! older Core's phone previews had a second listener and Serve entry of
+//! their own (`preview`): their choice is kept, their listener never starts
+//! again, and their Serve entry, while still exactly what it set, is removed
+//! by the next change of phone access.
 mod host;
 mod preview;
 #[cfg(test)]
@@ -40,7 +47,6 @@ use std::{path::{Path, PathBuf}, sync::{Arc, Mutex, OnceLock}, time::Duration};
 use tokio::sync::watch;
 
 pub(crate) use host::Host;
-pub(crate) use preview::door as preview_door;
 
 pub const DEFAULT_SERVE_PORT: u16 = 8444;
 pub const DEFAULT_LOCAL_PORT: u16 = 4318;
@@ -65,6 +71,9 @@ struct Desired {
     serve_port: u16,
     local_port: u16,
     origin: Option<String>,
+    /// Whether phone access includes previews (T-5); none in a record from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previews: Option<bool>,
     saved_at: String,
 }
 
@@ -94,6 +103,10 @@ struct Saved {
     desired: Option<Desired>,
     effective: Option<Applied>,
     owned: Option<Owned>,
+    /// Whether phone access includes previews as it applies (T-5); none in
+    /// a record from before, where an older Core's own choice holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previews: Option<bool>,
     operations: Vec<Operation>,
 }
 
@@ -108,9 +121,14 @@ pub(crate) struct ApplyRequest {
     serve_port: Option<u16>,
     #[serde(default)]
     local_port: Option<u16>,
+    /// Whether phone access includes previews (T-5). Left out (an older
+    /// page), what was saved holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previews: Option<bool>,
 }
 
-/// One recorded change, of phone access or (with its own request) of phone previews.
+/// One recorded change, of phone access or (with its own request, in an
+/// older Core's record) of phone previews.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Operation<R = ApplyRequest> {
@@ -128,6 +146,10 @@ struct Operation<R = ApplyRequest> {
     finished_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    /// What became of an older Core's Serve entry for phone previews, when
+    /// this change looked (T-5): apart from how phone access ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy: Option<Value>,
     request: R,
 }
 
@@ -135,6 +157,8 @@ struct Running {
     entry: Entry,
     since: String,
     source: &'static str,
+    /// Its `RemoteEntry::run`: what previews asked for through it are taken for.
+    run: u64,
     revoke: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -151,15 +175,16 @@ pub(crate) struct State {
     file: Mutex<()>,
     busy: Arc<tokio::sync::Mutex<()>>,
     listener: tokio::sync::Mutex<Option<Running>>,
-    /// The listener as the page sees it, readable while an operation holds `listener`.
-    current: Mutex<Option<(Entry, String, &'static str)>>,
+    /// The listener as the page sees it, readable while an operation holds
+    /// `listener`, with its run.
+    current: Mutex<Option<(Entry, String, &'static str, u64)>>,
+    /// Whether phone access includes previews, as it applies (T-5).
+    previews: Mutex<bool>,
     context: OnceLock<Started>,
     environment: OnceLock<Option<Entry>>,
     startup_error: OnceLock<String>,
     observed: Mutex<Value>,
     host: Mutex<Option<Host>>,
-    /// Phone previews' listener (T-5); see `preview`.
-    preview: preview::State,
     #[cfg(test)]
     pub(super) test_host: OnceLock<Host>,
 }
@@ -225,28 +250,23 @@ pub struct Startup {
     listen: Option<(Entry, &'static str)>,
     environment: Option<Entry>,
     error: Option<String>,
-    /// Phone previews, from their own record: never the phone entry's concern.
-    preview: (Option<(preview::Ports, String)>, Option<String>),
 }
 
 pub struct Bound {
     listener: Option<(tokio::net::TcpListener, Entry, &'static str)>,
     environment: Option<Entry>,
     error: Option<String>,
-    preview: (Option<(tokio::net::TcpListener, preview::Ports, String)>, Option<String>),
 }
 
 pub fn startup(data: &Path, environment: Option<(u16, RemoteEntry)>) -> Startup {
     let environment = environment.map(|(port, entry)| Entry { port, origin: entry.origin().to_owned(), login: entry.login().to_owned() });
-    let preview = preview::startup(data);
     match read(&data.join(FILE)) {
-        Ok(Saved { effective: Some(applied), .. }) => Startup { listen: applied.listen.map(|e| (e, "settings")), environment, error: None, preview },
-        Ok(_) => Startup { listen: environment.clone().map(|e| (e, "environment")), environment, error: None, preview },
+        Ok(Saved { effective: Some(applied), .. }) => Startup { listen: applied.listen.map(|e| (e, "settings")), environment, error: None },
+        Ok(_) => Startup { listen: environment.clone().map(|e| (e, "environment")), environment, error: None },
         Err(error) => Startup {
             listen: None,
             environment,
             error: Some(format!("Phone access was not started: {error:#}. Apply it again from Settings.")),
-            preview,
         },
     }
 }
@@ -255,10 +275,7 @@ impl Startup {
     /// Bind the listener before the Workspace opens. A YUZUNO_REMOTE_PORT
     /// that cannot be bound stops Core, as it always did; a port Settings
     /// chose only leaves phone access off, with the reason on the page.
-    /// Phone previews' port is bound after it, never on its port, and never
-    /// stops Core.
     pub async fn bind(self) -> Result<Bound> {
-        let phone = self.listen.as_ref().map(|(entry, _)| entry.port);
         let (listener, error) = match self.listen {
             None => (None, self.error),
             Some((entry, source)) => match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, entry.port)).await {
@@ -271,16 +288,18 @@ impl Startup {
                 ))),
             },
         };
-        let preview = preview::bind_startup(self.preview.0, self.preview.1, phone).await;
-        Ok(Bound { listener, environment: self.environment, error, preview })
+        Ok(Bound { listener, environment: self.environment, error })
     }
 }
 
 /// Start serving what `bound` holds, and mark operations a stopped Core left
-/// unfinished as interrupted.
+/// unfinished as interrupted. Whether previews are included is read from
+/// the record; nothing of an older Core's phone previews starts, and Serve
+/// is never changed here.
 pub fn run(ws: &Arc<Workspace>, bound: Bound, assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>, core_port: u16) {
     let state = &ws.remote_access;
     let _ = state.context.set(Started { assets, updates, core_port });
+    *state.previews.lock().unwrap() = included(&read(&path(ws)).unwrap_or_default(), preview::legacy_on(ws));
     let _ = state.environment.set(bound.environment);
     if let Some(error) = bound.error {
         eprintln!("{error}");
@@ -309,7 +328,36 @@ pub fn run(ws: &Arc<Workspace>, bound: Bound, assets: PathBuf, updates: Option<A
             Err(error) => eprintln!("Remote entry not started: {error:#}"),
         }
     }
-    preview::run(ws, bound.preview.0, bound.preview.1);
+}
+
+/// Whether phone access includes previews as `saved` applies: its own
+/// choice, or with none yet, the one an older Core's phone previews had
+/// (`legacy`); off for neither.
+fn included(saved: &Saved, legacy: bool) -> bool {
+    saved.previews.unwrap_or(legacy)
+}
+
+/// What a change saves as the choice: what it asks, else what was saved,
+/// else what applies.
+fn chosen(request: &ApplyRequest, previous: Option<&Desired>, applies: bool) -> bool {
+    request.previews.or(previous.and_then(|d| d.previews)).unwrap_or(applies)
+}
+
+/// The run of the phone entry previews are served through now (T-5): only
+/// while it listens and phone access includes them.
+pub(crate) fn phone_previews(ws: &Workspace) -> Option<u64> {
+    let included = *ws.remote_access.previews.lock().unwrap();
+    let run = ws.remote_access.current.lock().unwrap().as_ref().map(|c| c.3);
+    run.filter(|_| included)
+}
+
+/// Phone access including previews from now on, or not: not, and what a
+/// phone was given is gone, before any later request is let in.
+fn include_previews(ws: &Workspace, on: bool) {
+    *ws.remote_access.previews.lock().unwrap() = on;
+    if !on {
+        ws.previews.revoke_phone(None);
+    }
 }
 
 // ---- the listener -------------------------------------------------------
@@ -317,6 +365,7 @@ pub fn run(ws: &Arc<Workspace>, bound: Bound, assets: PathBuf, updates: Option<A
 fn spawn(ws: &Arc<Workspace>, listener: tokio::net::TcpListener, entry: Entry, source: &'static str) -> Result<Running> {
     let context = ws.remote_access.context.get().context("Phone access has not started")?;
     let remote = RemoteEntry::new(&entry.origin, &entry.login)?;
+    let run = remote.run();
     let (revoke, revoked) = watch::channel(false);
     let app = crate::server::remote_router(ws.clone(), context.assets.clone(), context.updates.clone(), remote)
         .layer(axum::middleware::from_fn_with_state(revoked.clone(), end_on_revoke));
@@ -341,12 +390,14 @@ fn spawn(ws: &Arc<Workspace>, listener: tokio::net::TcpListener, entry: Entry, s
             eprintln!("Remote entry stopped: {error}");
         }
     });
-    Ok(Running { entry, since: crate::model::now(), source, revoke, task })
+    Ok(Running { entry, since: crate::model::now(), source, run, revoke, task })
 }
 
-/// Copy what the listener slot holds for the page and Check.
+/// Copy what the listener slot holds for the page and Check. What phones
+/// were given through any other run is gone with it.
 fn mirror(ws: &Workspace, slot: &Option<Running>) {
-    *ws.remote_access.current.lock().unwrap() = slot.as_ref().map(|r| (r.entry.clone(), r.since.clone(), r.source));
+    *ws.remote_access.current.lock().unwrap() = slot.as_ref().map(|r| (r.entry.clone(), r.since.clone(), r.source, r.run));
+    ws.previews.revoke_phone(slot.as_ref().map(|r| r.run));
 }
 
 fn current(ws: &Workspace) -> Option<Entry> {
@@ -582,7 +633,7 @@ async fn view(ws: &Arc<Workspace>, can_change: bool) -> Result<Value> {
     // apply keeps it aside and starts again.
     let saved = read(&path(ws)).unwrap_or_default();
     let host = state.host(false);
-    let listening = state.current.lock().unwrap().as_ref().map(|(entry, since, source)| json!({
+    let listening = state.current.lock().unwrap().as_ref().map(|(entry, since, source, _)| json!({
         "port": entry.port, "origin": entry.origin, "login": entry.login, "since": since, "source": source,
     }));
     let applied_url = match (&saved.effective, &saved.owned) {
@@ -607,7 +658,8 @@ async fn view(ws: &Arc<Workspace>, can_change: bool) -> Result<Value> {
             },
             None => false,
         };
-        json!({"enabled": d.enabled, "login": d.login, "servePort": d.serve_port, "localPort": d.local_port, "origin": d.origin, "savedAt": d.saved_at, "applied": applied})
+        json!({"enabled": d.enabled, "login": d.login, "servePort": d.serve_port, "localPort": d.local_port, "origin": d.origin,
+            "previews": d.previews, "savedAt": d.saved_at, "applied": applied})
     });
     let environment = state.environment.get().cloned().flatten().map(|e| json!({
         "port": e.port, "origin": e.origin, "login": e.login, "ignored": saved.effective.is_some(),
@@ -629,7 +681,13 @@ async fn view(ws: &Arc<Workspace>, can_change: bool) -> Result<Value> {
         "defaults": {"servePort": DEFAULT_SERVE_PORT, "localPort": DEFAULT_LOCAL_PORT},
         "canChange": can_change,
         "readOnlyReason": (!can_change).then_some("Phone access is changed from Yuzuno on the computer that runs Core, not through the phone entry."),
-        "preview": preview::view(ws),
+        // Phone access including previews (T-5): as it applies, whether a
+        // phone can open them now, and what an older Core left of its own.
+        "previews": {
+            "included": *state.previews.lock().unwrap(),
+            "available": phone_previews(ws).is_some(),
+            "legacy": preview::view(ws),
+        },
     }))
 }
 
@@ -673,6 +731,7 @@ async fn start(ws: &Arc<Workspace>, request: ApplyRequest) -> Result<Value> {
         started_at: crate::model::now(),
         finished_at: None,
         url: None,
+        legacy: None,
         request,
     };
     update(ws, |saved| {
@@ -746,21 +805,48 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     let local_port = op.request.local_port.unwrap_or(DEFAULT_LOCAL_PORT);
     anyhow::ensure!(serve_port != 0 && local_port != 0, "Ports must be 1–65535");
     anyhow::ensure!(local_port != context.core_port, "The local port must differ from Core's own port {}", context.core_port);
-    // Previews' ports, even while they could not start: a phone entry there would take them at the next start.
-    for kept in preview::kept(ws) {
-        anyhow::ensure!(local_port != kept.local_port, "Port {local_port} is kept for phone previews; choose another local port, or turn phone previews off first");
-        anyhow::ensure!(serve_port != kept.serve_port, "Serve port {serve_port} is kept for phone previews; choose another Serve port, or turn phone previews off first");
+    // An older Core's own Serve entry for phone previews, until a change has
+    // removed it: neither of its ports is phone access's, so that removing it
+    // can never take phone access's entry.
+    match preview::held(ws) {
+        Ok(None) => {}
+        Ok(Some(held)) => {
+            let first = "Save and apply once with other ports, or Turn off, to remove it first; nothing was changed";
+            anyhow::ensure!(serve_port != held.serve_port, "Serve port {serve_port} is still the older phone previews' own entry. {first}");
+            let held_local = held.target.strip_prefix("http://127.0.0.1:").and_then(|p| p.parse::<u16>().ok());
+            anyhow::ensure!(held_local != Some(local_port), "Port {local_port} is still where the older phone previews' own Serve entry points. {first}");
+        }
+        // Which ports theirs holds is unknown: only the entry phone access
+        // serves now, on its ports as they are, may be applied again.
+        Err(error) => {
+            let applied = read(&path(ws)).ok().and_then(|saved| saved.effective).and_then(|e| e.listen.zip(e.serve_port));
+            let serving = current(ws).is_some_and(|entry| applied.as_ref().is_some_and(|(listen, port)| listen.port == entry.port && *port == serve_port && entry.port == local_port));
+            anyhow::ensure!(serving, "The older phone previews' record ({}) cannot be read: {error:#}. Which ports it still holds is unknown, so phone access moves to no other port until it can be read: repair that file or move it out of the data folder, or Save and apply with the ports phone access serves now; nothing was changed",
+                preview::record_path(ws).display());
+        }
     }
     let origin = if serve_port == 443 { format!("https://{dns}") } else { format!("https://{dns}:{serve_port}") };
     RemoteEntry::new(&origin, &login)?;
     let entry = Entry { port: local_port, origin: origin.clone(), login: login.clone() };
     let target = format!("http://127.0.0.1:{local_port}");
-    // save: what the user asked for; what applies is unchanged.
+    // save: what the user asked for; what applies is unchanged, but for
+    // previews left out, which apply at once: what a phone was given goes
+    // now, whatever this change comes to.
     at(ws, op, "save");
-    update(ws, |saved| {
-        saved.desired = Some(Desired { enabled: true, login: login.clone(), serve_port, local_port, origin: Some(origin.clone()), saved_at: crate::model::now() });
-        Ok(())
+    let applies = *ws.remote_access.previews.lock().unwrap();
+    let previews = update(ws, |saved| {
+        let previews = chosen(&op.request, saved.desired.as_ref(), applies);
+        saved.desired = Some(Desired {
+            enabled: true, login: login.clone(), serve_port, local_port, origin: Some(origin.clone()), previews: Some(previews), saved_at: crate::model::now(),
+        });
+        if !previews {
+            saved.previews = Some(false);
+        }
+        Ok(previews)
     })?;
+    if !previews {
+        include_previews(ws, false);
+    }
     // listen
     at(ws, op, "listen");
     let mut slot = ws.remote_access.listener.lock().await;
@@ -869,8 +955,11 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     update(ws, |saved| {
         saved.effective = Some(Applied { listen: Some(entry.clone()), serve_port: Some(serve_port), applied_at: crate::model::now() });
         saved.owned = Some(Owned { serve_port, host: dns.clone(), target: target.clone() });
+        saved.previews = Some(previews);
         Ok(())
     })?;
+    // Previews, as saved, from the entry that serves now.
+    include_previews(ws, previews);
     drop(slot);
     if let Undo::Restore(previous) = rollback {
         close(previous).await;
@@ -886,7 +975,37 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
         op.error = Some(format!("Applied, but not verified: {} ({})", failed["detail"].as_str().unwrap_or(""), failed["id"].as_str().unwrap_or("")));
         return Ok("failed");
     }
+    // An older Core's own Serve entry for phone previews, once this one is
+    // known to work: what became of it is said apart from phone access, and
+    // not removed is this change's own end.
+    if let Some(state) = legacy(ws, host, op, Some(serve_port)).await {
+        op.error = Some(format!("Phone access is on; {}", op.legacy.as_ref().and_then(|l| l["detail"].as_str()).unwrap_or("the older phone previews' Serve entry was not removed")));
+        return Ok(state);
+    }
     Ok("succeeded")
+}
+
+/// What an older Core's Serve entry for phone previews comes to in `op`
+/// (`preview::clear`), at a step of its own, never on `phone`, the Serve port
+/// phone access holds: in its own field and in words. With it not removed
+/// (`partial`, `uncertain`), the change ends so, at that step.
+async fn legacy(ws: &Workspace, host: &Host, op: &mut Operation, phone: Option<u16>) -> Option<&'static str> {
+    if !preview::pending(ws) {
+        return None;
+    }
+    at(ws, op, "cleanup");
+    op.legacy = preview::clear(ws, host, phone).await;
+    if let Some(said) = op.legacy.as_ref().and_then(|l| l["detail"].as_str()) {
+        op.notes.push(said.to_owned());
+    }
+    match op.legacy.as_ref().and_then(|l| l["state"].as_str()) {
+        Some("partial") => Some("partial"),
+        Some("uncertain") => Some("uncertain"),
+        _ => {
+            op.step = "done".into();
+            None
+        }
+    }
 }
 
 async fn disable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<&'static str> {
@@ -898,6 +1017,8 @@ async fn disable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result
             login: previous.as_ref().map(|d| d.login.clone()).unwrap_or_default(),
             serve_port: previous.as_ref().map_or(DEFAULT_SERVE_PORT, |d| d.serve_port),
             local_port: previous.as_ref().map_or(DEFAULT_LOCAL_PORT, |d| d.local_port),
+            // The choice is kept for the next time phone access is on.
+            previews: op.request.previews.or(previous.as_ref().and_then(|d| d.previews)),
             origin: previous.and_then(|d| d.origin),
             saved_at: crate::model::now(),
         });
@@ -943,19 +1064,27 @@ async fn disable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result
         saved.owned = keep_owned.clone();
         Ok(())
     })?;
-    // Previews go through the phone entry, so they go off with it.
-    let previews = preview::follow_off(ws, host, &op.request_id).await;
+    // Previews went with the listener (`mirror`); an older Core's own Serve
+    // entry for them goes with phone access too, never phone access's own
+    // that could not be removed.
     op.step = "done".into();
+    let left = legacy(ws, host, op, keep_owned.as_ref().map(|o| o.serve_port)).await;
+    if uncertain || keep_owned.is_some() {
+        // Phone access's own entry is what this change says of first.
+        op.step = "done".into();
+    }
     let state = if uncertain {
         op.error = Some("Phone access is off in Core; whether Serve still lists its port is unknown. Disable again to check".into());
         "uncertain"
     } else if keep_owned.is_some() {
         op.error = Some(op.notes.join("; "));
         "failed"
+    } else if let Some(state) = left {
+        op.error = Some(format!("Phone access is off; {}", op.legacy.as_ref().and_then(|l| l["detail"].as_str()).unwrap_or("the older phone previews' Serve entry was not removed")));
+        state
     } else {
         "succeeded"
     };
-    op.notes.extend(previews);
     Ok(state)
 }
 
@@ -976,9 +1105,6 @@ async fn post_check(AppState(ws): AppState<Arc<Workspace>>, request: Request) ->
     let saved = read(&path(&ws)).unwrap_or_default();
     let result = check(&ws, &host, current(&ws), planned(&saved)).await;
     observe(&ws, &result);
-    let name = (result["tailscale"]["state"] == "running").then(|| result["tailscale"]["dnsName"].as_str()).flatten();
-    let previews = preview::check(&ws, &host, name, preview::planned(&ws)).await;
-    preview::observe(&ws, &previews);
     changed(&ws);
     Ok(Json(view(&ws, can_change).await?))
 }
@@ -998,12 +1124,17 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/remote-access", get(get_view))
         .route("/api/remote-access/check", post(post_check))
         .route("/api/remote-access/operations/{id}", get(get_operation))
-        .route("/api/remote-access/preview/operations/{id}", get(preview::get_change))
 }
 
 /// Changing routes: on Core's own port only, so a phone cannot lock itself out.
 pub(crate) fn changes() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/remote-access/apply", post(post_apply))
-        .route("/api/remote-access/preview", post(preview::post_change))
+        .route("/api/remote-access/preview", post(previews_moved))
+}
+
+/// An older page turning phone previews on or off on their own (T-5): refused,
+/// never taken as a change of phone access.
+async fn previews_moved() -> Result<Json<Value>, ApiError> {
+    Err(anyhow::anyhow!("phone_previews_moved: phone previews now go through the phone entry; choose Phone access includes previews, then Save and apply").into())
 }

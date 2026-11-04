@@ -92,7 +92,6 @@ function mount(handler, { url = "http://isolated.test/", storage = {} } = {}) {
     writes: () => calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/check")),
     text: () => doc.querySelector("#settings-remote")?.textContent ?? "",
     states: () => [...doc.querySelectorAll('ul[aria-label="Phone access status"] li')].map((li) => [li.dataset.tone, li.textContent]),
-    previewStates: () => [...doc.querySelectorAll('ul[aria-label="Phone previews status"] li')].map((li) => [li.dataset.tone, li.textContent]),
     alerts: () => [...doc.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
     applies: () => calls.filter((c) => c.url.endsWith("/api/remote-access/apply")),
     close: () => dom.window.close(),
@@ -571,282 +570,301 @@ test("another Workspace's request, or one saved before requests were kept per Wo
   }
 });
 
-// T-5: previews on the phone, their own entry under phone access.
-const previews = (over = {}) => ({
-  saved: null, listening: null, serve: { state: "unchecked" }, verification: null, operation: null, url: null, startupError: null,
-  defaults: { servePort: 8445, localPort: 4319 }, available: true, ...over,
-});
-const PREVIEWS = "https://desk.example.ts.net:8445";
-const previewsOn = previews({
-  saved: { enabled: true, servePort: 8445, localPort: 4319, savedAt: "x", applied: true },
-  listening: { port: 4319, servePort: 8445, since: "x" },
-  serve: { state: "ours", port: 8445, target: "http://127.0.0.1:4319", observedAt: "x" },
-  verification: { ok: true, at: "x", steps: [] },
-  url: PREVIEWS,
-});
-const PREVIEW_STORE = "yuzuno.remoteAccess.previewPending:ws-a";
+// T-5: phone access includes previews, one choice saved with it.
+const included = (over = {}) => ({ included: true, available: true, legacy: null, ...over });
+const previewsLine = (p) => {
+  const line = p.doc.querySelector(".remote-access-previews-line");
+  return line ? [line.dataset.tone, line.textContent] : null;
+};
+const box = (p) => p.doc.querySelector('input[aria-label="Phone access includes previews"]');
 
-test("previews on the phone (T-5): none from an older Core; turning them on is a change of their own, shown by step, then their address", async () => {
-  const older = mount(() => ({ body: on() }));
+test("phone access includes previews (T-5): an older Core shows and sends no choice; with one, the box is the saved choice and Save and apply sends it", async () => {
+  // An older Core: no box, no line, and Save and apply sends no choice.
+  const older = mount((url, method, body) => {
+    if (url.endsWith("/check")) return { body: checkedView() };
+    if (url.endsWith("/apply")) return { status: 202, body: { operation: op("succeeded", "done", { requestId: body.requestId }) } };
+    return { body: view() };
+  });
   try {
-    await waitFor(() => older.states().length === 4, "phone access");
-    assert.equal(older.doc.querySelector(".remote-access-previews"), null, "a Core from before previews sends none");
+    await waitFor(() => button(older, "Check"), "the form");
+    assert.equal(box(older), null);
+    assert.equal(previewsLine(older), null);
+    button(older, "Check").click();
+    await waitFor(() => !button(older, "Save and apply").disabled, "checked");
+    button(older, "Save and apply").click();
+    await waitFor(() => older.applies().length === 1, "applied");
+    assert.ok(!("previews" in older.applies()[0].body), JSON.stringify(older.applies()[0].body));
   } finally {
     older.close();
   }
-  let current = previews();
-  let polls = 0;
+  // A Core that takes it, nothing chosen yet: off, said so; ticked, Save and apply sends it.
+  let current = view({ previews: included({ included: false, available: false }) });
   const p = mount((url, method, body) => {
-    if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview: current }) };
-    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
-      return { body: { operation: op("running", "validate", { id: "p-1", requestId: body.requestId }) } };
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: current };
+    if (url.endsWith("/check")) return { body: (current = checkedView({ previews: current.previews })) };
+    if (url.endsWith("/apply")) {
+      current = checkedView({ previews: current.previews, operation: op("running", "verify", { requestId: body.requestId }) });
+      return { status: 202, body: { operation: current.operation } };
     }
-    if (url.endsWith("/api/remote-access/preview/operations/p-1")) {
-      polls += 1;
-      if (polls === 1) return { body: op("running", "serve", { id: "p-1" }) };
-      current = { ...previewsOn, operation: op("succeeded", "done", { id: "p-1", requestId: p.calls.find((c) => c.method === "POST").body.requestId }) };
-      return { body: current.operation };
-    }
-    return { status: 404, body: { error: "unexpected" } };
-  });
-  try {
-    await waitFor(() => p.previewStates().length === 4, "the previews' four lines");
-    assert.deepEqual(p.previewStates().map(([tone]) => tone), ["off", "off", "unknown", "unknown"]);
-    assert.match(p.previewStates()[0][1], /Nothing saved/);
-    assert.match(p.text(), /Previews on the phone/);
-    assert.equal(p.doc.querySelector('input[aria-label="Previews\' Serve port"]').placeholder, "8445");
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    await waitFor(() => p.doc.querySelector(".remote-access-previews .remote-access-steps"), "its steps");
-    const sent = p.calls.filter((c) => c.method === "POST");
-    assert.equal(sent.length, 1);
-    assert.equal(sent[0].url, "/api/remote-access/preview", "its own change, not phone access's");
-    assert.match(sent[0].body.requestId, /^previews-[0-9a-f]{24}$/);
-    assert.deepEqual(Object.keys(sent[0].body).sort(), ["enabled", "requestId"], "empty ports are Core's defaults");
-    assert.equal(JSON.parse(p.window.localStorage.getItem(PREVIEW_STORE)).requestId, sent[0].body.requestId, "kept for asking again");
-    assert.equal(p.window.localStorage.getItem(STORE), null, "phone access's own request is untouched");
-    await waitFor(() => /Previews are on\./.test(p.text()), "how it ended");
-    assert.deepEqual(p.previewStates().map(([tone]) => tone), ["on", "on", "on", "on"]);
-    assert.match(p.text(), /Previews open at https:\/\/desk\.example\.ts\.net:8445/);
-    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "ended: no retry key");
-    assert.ok(button(p, "Turn off previews"), "it can be turned off");
-    assert.equal(p.calls.filter((c) => c.url.endsWith("/apply")).length, 0, "phone access was not asked to change");
-  } finally {
-    p.close();
-  }
-});
-
-test("previews need phone access, show a taken Serve port before they are turned on, and only show on the phone entry", async () => {
-  const without = mount(() => ({ body: checkedView({ preview: previews({ available: false }) }) }));
-  try {
-    await waitFor(() => without.previewStates().length === 4, "the previews' lines");
-    assert.match(without.text(), /Turn on phone access first: previews open through it\./);
-    assert.equal(button(without, "Turn on previews"), undefined);
-  } finally {
-    without.close();
-  }
-  const { _note, ...conflict } = structuredClone(examples.previewConflict);
-  const taken = mount(() => ({ body: on({ preview: conflict }) }));
-  try {
-    await waitFor(() => taken.previewStates().length === 4, "the previews' lines");
-    assert.deepEqual(taken.previewStates()[2], ["warn", `Tailscale Serve${conflict.serve.detail}`]);
-    assert.deepEqual(taken.previewStates()[3], ["warn", "VerificationNot ready: port 8445 is taken; choose another Serve port under Advanced"]);
-    assert.ok(button(taken, "Turn on previews"), "another port can be chosen");
-  } finally {
-    taken.close();
-  }
-  const phone = mount(() => ({ body: on({ canChange: false, readOnlyReason: "Read only here.", preview: previewsOn }) }), { url: `${ENTRY}/` });
-  try {
-    await waitFor(() => phone.previewStates().length === 4, "the previews' lines");
-    assert.match(phone.text(), /Previews open at https:\/\/desk\.example\.ts\.net:8445/);
-    assert.equal(button(phone, "Turn off previews"), undefined, "no change through the phone entry");
-    assert.equal(button(phone, "Turn on previews"), undefined);
-  } finally {
-    phone.close();
-  }
-});
-
-test("a lost answer to turning previews on is asked again as the same request; a busy Core is said so", async () => {
-  let lose = true;
-  let busy = false;
-  let ended = null;
-  const p = mount((url, method, body) => {
-    if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview: previews({ operation: ended }) }) };
-    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
-      if (lose) throw new TypeError("Failed to fetch");
-      if (busy) return { status: 400, body: { error: "remote_access_busy: another phone access change is running; wait for it to finish" } };
-      return { body: { operation: op("running", "validate", { id: "p-2", requestId: body.requestId }) } };
-    }
-    if (url.endsWith("/api/remote-access/preview/operations/p-2")) {
-      const requestId = p.calls.filter((c) => c.method === "POST").at(-1).body.requestId;
-      ended = op("failed", "validate", { id: "p-2", requestId, error: "Phone access is off: turn it on first, then phone previews" });
+    if (url.endsWith("/operations/op-1")) {
+      const ended = op("succeeded", "done", { requestId: current.operation.requestId, request: { previews: true } });
+      current = on({ previews: included(), saved: { ...on().saved, previews: true }, operation: ended });
       return { body: ended };
     }
     return { status: 404, body: {} };
   });
   try {
-    await waitFor(() => button(p, "Turn on previews"), "the button");
-    type(p, "Previews' Serve port", "9445");
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    await waitFor(() => p.alerts().some((a) => /answer did not arrive/.test(a)), "the lost answer");
-    const first = p.calls.filter((c) => c.method === "POST")[0].body;
-    assert.deepEqual({ ...first, requestId: undefined }, { requestId: undefined, enabled: true, servePort: 9445 });
-    lose = false;
-    busy = true;
-    await waitFor(() => !button(p, "Turn on previews").disabled, "ready again");
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    await waitFor(() => p.alerts().some((a) => /Another phone access change is already running/.test(a)), "busy");
-    const posts = p.calls.filter((c) => c.method === "POST");
-    assert.equal(posts[1].body.requestId, first.requestId, "the same request");
-    busy = false;
-    await waitFor(() => !button(p, "Turn on previews").disabled, "ready again");
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    await waitFor(() => p.alerts().some((a) => /stopped at “Check the settings and the Serve port”: Phone access is off/.test(a)), "Core's reason with its step");
-    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "ended: the next try is new");
+    await waitFor(() => box(p), "the box");
+    assert.equal(box(p).checked, false);
+    assert.deepEqual(previewsLine(p), ["off", "Previews on the phone Not included"]);
+    assert.match(p.text(), /Single-file HTML previews open on the phone at this same address, each in a sandbox of its own/);
+    button(p, "Check").click();
+    await waitFor(() => !button(p, "Save and apply").disabled, "checked");
+    box(p).click();
+    assert.equal(box(p).checked, true);
+    button(p, "Save and apply").click();
+    await waitFor(() => p.applies().length === 1, "applied");
+    const sent = p.applies()[0].body;
+    assert.deepEqual({ ...sent, requestId: "" }, { requestId: "", enabled: true, previews: true });
+    await waitFor(() => previewsLine(p)?.[0] === "on", "included now");
+    assert.deepEqual(previewsLine(p), ["on", "Previews on the phone Included"]);
+    assert.equal(box(p).checked, true, "what was typed stays");
   } finally {
     p.close();
   }
-});
-
-test("a progress read that fails is tried again, and the change's end still shows (R1)", async () => {
-  let reads = 0;
-  let current = previews();
-  const p = mount((url, method, body) => {
-    if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview: current }) };
-    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
-      return { body: { operation: op("running", "validate", { id: "p-4", requestId: body.requestId }) } };
-    }
-    if (url.endsWith("/api/remote-access/preview/operations/p-4")) {
-      reads += 1;
-      if (reads === 1) throw new TypeError("Failed to fetch");
-      current = { ...previewsOn, operation: op("succeeded", "done", { id: "p-4", requestId: p.calls.find((c) => c.method === "POST").body.requestId }) };
-      return { body: current.operation };
-    }
-    return { status: 404, body: {} };
-  });
+  // Saved on, phone access off: the box is the saved choice; the line says it waits for phone access.
+  const off = mount(() => ({ body: view({ saved: { ...on().saved, enabled: false, previews: true }, previews: included({ available: false }) }) }));
   try {
-    await waitFor(() => button(p, "Turn on previews"), "the button");
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    // The change ends only if the page reads its progress again; the failed read is said meanwhile.
-    let said = false;
-    await waitFor(() => {
-      said ||= p.alerts().some((a) => /progress could not be read .*trying again/.test(a));
-      return /Previews are on\./.test(p.text());
-    }, "the change's end, from a read after the failed one");
-    assert.ok(said, "the failed read was said");
-    assert.equal(reads, 2, "read again after the failure");
-    assert.ok(!p.alerts().some((a) => /progress could not be read/.test(a)), "the failure is no longer shown");
-    assert.equal(button(p, "Turn off previews").disabled, false, "nothing is left waiting");
+    await waitFor(() => box(off), "the box");
+    assert.equal(box(off).checked, true);
+    assert.deepEqual(previewsLine(off), ["warn", "Previews on the phone Included, once phone access is on"]);
   } finally {
-    p.close();
+    off.close();
+  }
+  // Through the phone entry: the line, and no box.
+  const phone = mount(() => ({ body: on({ canChange: false, readOnlyReason: "Read only here.", previews: included() }) }), { url: `${ENTRY}/` });
+  try {
+    await waitFor(() => previewsLine(phone), "the line");
+    assert.deepEqual(previewsLine(phone), ["on", "Previews on the phone Included"]);
+    assert.equal(box(phone), null, "no change through the phone entry");
+  } finally {
+    phone.close();
   }
 });
 
-test("a turning off that left their Serve entry can be tried again without turning previews on (R1)", async () => {
-  const left = previews({
-    saved: { enabled: false, servePort: 8445, localPort: 4319, savedAt: "x", applied: true },
-    serve: { state: "ours", port: 8445, target: "http://127.0.0.1:4319", observedAt: "x" },
-    operation: op("failed", "done", { id: "p-5", requestId: "r-off", kind: "disable", error: "Serve port 8445 was not removed: serve config locked" }),
-  });
-  for (const preview of [left, { ...left, serve: { state: "error", detail: "no answer" }, operation: { ...left.operation, state: "uncertain" } }]) {
-    const p = mount((url, method) => {
-      if (url.endsWith("/api/remote-access") && method === "GET") return { body: on({ preview }) };
-      if (url.endsWith("/api/remote-access/preview") && method === "POST") return { body: { operation: op("succeeded", "done", { id: "p-6", kind: "disable" }) } };
-      return { status: 404, body: {} };
-    });
+test("a change kept from before the choice is asked again as it was, until the box is changed (T-5)", async () => {
+  const kept = { requestId: "remote-aaaaaaaaaaaaaaaaaaaaaaaa", draft: { enabled: true, servePort: 9443 } };
+  for (const touch of [false, true]) {
+    const p = mount((url, method, body) => {
+      if (url.endsWith("/check")) return { body: checkedView({ previews: included({ included: false, available: false }) }) };
+      if (url.endsWith("/apply")) return { status: 202, body: { operation: op("succeeded", "done", { requestId: body.requestId }) } };
+      return { body: view({ previews: included({ included: false, available: false }) }) };
+    }, { storage: { [STORE]: kept } });
     try {
-      await waitFor(() => p.previewStates().length === 4, "the previews' lines");
-      assert.match(p.text(), /Serve port 8445 was not removed/);
-      p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn off previews"));
-      await waitFor(() => p.calls.some((c) => c.method === "POST"), "turned off again");
-      assert.deepEqual(p.calls.find((c) => c.method === "POST").body.enabled, false);
+      await waitFor(() => box(p), "the box");
+      assert.equal(p.doc.querySelector('input[aria-label="Serve port"]').value, "9443", "the kept draft");
+      button(p, "Check").click();
+      await waitFor(() => !button(p, "Save and apply").disabled, "checked");
+      if (touch) box(p).click();
+      button(p, "Save and apply").click();
+      await waitFor(() => p.applies().length === 1, "applied");
+      const sent = p.applies()[0].body;
+      if (touch) {
+        assert.notEqual(sent.requestId, kept.requestId, "changed here: a new request");
+        assert.deepEqual({ ...sent, requestId: "" }, { requestId: "", enabled: true, servePort: 9443, previews: true });
+      } else {
+        assert.deepEqual(sent, { requestId: kept.requestId, ...kept.draft }, "the same request, as it was kept");
+      }
     } finally {
       p.close();
     }
   }
 });
 
-test("a failed read of the whole view after a change ends is read again, without asking the change again (R3)", async () => {
-  let views = 0;
+test("an older Core's own Serve entry for previews is said apart: still to remove, then what a change made of it (T-5)", async () => {
+  const legacy = mount(() => ({ body: example("previewsLegacy") }));
+  try {
+    await waitFor(() => previewsLine(legacy), "the line");
+    assert.deepEqual(previewsLine(legacy), ["on", "Previews on the phone Included"], "their choice is kept");
+    assert.equal(box(legacy).checked, true, "and is the box's");
+    assert.match(legacy.text(), /An older Yuzuno set a Serve entry of its own for phone previews on port 8445 \(to http:\/\/127\.0\.0\.1:4319\)\. The next Save and apply or Turn off removes it while it is still exactly that entry/);
+    await tick();
+    assert.deepEqual(legacy.writes(), [], "reading it changes nothing");
+  } finally {
+    legacy.close();
+  }
+  const removed = "The older phone previews' own Serve port 8445 was removed";
+  const kept = "The older phone previews' own Serve port 8445 was not removed: serve config locked; it is kept for the next change";
+  // Gone, or left to others: phone access's change succeeded, and a line says what became of theirs.
+  for (const [state, detail] of [["removed", removed], ["foreign", "The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is"]]) {
+    const operation = op("succeeded", "done", { url: `${ENTRY}/`, legacy: { state, detail }, notes: ["The earlier entry on port 8443 was removed.", detail] });
+    const p = mount(() => ({ body: on({ previews: included(), operation }) }));
+    try {
+      await waitFor(() => p.doc.querySelector(".remote-access-operation"), `${state}: the change`);
+      assert.match(p.text(), /Applied\. The status above is what Core reports now\./, `${state}: phone access, as it ended`);
+      const line = [...p.doc.querySelectorAll('.remote-access-operation [role="status"]')].find((el) => el.textContent.startsWith("Older phone previews:"));
+      assert.equal(line?.textContent, `Older phone previews: ${detail}.`, `${state}: ${p.text()}`);
+      const notes = [...p.doc.querySelectorAll(".remote-access-notes li")].map((li) => li.textContent);
+      assert.deepEqual(notes, ["The earlier entry on port 8443 was removed."], `${state}: said once`);
+    } finally {
+      p.close();
+    }
+  }
+  // Not removed: that is how the change ended, at its own step, never "Applied".
+  const left = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319", lastAttempt: { state: "partial", detail: kept, at: "x" } };
+  for (const [state, said] of [
+    ["partial", `Phone access is on; ${kept}.`],
+    ["uncertain", `Core could not confirm how “Remove the older phone previews' Serve entry” ended: Phone access is on; ${kept}. Check, or apply again: Core compares with what is there first.`],
+  ]) {
+    const operation = op(state, "cleanup", { url: `${ENTRY}/`, error: `Phone access is on; ${kept}`, legacy: { state, detail: kept }, notes: [kept] });
+    const p = mount(() => ({ body: on({ previews: included({ legacy: left }), operation }) }));
+    try {
+      await waitFor(() => p.doc.querySelector(".remote-access-operation"), `${state}: the change`);
+      assert.doesNotMatch(p.text(), /Applied\./, `${state}: not said to have succeeded`);
+      assert.ok(p.alerts().includes(said), `${state}: ${p.alerts().join(" | ")}`);
+      assert.equal([...p.doc.querySelectorAll(".remote-access-operation p")].filter((el) => el.textContent.startsWith("Older phone previews:")).length, 0, `${state}: said once`);
+      assert.equal(p.doc.querySelector(".remote-access-notes"), null, `${state}: its note is the sentence above`);
+      assert.match(p.text(), /The next Save and apply or Turn off removes it while it is still exactly that entry/, `${state}: still left to remove`);
+      assert.ok(p.text().includes(`Last try: ${kept}.`), `${state}: with the last try`);
+    } finally {
+      p.close();
+    }
+  }
+  // No longer held: one left to others says so, never as removed; one removed or gone says nothing more.
+  const former = (state, detail) => ({ state, detail, at: "x", formerOwned: { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" } });
+  for (const [state, detail, said] of [
+    ["foreign", "The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is",
+      "An older Yuzuno's Serve entry for phone previews on port 8445 is no longer Yuzuno's: The older phone previews' Serve port 8445 was changed outside Yuzuno; it is left as it is."],
+    ["removed", removed, null],
+  ]) {
+    const p = mount(() => ({ body: on({ previews: included({ legacy: former(state, detail) }) }) }));
+    try {
+      await waitFor(() => previewsLine(p), `${state}: the line`);
+      const notes = [...p.doc.querySelectorAll('.remote-access-note[role="note"]')].map((n) => n.textContent);
+      if (said) assert.ok(notes.includes(said), `${state}: ${notes.join(" | ")}`);
+      else assert.ok(!notes.some((n) => /older Yuzuno/.test(n)), `${state}: ${notes.join(" | ")}`);
+      assert.doesNotMatch(p.text(), /removes it while it is still exactly that entry/, `${state}: not still to remove`);
+    } finally {
+      p.close();
+    }
+  }
+  // Running at that step: the steps show it.
+  const cleaning = mount(() => ({ body: on({ previews: included({ legacy: left }), operation: op("running", "cleanup") }) }));
+  try {
+    await waitFor(() => cleaning.doc.querySelector(".remote-access-steps"), "the steps");
+    assert.equal(cleaning.doc.querySelector('.remote-access-steps [data-state="running"]').textContent, "Remove the older phone previews' Serve entry");
+  } finally {
+    cleaning.close();
+  }
+  const unreadable = mount(() => ({ body: on({ previews: included({ legacy: { error: "remote-preview.json is not a readable phone previews record" } }) }) }));
+  try {
+    await waitFor(() => previewsLine(unreadable), "the line");
+    assert.match(unreadable.text(), /An older Yuzuno's phone previews record could not be read \(remote-preview\.json is not a readable phone previews record\); it is kept as it is\. Until it can be, phone access stays on the ports it serves on now\./);
+  } finally {
+    unreadable.close();
+  }
+});
+
+// With phone access off: an older Core's phone previews left an entry still held, or a record Core cannot read (T-5).
+const kept = "The older phone previews' own Serve port 8445 was not removed: serve config locked; it is kept for the next change";
+const entry = { servePort: 8445, host: "desk.example.ts.net", target: "http://127.0.0.1:4319" };
+const off = (legacy, over = {}) => checkedView({
+  saved: { enabled: false, login: "user@example.com", servePort: 8444, localPort: 4318, origin: ENTRY, previews: true, savedAt: "2026-10-24T17:00:02Z", applied: true },
+  previews: included({ available: false, legacy }),
+  ...over,
+});
+const former = (state, detail = "d") => ({ state, detail, at: "x", formerOwned: entry });
+const cleanups = (p) => ["Turn off", "Remove the older entry", "Try removing it again"].filter((label) => button(p, label));
+
+test("with phone access off, an older Core's entry still held is removed by a button of its own: Turn off as ever, tried again as asked, gone once it is no longer held (T-5)", async () => {
+  const removed = "The older phone previews' own Serve port 8445 was removed";
+  // As Core answers: the change starts, its progress is read until it ends, then the whole view.
+  let current = off({ ...entry, lastAttempt: null });
   let ended = null;
+  let tries = 0;
   const p = mount((url, method, body) => {
-    if (url.endsWith("/api/remote-access") && method === "GET") {
-      views += 1;
-      if (!ended) return { body: on({ preview: previews() }) };
-      // The first read after the change ended fails; the next one has it.
-      if (views === 2) throw new TypeError("Failed to fetch");
-      return { body: on({ preview: { ...previewsOn, operation: ended } }) };
-    }
-    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
-      return { body: { operation: op("running", "validate", { id: "p-8", requestId: body.requestId }) } };
-    }
-    if (url.endsWith("/api/remote-access/preview/operations/p-8")) {
-      ended = op("succeeded", "done", { id: "p-8", requestId: p.calls.find((c) => c.method === "POST").body.requestId });
-      return { body: ended };
-    }
-    return { status: 404, body: {} };
+    if (method === "GET" && url.includes("/remote-access/operations/")) return { body: ended };
+    if (method === "GET") return { body: current };
+    tries += 1;
+    if (tries === 2) throw new TypeError("the answer never arrived");
+    const id = `op-${tries}`;
+    ended = tries === 1
+      // Not removed: the record keeps it, with this try.
+      ? op("partial", "cleanup", { id, requestId: body.requestId, kind: "disable", error: `Phone access is off; ${kept}`, legacy: { state: "partial", detail: kept }, notes: [kept] })
+      : op("succeeded", "done", { id, requestId: body.requestId, kind: "disable", legacy: { state: "removed", detail: removed }, notes: [removed] });
+    current = tries === 1 ? off({ ...entry, lastAttempt: { state: "partial", detail: kept, at: "x" } }, { operation: ended }) : off(former("removed", removed), { operation: ended });
+    return { status: 202, body: { operation: op("running", "save", { id, requestId: body.requestId, kind: "disable" }) } };
   });
   try {
-    await waitFor(() => button(p, "Turn on previews"), "the button");
-    assert.equal(views, 1);
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    // No click, no remount: only reads bring the view to the change's end.
-    let failedRead = false;
-    await waitFor(() => {
-      failedRead ||= p.alerts().some((a) => /Could not read phone access/.test(a));
-      return /Previews open at https:\/\/desk\.example\.ts\.net:8445/.test(p.text()) && !!button(p, "Turn off previews");
-    }, "the address and Turn off, from a read after the failed one");
-    assert.ok(failedRead, "the failed read was shown");
-    assert.ok(views >= 3, `read again after the failure (${views} reads)`);
-    assert.match(p.text(), /Previews are on\./);
-    assert.deepEqual(p.alerts(), [], "no failure is shown any more");
-    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "no retry key is left");
-    assert.equal(p.calls.filter((c) => c.method === "POST").length, 1, "the change was asked once");
+    await waitFor(() => button(p, "Remove the older entry"), "its own button, with phone access off");
+    assert.deepEqual(cleanups(p), ["Remove the older entry"], "never Turn off for phone access already off");
+    assert.equal(button(p, "Remove the older entry").disabled, false, "pressed without a Check");
+    assert.equal(button(p, "Save and apply").disabled, true, "while Save and apply still waits for one");
+    assert.match(p.text(), /“Remove the older entry” or the next Save and apply removes it while it is still exactly that entry/);
+    button(p, "Remove the older entry").click();
+    await waitFor(() => p.applies().length === 1, "try 1");
+    await waitFor(() => p.alerts().includes(`Phone access is off; ${kept}.`), "try 1: how it ended");
+    await waitFor(() => button(p, "Try removing it again") && !button(p, "Try removing it again").disabled, "try 1: it can be tried again");
+    assert.ok(p.text().includes(`Last try: ${kept}.`), "try 1: with the last try");
+    button(p, "Try removing it again").click();
+    await waitFor(() => p.applies().length === 2, "try 2");
+    await waitFor(() => p.alerts().some((a) => /^Core's answer did not arrive/.test(a)), "try 2: its answer lost");
+    await waitFor(() => !button(p, "Try removing it again").disabled, "try 2: it can be asked again");
+    button(p, "Try removing it again").click();
+    await waitFor(() => p.applies().length === 3, "try 3");
+    const sent = p.applies().map((c) => c.body);
+    for (const body of sent) assert.deepEqual({ ...body, requestId: "" }, { requestId: "", enabled: false }, "Turn off as ever: no port, no login, never phone access on");
+    assert.notEqual(sent[1].requestId, sent[0].requestId, "after an ending, a new request");
+    assert.equal(sent[2].requestId, sent[1].requestId, "after a lost answer, the same request");
+    await waitFor(() => cleanups(p).length === 0, "no longer held: nothing left to remove");
+    assert.doesNotMatch(p.text(), /removes it while it is still exactly that entry/, "and not said to be held");
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/check")).length, 0, "no Check was asked");
+    assert.equal(p.writes().length, 3, "nothing else was asked");
   } finally {
     p.close();
   }
 });
 
-test("the retry key is dropped once the change's end is read, before the view answers (settle order)", async () => {
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
-  let views = 0;
-  let reads = 0;
-  let ended = null;
+test("with phone access off, a record Core cannot read can be tried again; one no longer held, none, an earlier partial change, or the phone entry itself offers nothing to remove (T-5)", async () => {
+  const unreadable = { error: "remote-preview.json is not a readable phone previews record" };
   const p = mount((url, method, body) => {
-    if (url.endsWith("/api/remote-access") && method === "GET") {
-      views += 1;
-      if (!ended) return { body: on({ preview: previews() }) };
-      // The read after the change's end is held until the test lets it answer.
-      return held.then(() => ({ body: on({ preview: { ...previewsOn, operation: ended } }) }));
-    }
-    if (url.endsWith("/api/remote-access/preview") && method === "POST") {
-      return { body: { operation: op("running", "validate", { id: "p-9", requestId: body.requestId }) } };
-    }
-    if (url.endsWith("/api/remote-access/preview/operations/p-9")) {
-      reads += 1;
-      ended = op("succeeded", "done", { id: "p-9", requestId: p.calls.find((c) => c.method === "POST").body.requestId });
-      return { body: ended };
-    }
-    return { status: 404, body: {} };
+    if (method === "GET") return { body: off(unreadable) };
+    const operation = op("partial", "cleanup", { requestId: body.requestId, kind: "disable", error: "Phone access is off; the record could not be read", legacy: { state: "partial", detail: "x" } });
+    return { status: 202, body: { operation } };
   });
   try {
-    await waitFor(() => button(p, "Turn on previews"), "the button");
-    p.window.HTMLButtonElement.prototype.click.call(button(p, "Turn on previews"));
-    await waitFor(() => p.window.localStorage.getItem(PREVIEW_STORE) !== null, "the retry key kept while it runs");
-    // The change's end has been read and the view is being read again, but has not answered.
-    await waitFor(() => views === 2, "the view read again after the change's end");
-    assert.equal(reads, 1);
-    assert.equal(p.window.localStorage.getItem(PREVIEW_STORE), null, "the retry key is gone before the view answers");
-    assert.equal(p.calls.filter((c) => c.method === "POST").length, 1);
-    release();
-    await waitFor(() => /Previews open at https:\/\/desk\.example\.ts\.net:8445/.test(p.text()) && !!button(p, "Turn off previews"), "the view's answer, shown");
-    assert.match(p.text(), /Previews are on\./);
-    // Nothing more is read once it shows: a progress read would come a second after the last.
-    const [viewsShown, readsShown] = [views, reads];
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    assert.deepEqual([views, reads], [viewsShown, readsShown], "no further reads");
-    assert.equal(p.calls.filter((c) => c.method === "POST").length, 1, "the change was asked once");
+    await waitFor(() => button(p, "Try removing it again"), "unreadable: its own button");
+    assert.deepEqual(cleanups(p), ["Try removing it again"]);
+    button(p, "Try removing it again").click();
+    await waitFor(() => p.applies().length === 1, "unreadable: tried");
+    assert.deepEqual({ ...p.applies()[0].body, requestId: "" }, { requestId: "", enabled: false });
   } finally {
     p.close();
+  }
+  const earlier = op("partial", "cleanup", { kind: "disable", error: `Phone access is off; ${kept}`, legacy: { state: "partial", detail: kept } });
+  for (const [what, shown] of [
+    ["removed", off(former("removed"))], ["absent", off(former("absent"))], ["foreign", off(former("foreign"))],
+    ["none", off(null)], ["none, after an earlier partial change", off(null, { operation: earlier })],
+  ]) {
+    const q = mount(() => ({ body: shown }));
+    try {
+      await waitFor(() => button(q, "Save and apply"), `${what}: the form`);
+      assert.deepEqual(cleanups(q), [], `${what}: nothing to remove`);
+      assert.doesNotMatch(q.text(), /removes it while it is still exactly that entry/, `${what}: not said to be held`);
+    } finally {
+      q.close();
+    }
+  }
+  for (const [what, legacy] of [["held", { ...entry, lastAttempt: null }], ["unreadable", unreadable]]) {
+    const q = mount(() => ({ body: off(legacy, { canChange: false, readOnlyReason: "Phone access is changed from Yuzuno on the computer that runs Core, not through the phone entry." }) }));
+    try {
+      await waitFor(() => /not through the phone entry/.test(q.text()), `phone entry, ${what}: read only`);
+      assert.deepEqual(cleanups(q), [], `phone entry, ${what}: nothing to press`);
+      assert.equal(!!button(q, "Save and apply") || !!button(q, "Check"), false, `phone entry, ${what}: no change at all`);
+      await tick();
+      assert.deepEqual(q.writes(), [], `phone entry, ${what}: nothing written`);
+    } finally {
+      q.close();
+    }
   }
 });
