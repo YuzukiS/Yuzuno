@@ -21,13 +21,34 @@ fn path(ws: &Workspace) -> PathBuf {
     ws.data_dir.join(FILE)
 }
 
-/// The record as it is on disk, or none.
+/// The record as it is on disk; none only when there is no such file. One
+/// that is not as Core writes it (an object of format 1 whose `owned` is null
+/// or an entry as Core writes it) is an error, never read as none: what it
+/// holds is unknown. What this Core adds to it (`formerOwned` and the rest) is
+/// kept as it is.
 fn record(ws: &Workspace) -> Result<Option<Value>> {
+    let unreadable = || format!("{} is not a readable phone previews record", path(ws).display());
     match std::fs::read(path(ws)) {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).with_context(|| format!("{} is not a readable phone previews record", path(ws).display()))?)),
+        Ok(bytes) => {
+            let record: Value = serde_json::from_slice(&bytes).with_context(unreadable)?;
+            shaped(&record).with_context(unreadable)?;
+            Ok(Some(record))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(error).with_context(unreadable),
     }
+}
+
+/// Whether `record` is as Core writes it: an object, `format` 1, and an
+/// `owned` that is null or an entry.
+fn shaped(record: &Value) -> Result<()> {
+    let object = record.as_object().context("it is not an object")?;
+    anyhow::ensure!(object.get("format") == Some(&json!(1)), "its format is not 1");
+    let owned = object.get("owned").context("it does not say which Serve entry it holds")?;
+    if !owned.is_null() {
+        serde_json::from_value::<Owned>(owned.clone()).context("its Serve entry cannot be read")?;
+    }
+    Ok(())
 }
 
 /// The Serve entry `record` says Core set for them, if it still says one.

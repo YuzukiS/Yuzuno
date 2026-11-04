@@ -1271,18 +1271,32 @@ async fn an_older_cores_entry_on_phone_access_s_own_serve_port_is_never_removed_
 #[tokio::test]
 async fn an_older_cores_record_it_cannot_read_keeps_phone_access_on_its_own_ports_until_it_can() {
     use std::os::unix::fs::PermissionsExt;
-    // Not JSON; an entry not as Core writes it; no access to it at all. None reads as no record.
-    for case in ["not JSON", "an entry not as Core writes it", "no access"] {
+    // Not JSON; JSON not as Core writes it (not an object, no format or another, no `owned`, an entry not
+    // as Core writes it); no access to it at all. None reads as no record.
+    for case in ["not JSON", "null", "a list", "a string", "an empty object", "another format", "no owned", "an entry not as Core writes it", "no access"] {
         let (phone, local) = (free_port(), free_port());
         let file = |lab: &Lab| lab.ws.data_dir.join("remote-preview.json");
         let lab = lab_with(|lab| {
             older(lab, phone, local, true, theirs(local));
+            let mut record = lab.legacy_record();
+            let write = |text: String| std::fs::write(file(lab), text).unwrap();
             match case {
-                "not JSON" => std::fs::write(file(lab), "{not json").unwrap(),
+                "not JSON" => write("{not json".into()),
+                "null" => write("null".into()),
+                "a list" => write("[]".into()),
+                "a string" => write("\"remote-preview\"".into()),
+                "an empty object" => write("{}".into()),
+                "another format" => {
+                    record["format"] = json!(2);
+                    write(record.to_string());
+                }
+                "no owned" => {
+                    record.as_object_mut().unwrap().remove("owned");
+                    write(record.to_string());
+                }
                 "an entry not as Core writes it" => {
-                    let mut record = lab.legacy_record();
                     record["owned"] = json!({"servePort": "8445", "target": 4319});
-                    std::fs::write(file(lab), record.to_string()).unwrap();
+                    write(record.to_string());
                 }
                 _ => std::fs::set_permissions(file(lab), std::fs::Permissions::from_mode(0o000)).unwrap(),
             }
