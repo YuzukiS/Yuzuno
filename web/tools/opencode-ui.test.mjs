@@ -508,3 +508,44 @@ test("a read begun before the Agent's revert was opened does not undo it", async
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
+
+test("a preview left for another Workspace leaves nothing waiting when its own is shown again", async () => {
+  const first = later();
+  let previews = 0;
+  const { page, show } = revertPage((route) => route === "preview" ? (++previews === 1 ? first.promise : shownPreview)
+    : route === "attempt" ? { attempt: null } : undefined);
+  try {
+    show("ws-1", () => true); await tick();
+    button(page, "Rewind").click(); await tick();
+    show("ws-2", () => true); await tick();
+    first.settle(shownPreview); await tick(); await tick();
+    show("ws-1", () => true); await tick(); await tick();
+    assert.doesNotMatch(page.document.body.textContent, /Reading OpenCode’s session/, "nothing left waiting");
+    button(page, "Rewind").click(); await tick(); await tick();
+    assert.ok(button(page, "Revert"), "a new preview is shown");
+    assert.equal(previews, 2);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an answer taken is not undone by a read begun before it", async () => {
+  const confirm = later();
+  const read = later();
+  let reads = 0;
+  const { page, show } = revertPage((route) => route === "preview" ? shownPreview : route === "confirm" ? confirm.promise
+    : route === "attempt" ? (++reads === 1 ? { attempt: null } : read.promise) : undefined);
+  try {
+    show("ws-1", () => true); await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    button(page, "Revert").click(); await tick();
+    // Shown again while the confirm is on its way: a read of what Core keeps begins.
+    page.window.unmount(); await tick();
+    show("ws-1", () => true); await tick();
+    confirm.settle(kept); await tick(); await tick();
+    assert.match(page.document.body.textContent, /Reverted\./);
+    read.settle({ attempt: { attemptId: "revert_1", status: "sending", draft: "", message: "" } }); await tick(); await tick();
+    assert.match(page.document.body.textContent, /Reverted\./, "the answer taken stays");
+    assert.doesNotMatch(page.document.body.textContent, /not yet confirmed/, "not undone by the older read");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});

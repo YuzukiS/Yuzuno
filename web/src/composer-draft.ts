@@ -29,7 +29,17 @@ export type ComposerDraft = {
   parts: readonly DraftPart[];
   images?: readonly DraftImage[];
   skills?: readonly DraftSkill[];
+  /**
+   * Where text added to it from elsewhere came from (an OpenCode revert's
+   * attempt, T-10 Lead 4139), saved with the draft itself: so the same one is
+   * never added twice, whatever was saved of it, or not, before.
+   */
+  origins?: readonly string[];
 };
+export const MAX_DRAFT_ORIGINS = 20;
+export function validDraftOrigins(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= MAX_DRAFT_ORIGINS && value.every((o) => typeof o === "string" && !!o && o.length <= 200);
+}
 export const emptyDraft = (): ComposerDraft => ({
   version: 1,
   nextNumber: 1,
@@ -75,6 +85,11 @@ export function pastedText(
       .slice(0, 6)
       .join("\n"),
   };
+}
+/** `text` added once from `origin`: a draft that holds it already is the same draft. */
+export function appendDraftOnce(draft: ComposerDraft, text: string, origin: string): ComposerDraft {
+  if (draft.origins?.includes(origin)) return draft;
+  return { ...appendDraft(draft, text), origins: [...(draft.origins ?? []), origin].slice(-MAX_DRAFT_ORIGINS) };
 }
 export function appendDraft(draft: ComposerDraft, text: string): ComposerDraft {
   return {
@@ -122,7 +137,7 @@ export function draftIdentityParts(identity: string): { workspace: string; agent
 type SavedPart =
   | { kind: "text"; text: string }
   | Pick<PastedText, "kind" | "id" | "number" | "bodyId">;
-type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[]; skills?: DraftSkill[] };
+type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[]; skills?: DraftSkill[]; origins?: string[] };
 
 /**
  * What an Agent's saved draft holds, read from its manifest alone (T-193): no
@@ -256,6 +271,7 @@ export class DraftStorage {
       throw new Error("Invalid saved draft");
     if (saved.images !== undefined && !validDraftImages(saved.images)) throw new Error("Invalid saved image references");
     if (saved.skills !== undefined && !validDraftSkills(saved.skills)) throw new Error("Invalid saved skill references");
+    if (saved.origins !== undefined && !validDraftOrigins(saved.origins)) throw new Error("Invalid saved draft origins");
     // A skill is this Agent's: one saved for another is never offered here.
     const skills = (saved.skills || []).filter((skill) => skill.agentId === agent);
     const keys = new Set<string>();
@@ -280,7 +296,7 @@ export class DraftStorage {
     this.bodies.set(agent, keys);
     this.manifests.set(agent, raw);
     return { version: 1, nextNumber: saved.nextNumber, parts, ...(saved.images?.length ? { images: saved.images } : {}),
-      ...(skills.length ? { skills } : {}) };
+      ...(skills.length ? { skills } : {}), ...(saved.origins?.length ? { origins: saved.origins } : {}) };
   }
 
   save(agent: string, draft: ComposerDraft) {
@@ -335,6 +351,7 @@ export class DraftStorage {
         parts,
         ...(draft.images?.length ? { images: draft.images } : {}),
         ...(draft.skills?.length ? { skills: draft.skills } : {}),
+        ...(draft.origins?.length ? { origins: draft.origins } : {}),
       });
       this.storage.setItem(prefix + agent, manifest);
       this.manifests.set(agent, manifest);

@@ -137,8 +137,13 @@ const subscribe = (listener: () => void) => { listeners.add(listener); return ()
 
 /** The Workspace the page shows now: no request goes out for, nor an answer is taken into, another. */
 let shownWorkspace = "";
-/** Where each Workspace's kept revert texts go: its host's draft, while it shows that Workspace. It says whether the text was saved. */
-const deliverers = new Map<string, (agentId: string, text: string) => boolean>();
+/**
+ * Where each Workspace's kept revert texts go: its host's draft, while it
+ * shows that Workspace. It adds a text once per `origin`, saved with the
+ * draft in the same write, and says whether the draft was saved.
+ */
+type Deliverer = (agentId: string, text: string, origin: string) => boolean;
+const deliverers = new Map<string, Deliverer>();
 
 // The attempts asked for here, until seen through: settled, closed, and their
 // text given if kept. So one that settles while the page is away is found
@@ -188,14 +193,16 @@ function deliver(key: string) {
   const to = deliverers.get(revert.workspace);
   let saved = false;
   if (to && revert.workspace === shownWorkspace) {
-    try { saved = to(revert.agent, outcome.draft); } catch { saved = false; }
+    // Added once, by its origin, in the same write as the draft: a retry saves that one, never adds a second.
+    try { saved = to(revert.agent, outcome.draft, `opencode-revert:${outcome.attemptId}`); } catch { saved = false; }
   }
   if (saved) markGiven(revert.workspace, outcome.attemptId);
   put(key, { undelivered: !saved });
 }
 
+/** An answer taken: a step too, so that no read begun before it undoes it (Lead 4139). */
 function settle(key: string, value: RevertOutcome) {
-  put(key, { outcome: value, preview: undefined, busy: false });
+  put(key, { outcome: value, preview: undefined, busy: false, version: (reverts.get(key)?.version ?? 0) + 1 });
   deliver(key);
 }
 
@@ -203,11 +210,15 @@ async function preview(key: string, workspace: string, agent: string, turnId: st
   step(key, { turnId, preview: undefined, outcome: undefined, error: "", busy: true, open: true, undelivered: false }, { workspace, agent });
   const version = reverts.get(key)!.version;
   const current = () => workspace === shownWorkspace && reverts.get(key)?.version === version;
+  // A preview whose Workspace is no longer shown when it comes is dropped, and nothing of it left waiting (Lead 4139).
+  const left = () => workspace !== shownWorkspace && reverts.get(key)?.version === version;
   try {
     const value = await post<RevertPreview>(`/agents/${encodeURIComponent(agent)}/rewind/preview`, { turnId });
     if (current()) put(key, { preview: value, busy: false });
+    else if (left()) put(key, undefined);
   } catch (e) {
     if (current()) put(key, { error: errorText(e), busy: false });
+    else if (left()) put(key, undefined);
   }
 }
 
@@ -251,6 +262,9 @@ async function recover(key: string, workspace: string, agent: string) {
     // One not yet known first: it holds the Agent back. Else the latest asked here that is not seen through.
     const found = pending.attempt ?? ours.map(o => o.attempt).filter((a): a is RevertOutcome => !!a).at(-1);
     if (!found) return;
+    // A settled outcome is never taken back to one not yet known.
+    const held = reverts.get(key)?.outcome;
+    if (held?.attemptId === found.attemptId && !unsettled(held) && unsettled(found)) return;
     if (reverts.get(key)?.outcome?.attemptId === found.attemptId && reverts.get(key)?.outcome?.status === found.status) { deliver(key); return; }
     put(key, { outcome: found, preview: undefined, turnId: undefined }, base);
     deliver(key);
@@ -269,7 +283,7 @@ const RevertHost = createContext<((agentId: string, turnId: string) => void) | n
  * checked, never confirmed again or resolved.
  */
 export function OpenCodeRevertHost({ workspaceId, agent, onDraft, children }: { workspaceId: string; agent?: Agent;
-  onDraft?: (agentId: string, text: string) => boolean; children: ReactNode }) {
+  onDraft?: Deliverer; children: ReactNode }) {
   useSyncExternalStore(subscribe, () => changes);
   const id = agent?.harness === "opencode" && workspaceId ? agent.id : undefined;
   const key = id ? keyOf(workspaceId, id) : undefined;

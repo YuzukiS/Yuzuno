@@ -191,7 +191,7 @@ import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
-import { appendDraft, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
+import { appendDraft, appendDraftOnce, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
 import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
 import { handoffLabel, handoffNotices, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
@@ -2445,8 +2445,9 @@ export function App() {
     [],
   );
   // Whether the text was added and saved (an OpenCode revert counts its text as given only then).
-  const rewindDraft = useCallback((agentId: string, text: string) => {
-    const saved = setDraft(agentId, current => appendDraft(current, text));
+  // With an `origin`, once: a draft that holds it already is saved again as it is, not added to.
+  const rewindDraft = useCallback((agentId: string, text: string, origin?: string) => {
+    const saved = setDraft(agentId, current => origin ? appendDraftOnce(current, text, origin) : appendDraft(current, text));
     if (saved) setNotice(shellNow.current.rewindSaved);
     return saved;
   }, [setDraft]);

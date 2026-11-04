@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { savedDraftText } from "./composer-driver.mjs";
+import { composerText, savedDraftText } from "./composer-driver.mjs";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 
 // OpenCode's revert in the app itself (T-10, Lead 4128): held for the Agent,
@@ -43,7 +43,7 @@ const unknown = { attemptId: "revert_1", status: "unknown", draft: "", message: 
  * The app with Mori (OpenCode, two turns) and Hana (Codex). `core.answers`
  * answers the revert routes; `core.turns` is Mori's record as Core holds it.
  */
-async function mount(core, stored = {}, shownTurn = "t2") {
+async function mount(core, stored = {}, shownTurn = "t2", prepare = () => {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (e) => errors.push(e.message));
@@ -52,6 +52,7 @@ async function mount(core, stored = {}, shownTurn = "t2") {
   });
   const { window } = dom;
   for (const [key, value] of Object.entries(stored)) window.localStorage.setItem(key, value);
+  prepare(window);
   window.matchMedia = (media) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} });
   const streams = [];
   window.EventSource = class { constructor(url) { this.url = url; streams.push(this); } close() {} };
@@ -79,6 +80,7 @@ async function mount(core, stored = {}, shownTurn = "t2") {
   const d = window.document;
   const page = {
     window, d, errors, close: () => window.close(),
+    composer: () => d.querySelector('[data-composer-input][aria-label="Message Mori"]'),
     text: () => d.body.textContent,
     open: (name) => [...d.querySelectorAll(".agent-row")].find((el) => el.textContent.includes(name)).querySelector(".agent-select").click(),
     shown: () => d.querySelector(".agent-row.selected")?.dataset.agentId,
@@ -208,7 +210,7 @@ test("a revert that settled while the page was away is found again with its resu
   const again = await mount(core, stored, "t3");
   try {
     await until(() => /OpenCode’s revert has an outcome you have not seen yet/.test(again.text()), "an outcome to see");
-    assert.deepEqual([...new Set(again.calls.filter((c) => c.path === "/api/agents/a/rewind/attempt").map((c) => c.query))].sort(), ["revert_1", null].sort(),
+    assert.deepEqual([...new Set(core.calls.filter((c) => c.path === "/api/agents/a/rewind/attempt").map((c) => c.query))].sort(), ["revert_1", null].sort(),
       "read as the one pending and by its own ID");
     await until(() => occurrences(savedDraftText(again.window.localStorage, "a"), "Fix a.txt") === 1, "its text, once, in Mori's draft");
     again.button("Show outcome").click();
@@ -226,7 +228,7 @@ test("a revert that settled while the page was away is found again with its resu
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.doesNotMatch(third.text(), /OpenCode’s revert/, "nothing left to see");
-    assert.deepEqual([...new Set(third.calls.filter((c) => c.path === "/api/agents/a/rewind/attempt").map((c) => c.query))], [null], "no longer asked for by its ID");
+    assert.deepEqual([...new Set(core.calls.filter((c) => c.path === "/api/agents/a/rewind/attempt").map((c) => c.query))], [null], "no longer asked for by its ID");
     assert.equal(occurrences(savedDraftText(third.window.localStorage, "a"), "Fix a.txt"), 1, "not given twice");
     assert.deepEqual(third.errors, []);
   } finally { third.close(); }
@@ -250,4 +252,49 @@ test("a saved draft that cannot be read is not overwritten, and the text is left
     assert.equal(page.window.localStorage.getItem(key), damaged, "the damaged draft is left as it was");
     assert.doesNotMatch(page.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "", /revert_1/, "not counted as given");
   } finally { page.close(); }
+});
+
+test("a draft that cannot be saved keeps the text once here, saves that one when it can, and never adds it twice", async () => {
+  const kept = { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [] };
+  const core = { calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
+    preview, confirm: kept, attempt: (id) => ({ attempt: id === "revert_1" ? kept : null }),
+  } };
+  // The page's own storage refuses writes as a full one does, to the draft or to what was given.
+  const full = { draft: false, given: false };
+  const refusing = (window) => {
+    const write = window.Storage.prototype.setItem;
+    window.Storage.prototype.setItem = function (key, value) {
+      if ((full.draft && key.startsWith("yuzuno.composer.v1:")) || (full.given && key === "yuzuno.revert.given.v1"))
+        throw new window.DOMException("The quota has been exceeded.", "QuotaExceededError");
+      return write.call(this, key, value);
+    };
+  };
+  const page = await mount(core, {}, "t2", refusing);
+  let stored;
+  try {
+    full.draft = true;
+    page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
+    await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    page.button("Revert", page.dialog()).click();
+    await until(() => /The original text could not be added to the draft/.test(page.text()), "not saved, said so");
+    assert.equal(savedDraftText(page.window.localStorage, "a"), "", "nothing saved");
+    assert.equal(occurrences(composerText(page.composer()), "Fix a.txt"), 1, "kept once in this window");
+    // The draft can be saved again; what was given cannot.
+    full.draft = false; full.given = true;
+    page.button("Add to draft", page.dialog()).click();
+    await until(() => !/could not be added/.test(page.text()), "saved");
+    assert.equal(occurrences(savedDraftText(page.window.localStorage, "a"), "Fix a.txt"), 1, "the one kept here is saved, not a second");
+    assert.equal(occurrences(composerText(page.composer()), "Fix a.txt"), 1, "still once here");
+    assert.doesNotMatch(page.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "", /revert_1/, "what was given was not saved");
+    stored = Object.fromEntries(Object.entries(page.window.localStorage));
+  } finally { page.close(); }
+
+  // Reloaded before it was closed: found again by its ID, and its text, already in the saved draft, not added again.
+  const again = await mount(core, stored);
+  try {
+    await until(() => core.calls.some((c) => c.path === "/api/agents/a/rewind/attempt" && c.query === "revert_1"), "read again by its ID");
+    await until(() => (again.window.localStorage.getItem("yuzuno.revert.given.v1") ?? "").includes("revert_1"), "now counted as given");
+    assert.equal(occurrences(savedDraftText(again.window.localStorage, "a"), "Fix a.txt"), 1, "never added twice");
+    assert.deepEqual(again.errors, []);
+  } finally { again.close(); }
 });
