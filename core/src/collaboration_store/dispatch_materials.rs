@@ -111,6 +111,36 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
     Ok(value)
 }
 
+/// Explicit SHAs are checked where they are registered (T-29), as a dispatch
+/// checks them (snapshot): they need their repositoryId, and that repository
+/// linked to this task or its Project. Called once the task and its Project are
+/// as the call leaves them; a refusal rolls the whole call back. Materials
+/// without SHAs are checked at dispatch, as before.
+pub(super) fn check_shas(db: &Connection, task: &str, materials: &Value) -> Result<()> {
+    let named: Vec<&str> = ["baseSha", "headSha"].into_iter().filter(|key| !materials[*key].is_null()).collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    let Some(id) = materials["repositoryId"].as_i64() else {
+        bail!("invalid_input: explicit base/head requires an explicit repositoryId: materials give {} but no repositoryId. \
+            Add the saved repository's id (github_repositories lists them); it must be linked to this task or its Project",
+            named.join(" and "));
+    };
+    let linked: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM github_project_repos p JOIN project_tasks t ON t.project_id=p.project_id
+            WHERE t.task_id=?1 AND p.repo_id=?2)
+        OR EXISTS(SELECT 1 FROM github_task_links l JOIN github_objects o ON o.id=l.object_id WHERE l.task_id=?1 AND o.repo_id=?2)",
+        params![task, id],
+        |r| r.get(0),
+    )?;
+    ensure!(
+        linked,
+        "invalid_input: selected repository must be linked to this task or its Project: repository {id} is in neither. \
+        Link one of its pull requests or issues to this task (github_links), or give the task a Project that has the repository"
+    );
+    Ok(())
+}
+
 impl Store {
     /// The repositoryId of a task's registered materials, or None: where a
     /// dispatch that names none resolves an abbreviated SHA (T-164).
