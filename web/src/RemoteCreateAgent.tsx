@@ -768,11 +768,6 @@ export function RemoteCreateAgent({
           {disabled && (
             <p className="field-hint">{t.createDisabled}</p>
           )}
-          {error && (
-            <p role="alert" className="inline-error">
-              {error}
-            </p>
-          )}
           <div className="modal-actions">
             <button
               className="secondary-button"
@@ -802,6 +797,12 @@ export function RemoteCreateAgent({
               {busy ? t.creating : t.create}
             </button>
           </div>
+          {/* Below the buttons, so a failure does not move them under the pointer (T-19 SX-25). */}
+          {error && (
+            <p role="alert" className="inline-error">
+              {error}
+            </p>
+          )}
         </form>
       )}
     </Modal>

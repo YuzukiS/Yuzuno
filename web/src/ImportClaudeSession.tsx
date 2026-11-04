@@ -474,11 +474,6 @@ export function ImportClaudeSession({
             {t.claudeHandoff}
             {!existing && t.claudeAddsNothing}
           </p>
-          {errorShown && (
-            <p role="alert" className="remote-field-error">
-              {errorShown}
-            </p>
-          )}
           <div className="modal-actions">
             <button
               className="secondary-button"
@@ -500,6 +495,12 @@ export function ImportClaudeSession({
               {busy ? t.opening : existing ? t.openAgent : t.addToWorkspace}
             </button>
           </div>
+          {/* Below the buttons, so a failure does not move them under the pointer (T-19 SX-47). */}
+          {errorShown && (
+            <p role="alert" className="remote-field-error">
+              {errorShown}
+            </p>
+          )}
         </form>
       )}
       {!preview && errorShown && (
