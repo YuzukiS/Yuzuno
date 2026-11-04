@@ -33,6 +33,10 @@ export type SectionAttachment = {
   url?: string;
   /** Where a referenced (not snapshotted) file lives on its machine. */
   path?: string;
+  /** A kept image's size as drawn, which Core read from the bytes it keeps
+   * (T-19 HM:B14); absent when it could not, or for anything not kept. */
+  width?: number;
+  height?: number;
 };
 
 /**
