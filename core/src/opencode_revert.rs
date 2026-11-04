@@ -79,10 +79,11 @@ impl Workspace {
     /// OpenCode one with nothing running, waiting or unconfirmed (no Turn in
     /// progress, no request pending, no compaction or message whose outcome is
     /// not known), its session idle with no revert waiting in it, and `turn`
-    /// one of its Turns whose message the session holds. With files to send
-    /// back, also unless where OpenCode keeps its snapshots is known from how
-    /// it was started, its `/path` agrees with that, the session is its
-    /// project's, and every file comes out known (`opencode_revert_files::plan`).
+    /// one of its Turns whose message the session holds, and the session of
+    /// the project OpenCode holds the Agent's folder for now (Lead 4092). With
+    /// files to send back, also unless where OpenCode keeps its snapshots is
+    /// known from how it was started, its `/path` agrees with that, and every
+    /// file comes out known (`opencode_revert_files::plan`).
     pub(super) async fn opencode_revert_read(self: &Arc<Self>, id: &str, turn: &str) -> Result<Read> {
         // What a send checks, with this Turn among the Turns read; and where it is among all of them.
         let (agent, wanted) = (id.to_owned(), turn.to_owned());
@@ -109,6 +110,9 @@ impl Workspace {
         let path = c.server.path().await.context(unread)?;
         ensure!(path["directory"] == folder.as_str(), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
         let worktree = path["worktree"].as_str().context("OpenCode 没有说它的 worktree；没有预览回退")?.to_owned();
+        let project = c.server.project().await.context(unread)?;
+        let project = project["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
+        ensure!(session["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有预览回退");
         let targets = files::targets(list, turn, &worktree, &folder)?;
         let (entries, root) = if targets.is_empty() {
             (Vec::new(), None)
@@ -118,9 +122,6 @@ impl Workspace {
             started.launcher.check()?;
             started.launcher.bound(c.server.pid().context("OpenCode's process has no ID")?)?;
             started.roots.agrees(&path)?;
-            let project = c.server.project().await.context(unread)?;
-            let project = project["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
-            ensure!(session["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有预览回退");
             let store = files::store(&started.roots.data, &project, &worktree)?;
             let root = Root::of(Path::new(&folder))?;
             let (entries, _) = files::plan(&store, Path::new(&worktree), &[], &targets, Path::new(&folder), root, BOUNDS).await?;

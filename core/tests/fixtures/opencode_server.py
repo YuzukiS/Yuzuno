@@ -212,6 +212,8 @@ def xdg(name, *default):
 DATA, STATE, CONFIG = xdg('XDG_DATA_HOME', '.local', 'share'), xdg('XDG_STATE_HOME', '.local', 'state'), xdg('XDG_CONFIG_HOME', '.config')
 # The project OpenCode names this folder's (`core/src/project.ts`; a fixed one here).
 PROJECT = 'fixtureproject'
+# The project `/project/current` names now (control `project`); snapshots stay under PROJECT's store.
+current_project = [PROJECT]
 # OpenCode's snapshot store for this worktree (`snapshot/index.ts`: data/snapshot/<project>/<sha1 of the worktree>).
 STORE = Path(DATA) / 'snapshot' / PROJECT / hashlib.sha1(str(WORK).encode()).hexdigest()
 # Snapshots are taken only into a data folder a test made for them (marked `.yuzuno-fixture`), never under anyone's
@@ -418,6 +420,10 @@ def control(name, body):
         sessions[body['sessionID']]['revert'] = {'messageID': body.get('messageID', 'msg_reverted')}
         save()
         return True
+    if name == 'project':
+        # The folder held for another project from now on (T-10 Revert), as when its repository changed.
+        current_project[0] = body['id']
+        return True
     if name == 'compaction':
         # A compaction message in the session (T-10): one asked for, or OpenCode's own (`auto`).
         return compaction(body['sessionID'], body.get('model', {'providerID': 'deepseek', 'modelID': 'deepseek-flash'}),
@@ -557,7 +563,7 @@ class Handler(BaseHTTPRequestHandler):
             # `handlers/instance.ts` getPath: OpenCode's own folders and the instance's worktree and directory.
             return self.reply(200, {'home': HOME, 'state': STATE, 'config': CONFIG, 'worktree': str(WORK), 'directory': str(WORK)})
         if key == ('GET', 'project', 'current'):
-            return self.reply(200, {'id': PROJECT, 'worktree': str(WORK), 'vcs': 'git'})
+            return self.reply(200, {'id': current_project[0], 'worktree': str(WORK), 'vcs': 'git'})
         if key == ('POST', 'session'):
             session = {'id': new_id('ses'), 'projectID': PROJECT, 'title': (body or {}).get('title', ''),
                        'directory': parse_qs(url.query).get('directory', [''])[0]}

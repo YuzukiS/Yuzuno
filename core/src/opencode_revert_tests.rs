@@ -102,6 +102,26 @@ async fn a_preview_with_no_file_to_send_back_needs_no_snapshot_says_what_leaves_
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn a_session_not_of_the_project_opencode_holds_the_folder_for_now_is_refused_with_no_file_to_send_back_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    // The same folder, now held for another project (as when its repository's first commit or remote changed).
+    control(&data, "project", json!({"id": "otherproject"})).await;
+    let error = ws.opencode_revert_preview("oc", &first).await.expect_err("a session of another project is refused").to_string();
+    assert!(error.contains("不属于它现在的项目"), "{error}");
+    assert!(!asked(&data).iter().any(|(method, path)| method == "POST" && path.ends_with("/revert")), "nothing asked: {:?}", asked(&data));
+    control(&data, "project", json!({"id": "fixtureproject"})).await;
+    assert!(ws.opencode_revert_preview("oc", &first).await.is_ok(), "its own project's session is previewed");
+    ws.close_agent("oc").await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn files_to_send_back_with_an_opencode_started_through_a_script_refuse_and_say_why() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
