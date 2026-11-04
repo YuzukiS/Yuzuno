@@ -162,3 +162,27 @@ export function PinnedSection({
     </section>
   );
 }
+
+/**
+ * What a pinned card shown as its summary card says above its head (T-18):
+ * that Home's last read failed, so it may not be current; or that it is a
+ * report the user marked seen, shown as last written. Never as new.
+ */
+export function PinNotes({ source }: { source: PinSource }) {
+  const t = homeText(useLanguage());
+  if (source.state !== "shown" || (source.current && !source.seen)) return null;
+  return (
+    <>
+      {!source.current && (
+        <p className="home-pinned-note" role="status">
+          <TriangleAlert size={12} aria-hidden="true" /> {t.notCurrent}
+        </p>
+      )}
+      {source.seen && (
+        <p className="home-pinned-time" role="status">
+          <Eye size={12} aria-hidden="true" /> {t.markedSeen}
+        </p>
+      )}
+    </>
+  );
+}

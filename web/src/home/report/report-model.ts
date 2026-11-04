@@ -17,13 +17,15 @@ function tree(section: Section) {
 
 /**
  * What a report opens with (T-18), as its author named it on the body's
- * root: `summary {lead, visual?, conditions?}`, ids of the root's own
- * blocks, which the page shows first and once. Core refuses any other
- * shape; one that does not hold here is taken as none. A body that names
- * none has no summary: its page is the body in the author's order, nothing
- * lifted or guessed.
+ * root: `summary {lead, visual?, conditions?, size}`, ids of the root's own
+ * blocks, which the page shows first and once, and the room its card takes
+ * on Home. Core refuses any other shape; one that does not hold here is
+ * taken as none. A body that names none has no summary: its page is the body
+ * in the author's order, nothing lifted or guessed. A summary kept from
+ * before sizes were named has no size (null).
  */
-export type Summary = { lead: string; visual: string | null; conditions: string | null };
+export type Summary = { lead: string; visual: string | null; conditions: string | null; size: "small" | "wide" | "large" | null };
+const SIZES = new Set(["small", "wide", "large"]);
 
 export function summaryOf(section: Section): Summary | null {
   const body = tree(section);
@@ -31,7 +33,7 @@ export function summaryOf(section: Section): Summary | null {
   if (!body || !named || typeof named !== "object" || Array.isArray(named)) return null;
   const { elements, top } = body;
   const type = (id: unknown) => (typeof id === "string" && top.includes(id) ? elements[id]?.type : undefined);
-  const { lead, visual, conditions } = named;
+  const { lead, visual, conditions, size } = named;
   if (type(lead) !== "Markdown") return null;
   const figure = visual === undefined || (FIGURES.has(type(visual) ?? "") &&
     (type(visual) !== "Attachments" || (elements[visual as string].props?.items as unknown[] | undefined)?.length === 1));
@@ -42,7 +44,12 @@ export function summaryOf(section: Section): Summary | null {
   // other stays a file among the attachments, never passed off as the figure.
   const items = type(visual) === "Attachments" ? (elements[visual as string].props?.items as { name?: unknown }[]) : null;
   const image = !items || section.attachments?.some((file) => file.name === items[0]?.name && file.kind === "image");
-  return { lead: lead as string, visual: image ? ((visual as string | undefined) ?? null) : null, conditions: (conditions as string | undefined) ?? null };
+  return {
+    lead: lead as string,
+    visual: image ? ((visual as string | undefined) ?? null) : null,
+    conditions: (conditions as string | undefined) ?? null,
+    size: typeof size === "string" && SIZES.has(size) ? (size as Summary["size"]) : null,
+  };
 }
 
 /**

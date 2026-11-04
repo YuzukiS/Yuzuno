@@ -9,12 +9,14 @@ import type { Agent } from "../../types";
 import { changedBlocks, type BlockChanges } from "../brief/block-changes";
 import { reportMarkdown } from "../brief/brief-copy";
 import { changedSinceSeen } from "../brief-layout";
-import { CardReply } from "../CardReply";
+import { unmaintained } from "../card-summary";
+import { CardReply, replyableIn } from "../CardReply";
 import { absolute, duration, relative } from "../format";
 import type { SeenMark } from "../home-api";
 import { BriefDensity } from "../home-density";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
+import { SectionTime } from "../SectionCard";
 import type { HomeData, Section, SectionAttachment } from "../types";
 import { figuresOf, linkTo, outlineOf, partsOf, reportPlace, type FigureEntry, type OutlineEntry, type ReportPlace } from "./report-model";
 import { reportText } from "./report-text";
@@ -97,6 +99,9 @@ export function ReportPage({
   );
   const dataFiles = (shown?.attachments ?? []).filter((file) => file.kind === "data");
   const railed = !!parts && (parts.sources.length > 0 || parts.attachments.length > 0 || dataFiles.length > 0);
+  // A reply where Home takes one (T-174): on the live version, or on a report marked seen that a reply can still
+  // refer to (replyableIn), as its card and pin do (Lead 2655). Never another version kept in History.
+  const replyable = !readOnly && place?.kind === "found" && replyableIn(panel, place.section);
   const [replying, setReplying] = useState(false);
   // Only ever opened by the user here; closed, focus goes back to Reply (T-19 HM:S7).
   const replyButton = useRef<HTMLButtonElement>(null);
@@ -201,7 +206,7 @@ export function ReportPage({
               {home.seen}
             </button>
           )}
-          {live && shown && !readOnly && shown.kind !== "ask" && (
+          {replyable && shown && (
             <button
               type="button"
               className="quiet-button home-reply-open"
@@ -237,7 +242,7 @@ export function ReportPage({
           </div>
         )}
         {notice}
-        {live && shown && replying && (
+        {replyable && shown && replying && (
           <CardReply
             section={shown}
             projectId={link.projectId}
@@ -264,6 +269,7 @@ export function ReportPage({
                     <p className="report-kicker">
                       <span className={`home-kind kind-${shown.kind}`}>{home.kind[shown.kind]}</span>
                       {live && changedSinceSeen(shown) && <span className="home-changed">{shown.seen ? home.updated : home.new}</span>}
+                      {unmaintained(shown) && <span className="home-unmaintained">{home.notMaintained}</span>}
                       {panel && <span>{panel.project.name}</span>}
                     </p>
                     <h1 id={headingId} ref={heading} tabIndex={-1}>
@@ -280,8 +286,22 @@ export function ReportPage({
                           {shown.status.stale && home.pastValidity(duration(shown.status.validFor, language))}
                         </span>
                       )}
+                      {/* The card says when its data is from; the page also says what is due and next. */}
+                      <SectionTime label={home.due} iso={shown.time?.due} />
+                      <SectionTime label={home.expected} iso={shown.time?.eta} />
+                      <SectionTime label={home.nextUpdate} iso={shown.time?.nextUpdate} />
                       {changes && changes.size > 0 && <span className="report-changes">{t.blocksUpdated(changes.size)}</span>}
                     </p>
+                    {/* Who left it and that it can be claimed, in words, not only in the card's tip (T-173). */}
+                    {unmaintained(shown) && (
+                      <p className="home-note home-unmaintained-note">
+                        {home.notMaintainedNote(
+                          shown.owner.name,
+                          home.gone[shown.owner.state as keyof typeof home.gone] ?? home.inactive,
+                          home.kindInSentence[shown.kind],
+                        )}
+                      </p>
+                    )}
                     {summary?.conditions && (
                       <div className="report-conditions" role="group" aria-label={t.conditions}>
                         <span className="report-conditions-label">{t.conditions}</span>

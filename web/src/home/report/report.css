@@ -216,8 +216,9 @@
   gap: 6px 10px;
   max-width: 46em;
   padding: 10px 14px;
-  border-left: 3px solid var(--home-attention);
-  border-radius: 0 10px 10px 0;
+  /* As on the card: one border all round, in the attention tone (Dev 7, 2399). */
+  border: 1px solid color-mix(in srgb, var(--home-attention) 40%, var(--line));
+  border-radius: 10px;
   background: var(--home-soft);
 }
 .report-conditions-label {
@@ -228,6 +229,12 @@
 .report-conditions > .brief-body {
   flex: 1 1 18rem;
   min-width: 0;
+}
+/* Conditions sit on the soft surface: their prose is in the ink there, as
+   their chips are, readable at 4.5:1 or more in every palette (a body's
+   secondary text colour is 4.3:1 on that surface in Garden). */
+:is(.report-conditions, .home-card-conditions) .brief-body .brief-markdown {
+  color: var(--ink);
 }
 /* A checklist of conditions reads as a row of them: each item and its own
    mark, without a count of how many are ticked; on the page and on a
@@ -412,9 +419,11 @@
 .report-block .brief-markdown {
   max-width: 46em;
 }
+/* A part's title on the page: above a written h2, below a written h1, which
+   still leads (T-9's levels, measured by brief-typography-check). */
 .report-block > .brief-body > .brief-root > .brief-group > h4,
 .report-block > .brief-body > .brief-root > .brief-change > .brief-group > h4 {
-  font-size: calc(16px + var(--font-adjust, 3px));
+  font-size: 1.08rem;
   font-weight: 600;
 }
 /* Supporting detail the author named: its title and two lines until opened. */

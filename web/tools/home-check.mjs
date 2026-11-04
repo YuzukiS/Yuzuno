@@ -26,7 +26,7 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/home"
 await mkdir(output, { recursive: true });
 // https, so the page is a secure context (replies use crypto.randomUUID).
 const HOST = "yuzuno-home.test";
-const report = { checks: [], failures: [], errors: [], unexpected: [], writes: [], screenshots: [], observations: [] };
+const report = { checks: [], failures: [], errors: [], unexpected: [], writes: [], screenshots: [], observations: [], agentReads: [] };
 let page;
 /** One numbered check: PASS, or FAIL with a screenshot, and the next goes on. */
 async function step(name, run) {
@@ -383,6 +383,7 @@ const browser = await chromium.launch({
   executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium",
 });
 const writes = report.writes;
+let readingSeq = 0;
 const writesTo = (pattern) => writes.filter((w) => pattern.test(w.path));
 async function serve(route) {
   const request = route.request();
@@ -393,10 +394,24 @@ async function serve(route) {
   }
   const path = url.pathname;
   const method = request.method();
+  // An open conversation's reading place (reading-handoff-api.ts) and its inputs (useConversationInputs.ts),
+  // answered as Core answers an Agent with none; counted apart from Home's writes.
+  const reading = /^\/api\/agents\/([^/]+)\/reading$/.exec(path);
+  if (reading && agents.some((a) => a.id === reading[1]) && (method === "GET" || method === "PUT")) {
+    report.agentReads.push(`${method} ${path}`);
+    return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: ++readingSeq, accepted: true } : { handoff: null, sourceSeq: readingSeq } });
+  }
+  const inputs = /^\/api\/agents\/([^/]+)\/conversation\/inputs$/.exec(path);
+  if (inputs && agents.some((a) => a.id === inputs[1]) && method === "GET") {
+    report.agentReads.push(path);
+    return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
+  }
   if (method !== "GET" && path.startsWith("/api/")) {
     const body = request.postDataJSON();
-    // A read that happens to be a POST: the project's linked repositories.
-    if (path === "/api/collaboration/github_repositories")
+    // A read that happens to be a POST: the project's linked repositories; and, once Repository details
+    // show their links, the same list refreshed from GitHub (GitHubLinks.tsx), counted apart from writes.
+    if (path === "/api/collaboration/github_refresh") report.agentReads.push(`${method} ${path}`);
+    if (path === "/api/collaboration/github_repositories" || path === "/api/collaboration/github_refresh")
       return route.fulfill({
         json: body?.projectId === "p1"
           ? { repositories: [{ id: 1, fullName: "example/yuzuno-next", url: "https://github.com/example/yuzuno-next", syncedAt: iso(-3 * MIN), error: null }], links: [] }
@@ -522,7 +537,7 @@ const layout = () =>
               cards: Object.fromEntries(
                 [...p.querySelectorAll("[data-section-key]")].map((c) => {
                   const r = c.getBoundingClientRect();
-                  return [c.dataset.sectionKey, { top: round(r.top - origin), inPanel: round(r.top - box.top), height: round(r.height), version: Number(c.dataset.sectionVersion) }];
+                  return [c.dataset.sectionKey, { top: round(r.top - origin), left: round(r.left), inPanel: round(r.top - box.top), height: round(r.height), version: Number(c.dataset.sectionVersion) }];
                 }),
               ),
             },
@@ -636,7 +651,21 @@ const fit = () =>
         );
       })
       .slice(0, 5)
-      .map((el) => `${el.tagName.toLowerCase()}.${[...el.classList].join(".")} right ${Math.round(el.getBoundingClientRect().right)}`);
+      // Which node, where it is on Home, and why it is wide: its box, its content's width, and its ancestors' widths.
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        const named = (e) => `${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ""}${e.classList.length ? `.${[...e.classList].join(".")}` : ""}`;
+        const ancestors = [];
+        for (let e = el.parentElement; e && e !== view && ancestors.length < 4; e = e.parentElement)
+          ancestors.push(`${named(e)} ${Math.round(e.getBoundingClientRect().width)}px${getComputedStyle(e).display === "flex" ? " flex" : ""}`);
+        return {
+          node: named(el),
+          in: el.closest("[data-section-key]")?.dataset.sectionKey ?? el.closest("section[aria-label]")?.getAttribute("aria-label") ?? null,
+          left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width),
+          scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, minWidth: getComputedStyle(el).minWidth, flex: getComputedStyle(el).flex,
+          ancestors,
+        };
+      });
     return {
       width: innerWidth,
       pageOverflow: document.documentElement.scrollWidth > innerWidth,
@@ -687,8 +716,9 @@ try {
     };
     if (!localStorage.getItem("home-fixture")) {
       localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
-      // The remembered Agent has no project; the remembered scope is one project.
-      localStorage.setItem("yuzuno.selected", JSON.stringify("yuki"));
+      // The remembered Agent has no project; the remembered scope is one project. Both per Workspace,
+      // as the app reads them (T-195: the unscoped yuzuno.selected is no longer read).
+      localStorage.setItem("yuzuno.selected.ws", JSON.stringify("yuki"));
       localStorage.setItem("yuzuno.projectScope.ws", JSON.stringify("project:p1"));
       localStorage.setItem("home-fixture", "seeded");
     }
@@ -728,23 +758,21 @@ try {
     return { needs, order: shown.order };
   });
 
-  await step("2 every Brief component draws (Markdown with code and log, KaTeX, checklist, plan, findings, metric deltas, table, sources; inline, attachment, scatter and bar charts; live refs with states; image, CSV, text tail and referenced attachments) with no console errors; data arriving moves no card", async () => {
+  // A section's body is read on its report page (T-18, #465): its card on Home names it and opens it there.
+  const reportOf = async (pid, key) => {
+    await card(pid, key).locator(".home-report-open").click();
+    await page.locator(".home-report .report-head h1").waitFor();
+    return page.locator(".home-report .report-article");
+  };
+  const closeReport = async () => {
+    if (!(await page.locator(".home-report").count())) return;
+    await page.locator(".home-report .report-back").click();
+    await page.locator(".home-report").waitFor({ state: "detached" });
+  };
+
+  await step("2 every Brief component draws on its report page (Markdown with code and log, KaTeX, checklist, plan, findings, metric deltas, table, sources; inline, attachment, scatter and bar charts; live refs with states; image, CSV, text tail and referenced attachments) with no console errors; data arriving moves no card on Home and no block on the page", async () => {
     await page.setViewportSize({ width: 1440, height: 2400 });
-    await card("p2", "files").locator(".brief-image").scrollIntoViewIfNeeded();
-    const beforeData = await settled();
-    assert.ok(await viewOf("p2").getByText("Loading chart data…").count(), "the attachment chart waits for its data");
-    releaseData();
-    await until("chart data", () => viewOf("p2").getByText("Downsampled from 12,000 points").count());
-    await until("the image", () => card("p2", "files").locator(".brief-image img").evaluate((img) => img.complete && img.naturalWidth === 320));
-    await until("the previews", async () => (await card("p2", "files").locator(".brief-preview table tbody tr").count()) === 20 && (await card("p2", "files").locator(".brief-tail").count()) === 1);
-    const afterData = await settled();
     const problems = [];
-    for (const pid of ["p1", "p2"]) {
-      const keys = Object.keys(beforeData.panels[pid].cards);
-      const shifts = [...moved(beforeData.panels[pid].cards, afterData.panels[pid].cards, keys), ...moved(beforeData.panels[pid].cards, afterData.panels[pid].cards, keys, "height").map((m) => ({ ...m, height: true }))];
-      if (shifts.length)
-        problems.push(`${pid}: data arriving moved or resized cards ${JSON.stringify(shifts)}; heights ${JSON.stringify(Object.fromEntries(keys.map((k) => [k, [beforeData.panels[pid].cards[k].height, afterData.panels[pid].cards[k].height]])))}`);
-    }
     const expect = async (what, test) => {
       try {
         await test();
@@ -752,63 +780,122 @@ try {
         problems.push(`${what}: ${String(error.message).split("\n")[0]}`);
       }
     };
-    await expect("code block", async () => assert.match(await build.locator(".brief-markdown pre code").first().innerText(), /fn main\(\)/));
-    await expect("log excerpt", async () => assert.match(await build.locator(".brief-markdown pre code").nth(1).innerText(), /412 passed/));
-    await expect("blockquote", async () => assert.equal(await build.locator(".brief-markdown blockquote").count(), 1));
-    await expect("KaTeX", async () => assert.equal(await build.locator(".brief-math.is-display .katex-display .katex").count(), 1));
-    await expect("KaTeX errors", async () => assert.equal(await page.locator(".home-view .katex-error").count(), 0));
-    await expect("group", async () => assert.equal(await build.locator(".brief-group > h4").innerText(), "Checks"));
-    await expect("checklist", async () => assert.match(await build.locator('.brief-list[aria-label="Release checklist"] header').innerText(), /1 of 3 done/));
-    await expect("plan", async () => assert.deepEqual(await build.locator('.brief-list[aria-label="Plan"] .brief-chip').allInnerTexts(), ["Done", "Doing", "To do", "Blocked"]));
-    await expect("findings", async () => assert.deepEqual(await build.locator(".brief-findings .brief-chip").evaluateAll((els) => els.map((e) => e.dataset.severity)), ["high", "medium", "info"]));
-    await expect("finding link", async () => assert.equal(await build.locator('.brief-findings a[href="https://github.com/example/yuzuno-next/pull/71"]').count(), 1));
-    await expect("metric deltas", async () =>
-      assert.deepEqual(
-        await build.locator(".brief-metrics > div").evaluateAll((items) => items.map((i) => i.querySelector(".brief-delta")?.textContent.replace(/\s*since the previous version/, "").trim() ?? null)),
-        ["+0.02", "−33 s", "±0 MB", "Previously red"],
-      ));
-    await expect("table", async () => assert.equal(await build.locator(".result-table-section tbody tr").count(), 3));
-    await expect("sources", async () => assert.equal(await build.locator(".result-source-list a, .result-source-list button").count(), 1));
+    const beforeData = await settled();
+    // The attachment chart, on its page: it waits for its data, then draws, and nothing on the page moves.
+    const blocks = () => page.locator(".home-report .report-main > .report-block").evaluateAll((els) =>
+      els.map((el) => { const r = el.getBoundingClientRect(); return [el.id, Math.round(r.top), Math.round(r.height)]; }));
+    let results;
+    try {
+      results = await reportOf("p2", "results");
+      await expect("the attachment chart waits for its data", async () => assert.ok(await results.getByText("Loading chart data…").count()));
+      const waiting = await blocks();
+      releaseData();
+      await until("chart data", () => results.getByText("Downsampled from 12,000 points").count());
+      await expect("data arriving moves no block on the page", async () => assert.deepEqual(await blocks(), waiting));
+      await expect("charts", async () => {
+        assert.equal(await results.locator(".brief-chart").count(), 4);
+        assert.equal(await results.locator(".brief-chart .recharts-surface").count(), 4);
+      });
+      await expect("inline line chart", async () => assert.equal(await results.locator('.brief-chart[aria-label="Validation accuracy"] .recharts-line').count(), 2));
+      await expect("attachment line chart", async () => {
+        assert.equal(await results.locator('.brief-chart[aria-label="Training loss (from curve.csv)"] .recharts-line').count(), 2);
+        const foot = results.locator('.brief-chart[aria-label="Training loss (from curve.csv)"] .brief-chart-foot');
+        assert.match(await foot.innerText(), /Data: curve\.csv · snapshot \S/);
+        assert.equal(await foot.locator(".brief-chart-points").innerText(), "Downsampled from 12,000 points");
+      });
+      await expect("scatter", async () => assert.equal(await results.locator('.brief-chart[aria-label="Size vs. score"] .recharts-scatter-symbol').count(), 6));
+      await expect("bars", async () => assert.equal(await results.locator('.brief-chart[aria-label="Wall time per stage"] .recharts-bar-rectangle').count(), 4));
+      await expect("no failed part (results)", async () => assert.equal(await results.locator(".result-part-error").count(), 0));
+      await shot("report-p2-results.png", results);
+    } finally {
+      releaseData();
+      await closeReport();
+    }
+    const afterData = await settled();
+    for (const pid of ["p1", "p2"]) {
+      const keys = Object.keys(beforeData.panels[pid].cards);
+      const shifts = [...moved(beforeData.panels[pid].cards, afterData.panels[pid].cards, keys), ...moved(beforeData.panels[pid].cards, afterData.panels[pid].cards, keys, "height").map((m) => ({ ...m, height: true }))];
+      if (shifts.length)
+        problems.push(`${pid}: data arriving moved or resized cards ${JSON.stringify(shifts)}; heights ${JSON.stringify(Object.fromEntries(keys.map((k) => [k, [beforeData.panels[pid].cards[k].height, afterData.panels[pid].cards[k].height]])))}`);
+    }
+    // The build report: Markdown, maths, checklist, plan, findings, metrics, table, sources, state tints.
+    try {
+      const build = await reportOf("p1", "build");
+      await expect("code block", async () => assert.match(await build.locator(".brief-markdown pre code").first().innerText(), /fn main\(\)/));
+      await expect("log excerpt", async () => assert.match(await build.locator(".brief-markdown pre code").nth(1).innerText(), /412 passed/));
+      await expect("blockquote", async () => assert.equal(await build.locator(".brief-markdown blockquote").count(), 1));
+      await expect("KaTeX", async () => assert.equal(await build.locator(".brief-math.is-display .katex-display .katex").count(), 1));
+      await expect("KaTeX errors", async () => assert.equal(await page.locator(".home-report .katex-error").count(), 0));
+      await expect("group", async () => assert.equal(await build.locator(".brief-group > h4").innerText(), "Checks"));
+      await expect("checklist", async () => assert.match(await build.locator('.brief-list[aria-label="Release checklist"] header').innerText(), /1 of 3 done/));
+      await expect("plan", async () => assert.deepEqual(await build.locator('.brief-list[aria-label="Plan"] .brief-chip').allInnerTexts(), ["Done", "Doing", "To do", "Blocked"]));
+      await expect("findings", async () => assert.deepEqual(await build.locator(".brief-findings .brief-chip").evaluateAll((els) => els.map((e) => e.dataset.severity)), ["high", "medium", "info"]));
+      await expect("finding link", async () => assert.equal(await build.locator('.brief-findings a[href="https://github.com/example/yuzuno-next/pull/71"]').count(), 1));
+      await expect("metric deltas", async () =>
+        assert.deepEqual(
+          await build.locator(".brief-metrics > div").evaluateAll((items) => items.map((i) => i.querySelector(".brief-delta")?.textContent.replace(/\s*since the previous version/, "").trim() ?? null)),
+          ["+0.02", "−33 s", "±0 MB", "Previously red"],
+        ));
+      await expect("table", async () => assert.equal(await build.locator(".result-table-section tbody tr").count(), 3));
+      await expect("sources", async () => assert.equal(await build.locator(".result-source-list a, .result-source-list button").count(), 1));
+      await expect("no failed part (build)", async () => assert.equal(await build.locator(".result-part-error").count(), 0));
+      // A state chip and an attention reference are tinted by their state
+      // colour in the default palette, as the To do chip is by its own.
+      await expect("state tints", async () => {
+        const tints = await build.locator(".brief-chip").evaluateAll((chips) =>
+          chips.map((chip) => {
+            const s = getComputedStyle(chip);
+            return [chip.dataset.state || chip.dataset.severity, s.borderTopStyle, s.backgroundColor];
+          }),
+        );
+        const flat = tints.filter(([, border, background]) => border === "none" || background === "rgba(0, 0, 0, 0)");
+        assert.deepEqual(flat, [], `chips without their tint: ${JSON.stringify(tints)}`);
+      });
+      await shot("report-p1-build.png", build);
+    } finally {
+      await closeReport();
+    }
     await expect("sub-topic", async () => {
       assert.equal(await card("p1", "build/review").locator("xpath=..").getAttribute("class"), "home-subs");
       assert.match(await card("p1", "build/review").locator(".home-owner").innerText(), /^by Kumo$/);
     });
-    const refs = card("p1", "refs");
-    await expect("live refs", async () =>
-      assert.deepEqual(
-        await refs.locator(".brief-ref").evaluateAll((els) => els.map((e) => [e.dataset.kind, e.dataset.tone, e.querySelector(".brief-ref-state")?.textContent || null])),
-        [["task", "active", "doing"], ["pr", "neutral", "open"], ["ci", "attention", "failed"], ["job", "active", "running"], ["review", "ok", "passed"], ["agent", "neutral", "idle"], ["machine", "ok", "reachable"], ["task", "missing", "not found"]],
-      ));
-    await expect("PR link", async () => assert.equal(await refs.locator('a.brief-ref[href="https://github.com/example/yuzuno-next/pull/71"]').count(), 1));
-    await expect("status time", async () => assert.match(await refs.locator(".home-section-time").innerText(), /Data as of .*Next update in (19|20) min/s));
-    const results = card("p2", "results");
-    await expect("charts", async () => {
-      assert.equal(await results.locator(".brief-chart").count(), 4);
-      assert.equal(await results.locator(".brief-chart .recharts-surface").count(), 4);
-    });
-    await expect("inline line chart", async () => assert.equal(await results.locator('.brief-chart[aria-label="Validation accuracy"] .recharts-line').count(), 2));
-    await expect("attachment line chart", async () => {
-      assert.equal(await results.locator('.brief-chart[aria-label="Training loss (from curve.csv)"] .recharts-line').count(), 2);
-      const foot = results.locator('.brief-chart[aria-label="Training loss (from curve.csv)"] .brief-chart-foot');
-      assert.match(await foot.innerText(), /Data: curve\.csv · snapshot \S/);
-      assert.equal(await foot.locator(".brief-chart-points").innerText(), "Downsampled from 12,000 points");
-    });
-    await expect("scatter", async () => assert.equal(await results.locator('.brief-chart[aria-label="Size vs. score"] .recharts-scatter-symbol').count(), 6));
-    await expect("bars", async () => assert.equal(await results.locator('.brief-chart[aria-label="Wall time per stage"] .recharts-bar-rectangle').count(), 4));
-    const files = card("p2", "files");
-    await expect("CSV preview", async () => assert.match(await files.locator('.brief-attachment[data-kind="data"]').first().locator(".brief-preview small").innerText(), /First 20 rows/));
-    await expect("text tail", async () => {
-      assert.match(await files.locator(".brief-tail").innerText(), /line 300$/);
-      assert.match(await files.locator('.brief-attachment[data-kind="text"] .brief-preview small').innerText(), /Last 200 lines/);
-      assert.ok(await files.locator(".brief-tail").evaluate((el) => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2), "the tail starts at its end");
-    });
-    await expect("referenced file", async () => {
-      const referenced = files.locator(".brief-attachment").nth(3);
-      assert.equal(await referenced.locator('.brief-chip[data-state="changed"]').innerText(), "May have changed");
-      assert.equal(await referenced.locator(".brief-path").getAttribute("title"), "/data/runs/exp-12/checkpoints/epoch-40.safetensors");
-      assert.match(await referenced.innerText(), /Referenced/);
-      assert.equal(await referenced.locator("img, .brief-preview").count(), 0, "a referenced file is never previewed");
-    });
+    // The live references, and the status's time, on its page.
+    try {
+      const refs = await reportOf("p1", "refs");
+      await expect("live refs", async () =>
+        assert.deepEqual(
+          await refs.locator(".brief-ref").evaluateAll((els) => els.map((e) => [e.dataset.kind, e.dataset.tone, e.querySelector(".brief-ref-state")?.textContent || null])),
+          [["task", "active", "doing"], ["pr", "neutral", "open"], ["ci", "attention", "failed"], ["job", "active", "running"], ["review", "ok", "passed"], ["agent", "neutral", "idle"], ["machine", "ok", "reachable"], ["task", "missing", "not found"]],
+        ));
+      await expect("PR link", async () => assert.equal(await refs.locator('a.brief-ref[href="https://github.com/example/yuzuno-next/pull/71"]').count(), 1));
+      await expect("status time", async () => assert.match(await page.locator(".home-report .report-meta").innerText(), /Data as of .*Next update in (19|20) min/s));
+      await shot("report-p1-refs.png", refs);
+    } finally {
+      await closeReport();
+    }
+    // The files: an image, a CSV and a text tail previewed, a referenced file never.
+    try {
+      const files = await reportOf("p2", "files");
+      await until("the image", () => files.locator(".brief-image img").evaluate((img) => img.complete && img.naturalWidth === 320));
+      await until("the previews", async () => (await files.locator(".brief-preview table tbody tr").count()) === 20 && (await files.locator(".brief-tail").count()) === 1);
+      await expect("CSV preview", async () => assert.match(await files.locator('.brief-attachment[data-kind="data"]').first().locator(".brief-preview small").innerText(), /First 20 rows/));
+      await expect("text tail", async () => {
+        assert.match(await files.locator(".brief-tail").innerText(), /line 300$/);
+        assert.match(await files.locator('.brief-attachment[data-kind="text"] .brief-preview small').innerText(), /Last 200 lines/);
+        assert.ok(await files.locator(".brief-tail").evaluate((el) => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2), "the tail starts at its end");
+      });
+      await expect("referenced file", async () => {
+        const referenced = files.locator(".brief-attachment").nth(3);
+        assert.equal(await referenced.locator('.brief-chip[data-state="changed"]').innerText(), "May have changed");
+        assert.equal(await referenced.locator(".brief-path").getAttribute("title"), "/data/runs/exp-12/checkpoints/epoch-40.safetensors");
+        assert.match(await referenced.innerText(), /Referenced/);
+        assert.equal(await referenced.locator("img, .brief-preview").count(), 0, "a referenced file is never previewed");
+      });
+      await expect("no failed part (files)", async () => assert.equal(await files.locator(".result-part-error").count(), 0));
+      await shot("report-p2-files.png", files);
+    } finally {
+      await closeReport();
+    }
     await expect("stale status", async () => {
       assert.match(await card("p2", "queue").getAttribute("class"), /\bis-stale\b/);
       assert.match(await card("p2", "queue").locator(".home-stale").innerText(), /older than its 1 h validity/);
@@ -826,23 +913,17 @@ try {
     await expect("opening team details writes nothing", async () => assert.deepEqual(writes.slice(writesBeforeDetails), []));
     // Folded again, as the rest of this check expects Home.
     for (const pid of ["p1", "p2"]) await teamDetails(pid).locator(":scope > summary").click();
+    // One line per repository (T-18): its name and latest state; Repository details open its activity lists,
+    // where the open PR is, and close again.
     await expect("repositories", async () => {
-      await until("repository activity", () => p1.locator(".home-repos .repo-activity").getByText("Home V1 slice 1").count());
-      assert.match(await p1.locator(".home-repos").innerText(), /example\/yuzuno-next/);
+      const repos = p1.locator(".home-repos");
+      await until("the repository's line", () => repos.getByText("example/yuzuno-next").count());
+      await repos.locator(".home-repos-details").click();
+      await until("repository activity", () => repos.locator(".repo-activity").getByText("Home V1 slice 1").count());
+      await repos.locator(".home-repos-details").click();
+      assert.equal(await repos.locator(".home-repos-details").getAttribute("aria-expanded"), "false");
     });
-    await expect("no failed part", async () => assert.equal(await page.locator(".home-view .result-part-error").count(), 0));
-    // A state chip and an attention reference are tinted by their state
-    // colour in the default palette, as the To do chip is by its own.
-    await expect("state tints", async () => {
-      const tints = await build.locator(".brief-chip").evaluateAll((chips) =>
-        chips.map((chip) => {
-          const s = getComputedStyle(chip);
-          return [chip.dataset.state || chip.dataset.severity, s.borderTopStyle, s.backgroundColor];
-        }),
-      );
-      const flat = tints.filter(([, border, background]) => border === "none" || background === "rgba(0, 0, 0, 0)");
-      assert.deepEqual(flat, [], `chips without their tint: ${JSON.stringify(tints)}`);
-    });
+    await expect("no failed part on Home", async () => assert.equal(await page.locator(".home-view .result-part-error").count(), 0));
     for (const [pid, key] of [["p1", "release"], ["p1", "build"], ["p1", "naming"], ["p1", "refs"], ["p2", "results"], ["p2", "files"], ["p2", "queue"]])
       await shot(`section-${pid}-${key.replace("/", "-")}.png`, card(pid, key));
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -850,7 +931,10 @@ try {
     assert.deepEqual(report.errors, [], "no console errors while drawing");
   });
 
-  await step("8 Machines: a null metric shows unknown (no meter segment), the GPU reads as use and memory bars with attribution unknown in its tip, a Job names its project and Agent", async () => {
+  await step("8 Machines: a null metric shows unknown (no meter segment), the GPU reads as use and memory bars with attribution unknown in its tip, a Job names its project and Agent in the Jobs line's tip", async () => {
+    // Step 1 lets the first reading through; again here, so this step reads Machines whatever step 1 did.
+    releaseMachine();
+    await page.locator(".home-machines .home-machine:not([aria-busy])").waitFor();
     const cpu = page.locator(".home-machines .home-load").first();
     assert.deepEqual(
       await cpu.locator(".home-fact").evaluateAll((els) => els.map((e) => [e.dataset.fact, e.querySelector("strong").textContent, e.classList.contains("is-unknown")])),
@@ -862,14 +946,14 @@ try {
     assert.match(await gpu.textContent(), /NVIDIA GeForce RTX 5090.*Use 63%.*Memory/is);
     assert.equal(await gpu.locator(".home-meter").count(), 2, "a bar for use and one for memory");
     assert.match(await gpu.getAttribute("title"), /other programs included; not split by Agent or Job/);
-    const job = page.locator(".home-machine-jobs li");
-    assert.match(await job.textContent(), /cargo test -j2.*Yuzuno app · Mori/);
-    assert.equal(await job.locator('[data-fact="CPU"] strong').textContent(), "unknown");
-    assert.equal(await job.locator('[data-fact="Memory"] strong').textContent(), "2.0 GiB");
+    // The Jobs here are one line (T-18): how many and the first; each Job's project and Agent in its tip.
+    const job = page.locator(".home-machine-jobs .home-machine-job-line");
+    assert.match(await job.textContent(), /1 running\s*cargo test -j2/);
+    assert.match(await job.getAttribute("title"), /cargo test -j2 · Yuzuno app · Mori/);
   });
 
   const looks = {};
-  await step("9 light and dark at 1440 and 390 px: no horizontal overflow, headers readable (contrast ≥ 4.5, ≥ 11 px, not cut), the needs-you bar inside the viewport", async () => {
+  await step("9 light and dark at 1440 and 390 px: no horizontal overflow, headers readable (contrast ≥ 4.5, ≥ 11 px, not cut), the needs-you bar inside the viewport, its list scrolling inside it to its last item", async () => {
     const problems = [];
     for (const theme of ["light", "dark"]) {
       await setTheme(theme);
@@ -880,7 +964,26 @@ try {
         await sleep(250);
         const shown = await fit();
         const name = `${theme}-${width}`;
-        looks[name] = { ...shown, sides: await sideTabs() };
+        // Needs you keeps its items in its row: the list inside Home, and scrolled to its end, its last item
+        // whole inside the list (it scrolls, rather than widening Home, where they don't all fit).
+        const needsRow = await page.evaluate(() => {
+          const view = document.querySelector(".home-view").getBoundingClientRect();
+          const list = document.querySelector(".home-needs-list");
+          const box = (r) => ({ left: Math.round(r.left), right: Math.round(r.right) });
+          const before = { list: box(list.getBoundingClientRect()), scrollWidth: list.scrollWidth, clientWidth: list.clientWidth };
+          list.scrollLeft = list.scrollWidth;
+          const listBox = list.getBoundingClientRect();
+          const last = list.lastElementChild.getBoundingClientRect();
+          const end = { scrollLeft: Math.round(list.scrollLeft), last: box(last) };
+          list.scrollLeft = 0;
+          return {
+            ...before, ...end, scrolls: before.scrollWidth > before.clientWidth + 1,
+            inside: listBox.left >= view.left - 1 && listBox.right <= view.right + 1,
+            lastReached: last.left >= listBox.left - 1 && last.right <= listBox.right + 1,
+          };
+        });
+        if (!needsRow.inside || !needsRow.lastReached) problems.push(`${name}: Needs you's row ${JSON.stringify(needsRow)}`);
+        looks[name] = { ...shown, sides: await sideTabs(), needsRow };
         if (shown.pageOverflow || shown.viewOverflow || shown.wide.length) problems.push(`${name}: horizontal overflow ${JSON.stringify({ page: shown.pageOverflow, view: shown.viewOverflow, wide: shown.wide })}`);
         if (!shown.needsInside) problems.push(`${name}: needs-you bar outside the viewport`);
         const unreadable = shown.headers.filter((h) => h.contrast < 4.5 || h.size < 11 || h.clipped || h.outside);
@@ -898,7 +1001,7 @@ try {
     await ensureHome();
     await scrollHomeTo(null);
     assert.deepEqual(problems, []);
-    return Object.fromEntries(Object.entries(looks).map(([k, v]) => [k, { headers: v.headers.length, minContrast: Math.min(...v.headers.map((h) => h.contrast)), view: v.viewBox }]));
+    return Object.fromEntries(Object.entries(looks).map(([k, v]) => [k, { headers: v.headers.length, minContrast: Math.min(...v.headers.map((h) => h.contrast)), view: v.viewBox, needsRow: v.needsRow }]));
   });
 
   await step("10 no element in Home has a coloured left border wider than 2 px; the main cards' borders are even on both sides", async () => {
@@ -941,7 +1044,11 @@ try {
     await until("version 4", async () => (await build.getAttribute("data-section-version")) === "4");
     assert.equal(await build.locator(".home-changed").innerText(), "Updated");
     assert.match(await build.getAttribute("class"), /\bis-changed\b/);
-    const marks = await build.locator(".brief-change").evaluateAll((els) => els.map((el) => ({
+    // The changed blocks are marked where the body is read: its report page (T-18).
+    const opened = page.locator(".home-report");
+    await build.locator(".home-report-open").click();
+    await opened.locator(".report-head h1").waitFor();
+    const marks = await opened.locator(".report-main .brief-change").evaluateAll((els) => els.map((el) => ({
       change: el.dataset.change,
       mark: el.querySelector(":scope > .brief-change-mark")?.textContent,
       block: [...(el.querySelector(":scope > :not(.brief-change-mark)")?.classList ?? [])].find((name) => name.startsWith("brief-")),
@@ -952,7 +1059,9 @@ try {
       ["updated", "Updated", "brief-metrics"],
     ]);
     assert.match(marks[0].text, /lockfile/);
-    assert.equal(writesTo(/\/brief\/seen$/).length, 1, "nothing marked by itself");
+    await opened.locator(".report-back").click();
+    await opened.waitFor({ state: "hidden" });
+    assert.equal(writesTo(/\/brief\/seen$/).length, 1, "nothing marked by itself, reading the page included");
     return { body: write.body, marks };
   });
 
@@ -1019,7 +1128,9 @@ try {
     const after = await settled();
     const keys = Object.keys(before.panels.p1.cards);
     assert.deepEqual(moved(before.panels.p1.cards, after.panels.p1.cards, keys), [], "an appended section moved the cards before it");
-    assert.ok(after.panels.p1.cards.deploy.top > Math.max(...keys.map((k) => after.panels.p1.cards[k].top)), "appended at the end");
+    // The deck reads row by row (T-18): the new card comes after every other one.
+    const deploy = after.panels.p1.cards.deploy;
+    assert.ok(keys.every((k) => { const c = after.panels.p1.cards[k]; return deploy.top > c.top + 1 || (Math.abs(deploy.top - c.top) <= 1 && deploy.left > c.left); }), "appended at the end");
     // A shorter new version keeps its card's height: the cards below stay.
     const build = sectionByKey("p1", "build");
     const buildVersion = build.version + 1;

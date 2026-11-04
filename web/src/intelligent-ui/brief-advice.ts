@@ -47,6 +47,13 @@ export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
   const at = (key: string, tail = "") => `body.elements.${key}${tail}`;
   const advice: BriefAdvice[] = [];
 
+  // A summary whose author named no size: Home can only guess its card's (T-18, Lead 2473).
+  const root = section.body.elements[section.body.root] as unknown as Block | undefined;
+  const named = root?.props?.summary as { size?: unknown } | undefined;
+  if (named && typeof named === "object" && named.size === undefined)
+    advice.push(hint("summary_size_missing", at(section.body.root, ".props.summary"),
+      `The summary names no size, so Home guesses its card's size from its figure. Name the room it takes: "small" (one column), "wide" (two columns, the figure beside the text) or "large" (two columns, two rows), for what the summary shows.`));
+
   // Long Markdown: each long block; otherwise, when all of it is long, the longest.
   const markdown = blocks.filter(([, block]) => block.type === "Markdown")
     .map(([key, block]) => [key, adviceChars(String(block.props.text ?? ""))] as const);

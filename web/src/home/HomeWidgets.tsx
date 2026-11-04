@@ -9,13 +9,26 @@ import { ArrowDown, ArrowUp, Eye, EyeOff, LayoutGrid, PinOff, SlidersHorizontal 
 import { Modal } from "../components";
 import { useStrings } from "../i18n";
 import { homeText } from "./home-text";
+import type { CardSize } from "./card-preview";
+import { SizeChoice } from "./SizeChoice";
+import { cardText } from "./card-text";
 import type { WidgetLayout } from "./widget-layout";
+
+/** A pinned card's size on the widget column: the user's, else its Agent's (`own`). */
+export type WidgetSize = { shown: CardSize; own: CardSize; chosen: CardSize | null; onChange: (size: CardSize | null) => void };
+
+/** "Small 1×1" as one unit: a long line wraps before it, never inside it. */
+const Unit = ({ children }: { children: ReactNode }) => <span className="home-size-unit">{children}</span>;
 
 export type HomeWidget = {
   id: string;
   name: string;
   /** Drawn only while the widget is on show, so a hidden one reads nothing. */
   body: ReactNode;
+  /** A pinned card with a summary has one (T-18, Dev 7's v19). */
+  size?: WidgetSize;
+  /** The whole row at its content's height: Machines, built in; a pin with no summary, shown in full. */
+  full?: "builtin" | "legacy";
   /** A pinned section can also be unpinned: hidden, it stays pinned to show again. */
   onUnpin?: () => void;
 };
@@ -35,14 +48,18 @@ export function HomeWidgets({
   widgets,
   layout,
   onChange,
+  onResetSizes,
 }: {
   widgets: HomeWidget[];
   /** null until this workspace's layout is read: nothing is drawn as arranged. */
   layout: WidgetLayout | null;
   /** Absent where the layout can't be changed (the design preview). */
   onChange?: (next: (current: WidgetLayout) => WidgetLayout) => void;
+  /** Gives every pinned widget back to its Agent's size. */
+  onResetSizes?: () => void;
 }) {
   const t = useStrings(homeText);
+  const c = useStrings(cardText);
   const [organizing, setOrganizing] = useState(false);
   const { shown, hidden } = arrangeWidgets(widgets, layout ?? { order: [], hidden: [], pins: [] });
   function change(order: HomeWidget[], hiddenIds: string[]) {
@@ -98,7 +115,12 @@ export function HomeWidgets({
       {layout && shown.length > 0 && (
         <div className="home-widget-grid">
           {shown.map((widget) => (
-            <div key={widget.id} className="home-widget-slot" data-widget={widget.id}>
+            <div
+              key={widget.id}
+              className={`home-widget-slot${widget.size ? ` size-${widget.size.shown}` : ""}${widget.full ? " is-full" : ""}`}
+              data-widget={widget.id}
+              data-widget-size={widget.size?.shown}
+            >
               {widget.body}
             </div>
           ))}
@@ -114,11 +136,38 @@ export function HomeWidgets({
           className="home-organize"
         >
           <h3>{t.onShow}</h3>
+          <p className="home-note home-widget-sizes-note">{c.widgetSizesNote}</p>
           {shown.length ? (
             <ol className="home-organize-list">
               {shown.map((widget, index) => (
-                <li key={widget.id} data-widget={widget.id}>
-                  <span>{widget.name}</span>
+                <li key={widget.id} data-widget={widget.id} className="home-widget-row">
+                  <span className="home-widget-name">{widget.name}</span>
+                  {/* Where a widget's size comes from (Dev 7's v19); only a pinned card with a summary has one to choose. */}
+                  {widget.size ? (
+                    <>
+                      <small className="home-size-source">
+                        {widget.size.chosen ? (
+                          <>
+                            {c.youSetPrefix} <Unit>{c.sizeLabel(widget.size.shown)}</Unit> · {c.cardStays} <Unit>{c.sizeLabel(widget.size.own)}</Unit>
+                          </>
+                        ) : (
+                          <>
+                            {c.followPrefix} <Unit>{c.sizeLabel(widget.size.shown)}</Unit>
+                          </>
+                        )}
+                      </small>
+                      <SizeChoice
+                        name={`size-${widget.id}`}
+                        legend={c.sizeOf(widget.name)}
+                        value={widget.size.chosen}
+                        own={widget.size.own}
+                        variant="row"
+                        onChange={widget.size.onChange}
+                      />
+                    </>
+                  ) : (
+                    widget.full && <small className="home-size-source is-note">{widget.full === "builtin" ? c.builtIn : c.shownInFull}</small>
+                  )}
                   <span className="home-organize-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
                     <button
                       type="button"
@@ -178,6 +227,19 @@ export function HomeWidgets({
             <p className="home-note">{t.noneHidden}</p>
           )}
           <p className="home-note">{t.addFromProject}</p>
+          {onResetSizes && (
+            <div className="home-size-foot">
+              <button
+                type="button"
+                className="quiet-button home-size-reset"
+                disabled={!layout?.pins.some((pin) => pin.size)}
+                onClick={onResetSizes}
+              >
+                {c.resetWidgetSizes}
+              </button>
+              <p className="home-note">{c.widgetSizesSaved}</p>
+            </div>
+          )}
           <div className="modal-actions">
             <button type="button" className="primary-button" onClick={() => setOrganizing(false)}>
               {t.reorderDone}
