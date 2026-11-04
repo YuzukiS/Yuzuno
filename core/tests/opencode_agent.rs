@@ -39,7 +39,7 @@ struct Lab {
 
 fn agent(cwd: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
-        "id":ID, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
+        "id":ID, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode", "opencodeMajor":"2",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
@@ -158,6 +158,35 @@ fn journal(lab: &Lab) -> Vec<String> {
     let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
     let mut query = db.prepare("SELECT kind FROM journal WHERE agent_id=?1 ORDER BY seq").unwrap();
     query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect()
+}
+
+/// An OpenCode Agent made with 1.19.3, the release Core pinned before T-32
+/// (a record without `opencodeMajor`), is kept to read: it is never started,
+/// so that 2.x never opens, and so migrates, its database; asking it for
+/// anything says why, and its conversation stays in Core's record.
+#[tokio::test]
+async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let mut old = agent(&work.to_string_lossy());
+    old.agent.opencode_major = None;
+    old.agent.opencode_session_id = Some("ses_made_with_1x".into());
+    old.turns = vec![json!({"id": "msg_1", "status": "completed", "items": [
+        {"id": "u1", "type": "userMessage", "content": [{"type": "text", "text": "Kept"}]},
+        {"id": "a1", "type": "agentMessage", "text": "Read."}]})];
+    ws.store.insert(&old).unwrap();
+    let why = "是用 OpenCode 1.19.3 创建的，只能阅读";
+    let reconnected = ws.reconnect(ID).await.err().expect("not reconnected").to_string();
+    assert!(reconnected.contains(why), "{reconnected}");
+    let sent = ws.send(ID, "next".into()).await.err().expect("not sent").to_string();
+    assert!(sent.contains(why), "{sent}");
+    assert!(!dir.path().join("data/opencode").join(ID).join("start.json").exists(), "OpenCode never started for it");
+    let kept = ws.store.detail(ID).unwrap();
+    assert_eq!(kept.turns.len(), 1, "its conversation stays readable");
+    assert_eq!(kept.agent.opencode_session_id.as_deref(), Some("ses_made_with_1x"));
 }
 
 #[tokio::test]
@@ -1046,7 +1075,7 @@ async fn closing_or_stopping_core_ends_what_opencodes_tools_run_and_only_that_ag
     lab.ws.close_agent(ID).await.unwrap();
     assert!(ends(pid(&lab.seen(), "tool")).await, "the tool's process outlived the close");
     assert!(ends(pid(&lab.seen(), "pid")).await);
-    assert_eq!(lab.posts("/global/dispose").len(), 1);
+    assert!(lab.posts("/global/dispose").is_empty(), "2.x has no dispose: its teardown after SIGTERM ended the tool");
     // Long enough for a reaction to the stream's end to be recorded.
     tokio::time::sleep(Duration::from_millis(800)).await;
     let after = kinds(ID);

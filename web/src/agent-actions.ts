@@ -56,6 +56,12 @@ export interface AgentActionHandlers {
   copyLink?: (id: string) => void;
 }
 
+/** An OpenCode Agent made with OpenCode 1.19.3 (T-32): kept to read, never
+ * started again, since 2.x would migrate its database in place. */
+export function openCodeArchived(agent: Agent): boolean {
+  return agent.harness === "opencode" && agent.opencodeMajor !== "2";
+}
+
 /**
  * How reconnecting is offered: "check" where the last result is unknown,
  * "reconnect" where the session is simply not connected, "connecting" while
@@ -65,7 +71,7 @@ export interface AgentActionHandlers {
  * doing afterwards is what Core reports.
  */
 export function reconnectOffer(agent: Agent): "reconnect" | "check" | "connecting" | null {
-  if (agent.closedAt) return null;
+  if (agent.closedAt || openCodeArchived(agent)) return null;
   if (!agent.remote && !nativeSession(agent)) return null;
   if (agent.connectionState === "connecting") return "connecting";
   if (agent.status === "uncertain" || agent.connectionState === "unconfirmed") return "check";

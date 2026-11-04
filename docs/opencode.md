@@ -1,11 +1,22 @@
 # OpenCode Agents (experimental)
 
-Core can run an Agent on [OpenCode](https://github.com/anomalyco/opencode)
-1.19.3, talking to OpenCode's own server (`opencode serve`) on loopback. This
-is off by default. A Core started with `YUZUNO_EXPERIMENTAL_OPENCODE=1` offers
+Core can run an Agent on [OpenCode](https://github.com/anomalyco/opencode),
+talking to OpenCode's own server (`opencode serve`) on loopback. This is off by
+default. A Core started with `YUZUNO_EXPERIMENTAL_OPENCODE=1` offers
 **OpenCode** when creating an Agent; without it, Core refuses the harness and
 the UI does not offer it. The switch decides only creation: an existing
 OpenCode Agent keeps working either way.
+
+**Moving to OpenCode 2.x (T-32).** Core is moving from OpenCode 1.19.3 to 2.x,
+one part of the protocol at a time. It now starts, checks and stops OpenCode
+as 2.x does, and takes any 2.x (checked against 2.2.5); an OpenCode that is not
+2.x is refused with the version it says it is. The rest of the protocol is
+still 1.19.3's until the following parts land, so an OpenCode Agent does not
+yet work end to end.
+
+An OpenCode Agent made before this change was made with 1.19.3. It is kept to
+read: its conversation stays in Yuzuno, and it is never started again, because
+2.x would migrate its database in place. To go on, create a new OpenCode Agent.
 
 ## What it does
 

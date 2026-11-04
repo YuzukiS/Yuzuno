@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CircleAlert, CircleStop, LoaderCircle, RotateCw } from "lucide-react";
 import { errorText, reconnectAgent } from "./api";
 import { nativeSession } from "./machine-checks";
+import { openCodeArchived } from "./agent-actions";
 import { langTag, strings, useLanguage } from "./i18n";
 import type { AgentDetail } from "./types";
 import "./recovery.css";
@@ -14,11 +15,13 @@ import "./recovery.css";
  * session is simply not connected, its last Turn ended (T-184). Null when it
  * is connected, there is nothing to reconnect to, or another notice already
  * offers a reconnect (a writer conflict, an unconfirmed message) or the
- * remote controls do.
+ * remote controls do. "archived" for an OpenCode Agent made with 1.19.3
+ * (T-32), which is kept to read and offers no reconnect.
  */
-export function recoveryReason(detail: AgentDetail): "disconnected" | "running" | "uncertain" | "offline" | "collaboration" | "missing" | null {
+export function recoveryReason(detail: AgentDetail): "disconnected" | "running" | "uncertain" | "offline" | "collaboration" | "missing" | "archived" | null {
   const agent = detail.agent;
   if (agent.closedAt) return null;
+  if (openCodeArchived(agent)) return "archived";
   if (agent.disconnectedAt) return "disconnected";
   if (detail.collaboration?.ready === false) return "collaboration";
   if (agent.remote) return null;
@@ -47,6 +50,7 @@ const text = strings({
   unconfirmed: (machine: string | null, harness: string) =>
     `${machine || "Its machine"} didn’t confirm that ${harness} stopped there, so it may still be running; Yuzuno treats it as disconnected.`,
   offline: "This agent’s session isn’t connected. Reconnect to open the same session; nothing is sent.",
+  archived: "This OpenCode agent was made with OpenCode 1.19.3 and is kept to read. Yuzuno now uses OpenCode 2.x, which would change this agent’s saved session in place, so it isn’t started again. To go on, create a new OpenCode agent.",
   collaboration: "The workspace collaboration connection isn’t confirmed. New messages are paused; the current turn and approvals remain available.",
   running: "The last turn was still running when this agent’s connection ended, so its result isn’t confirmed.",
   uncertain: "The previous result isn’t confirmed yet.",
@@ -64,6 +68,7 @@ const text = strings({
     `你${when ? `在 ${when} ` : ""}断开了此 Agent 的连接。${unconfirmed}不会有任何东西再启动它，包括新邮件、消息或自动继续，发给它的消息会等待。重新连接即可打开同一会话，等待的消息随后会送达。`,
   unconfirmed: (machine, harness) => `${machine || "它所在的机器"}没有确认 ${harness} 已在那里停止，因此它可能仍在运行；Yuzuno 将其视为已断开。`,
   offline: "此 Agent 的会话未连接。重新连接即可打开同一会话；不会发送任何内容。",
+  archived: "这个 OpenCode Agent 是用 OpenCode 1.19.3 创建的，只能阅读。Yuzuno 现在使用 OpenCode 2.x，它会就地改写这个 Agent 保存的会话，所以不会再启动它。要继续工作，请新建一个 OpenCode Agent。",
   collaboration: "工作区协作连接尚未确认。新消息已暂停；当前 Turn 和审批仍可使用。",
   running: "此 Agent 的连接结束时，上一个 Turn 仍在运行，因此其结果尚未确认。",
   uncertain: "上一个结果尚未确认。",
@@ -149,6 +154,8 @@ export function RecoveryNotice({
           )
         ) : reason === "offline" ? (
           t.offline
+        ) : reason === "archived" ? (
+          t.archived
         ) : (
           <>
             {reason === "collaboration"
@@ -161,15 +168,17 @@ export function RecoveryNotice({
         )}
         {hasDraft ? t.draftKept : ""}
       </span>
-      <button
-        type="button"
-        className="secondary-button"
-        disabled={disabled || connecting}
-        onClick={() => void reconnect()}
-      >
-        {connecting ? <LoaderCircle size={14} className="spin" /> : <RotateCw size={14} />}
-        {connecting ? t.reconnecting : error ? t.tryAgain : reason === "offline" || reason === "disconnected" ? t.reconnect : t.reconnectCheck}
-      </button>
+      {reason !== "archived" && (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={disabled || connecting}
+          onClick={() => void reconnect()}
+        >
+          {connecting ? <LoaderCircle size={14} className="spin" /> : <RotateCw size={14} />}
+          {connecting ? t.reconnecting : error ? t.tryAgain : reason === "offline" || reason === "disconnected" ? t.reconnect : t.reconnectCheck}
+        </button>
+      )}
       {reason === "missing" && onEndMissing && (
         <button type="button" className="primary-button" disabled={disabled || connecting} onClick={onEndMissing}>
           <CircleStop size={14} />

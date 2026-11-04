@@ -305,7 +305,7 @@ pub fn enabled() -> bool {
 /// starts with OpenCode's own default (its configuration's); its models are
 /// its own OpenCode's (`opencode_agent_catalog`).
 pub fn catalog() -> Value {
-    json!({"models":[],"opencode":{"version":opencode::VERSION}})
+    json!({"models":[],"opencode":{"version":opencode::VERIFIED}})
 }
 
 /// A model as the Agent settings offer it: named `<provider>/<model>`, shown
@@ -437,7 +437,7 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
         let models = c.server.models().await?;
         c.windows(&models);
-        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERSION}}))
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERIFIED}}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -522,6 +522,7 @@ impl Workspace {
             harness: "opencode".into(),
             claude_session_id: None,
             opencode_session_id: None,
+            opencode_major: Some(opencode::MAJOR.into()),
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -603,6 +604,7 @@ impl Workspace {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         crate::model::ensure_not_disconnected(&d.agent)?;
+        crate::model::ensure_opencode_current(&d.agent)?;
         if let Some(c) = self.opencodes.lock().unwrap().get(id).cloned() {
             return Ok(c);
         }
@@ -696,7 +698,7 @@ impl Workspace {
         }
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
-        let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
+        let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":server.version()}));
         let usage = c.clone();
         // Compared as before, since it changes Turns, without returning a copy
         // of the record nobody reads (T-140).
@@ -1756,16 +1758,14 @@ impl Workspace {
     }
 }
 
-/// Lets OpenCode end cleanly when nothing else holds it; else it is only asked
-/// to end what its tools run, and dropping the last holder ends its group.
-/// Either way a refused or unanswered dispose does not stop the stop.
+/// Lets OpenCode end cleanly (`shutdown`) when nothing else holds it; else it
+/// is only signalled to end (2.x tears down, ending what its tools run, as
+/// it would for `shutdown`), and the last holder reaps it.
 async fn stop(server: Arc<Server>) -> Result<()> {
     match Arc::try_unwrap(server) {
         Ok(server) => server.shutdown().await,
         Err(server) => {
-            if let Err(error) = server.dispose().await {
-                eprintln!("OpenCode did not end what its tools run before it was stopped: {error:#}");
-            }
+            server.terminate();
             Ok(())
         }
     }

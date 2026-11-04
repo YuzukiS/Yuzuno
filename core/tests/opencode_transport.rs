@@ -106,11 +106,11 @@ async fn it_listens_on_loopback_behind_its_own_password_and_shutdown_ends_its_pr
     let lab = lab();
     let server = Server::start(&lab.launch).await.unwrap();
     let seen = lab.seen();
-    assert_eq!(seen["argv"], json!(["serve", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false"]));
+    assert_eq!(seen["argv"], json!(["serve", "--hostname", "127.0.0.1", "--port", "0"]), "no --mdns: 2.x ends on a flag it does not know");
     assert_eq!(seen["cwd"], lab.launch.directory.to_str().unwrap());
     assert_eq!(seen["database"], lab.launch.database.to_str().unwrap());
     assert_eq!(seen["pgid"], seen["pid"], "OpenCode leads a process group of its own");
-    assert_eq!(seen["username"], "opencode");
+    assert_eq!(seen["passwordFrom"], "OPENCODE_PASSWORD", "the name 2.x reads first");
     assert!(seen["passwordLength"].as_u64().unwrap() >= 32);
     assert_eq!(seen["passwordInArgv"], false, "the password is in the environment only");
 
@@ -122,9 +122,11 @@ async fn it_listens_on_loopback_behind_its_own_password_and_shutdown_ends_its_pr
     let calls = lab.calls();
     assert_eq!(calls.iter().filter(|c| c["authorized"] == false).count(), 2, "only this test's guesses failed");
     let mine: Vec<_> = calls.iter().filter(|c| c["authorized"] == true).collect();
-    assert_eq!(mine.iter().map(|c| c["path"].as_str().unwrap()).collect::<Vec<_>>(), ["/global/health", "/session"]);
-    assert!(mine.iter().all(|c| c["query"]["directory"] == json!([lab.launch.directory.to_str().unwrap()])),
-        "every request names the Agent's folder");
+    assert_eq!(mine.iter().map(|c| c["path"].as_str().unwrap()).collect::<Vec<_>>(), ["/api/info", "/session"]);
+    assert_eq!(mine[0]["query"], json!({}), "the server's own info names no folder");
+    assert!(mine[1..].iter().all(|c| c["query"]["directory"] == json!([lab.launch.directory.to_str().unwrap()])),
+        "every request of the Agent's names its folder");
+    assert_eq!(server.version(), "2.2.5", "the version it reported");
 
     let (pid, child) = lab.pids();
     server.shutdown().await.unwrap();
@@ -156,7 +158,8 @@ async fn output_that_is_not_utf8_stops_neither_start_nor_the_drain() {
 async fn a_server_elsewhere_of_another_version_or_that_exits_early_is_refused_and_ended() {
     for (switch, value, expected) in [
         ("host", "0.0.0.0", "not on this host's loopback"),
-        ("version", "1.20.0", "OpenCode 1.20.0 is not supported"),
+        ("version", "1.20.0", "OpenCode 1.20.0 is not supported: Yuzuno speaks the server protocol of OpenCode 2.x (checked against 2.2.5)"),
+        ("version", "3.0.0", "OpenCode 3.0.0 is not supported"),
         ("exit", "1", "exited before it was listening"),
     ] {
         let lab = lab();
@@ -173,15 +176,21 @@ async fn a_server_elsewhere_of_another_version_or_that_exits_early_is_refused_an
 /// `--version` names another. A supported one that says nothing adds nothing.
 #[tokio::test]
 async fn a_start_that_fails_says_what_opencode_said_and_which_one_it_is() {
-    // As 2.0.16 refuses `--mdns`: two lines on stderr, the first coloured, then it exits.
+    // One not of 2.x that exits saying why: two lines on stderr, the first coloured.
     let refused = lab();
     refused.switch("exit", "1");
-    refused.switch("exitStderr", "\u{1b}[31mERROR\u{1b}[0m\nUnrecognized flag: --mdns in command opencode serve");
-    refused.switch("versionLine", "opencode v2.0.16");
+    refused.switch("exitStderr", "\u{1b}[31mERROR\u{1b}[0m\nfixture: this OpenCode cannot serve here");
+    refused.switch("versionLine", "1.19.3");
     let error = Server::start(&refused.launch).await.err().expect("not started").to_string();
-    assert_eq!(error, "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.0.16\u{201d}; \
-        Yuzuno speaks the server protocol of OpenCode 1.19.3): ERROR / Unrecognized flag: --mdns in command opencode serve",
+    assert_eq!(error, "OpenCode exited before it was listening (the installed OpenCode says \u{201c}1.19.3\u{201d}; \
+        Yuzuno speaks the server protocol of OpenCode 2.x): ERROR / fixture: this OpenCode cannot serve here",
         "says what it said and which OpenCode it is");
+    // Another 2.x that exits says what it said, and is not called the wrong one.
+    let other = lab();
+    other.switch("exit", "1");
+    other.switch("exitStderr", "fixture: no");
+    other.switch("versionLine", "opencode v2.0.16");
+    assert_eq!(Server::start(&other.launch).await.err().expect("not started").to_string(), "OpenCode exited before it was listening: fixture: no");
     let (pid, child) = refused.pids();
     assert!(ends(pid).await && ends(child).await, "what it started has ended");
 
@@ -190,6 +199,47 @@ async fn a_start_that_fails_says_what_opencode_said_and_which_one_it_is() {
     quiet.switch("exit", "1");
     let error = Server::start(&quiet.launch).await.err().expect("not started").to_string();
     assert_eq!(error, "OpenCode exited before it was listening");
+}
+
+/// Any 2.x is spoken to (T-32: the latest 2.x, not one release), and the
+/// version it reported is kept with the server.
+#[tokio::test]
+async fn any_release_of_2x_is_started_and_its_version_kept() {
+    let lab = lab();
+    lab.switch("version", "2.9.1");
+    let server = Server::start(&lab.launch).await.unwrap();
+    assert_eq!(server.version(), "2.9.1");
+    session(&server).await;
+    server.shutdown().await.unwrap();
+}
+
+/// 2.x answers `/api/info` with 503 while it starts: Core asks again until it
+/// is ready, and only then speaks to it.
+#[tokio::test]
+async fn a_server_still_starting_is_asked_again_until_it_is_ready() {
+    let lab = lab();
+    lab.switch("starting", "1");
+    let server = Server::start(&lab.launch).await.unwrap();
+    let infos = lab.calls().into_iter().filter(|c| c["path"] == "/api/info").count();
+    assert!(infos >= 2, "asked {infos} times");
+    session(&server).await;
+    server.shutdown().await.unwrap();
+}
+
+/// A 1.x, which starts and says it listens as 1.x does, is refused at once
+/// (not waited past for 2.x's line) and said to be the one installed.
+#[tokio::test]
+async fn one_that_starts_as_1x_does_is_refused_at_once_and_named() {
+    let lab = lab();
+    lab.switch("line1x", "1");
+    lab.switch("versionLine", "1.19.3");
+    let started = std::time::Instant::now();
+    let error = Server::start(&lab.launch).await.err().expect("not started").to_string();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
+    assert_eq!(error, "OpenCode started as 1.x does, not as 2.x \
+        (the installed OpenCode says \u{201c}1.19.3\u{201d}; Yuzuno speaks the server protocol of OpenCode 2.x)");
+    let (pid, child) = lab.pids();
+    assert!(ends(pid).await && ends(child).await, "what it started has ended");
 }
 
 #[tokio::test]

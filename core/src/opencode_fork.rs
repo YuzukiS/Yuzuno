@@ -476,7 +476,8 @@ impl Workspace {
             agent: crate::model::Agent {
                 id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, project_id: None,
                 cwd: frozen.cwd.clone(), model: source.model.clone(), settings: source.settings.clone(), color: source.color.clone(),
-                harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()), thread_id: None,
+                harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()),
+                opencode_major: Some(crate::opencode::MAJOR.into()), thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
                 created_at: at.clone(), updated_at: at, unread_count: 0, pending_count: 0, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),

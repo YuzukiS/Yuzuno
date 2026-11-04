@@ -110,6 +110,25 @@ test("it is offered where reconnecting can check a result or open an offline ses
   page.close();
 });
 
+// T-32: an OpenCode Agent made with 1.19.3 (no `opencodeMajor`) is kept to
+// read; 2.x would migrate its database in place, so nothing offers to start it.
+test("an OpenCode agent made with OpenCode 1.19.3 is said to be kept to read, with no reconnect", async () => {
+  const page = mount(() => ({}));
+  const ended = { turns: [{ id: "t", status: "completed", items: [] }] };
+  const old = detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_old" }, ended);
+  assert.equal(page.window.recoveryReason(old), "archived");
+  assert.equal(page.window.recoveryReason(detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_new", opencodeMajor: "2" }, ended)),
+    "offline", "one made with 2.x reconnects as any other");
+  assert.equal(page.window.recoveryReason({ ...old, agent: { ...old.agent, closedAt: "now" } }), null, "closed, it is as any closed agent");
+  page.window.renderNotice({ detail: old, disabled: false, hasDraft: true, onRecovered() {} });
+  await tick();
+  assert.match(text(page), /made with OpenCode 1\.19\.3 and is kept to read/);
+  assert.match(text(page), /create a new OpenCode agent/);
+  assert.ok(!button(page), "nothing offers to start it");
+  assert.equal(page.calls.length, 0, "nothing asked of Core");
+  page.close();
+});
+
 test("one click sends one reconnect, shows it working, and lets Core decide", async () => {
   const waitFor = async (ready) => {
     for (let attempt = 0; attempt < 80 && !ready(); attempt++) await tick();
