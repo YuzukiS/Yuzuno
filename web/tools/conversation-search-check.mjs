@@ -210,7 +210,9 @@ try {
   });
   const input = page.getByRole("searchbox", { name: "Search loaded messages" });
   const dialog = page.getByRole("dialog", { name: "Search conversation" });
-  const matches = page.locator(".conversation-search-result");
+  // The open dialog's results: one that closes leaves through an inert, aria-hidden copy (T-19 1b,
+  // DialogExitGhost) whose results are still in the page while it fades.
+  const matches = dialog.locator(".conversation-search-result");
   const conversation = page.locator(".conversation-scroll");
   const composer = page.getByRole("textbox", { name: "Message Mori" });
   await composer.fill("Keep this unsent draft 保留草稿");
