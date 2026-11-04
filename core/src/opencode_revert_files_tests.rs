@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 
 fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
     let pairs: Vec<(String, String)> = pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-    move |name| pairs.iter().find(|(n, _)| n == name).map(|(_, v)| v.into())
+    move |name: &str| pairs.iter().find(|(n, _)| n == name).map(|(_, v)| v.into())
 }
 
 /// Git on `store` with `work` as its work tree, as OpenCode runs it on its
@@ -152,6 +152,7 @@ async fn what_each_file_should_become_is_read_from_the_snapshot_store_which_is_l
     let hash = track(&store, &work);
     fs::write(work.join("new.txt"), "n1").unwrap();
     let before = listing(&store);
+    let missing = "0".repeat(40);
 
     check_store(&store).unwrap();
     assert_eq!(expected(&store, &hash, "a.txt", BOUNDS).await.unwrap(), file(b"a0\n", false));
@@ -163,7 +164,7 @@ async fn what_each_file_should_become_is_read_from_the_snapshot_store_which_is_l
     for (hash, rel, bounds, said) in [
         (hash.as_str(), "link", BOUNDS, "mode 120000"),
         (hash.as_str(), "sub", BOUNDS, "a tree of mode 040000"),
-        (&"0".repeat(40)[..], "a.txt", BOUNDS, "reverting would delete a.txt"),
+        (missing.as_str(), "a.txt", BOUNDS, "reverting would delete a.txt"),
         (hash.as_str(), "a.txt", Bounds { file: 2, ..BOUNDS }, "more than 2 for Core to check"),
     ] {
         let error = format!("{:#}", expected(&store, hash, rel, bounds).await.unwrap_err());
@@ -281,7 +282,7 @@ fn only_a_native_executable_is_a_launcher_whose_environment_is_known() {
         assert!(matches!(Launcher::resolve(program, Some(bin.as_os_str())).unwrap(), Launcher::Other { .. }), "{program:?}");
     }
     let path = std::ffi::OsString::from(format!("relative:{}", bin.display()));
-    assert!(matches!(Launcher::resolve(Path::new("opencode"), Some(&path)).unwrap(), Launcher::Other { why, .. } if why.contains("relative entry")));
+    assert!(matches!(Launcher::resolve(Path::new("opencode"), Some(path.as_os_str())).unwrap(), Launcher::Other { why, .. } if why.contains("relative entry")));
     assert!(Launcher::resolve(Path::new("missing"), Some(bin.as_os_str())).is_err());
 
     fs::write(&elf, b"\x7fELF\x02\x01\x01\0rest and more").unwrap();
