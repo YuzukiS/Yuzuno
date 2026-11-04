@@ -85,6 +85,8 @@ export function RemoteCreateAgent({
   onCreated: (
     agent: Agent & { projectDefaultError?: string },
     source?: "imported" | "existing",
+    /** Whether Core says an import made the Agent; a create always does. */
+    added?: boolean,
   ) => void;
   projects?: Project[];
   /** The project being viewed, if any; the user can still choose another. */

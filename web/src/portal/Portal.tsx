@@ -5,6 +5,7 @@ import { api, errorText, post } from "../api";
 import { langTag, strings, useLanguage, useStrings } from "../i18n";
 import { openJobs } from "../Jobs";
 import type { OpenedService, ProjectService } from "../ProjectServices";
+import { useSurfaceIn } from "../surface";
 import { savedPortalWidth, savePortalWidth } from "./portal-preference";
 import {
   closePortal,
@@ -292,6 +293,13 @@ function PortalHost() {
   useEffect(() => {
     if (shown) panel.current?.querySelector<HTMLElement>(".portal-title")?.focus({ preventScroll: true });
   }, [shown?.key]);
+  // Opened beside the chat, the page comes in from the right over medium (T-19 M7, WK:PT-01), in
+  // the column the grid gave it above: its transform and opacity move nothing in the chat, so
+  // keepInPlace holds the reading as before. Over the chat, nothing plays; closing stays instant.
+  const opens = useRef({ open: false, n: 0 });
+  const open = !!(shown && shape);
+  if (opens.current.open !== open) opens.current = { open, n: opens.current.n + (open ? 1 : 0) };
+  useSurfaceIn(panel, opens.current.n, "medium", open && shape?.mode === "side", "translateX(8px)");
   if (!shown || !shape) return null;
   const full = shape.mode === "full";
   const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -438,10 +446,27 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [target, readService]);
+  // Where focus goes when what had it here is gone and nothing else is there
+  // to take it: the page's title, which every view of the Portal shows.
+  const titleBox = useRef<HTMLSpanElement>(null);
+  const focusTitle = useCallback(() => titleBox.current?.focus({ preventScroll: true }), []);
+  // Disconnected from here (T-19 WK:PT-11): the note takes the page's place
+  // and fades in and, focus having gone with Disconnect, takes it. Where the
+  // run isn't live, its state stands there instead and the title takes focus.
+  const disconnectedNote = useRef<HTMLDivElement>(null);
+  const [disconnects, setDisconnects] = useState(0);
+  useSurfaceIn(disconnectedNote, disconnects, "small", disconnects > 0);
+  useLayoutEffect(() => {
+    if (!disconnects || (document.activeElement && document.activeElement !== document.body)) return;
+    if (disconnectedNote.current) disconnectedNote.current.focus({ preventScroll: true });
+    else focusTitle();
+  }, [disconnects, focusTitle]);
   const disconnect = async () => {
     if (target.kind !== "service") return;
     await post(`/services/${encodeURIComponent(target.service.id)}/close`);
-    if (alive.current) setDisconnected(true);
+    if (!alive.current) return;
+    setDisconnected(true);
+    setDisconnects((n) => n + 1);
   };
   // Opens the service's way again and checks it from this browser, as the
   // services list does; it never starts anything.
@@ -506,7 +531,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
             {target.kind === "snapshot" ? <FileCode2 size={16} /> : <Globe size={16} />}
           </span>
         )}
-        <span className="portal-title" tabIndex={-1}>
+        <span className="portal-title" tabIndex={-1} ref={titleBox}>
           <strong>{title}</strong>
           <small>{subtitle}</small>
         </span>
@@ -578,7 +603,8 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
         ) : idle ? (
           <ServiceIdle kind={idle} />
         ) : disconnected || unchecked ? (
-          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}>
+          <div className="portal-state portal-idle" role="status" data-idle={disconnected ? "disconnected" : "check"}
+            ref={disconnectedNote} tabIndex={disconnected ? -1 : undefined}>
             {disconnected ? <p>{t.disconnected}</p> : <ServiceIdle kind="check" />}
             {managed && (
               <button type="button" className="primary-button" disabled={proof?.state === "checking"} onClick={() => {
@@ -618,7 +644,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           readFailed={readFailed} onRefresh={readService} onDisconnect={disconnect} onCheckPreview={checkPreview} />
       ) : target.kind === "service" && service && (
         // An older Core, or a service no Yuzuno Job runs.
-        <ServiceJob service={service} disconnected={disconnected} onDisconnect={disconnect} />
+        <ServiceJob service={service} disconnected={disconnected} onDisconnect={disconnect} onFocusLost={focusTitle} />
       )}
     </>
   );
@@ -641,13 +667,50 @@ type JobLog = { text: string };
 
 /** The service's way and, when a Yuzuno Job serves it, that Job: running,
  * reachable and healthy are three facts, never one guessed from another. */
-function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectService; disconnected: boolean; onDisconnect: () => Promise<void> }) {
+function ServiceJob({ service, disconnected, onDisconnect, onFocusLost }: {
+  service: ProjectService;
+  disconnected: boolean;
+  onDisconnect: () => Promise<void>;
+  /** Focus had nowhere to go here: the Portal gives it a place. */
+  onFocusLost: () => void;
+}) {
   const t = text(useLanguage());
   const [drawer, setDrawer] = useState<"logs" | null>(null);
   const [log, setLog] = useState("");
   // The Job the confirmation was opened for: a newer one read meanwhile is
   // never stopped by it.
   const [confirming, setConfirming] = useState<string | null>(null);
+  // The confirmation fades in below the actions over small, opacity only, at
+  // its own height, and takes focus (T-19 WK:PT-11). Gone while focus is in
+  // it, focus goes back to Stop Job… after Keep it, or else (Stop Job… gone
+  // too, the Job no longer read, or the Job stopped) to the Portal's title.
+  const confirmBox = useRef<HTMLDivElement | null>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  const kept = useRef(false);
+  const focusWasIn = useRef(false);
+  // Read as it is removed, while what it held is still in the page.
+  const confirmRef = useCallback((element: HTMLDivElement | null) => {
+    confirmBox.current = element;
+    if (!element) return;
+    return () => {
+      confirmBox.current = null;
+      focusWasIn.current = element.contains(document.activeElement);
+    };
+  }, []);
+  useSurfaceIn(confirmBox, confirming, "small", confirming !== null);
+  useLayoutEffect(() => {
+    if (confirming) confirmBox.current?.focus({ preventScroll: true });
+  }, [confirming]);
+  useLayoutEffect(() => {
+    if (!focusWasIn.current) return;
+    focusWasIn.current = false;
+    const keptIt = kept.current;
+    kept.current = false;
+    // Focus the user moved elsewhere stays there.
+    if (document.activeElement && document.activeElement !== document.body) return;
+    if (keptIt && stopButton.current) stopButton.current.focus();
+    else onFocusLost();
+  });
   const [error, setError] = useState("");
   const job = service.job;
   const c = service.connection;
@@ -721,20 +784,23 @@ function ServiceJob({ service, disconnected, onDisconnect }: { service: ProjectS
             </button>
             <button type="button" className="quiet-button" onClick={() => openJobs({ jobId: job.jobId })}>{t.inJobs}</button>
             {job.canStop && confirming === null && (
-              <button type="button" className="danger-button portal-stop" onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
+              <button type="button" className="danger-button portal-stop" ref={stopButton} onClick={() => setConfirming(job.jobId)}>{t.stop}</button>
             )}
           </>
         )}
         {!job && job !== undefined && <span className="portal-muted">{t.neverStops}</span>}
       </div>
       {confirming !== null && job && (
-        <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm}>
+        <div className="portal-confirm" role="alertdialog" aria-label={t.stopConfirm} ref={confirmRef} tabIndex={-1}>
           <p>{job.jobId === confirming ? t.stopNote : t.stopChanged}</p>
           <button type="button" className="danger-button" disabled={job.jobId !== confirming} onClick={act(async () => {
             await post(`/jobs/${encodeURIComponent(confirming)}/cancel`);
             setConfirming(null);
           })}>{t.stopConfirm}</button>
-          <button type="button" className="quiet-button" onClick={() => setConfirming(null)}>{t.stopCancel}</button>
+          <button type="button" className="quiet-button" onClick={() => {
+            kept.current = true;
+            setConfirming(null);
+          }}>{t.stopCancel}</button>
         </div>
       )}
       {drawer === "logs" && <pre className="portal-logs">{log}</pre>}

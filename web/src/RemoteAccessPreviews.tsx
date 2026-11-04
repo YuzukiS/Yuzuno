@@ -369,6 +369,7 @@ export function RemoteAccessPreviews({
               {operationSteps.map((step, index) => (
                 <li key={step} data-state={index < stepIndex ? "done" : index === stepIndex ? "running" : "pending"}>
                   {t.operationSteps[step]}
+                  {index === stepIndex && <span className="step-moving" aria-hidden="true" />}
                 </li>
               ))}
             </ol>

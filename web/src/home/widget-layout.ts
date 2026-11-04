@@ -99,7 +99,9 @@ export function pinSource(data: HomeData | null, projectId: string, section: Pic
 export type PinControl = {
   isPinned: (projectId: string, section: Section) => boolean;
   canPin: (projectId: string, section: Section) => boolean;
-  toggle: (projectId: string, section: Section) => void;
+  /** `pressed` is the control pressed for it, which keeps its place while a
+   * pin it makes grows the widget column (T-19 HM:W5). */
+  toggle: (projectId: string, section: Section, pressed?: HTMLElement) => void;
 };
 export const PinsContext = createContext<PinControl | null>(null);
 

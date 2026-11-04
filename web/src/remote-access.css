@@ -121,6 +121,19 @@
   color: var(--ink);
   font-weight: 550;
 }
+/* The running step's segment lies under its words, in the gap below, so the
+   list does not move as the change goes from one step to the next. */
+.remote-access-steps li {
+  position: relative;
+  justify-self: start;
+}
+.remote-access-steps .step-moving {
+  position: absolute;
+  right: 0;
+  bottom: -3px;
+  left: 0;
+  height: 2px;
+}
 .remote-access-steps li[data-state="failed"] {
   color: var(--danger, #b55d53);
 }

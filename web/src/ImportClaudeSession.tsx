@@ -80,7 +80,8 @@ export function ImportClaudeSession({
 }: {
   disabled: boolean;
   close: () => void;
-  onCreated: (agent: Agent, source?: "imported" | "existing") => void;
+  /** `added`: Core says this import made the Agent (T-19 SH:R11). */
+  onCreated: (agent: Agent, source?: "imported" | "existing", added?: boolean) => void;
   onBusyChange: (busy: boolean) => void;
   projects?: Project[];
   initialProjectId?: string;
@@ -234,7 +235,7 @@ export function ImportClaudeSession({
         if (!result.existing) source = "imported";
       }
       if (!mounted.current) return;
-      onCreated(agent, source);
+      onCreated(agent, source, source === "imported");
       close();
     } catch (e) {
       if (mounted.current) setError(errorText(e));

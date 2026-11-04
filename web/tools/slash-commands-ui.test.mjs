@@ -485,8 +485,9 @@ test("only a draft that is exactly a control for its harness runs it", async () 
     assert.deepEqual(c("/model"), { command: "model", args: "" });
     assert.deepEqual(c("/model gpt-x", "claude"), { command: "model", args: "gpt-x" });
     // OpenCode's model is its own configuration; its drafts are messages.
+    // Its /compact is OpenCode's own compaction, run by Yuzuno (T-10).
     assert.equal(c("/model gpt-x", "opencode"), null);
-    assert.equal(c("/compact", "opencode"), null);
+    assert.deepEqual(c("/compact", "opencode"), { command: "compact", args: "" });
     // What opens a part of Yuzuno (T-29): for Codex all of them; for Claude
     // those Claude Code has no better command for; none for OpenCode.
     for (const name of ["permissions", "fork", "new", "resume", "status", "usage"]) {

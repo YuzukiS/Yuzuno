@@ -135,15 +135,16 @@ test("typing / lists this Agent's OpenCode commands; choosing fills in the name 
   const p = page({ o1: ready(catalog) });
   try {
     p.type("/");
-    await until(() => p.options().length === 3, "the Agent's commands");
+    await until(() => p.options().length === 4, "the Agent's commands");
     assert.deepEqual(p.calls, ["GET /api/agents/o1/opencode/commands"]);
     assert.deepEqual(p.options().map((o) => [o.name, o.source, o.hint]), [
-      ["/review", "Command", "<arguments>"], ["/plan-it", "Command", ""], ["/deploy", "Command", ""],
-    ], "OpenCode's own, and none of Yuzuno's controls");
+      ["/review", "Command", "<arguments>"], ["/plan-it", "Command", ""], ["/deploy", "Command", ""], ["/compact", "Yuzuno control", ""],
+    ], "OpenCode's own, then Yuzuno's /compact (T-10)");
     assert.equal(p.list().getAttribute("aria-label"), "OpenCode commands");
     assert.match(p.options()[1].title, /Runs as a sub-agent/);
     assert.doesNotMatch(p.options()[0].title, /sub-agent/);
-    assert.match(p.notes().join(" "), /^Listed by this Agent's OpenCode\. Choosing one only fills it in; Send runs it as that command\./);
+    assert.deepEqual(p.notes(), ["Listed by this Agent's OpenCode. Choosing one only fills it in; Send runs it as that command.",
+      "/compact is Yuzuno's control: Send runs OpenCode's own compaction, a model run, never a prompt."]);
     p.type("re");
     await until(() => p.options().length === 1, "filtered by what was typed");
     assert.equal(p.key("Enter").defaultPrevented, true);
@@ -197,13 +198,13 @@ test("an OpenCode that lists no commands says so; a long list says how many ther
   try {
     p.type("/");
     await until(() => p.notes().length > 0 && !/^Reading/.test(p.notes()[0]), "the answer");
-    assert.deepEqual(p.notes(), ["This Agent's OpenCode lists no commands. Enter sends the text as it is."]);
-    p.key("Enter");
-    assert.equal(p.w.events.submits, 1);
+    assert.deepEqual(p.notes(), ["This Agent's OpenCode lists no commands.",
+      "/compact is Yuzuno's control: Send runs OpenCode's own compaction, a model run, never a prompt."]);
+    assert.deepEqual(p.options().map((o) => o.name), ["/compact"], "only Yuzuno's own control");
     answers.o1 = ready(catalog.slice(0, 2), { total: 600, truncated: true });
     p.clear();
     p.type("/");
-    await until(() => p.options().length === 2, "the first ones");
+    await until(() => p.options().length === 3, "the first ones");
     assert.match(p.notes().join(" "), /Listed by this Agent's OpenCode; 600 in all, the first 2 shown\./);
   } finally {
     p.close();
@@ -225,14 +226,14 @@ test("an answer for another OpenCode Agent never shows in this one's list", asyn
     await sleep(50);
     assert.equal(p.menu(), null, "o1's answer does not open o2's list");
     p.type("/");
-    await until(() => p.options().length === 1, "o2's own list");
-    assert.deepEqual(p.options().map((o) => o.name), ["/only-o2"]);
+    await until(() => p.options().length === 2, "o2's own list");
+    assert.deepEqual(p.options().map((o) => o.name), ["/only-o2", "/compact"]);
   } finally {
     p.close();
   }
 });
 
-test("read-only, the list is not read; no draft is one of Yuzuno's controls for OpenCode", async () => {
+test("read-only, the list is not read; of Yuzuno's controls only /compact is OpenCode's", async () => {
   const p = page({ o1: ready(catalog) });
   try {
     p.w.show({ readOnly: true });
@@ -240,8 +241,10 @@ test("read-only, the list is not read; no draft is one of Yuzuno's controls for 
     await sleep(30);
     assert.equal(p.menu(), null);
     assert.deepEqual(p.calls, []);
-    for (const text of ["/model", "/review the diff", "/compact", "/new", "/status"])
+    for (const text of ["/model", "/review the diff", "/new", "/status"])
       assert.equal(p.w.nativeControl(text, "opencode"), null, `${text} is sent to OpenCode, not run by Yuzuno`);
+    assert.deepEqual(JSON.parse(JSON.stringify(p.w.nativeControl("/compact", "opencode"))), { command: "compact", args: "" },
+      "OpenCode's own compaction, run by Yuzuno (T-10)");
   } finally {
     p.close();
   }

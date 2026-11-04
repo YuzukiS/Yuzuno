@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { composerDraft, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+// The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
+const WORKSPACE = "ws-permissions";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -16,6 +18,11 @@ const report = {
   mode: "isolated-browser-fixtures",
   checks: [],
   mutations: [],
+  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
+  // counted apart from the mutations this check refuses.
+  readingSaves: 0,
+  // Reads this fixture does not answer: refused, and the check fails on them at its end.
+  unexpected: [],
   errors: [],
 };
 const agent = {
@@ -116,6 +123,10 @@ await page.route("**/*", async (route) => {
   // The read receipt for the conversation on screen is not a settings write.
   if (request.method() === "POST" && url.pathname === "/api/agents/a/review")
     return route.fulfill({ json: {} });
+  if (request.method() === "PUT" && /^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) {
+    report.readingSaves++;
+    return route.fulfill({ json: { accepted: true } });
+  }
   if (request.method() !== "GET") {
     const input = request.postDataJSON();
     report.mutations.push({ path: url.pathname, input });
@@ -136,11 +147,14 @@ await page.route("**/*", async (route) => {
   if (url.pathname === "/api/workspace")
     return route.fulfill({
       json: {
+        workspace: { id: WORKSPACE },
         agents: [agent],
         runtime: { connected: true },
         defaultCwd: "/fixture",
       },
     });
+  // What the app reads once it knows its Workspace: no reading place held by Core.
+  if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
   if (url.pathname === "/api/agents/a") return route.fulfill({ json: detail });
   if (url.pathname === "/api/agents/a/models")
     return route.fulfill({
@@ -167,6 +181,8 @@ await page.route("**/*", async (route) => {
     "/api/jobs": noJobs,
     "/api/jobs/live": noLiveJobs,
     "/api/ci": noCiRuns,
+    "/api/ci/live": noLiveCi,
+    "/api/agents/a/conversation/inputs": noConversationInputs,
     "/api/reviews": noReviews,
     "/api/home": { generatedAt: "", order: [], needsYou: [], projects: [] },
     "/api/machine-load": {
@@ -178,10 +194,12 @@ await page.route("**/*", async (route) => {
     },
   }[url.pathname];
   if (quiet) return route.fulfill({ json: quiet });
-  assert.ok(
-    !url.pathname.startsWith("/api/"),
-    `Unexpected request ${url.pathname}`,
-  );
+  // Any other read is refused, and said at the end, rather than thrown here, where it stopped the
+  // whole check at the first one.
+  if (url.pathname.startsWith("/api/")) {
+    report.unexpected.push(url.pathname);
+    return route.fulfill({ status: 500, json: { error: "not in this check's fixture" } });
+  }
   const file = resolve(
     dist,
     `.${url.pathname === "/" ? "/index.html" : url.pathname}`,
@@ -253,7 +271,7 @@ try {
       report.mutations.at(-1).input.settings.permissionPreset,
       preset,
     );
-    assert.equal(await composerDraft(composer), "保留这段还没发送的草稿。");
+    assert.equal(await composerDraft(composer, WORKSPACE), "保留这段还没发送的草稿。");
     record("Permission mode saved with its next-turn preview", { preset });
   }
   const full = permissions.presets.find((p) => p.id === "full");
@@ -317,7 +335,7 @@ try {
   assert.equal(detail.messageReceipts[0].turnId, "turn-2");
   await modal.getByRole("button", { name: "Close dialog", exact: true }).click();
   await modal.waitFor({ state: "detached" });
-  assert.equal(await composerDraft(composer), "保留这段还没发送的草稿。");
+  assert.equal(await composerDraft(composer, WORKSPACE), "保留这段还没发送的草稿。");
   record(
     "A stale active-turn UI accepts the Core receipt for a new turn; draft is preserved",
   );
@@ -346,6 +364,7 @@ try {
     report.mutations.every((r) => /\/(settings|messages)$/.test(r.path)),
   );
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, [], "every read the app makes is one this fixture answers");
   record(
     "Uncertain answer delivery survives reload without automatic resend or Pending/read mutations",
   );

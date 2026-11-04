@@ -438,6 +438,11 @@ p {
   overflow: auto;
   min-height: 0;
 }
+/* A row this window added, while its group opens: it comes in once the
+   group is open (T-19 SH:R11). */
+.agent-row[data-joining] {
+  opacity: 0;
+}
 .agent-row {
   position: relative;
   display: block;
@@ -2838,6 +2843,36 @@ p {
   to {
     opacity: 1;
   }
+}
+/* A step whose work Core reports running (T-19 M14): a lit segment moves
+   along its bar, as on the update steps' current bar (updates.css). Under
+   reduced motion it stands still, and the step's text carries it. */
+.step-moving {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent),
+      transparent
+    )
+    0 0 / 50% 100% no-repeat,
+    color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+  animation: step-moving 1.6s ease-in-out infinite;
+}
+@keyframes step-moving {
+  from {
+    background-position: -100% 0, 0 0;
+  }
+  to {
+    background-position: 200% 0, 0 0;
+  }
+}
+/* The box an inline panel reveals in (surface.ts useRevealIn): it holds the
+   panel's own margins, so only its height moves as the panel opens. */
+.reveal {
+  display: flow-root;
 }
 @media (min-width: 1500px) {
   .app {

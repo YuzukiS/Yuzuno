@@ -9,6 +9,9 @@ export interface DetailSyncOptions {
   publish: (detail: AgentDetail | null) => void;
   /** The latest read failure, or null once a read succeeds. */
   error: (error: unknown) => void;
+  /** Streamed changes were applied and nothing shown changed: what waits for
+   * the sync to be idle looks again (T-19 CV:Q-01, Lead 3356). */
+  quiet?: () => void;
   /** Refetches requested within this window share one read. */
   refetchDelayMs?: number;
   /** Streamed changes are rendered at most this often. */
@@ -56,6 +59,12 @@ export class DetailSync {
   /** Changes received but not rendered yet. */
   queue: DetailEvent[] = [];
   generation = 0;
+  /** Reads started so far; the shown detail came from read `currentRead`,
+   * and `readOf` names the read each shown copy came from (T-19: what a read
+   * started after the stream reopened brings is told apart). */
+  reads = 0;
+  currentRead = 0;
+  readOf = new WeakMap<AgentDetail, number>();
   refetchTimer: ReturnType<typeof setTimeout> | undefined;
   flushTimer: ReturnType<typeof setTimeout> | undefined;
   retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -65,6 +74,7 @@ export class DetailSync {
       refetchDelayMs: 150,
       flushDelayMs: 100,
       retryDelayMs: 5_000,
+      quiet: () => {},
       ...options,
     };
   }
@@ -174,7 +184,9 @@ export class DetailSync {
   }
 
   show() {
-    this.options.publish(this.view());
+    const view = this.view();
+    if (view) this.readOf.set(view, this.currentRead);
+    this.options.publish(view);
   }
 
   /** Applies changes newer than the last read; returns whether any could
@@ -205,6 +217,7 @@ export class DetailSync {
     const before = this.current;
     const missing = this.apply(events);
     if (this.current !== before) this.show();
+    else this.options.quiet();
     if (missing) this.refetch();
   }
 
@@ -226,6 +239,7 @@ export class DetailSync {
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
     this.running = true;
+    const number = ++this.reads;
     this.queued = false;
     const generation = this.generation;
     this.recent = [];
@@ -241,6 +255,7 @@ export class DetailSync {
       clearTimeout(this.flushTimer);
       this.flushTimer = undefined;
       this.current = read;
+      this.currentRead = number;
       this.baseRev = read.agent.rev ?? 0;
       this.baseSeq = read.agent.lastSeq;
       this.failed = false;

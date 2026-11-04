@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { ArrowUpRight, Clock3, Eye, MessageSquareReply, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
@@ -32,7 +32,8 @@ export function PinnedSection({
   onOpen: () => void;
   onUnpin: () => void;
   /** Only when the section now under the key may itself be pinned (not an ask). */
-  onPinCurrent?: () => void;
+  /** `pressed` is the button pressed, which keeps its place (T-19 HM:W5). */
+  onPinCurrent?: (pressed: HTMLElement) => void;
   /** Where replies can be sent from (not the design preview): the workspace and the project's open Agents. */
   reply?: { workspaceId: string; agents: Agent[] };
 }) {
@@ -51,8 +52,19 @@ export function PinnedSection({
   const [replying, setReplying] = useState(
     () => !!reply && hasCardReply(cardReplySlot(reply.workspaceId, pin.projectId, pin.key)),
   );
+  // Opened by the user here, not kept from before; closed, focus goes back to
+  // Reply (T-19 HM:S7), or, with the card folded meanwhile and Reply hidden in
+  // it, to the card's fold button. The card stays as the user folded it.
+  const [replyOpened, setReplyOpened] = useState(false);
+  const replyButton = useRef<HTMLButtonElement>(null);
+  const card = useRef<HTMLElement>(null);
+  const closeReply = () => {
+    const fold = card.current?.querySelector<HTMLButtonElement>(".home-pinned-head .home-fold");
+    (collapsed ? fold : replyButton.current)?.focus();
+    setReplying(false);
+  };
   return (
-    <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={t.pinnedFrom(title, projectName)}>
+    <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={t.pinnedFrom(title, projectName)} ref={card}>
       <header className="home-pinned-head">
         <h2>
           {source.state === "shown" && <FoldButton collapsed={collapsed} onToggle={toggleFold} label={title} controls={body} />}
@@ -102,10 +114,14 @@ export function PinnedSection({
               <button
                 type="button"
                 className="quiet-button"
+                ref={replyButton}
                 aria-expanded={replying}
                 aria-label={t.replyLabel(source.section.title)}
                 title={t.replyTitle(source.section.owner.name)}
-                onClick={() => setReplying((open) => !open)}
+                onClick={() => {
+                  setReplyOpened(true);
+                  setReplying((open) => !open);
+                }}
               >
                 <MessageSquareReply size={13} /> {t.reply}
               </button>
@@ -118,7 +134,8 @@ export function PinnedSection({
               projectId={pin.projectId}
               workspaceId={reply.workspaceId}
               agents={reply.agents}
-              onClose={() => setReplying(false)}
+              opened={replyOpened}
+              onClose={closeReply}
             />
           )}
         </>
@@ -132,7 +149,7 @@ export function PinnedSection({
           </p>
           <span className="home-pinned-actions">
             {onPinCurrent && (
-              <button type="button" className="quiet-button" onClick={onPinCurrent}>
+              <button type="button" className="quiet-button" onClick={(event) => onPinCurrent(event.currentTarget)}>
                 <PinIcon size={13} /> {t.pinNew}
               </button>
             )}

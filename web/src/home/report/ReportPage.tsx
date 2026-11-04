@@ -103,6 +103,8 @@ export function ReportPage({
   // refer to (replyableIn), as its card and pin do (Lead 2655). Never another version kept in History.
   const replyable = !readOnly && place?.kind === "found" && replyableIn(panel, place.section);
   const [replying, setReplying] = useState(false);
+  // Only ever opened by the user here; closed, focus goes back to Reply (T-19 HM:S7).
+  const replyButton = useRef<HTMLButtonElement>(null);
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLElement>(null);
@@ -208,6 +210,7 @@ export function ReportPage({
             <button
               type="button"
               className="quiet-button home-reply-open"
+              ref={replyButton}
               aria-expanded={replying}
               aria-label={home.replyLabel(shown.title)}
               title={home.replyTitle(shown.owner.name)}
@@ -240,7 +243,17 @@ export function ReportPage({
         )}
         {notice}
         {replyable && shown && replying && (
-          <CardReply section={shown} projectId={link.projectId} workspaceId={workspaceId} agents={agents} onClose={() => setReplying(false)} />
+          <CardReply
+            section={shown}
+            projectId={link.projectId}
+            workspaceId={workspaceId}
+            agents={agents}
+            opened
+            onClose={() => {
+              replyButton.current?.focus();
+              setReplying(false);
+            }}
+          />
         )}
         {error && (
           <p className="inline-error" role="alert">

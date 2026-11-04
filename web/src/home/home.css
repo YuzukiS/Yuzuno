@@ -148,6 +148,13 @@
   border-radius: 10px;
   background: var(--home-surface);
 }
+/* A section pinned here settles on its own card (T-19 HM:W5); under reduced
+ * motion the still tint is the card's, as its background would cover it. */
+@media (prefers-reduced-motion: reduce) {
+  .home-pinned[data-settle] {
+    background-color: color-mix(in srgb, var(--accent-wash, #f5edcf) 55%, var(--home-surface));
+  }
+}
 .home-pinned-head {
   display: flex;
   flex-direction: column;

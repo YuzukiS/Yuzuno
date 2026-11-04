@@ -1,3 +1,4 @@
+import { flushSync } from "react-dom";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { SkillChips } from "./SkillChips";
 import { MAX_DRAFT_SKILLS } from "./composer-draft";
@@ -200,7 +201,7 @@ import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
-import { useSurfaceIn } from "./surface";
+import { useArrivalsIn, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -264,6 +265,8 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
+const JOIN_WAIT = 90;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -350,6 +353,69 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // An Agent row this window just added (T-19 SH:R11): one it created, or
+  // forked, or one Core says this import made; never one a read of the
+  // Workspace brings, nor one an import found already there. Once the row is
+  // shown, it is brought into view at once, comes in over small (opacity,
+  // 4 px up) and settles once; under reduced motion it is there at once and
+  // settles. It is this Workspace's, this choice's and this action's only:
+  // - its group folded, opening because the new Agent is chosen: the row is
+  //   kept hidden until the group has opened, then comes in, so it is seen
+  //   coming in once (at most JOIN_WAIT frames; past that it shows still);
+  // - listed already when the answer came (a read after Core said the
+  //   Workspace changed got there first): it was shown then, so it does not
+  //   come in again; it is brought into view and settles;
+  // - not shown at all (a search it does not match, a phone's conversation
+  //   in front of the list, the list hidden): nothing plays, now or later;
+  // - another Agent chosen, or another Workspace, before it shows: dropped.
+  const [joined, setJoined] = useState<{ workspace: string; id: string; n: number; enter: boolean } | null>(null);
+  const joinedRow = useRef<HTMLElement | null>(null);
+  const [entered, setEntered] = useState(0);
+  useLayoutEffect(() => {
+    if (!joined) return;
+    let frame = 0;
+    let waited = 0;
+    let row: HTMLElement | undefined;
+    let settled: (() => void) | null = null;
+    const hide = (hidden: boolean) => row?.toggleAttribute("data-joining", hidden);
+    const land = (later: boolean) => {
+      row = [...document.querySelectorAll<HTMLElement>(".agent-list .agent-row")].find((shown) => shown.dataset.agentId === joined.id);
+      const still = joined.workspace === currentWorkspace.current && currentSelected.current === joined.id;
+      if (!still || !row || !row.getClientRects().length) return hide(false);
+      const body = row.closest<HTMLElement>(".project-group-body");
+      const opening = !!row.closest(".project-group.is-folded") ||
+        (!!body && (Number(getComputedStyle(body).opacity) < 1 || body.getAnimations().some((a) => a.playState === "running")));
+      if (opening) {
+        if (++waited > JOIN_WAIT) return hide(false);
+        hide(joined.enter);
+        frame = requestAnimationFrame(() => land(true));
+        return;
+      }
+      row.scrollIntoView?.({ block: "nearest", behavior: "instant" });
+      joinedRow.current = row;
+      // Its entrance starts before this frame is painted, so the row is
+      // never seen between hidden and coming in.
+      if (joined.enter) {
+        if (later) flushSync(() => setEntered((n) => n + 1));
+        else setEntered((n) => n + 1);
+      }
+      hide(false);
+      settled = settleWhenLanded(row, "data-settle", false, "animation");
+    };
+    land(false);
+    return () => {
+      cancelAnimationFrame(frame);
+      hide(false);
+      settled?.();
+    };
+  }, [joined]);
+  useSurfaceIn(joinedRow, entered, "small", entered > 0, "translateY(4px)");
+  /** `id` is the Agent this window's create, fork or import has just made. */
+  const markJoined = (id: string) => {
+    const workspace = currentWorkspace.current;
+    const enter = !workspaceRef.current?.agents.some((listed) => listed.id === id);
+    setJoined((last) => ({ workspace, id, n: (last?.n ?? 0) + 1, enter }));
+  };
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
@@ -535,12 +601,18 @@ export function App() {
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
+  // A touch on the pane: where the pane was when it began, and whether the
+  // browser took it as a pan (pointercancel, which it sends when a finger
+  // moves the page rather than taps, and after which no click comes). Either
+  // that or the pane having moved makes it the reader scrolling, even when
+  // the pan moved nothing (already at the end) or came back where it began.
+  const touch = useRef<{ from: number; panned: boolean } | null>(null);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
   // or a pane that shrinks under a growing composer, keeps the end in view
   // while the conversation follows it, as an update does. A row the reader
-  // has just opened stays where they clicked it.
+  // opens or closes stops the following (onClickCapture), so it stays where
+  // they clicked it, and what it opens below is theirs to scroll to (T-19).
   const followHeld = useRef(false);
-  const readerToggled = useRef(-Infinity);
   const followGrowth = useCallback((inner: HTMLDivElement | null) => {
     if (!inner || typeof ResizeObserver === "undefined") return;
     let last: { height: number; pane: number } | null = null;
@@ -558,13 +630,14 @@ export function App() {
         grown > 0 &&
         gapBefore < 72 &&
         stickToBottom.current &&
-        !followHeld.current &&
-        performance.now() - readerToggled.current > 600
+        !followHeld.current
       )
         el.scrollTop = el.scrollHeight;
-      // Following, but not moved to the end: said once the frame is done
-      // (by then a conversation that has just opened has been put there).
-      else if (stickToBottom.current) requestAnimationFrame(measureLatest);
+      // Not moved to the end: said once the frame is done (by then a
+      // conversation that has just opened has been put there), so Back to
+      // latest shows once the end is out of view, as after a row the reader
+      // opened there.
+      else requestAnimationFrame(measureLatest);
     });
     observer.observe(inner);
     if (inner.parentElement) observer.observe(inner.parentElement);
@@ -592,6 +665,33 @@ export function App() {
   // The Agent whose conversation is on screen now, for a reply that comes later.
   const shownConversation = useRef<string | null>(null);
   shownConversation.current = homeOpen || listShown ? null : selected;
+  // Core announced a change to the open Agent (`agent.changed`, which is how a
+  // new request is announced) since the stream last reset: the next request
+  // its detail lists arrived live and may fade in (T-19 CV:Q-01).
+  const liveChange = useRef<{ workspace: string; agent: string } | null>(null);
+  // Since a reset, since the stream broke, or since the conversation was
+  // left: until a detail from a read started after `after` (DetailSync.reads;
+  // never while the stream is down) is shown, nothing arrives live. That
+  // detail only becomes what was shown, so neither a read already on its way,
+  // a copy kept from before, nor a change Core replays when the stream resumes
+  // makes an old request play (Lead 3299, 3301). After Core resumed the stream
+  // (`drain`), only the end of what it replays (`drained`) or a reset ends the
+  // wait: no read starts for it, and no timer guesses it (Lead 3356).
+  const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
+  // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
+  const [, setDrains] = useState(0);
+  // Told in the stream's order, so a reset that follows always wins (R1 276d4a1d; Lead 3356).
+  const onReplay = useCallback((state: "resumed" | "drained") => {
+    if (state === "resumed") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity, drain: true };
+      return;
+    }
+    const mark = arrivalsSettle.current;
+    if (!mark?.drain) return;
+    mark.drained = true;
+    setDrains((n) => n + 1);
+  }, []);
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -622,7 +722,10 @@ export function App() {
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
-          if (event.agentId === currentSelected.current) live.sync.refetch();
+          if (event.agentId === currentSelected.current) {
+            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.refetch();
+          }
           return;
         case "agent.progress": {
           // Its Items went out already; only its rail entry changes.
@@ -673,6 +776,9 @@ export function App() {
           else refresh();
           return;
         case "reset":
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
+          liveChange.current = null;
+          arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
           refresh();
@@ -683,7 +789,18 @@ export function App() {
     },
     [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
-  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
+  const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
+  // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
+  // Core has resumed it (`onReplay`, then the end of its replay) or reset it (a read after that).
+  // Those two are told in the stream's order; this render only marks the break.
+  const lastConnection = useRef(eventConnection);
+  if (lastConnection.current !== eventConnection) {
+    lastConnection.current = eventConnection;
+    if (eventConnection !== "open") {
+      liveChange.current = null;
+      arrivalsSettle.current = { after: Infinity };
+    }
+  }
   useEffect(() => {
     if (eventConnection === "open" && !previewMode) jobsRefresh.now();
   }, [eventConnection, previewMode, jobsRefresh]);
@@ -747,6 +864,34 @@ export function App() {
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
+  // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
+  // the left on a desktop window, the context panel from the right. Its column changes at once,
+  // as before, and hiding stays instant. Counted where the setting turns on, not where a panel
+  // mounts: arriving at a conversation, or a window turning into a phone's, plays none.
+  const panelOpens = useRef({ rail: railOpen, inspector, phoneInspector, rails: 0, inspectors: 0 });
+  if (panelOpens.current.rail !== railOpen || panelOpens.current.inspector !== inspector || panelOpens.current.phoneInspector !== phoneInspector) {
+    const was = panelOpens.current;
+    panelOpens.current = {
+      rail: railOpen,
+      inspector,
+      phoneInspector,
+      rails: was.rails + (railOpen && !was.rail ? 1 : 0),
+      inspectors: was.inspectors + ((inspector && !was.inspector) || (phoneInspector && !was.phoneInspector) ? 1 : 0),
+    };
+  }
+  const inspectorBox = useRef<HTMLElement>(null);
+  const inspectorTitle = useRef<HTMLSpanElement>(null);
+  // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
+  useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
+  useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // On a phone the context panel is a screen of its own: opening it takes focus to its heading
+  // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
+  useEffect(() => {
+    if (phone && phoneInspector && inspectorShown && !inspectorBox.current?.contains(document.activeElement))
+      inspectorTitle.current?.focus({ preventScroll: true });
+    // Only an opening moves focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelOpens.current.inspectors]);
   // An open dock panel closes when something covers the conversation (the
   // Agent list, or the context panel a job opens) or the window widens.
   useEffect(() => {
@@ -902,6 +1047,58 @@ export function App() {
   const time = useTimeDisplay();
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
+  // A request that arrives live while its conversation is open fades in, once (T-19 CV:Q-01): one
+  // that a detail lists, new in this Workspace, Agent and native session, after Core announced a
+  // change to the Agent. The first detail of that scope, and any new request a reconnect, poll or
+  // reset brings, only become what was shown; so do a return to the Agent and another session.
+  const pendingScope = currentDetail && currentDetail.agent.id === selected && !homeOpen && !listShown
+    ? [workspaceId, selected, nativeSession(currentDetail.agent) ?? ""].join("\n") : null;
+  const pendingSeen = useRef<{ scope: string; ids: Set<string>; arrived: string[] } | null>(null);
+  // The conversation was left: another Agent or Workspace opened, or Home or
+  // the phone's list over it. Nothing arrives live until a detail read after
+  // this is shown, and that one is a new baseline (Lead 3301).
+  if (!pendingScope && pendingSeen.current) {
+    const was = arrivalsSettle.current;
+    pendingSeen.current = null;
+    liveChange.current = null;
+    arrivalsSettle.current = { ...was, after: Math.max(was?.after ?? 0, live.sync.reads) };
+  }
+  // The detail shown came from this read; the first one started after a
+  // reset or leaving settles it, and what it lists only becomes shown. It is
+  // current when it is the newest read and the sync has nothing failed,
+  // running, queued, due or waiting to be applied.
+  const readNumber = (live.detail && live.sync.readOf.get(live.detail)) ?? 0;
+  const sync = live.sync;
+  const current = !!live.detail && readNumber === sync.currentRead && !sync.running && !sync.queued && !sync.failed
+    && sync.refetchTimer === undefined && sync.retryTimer === undefined && sync.flushTimer === undefined && !sync.queue.length;
+  // After a stream opened again, only once its replay is over: if a read was on its way then, when
+  // it and any after it are done.
+  const mark = arrivalsSettle.current;
+  let settles = !!mark && (mark.drain ? !!mark.drained && current && !!pendingScope : readNumber > mark.after);
+  if (pendingScope) {
+    const seen = pendingSeen.current;
+    if (!seen || seen.scope !== pendingScope) {
+      pendingSeen.current = { scope: pendingScope, ids: new Set(pending.map((request) => request.id)), arrived: [] };
+      liveChange.current = null;
+      // Back to a conversation whose detail is current (from Home, say): it is the new baseline
+      // now, unless the stream is down or its replay not over (the case above).
+      if (current && !mark?.drain && mark?.after !== Infinity) settles = true;
+    } else {
+      const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
+      if (fresh.length) {
+        const announced = !arrivalsSettle.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        if (announced) liveChange.current = null;
+        pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
+          arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
+      }
+    }
+  }
+  if (settles) arrivalsSettle.current = liveChange.current = null;
+  useArrivalsIn(
+    pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
+    (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
+    "small",
+  );
   // Browser drafts of answers to native questions (T-170) last only while
   // Core still lists their request for this Agent.
   const requestDraftScope = previewMode || !workspaceId ? null : workspaceId;
@@ -2204,10 +2401,11 @@ export function App() {
         return;
       }
       if (control?.command === "compact") {
-        if (control.args) throw new Error("Codex's own compaction takes no instructions. Send /compact alone; your draft is kept.");
+        const opencode = agent.harness === "opencode";
+        if (control.args) throw new Error(`${opencode ? "OpenCode" : "Codex"}'s own compaction takes no instructions. Send /compact alone; your draft is kept.`);
         await post(`/agents/${encodeURIComponent(target)}/compact`);
         clearIfUnchanged(target, sentDraft);
-        setNotice(shell.compactAccepted);
+        setNotice(opencode ? shell.opencodeCompactAccepted : shell.compactAccepted);
         refresh();
         return;
       }
@@ -2966,7 +3164,26 @@ export function App() {
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                onTouchEnd={readerScrollIntent}
+                onTouchStart={() => {
+                  touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
+                }}
+                // The browser's pan: noted, never taken for a cancelled touch.
+                onPointerCancel={(e) => {
+                  if (e.pointerType === "touch" && touch.current) touch.current.panned = true;
+                }}
+                // A touch the system took away ends nothing the reader did.
+                onTouchCancel={() => {
+                  touch.current = null;
+                }}
+                // A tap on a disclosure opens or closes it (its click hands the
+                // conversation to the reader); it is not the reader going to the
+                // end. A pan is, wherever it began.
+                onTouchEnd={(e) => {
+                  const began = touch.current;
+                  touch.current = null;
+                  const scrolled = !began || began.panned || Math.abs((scroll.current?.scrollTop ?? began.from) - began.from) >= 1;
+                  if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
+                }}
                 onKeyDownCapture={(e) => {
                   if (
                     e.target instanceof HTMLElement &&
@@ -2975,7 +3192,9 @@ export function App() {
                     )
                   )
                     return;
-                  if (["End", "PageDown", "ArrowDown", " "].includes(e.key))
+                  // Space on a disclosure opens or closes it rather than scrolling.
+                  if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
+                    (e.key === " " && !(e.target as Element).closest?.("summary")))
                     readerScrollIntent();
                   if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
                     live.pinWindow();
@@ -2983,8 +3202,17 @@ export function App() {
                   }
                 }}
                 onClickCapture={(e) => {
-                  if ((e.target as Element).closest?.("summary"))
-                    readerToggled.current = performance.now();
+                  // The reader opens or closes a disclosure (by pointer, key or
+                  // touch, which all click it): they take over from following,
+                  // as a wheel up or Home does, so nothing moves what they
+                  // clicked; their window is kept as it is, and where they are
+                  // reading is noted, as a scroll would note it, so the
+                  // conversation reopens there rather than at the end (T-19).
+                  if ((e.target as Element).closest?.("summary")) {
+                    live.pinWindow();
+                    stickToBottom.current = false;
+                    noteReading(false);
+                  }
                 }}
                 onPointerDown={(e) => {
                   // Native scrollbar events target the scroll container itself.
@@ -3570,11 +3798,11 @@ export function App() {
       </ClarificationHost.Provider>
 
       {inspectorShown && (
-        <aside className="inspector" id="context-panel" lang={langTag(language)}>
+        <aside className="inspector" id="context-panel" ref={inspectorBox} lang={langTag(language)}>
           <PanelResizeHandle side="inspector" size={panelWidths.inspector} />
           <div className="inspector-content">
             <div className="inspector-heading">
-              <span>{shell.atGlance}</span>
+              <span ref={inspectorTitle} tabIndex={-1}>{shell.atGlance}</span>
               <button
                 className="icon-button"
                 aria-label={shell.closePanel}
@@ -3841,6 +4069,7 @@ export function App() {
           onForked={(outcome) => {
             const fork = outcome.agent!;
             const sourceId = agent.id;
+            markJoined(fork.id);
             // Draft protection: the unsent text is copied, never sent.
             copyDraft(sourceId, fork.id);
             setWorkspace((w) =>
@@ -3879,7 +4108,9 @@ export function App() {
         disabled={previewMode}
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}
-        onCreated={(a, source) => {
+        onCreated={(a, source, added) => {
+          // A create always makes its Agent; an import says whether it did.
+          if (added ?? !source) markJoined(a.id);
           setWorkspace((w) =>
             w
               ? {

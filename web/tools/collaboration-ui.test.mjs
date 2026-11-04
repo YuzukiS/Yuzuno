@@ -1643,6 +1643,34 @@ test("Messages reads in Chinese; bodies, names and delivery facts are said, not 
 });
 
 
+test("a record's proposed next check or stop shows as a proposal, in English and Chinese (T-17)", async () => {
+  const observation = { schema: "research/1", type: "observation", id: "ranking-flips", title: "Ranking flips with link order",
+    text: "Reordering the link step reverses which layout is faster.",
+    next: { action: "check", text: "Time ten fresh processes with the link order shuffled." } };
+  for (const [language, label, note] of [
+    ["en", "Proposes a next check", "A proposal: nothing runs or stops because of it."],
+    ["zh-Hans", "提议下一项检查", "只是提议：不会因此运行或停止任何东西。"],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(5, observation, "Observed.")], executions: [], hasMore: false },
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      const next = await waitFor(() => page.document.querySelector(".task-research-next"), "the proposal");
+      assert.equal(next.getAttribute("data-action"), "check");
+      assert.ok(next.textContent.includes(label) && next.textContent.includes("Time ten fresh processes"), next.textContent);
+      assert.equal(next.getAttribute("title"), note);
+      assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "nothing is read for a proposal");
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
 test("a comparison entry shows each part its author gave and says which part is missing; a field can differ and be missing at once (T-17)", async () => {
   const entries = [
     { id: "a", label: "Iterations", status: "included", unit: "ms", level: "process", definition: "median of runs",
@@ -1744,6 +1772,143 @@ test("value, low, high and n past JavaScript's safe integers read as approximate
       // A safe n with a sample level, on an excluded entry, is exact.
       assert.equal(identity(safe).textContent, "seed · n = 9007199254740991");
       assert.equal(identity(safe).getAttribute("title"), null);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("what each kind of study keeps apart shows as given with what it cannot show, and a claim's revision says what it does to the earlier scope (T-17)", async () => {
+  const base = { schema: "research/1", text: "As written." };
+  const theory = { ...base, type: "claim", id: "bound", title: "The bound holds", field: "theory", status: "supported",
+    details: { result: "proof", checked: "enumeration", bound: "n ≤ 12", obligations: ["Base case", "Induction step"] } };
+  const systems = { ...base, type: "method", id: "timing", title: "Timing protocol", field: "systems",
+    details: { machines: 1, builds: 2, processes: 10, iterations: 5, warmup: "One discarded process" } };
+  const ml = { ...base, type: "claim", id: "gain", title: "A gain on task A", field: "ml", status: "conditional",
+    details: { baseline: "Tuned baseline", selection: "Best validation loss", budget: "20 trials each", seeds: 5, split: "80/10/10" } };
+  const robot = { ...base, type: "observation", id: "episodes", title: "Real-arm episodes", field: "robotics",
+    details: JSON.parse('{"planned":20,"executed":18,"completed":12,"intervened":3,"stopped":6,"excluded":9007199254740993,"protocol":"Grasp protocol v1"}') };
+  const first = { ...base, type: "claim", id: "faster", title: "Layout B is faster", field: "systems", status: "conditional", conditions: ["Machine A", "Machine B"] };
+  const narrowed = { ...first, title: "Layout B is faster on machine A", conditions: ["Machine A"],
+    revises: { activitySeq: 8, scope: "narrows", reason: "Machine B reverses it." } };
+  const answer = { taskId: "T-1", activitySeq: 8, version: 1, revisedBy: 9, latestActivitySeq: 9, research: first, method: null,
+    revision: { activitySeq: 9, scope: "narrows", reason: "Machine B reverses it." } };
+  for (const [language, expected] of [
+    ["en", {
+      bound: ["Proof · checked by enumeration up to n ≤ 12", "A finite enumeration is no general proof.", "Proof obligations", "Induction step"],
+      timing: ["Levels: 1 machine · 2 builds · 10 processes · 5 iterations", "Warm-up: One discarded process", "Iterations within one process are not independent runs."],
+      gain: ["Baseline", "Tuned baseline", "Selection", "Best validation loss", "Budget", "20 trials each", "Seeds", "5", "Split", "80/10/10"],
+      episodes: ["Episodes: 20 planned · 18 executed · 12 completed · 3 intervened · 6 stopped · ≈9007199254740992 excluded", "Protocol: Grasp protocol v1",
+        "These counts overlap: an intervened episode may also be completed, and the denominator is the protocol's."],
+      narrowed: "Narrows activity 8 Machine B reverses it.",
+      revised: "Activity 9 narrows this scope: Machine B reverses it.",
+    }],
+    ["zh-Hans", {
+      bound: ["证明 · 枚举核对至 n ≤ 12", "有限枚举不是一般性证明。", "证明义务"],
+      timing: ["层级: 1 台机器 · 2 次构建 · 10 个进程 · 5 次迭代", "同一进程内的多次迭代不是相互独立的运行。"],
+      gain: ["基线", "选模", "预算", "种子数", "数据划分"],
+      episodes: ["回合: 20 计划 · 18 执行 · 12 完成 · 3 介入 · 6 停止 · ≈9007199254740992 排除", "这些计数会重叠"],
+      narrowed: "收窄活动 8 Machine B reverses it.",
+      revised: "活动 9 收窄了这一适用范围: Machine B reverses it.",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: [recorded(3, theory, "T."), recorded(4, systems, "S."), recorded(5, ml, "M."), recorded(6, robot, "R."),
+        recorded(8, first, "v1."), recorded(9, narrowed, "v2.")], executions: [], hasMore: false },
+      task_research_get: (body) => (body.activitySeq === 8 ? answer : { ...answer, activitySeq: body.activitySeq, revision: null, revisedBy: null }),
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === 6, "every record");
+      const cards = [...page.document.querySelectorAll(".task-research")];
+      const card = (title) => cards.find((el) => el.textContent.includes(title));
+      for (const [title, key] of [["The bound holds", "bound"], ["Timing protocol", "timing"], ["A gain on task A", "gain"], ["Real-arm episodes", "episodes"]]) {
+        const details = card(title).querySelector(".task-research-study");
+        for (const text of expected[key]) assert.ok(details.textContent.includes(text), `${language} ${key}: ${text} in ${details.textContent}`);
+      }
+      const v2 = card("Layout B is faster on machine A");
+      assert.equal(v2.querySelector(".task-research-revises").getAttribute("data-scope"), "narrows");
+      assert.ok(v2.querySelector(".task-research-revises").textContent.includes(expected.narrowed), v2.querySelector(".task-research-revises").textContent);
+      const v1 = cards.find((el) => el.textContent.includes("Layout B is faster") && !el.textContent.includes("on machine A"));
+      assert.ok(v1.textContent.includes("Machine B"), "the earlier scope is shown as written");
+      toggleOf(v1).click();
+      await waitFor(() => v1.querySelector(".task-research-revised"), `${language}: how it was revised`);
+      assert.ok(v1.querySelector(".task-research-revised").textContent.includes(expected.revised), v1.querySelector(".task-research-revised").textContent);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("a theory record's bound shows as its author wrote it whatever was checked, and an enumeration's only once (T-17)", async () => {
+  const base = { schema: "research/1", text: "As written.", type: "claim", field: "theory", status: "conditional" };
+  const records = [
+    { ...base, id: "by-hand", title: "Claim by hand", details: { result: "partial", checked: "by_hand", bound: "n ≤ 12" } },
+    { ...base, id: "alone", title: "Claim with a bound alone", details: { bound: "k < 5, for prime k only" } },
+    { ...base, id: "formal", title: "Claim in Lean", details: { checked: "formal", bound: "|x| ≤ 2^10" } },
+    { ...base, id: "none", title: "Claim not yet looked at", details: { checked: "none", bound: "m ≥ 3" } },
+    { ...base, id: "enumerated", title: "Claim enumerated", details: { result: "proof", checked: "enumeration", bound: "n ≤ 12" } },
+    { ...base, id: "unbounded", title: "Claim with no bound", details: { result: "conjecture", checked: "by_hand" } },
+  ];
+  for (const [language, expected] of [
+    ["en", {
+      "Claim by hand": ["Partial result · checked by hand", "Bound: n ≤ 12"],
+      "Claim with a bound alone": ["Bound: k < 5, for prime k only"],
+      "Claim in Lean": ["checked formally", "Bound: |x| ≤ 2^10", "A formal check covers the formal statement"],
+      "Claim not yet looked at": ["not checked", "Bound: m ≥ 3"],
+      "Claim enumerated": ["Proof · checked by enumeration up to n ≤ 12", "A finite enumeration is no general proof."],
+      "Claim with no bound": ["Conjecture · checked by hand"],
+      label: "Bound",
+    }],
+    ["zh-Hans", {
+      "Claim by hand": ["部分结果 · 人工核对", "界限: n ≤ 12"],
+      "Claim with a bound alone": ["界限: k < 5, for prime k only"],
+      "Claim in Lean": ["形式化核对", "界限: |x| ≤ 2^10", "形式化核对只覆盖形式化的命题"],
+      "Claim not yet looked at": ["未核对", "界限: m ≥ 3"],
+      "Claim enumerated": ["证明 · 枚举核对至 n ≤ 12", "有限枚举不是一般性证明。"],
+      "Claim with no bound": ["猜想 · 人工核对"],
+      label: "界限",
+    }],
+  ]) {
+    const page = mount(quietCore({
+      task_list: { tasks: [task()], hasMore: false, counts: { doing: 1 } },
+      task_get: { task: task(), activities: records.map((record, n) => recorded(3 + n, record, "T.")), executions: [], hasMore: false },
+      task_research_get: (body) => readOf(body.activitySeq, records[body.activitySeq - 3], 1, body.activitySeq),
+    }));
+    try {
+      if (language !== "en") chinese(page);
+      page.render({ workspaceId: "ws-1" });
+      await openTask(page);
+      await waitFor(() => page.document.querySelectorAll(".task-research").length === records.length, "every record");
+      const cards = [...page.document.querySelectorAll(".task-research")];
+      const card = (title) => cards.find((el) => el.querySelector("h5").textContent === title);
+      const shows = (title, state) => {
+        const details = card(title).querySelector(".task-research-study");
+        assert.ok(details, `${language} ${state} ${title}: its details`);
+        for (const text of expected[title]) assert.ok(details.textContent.includes(text), `${language} ${state} ${title}: ${text} in ${details.textContent}`);
+        return details.textContent;
+      };
+      for (const state of ["collapsed", "expanded"]) {
+        for (const record of records) shows(record.title, state);
+        // An enumeration's line already says how far it went: no second bound.
+        const enumerated = shows("Claim enumerated", state);
+        assert.equal(enumerated.split("n ≤ 12").length - 1, 1, `${language} ${state}: the bound once in ${enumerated}`);
+        assert.ok(!enumerated.includes(`${expected.label}:`), `${language} ${state}: no bound line in ${enumerated}`);
+        // No bound given: no label left empty.
+        const unbounded = shows("Claim with no bound", state);
+        assert.ok(!unbounded.includes(expected.label), `${language} ${state}: no bound label in ${unbounded}`);
+        if (state === "collapsed") {
+          for (const el of cards) toggleOf(el).click();
+          await waitFor(() => cards.every((el) => el.querySelector(".task-research-read")), `${language}: every record read`);
+          // The read's panel is not the record's details.
+          for (const el of cards) assert.ok(!el.querySelector(".task-research-details").textContent.includes(expected.label), el.querySelector(".task-research-details").textContent);
+        }
+      }
       assert.deepEqual(page.errors, []);
     } finally {
       page.close();

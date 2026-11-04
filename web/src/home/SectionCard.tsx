@@ -92,7 +92,7 @@ export function PinButton({ section, projectId }: { section: Section; projectId:
       aria-pressed={pinned}
       aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
       title={pinned ? t.unpin : t.pin}
-      onClick={() => pins.toggle(projectId, section)}
+      onClick={(event) => pins.toggle(projectId, section, event.currentTarget)}
     >
       {pinned ? <PinOff size={13} /> : <Pin size={13} />}
     </button>
@@ -142,6 +142,9 @@ export const SectionCard = memo(function SectionCard({
   // draft or unconfirmed reply opens it again after a reload.
   const replyable = !readOnly && section.kind !== "ask" && !section.history;
   const [replying, setReplying] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
+  // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
+  const [replyOpened, setReplyOpened] = useState(false);
+  const replyButton = useRef<HTMLButtonElement>(null);
   const changed = changedSinceSeen(section);
   // Which blocks changed is marked on them; the card itself only says that it did.
   const blocks = useMemo(() => changedBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
@@ -247,10 +250,14 @@ export const SectionCard = memo(function SectionCard({
           <button
             type="button"
             className="quiet-button home-reply-open"
+            ref={replyButton}
             aria-expanded={replying}
             aria-label={t.replyLabel(section.title)}
             title={t.replyTitle(section.owner.name)}
-            onClick={() => setReplying((open) => !open)}
+            onClick={() => {
+              setReplyOpened(true);
+              setReplying((open) => !open);
+            }}
           >
             <MessageSquareReply size={13} />
             {t.reply}
@@ -383,7 +390,17 @@ export const SectionCard = memo(function SectionCard({
       )}
       </div>
       {replyable && replying && (
-        <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setReplying(false)} />
+        <CardReply
+          section={section}
+          projectId={projectId}
+          workspaceId={workspaceId}
+          agents={agents}
+          opened={replyOpened}
+          onClose={() => {
+            replyButton.current?.focus();
+            setReplying(false);
+          }}
+        />
       )}
       {error && (
         <p className="inline-error" role="alert">
