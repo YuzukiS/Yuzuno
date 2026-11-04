@@ -134,22 +134,24 @@
     }
     /* The excerpt gives way over the same time as the list comes, and comes
        back as it goes, so the pin grows as it opens and shrinks as it closes,
-       never first the other way. Hidden once it is out of the way. */
+       never first the other way. Its own height moves, from all of it to
+       nothing at the list's pace, not its two-line cap, so a one-line excerpt
+       gives way as evenly as a full one. Hidden once it is out of the way. */
     .current-turn-excerpt {
       transition:
-        max-height var(--motion-exit-small) var(--ease-exit),
+        height var(--motion-exit-small) var(--ease-exit),
         margin-top var(--motion-exit-small) var(--ease-exit),
         opacity var(--motion-exit-small) var(--ease-exit),
         visibility var(--motion-exit-small) allow-discrete;
     }
     .current-turn-prompt[open] .current-turn-excerpt {
       display: -webkit-box;
-      max-height: 0;
+      height: 0;
       margin-top: 0;
       opacity: 0;
       visibility: hidden;
       transition:
-        max-height var(--motion-small) var(--ease-standard),
+        height var(--motion-small) var(--ease-standard),
         margin-top var(--motion-small) var(--ease-standard),
         opacity var(--motion-small) var(--ease-standard),
         visibility var(--motion-small) allow-discrete;
