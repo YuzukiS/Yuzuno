@@ -3212,7 +3212,12 @@ export function App() {
                   // clicked; their window is kept as it is, and where they are
                   // reading is noted, as a scroll would note it, so the
                   // conversation reopens there rather than at the end (T-19).
-                  if ((e.target as Element).closest?.("summary")) {
+                  // Only a disclosure of the conversation itself: a dialog
+                  // portaled out of it (a revert's or a rewind's original
+                  // input) still sends its clicks here through React, and
+                  // leaves the conversation where it was (T-10, Lead 4153).
+                  const summary = (e.target as Element).closest?.("summary");
+                  if (summary && e.currentTarget.contains(summary)) {
                     live.pinWindow();
                     stickToBottom.current = false;
                     noteReading(false);

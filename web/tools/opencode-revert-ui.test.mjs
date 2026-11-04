@@ -63,9 +63,10 @@ async function mount(core, stored = {}, shownTurn = "t2", prepare = () => {}) {
   const agents = [agent("a", "Mori", "opencode"), agent("b", "Hana", "codex")];
   window.fetch = async (url, init = {}) => {
     const { pathname: path, searchParams } = new URL(String(url), window.location.href);
-    core.calls.push({ path, query: searchParams.get("id"), method: init.method || "GET", body: init.body && JSON.parse(init.body) });
+    core.calls.push({ path, query: searchParams.get("id"), turnId: searchParams.get("turnId"), method: init.method || "GET", body: init.body && JSON.parse(init.body) });
     if (path === "/api/workspace") return reply(200, { workspace: { id: "ws-1" }, agents, runtime: { connected: true }, defaultCwd: "/w" });
-    if (path === "/api/agents/a") return reply(200, { agent: agents[0], pending: [], artifacts: [], messageReceipts: [], turns: core.turns });
+    if (path === "/api/agents/a") return reply(200, { agent: agents[0], pending: [], artifacts: [], messageReceipts: [], turns: core.turns,
+      ...(core.window ? { conversation: windowOf(core.turns) } : {}) });
     if (path === "/api/agents/b") return reply(200, { agent: agents[1], pending: [], artifacts: [], messageReceipts: [], turns: [] });
     const revert = path.match(/^\/api\/agents\/a\/rewind\/(\w+)$/)?.[1];
     if (revert) {
@@ -94,6 +95,14 @@ async function mount(core, stored = {}, shownTurn = "t2", prepare = () => {}) {
   return page;
 }
 const occurrences = (text, part) => text.split(part).length - 1;
+/** Mori's conversation as one window, with its metadata, as Core sends it: what the reader's window is held at. */
+const windowOf = (turns) => ({
+  index: turns.map((t, i) => ({ ...t, number: i + 1, itemCount: t.items.length, items: [t.items[0]] })),
+  questions: [], nativeClientIds: [],
+  start: JSON.stringify([turns[0].id, turns[0].items[0].id]),
+  end: JSON.stringify([turns.at(-1).id, turns.at(-1).items.at(-1).id]),
+  hasBefore: false, hasAfter: false, totalItems: turns.reduce((n, t) => n + t.items.length, 0),
+});
 
 test("a revert's result stays readable once Core's record drops the turn it reverted", async () => {
   const core = { calls: [], turns: [turn("t1", "Start", "Started."), turn("t2", "Fix a.txt", "Fixed.")], answers: {
@@ -375,4 +384,35 @@ test("a draft cleared after a revert's text was saved stays cleared, even when w
     assert.equal(composerText(again.composer()), "", "nor shown as holding text");
     assert.deepEqual(again.errors, []);
   } finally { again.close(); }
+});
+
+test("a revert dialog's disclosure is not the conversation's: opening its original input does not take over from following", async () => {
+  const withTool = turn("t2", "Fix a.txt", "Fixed.");
+  withTool.items.splice(1, 0, { id: "prt_1", type: "opencodeTool", name: "bash", callId: "call_1", input: { command: "ls" }, output: "a.txt", status: "completed" });
+  const core = { calls: [], window: true, turns: [turn("t1", "Start", "Started."), withTool], answers: { preview, attempt: { attempt: null } } };
+  const page = await mount(core);
+  const reads = () => core.calls.filter((c) => c.path === "/api/agents/a" && c.method === "GET");
+  const readAgain = async () => {
+    const before = reads().length;
+    page.changed();
+    await until(() => reads().length > before, "Mori's conversation read again");
+    return reads().at(-1);
+  };
+  try {
+    // The revert dialog's original input, opened and closed, as a reader of it would.
+    page.button("Rewind", page.d.querySelector('[data-turn-id="t2"]')).click();
+    await until(() => page.button("Revert", page.dialog()), "the preview offers the revert");
+    const input = [...page.dialog().querySelectorAll("summary")].find((el) => el.textContent.trim() === "Original input");
+    assert.ok(input, "the dialog's original input");
+    input.click();
+    page.button("Close", page.dialog()).click();
+    await until(() => !page.dialog(), "closed");
+    assert.equal((await readAgain()).turnId, null, "a dialog's disclosure is not the conversation's: it still follows the latest");
+    // The conversation's own disclosure does take over from following: the reader's window is held.
+    const own = page.d.querySelector('[data-turn-id="t2"] summary');
+    assert.ok(own, "the tool row's own disclosure");
+    own.click();
+    assert.equal((await readAgain()).turnId, "t1", "its own disclosure holds the reader's window");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
 });
