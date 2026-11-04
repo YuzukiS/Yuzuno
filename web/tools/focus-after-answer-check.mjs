@@ -182,9 +182,9 @@ const noticeCases = [
     shows: (n) => n.getByText("Automatic continue was cancelled", { exact: false }) },
 ];
 const cards = [
-  { tag: "Codex question", agent: "s", name: "Sora" },
-  { tag: "Claude question", agent: "r", name: "Rin" },
-  { tag: "OpenCode question", agent: "o", name: "Ao" },
+  { tag: "a Codex question", agent: "s", name: "Sora" },
+  { tag: "a Claude question", agent: "r", name: "Rin" },
+  { tag: "an OpenCode question", agent: "o", name: "Ao" },
 ];
 
 /** A fresh page on `name`'s conversation. */
@@ -270,7 +270,7 @@ try {
     for (const c of cards) {
       const state = { notice: views.none, late: 0, actions: [] };
       const { context, page } = await open(run, state, c.name);
-      const name = `${how}: Answer again on a ${c.tag}`;
+      const name = `${how}: Answer again on ${c.tag}`;
       const id = `request-${pending[c.agent].id}`;
       try {
         const card = page.locator(`#${id}`);
