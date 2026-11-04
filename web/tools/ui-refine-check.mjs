@@ -195,6 +195,8 @@ await page.route("**/*", async (route) => {
     return route.fulfill({
       json: { workspace: { id: WORKSPACE }, agents, runtime: { connected: true }, defaultCwd: "/fixture" },
     });
+  // No Appearance preset shared in this Workspace (appearance-preset.ts reads { workspaceId, preset }).
+  if (url.pathname === "/api/appearance-preset") return route.fulfill({ json: { workspaceId: WORKSPACE, preset: null } });
   // What the app reads once it knows its Workspace: no reading place held by Core.
   if (/^\/api\/agents\/[^/]+\/reading$/.test(url.pathname)) return route.fulfill({ json: { handoff: null } });
   if (/^\/api\/agents\/[ab]$/.test(url.pathname))

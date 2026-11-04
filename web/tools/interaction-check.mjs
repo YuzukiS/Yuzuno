@@ -322,9 +322,9 @@ async function fixture() {
       ?.getAttribute("aria-label")
       .includes("unavailable"),
   );
-  assert.equal(
-    requests.filter((r) => /interrupt|review|respond/.test(r.path)).length,
-    0,
+  assert.deepEqual(
+    requests.filter((r) => /interrupt|review|respond/.test(r.path)).map((r) => `${r.method} ${r.path}`),
+    [],
   );
   check("working send, agent switch, no interrupt/read/pending mutations");
 }
