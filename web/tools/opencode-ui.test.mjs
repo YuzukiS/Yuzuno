@@ -312,7 +312,7 @@ test("an unsent answer survives a reload, within bounds, and says so when it can
   } finally { damaged.close(); }
 });
 
-test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind", async () => {
+test("an OpenCode turn names OpenCode, shows its tool calls and offers its own revert", async () => {
   const turn = { id: "msg_1", status: "completed", items: [
     { id: "u1", type: "userMessage", content: [{ type: "text", text: "List the files" }] },
     { id: "prt_1", type: "opencodeTool", name: "bash", callId: "call_1", input: { command: "ls" }, output: "a.txt\nb.txt", status: "completed" },
@@ -328,7 +328,7 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind
   try {
     await tick(); await tick();
     assert.ok(button(codex, "Rewind"), "the same turn of a Codex Agent offers a rewind");
-    assert.equal(button(page, "Rewind"), undefined);
+    assert.match(button(page, "Rewind")?.title ?? "", /reverting to before this turn, with its files/);
     const text = page.document.body.textContent;
     assert.match(text, /OpenCode/);
     assert.doesNotMatch(text, /Codex/);
@@ -340,4 +340,83 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind
     assert.match(tool.textContent, /a\.txt\s*b\.txt/);
     assert.deepEqual(page.errors, []);
   } finally { codex.close(); page.close(); }
+});
+
+// OpenCode's revert (T-10): previewed with its files, asked once, the
+// original text given back only once OpenCode keeps the revert; an outcome
+// not confirmed is only checked, never kept by choice or asked again.
+test("OpenCode's revert previews its files, asks once and gives the text back only once it is kept", async () => {
+  const turn = { id: "msg_2", status: "completed", items: [
+    { id: "u2", type: "userMessage", content: [{ type: "text", text: "Fix a.txt" }] },
+    { id: "prt_3", type: "agentMessage", text: "Fixed." },
+  ] };
+  const preview = { previewId: "revert_1", available: true, removedTurns: 2, keptTurns: 1, draft: "Fix a.txt",
+    files: [{ path: "/work/a.txt", current: { state: "file", size: 3, sha256: "b", executable: false }, expected: { state: "absent" } }] };
+  const open = async (answers) => {
+    const drafts = [];
+    const page = mount((url) => {
+      for (const [end, body] of Object.entries(answers)) if (url.endsWith(end)) return typeof body === "function" ? body() : body;
+      return undefined;
+    });
+    page.window.renderTurn({ turn, index: 0, agent: { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" },
+      onFile() {}, onRewindDraft(agent, text) { drafts.push([agent, text]); } });
+    await tick();
+    button(page, "Rewind").click(); await tick(); await tick();
+    return { page, drafts };
+  };
+  const sent = (page, end) => page.calls.filter((call) => call.url.endsWith(end)).map((call) => call.body);
+
+  // Kept, every file as the snapshot holds it: the text comes back once, and the dialog closes.
+  const kept = await open({ "/rewind/preview": preview,
+    "/rewind/confirm": { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [{ path: "/work/a.txt", outcome: "verified" }] } });
+  try {
+    const text = kept.page.document.body.textContent;
+    assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay/);
+    assert.match(text, /\/work\/a\.txt: now 3 bytes, becomes no file/);
+    assert.match(text, /Any change made since, by you or another Agent, is overwritten; Core keeps a copy of each first/);
+    assert.equal(button(kept.page, "Keep current history"), undefined, "no way to keep the current history");
+    assert.equal(button(kept.page, "Preview file restore…"), undefined);
+    assert.deepEqual(kept.drafts, [], "nothing given back before the revert is confirmed");
+    button(kept.page, "Revert").click(); await tick(); await tick();
+    assert.deepEqual(sent(kept.page, "/rewind/confirm"), [{ previewId: "revert_1" }], "asked once, for that preview");
+    assert.deepEqual(kept.drafts, [["a", "Fix a.txt"]]);
+    assert.doesNotMatch(kept.page.document.body.textContent, /in OpenCode’s conversation and in the files/, "closed once kept");
+    assert.deepEqual(kept.page.errors, []);
+  } finally { kept.page.close(); }
+
+  // Not confirmed: only checked, held back meanwhile; kept on check with a file that drifted: the text once, the file named.
+  let checks = 0;
+  const unsure = await open({ "/rewind/preview": preview,
+    "/rewind/confirm": { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" },
+    "/rewind/check": () => (++checks === 1
+      ? { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" }
+      : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退，但有 1 个文件不是快照里的内容",
+        files: [{ path: "/work/a.txt", outcome: "drifted", why: null }] }) });
+  try {
+    button(unsure.page, "Revert").click(); await tick(); await tick();
+    let text = unsure.page.document.body.textContent;
+    assert.match(text, /The revert is not yet confirmed/);
+    assert.match(text, /New messages to this Agent wait until the outcome is confirmed\. The revert is never asked for again/);
+    assert.equal(button(unsure.page, "Keep current history"), undefined, "an unknown outcome is never kept by choice");
+    assert.deepEqual(unsure.drafts, [], "no text back while not confirmed");
+    button(unsure.page, "Check outcome").click(); await tick(); await tick();
+    assert.deepEqual(unsure.drafts, []);
+    button(unsure.page, "Check outcome").click(); await tick(); await tick();
+    assert.deepEqual(sent(unsure.page, "/rewind/check"), [{ attemptId: "revert_1" }, { attemptId: "revert_1" }]);
+    assert.deepEqual(sent(unsure.page, "/rewind/confirm").length, 1, "never asked again");
+    assert.deepEqual(unsure.drafts, [["a", "Fix a.txt"]], "the text once, when kept");
+    text = unsure.page.document.body.textContent;
+    assert.match(text, /Reverted\./);
+    assert.match(text, /\/work\/a\.txt: neither as before nor as the snapshot holds it/, "a file that drifted is named, the dialog left open");
+    assert.deepEqual(unsure.page.errors, []);
+  } finally { unsure.page.close(); }
+
+  // Ended with nothing kept: no text back.
+  const none = await open({ "/rewind/preview": preview,
+    "/rewind/confirm": { attemptId: "revert_1", status: "unchanged", draft: "", message: "没有保留回退的结果" } });
+  try {
+    button(none.page, "Revert").click(); await tick(); await tick();
+    assert.match(none.page.document.body.textContent, /Not reverted\. 没有保留回退的结果/);
+    assert.deepEqual(none.drafts, [], "nothing kept, no text back");
+  } finally { none.page.close(); }
 });

@@ -5,3 +5,5 @@
 .rewind-dialog p { line-height: 1.5; }
 .rewind-note { opacity: .75; }
 .rewind-input { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: inherit; }
+.revert-files { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-height: 200px; overflow: auto; }
+.revert-files code { overflow-wrap: anywhere; }

@@ -24,6 +24,7 @@ native history and Core's prior view, linked by the rewind attempt ID.
 | Codex files | No file restore through conversation rewind | Unavailable |
 | Claude conversation | Unavailable in the current integration (CLI 2.1.280 / SDK 0.3.296) | Unavailable |
 | Claude files | Existing native checkpoint preview and restore | Not supported by the current file-checkpoint integration |
+| OpenCode conversation and files | OpenCode's own revert (`POST /session/:id/revert`, 1.19.3), together; see [OpenCode](#opencode). Checked against a stand-in only | Unavailable |
 
 Claude's file option opens the existing file-checkpoint preview. It restores
 only files covered by Claude Code's checkpoint and leaves conversation history
@@ -50,6 +51,51 @@ refusal preserves the existing history.
 The preview loads history only when opened, with limits of 1,000 turns and a
 32 MiB archive. Exceeding either limit refuses the operation. Rendering reply
 footers does not scan native histories or file checkpoints.
+
+## OpenCode
+
+On an OpenCode Agent, **Rewind** is OpenCode's own revert. The selected turn and
+later turns leave the conversation; OpenCode removes them from its session with
+the next message it gets. Each file that a later change of OpenCode's touched
+goes back as OpenCode's snapshot holds it. It is not a conversation-only
+rewind.
+
+The preview lists each such file: what it is now and what it becomes. A change
+made to it since, by you or another Agent, is overwritten. Core keeps a copy of
+each file in the Agent's folder before it asks OpenCode. Files can be sent back
+only when Core can tell exactly what OpenCode will write:
+
+- OpenCode was started by Core from its native executable, not a script or
+  wrapper, and Core's environment sets no Git variables;
+- each path is plain, not `.gitattributes`, and Git would not convert the file
+  on checkout;
+- at most 200 files, 8 MiB each and 32 MiB in all.
+
+Otherwise a revert with files is refused before anything is asked. A turn with
+no file to send back needs none of this.
+
+A revert is refused while anything runs or waits for an answer, while an
+earlier rewind, compaction or message is unconfirmed, or while the session
+already holds a revert. Confirming reads everything again and refuses on any
+change; then OpenCode is asked once.
+
+- **Reverted:** the session holds the revert. Each file is reported on its own:
+  as the snapshot holds it, still as before (OpenCode only logs a checkout that
+  fails), or neither. Nothing is overwritten to fix it. The original text is
+  added to the draft.
+- **Not reverted:** OpenCode refused before it began (busy, no such session, a
+  request it could not read), or its request ended without keeping the revert
+  and a new read finds the messages and every file as before. No turn leaves
+  and no text is added.
+- **Not yet confirmed:** new messages, commands, `/compact` and another revert
+  wait. **Check outcome** reads again only a request OpenCode answered. One it
+  never answered stays unconfirmed: OpenCode's own Git processes may still be
+  changing files. There is no **Keep current history** for OpenCode, and the
+  revert is never asked for again.
+
+OpenCode's restore (unrevert) is not offered: it writes back every file of the
+snapshot. This has been checked against Core's stand-in of OpenCode 1.19.3, not
+yet against OpenCode itself.
 
 ## Protocol evidence
 
