@@ -1,5 +1,6 @@
 import { MessageContent } from "./MessageContent";
 import { RewindButton } from "./Rewind";
+import { OpenCodeForkButton } from "./ForkOpenCode";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff";
 import { parseMessageLink, parseReportLink, useMessageLinks } from "./deep-link";
@@ -1088,6 +1089,7 @@ export function Turn({
                     <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
                     <TurnFooter parts={footer} />
                     <RewindButton agent={agent} turn={turn} onDraft={onRewindDraft} />
+                    <OpenCodeForkButton agent={agent} turn={turn} />
                   </div>
                 ) : (
                   <>
@@ -1288,6 +1290,7 @@ export function Turn({
           <div className="turn-footer-standalone reply-actions">
             <TurnFooter parts={footer} />
             <RewindButton agent={agent} turn={turn} onDraft={onRewindDraft} />
+            <OpenCodeForkButton agent={agent} turn={turn} />
           </div>
         )}
       </div>

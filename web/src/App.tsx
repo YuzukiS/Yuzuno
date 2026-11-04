@@ -210,6 +210,7 @@ import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
 import { OpenCodeRevertHost } from "./Rewind";
+import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
 
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
@@ -2469,6 +2470,21 @@ export function App() {
     if (saved) setNotice(shellNow.current.rewindSaved);
     return saved;
   }, [setDraft]);
+  // An OpenCode fork (T-10 Fork): its new Agent shown and opened. The source
+  // Agent stays as it is, its draft too: nothing is copied or sent.
+  function openForked(outcome: OpenCodeForkOutcome) {
+    const fork = outcome.agent;
+    if (!fork) return;
+    markJoined(fork.id);
+    setWorkspace((w) => w ? { ...w, agents: [...w.agents.filter((a) => a.id !== fork.id), fork] } : w);
+    revealAgent(fork);
+    setSelected(fork.id);
+    setAgentScope(fork.closedAt ? "closed" : "active");
+    refresh();
+    setNotice(fork.closedAt ? shell.forkClosed(fork.name)
+      : outcome.connected ? shell.forkContinuing(fork.name)
+      : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" ")));
+  }
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It
    * only adds to that Agent's draft, after what is there, and opens it: the
@@ -3265,6 +3281,8 @@ export function App() {
                   <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
                   {/* OpenCode's revert, held for the Agent, not for the turn it removes (T-10). */}
                   <OpenCodeRevertHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onDraft={previewMode || closed ? undefined : rewindDraft}>
+                  {/* OpenCode's fork into a new Agent, also held for the Agent (T-10 Fork). */}
+                  <OpenCodeForkHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onForked={openForked}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpHere ? { turnId: jumpHere, itemId: jumpItem.current ?? undefined } : pageTarget}>
@@ -3401,6 +3419,7 @@ export function App() {
                   {pageSpace === "after" && currentDetail?.conversation?.hasAfter &&
                     <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   </ConversationWindow>
+                  </OpenCodeForkHost>
                   </OpenCodeRevertHost>
                   </InputReading.Provider>
                 </div>
