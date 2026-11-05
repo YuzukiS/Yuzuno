@@ -200,7 +200,7 @@ async fn through_mcp_a_lead_proposes_a_member_is_refused_and_the_user_decides() 
     let lead = tokio::time::timeout(std::time::Duration::from_secs(10), ().serve(connect("lead"))).await.unwrap().unwrap();
     let member = tokio::time::timeout(std::time::Duration::from_secs(10), ().serve(connect("member"))).await.unwrap().unwrap();
     let tools = lead.list_all_tools().await.unwrap();
-    for name in TOOLS {
+    for name in ["handover_get", "handover_propose"] {
         assert!(tools.iter().any(|t| t.name == name), "{name} is offered to Agents");
     }
     assert!(!tools.iter().any(|t| t.name.contains("decision") || t.name.contains("approve")), "no Agent tool decides");

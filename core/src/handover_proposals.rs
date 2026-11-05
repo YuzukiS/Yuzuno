@@ -24,8 +24,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-pub(crate) const TOOLS: [&str; 2] = ["handover_get", "handover_propose"];
-
 /// With the versions' table (handover::migrate): idempotent, on every open.
 /// One pending proposal per Project, and one proposal per proposer and
 /// requestId; a deleted Project's proposals go with it.
@@ -321,7 +319,7 @@ fn decide(store: &Store, project: &str, id: &str, input: &Decision) -> Result<(V
     let current = current_version(&tx, project)?;
     ensure!(current == input.expected_version,
         "version_conflict: this Project's handover changed after you read the proposal; reload it before deciding");
-    let project_name: String = tx.query_row("SELECT name FROM projects WHERE id=?1", [project], |r| r.get(0))?;
+    let project_name: String = tx.query_row("SELECT json_extract(data,'$.name') FROM projects WHERE id=?1", [project], |r| r.get(0))?;
     let said = note.map(|n| format!("\n\nTheir note: {n}")).unwrap_or_default();
     let (state, version, body) = if approve {
         ensure!(current == p.base_version,
