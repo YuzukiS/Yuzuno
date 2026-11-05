@@ -30,6 +30,9 @@ pub(crate) use remote::WINDOWS_LEGACY_ROOT;
 mod resource_summary;
 #[cfg(test)]
 mod resource_tests;
+mod suggestion;
+#[cfg(test)]
+mod suggestion_tests;
 #[cfg(test)]
 mod remote_tests;
 mod runs;
@@ -533,6 +536,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/disk", post(set_disk_reserve))
         .route("/api/jobs/windows", post(set_windows_jobs))
         .route("/api/jobs/live", get(live))
+        .route("/api/jobs/suggestion", get(suggestion_for))
         .route("/api/jobs/gpus", get(gpus))
         .route("/api/jobs/gpus/{uuid}/admission", post(gpu_admission))
         .route("/api/jobs/gpus/{uuid}/settings", post(gpu_settings))
@@ -568,6 +572,27 @@ async fn list(
             json!({"agentId":input.agent_id,"taskId":input.task_id,"before":input.before}),
         )
         .await?,
+    ))
+}
+/// The submit form's question: what would this task's earlier runs of the
+/// same name or command suggest? argv is a JSON array of strings.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionFor {
+    task_id: String,
+    name: String,
+    argv: Option<String>,
+}
+async fn suggestion_for(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Query(input): Query<SuggestionFor>,
+) -> Result<Json<Value>, ApiError> {
+    let argv: Vec<String> = match input.argv.as_deref() {
+        Some(raw) => serde_json::from_str(raw).context("invalid_input: argv must be a JSON array of strings")?,
+        None => Vec::new(),
+    };
+    Ok(Json(
+        call(ws, None, "job_suggestion".into(), json!({"taskId":input.task_id,"name":input.name,"argv":argv})).await?,
     ))
 }
 async fn submit(
@@ -941,13 +966,15 @@ pub async fn call(
             let mut input: Submit = serde_json::from_value(input)?;
             input.validate()?;
             input.default_env();
+            // What earlier runs suggest, shown beside the answer (T-38 C).
+            let query = suggestion::Query { task_id: input.task_id.clone(), name: input.name.clone(), argv: input.argv.clone() };
             let prior = input.clone();
             let author = actor.clone();
             if let Some(job) = ws
                 .stored(move |s| s.previous_job(author.as_deref(), &prior))
                 .await?
             {
-                return Ok(job);
+                return Ok(suggestion::beside(&ws, job, query).await);
             }
             // A retry above named its Job however its alias resolves now. A
             // new one runs where the alias resolves now, from the submitting
@@ -990,7 +1017,7 @@ pub async fn call(
                     .await?;
                 changed(&ws);
                 ws.jobs.remote_wake.notify_one();
-                return Ok(job);
+                return Ok(suggestion::beside(&ws, job, query).await);
             }
             // On a host that cannot run local Jobs, writing the helper is
             // refused (host::local_host): after the retry and the alias above,
@@ -1021,7 +1048,7 @@ pub async fn call(
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
-            Ok(job)
+            Ok(suggestion::beside(&ws, job, query).await)
         }
         "job_list" => {
             ws.stored(move |s| s.list_jobs_for(actor.as_deref(), input)).await
@@ -1101,6 +1128,11 @@ pub async fn call(
             Ok(provenance::export(run.as_ref(), &jobs, &extents, provenance::Known::host(&ws.data_dir, std::env::var("HOME").ok())))
         }
         "job_live" => ws.stored(|s| s.live_job_counts()).await,
+        "job_suggestion" => {
+            let query: suggestion::Query = serde_json::from_value(input)?;
+            let suggestion = ws.stored(move |s| s.resource_suggestion(&query, None)).await?;
+            Ok(json!({"suggestion": suggestion}))
+        }
         "job_run_submit" => {
             let mut input: runs::RunSubmit = serde_json::from_value(input)?;
             for stage in &mut input.stages {
@@ -1111,13 +1143,21 @@ pub async fn call(
                 stage.env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
             }
             input.validate()?;
+            let queries: Vec<_> = input
+                .stages
+                .iter()
+                .map(|stage| {
+                    let submit = input.submit(stage);
+                    (stage.key().to_owned(), suggestion::Query { task_id: submit.task_id, name: submit.name, argv: submit.argv })
+                })
+                .collect();
             let prior = input.clone();
             let author = actor.clone();
             if let Some(run) = ws
                 .stored(move |s| s.previous_run(author.as_deref(), &prior))
                 .await?
             {
-                return Ok(run);
+                return Ok(suggestion::beside_run(&ws, run, queries).await);
             }
             let helper = host::helper(&ws.data_dir).await?;
             let capability = host::invoke(&helper, "capabilities", None, None).await?;
@@ -1170,7 +1210,7 @@ pub async fn call(
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
-            Ok(run)
+            Ok(suggestion::beside_run(&ws, run, queries).await)
         }
         "job_run_get" => {
             let q: RunReference = serde_json::from_value(input)?;
@@ -1576,12 +1616,12 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let make = |name: &str, description: &str, p: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":p,"required":required,"additionalProperties":false}});
     let run_id = json!({"runId":string});
     vec![
-        make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
+        make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. When the task ran the same name or argv before, suggestion gives what its measured peaks suggest requesting; it is never applied.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
         make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
         make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":job_ref}), vec!["jobId"]),
-        make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own.",
+        make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own. suggestions: per stage, what the task's earlier measured runs of the same name or argv suggest requesting; never applied.",
             json!({"requestId":string,"taskId":task_reference,"name":string,
                 "experiment":{"type":"string","description":"Optional label grouping runs of one experiment."},
                 "costLimitUsd":{"type":"number","exclusiveMinimum":0},
