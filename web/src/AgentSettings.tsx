@@ -431,17 +431,23 @@ export function AgentSettings({
           }}
         >
           <p className="agent-settings-location">{t.machine(agent.remote?.machine.name || null)}</p>
-          {loading && (
-            <p role="status">
-              <LoaderCircle size={14} className="spin" /> {t.loading}
-            </p>
-          )}
           <div className="agent-setting">
             <ChoiceChips
               label={t.model}
               name="agent-model"
               value={model}
               disabled={loading || saving}
+              // While the catalog loads, its note waits in the chips' row, a
+              // chip high (T-19 ST:AS2): how many rows the catalog takes is
+              // not known before it arrives, so a one-row catalog moves
+              // nothing, and a longer one only grows the dialog's bottom.
+              after={
+                loading ? (
+                  <span className="choice-chip-status" role="status">
+                    <LoaderCircle size={14} className="spin" /> {t.loading}
+                  </span>
+                ) : undefined
+              }
               onChange={(value) => selectModel(value, models, opencode ? opencodeVariant : claudeEffort)}
               choices={[
                 ...(claude || opencode ? [{ value: "", label: t.harnessDefault }] : []),

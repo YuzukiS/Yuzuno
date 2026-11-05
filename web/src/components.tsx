@@ -170,6 +170,7 @@ export function Modal({
   wide = false,
   className = "",
   onCloseAutoFocus,
+  onEscapeKeyDown,
   lang,
   closeLabel = "Close dialog",
   confirm = false,
@@ -183,6 +184,9 @@ export function Modal({
   /** More classes for the dialog box, such as a fixed size. */
   className?: string;
   onCloseAutoFocus?: (event: Event) => void;
+  /** Escape inside it; `preventDefault()` keeps the dialog open, for a part
+      of it that Escape closes first. */
+  onEscapeKeyDown?: (event: KeyboardEvent) => void;
   /** The language of its title and close button, when not the page's. */
   lang?: string;
   closeLabel?: string;
@@ -208,6 +212,7 @@ export function Modal({
           ref={box}
           className={`modal ${wide ? "modal-wide" : ""} ${entrance.confirm ? "modal-confirm" : ""} ${className}`.trim()}
           onCloseAutoFocus={onCloseAutoFocus}
+          onEscapeKeyDown={onEscapeKeyDown}
           lang={lang}
         >
           <div className="modal-heading">

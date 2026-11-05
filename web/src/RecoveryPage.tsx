@@ -1,7 +1,8 @@
-import { Component, Fragment, useState, type ReactNode } from "react";
+import { Component, Fragment, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Copy, Download, Eye, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { clearRecordedErrors, diagnosticsText, errorRecordProblem, gatherFacts, recordError, recordedErrors } from "./diagnostics";
 import { strings, TranslatedPart, useStrings } from "./i18n";
+import { useRevealIn } from "./surface";
 import "./diagnostics.css";
 
 // Diagnostics' words in the interface language (T-189). The report itself
@@ -41,6 +42,10 @@ const words = strings({
           : `${errors} recorded ${errors === 1 ? "error is" : "errors are"} kept in this browser for this site.`
     } Clearing removes only these error records and can't be undone. Core's and the desktop app's last-read versions stay, and so do drafts, settings, conversations and Core's logs. Errors after that are recorded as before.`,
   clear: "Clear recorded errors",
+  clearLabel: "Clear the recorded errors",
+  clearAsk: (count: number) => `Clear the ${count} ${count === 1 ? "error" : "errors"} recorded in this browser? This can't be undone.`,
+  clearConfirm: "Clear them",
+  keep: "Keep them",
   cleared: (count: number) => `Cleared ${count} recorded ${count === 1 ? "error" : "errors"} from this browser for this site.`,
   notCleared: (reason: string) => `Nothing was cleared: ${reason}. The recorded errors are kept as they were.`,
 }, {
@@ -67,6 +72,10 @@ const words = strings({
           : `此浏览器为此站点保存了 ${errors} 条已记录的错误。`
     }清除只会删除这些错误记录，且无法撤销。Core 和桌面应用最近读取的版本会保留，草稿、设置、会话和 Core 的日志也都保留。之后的错误照常记录。`,
   clear: "清除已记录的错误",
+  clearLabel: "清除已记录的错误",
+  clearAsk: (count) => `清除此浏览器中记录的 ${count} 条错误？此操作无法撤销。`,
+  clearConfirm: "清除",
+  keep: "保留",
   cleared: (count) => `已从此浏览器为此站点清除 ${count} 条已记录的错误。`,
   notCleared: (reason) => `没有清除任何内容：${recordProblemZh(reason)}。已记录的错误保持原样。`,
 });
@@ -269,6 +278,22 @@ export function DiagnosticsCopy() {
   const { text, state, saved, why, cleared, beforeClear, preview, copy, download, clear } = useDiagnosticsPreview();
   const errors = recordedErrors().length;
   const problem = errorRecordProblem();
+  // Clearing can't be undone, so it asks first, below its button; the result
+  // then shows next to the button and takes focus, as the confirmation goes
+  // and the button has nothing left to clear (T-19 ST:SX-105).
+  const [confirming, setConfirming] = useState(false);
+  const revealBox = useRef<HTMLDivElement>(null);
+  const confirmBox = useRef<HTMLDivElement>(null);
+  const clearButton = useRef<HTMLButtonElement>(null);
+  const result = useRef<HTMLParagraphElement>(null);
+  const [clears, setClears] = useState(0);
+  useRevealIn(revealBox, confirming || null);
+  useLayoutEffect(() => {
+    if (confirming) confirmBox.current?.focus({ preventScroll: true });
+  }, [confirming]);
+  useLayoutEffect(() => {
+    if (clears) result.current?.focus({ preventScroll: true });
+  }, [clears]);
   return (
     <section id="settings-diagnostics" className="settings-section diagnostics-section" aria-label={t.title}>
       <header className="settings-section-heading">
@@ -318,16 +343,47 @@ export function DiagnosticsCopy() {
       )}
       <div className="diagnostics-clear">
         <p className="diagnostics-note">{t.record(problem, errors)}</p>
-        <button type="button" className="secondary-button" onClick={clear} disabled={!!problem || errors === 0 || state === "reading"}>
+        <button ref={clearButton} type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={!!problem || errors === 0 || state === "reading"}>
           <Trash2 size={14} aria-hidden="true" /> {t.clear}
         </button>
+        {confirming && (
+          <div className="reveal" ref={revealBox}>
+            <div className="settings-confirm" role="group" aria-label={t.clearLabel} ref={confirmBox} tabIndex={-1}>
+              <p>{t.clearAsk(errors)}</p>
+              <span className="settings-confirm-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={state === "reading"}
+                  onClick={() => {
+                    setConfirming(false);
+                    clear();
+                    setClears((n) => n + 1);
+                  }}
+                >
+                  {t.clearConfirm}
+                </button>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => {
+                    setConfirming(false);
+                    clearButton.current?.focus();
+                  }}
+                >
+                  {t.keep}
+                </button>
+              </span>
+            </div>
+          </div>
+        )}
         {cleared && "cleared" in cleared && (
-          <p className="diagnostics-note" role="status">
+          <p className="diagnostics-note" role="status" ref={result} tabIndex={-1}>
             {t.cleared(cleared.cleared)}
           </p>
         )}
         {cleared && "notCleared" in cleared && (
-          <p className="diagnostics-note" role="alert">
+          <p className="diagnostics-note" role="alert" ref={result} tabIndex={-1}>
             {t.notCleared(cleared.notCleared)}
           </p>
         )}
