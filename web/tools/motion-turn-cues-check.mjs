@@ -351,6 +351,10 @@ for (const run of runs) {
     ok(`${tag}: a second question while the dock is shown: the dock plays nothing`,
       more.frames.every((f) => f.dock && !f.dock.plays.length) && !more.calls.some((c) => c.part === "dock"), { calls: more.calls });
 
+    // t-c1, in the window a conversation opens at, starts and completes live once more before leaving.
+    await bring(statusOf("t-c1", "inProgress"), "__announce", 600);
+    await bring(statusOf("t-c1", "completed", answer("t-c1-r", "The tests pass.")), "__announce", 600);
+
     // Not live: another Agent's question on its first view.
     const before = (await calls()).length;
     await open("Hana");
@@ -359,26 +363,27 @@ for (const run of runs) {
     ok(`${tag}: another Agent's conversation, first shown with a question: the dock shows with nothing playing`,
       hana.every((f) => f.dock && !f.dock.plays.length) && !(await calls()).slice(before).some((c) => c.part === "dock"), hana.at(-1)?.dock);
 
-    // Back on Mori after Hana (R2 3578219f): work-1's next live start and completion each cue once
-    // more, as they would have without leaving.
+    // Back on Mori after Hana (R2 3578219f): t-c1's next live start and completion each cue once more,
+    // as they would have without leaving. (The conversation opens at its latest Turns: work-1 is not
+    // among them.)
     await open("Mori");
-    await page.locator('.turn[data-turn-id="work-1"]').waitFor();
+    await page.locator('.turn[data-turn-id="t-c1"]').waitFor();
     await page.waitForTimeout(300);
-    const back = record("back on Mori, work-1 runs again", await bring(statusOf("work-1", "inProgress"), "__announce"));
-    const rerun3 = back.frames.filter((f) => f.turns["work-1"]?.activity);
+    const back = record("back on Mori, t-c1 runs again", await bring(statusOf("t-c1", "inProgress"), "__announce"));
+    const rerun3 = back.frames.filter((f) => f.turns["t-c1"]?.activity);
     if (reduced) ok(`${tag}: under reduced motion, back from another Agent, a shown Turn running again: its working indicator shows, nothing playing`,
-      rerun3.length > 5 && quiet(back.frames) && back.calls.length === 0, { at: rerun3[0]?.turns["work-1"], calls: back.calls });
+      rerun3.length > 5 && quiet(back.frames) && back.calls.length === 0, { at: rerun3[0]?.turns["t-c1"], calls: back.calls });
     else ok(`${tag}: back from another Agent, a shown Turn running again: its working indicator comes in once more over small (opacity only)`,
-      rerun3.length > 5 && fadeOf(rerun3[0].turns["work-1"].activity.plays) && back.calls.length === 1 && back.calls[0].part === "activity",
-      { at: rerun3[0]?.turns["work-1"], calls: back.calls });
-    const backDone = record("back on Mori, work-1 completes again", await bring(statusOf("work-1", "completed"), "__announce"));
-    const ended3 = backDone.frames.filter((f) => f.turns["work-1"]?.actions);
-    const first3 = ended3[0]?.turns["work-1"];
-    if (reduced) ok(`${tag}: under reduced motion, back from another Agent, a shown Turn completed again: its reply actions and files show, nothing playing`,
+      rerun3.length > 5 && fadeOf(rerun3[0].turns["t-c1"].activity.plays) && back.calls.length === 1 && back.calls[0].part === "activity",
+      { at: rerun3[0]?.turns["t-c1"], calls: back.calls });
+    const backDone = record("back on Mori, t-c1 completes again", await bring(statusOf("t-c1", "completed"), "__announce"));
+    const ended3 = backDone.frames.filter((f) => f.turns["t-c1"]?.actions);
+    const first3 = ended3[0]?.turns["t-c1"];
+    if (reduced) ok(`${tag}: under reduced motion, back from another Agent, a shown Turn completed again: its reply actions show, nothing playing`,
       ended3.length > 5 && !first3.activity && quiet(backDone.frames) && backDone.calls.length === 0, { first3, calls: backDone.calls });
-    else ok(`${tag}: back from another Agent, a shown Turn Core records completed again: its reply actions and its files come in once more over small (opacity only)`,
-      ended3.length > 5 && !first3.activity && fadeOf(first3.actions?.plays) && fadeOf(first3.files?.plays)
-        && backDone.calls.length === 2 && backDone.calls.every((c) => c.turn === "work-1" && (c.part === "actions" || c.part === "files")),
+    else ok(`${tag}: back from another Agent, a shown Turn Core records completed again: its reply actions come in once more over small (opacity only)`,
+      ended3.length > 5 && !first3.activity && fadeOf(first3.actions?.plays)
+        && backDone.calls.length === 1 && backDone.calls[0].turn === "t-c1" && backDone.calls[0].part === "actions",
       { first3, calls: backDone.calls });
     await page.screenshot({ path: join(output, `${tag}.png`) });
   } catch (error) {
