@@ -451,7 +451,9 @@ export function RemoteCreateAgent({
       open={open}
       onOpenChange={(value) => !value && !locked && close()}
       onEscapeKeyDown={(event) => {
-        if (!adding) return;
+        // Only while the editor shows: kept in the hidden New pane, it waits
+        // there, and Escape in another pane closes the dialog (R1 bd985b53).
+        if (!adding || mode !== "new") return;
         event.preventDefault();
         if (savingMachine) return;
         refocusAdd.current = true;

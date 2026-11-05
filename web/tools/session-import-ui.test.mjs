@@ -781,3 +781,21 @@ test("a pane switched away from keeps what was typed and previewed there, and th
     page.close();
   }
 });
+
+test("a bad ID typed over a kept preview is said once, below it, not again in the preview's out-of-reach form (T-19 ST:SX-28, R1 bd985b53)", async () => {
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page);
+    await read(page);
+    await value(page, page.document.querySelector("#import-session-id"), "not-an-id");
+    // "Read again" over the kept preview; where none is kept, "Preview session".
+    (button(page, "Read again") ?? button(page, "Preview session")).click();
+    await tick();
+    const said = [...page.document.querySelectorAll('[role="alert"]')]
+      .filter((node) => node.textContent.includes("Paste the session ID from Codex"));
+    assert.equal(said.length, 1, "the bad ID is said once");
+    assert.equal(!!said[0].closest("form[data-stale]"), false, "and not in the stale preview's form");
+  } finally {
+    page.close();
+  }
+});

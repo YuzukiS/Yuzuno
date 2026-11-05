@@ -491,3 +491,24 @@ test("Escape with the SSH machine editor open closes the editor, not New agent, 
     page.close();
   }
 });
+
+test("with the SSH machine editor kept open in the hidden New pane, Escape in another pane closes New agent (T-19 ST:SX-50, R1 bd985b53)", async () => {
+  let closes = 0;
+  const page = mount(() => undefined);
+  try {
+    await createDialog(page, { close() { closes++; } });
+    button(page, "Add SSH machine").click();
+    await tick();
+    assert.equal(!!page.document.querySelector("#new-ssh-machine"), true, "the editor is open in New");
+    button(page, "Existing Codex session").click();
+    await tick();
+    const field = page.document.querySelector("#import-session-id");
+    field.focus();
+    field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    assert.equal(closes, 1, "Escape in another pane closes New agent");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

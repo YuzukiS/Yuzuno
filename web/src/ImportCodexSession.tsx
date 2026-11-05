@@ -272,7 +272,8 @@ export function ImportCodexSession({
           {/* The error's two lines are kept while empty: a failure fills them instead of
               pushing the buttons down under the pointer. Below them it could fall out of this
               dialog's scrolled view (T-19 SX-35). */}
-          {errorShown ? (
+          {/* A stale preview's form is out of reach: its error shows below it, once. */}
+          {errorShown && !stale ? (
             <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
               <span>{errorShown}</span>
             </p>
