@@ -23,12 +23,15 @@ pub(crate) const RETRIES: i64 = 3;
 /// The wait before the first retry, doubled for each one after it.
 const FIRST_WAIT_SECONDS: i64 = 30;
 
-/// Unread mail whose native wake-up was refused, with its recipient (by
-/// state first: an index). Whether one is due is [`due`]'s.
+/// Unread mail whose native wake-up was refused, to a recipient still open,
+/// with that recipient (by state first: an index). Whether one is due is
+/// [`due`]'s. A closed recipient's batches are never rung
+/// (`pending_peer_deliveries`), so its refusals are not requeued at all.
 const REFUSED: &str = "SELECT seq,recipient_id,delivery_detail FROM collaboration_messages m
     WHERE delivery_state='error' AND json_extract(delivery_detail,'$.mode') IN ('start','steer','hook')
       AND COALESCE(json_extract(data,'$.metadata.kind'),'')!='update_wait'
-      AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)";
+      AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)
+      AND EXISTS(SELECT 1 FROM agents a WHERE a.id=m.recipient_id AND json_extract(a.data,'$.agent.closedAt') IS NULL)";
 
 /// When a wake-up was refused, if Core recorded it: refusals from before
 /// it did have none.
@@ -39,18 +42,32 @@ fn failed_at(detail: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|at| at.with_timezone(&chrono::Utc))
 }
 
+/// Why a wake-up waiting to ring again never will: its recipient is closed
+/// (or gone), or has read the mail. Pending mail rings only for an open
+/// recipient that has not read it (`pending_peer_deliveries`).
+fn stopped(read: bool, closed: bool) -> Option<&'static str> {
+    if closed {
+        Some("it is not tried again: the recipient is closed")
+    } else if read {
+        Some("it is not tried again: the recipient has read the mail")
+    } else {
+        None
+    }
+}
+
 /// Why Core does not try this refused wake-up again, or None when it does,
 /// at the recipient's next wake-up once its wait has passed: the one rule
 /// [`due`] acts on and [`problem`] puts in words. Never for mail without a
 /// wake-up of its own (a result mail to a closed recipient, an update's
-/// notice), mail the recipient has read, a refusal from before Core recorded
-/// when it happened, or one tried [`RETRIES`] times.
-fn not_again(detail: &Value, read: bool, kind: Option<&str>) -> Option<String> {
+/// notice), mail to a recipient closed since, mail the recipient has read, a
+/// refusal from before Core recorded when it happened, or one tried
+/// [`RETRIES`] times.
+fn not_again(detail: &Value, read: bool, closed: bool, kind: Option<&str>) -> Option<String> {
     let tried = detail["retry"]["count"].as_i64().unwrap_or(0);
     if !matches!(detail["mode"].as_str(), Some("start" | "steer" | "hook")) || kind == Some("update_wait") {
         Some("it is not tried again".to_owned())
-    } else if read {
-        Some("it is not tried again: the recipient has read the mail".to_owned())
+    } else if let Some(why) = stopped(read, closed) {
+        Some(why.to_owned())
     } else if failed_at(detail).is_none() {
         Some("it is not tried again: it was refused before Core recorded refusal times".to_owned())
     } else if tried >= RETRIES {
@@ -62,9 +79,9 @@ fn not_again(detail: &Value, read: bool, kind: Option<&str>) -> Option<String> {
 
 /// When a refused wake-up is tried again: by [`not_again`]'s rule, and not
 /// before its wait has passed since it failed. [`REFUSED`] reads only unread
-/// mail with a wake-up of its own.
+/// mail with a wake-up of its own, to an open recipient.
 fn due(detail: &Value, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
-    if not_again(detail, false, None).is_some() {
+    if not_again(detail, false, false, None).is_some() {
         return None;
     }
     let count = detail["retry"]["count"].as_i64().unwrap_or(0);
@@ -128,22 +145,23 @@ impl Store {
 
 /// A mail's wake-up in words when it did not simply go through, or None:
 /// "delivery failed: <reason>" and what happens next, by the rule Core acts
-/// on ([`not_again`]). `read`: the recipient has read the mail; `kind` is
-/// its metadata kind.
-pub(crate) fn problem(state: &str, detail: &Value, read: bool, kind: Option<&str>) -> Option<String> {
+/// on ([`not_again`]). `read`: the recipient has read the mail; `closed`:
+/// the recipient is closed or gone; `kind` is its metadata kind.
+pub(crate) fn problem(state: &str, detail: &Value, read: bool, closed: bool, kind: Option<&str>) -> Option<String> {
     let retry = &detail["retry"];
     let tried = retry["count"].as_i64().unwrap_or(0);
     let reason = |value: &Value| value.as_str().map(str::to_owned).unwrap_or_else(|| "no reason was recorded".into());
     match state {
         "error" => {
             let why = reason(if detail["error"].is_string() { &detail["error"] } else { &detail["reason"] });
-            let next = not_again(detail, read, kind).unwrap_or_else(|| "it is tried again at the recipient's next wake-up".to_owned());
+            let next = not_again(detail, read, closed, kind).unwrap_or_else(|| "it is tried again at the recipient's next wake-up".to_owned());
             Some(format!("delivery failed: {why}; {next}. The mail stays in the mailbox."))
         }
-        // Back in pending, it rings only while unread (pending_peer_deliveries).
-        "pending" | "sending" if retry.is_object() && read => Some(format!(
-            "delivery failed: {}; it is not tried again: the recipient has read the mail. The mail stays in the mailbox.",
-            reason(&retry["lastError"])
+        // Back in pending, it rings only for an open recipient that has not read it.
+        "pending" | "sending" if retry.is_object() && stopped(read, closed).is_some() => Some(format!(
+            "delivery failed: {}; {}. The mail stays in the mailbox.",
+            reason(&retry["lastError"]),
+            stopped(read, closed).unwrap_or_default()
         )),
         "pending" | "sending" if retry.is_object() => Some(format!(
             "delivery failed: {}; trying again at the recipient's next wake-up (retry {tried} of {}). The mail stays in the mailbox.",
@@ -163,19 +181,19 @@ pub(crate) fn problem(state: &str, detail: &Value, read: bool, kind: Option<&str
 pub(crate) fn task_problems(db: &Connection, task: &str, limit: usize) -> Result<Vec<Value>> {
     // By state first (an index), so a task with a long history costs nothing more.
     let mut q = db.prepare(&format!(
-        "SELECT seq,id,data,delivery_state,delivery_detail,{READ} FROM collaboration_messages m
+        "SELECT seq,id,data,delivery_state,delivery_detail,{READ},{CLOSED} FROM collaboration_messages m
          WHERE delivery_state IN ('error','uncertain','pending','sending') AND json_extract(data,'$.taskId')=?1
          ORDER BY seq DESC"
     ))?;
     let rows = q.query_map([task], |r| {
         Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
-            r.get::<_, bool>(5)?))
+            r.get::<_, bool>(5)?, r.get::<_, bool>(6)?))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (seq, id, data, state, detail, read) = row?;
+        let (seq, id, data, state, detail, read, closed) = row?;
         let (message, detail): (Value, Value) = (serde_json::from_str(&data)?, serde_json::from_str(&detail)?);
-        if let Some(problem) = entry(seq, &id, &message, &state, &detail, read) {
+        if let Some(problem) = entry(seq, &id, &message, &state, &detail, read, closed) {
             out.push(problem);
             if out.len() == limit {
                 break;
@@ -187,11 +205,13 @@ pub(crate) fn task_problems(db: &Connection, task: &str, limit: usize) -> Result
 
 /// Whether the recipient has read a mail `m`, as a column of a query.
 pub(crate) const READ: &str = "EXISTS(SELECT 1 FROM collaboration_message_reads r WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)";
+/// Whether a mail `m`'s recipient is closed or gone, as a column of a query.
+pub(crate) const CLOSED: &str = "NOT EXISTS(SELECT 1 FROM agents a WHERE a.id=m.recipient_id AND json_extract(a.data,'$.agent.closedAt') IS NULL)";
 
 /// One mail's problem as a task or a Job lists it, or None.
-pub(crate) fn entry(seq: i64, id: &str, message: &Value, state: &str, detail: &Value, read: bool) -> Option<Value> {
+pub(crate) fn entry(seq: i64, id: &str, message: &Value, state: &str, detail: &Value, read: bool, closed: bool) -> Option<Value> {
     let metadata = &message["metadata"];
-    let problem = problem(state, detail, read, metadata["kind"].as_str())?;
+    let problem = problem(state, detail, read, closed, metadata["kind"].as_str())?;
     Some(json!({"messageId":id,"seq":seq,"createdAt":message["createdAt"],"recipient":message["recipient"]["name"],
         "kind":metadata["kind"],"status":metadata["status"],"jobId":metadata["jobId"],"runId":metadata["runId"],
         "delivery":state,"problem":problem}))
@@ -204,14 +224,14 @@ pub(crate) fn notifications(db: &Connection, notifications: &Value) -> Result<Va
     for (status, id) in notifications.as_object().into_iter().flatten() {
         // "run" and "retried" mark a stage whose run mails instead.
         let Some(id) = id.as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok()) else { continue };
-        let found: Option<(String, String, bool, Option<String>)> = rusqlite::OptionalExtension::optional(db.query_row(
-            &format!("SELECT delivery_state,delivery_detail,{READ},json_extract(data,'$.metadata.kind') FROM collaboration_messages m WHERE id=?1"),
+        let found: Option<(String, String, bool, bool, Option<String>)> = rusqlite::OptionalExtension::optional(db.query_row(
+            &format!("SELECT delivery_state,delivery_detail,{READ},{CLOSED},json_extract(data,'$.metadata.kind') FROM collaboration_messages m WHERE id=?1"),
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         ))?;
-        let Some((state, detail, read, kind)) = found else { continue };
+        let Some((state, detail, read, closed, kind)) = found else { continue };
         let detail: Value = serde_json::from_str(&detail)?;
-        out.insert(status.clone(), json!({"messageId":id,"delivery":state,"problem":problem(&state, &detail, read, kind.as_deref())}));
+        out.insert(status.clone(), json!({"messageId":id,"delivery":state,"problem":problem(&state, &detail, read, closed, kind.as_deref())}));
     }
     Ok(Value::Object(out))
 }

@@ -1503,3 +1503,31 @@ fn a_refused_wake_up_core_will_not_retry_does_not_promise_a_retry() {
         assert_eq!((on_task.as_str(), on_job.as_str()), (words.as_str(), words.as_str()));
     }
 }
+
+/// T-50 R2 ffe9a391 P3: a refusal whose recipient is closed afterwards is not
+/// requeued (a closed Agent's batches never ring), and its Job and task say it
+/// is not tried again because the recipient is closed.
+#[test]
+fn a_refused_wake_up_to_a_recipient_closed_since_is_not_requeued_and_says_so() {
+    let (_dir, s) = setup();
+    let job = submit(&s, "closed-since");
+    s.reserve_next_job(None, None, None).unwrap().unwrap();
+    let id = job["id"].as_str().unwrap();
+    s.update_job_evidence(id, evidence(&job, "succeeded")).unwrap();
+    let inbox = s.collaboration_call(None, "peer_read", json!({"agentId":"a"})).unwrap();
+    let seq = inbox["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["jobId"] == job["id"]).unwrap()["seq"].as_i64().unwrap();
+    s.set_peer_delivery("a", seq, "sending", json!({})).unwrap();
+    // Refused ten minutes ago: its first retry is due.
+    let at = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+    s.set_peer_delivery("a", seq, "error", json!({"mode":"start","error":"Effort changes must wait until the current turn finishes","failedAt":at})).unwrap();
+    s.update("a", "agent/closed", &json!({}), |d| d.agent.closed_at = Some(chrono::Utc::now().to_rfc3339())).unwrap();
+    assert!(s.pending_peer_deliveries().unwrap().is_empty(), "a closed Agent is never rung");
+    let state: String = s.db.read().unwrap()
+        .query_row("SELECT delivery_state FROM collaboration_messages WHERE seq=?1", [seq], |r| r.get(0)).unwrap();
+    assert_eq!(state, "error", "a refusal to a closed recipient is not requeued");
+    let words = json!("delivery failed: Effort changes must wait until the current turn finishes; it is not tried again: the recipient is closed. The mail stays in the mailbox.");
+    let task = s.collaboration_call(None, "task_get", json!({"taskId":"T-1","view":"current"})).unwrap();
+    let on_task = task["current"]["mailProblems"].as_array().unwrap().iter().find(|p| p["jobId"] == job["id"]).unwrap()["problem"].clone();
+    let on_job = s.mail_notifications(&s.job(id).unwrap()["notifications"]).unwrap()["succeeded"]["problem"].clone();
+    assert_eq!((on_task, on_job), (words.clone(), words));
+}

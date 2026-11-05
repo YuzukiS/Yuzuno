@@ -72,31 +72,36 @@ fn only_a_definite_refusal_with_its_time_rings_again_and_never_unread_mail_twice
 fn a_delivery_reads_as_what_failed_and_what_happens_next() {
     let refused = "turn already completed";
     let at = ago(5);
+    // (state, detail, read, closed, kind, words)
     let cases = [
-        ("error", json!({"mode":"start","error":refused,"failedAt":at}), false, None,
+        ("error", json!({"mode":"start","error":refused,"failedAt":at}), false, false, None,
             Some(format!("delivery failed: {refused}; it is tried again at the recipient's next wake-up. The mail stays in the mailbox."))),
-        ("error", json!({"mode":"hook","error":refused,"failedAt":at,"retry":{"count":3,"of":3}}), false, None,
+        ("error", json!({"mode":"hook","error":refused,"failedAt":at,"retry":{"count":3,"of":3}}), false, false, None,
             Some(format!("delivery failed: {refused}; tried again 3 times, not again. The mail stays in the mailbox."))),
-        // T-50 R1 P3: what Core will not try again is never promised.
-        ("error", json!({"mode":"start","error":refused}), false, Some("job"),
+        // T-50 R1 P3 and R2 P3: what Core will not try again is never promised.
+        ("error", json!({"mode":"start","error":refused}), false, false, Some("job"),
             Some(format!("delivery failed: {refused}; it is not tried again: it was refused before Core recorded refusal times. The mail stays in the mailbox."))),
-        ("error", json!({"mode":"start","error":refused,"failedAt":at}), true, Some("job"),
+        ("error", json!({"mode":"start","error":refused,"failedAt":at}), true, false, Some("job"),
             Some(format!("delivery failed: {refused}; it is not tried again: the recipient has read the mail. The mail stays in the mailbox."))),
-        ("error", json!({"mode":"hook","error":refused,"failedAt":at}), false, Some("update_wait"),
+        ("error", json!({"mode":"start","error":refused,"failedAt":at}), false, true, Some("job"),
+            Some(format!("delivery failed: {refused}; it is not tried again: the recipient is closed. The mail stays in the mailbox."))),
+        ("error", json!({"mode":"hook","error":refused,"failedAt":at}), false, false, Some("update_wait"),
             Some(format!("delivery failed: {refused}; it is not tried again. The mail stays in the mailbox."))),
-        ("error", json!({"reason":"recipient_closed"}), false, Some("task_result"),
+        ("error", json!({"reason":"recipient_closed"}), false, true, Some("task_result"),
             Some("delivery failed: recipient_closed; it is not tried again. The mail stays in the mailbox.".to_owned())),
-        ("pending", json!({"retry":{"count":2,"of":3,"lastError":refused}}), false, None,
+        ("pending", json!({"retry":{"count":2,"of":3,"lastError":refused}}), false, false, None,
             Some(format!("delivery failed: {refused}; trying again at the recipient's next wake-up (retry 2 of 3). The mail stays in the mailbox."))),
-        ("pending", json!({"retry":{"count":2,"of":3,"lastError":refused}}), true, None,
+        ("pending", json!({"retry":{"count":2,"of":3,"lastError":refused}}), true, false, None,
             Some(format!("delivery failed: {refused}; it is not tried again: the recipient has read the mail. The mail stays in the mailbox."))),
-        ("uncertain", json!({"error":"connection lost"}), false, None,
+        ("pending", json!({"retry":{"count":2,"of":3,"lastError":refused}}), false, true, None,
+            Some(format!("delivery failed: {refused}; it is not tried again: the recipient is closed. The mail stays in the mailbox."))),
+        ("uncertain", json!({"error":"connection lost"}), false, false, None,
             Some("delivery uncertain: connection lost; the recipient may have received it, so it is not repeated. The mail stays in the mailbox.".to_owned())),
-        ("pending", json!({}), false, None, None),
-        ("delivered", json!({"retry":{"count":1,"of":3}}), false, None, None),
-        ("skipped", json!({"reason":"result_acknowledged"}), false, None, None),
+        ("pending", json!({}), false, false, None, None),
+        ("delivered", json!({"retry":{"count":1,"of":3}}), false, false, None, None),
+        ("skipped", json!({"reason":"result_acknowledged"}), false, false, None, None),
     ];
-    for (state, detail, read, kind, words) in cases {
-        assert_eq!(problem(state, &detail, read, kind), words, "{state} {detail} read={read} {kind:?}");
+    for (state, detail, read, closed, kind, words) in cases {
+        assert_eq!(problem(state, &detail, read, closed, kind), words, "{state} {detail} read={read} closed={closed} {kind:?}");
     }
 }

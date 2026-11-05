@@ -1325,19 +1325,20 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
             activities.push(value);
         }
     }
-    let mut q = db.prepare(&format!("SELECT data,delivery_detail,seq,id,delivery_state,{} FROM collaboration_messages m WHERE json_extract(data,'$.taskId')=?1 ORDER BY seq", mail_delivery::READ))?;
+    let mut q = db.prepare(&format!("SELECT data,delivery_detail,seq,id,delivery_state,{},{} FROM collaboration_messages m WHERE json_extract(data,'$.taskId')=?1 ORDER BY seq",
+        mail_delivery::READ, mail_delivery::CLOSED))?;
     // Its mail whose wake-up failed, is tried again or is uncertain (T-50).
     let mut problems = Vec::new();
     for row in q.query_map([&task.id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
-            r.get::<_, bool>(5)?))
+            r.get::<_, bool>(5)?, r.get::<_, bool>(6)?))
     })? {
-        let (message, detail, seq, id, state, read) = row?;
+        let (message, detail, seq, id, state, read, closed) = row?;
         let message: Value = serde_json::from_str(&message)?;
         add_execution(&mut executions, &message["source"]);
         let detail: Value = serde_json::from_str(&detail)?;
         add_execution(&mut executions, &detail);
-        problems.extend(mail_delivery::entry(seq, &id, &message, &state, &detail, read));
+        problems.extend(mail_delivery::entry(seq, &id, &message, &state, &detail, read, closed));
     }
     problems.reverse();
     problems.truncate(MAIL_PROBLEMS);
