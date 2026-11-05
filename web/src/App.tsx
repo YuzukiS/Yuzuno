@@ -42,7 +42,9 @@ import {
   SquareDashedMousePointer,
   Leaf,
   LoaderCircle,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   Monitor,
   PanelLeft,
   PanelRight,
@@ -1359,13 +1361,24 @@ export function App() {
   // controls' widths count, so what changes them is listed too. A placeholder
   // too long for the line shows its short form (Lead 2 4757).
   const [composerBox, setComposerBox] = useState<HTMLFormElement | null>(null);
-  const { shape: composerShape, short: placeholderShort } = useComposerShape(
+  // Expanded for editing, as with the ChatGPT app's expand icon (T-44): a
+  // block at a set height until the same button collapses it, the draft is
+  // emptied (sent or cleared) or another Agent opens.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
+  const expanded = expandedFor === selected && draft.parts.some((p) => p.kind === "paste" || !!p.text);
+  useLayoutEffect(() => {
+    if (expandedFor !== null && !expanded) setExpandedFor(null);
+  }, [expandedFor, expanded]);
+  const { shape: composerShape, short: placeholderShort, tall: composerTall } = useComposerShape(
     composerBox,
     () => composer.current?.lineExtent() ?? null,
-    !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
+    expanded || !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
     [draft, selected, language, busy, interrupting, sending, currentDetail?.codexPlan, previewMode],
     composerPlaceholder,
+    () => composer.current?.rows() ?? 0,
   );
+  // Offered from a draft's third row, and while expanded, to collapse it.
+  const offerExpand = composerShape === "block" && (composerTall || expanded);
   const [resultRequestFor, setResultRequestFor] = useState<string | null>(null);
   const resultRequestFrom = useRef<HTMLElement | null>(null);
   // New Claude messages still sending that their own Turn shows: once, there,
@@ -3923,6 +3936,7 @@ export function App() {
                   ref={setComposerBox}
                   className={`composer ${busy ? "is-working" : ""}`}
                   data-shape={composerShape}
+                  data-expand={offerExpand ? (expanded ? "open" : "offered") : undefined}
                   onDragOver={(e) => {
                     if (e.dataTransfer.types.includes("Files")) e.preventDefault();
                   }}
@@ -3972,6 +3986,19 @@ export function App() {
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
                   />
+                  {offerExpand && (
+                    <button
+                      type="button"
+                      className="composer-tool composer-expand"
+                      aria-label={expanded ? shell.collapseDraft : shell.expandDraft}
+                      title={expanded ? shell.collapseDraft : shell.expandDraft}
+                      // A click leaves the caret where it was in the text.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setExpandedFor(expanded ? null : selected)}
+                    >
+                      {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                    </button>
+                  )}
                   <ImageAttachments images={draft.images || []} description={imageNote ?? undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
                   {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}

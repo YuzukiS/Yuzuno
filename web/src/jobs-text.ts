@@ -109,6 +109,8 @@ export const jobsText = strings({
   pausedOn: (machine: string) => `Paused on ${machine}. Its memory and the machine's reservation stay; only you can resume it.`,
   pausedHere: "Paused. Memory and GPU memory stay reserved; only you can resume it.",
   timeoutCounts: (when: string) => ` The timeout still counts: it stops at ${when}.`,
+  /** Its mail to the Agent did not simply go through (T-50); Core's words follow. */
+  mailProblem: "Mail to its Agent:",
   cancellingResumes: " Cancelling resumes it briefly while it stops.",
   summary: "Summary",
   sourceLabel: "Source",
@@ -266,6 +268,7 @@ export const jobsText = strings({
   pausedOn: (machine) => `已在 ${machine} 上暂停。其内存和该机器的预留保持不变；只有你能让它继续。`,
   pausedHere: "已暂停。内存和 GPU 内存仍保留；只有你能让它继续。",
   timeoutCounts: (when) => `超时仍在计算：它会在 ${when} 停止。`,
+  mailProblem: "给它的 Agent 的邮件：",
   cancellingResumes: "取消时会短暂继续它，以便停止。",
   summary: "摘要",
   sourceLabel: "来源",

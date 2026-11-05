@@ -1071,7 +1071,14 @@ fn main() {
                     // Elsewhere the system frame stays.
                     .decorations(!cfg!(windows))
                     .shadow(true)
-                    .background_color(tauri::window::Color(250, 248, 244, 255));
+                    .background_color(tauri::window::Color(250, 248, 244, 255))
+                    // Dropped files go to the page, as in a browser: the
+                    // composer takes images dropped on it (T-44). Tauri's own
+                    // handler kept them from the page on every platform, and
+                    // nothing here listens for its events. A file dropped
+                    // anywhere else is a navigation, which `on_navigation`
+                    // refuses and never hands to the system.
+                    .disable_drag_drop_handler();
             #[cfg(not(target_os = "macos"))]
             let builder = builder.menu(menu);
             let builder = builder

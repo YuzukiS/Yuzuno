@@ -122,6 +122,8 @@ type Job = {
   /** The job this one resumes from its checkpoint. */
   resumeOf?: string | null;
   checkpointFrom?: { jobId: string } | null;
+  /** Its mail by status: delivery, and why when it did not go through (T-50). */
+  mail?: Record<string, { messageId: string; delivery: string; problem?: string | null }> | null;
   /** How admission started it: ahead of the blocked queue head, within what
    * that head's need left (T-38). */
   admission?: { passed?: PassedHead | null } | null;
@@ -1433,6 +1435,13 @@ function JobDetail({
       ) : (
         job.reason && <p>{job.reason}</p>
       )}
+      {Object.entries(job.mail || {})
+        .filter(([, mail]) => mail.problem)
+        .map(([status, mail]) => (
+          <p key={status} className="job-mail-problem">
+            {t.mailProblem} {mail.problem}
+          </p>
+        ))}
       <JobCard title={t.summary}>
         <dl>
           <dt>{t.sourceLabel}</dt>

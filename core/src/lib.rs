@@ -1,6 +1,8 @@
 mod codex_context;
 pub mod agent_defaults;
 pub mod agent_roles;
+pub mod executor_templates;
+mod executor_dispatch;
 pub mod appearance_preset;
 pub mod background_shells;
 pub mod backlog;

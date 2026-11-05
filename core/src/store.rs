@@ -278,6 +278,9 @@ fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
     Brief { agent, active_turn, active_turn_unmatched, pending_ids, activity: Activity::with(detail, receipts) }
 }
 
+/// Further writes for the transaction a write of the store makes (`insert_created_then`).
+pub(crate) type InTransaction = Box<dyn FnOnce(&Connection) -> Result<()> + Send>;
+
 /// Which of an Agent's Turns a read or a change works on (T-140). Every
 /// selection but `Meta` also holds the Agent's open Turns and its newest
 /// one, so `turns.last()` is the newest Turn and whether a Turn runs is
@@ -1327,16 +1330,23 @@ impl Store {
     /// A requested project is linked in the same transaction, so a new Agent
     /// never exists outside the project it was created for.
     pub fn insert(&self, detail: &AgentDetail) -> Result<()> {
-        self.insert_record(detail, false)
+        self.insert_record(detail, false, None)
     }
 
     /// A newly created Agent, refused if its SSH machine is no longer
     /// registered.
     pub fn insert_created(&self, detail: &AgentDetail) -> Result<()> {
-        self.insert_record(detail, true)
+        self.insert_record(detail, true, None)
     }
 
-    fn insert_record(&self, detail: &AgentDetail, machine_registered: bool) -> Result<()> {
+    /// `insert_created`, with `then` written in the same transaction: an
+    /// executor's role and its dispatch's state (T-34), so the Agent never
+    /// exists without them.
+    pub(crate) fn insert_created_then(&self, detail: &AgentDetail, then: Option<InTransaction>) -> Result<()> {
+        self.insert_record(detail, true, then)
+    }
+
+    fn insert_record(&self, detail: &AgentDetail, machine_registered: bool, then: Option<InTransaction>) -> Result<()> {
         let mut detail = detail.clone();
         detail.agent.work_summary = None;
         let project = detail.agent.project_id.take();
@@ -1361,6 +1371,9 @@ impl Store {
             record_rows::insert(&tx, &detail.agent.id, &rows)?;
             if let Some(project) = project.as_deref() {
                 crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+            }
+            if let Some(then) = then {
+                then(&tx)?;
             }
             tx.commit()?;
         }

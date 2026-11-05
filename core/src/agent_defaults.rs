@@ -41,9 +41,9 @@ pub(crate) fn project_key(project: &str) -> String {
 const HARNESSES: [&str; 2] = ["codex", "claude"];
 /// `config` follows the machine's Codex configuration; the others are
 /// Yuzuno's own choice (`permissions::resolve`).
-const CODEX_PRESETS: [&str; 4] = ["config", "ask", "auto", "full"];
+pub(crate) const CODEX_PRESETS: [&str; 4] = ["config", "ask", "auto", "full"];
 /// The modes a Claude Agent can select (`claude::SELECTABLE_PERMISSION_MODES`).
-const CLAUDE_MODES: [&str; 2] = ["default", "auto"];
+pub(crate) const CLAUDE_MODES: [&str; 2] = ["default", "auto"];
 const BUILT_IN_HARNESS: &str = "codex";
 const BUILT_IN_CLAUDE_MODE: &str = "default";
 

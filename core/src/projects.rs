@@ -110,6 +110,11 @@ pub(crate) fn ensure_assignable(db: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The folder `id` pre-fills new Agents with on `machine`, if it has one.
+pub(crate) fn default_dir(db: &Connection, id: &str, machine: &str) -> Result<Option<String>> {
+    Ok(load(db, id)?.default_dirs.get(machine).cloned())
+}
+
 pub(crate) fn agent_project(db: &Connection, agent_id: &str) -> Result<Option<String>> {
     Ok(db
         .query_row(
@@ -263,8 +268,9 @@ impl Store {
             project.name
         );
         tx.execute("DELETE FROM projects WHERE id=?1", [id])?;
-        // Its new-Agent and review defaults go with it (T-190).
+        // Its new-Agent and review defaults go with it (T-190), and its executor templates (T-34).
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::agent_defaults::project_key(id)])?;
+        tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::executor_templates::project_key(id)])?;
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::pr_review::settings::project_key(id)])?;
         tx.commit()?;
         Ok(())

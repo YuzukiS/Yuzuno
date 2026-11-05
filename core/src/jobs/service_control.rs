@@ -261,7 +261,7 @@ fn submission(current: &Current, request: &Request) -> Result<Submit> {
         && job["snapshot"]["cwd"].is_string() && job["snapshot"].get("git").is_some() && job["snapshot"]["files"].is_array(),
         "source_unavailable: the retained launch settings or original input snapshot are incomplete; submit a new Job explicitly");
     let mut value = json!({"requestId":uuid::Uuid::new_v4().to_string(),"taskId":job["taskId"],"agentId":job["agentId"]});
-    for key in FIELDS.iter().copied().chain(["artifacts","gpu"]) {
+    for key in FIELDS.iter().copied().chain(["artifacts","gpu","guardPaths"]) {
         if let Some(field) = job.get(key) { value[key] = field.clone(); }
     }
     value["timeoutSeconds"] = json!(request.timeout_seconds.unwrap_or_else(|| job["timeoutSeconds"].as_u64().unwrap_or(0)));
@@ -305,7 +305,17 @@ pub(super) fn check_start(store: &Store, db: &Connection, guard: &StartGuard) ->
 }
 
 pub(super) fn check_snapshot(original: &Value, snapshot: &Value) -> Result<()> {
-    ensure!(["cwd","git","files"].iter().all(|key| snapshot[*key] == original[*key]),
+    // With guardPaths (T-50) a commit elsewhere moves HEAD, not what is guarded.
+    let guarded = |value: &Value| {
+        let mut git = value["git"].clone();
+        if git["guardPaths"].is_array() {
+            if let Some(fields) = git.as_object_mut() {
+                fields.remove("head");
+            }
+        }
+        git
+    };
+    ensure!(["cwd","files"].iter().all(|key| snapshot[*key] == original[*key]) && guarded(snapshot) == guarded(original),
         "guarded_inputs_changed: the original guarded inputs or working directory changed; submit a new Job explicitly");
     Ok(())
 }

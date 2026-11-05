@@ -154,6 +154,10 @@ pub(crate) struct Submit {
     timeout_seconds: u64,
     #[serde(default = "yes")]
     guard_git: bool,
+    /// With guardGit, freeze only the tracked content under these paths
+    /// (relative to cwd) instead of the whole checkout (T-50).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    guard_paths: Vec<String>,
     #[serde(default)]
     inputs: Vec<String>,
     #[serde(default)]
@@ -336,6 +340,7 @@ impl Submit {
             ensure!(self.gpu.is_none(), "GPU admission is not available on a remote machine in this version; omit gpu");
             ensure!(!self.exclusive, "exclusive applies to this host's jobs only; omit it for a remote machine");
             ensure!(!self.guard_git, "guardGit reads the working tree on this host; set guardGit to false for a remote machine (its files are not visible to Core)");
+            ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
             ensure!(
                 self.outputs.is_empty(),
                 "outputs are downloaded from this host; on a remote machine they stay there, so declare them as artifacts instead"
@@ -428,6 +433,16 @@ impl Submit {
                     .iter()
                     .all(|p| !p.is_empty() && p.len() <= 4096 && !p.contains('\0')),
             "At most 128 explicit small input paths are supported"
+        );
+        ensure!(
+            self.guard_paths.len() <= 128
+                && self.guard_paths.iter().all(|p| relative_path(p) && !p.chars().any(char::is_control))
+                && self.guard_paths.iter().collect::<std::collections::BTreeSet<_>>().len() == self.guard_paths.len(),
+            "guardPaths are at most 128 distinct paths relative to cwd, never through .. and without control characters"
+        );
+        ensure!(
+            self.guard_paths.is_empty() || self.guard_git,
+            "guardPaths narrows guardGit to those paths: set guardGit to true, or omit guardPaths"
         );
         ensure!(self.outputs.len() <= 20 && self.outputs.iter().all(|p| !p.is_empty() && p.len() <= 4096 && !p.contains('\0') && !std::path::Path::new(p).is_absolute() && !std::path::Path::new(p).components().any(|c|matches!(c,std::path::Component::ParentDir))),"At most 20 output paths relative to cwd are supported; parent traversal is not allowed");
         ensure!(
@@ -1004,6 +1019,10 @@ pub async fn call(
                 job["reports"] = host::reports(&ws.data_dir, &job).await.unwrap_or(Value::Null);
             }
             job["resourceSummary"] = resource_summary::attempt(&job);
+            // What became of its mail (T-50): "delivery failed: <reason>"
+            // when the wake-up did not simply go through.
+            let notifications = job["notifications"].clone();
+            job["mail"] = ws.stored(move |s| s.mail_notifications(&notifications)).await?;
             Ok(job)
         }
         "job_cancel" => {
@@ -1131,7 +1150,13 @@ pub async fn call(
         }
         "job_run_get" => {
             let q: RunReference = serde_json::from_value(input)?;
-            ws.stored(move |s| s.run(&q.run_id)).await
+            ws.stored(move |s| {
+                let mut run = s.run(&q.run_id)?;
+                // What became of the run's own mail (T-50).
+                run["mail"] = s.mail_notifications(&run["notifications"])?;
+                Ok(run)
+            })
+            .await
         }
         "job_cost" => {
             let q: TaskReference = serde_json::from_value(input)?;
@@ -1422,7 +1447,15 @@ const INPUTS: &str = "Small files the command reads (at most 2 MiB each, 16 MiB 
 /// guardGit in short (T-29): what it adds to the inputs, and that those count.
 const GUARD_GIT: &str = "Also freeze the Git HEAD of cwd's checkout and its changed tracked files (not untracked or ignored ones), \
     checked like inputs before the command starts. Those files count toward the same limits as inputs: 2 MiB each, 16 MiB and 128 \
-    files together with them. Set it to false for a checkout with large uncommitted files, and list in inputs what the command reads.";
+    files together with them. Set it to false for a checkout with large uncommitted files, and list in inputs what the command reads. \
+    To let commits and edits elsewhere in the checkout go on while it waits or runs, name the paths it depends on in guardPaths.";
+/// guardPaths in short (T-50): what it freezes instead, and what it leaves out.
+const GUARD_PATHS: &str = "With guardGit, freeze only these files or directories (relative to cwd, at most 128) instead of the \
+    whole checkout: their tracked content at HEAD (a directory covers every tracked file below it) and their changed tracked files, \
+    checked again before the command starts (before each stage of a run). A commit or edit elsewhere in the checkout no longer \
+    stops it, and HEAD may move: the job records HEAD at submission and at its start. A change under a guarded path rejects it, \
+    naming that path. Not protected: the rest of the checkout, untracked or ignored files (also under the guarded paths), \
+    submodule contents, and anything the command reads outside them; list such files in inputs.";
 const REMOTE_INPUTS: &str = "With machineId they are files on that machine, read there at submit (on windows by its native \
     helper, never through /mnt): one that is missing, unreadable or too large refuses the submit, and nothing of this host is read for them.";
 const ARTIFACTS: &str = "Files a clean exit must leave behind, relative to cwd. After exit 0 each must be a regular file inside cwd \
@@ -1479,7 +1512,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "resources":{"type":"object","properties":{"cpuMillis":{"type":"integer","minimum":100},"memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["cpuMillis","memoryMiB","swapMiB"],"additionalProperties":false},
         "exclusive":{"type":"boolean","default":false,"description":"Run alone among this Core's managed local jobs. FIFO waits for existing jobs and their process-group cleanup; later jobs remain queued until this reservation releases. Does not stop other applications or reserve the whole host. Request actual CPU/RAM/swap limits as usual."},
         "timeoutSeconds":{"type":"integer","minimum":1,"maximum":604800,"default":86400},
-        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
+        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"guardPaths":{"type":"array","items":string,"maxItems":128,"description":GUARD_PATHS},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
     let artifacts = json!({"type":"array","maxItems":20,"description":ARTIFACTS,
         "items":{"type":"object","properties":{"path":string,"format":{"type":"string","enum":["bytes","json","jsonl"],"default":"bytes"},"minBytes":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}});
     let mut properties = properties;
@@ -1521,7 +1554,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
-        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
+        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
         make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own.",
@@ -1532,7 +1565,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                     "description":"The task's method record (task_comment research, type method) this run follows, by its activity. A later method version leaves the run as it was; only a changed command or input needs a new run."},
                 "stages":{"type":"array","minItems":1,"maxItems":16,"description":"In dependency order: a stage may need only earlier stages.","items":{"type":"object","properties":stage,"required":stage_required,"additionalProperties":false}}}),
             vec!["requestId","taskId","name","stages"]),
-        make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero.", run_id.clone(), vec!["runId"]),
+        make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero. mail: the run's own mail by status and its delivery, as in job_get.", run_id.clone(), vec!["runId"]),
         make("job_provenance", "Export where a result came from, as Core recorded it: one Job (jobId) or every attempt of a run (runId). Returns manifest (versioned JSON, schema yuzuno.provenance) and report (short Markdown from the same manifest). Each attempt keeps its own outcome, exit, target machine and executor, Git and frozen-input digests, labels showing which attempts share a command and identity, declared/held/measured resources, artifacts with SHA-256 and where they stay, and whether early output was overwritten; each item is verified, declared, notRecorded or unknown. Restates records only: reads no working file again and asks no machine, so it is not a claim that the result can be reproduced. Leaves out argv and env values and Core's digests of them, absolute paths, logs, chat and file contents; show the user the report before sharing it.", json!({"jobId":job_ref,"runId":run_ref}), vec![]),
         make("job_run_list", "List runs with their status, stages and recorded cost, newest first, 20 per page; follow nextBefore as before while hasMore. Unlike job_list it does not default to your own Agent: without filters it lists every Agent's runs, so pass agentId, taskId or experiment to narrow it.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer","description":"nextBefore from the previous page; keep the same filters."},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
         make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000},

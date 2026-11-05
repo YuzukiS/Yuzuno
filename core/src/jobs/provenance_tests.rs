@@ -316,3 +316,34 @@ fn an_attempt_that_started_ahead_of_a_blocked_head_says_which_and_why_it_fitted(
     assert!(m["attempts"][0]["admission"].is_null());
     assert!(!report.contains("Started ahead of"), "{report}");
 }
+
+/// T-50: with guardPaths the export says which paths were frozen and their
+/// objects, HEAD at submission and at the start, and whether the start found
+/// them unchanged; without that start check it says only declared.
+#[test]
+fn guarded_paths_export_both_heads_and_whether_they_were_unchanged_at_the_start() {
+    const AT_SUBMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const AT_START: &str = "89abcdef0123456789abcdef0123456789abcdef";
+    const TREE: &str = "fedcba9876543210fedcba9876543210fedcba98";
+    let mut job = local_job();
+    let paths = json!([{"path":"src","object":TREE,"type":"tree"},{"path":"later","object":null,"type":null}]);
+    job["guardPaths"] = json!(["src", "later"]);
+    job["snapshot"]["git"]["guardPaths"] = paths.clone();
+    job["result"]["guard"] = json!({"attempt":"a1","checkedAt":2.0,"guardPaths":paths,"headAtSubmit":AT_SUBMIT,"headAtStart":AT_START,"guardedUnchanged":true});
+    let (m, report) = export(&[job.clone()], vec![Ok(Value::Null)]);
+    let code = &m["attempts"][0]["code"];
+    assert_eq!((&code["git"]["headAtSubmit"], &code["git"]["headAtStart"], &code["git"]["guardedUnchanged"]),
+        (&json!(AT_SUBMIT), &json!(AT_START), &json!(true)));
+    assert_eq!(code["git"]["guardPaths"], paths);
+    assert_eq!(code["state"], "verified");
+    assert!(code["when"].as_str().unwrap().contains("HEAD itself and the rest of the checkout could change"), "{code}");
+    assert!(report.contains(&format!("- Code: guarded paths src `{TREE}`, later unknown at Git `{AT_SUBMIT}` (HEAD at submission), HEAD at start `{AT_START}`, tracked changes none under the guarded paths (verified")), "{report}");
+    // Rejected before its start check: frozen at submission, nothing checked at a start.
+    job["result"]["guard"] = Value::Null;
+    let (m, _) = export(&[job], vec![Ok(Value::Null)]);
+    let code = &m["attempts"][0]["code"];
+    assert_eq!((&code["state"], &code["git"]["headAtStart"], &code["git"]["guardedUnchanged"]), (&json!("declared"), &Value::Null, &Value::Null));
+    // Without guardPaths the export is as before.
+    let (m, _) = export(&[local_job()], vec![Ok(Value::Null)]);
+    assert!(m["attempts"][0]["code"]["git"].get("guardPaths").is_none());
+}
