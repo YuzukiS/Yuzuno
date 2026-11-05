@@ -22,7 +22,10 @@ requests and questions, keep 1.19.3's shape in Core and in its tests, inside
 parts: sending a message, a command, compaction, rewind, fork, answering a
 request, interrupting, Workspace MCP and the model list. So messages to an
 OpenCode 2.x Agent do not work yet, which is why creating one stays behind the
-experimental switch.
+experimental switch. A session's status is read from the sessions 2.x lists as
+running (`/api/session/active`). Busy on the real binary is first observed in
+slice 4 (first execution, stub provider): until then only its idle reading and
+its answer's shape are checked against a real OpenCode.
 
 An OpenCode Agent made before this change was made with 1.19.3. It is kept to
 read: its conversation stays in Yuzuno, and it is never started again, because
