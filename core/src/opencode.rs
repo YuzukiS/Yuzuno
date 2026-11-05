@@ -1428,7 +1428,6 @@ pub fn newer_than_verified(version: &str) -> bool {
     matches!((release(version), release(VERIFIED)), (Some(v), Some(w)) if v > w)
 }
 
-/// Whether `version` is a release before MIN (T-32): refused.
 /// Whether an Agent can be logged in through an OpenCode of `version`
 /// (T-32 slice 4b, D4): one of LOGIN_MIN or newer, ranked as `release` ranks
 /// them.
@@ -1441,6 +1440,7 @@ pub fn login_update_note(version: &str) -> String {
     format!("update OpenCode to log in here: this Agent runs {version}; logging in needs {LOGIN_MIN} or newer")
 }
 
+/// Whether `version` is a release before MIN (T-32): refused.
 pub fn older_than_min(version: &str) -> bool {
     matches!((release(version), release(MIN)), (Some(v), Some(m)) if v < m)
 }

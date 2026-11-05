@@ -244,6 +244,32 @@ async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() 
     assert_eq!(said, vec![json!({"folder": aside})], "the record says where it went");
 }
 
+/// A WAL left without its database can't be read as one, and never stops a
+/// start (R1 dd77b02d of #621): overwritten with zeros and removed before
+/// 2.x starts, nothing of it moved aside, and the record notes it.
+#[tokio::test]
+async fn a_wal_left_without_its_database_is_overwritten_and_removed_and_2x_starts() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let root = dir.path().join("data/opencode").join(ID);
+    std::fs::create_dir_all(&root).unwrap();
+    let left = b"pages of fixture-orphan-secret";
+    std::fs::write(root.join("opencode.db-wal"), left).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&work.to_string_lossy())).unwrap();
+    let started = ws.reconnect(ID).await.map(|d| d.agent.connection_state).map_err(|e| e.to_string());
+    assert_eq!(started.as_deref(), Ok("connected"), "the start proceeds past a WAL left without its database");
+    assert!(!root.join("set-aside-1").exists(), "nothing of it moved aside");
+    assert_eq!(file_holding(&root, "fixture-orphan-secret"), None, "none of its bytes left in the Agent's folder");
+    let db = rusqlite::Connection::open(dir.path().join("data/workspace.sqlite")).unwrap();
+    let said: Vec<Value> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/leftoverDestroyed'").unwrap()
+        .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+    assert_eq!(said, vec![json!({"file":"opencode.db-wal","bytes":left.len(),"why":"orphan_wal"})], "the record notes what was destroyed");
+    ws.close_agent(ID).await.unwrap();
+}
+
 /// An Agent's OpenCode keeps its data and state in the Agent's own folder
 /// and its downloads in the cache Core's Agents share, never the user's;
 /// its config stays the user's. It checks for no update and fetches no
@@ -2614,6 +2640,14 @@ fn holds_bytes(path: &std::path::Path, text: &str) -> bool {
     std::fs::read(path).is_ok_and(|bytes| bytes.windows(text.len()).any(|w| w == text.as_bytes()))
 }
 
+/// A file under `dir`, read whole, that holds `text`.
+fn file_holding(dir: &std::path::Path, text: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()).find_map(|path| match path.is_dir() {
+        true => file_holding(&path, text),
+        false => holds_bytes(&path, text).then_some(path),
+    })
+}
+
 fn key_login(integration: &str, key: &str, label: Option<&str>) -> KeyLogin {
     KeyLogin { integration: integration.into(), key: key.into(), label: label.map(str::to_owned), answer: None }
 }
@@ -2735,17 +2769,11 @@ async fn a_login_needs_the_agent_connected_and_its_opencode_at_2_0_20() {
 
 /// A deleted OpenCode Agent's database stays with its files, and no login
 /// stays in it (D6): scrubbed once its server is stopped, its other rows
-/// kept. A scrub that fails refuses the delete, with the reason.
+/// kept.
 #[tokio::test]
 async fn an_opencode_agent_deleted_keeps_its_database_with_no_login_in_it() {
     let lab = lab(&[], false).await;
     let db = lab.root().join("opencode.db");
-    std::fs::write(&db, b"not a database").unwrap();
-    let refused = lab.ws.delete_agent(ID).await.map(|_| String::new()).unwrap_or_else(|e| e.to_string());
-    assert!(refused.contains("登录凭据没有清除") && refused.contains("Agent 没有删除"), "a failed scrub refuses the delete: {refused}");
-    assert!(lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "still there");
-
-    std::fs::remove_file(&db).unwrap();
     rusqlite::Connection::open(&db).unwrap().execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE session (id TEXT);
         INSERT INTO session VALUES ('ses_kept'); CREATE TABLE credential (id TEXT, value TEXT);
         INSERT INTO credential VALUES ('crd_1', '{\"type\":\"api\",\"key\":\"fixture-deleted-key\"}');").unwrap();
@@ -2755,6 +2783,42 @@ async fn an_opencode_agent_deleted_keeps_its_database_with_no_login_in_it() {
     }
     let kept = rusqlite::Connection::open(&db).unwrap();
     assert_eq!(kept.query_row("SELECT id FROM session", [], |r| r.get::<_, String>(0)).unwrap(), "ses_kept", "its database kept");
+}
+
+/// An OpenCode Agent whose database is still in use is not deleted (R1
+/// dd77b02d of #621): the delete is refused, to be tried again, and the
+/// database is left as it is.
+#[tokio::test]
+async fn an_opencode_agent_whose_database_is_in_use_is_not_deleted() {
+    let lab = lab(&[], false).await;
+    let holder = rusqlite::Connection::open(lab.root().join("opencode.db")).unwrap();
+    holder.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE credential (id TEXT, value TEXT);
+        INSERT INTO credential VALUES ('crd_1', 'fixture-held-key'); BEGIN IMMEDIATE;").unwrap();
+    let refused = lab.ws.delete_agent(ID).await.map(|_| String::new()).unwrap_or_else(|e| e.to_string());
+    assert!(refused.contains("仍被占用") && refused.contains("稍后再试") && refused.contains("Agent 没有删除"),
+        "a database still in use refuses the delete: {refused}");
+    assert!(lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "still there");
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(holder.query_row("SELECT count(*) FROM credential", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "its database left as it is");
+}
+
+/// An OpenCode Agent whose `opencode.db` can't be read as a database is still
+/// deleted (R1 dd77b02d of #621): that file and the WAL beside it are
+/// overwritten with zeros and removed, and none of their bytes is left in
+/// the Agent's folder.
+#[tokio::test]
+async fn an_opencode_agent_whose_database_is_not_one_is_deleted_with_it_overwritten_and_removed() {
+    let lab = lab(&[], false).await;
+    let root = lab.root();
+    std::fs::write(root.join("opencode.db"), b"not a database: fixture-unread-key").unwrap();
+    std::fs::write(root.join("opencode.db-wal"), b"pages of fixture-unread-key").unwrap();
+    let deleted = lab.ws.delete_agent(ID).await.map_err(|e| e.to_string());
+    assert_eq!(deleted, Ok(()), "a database that is not one never refuses the delete");
+    assert!(!lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "deleted");
+    for name in ["opencode.db", "opencode.db-wal"] {
+        assert!(!root.join(name).exists(), "overwritten and removed: {name}");
+    }
+    assert_eq!(file_holding(&root, "fixture-unread-key"), None, "none of their bytes left in the Agent's folder");
 }
 
 /// The login is on Core's own page only: served to it, refused to another

@@ -76,8 +76,7 @@ fn the_login_floor_is_2_0_20_and_its_note_names_both_versions() {
 /// The scrub before an Agent's database is kept or moved (D6): no
 /// credential's bytes are left in the file, its WAL or index, and its other
 /// rows are kept. A database with no `credential` table, or none at all,
-/// holds none; a WAL left without its database, and a file that is not a
-/// database, are refused.
+/// holds none, and is left as it is.
 #[test]
 fn a_scrub_leaves_no_credential_bytes_and_keeps_the_rest() {
     let dir = tempfile::tempdir().unwrap();
@@ -103,13 +102,67 @@ fn a_scrub_leaves_no_credential_bytes_and_keeps_the_rest() {
 
     let plain = dir.path().join("plain.db");
     rusqlite::Connection::open(&plain).unwrap().execute_batch("CREATE TABLE session (id TEXT);").unwrap();
-    scrub(&plain).expect("no credential table: nothing to remove");
-    scrub(&dir.path().join("none.db")).expect("no database: nothing to remove");
-    std::fs::write(dir.path().join("orphan.db-wal"), b"pages of fixture-scrubbed-key-3").unwrap();
-    assert!(scrub(&dir.path().join("orphan.db")).is_err(), "a WAL without its database is refused");
-    let text = dir.path().join("text.db");
-    std::fs::write(&text, b"not a database").unwrap();
-    assert!(scrub(&text).is_err(), "a file that is not a database is refused");
+    assert_eq!(scrub(&plain).expect("no credential table: nothing to remove"), vec![]);
+    assert!(plain.exists(), "and kept");
+    assert_eq!(scrub(&dir.path().join("none.db")).expect("no database: nothing to remove"), vec![]);
+}
+
+/// What can't be read as a database is never kept and never refused (R1
+/// dd77b02d of #621): a WAL, index or journal left without its database, and
+/// a file that is not a database or a truncated one, with what is beside it,
+/// are overwritten with zeros, which a second link to each shows, and
+/// removed. A database still in use is refused, to be tried again, and left
+/// as it is.
+#[test]
+fn a_scrub_overwrites_and_removes_what_is_not_a_database_and_refuses_one_in_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = dir.path().join("seen");
+    std::fs::create_dir(&seen).unwrap();
+    let left = |name: &str, bytes: &[u8]| {
+        std::fs::write(dir.path().join(name), bytes).unwrap();
+        std::fs::hard_link(dir.path().join(name), seen.join(name)).unwrap();
+    };
+    let gone = |name: &str, bytes: usize, why: &'static str| Destroyed { file: name.into(), bytes: bytes as u64, why };
+    left("orphan.db-wal", b"pages of fixture-left-key-1");
+    left("orphan.db-shm", b"its index");
+    left("orphan.db-journal", b"pages of fixture-left-key-2");
+    assert_eq!(scrub(&dir.path().join("orphan.db")).expect("a WAL without its database is not refused"),
+        vec![gone("orphan.db-wal", 27, "orphan_wal"), gone("orphan.db-shm", 9, "orphan_wal"), gone("orphan.db-journal", 27, "orphan_wal")]);
+    left("text.db", b"not a database: fixture-left-key-3");
+    left("text.db-wal", b"pages of fixture-left-key-4");
+    assert_eq!(scrub(&dir.path().join("text.db")).expect("a file that is not a database is not refused"),
+        vec![gone("text.db", 34, "not_a_database"), gone("text.db-wal", 27, "orphan_wal")]);
+    let truncated = dir.path().join("truncated.db");
+    {
+        let made = rusqlite::Connection::open(&truncated).unwrap();
+        made.execute_batch("CREATE TABLE session (id TEXT); CREATE TABLE credential (id TEXT, value TEXT);
+            INSERT INTO credential VALUES ('crd_1', 'fixture-left-key-5');").unwrap();
+        for _ in 0..100 {
+            made.execute("INSERT INTO session VALUES (?1)", [&"s".repeat(200)]).unwrap();
+        }
+    }
+    std::fs::OpenOptions::new().write(true).open(&truncated).unwrap().set_len(4196).unwrap();
+    std::fs::hard_link(&truncated, seen.join("truncated.db")).unwrap();
+    let destroyed = scrub(&truncated).expect("a truncated database is not refused");
+    assert_eq!(destroyed.first(), Some(&gone("truncated.db", 4196, "not_a_database")), "{destroyed:?}");
+    for name in ["orphan.db-wal", "orphan.db-shm", "orphan.db-journal", "text.db", "text.db-wal", "truncated.db", "truncated.db-journal"] {
+        assert!(dir.path().join(name).symlink_metadata().is_err(), "removed: {name}");
+    }
+    for entry in std::fs::read_dir(&seen).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.is_empty() && bytes.iter().all(|b| *b == 0), "overwritten with zeros before it is removed: {}", path.display());
+    }
+
+    let held = dir.path().join("held.db");
+    let holder = rusqlite::Connection::open(&held).unwrap();
+    holder.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE credential (id TEXT, value TEXT);
+        INSERT INTO credential VALUES ('crd_1', 'fixture-held-key'); BEGIN IMMEDIATE;").unwrap();
+    let refused = scrub(&held).map(|_| String::new()).unwrap_or_else(|e| format!("{e:#}"));
+    assert!(refused.contains("仍被占用") && refused.contains("稍后再试"), "a database still in use is refused, to be tried again: {refused}");
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(holder.query_row("SELECT count(*) FROM credential", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "and left as it is");
+    assert!(holds(&held.with_extension("db-wal"), b"fixture-held-key") || holds(&held, b"fixture-held-key"), "its login still in it");
 }
 
 /// No Workspace tool an Agent can call reaches a login (the user's decision

@@ -202,8 +202,11 @@ Agent or from your own OpenCode to another, and never imports a 1.x
 - **When the Agent's database is kept or moved:** deleting an OpenCode Agent
   keeps its folder, and a database Yuzuno moves aside (`set-aside-N`) is kept
   too. Before either, with OpenCode stopped, Yuzuno removes every login from
-  that database, overwriting where it was, and refuses the delete or the move,
-  with the reason, if it can't.
+  that database, overwriting where it was. What can't be read as a database (a
+  WAL left without its database, or a damaged `opencode.db`) is overwritten
+  with zeros and removed instead, so it never keeps the Agent from starting or
+  being deleted. A database still in use refuses the start or the delete, with
+  the reason: stop what is using it, or try again.
 - **Needs** OpenCode 2.0.20 or newer.
 - **Limits:** a sign-in in progress is lost if the Agent's OpenCode restarts;
   start it again.

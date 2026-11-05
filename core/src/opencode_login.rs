@@ -20,6 +20,7 @@
 //! choice ones (D8).
 use crate::{opencode::LoginRefused, server::ApiError, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
+use rusqlite::ErrorCode;
 use axum::{
     extract::{Path, State as ApiState},
     routing::{delete, get, post},
@@ -313,15 +314,44 @@ impl Workspace {
 /// server stopped: deleted with `secure_delete`, so their pages are
 /// overwritten, the WAL checkpointed and truncated, the file vacuumed and
 /// its WAL truncated again. A database with no `credential` table holds
-/// none, and no database at all holds none. A failure is the caller's to
-/// refuse with.
-pub fn scrub(db: &std::path::Path) -> Result<()> {
-    if db.symlink_metadata().is_err() {
-        // A WAL left without its database could hold a credential's pages, and can't be scrubbed.
-        let wal = db.with_extension("db-wal");
-        ensure!(wal.symlink_metadata().is_err(), "{} 没有它的数据库，无法清除", wal.display());
-        return Ok(());
+/// none, and no database at all holds none.
+///
+/// What can't be read as a database is never kept and never refuses (R1
+/// dd77b02d of #621): a WAL, index or journal left without its database
+/// (`orphan_wal`), and an `opencode.db` SQLite can't read (`not_a_database`)
+/// with what is left beside it, are overwritten with zeros and removed. The
+/// caller notes each. A database still in use is refused, to be tried again.
+pub fn scrub(db: &std::path::Path) -> Result<Vec<Destroyed>> {
+    let mut destroyed = Vec::new();
+    if db.symlink_metadata().is_ok() {
+        match clear(db) {
+            Ok(()) => return Ok(destroyed),
+            Err(error) if failed(&error, &[ErrorCode::DatabaseBusy, ErrorCode::DatabaseLocked]) =>
+                bail!("{} 仍被占用（{error:#}）；请先停止使用它的 OpenCode，或稍后再试", db.display()),
+            Err(error) if failed(&error, &[ErrorCode::NotADatabase, ErrorCode::DatabaseCorrupt]) =>
+                destroyed.push(destroy(db, "not_a_database")?),
+            Err(error) => return Err(error),
+        }
     }
+    for left in ["db-wal", "db-shm", "db-journal"].map(|extension| db.with_extension(extension)) {
+        if left.symlink_metadata().is_ok() {
+            destroyed.push(destroy(&left, "orphan_wal")?);
+        }
+    }
+    Ok(destroyed)
+}
+
+/// A file of an Agent's OpenCode database that `scrub` overwrote and
+/// removed, as the journal notes it (`opencode/leftoverDestroyed`): its
+/// name, its length and why.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Destroyed {
+    pub file: String,
+    pub bytes: u64,
+    pub why: &'static str,
+}
+
+fn clear(db: &std::path::Path) -> Result<()> {
     let conn = rusqlite::Connection::open(db).with_context(|| format!("{} 打不开", db.display()))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "secure_delete", "ON")?;
@@ -331,13 +361,47 @@ pub fn scrub(db: &std::path::Path) -> Result<()> {
     }
     let checkpoint = |conn: &rusqlite::Connection| -> Result<()> {
         let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
-        ensure!(busy == 0, "{} 仍被占用，WAL 没有清空", db.display());
+        ensure!(busy == 0, "{} 仍被占用，WAL 没有清空；请先停止使用它的 OpenCode，或稍后再试", db.display());
         Ok(())
     };
     checkpoint(&conn)?;
     conn.execute_batch("VACUUM")?;
     checkpoint(&conn)?;
     Ok(())
+}
+
+/// Whether SQLite failed with one of `codes` anywhere in `error`'s chain.
+fn failed(error: &anyhow::Error, codes: &[ErrorCode]) -> bool {
+    error.chain().any(|cause| matches!(cause.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(failure, _)) if codes.contains(&failure.code)))
+}
+
+/// Overwrites the regular file at `path` with zeros to its length, syncs it
+/// and removes it; a link is never followed.
+fn destroy(path: &std::path::Path, why: &'static str) -> Result<Destroyed> {
+    use std::io::Write;
+    let file = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    ensure!(path.symlink_metadata()?.is_file(), "{} 不是普通文件，没有清除", path.display());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let mut opened = options.open(path).with_context(|| format!("{} 无法覆写", path.display()))?;
+    let bytes = opened.metadata()?.len();
+    let zeros = [0u8; 64 * 1024];
+    let mut left = bytes;
+    while left > 0 {
+        let n = left.min(zeros.len() as u64) as usize;
+        opened.write_all(&zeros[..n]).with_context(|| format!("{} 无法覆写", path.display()))?;
+        left -= n as u64;
+    }
+    opened.sync_all()?;
+    drop(opened);
+    std::fs::remove_file(path).with_context(|| format!("{} 覆写后无法删除", path.display()))?;
+    Ok(Destroyed { file, bytes, why })
 }
 
 #[derive(Deserialize)]

@@ -306,18 +306,22 @@ async fn sub_agents(server: &Server, session: &str) -> Result<BTreeMap<String, V
 /// `set-aside-N` folder beside it, its WAL and other files first, so that a
 /// new database never meets an old WAL; that folder, or None when there is
 /// no database. A failed move fails the start, so OpenCode never starts
-/// with part of one left.
-fn set_aside(folder: &std::path::Path) -> Result<Option<PathBuf>> {
+/// with part of one left. What the scrub overwrote and removed instead, as
+/// what can't be read as a database, is listed beside it.
+fn set_aside(folder: &std::path::Path) -> Result<(Option<PathBuf>, Vec<crate::opencode_login::Destroyed>)> {
     let present = || -> Vec<&str> { ["opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "opencode.db"].into_iter()
         .filter(|name| folder.join(name).symlink_metadata().is_ok()).collect() };
     if present().is_empty() {
-        return Ok(None);
+        return Ok((None, Vec::new()));
     }
     // No login leaves with it (T-32 slice 4b, D6): its credentials are scrubbed first, with no server running yet.
     // SQLite may remove its WAL and index as it closes, so what is moved is what is left after.
-    crate::opencode_login::scrub(&folder.join("opencode.db"))
+    let destroyed = crate::opencode_login::scrub(&folder.join("opencode.db"))
         .map_err(|error| anyhow!("OpenCode 数据库的登录凭据没有清除（{error:#}）；数据库没有挪开，OpenCode 没有启动"))?;
     let files = present();
+    if files.is_empty() {
+        return Ok((None, destroyed));
+    }
     let mut n = 1;
     let aside = loop {
         let path = folder.join(format!("set-aside-{n}"));
@@ -330,7 +334,7 @@ fn set_aside(folder: &std::path::Path) -> Result<Option<PathBuf>> {
     for name in files {
         std::fs::rename(folder.join(name), aside.join(name)).with_context(|| format!("没有记下 Session 的 OpenCode 数据库 {name} 无法移到 {}；OpenCode 没有启动", aside.display()))?;
     }
-    Ok(Some(aside))
+    Ok((Some(aside), destroyed))
 }
 
 /// The `opencode` this Core starts (`YUZUNO_OPENCODE_BIN`, else from PATH).
@@ -717,7 +721,11 @@ impl Workspace {
         // never deleted, and 2.x makes a new one (R2 f9cbccce of #575).
         if d.agent.opencode_session_id.is_none() {
             let folder = self.data_dir.join("opencode").join(id);
-            if let Some(aside) = tokio::task::spawn_blocking(move || set_aside(&folder)).await?? {
+            let (aside, destroyed) = tokio::task::spawn_blocking(move || set_aside(&folder)).await??;
+            for leftover in destroyed {
+                self.record_meta(id, "opencode/leftoverDestroyed", json!(leftover), |_| {}).await?;
+            }
+            if let Some(aside) = aside {
                 self.record_meta(id, "opencode/setAside", json!({"folder": aside}), |_| {}).await?;
             }
         }
