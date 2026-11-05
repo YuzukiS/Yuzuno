@@ -4,6 +4,20 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { composerDraft, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveCi, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+
+/** A press in the composer box away from its controls and its text, which types at the end
+ * (the whole box is the input). Its one-line shape has no status line (T-44): a free spot. */
+async function pressBox(page) {
+  const point = await page.locator("form.composer").evaluate((form) => {
+    const r = form.getBoundingClientRect();
+    const free = (el) => !!el && form.contains(el) && !el.closest("textarea, button, a, input, select, summary, [role], [tabindex]");
+    for (const [x, y] of [[r.left + 3, r.top + r.height / 2], [r.left + r.width / 2, r.bottom - 3], [r.left + 3, r.bottom - 3]])
+      if (free(document.elementFromPoint(x, y))) return { x, y };
+    return null;
+  });
+  if (!point) throw new Error("no free spot in the composer box");
+  await page.mouse.click(point.x, point.y);
+}
 // The Workspace this fixture's Core says it is: drafts are saved under it (T-195).
 const WORKSPACE = "ws-ui-refine";
 
@@ -616,7 +630,7 @@ try {
   await composer.waitFor();
   // The whole composer box is the input: a press on its status line types
   // at the end of the draft.
-  await page.locator(".composer-bottom > span").click();
+  await pressBox(page);
   assert.ok(
     await composer.evaluate((el) => el.contains(document.activeElement) || el === document.activeElement),
     "the press focuses the editor",
@@ -626,7 +640,8 @@ try {
   await page.keyboard.press("Backspace");
   // Focus raises a soft glow behind the whole box (no ring around the editor
   // alone), and it fades when focus leaves. The editor grows with its text up
-  // to about a third of the window, then scrolls inside; it shrinks back after.
+  // to twelve lines or two fifths of the window (T-44), then scrolls inside;
+  // it shrinks back after.
   const box = page.locator("form.composer");
   const glow = () =>
     box.evaluate((el) => Number(getComputedStyle(el, "::before").opacity));
@@ -673,7 +688,8 @@ try {
   assert.ok(grown.height > resting.height + 40 && !grown.scrolls, JSON.stringify({ resting, grown }));
   await composer.fill(Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行`).join("\n"));
   const capped = await editorHeight();
-  const cap = await page.evaluate(() => Math.min(innerHeight * 0.35, 320));
+  const cap = await page.evaluate(() =>
+    Math.min(12 * parseFloat(getComputedStyle(document.querySelector("form.composer .cm-content")).lineHeight) + 21, innerHeight * 0.4));
   assert.ok(capped.height <= cap + 1 && capped.height > cap - 4 && capped.scrolls, JSON.stringify({ capped, cap }));
   await page.locator("form.composer").screenshot({ path: `${output}/composer-grown.png` });
   await composer.fill("保留还未发送的草稿");
@@ -857,7 +873,7 @@ try {
         animations: "disabled",
         path: `${output}/${palette.toLowerCase()}-${theme}-conversation.png`,
       });
-      await page.locator(".composer-bottom > span").click();
+      await pressBox(page);
       await page.waitForFunction(
         () => Number(getComputedStyle(document.querySelector("form.composer"), "::before").opacity) > 0.65,
       );

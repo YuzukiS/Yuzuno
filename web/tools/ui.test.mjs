@@ -1002,9 +1002,11 @@ test("local Claude takes images and says large ones are scaled for Claude while 
   for (const harness of ["claude", "codex"]) {
     const page = await mount({ harness });
     try {
-      // The composer's image button takes images for both; its tooltip
-      // carries the note for Claude.
-      const button = page.document.querySelector('.composer-tools [aria-label="Add images"]');
+      // The composer's "+" offers images to both; the entry's tooltip
+      // carries the note for Claude (T-44).
+      page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
+      await pause();
+      const button = page.document.querySelector('.composer-add-menu [role="menuitem"][aria-label="Add images"]');
       assert.equal(button?.disabled, false, harness);
       assert.equal(button?.hasAttribute("aria-disabled"), false, harness);
       assert.equal(/scaled or compressed when sent to Claude · originals are kept/.test(button?.title ?? ""), harness === "claude", harness);
@@ -2288,12 +2290,21 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
     assert.match(footer.textContent, /workspace.*test-model/);
     assert.doesNotMatch(footer.textContent, /Core host|Send|New line/);
     assert.ok(footer.querySelector('.context-usage'));
-    // In the box: the tools as icons, then the keys (shown while typing).
+    // In the box: "+" with the tools in its menu (T-44), then the keys
+    // (shown while typing).
     const row = page.document.querySelector('.composer-bottom');
     assert.deepEqual(
-      [...row.querySelectorAll(".composer-tools > button")].map((b) => b.getAttribute("aria-label")),
+      [...row.querySelectorAll(".composer-tools button")].map((b) => b.getAttribute("aria-label")),
+      ["Add"],
+    );
+    row.querySelector('.composer-tools button[aria-label="Add"]').click();
+    await pause();
+    assert.deepEqual(
+      [...row.querySelectorAll('.composer-add-menu [role="menuitem"]')].map((b) => b.getAttribute("aria-label")),
       ["Add images", "Mark up an image", "Ask for an interactive result"],
     );
+    row.querySelector('.composer-tools button[aria-label="Add"]').click();
+    await pause();
     assert.equal(row.querySelector(".composer-keys")?.textContent.replace(/\s+/g, " ").trim(), "↵ Send ⇧ ↵ New line");
     assert.doesNotMatch(page.document.querySelector('.composer-area').textContent, /Pastes of 12|Room for your next idea|work is underway|Interactive result/);
     assert.doesNotMatch(page.document.querySelector('.conversation-header').textContent, /Core host|test-model/);
@@ -3304,7 +3315,9 @@ test("the composer box focuses its input, but not for presses from a portalled d
     assert.ok(page.document.activeElement === field, "the composer field keeps focus");
     assert.equal(composerSelection(field), "Keep this draft".length);
     field.blur();
-    page.document.querySelector('[aria-label="Ask for an interactive result"]').click();
+    page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][aria-label="Ask for an interactive result"]').click();
     await pause();
     const overlay = page.document.querySelector(".modal-overlay");
     assert.ok(overlay, "the result request dialog is open");
