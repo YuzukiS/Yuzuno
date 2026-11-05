@@ -656,16 +656,19 @@ impl Workspace {
         }
         // What `opencode` resolves to now: a native executable is started by
         // that very file, so what was checked is what runs (T-10 Revert).
+        // Read from the disk on the blocking pool, as what it checks next is (R5 of #534).
         let named = program();
-        let launcher = crate::opencode_revert_files::Launcher::resolve(&named, std::env::var_os("PATH").as_deref());
+        let (wanted, path) = (named.clone(), std::env::var_os("PATH"));
+        let launcher = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Launcher::resolve(&wanted, path.as_deref())).await?;
         let start = match &launcher {
             Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
             _ => named,
         };
         let launch = Launch { program: start, directory: cwd.into(), database: folder.join("opencode.db") };
         let server = Arc::new(Server::start(&launch).await?);
-        let files = crate::opencode_revert_files::Started::of(launcher, server.pid(), |name| std::env::var_os(name),
-            std::env::vars_os().map(|(name, _)| name), dirs::home_dir);
+        let pid = server.pid();
+        let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, |name| std::env::var_os(name),
+            std::env::vars_os().map(|(name, _)| name), dirs::home_dir)).await?;
         Ok(Started { server, files })
     }
 

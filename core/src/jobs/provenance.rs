@@ -9,7 +9,7 @@
 //! command arguments, environment values, absolute paths, logs, chat and file
 //! contents never do. A recorded string that may still hold a known absolute
 //! path (a reason, a scope note) has it replaced by what it stands for.
-use super::{resource_summary, runs, store};
+use super::{ids, resource_summary, runs, store};
 use crate::{model::now, store::Store};
 use anyhow::{ensure, Result};
 use serde::Deserialize;
@@ -57,9 +57,11 @@ impl Store {
     /// a run's attempts in stage order, each stage's oldest first.
     pub(super) fn provenance_records(&self, scope: &Scope) -> Result<(Option<Value>, Vec<Value>)> {
         let db = self.db.read()?;
+        // The whole ID, or a unique prefix of it (T-30), read with the records.
         match scope {
-            Scope::Job(id) => Ok((None, vec![store::get(&db, id)?])),
+            Scope::Job(id) => Ok((None, vec![store::get(&db, &ids::resolve(&db, ids::Kind::Job, id)?)?])),
             Scope::Run(id) => {
+                let id = &ids::resolve(&db, ids::Kind::Run, id)?;
                 let run = runs::run_view(&db, id)?;
                 let mut all = runs::attempts(&db, id)?;
                 let mut jobs = Vec::new();

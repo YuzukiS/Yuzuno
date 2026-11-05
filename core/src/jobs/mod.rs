@@ -5,6 +5,9 @@ mod gpu;
 mod gpu_tests;
 mod checkpoint;
 mod host;
+mod ids;
+#[cfg(test)]
+mod ids_tests;
 mod list;
 #[cfg(test)]
 mod list_tests;
@@ -988,7 +991,8 @@ pub async fn call(
         }
         "job_get" => {
             let q: Reference = serde_json::from_value(input)?;
-            let mut job = ws.stored(move |s| s.job(&q.job_id)).await?;
+            // The whole ID, or a unique prefix of it (T-30).
+            let mut job = ws.stored(move |s| s.job(&s.resolve_id(ids::Kind::Job, &q.job_id)?)).await?;
             if actor.as_deref().is_some_and(|a| job["agentId"] != a) {
                 job["env"] = json!({"redacted":"Another Agent's explicit environment is private"});
             }
@@ -1004,7 +1008,7 @@ pub async fn call(
             let q: Reference = serde_json::from_value(input)?;
             let id = q.job_id;
             let job = ws
-                .stored(move |s| s.request_job_cancel(actor.as_deref(), &id))
+                .stored(move |s| s.request_job_cancel(actor.as_deref(), &s.resolve_id(ids::Kind::Job, &id)?))
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
@@ -1032,7 +1036,7 @@ pub async fn call(
         "job_logs" => {
             let q: Log = serde_json::from_value(input)?;
             let id = q.job_id;
-            let job = ws.stored(move |s| s.job(&id)).await?;
+            let job = ws.stored(move |s| s.job(&s.resolve_id(ids::Kind::Job, &id)?)).await?;
             if job["executor"].is_object() {
                 return remote::logs(&ws, &job, q.offset).await;
             }
@@ -1463,6 +1467,9 @@ const CHECKPOINT: &str = "For a command that can save and exit at a safe point w
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
+    // A Job or run named by its whole ID or a unique prefix of it (T-30).
+    let job_ref = json!({"type":"string","description":"The Job's ID, or a unique prefix of it: at least 8 of its hexadecimal characters from the start, as mail and notes name it."});
+    let run_ref = json!({"type":"string","description":"The run's ID, or a unique prefix of it: at least 8 of its hexadecimal characters from the start, as mail and notes name it."});
     let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let properties = json!({"requestId":string,"taskId":task_reference,"name":string,"cwd":string,
         "argv":{"type":"array","items":string,"minItems":1,"maxItems":128},
@@ -1512,9 +1519,9 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
-        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. Unknown is not success; task status is independent.", json!({"jobId":string}), vec!["jobId"]),
-        make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":string,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
-        make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":string}), vec!["jobId"]),
+        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
+        make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
+        make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own.",
             json!({"requestId":string,"taskId":task_reference,"name":string,
                 "experiment":{"type":"string","description":"Optional label grouping runs of one experiment."},
@@ -1524,7 +1531,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "stages":{"type":"array","minItems":1,"maxItems":16,"description":"In dependency order: a stage may need only earlier stages.","items":{"type":"object","properties":stage,"required":stage_required,"additionalProperties":false}}}),
             vec!["requestId","taskId","name","stages"]),
         make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero.", run_id.clone(), vec!["runId"]),
-        make("job_provenance", "Export where a result came from, as Core recorded it: one Job (jobId) or every attempt of a run (runId). Returns manifest (versioned JSON, schema yuzuno.provenance) and report (short Markdown from the same manifest). Each attempt keeps its own outcome, exit, target machine and executor, Git and frozen-input digests, labels showing which attempts share a command and identity, declared/held/measured resources, artifacts with SHA-256 and where they stay, and whether early output was overwritten; each item is verified, declared, notRecorded or unknown. Restates records only: reads no working file again and asks no machine, so it is not a claim that the result can be reproduced. Leaves out argv and env values and Core's digests of them, absolute paths, logs, chat and file contents; show the user the report before sharing it.", json!({"jobId":string,"runId":string}), vec![]),
+        make("job_provenance", "Export where a result came from, as Core recorded it: one Job (jobId) or every attempt of a run (runId). Returns manifest (versioned JSON, schema yuzuno.provenance) and report (short Markdown from the same manifest). Each attempt keeps its own outcome, exit, target machine and executor, Git and frozen-input digests, labels showing which attempts share a command and identity, declared/held/measured resources, artifacts with SHA-256 and where they stay, and whether early output was overwritten; each item is verified, declared, notRecorded or unknown. Restates records only: reads no working file again and asks no machine, so it is not a claim that the result can be reproduced. Leaves out argv and env values and Core's digests of them, absolute paths, logs, chat and file contents; show the user the report before sharing it.", json!({"jobId":job_ref,"runId":run_ref}), vec![]),
         make("job_run_list", "List runs with their status, stages and recorded cost, newest first, 20 per page; follow nextBefore as before while hasMore. Unlike job_list it does not default to your own Agent: without filters it lists every Agent's runs, so pass agentId, taskId or experiment to narrow it.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer","description":"nextBefore from the previous page; keep the same filters."},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
         make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000},
             "record":{"type":"object","additionalProperties":false,"properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"],

@@ -131,6 +131,17 @@ export function CodexPermissions({
           });
         }}
         choices={[
+          ...modes.map(({ id }) => {
+            const choice = catalog?.presets.find((p) => p.id === id);
+            return {
+              value: id,
+              label: t.modes[id].label,
+              disabled: !choice?.available,
+              note: choice && !choice.available ? t.unavailable : undefined,
+            };
+          }),
+          // An Agent's own older permissions, last: it goes once a mode is
+          // chosen, and no chip moves under the pointer then (T-19 CX-10).
           ...(mode === "legacy"
             ? [
                 {
@@ -141,15 +152,6 @@ export function CodexPermissions({
                 },
               ]
             : []),
-          ...modes.map(({ id }) => {
-            const choice = catalog?.presets.find((p) => p.id === id);
-            return {
-              value: id,
-              label: t.modes[id].label,
-              disabled: !choice?.available,
-              note: choice && !choice.available ? t.unavailable : undefined,
-            };
-          }),
         ]}
       />
       <small>

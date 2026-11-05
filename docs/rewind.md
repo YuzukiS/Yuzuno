@@ -63,7 +63,9 @@ rewind.
 The preview lists each such file: what it is now and what it becomes. A change
 made to it since, by you or another Agent, is overwritten. Before it asks
 OpenCode, Core keeps a copy of each file in its own data folder, under
-`opencode/<agent>/revert/<attempt>`, not in the Agent's folder. Files can be
+`opencode/<agent>/revert/<attempt>`, not in the Agent's folder. It keeps the
+copies of the newest three reverts whose outcome is known, removing older ones
+when it makes a new copy; a revert not yet confirmed keeps its copy. Files can be
 sent back only when Core can tell exactly what OpenCode will write:
 
 - OpenCode was started by Core from its native executable, not a script or
