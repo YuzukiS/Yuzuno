@@ -1377,6 +1377,8 @@ impl Workspace {
             let _held = gate.lock().await;
             if !self.mark_reopened(id).await? { return self.answer(id).await; }
         }
+        // A reopened executor waits for its slot again; the queue starts it (T-35).
+        if self.reopened_into_queue(id).await? { return self.answer(id).await; }
         // Native resume preserves the existing identity and session. A failed
         // reconnection leaves an open, retryable Agent with the original history.
         self.reconnect_accepted(id, &_permit).await
@@ -1391,6 +1393,7 @@ impl Workspace {
             let _held = gate.lock().await;
             if !self.mark_reopened(id).await? { return self.listed(id).await; }
         }
+        if self.reopened_into_queue(id).await? { return self.listed(id).await; }
         self.reconnect_settled(id, &permit).await?;
         self.listed(id).await
     }

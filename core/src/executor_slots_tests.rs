@@ -96,6 +96,52 @@ fn the_workspace_limit_starts_executors_in_dispatch_order_and_a_close_frees_a_sl
     assert_eq!(state(&store, "b"), ("released".into(), Some("closed".into())));
 }
 
+fn reopen(store: &Store, id: &str) {
+    store.update(id, "agent/reopened", &json!({}), |d| {
+        d.agent.closed_at = None;
+        d.agent.connection_state = "disconnected".into();
+    }).unwrap();
+}
+
+/// D1, D4: a close releases the slot in the transaction that closes the
+/// executor, before any pass; a reopen queues it again, last, so a reopened
+/// executor never runs past the limit. One from before slots gets its row.
+#[test]
+fn a_close_releases_the_slot_with_it_and_a_reopen_queues_the_executor_again() {
+    let (_dir, store) = store();
+    limit(&store, KEY, 1);
+    queued(&store, "a", None, "local");
+    queued(&store, "b", None, "local");
+    assert_eq!(started(&store), ["a"]);
+    store.executor_slot_not_started("a", true, "its start was not confirmed").unwrap();
+    close(&store, "a");
+    assert_eq!(state(&store, "a"), ("released".into(), Some("closed".into())), "released with the close, before any pass");
+    assert_eq!(started(&store), ["b"]);
+    reopen(&store, "a");
+    assert_eq!(state(&store, "a"), ("waiting".into(), None), "reopened: it waits again");
+    assert_eq!(view(&store, "task-a").unwrap()["position"], 1);
+    assert!(store.executor_slot_gate("a").is_err(), "and only the queue starts it");
+    assert!(started(&store).is_empty(), "b holds the one slot");
+    queued(&store, "c", None, "local");
+    close(&store, "b");
+    assert_eq!(started(&store), ["a"], "the reopened one, first in the queue");
+
+    // An executor from before slots, closed then reopened, waits too.
+    agent(&store, "older");
+    store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,created_at,updated_at)
+         VALUES('older','executor','reviewer','task-older','user','now','now')", []).unwrap();
+    close(&store, "older");
+    reopen(&store, "older");
+    assert_eq!(state(&store, "older"), ("waiting".into(), None));
+    assert_eq!(view(&store, "task-older").unwrap()["position"], 2, "behind c");
+    // A plain Agent reopened gets no row.
+    agent(&store, "standing");
+    close(&store, "standing");
+    reopen(&store, "standing");
+    store.executor_slot_gate("standing").unwrap();
+}
+
 /// D6: a Project's or a machine's own limit, when set, holds back only its
 /// executors; the next in the queue with room starts instead.
 #[test]

@@ -245,7 +245,20 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     until("the fourth runs", || slot(&fourth)["state"] == "running").await;
     assert_eq!(in_use(client.clone(), base.clone()).await, json!({"waiting":0,"starting":0,"running":3}));
 
-    for id in executors.iter().skip(1).chain([&fourth_executor]) {
+    // The first, reopened, waits for a slot again instead of starting; it
+    // starts when one is free.
+    let reopened = client.post(format!("{base}/agents/{}/reopen", executors[0])).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({})).send().await.unwrap();
+    assert_eq!(reopened.status(), reqwest::StatusCode::OK, "a reopen is not refused");
+    let first = ws.store.agent(&executors[0]).unwrap();
+    assert!(first.closed_at.is_none());
+    assert_eq!((first.connection_state.as_str(), first.status.as_str()), ("disconnected", "offline"), "reopened, not started");
+    assert_eq!(slot(&tasks[0]), json!({"agentId":executors[0],"state":"waiting","machine":"local","position":1}));
+    ws.close_agent(&fourth_executor).await.unwrap();
+    until("the reopened one runs", || slot(&tasks[0])["state"] == "running").await;
+    assert_eq!(ws.store.agent(&executors[0]).unwrap().connection_state, "connected");
+
+    for id in &executors {
         ws.close_agent(id).await.unwrap();
     }
     serving.abort();

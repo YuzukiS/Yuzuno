@@ -11,8 +11,9 @@
 //! A slot is held from `starting` until the executor is closed, by anyone and
 //! in any way. A disconnect or a Core restart keeps it, so a reconnect never
 //! passes the limit, and an executor waiting in the queue cannot be started
-//! any other way. Every pass first marks `released` the rows of executors
-//! that are closed or gone, so a close always frees its slot.
+//! any other way. A close releases the slot in the transaction that closes
+//! the executor (`follow_agent`); a reopen queues it again. Every pass also
+//! marks `released` the rows of executors that are closed or gone.
 //!
 //! The limits: the Workspace's (`executors.slots`, 3 unless saved), and
 //! optionally a Project's (`executors.slots.project:<id>`) and a machine's
@@ -268,6 +269,35 @@ pub(crate) fn views(db: &Connection, tasks: &[&str]) -> Result<HashMap<String, V
         }
     }
     Ok(out)
+}
+
+/// An executor's row follows its close and its reopen, in the transaction
+/// that writes either (store.rs `change_locked`), so the two commit or fail
+/// together: closed, its slot is released; reopened, it waits again, at the
+/// end of the queue. One from before slots existed gets its row then.
+pub(crate) fn follow_agent(db: &Connection, agent: &crate::model::Agent, kind: &str) -> Result<()> {
+    if agent.closed_at.is_some() {
+        db.execute(
+            "UPDATE executor_slots SET state='released',since=?2,reason='closed' WHERE agent_id=?1 AND state!='released'",
+            params![agent.id, now()],
+        )?;
+    } else if kind == "agent/reopened" {
+        let seq: i64 = db.query_row("SELECT COALESCE(MAX(seq),0)+1 FROM executor_slots", [], |r| r.get(0))?;
+        let machine = agent.remote.as_ref().map_or("local", |remote| remote.machine.id.as_str());
+        let at = now();
+        db.execute(
+            "UPDATE executor_slots SET state='waiting',seq=?2,since=?3,queued_at=?3,reason=NULL WHERE agent_id=?1 AND state='released'",
+            params![agent.id, seq, at],
+        )?;
+        db.execute(
+            "INSERT INTO executor_slots(agent_id,seq,task_id,project_id,machine_id,template_id,state,since,queued_at)
+             SELECT r.agent_id, ?2, COALESCE(r.task_id,''), r.project_id, ?3, COALESCE(r.template_id,''), 'waiting', ?4, ?4
+             FROM agent_roles r WHERE r.agent_id=?1 AND r.kind='executor'
+               AND NOT EXISTS(SELECT 1 FROM executor_slots s WHERE s.agent_id=?1)",
+            params![agent.id, seq, machine, at],
+        )?;
+    }
+    Ok(())
 }
 
 /// The waiting row of an executor just dispatched, in the transaction that
@@ -556,6 +586,19 @@ impl Workspace {
     pub(crate) async fn executor_slot_admits(&self, id: &str) -> Result<()> {
         let agent = id.to_owned();
         self.stored(move |store| store.executor_slot_gate(&agent)).await
+    }
+
+    /// Whether a reopened Agent is an executor waiting for its slot again:
+    /// the queue starts it, not the reopen (workspace.rs `reopen_agent`).
+    pub(crate) async fn reopened_into_queue(&self, id: &str) -> Result<bool> {
+        match self.executor_slot_admits(id).await {
+            Ok(()) => Ok(false),
+            Err(error) if error.downcast_ref::<WaitsForSlot>().is_some() => {
+                self.wake_executor_slots();
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
