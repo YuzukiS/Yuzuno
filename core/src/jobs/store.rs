@@ -519,6 +519,10 @@ pub(super) fn request_cancel_in(store: &Store, tx: &Connection, actor: Option<&s
         job["status"] = json!("cancelled");
         job["finishedAt"] = json!(now());
         job["cancelRequestedAt"] = json!(now());
+        // A blocked head cancelled in the queue keeps no mark (T-38).
+        if let Some(fields) = job.as_object_mut() {
+            fields.remove("admission");
+        }
         notify(tx, &mut job)?;
     } else if job["reserved"] == true {
         if job["cancelRequestedAt"].is_null() {
@@ -820,10 +824,12 @@ impl Store {
     /// reservation it got by starting ahead of a head (any head: which job is
     /// the head can change between passes, with the projects' turns, aging or
     /// a cancel) stay within the budget less this head's need (`BlockedHead`).
-    /// The head keeps its place: once a job that was the head fits, it is
-    /// tried before the turns (the oldest first). So no head's share is
-    /// taken, and the head starts once the jobs running before it free
-    /// enough. A job short of host memory
+    /// The head keeps its place: it is marked `admission.head` while it waits
+    /// (never `passed`, so it is never counted as a passer), and once a job so
+    /// marked fits, it is tried before the turns, the earliest submitted
+    /// first, and starts unmarked; a head cancelled in the queue keeps no mark.
+    /// So no head's share is taken, and the head starts once the jobs running
+    /// before it free enough. A job short of host memory
     /// (free less headroom) is not a reservation that can be held open, so
     /// nothing passes it. A job waiting for a GPU holds only that device, a
     /// disk wait is skipped, an exclusive job holds everything, and stages

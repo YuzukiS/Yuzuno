@@ -186,6 +186,7 @@ fn the_jobs_that_passed_a_cancelled_head_still_count_against_the_next_one() {
     assert_eq!(start(&s).unwrap()["id"], small["id"], "1,064 MiB passes the first head");
     assert!(start(&s).is_none());
     s.request_job_cancel(None, first["id"].as_str().unwrap()).unwrap();
+    assert!(read(&s, &first)["admission"].is_null(), "a head cancelled in the queue keeps no mark");
     // The next head leaves 10,240 − 6,564 − 1,064 = 2,612 MiB: 3,064 does not fit.
     assert!(start(&s).is_none(), "the small job that passed the cancelled head still counts against the next one");
     assert!(read(&s, &next)["reason"].as_str().unwrap().ends_with("Up to 29800 mCPU / 2612 MiB RAM / 0 MiB swap may start ahead of it meanwhile"),
@@ -304,11 +305,18 @@ fn with_three_projects_every_job_that_starts_while_the_head_waits_is_held_to_its
         started.push(job["name"].clone());
     }
     assert_eq!(started.len(), 1, "one 1,064 MiB job fits the 1,740 MiB beside the head: {started:?}");
-    assert!(read(&s, &head)["reason"].as_str().unwrap().ends_with("Up to 29800 mCPU / 676 MiB RAM / 0 MiB swap may start ahead of it meanwhile"),
-        "{}", read(&s, &head)["reason"]);
+    let waiting = read(&s, &head);
+    assert!(waiting["reason"].as_str().unwrap().ends_with("Up to 29800 mCPU / 676 MiB RAM / 0 MiB swap may start ahead of it meanwhile"),
+        "{}", waiting["reason"]);
+    assert!(waiting["admission"]["head"].is_object() && waiting["admission"]["passed"].is_null(), "marked as the head, not as a passer: {}", waiting["admission"]);
+    assert_eq!(passers(&s), 1064, "only the job that passed it counts, never the head");
     // The job running before it ends: the head starts next, before R's turn.
     done(&s, &running);
-    assert_eq!(start(&s).unwrap()["id"], head["id"], "the head keeps its place and starts as soon as the job running before it ends");
+    let head_started = start(&s).unwrap();
+    assert_eq!(head_started["id"], head["id"], "the head keeps its place and starts as soon as the job running before it ends");
+    assert!(head_started.get("admission").is_none(), "{}", head_started["admission"]);
+    assert_eq!(passers(&s), 1064, "the head started in its place is no passer");
+    assert!(!report_of(&head_started).contains("Started ahead of"), "{}", report_of(&head_started));
 }
 
 #[test]
