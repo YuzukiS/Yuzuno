@@ -2115,7 +2115,7 @@ test("a delivery note names the Agent's own harness, and only its acceptance rea
       const receipt = { input: JSON.parse(init.body), status, turnId: null, error: status === "unknown" ? "Not confirmed; not sent again" : null };
       return { ok: true, status: 200, json: async () => receipt, text: async () => JSON.stringify(receipt) };
     };
-    const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789" }, messageResponse: reply });
+    const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5" }, messageResponse: reply });
     try {
       setValue(page.window, page.document.querySelector("[data-composer-input]"), "One more thing");
       await pause();
@@ -2136,7 +2136,7 @@ test("after a reload, an OpenCode message stored under its client ID shows no de
     { id: "msg_1:input", type: "userMessage", content: [{ type: "text", text: input.text }], nativeMessageId: "msg_1", ...fields }] }];
   const receipts = (fields) => [{ agentId: "a", input, status: "accepted", turnId: "msg_1", error: null, ...fields }];
   const preview = (page) => page.document.querySelector('[data-client-message-id="pasted"]');
-  const opencode = { harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789" } };
+  const opencode = { harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5" } };
   // As Core left it before: the message without a client ID, its receipt
   // never bound, so even a fresh page waits for it.
   const before = await mount({ ...opencode, receipts: receipts({}), extraTurns: stored({}) });
@@ -6042,7 +6042,7 @@ test("a Codex Agent's /compact asks Codex itself to compact and is never sent as
 });
 
 test("an OpenCode Agent's /compact asks OpenCode itself to compact and is never sent as a message (T-10)", async () => {
-  const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789", connectionState: "connected" } });
+  const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5", connectionState: "connected" } });
   try {
     const composer = await sendDraft(page, "/compact");
     assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
@@ -6071,7 +6071,7 @@ function stoppedCompaction() {
 const answer = (status, body) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
 async function mountGiveUp(abandonResponse) {
   const turn = stoppedCompaction();
-  const opencode = { opencodeSessionId: "ses_0123456789", connectionState: "connected" };
+  const opencode = { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5", connectionState: "connected" };
   const page = await mount({ harness: "opencode", otherHarness: "opencode", agentFields: opencode, otherAgentFields: { harness: "opencode", ...opencode },
     extraTurns: [turn], abandonResponse });
   const refresh = async () => { page.window.dispatchEvent(new page.window.Event("focus")); await pause(); await pause(); };
@@ -6268,7 +6268,7 @@ test("Claude: /model drops an effort the new model lacks exactly as the model ch
 test("an OpenCode Agent at work takes a message into its running turn, not while it waits for you, and shows OpenCode's own facts", async () => {
   // Waiting for your answer to a request: nothing joins the turn.
   // A connected Agent: one with its session but no connection is offered a reconnect instead.
-  const waiting = await mount({ harness: "opencode", status: "waiting", agentFields: { opencodeSessionId: "ses_0123456789", connectionState: "connected" } });
+  const waiting = await mount({ harness: "opencode", status: "waiting", agentFields: { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5", connectionState: "connected" } });
   try {
     setValue(waiting.window, waiting.document.querySelector("[data-composer-input]"), "One more thing");
     await pause();
@@ -6279,7 +6279,7 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
     assert.equal(waiting.calls.filter((call) => call.init.method === "POST").length, 0);
   } finally { waiting.close(); }
 
-  const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789", connectionState: "connected" } });
+  const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5", connectionState: "connected" } });
   try {
     const field = page.document.querySelector("[data-composer-input]");
     setValue(page.window, field, "One more thing");
