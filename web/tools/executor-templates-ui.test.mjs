@@ -226,7 +226,7 @@ test("Executors at once (T-35): the Workspace's limit is saved against its versi
     return [200, slotsView(current)];
   });
   page.window.renderTemplates();
-  const group = () => page.document.querySelector('[role="group"][aria-label="Executors at once"]');
+  const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
   await until(() => field(page, "Executors at once"), "the limit");
   assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots");
   assert.equal(field(page, "Executors at once").value, "3");
@@ -272,7 +272,7 @@ test("Executors at once (T-35): a project's own limit is within the Workspace's,
   await until(() => field(page, "Executors at once"), "the project's limit");
   assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots?projectId=p1");
   assert.equal(field(page, "Executors at once").value, "", "unset: empty");
-  const group = () => page.document.querySelector('[role="group"][aria-label="Executors at once"]');
+  const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
   assert.match(group().textContent, /At most this many of this project’s executors at once, within the Workspace’s 4\. Empty: only the Workspace’s limit applies\./);
   const save = () => button(page, "Save executors at once");
   assert.equal(save().disabled, true);
@@ -300,6 +300,6 @@ test("Executors at once (T-35): an answer without its fields reads as Core's def
   page.window.renderTemplates();
   await until(() => field(page, "Executors at once"), "the limit");
   assert.equal(field(page, "Executors at once").value, "3");
-  assert.match(page.document.querySelector('[role="group"][aria-label="Executors at once"]').textContent, /0 running, 0 starting, 0 waiting/);
+  assert.match(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]').textContent, /0 running, 0 starting, 0 waiting/);
   assert.deepEqual(page.errors, []);
 });

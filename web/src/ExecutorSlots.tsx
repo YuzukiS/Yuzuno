@@ -5,7 +5,7 @@ import { readExecutorSlots, saveExecutorSlots, type ExecutorSlotsView } from "./
 import { strings, useLanguage } from "./i18n";
 
 const text = strings({
-  group: "Executors at once",
+  group: "How many executors run at once",
   title: "Executors at once",
   help: (preset: number) => `How many executors run at once in this Workspace. Those dispatched beyond it wait in a queue and start in turn, as executors close. ${preset} unless you change it.`,
   helpProject: (workspace: number) => `At most this many of this project’s executors at once, within the Workspace’s ${workspace}. Empty: only the Workspace’s limit applies.`,
@@ -17,7 +17,7 @@ const text = strings({
   unsaved: "Unsaved change",
   reload: "Reload executors at once",
 }, {
-  group: "同时运行的执行者",
+  group: "同时运行的执行者数量",
   title: "同时运行的执行者",
   help: (preset) => `此 Workspace 中同时运行的执行者数量。超出的派发会排队，在执行者关闭后按顺序启动。未更改时为 ${preset}。`,
   helpProject: (workspace) => `此项目的执行者同时最多运行这么多个，且不超过 Workspace 的 ${workspace} 个。留空：只按 Workspace 的上限。`,

@@ -147,7 +147,7 @@ try {
 
   // ---- The Workspace's limit, and what holds a slot; a new one saved.
   let box = await openEditor(page);
-  const group = box.getByRole("group", { name: "Executors at once" });
+  const group = box.getByRole("group", { name: "How many executors run at once" });
   const input = group.locator('input[aria-label="Executors at once"]');
   await input.waitFor({ timeout: 10_000 });
   assert.equal(await input.inputValue(), "3");
@@ -201,7 +201,7 @@ try {
   box = await openEditor(page);
   await box.locator('input[aria-label="Executors at once"]').waitFor({ timeout: 10_000 });
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "on a phone the editor fits its width");
-  await box.getByRole("group", { name: "Executors at once" }).screenshot({ path: join(output, "6-settings-phone.png") });
+  await box.getByRole("group", { name: "How many executors run at once" }).screenshot({ path: join(output, "6-settings-phone.png") });
   check("at 390 px the cards and the editor fit their width");
 
   assert.deepEqual(report.errors, []);
