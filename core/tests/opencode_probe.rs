@@ -7,7 +7,8 @@
 //! run where no request can leave the host. Slice 3b (Lead 4983): a
 //! session's messages, inbox and events read through Core's mapping, there
 //! too. Slice 4a (Lead 5358): prompts run against a stub provider, also
-//! there.
+//! there. Slice 4b (Lead 5656): a login through Core's own calls, and the
+//! scrub after, against the stub provider.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
@@ -526,4 +527,105 @@ fn requests_after(log: &Path, seen: usize) -> Vec<String> {
             other => format!("text:{}", other.as_str().is_some()),
         }
     }).collect()
+}
+
+/// A real OpenCode 2.x logged in through Core's own calls (T-32 slice 4b,
+/// Lead 5656), against the stub provider: no network, no real provider,
+/// none of the user's logins, and only the probe's own folders read. The
+/// stub's integration is listed with a key method and nothing secret; a key
+/// logged in is listed by its label only and goes with the next prompt,
+/// over the config's own key (2.x's precedence); a model switch is taken
+/// while a run goes on (R6's third point); logged out, the config's key
+/// goes again; logged in again and its server stopped, the key is in the
+/// Agent's own database, and the scrub leaves it nowhere there.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_is_logged_in_through_core_and_its_database_scrubbed_after() {
+    const CONFIG_KEY: &str = "fixture-config-key-4b";
+    const LOGIN_KEY: &str = "fixture-login-key-4b-Qx7";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(directory.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": CONFIG_KEY},
+        "models": {"fake": {"name": "Fake"}, "fake2": {"name": "Fake 2"}}}}}).to_string()).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let models = server.models().await.unwrap();
+    let model = |id: &str| models.iter().find(|m| m.id() == id).cloned().unwrap_or_else(|| panic!("{id} is listed"));
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model("stub/fake"), None).await.unwrap();
+    let stub_entry = |listed: &[Value]| listed.iter().find(|i| i["id"] == "stub").cloned().expect("the stub's integration");
+    let authorizations = || -> Vec<String> { std::fs::read_to_string(&log).unwrap().lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()["authorization"].as_str().unwrap_or_default().to_owned()).collect() };
+
+    // 1. Listed with a key method, nothing secret in the answer.
+    let listed = server.integrations().await.unwrap();
+    let entry = stub_entry(&listed);
+    println!("probe: the stub's integration {entry}");
+    assert!(entry["methods"].as_array().unwrap().iter().any(|m| m["type"] == "key"), "a key method");
+    assert!(!Value::Array(listed.clone()).to_string().contains(CONFIG_KEY), "nothing secret in the list");
+
+    // 2. Logged in with a key: listed by its label only.
+    server.connect_key("stub", LOGIN_KEY, Some("probe"), None).await.unwrap();
+    let listed = server.integrations().await.unwrap();
+    let connections = stub_entry(&listed)["connections"].clone();
+    println!("probe: its connections {connections}");
+    assert!(connections.as_array().unwrap().iter().any(|c| c["type"] == "credential" && c["label"] == "probe"), "listed by its label");
+    assert!(!Value::Array(listed).to_string().contains(LOGIN_KEY), "never by its value");
+    let credential = connections.as_array().unwrap().iter().find(|c| c["label"] == "probe").unwrap()["id"].as_str().unwrap().to_owned();
+
+    // 3. The next prompt carries the logged-in key, over the config's.
+    let seen = authorizations().len();
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-4b hello").await.unwrap(), Submission::Accepted);
+    assert_eq!(one_run(&mut events, &session).await.last().unwrap()["type"], "session.execution.succeeded");
+    let sent = authorizations();
+    println!("probe: the stub saw {:?}", sent[seen..].iter().map(|a| a.replace(LOGIN_KEY, "<login key>").replace(CONFIG_KEY, "<config key>")).collect::<Vec<_>>());
+    assert!(!sent[seen..].is_empty() && sent[seen..].iter().all(|a| a == &format!("Bearer {LOGIN_KEY}")), "the logged-in key, over the config's");
+
+    // 4. A model switch while a run goes on is taken (R6's third point), then the run is interrupted.
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-4a slow").await.unwrap(), Submission::Accepted);
+    for _ in 0..100 {
+        if server.session_status(&session).await.unwrap() == json!({"type": "busy"}) { break; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "busy"}), "the run goes on");
+    server.switch_model(&session, &model("stub/fake2"), None).await.expect("a switch while a run goes on is taken");
+    let current = server.session(&session).await.unwrap()["model"].clone();
+    println!("probe: the session's model after a switch while it ran {current}");
+    assert_eq!(current["id"], "fake2");
+    server.abort(&session).await.unwrap();
+    assert_eq!(one_run(&mut events, &session).await.last().unwrap()["type"], "session.execution.interrupted");
+
+    // 5. Logged out: the config's key goes again.
+    server.delete_credential(&credential).await.unwrap();
+    let seen = authorizations().len();
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-4b again").await.unwrap(), Submission::Accepted);
+    assert_eq!(one_run(&mut events, &session).await.last().unwrap()["type"], "session.execution.succeeded");
+    assert!(authorizations()[seen..].iter().all(|a| a == &format!("Bearer {CONFIG_KEY}")), "logged out: the config's key");
+
+    // 6. Logged in again, its server stopped: the key is in the Agent's own database, and the scrub leaves it nowhere there.
+    server.connect_key("stub", LOGIN_KEY, Some("again"), None).await.unwrap();
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
+    stub.kill().ok();
+    stub.wait().ok();
+    let files = |db: &Path| ["", "-wal", "-shm"].map(|end| PathBuf::from(format!("{}{end}", db.display())));
+    let holds = |path: &Path| std::fs::read(path).is_ok_and(|bytes| bytes.windows(LOGIN_KEY.len()).any(|w| w == LOGIN_KEY.as_bytes()));
+    let before: Vec<bool> = files(&launch.database).iter().map(|p| holds(p)).collect();
+    println!("probe: the key in the Agent's database before the scrub (db, -wal, -shm): {before:?}");
+    assert!(before.iter().any(|h| *h), "kept in the Agent's own database");
+    yuzuno_workspace::opencode_login::scrub(&launch.database).unwrap();
+    let after: Vec<bool> = files(&launch.database).iter().map(|p| holds(p)).collect();
+    println!("probe: after the scrub: {after:?}");
+    assert!(after.iter().all(|h| !*h), "the scrub leaves it nowhere there");
+    let left: i64 = rusqlite::Connection::open(&launch.database).unwrap()
+        .query_row("SELECT count(*) FROM credential", [], |r| r.get(0)).unwrap();
+    assert_eq!(left, 0, "no credential left");
 }

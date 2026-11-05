@@ -229,8 +229,8 @@ def v2_integrations():
 
 
 def add_credential(integration, method, label, value):
+    cid = new_id('crd')
     with lock:
-        cid = new_id('crd')
         credentials[cid] = {'integration': integration, 'method': method, 'label': label, 'value': value}
     return cid
 

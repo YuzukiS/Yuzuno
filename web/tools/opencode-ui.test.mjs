@@ -614,3 +614,101 @@ test("an answer taken is not undone by a read begun before it", async () => {
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
+
+test("an OpenCode Agent is logged in to a provider from its settings, and the page keeps no key (T-32 slice 4b)", async () => {
+  const KEY = "fixture-web-key-7Hq";
+  const copilot = { kind: "oauth", id: "github-copilot/device", label: "Login with GitHub Copilot", names: [], fields: [
+    { key: "deploymentType", title: "Select GitHub deployment type", description: "", required: true, placeholder: "", default: null, when: [],
+      options: [{ value: "github.com", label: "GitHub.com", description: "" }, { value: "enterprise", label: "GitHub Enterprise", description: "" }] },
+    { key: "enterpriseUrl", title: "Enter your GitHub Enterprise URL", description: "", required: true, placeholder: "company.ghe.com", default: null,
+      options: [], when: [{ key: "deploymentType", op: "eq", value: "enterprise" }] },
+  ] };
+  const view = (connections) => ({ state: "ready", reason: null, version: "2.2.5", integrations: [
+    { id: "openrouter", name: "OpenRouter", connections, methods: [{ kind: "key", id: null, label: "Manually enter API Key", fields: [], names: [] },
+      { kind: "env", id: null, label: "", fields: [], names: ["OPENROUTER_API_KEY"] }] },
+    { id: "github-copilot", name: "GitHub Copilot", connections: [], methods: [copilot,
+      { kind: "elsewhere", id: "github-copilot/cli", label: "With its CLI", fields: [], names: [] }] },
+  ] });
+  const work = { kind: "credential", id: "crd_1", label: "work", method: "key", needsAuth: null };
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  const page = mount((url, init) => {
+    if (url.endsWith("/agents/oc/models")) return { models: [], opencode: { version: "2.2.5", verified: "2.2.5" } };
+    if (url.endsWith("/agents/oc/opencode/login")) return view([work]);
+    if (url.endsWith("/opencode/login/key")) return view([work, { ...work, id: "crd_2", label: "home" }]);
+    if (url.endsWith("/opencode/login/oauth")) return { attemptId: "con_1", url: "https://github.com/login/device", instructions: "Enter code WXYZ-0001", mode: "auto", time: {} };
+    if (url.endsWith("/opencode/login/credential/crd_1") && init.method === "DELETE") return view([]);
+    return undefined;
+  });
+  const section = () => page.document.querySelector(".opencode-login");
+  const press = async (text) => {
+    const found = [...section().querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+    assert.ok(found !== undefined, `the section has ${text}`);
+    found.click(); await tick(); await tick();
+  };
+  const select = async (node, chosen) => {
+    Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(node, chosen);
+    node.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+    await tick();
+  };
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click(); await tick(); await tick();
+    await until(() => section()?.textContent.includes("OpenRouter · work"), "the section to list the Agent's logins");
+    assert.match(section().textContent, /kept only in this Agent’s own OpenCode, never by Yuzuno/);
+    assert.ok([...section().querySelectorAll("button")].every((b) => b.type === "button"), "no button of it submits the settings form");
+
+    // A key: sent once in the request's body, then cleared; never in a link or in storage.
+    await select(section().querySelector(".opencode-login-provider select"), "openrouter");
+    assert.match(section().textContent, /OpenCode also reads OPENROUTER_API_KEY from its environment/);
+    await press("Log in with an API key");
+    const keyField = section().querySelector('input[type="password"]');
+    assert.ok(keyField !== null, "a password field for the key");
+    await value(page, keyField, KEY);
+    await press("Log in");
+    const sent = page.calls.filter((call) => call.url.endsWith("/opencode/login/key"));
+    assert.equal(sent.length, 1, "logged in once");
+    assert.deepEqual(sent[0].body, { integration: "openrouter", key: KEY });
+    assert.ok(page.calls.every((call) => !call.url.includes(KEY)), "the key is in no link");
+    assert.ok(!section().querySelector('input[type="password"]') || section().querySelector('input[type="password"]').value === "", "the key field is cleared");
+    for (const storage of [page.window.localStorage, page.window.sessionStorage]) {
+      assert.ok(Object.keys(storage).every((name) => !String(storage.getItem(name)).includes(KEY)), "the key is in no storage");
+    }
+    assert.ok(section().textContent.includes("OpenRouter · home"), "its new login listed");
+    assert.ok(!page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "the settings were not saved by it");
+
+    // A method's form: its choice, then the text field its answer asks for; the answers sent with the sign-in.
+    await select(section().querySelector(".opencode-login-provider select"), "github-copilot");
+    assert.match(section().textContent, /With its CLI: sign in from OpenCode itself/);
+    await press("Login with GitHub Copilot");
+    const form = () => section().querySelector(".opencode-login-form");
+    assert.ok(!form().textContent.includes("Enterprise URL"), "the URL is asked only for an enterprise");
+    await select(form().querySelector("select"), "enterprise");
+    await value(page, form().querySelector("input"), "company.ghe.com");
+    await press("Log in");
+    const started = page.calls.find((call) => call.url.endsWith("/opencode/login/oauth"));
+    assert.deepEqual(started.body, { integration: "github-copilot", method: "github-copilot/device",
+      answer: { deploymentType: "enterprise", enterpriseUrl: "company.ghe.com" } });
+    assert.ok(section().querySelector('a[href="https://github.com/login/device"]') !== null, "its link shown");
+    assert.match(section().textContent, /Enter code WXYZ-0001/);
+    await press("Cancel");
+    assert.ok(page.calls.some((call) => call.init.method === "DELETE" && call.url.endsWith("/opencode/login/oauth/github-copilot/con_1")), "cancelled at OpenCode");
+
+    // Logged out.
+    await press("Log out");
+    assert.ok(page.calls.some((call) => call.init.method === "DELETE" && call.url.endsWith("/opencode/login/credential/crd_1")));
+    assert.match(section().textContent, /Not logged in to any provider here/);
+  } finally { page.close(); }
+});
+
+test("an OpenCode Agent older than 2.0.20 is told to update to log in, naming both versions (T-32 slice 4b)", async () => {
+  const note = "update OpenCode to log in here: this Agent runs 2.0.16; logging in needs 2.0.20 or newer";
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  const page = mount((url) => url.endsWith("/agents/oc/models") ? { models: [], opencode: { version: "2.0.16", verified: "2.2.5" } }
+    : url.endsWith("/agents/oc/opencode/login") ? { state: "update", reason: note, version: "2.0.16", integrations: [] } : undefined);
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click(); await tick(); await tick();
+    await until(() => page.document.querySelector(".opencode-login")?.textContent.includes(note), "the note naming both versions");
+    assert.ok(page.document.querySelector(".opencode-login select") === null, "no provider to choose");
+  } finally { page.close(); }
+});
