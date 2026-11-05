@@ -15,6 +15,10 @@ async fn call(ws: &Arc<Workspace>, method: &str, path: &str, body: Option<Value>
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
+fn refused(answer: &Value, error: &str) -> bool {
+    answer["error"].as_str().is_some_and(|e| e.starts_with(error))
+}
+
 /// T-34 S3a: the user keeps a Project's handover document through its
 /// routes. Each save is a new version, checked against the version read,
 /// kept with why; a past version stays readable. An archived Project's
@@ -35,8 +39,7 @@ async fn a_handover_document_is_saved_as_versions_against_the_version_read() {
     let announced: Value = serde_json::from_str(&events.try_next().expect("a save is announced").data).unwrap();
     assert_eq!((announced["handover"].clone(), announced["projectId"].clone()), (json!(true), json!(p)));
     let (_, stale) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"markdown":"Overwritten"}))).await;
-    assert!(stale["error"].as_str().unwrap().starts_with("version_conflict: this Project's handover changed"),
-        "a save against a stale version is refused: {stale}");
+    assert!(refused(&stale, "version_conflict: this Project's handover changed"), "a save against a stale version is refused: {stale}");
     let (_, second) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":1,"markdown":"# Lab\nBuild with make; test with make check."}))).await;
     assert_eq!(second["version"], 2);
     assert_eq!(second["markdown"], "# Lab\nBuild with make; test with make check.");
@@ -49,14 +52,14 @@ async fn a_handover_document_is_saved_as_versions_against_the_version_read() {
     assert_eq!(current_in(&ws.store.db.read().unwrap(), &p).unwrap(), Some((2, "# Lab\nBuild with make; test with make check.".into())));
 
     let (_, large) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"x".repeat(MAX_BYTES + 1)}))).await;
-    assert!(large["error"].as_str().unwrap().starts_with("A handover document is at most 32 KiB"), "{large}");
+    assert!(refused(&large, "A handover document is at most 32 KiB"), "a document over 32 KiB is refused: {large}");
     let (_, control) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"Bell \u{7}"}))).await;
-    assert!(control["error"].as_str().unwrap().starts_with("A handover document is text"), "{control}");
+    assert!(refused(&control, "A handover document is text"), "a document with a control character is refused: {control}");
     ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     let (_, archived) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"Later"}))).await;
-    assert!(archived["error"].as_str().unwrap().starts_with("project_archived:"), "an archived Project's document doesn't change: {archived}");
+    assert!(refused(&archived, "project_archived:"), "an archived Project's document doesn't change: {archived}");
     ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(false) }).unwrap();
-    ws.store.delete_project(&p).unwrap();
+    ws.store.delete_project(&p).unwrap_or_else(|e| panic!("a deleted Project's handover goes with it: {e}"));
     let left: i64 = ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM project_handover_versions", [], |r| r.get(0)).unwrap();
     assert_eq!(left, 0, "a deleted Project's handover goes with it");
 }
