@@ -117,7 +117,9 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     // is written; an ordinary dispatch is not.
     ws.admission.begin_drain("t34-lab-update").unwrap();
     let third = task(&ws, "Dispatched after the update", &project, None).await;
-    let paused = ws.collaboration_call(None, "task_dispatch", dispatch("paused", &third)).await.unwrap_err().to_string();
+    // An accepted dispatch is said so, not a panic: the assertion below names it.
+    let paused = ws.collaboration_call(None, "task_dispatch", dispatch("paused", &third)).await
+        .err().map_or_else(|| "accepted".to_owned(), |e| e.to_string());
     assert!(paused.starts_with("workspace_updating:") && paused.contains("from an executor template waits for it"),
         "a template dispatch is refused while an update drains: {paused}");
     assert!(paused.contains("Retry the same request once the update is done"), "the refusal says to retry it: {paused}");
