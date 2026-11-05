@@ -104,7 +104,7 @@ test('a completion mail whose delivery failed says why in the job details', asyn
   try {
     await until(() => q.doc.querySelector('.conversation-job')); q.doc.querySelector('.conversation-job').click();
     await until(() => q.doc.querySelector('.job-log'));
-    assert.equal(q.doc.querySelector('.job-mail-problem'), null);
+    assert.ok(!q.doc.querySelector('.job-mail-problem'), 'a mail that went through says nothing');
   } finally { q.close(); }
 });
 
