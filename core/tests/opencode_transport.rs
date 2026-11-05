@@ -233,6 +233,36 @@ async fn a_server_still_starting_is_asked_again_until_it_is_ready() {
     server.shutdown().await.unwrap();
 }
 
+/// A 2.x older than the oldest Core reads (`MIN`, T-32 R2 59b5e3c6) is
+/// refused and ended, naming both versions and saying to update it: by the
+/// version its `/api/info` reports, and, when it fails before that (an
+/// OpenCode before 2.0.6 has no `/api/info`), by what `--version` says. The
+/// oldest one Core reads starts.
+#[tokio::test]
+async fn a_2x_older_than_the_oldest_core_reads_is_refused_naming_both_versions() {
+    let older = lab();
+    older.switch("version", "2.0.6");
+    let error = Server::start(&older.launch).await.err().map(|e| e.to_string());
+    assert_eq!(error.as_deref(), Some("OpenCode 2.0.6 is older than 2.0.7, the oldest Core reads; update it"),
+        "an older 2.x is refused, naming both versions");
+    let (pid, child) = older.pids();
+    assert!(ends(pid).await && ends(child).await, "what it started has ended");
+
+    let before_info = lab();
+    before_info.switch("exit", "1");
+    before_info.switch("exitStderr", "fixture: no");
+    before_info.switch("versionLine", "opencode v2.0.5");
+    assert_eq!(Server::start(&before_info.launch).await.err().expect("not started").to_string(),
+        "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.0.5\u{201d}, \
+        older than 2.0.7, the oldest Core reads; update it): fixture: no", "one that fails before saying its version is named too");
+
+    let oldest = lab();
+    oldest.switch("version", "2.0.7");
+    let server = Server::start(&oldest.launch).await.unwrap();
+    assert_eq!(server.version(), "2.0.7");
+    server.shutdown().await.unwrap();
+}
+
 /// A 1.x, which starts and says it listens as 1.x does, is refused at once
 /// (not waited past for 2.x's line) and said to be the one installed.
 #[tokio::test]

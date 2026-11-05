@@ -4,8 +4,9 @@
 //! no permission rule of its own.
 //!
 //! OpenCode 2.x (T-32): it is started, checked and stopped as 2.x is, and
-//! any 2.x its `/api/info` reports is spoken to (`MAJOR`; the release this
-//! was checked against is `VERIFIED`); another major is stopped. The calls
+//! any 2.x from `MIN` its `/api/info` reports is spoken to (`MAJOR`; the
+//! release this was checked against is `VERIFIED`); an older 2.x or another
+//! major is stopped. The calls
 //! past start and stop are still those of 1.19.3 until their slices of T-32
 //! move them to 2.x. Native requests, events and
 //! results come back as OpenCode sent them. What OpenCode did not say is not
@@ -46,11 +47,16 @@ use tokio::{
 };
 
 /// The OpenCode major this module speaks (T-32: the latest 2.x, not one
-/// release): any version `/api/info` reports in it is taken.
+/// release): any version `/api/info` reports in it from `MIN` is taken.
 pub const MAJOR: &str = "2";
 /// The newest release the stand-in and tests were checked against (T-32). A
 /// later 2.x that breaks a call is a bug to fix here, not a refusal.
 pub const VERIFIED: &str = "2.2.5";
+/// The oldest 2.x Core reads (T-32, R2 59b5e3c6): its `/api/info` (2.0.6),
+/// the `idle` message among a session's messages (2.0.4) and a step's own
+/// start (`started`, 2.0.7) are there, as are every other route and event
+/// Core reads (2.0.0). An older one is refused, never read in part.
+pub const MIN: &str = "2.0.7";
 /// 2.x's Basic user, which it does not let be changed (server/src/process.ts).
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
@@ -531,6 +537,7 @@ impl Server {
         let version = info["version"].as_str().unwrap_or_default();
         ensure!(supported(version),
             "OpenCode {version} is not supported: Yuzuno speaks the server protocol of OpenCode {MAJOR}.x (checked against {VERIFIED})");
+        ensure!(!older_than_min(version), "OpenCode {version} is {}", older_note());
         server.version = version.to_owned();
         Ok(server)
     }
@@ -1195,6 +1202,8 @@ async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
     match installed(launch).await {
         Some(version) if !supported(&version) => out.push_str(&format!(
             " (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {MAJOR}.x)")),
+        Some(version) if older_than_min(&version) => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", older_note())),
         Some(version) if newer_than_verified(&version) => out.push_str(&format!(
             " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", newer_note())),
         _ => {}
@@ -1224,15 +1233,28 @@ pub fn major(version: &str) -> Option<String> {
     supported(version).then(|| MAJOR.to_owned())
 }
 
+/// A release's numbers (`2.2.5`, or `opencode v2.0.16` as `--version`
+/// prints it); none for anything else.
+fn release(version: &str) -> Option<Vec<u64>> {
+    let v = version.trim();
+    let v = v.strip_prefix("opencode ").unwrap_or(v);
+    v.strip_prefix('v').unwrap_or(v).split('.').map(|p| p.parse().ok()).collect()
+}
+
 /// Whether `version` is a release after VERIFIED (T-32): taken, and said to
 /// be newer than the one checked against.
 pub fn newer_than_verified(version: &str) -> bool {
-    let parts = |v: &str| -> Option<Vec<u64>> {
-        let v = v.trim();
-        let v = v.strip_prefix("opencode ").unwrap_or(v);
-        v.strip_prefix('v').unwrap_or(v).split('.').map(|p| p.parse().ok()).collect()
-    };
-    matches!((parts(version), parts(VERIFIED)), (Some(v), Some(w)) if v > w)
+    matches!((release(version), release(VERIFIED)), (Some(v), Some(w)) if v > w)
+}
+
+/// Whether `version` is a release before MIN (T-32): refused.
+pub fn older_than_min(version: &str) -> bool {
+    matches!((release(version), release(MIN)), (Some(v), Some(m)) if v < m)
+}
+
+/// What a start says of a 2.x older than MIN.
+fn older_note() -> String {
+    format!("older than {MIN}, the oldest Core reads; update it")
 }
 
 /// What a start or the Agent says of a version newer than VERIFIED.
