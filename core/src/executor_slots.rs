@@ -228,8 +228,11 @@ fn holding(db: &Connection) -> Result<(i64, HashMap<String, i64>, HashMap<String
 
 /// An executor's slot row as the task card shows it, and its place in the
 /// queue (1 first) while it waits.
+/// A slot row as a task shows it: its executor, state, machine and reason.
+type SlotRow = (String, String, String, Option<String>);
+
 fn view_row(db: &Connection, task: &str, positions: &HashMap<String, usize>) -> Result<Option<Value>> {
-    let row: Option<(String, String, String, Option<String>)> = db
+    let row: Option<SlotRow> = db
         .query_row(
             "SELECT s.agent_id, s.state, s.machine_id, s.reason FROM executor_slots s
              WHERE s.task_id=?1 AND s.state!='released'
@@ -312,6 +315,9 @@ pub(crate) fn enqueue(db: &Connection, agent: &str, task: &str, project: Option<
     )?;
     Ok(())
 }
+
+/// An open executor from before slots: its Agent, task, Project, template and machine.
+type OlderExecutor = (String, Option<String>, Option<String>, Option<String>, String);
 
 impl Store {
     /// The scheduler's one transaction: frees the slots of closed executors,
@@ -407,7 +413,7 @@ impl Store {
             "UPDATE executor_slots SET state='waiting',since=?1,reason=NULL WHERE state='starting' AND reason IS NULL",
             [&at],
         )?;
-        let older: Vec<(String, Option<String>, Option<String>, Option<String>, String)> = tx
+        let older: Vec<OlderExecutor> = tx
             .prepare(
                 "SELECT r.agent_id, r.task_id, r.project_id, r.template_id,
                         COALESCE(json_extract(a.data,'$.agent.remote.machine.id'),'local')
