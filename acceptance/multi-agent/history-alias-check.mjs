@@ -92,7 +92,8 @@ try {
   assert.equal(await matches.count(), 1, "Search should see one original commentary, not replay aliases.");
   await matches.click();
   const source = article.locator(`[data-item-id="${originalComment.id}"]`);
-  await source.locator("xpath=self::*[@data-search-highlight='true']").waitFor();
+  // The app lands a search result as a source (onLocate), marked as the Catch-up source below is.
+  await source.locator("xpath=self::*[contains(@class,'source-highlight')]").waitFor();
   assert.equal(await source.evaluate(element => document.activeElement === element), true);
   await page.screenshot({ path: resolve(lab, "history-alias-search-source.png"), animations: "disabled" });
   record("gui-search-finds-one-message-and-jumps-to-original-live-source", { itemId: originalComment.id });

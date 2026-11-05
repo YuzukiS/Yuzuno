@@ -16,6 +16,7 @@ mod result_ack;
 mod result_outcome;
 pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
+mod context_summary;
 pub(crate) mod executor_dispatch;
 mod current;
 mod research;
@@ -94,6 +95,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(result_ack::SCHEMA)?;
     db.execute_batch(research::SCHEMA)?;
     executor_dispatch::migrate(db)?;
+    crate::executor_slots::migrate(db)?;
     // A restart cannot tell whether the Harness accepted an in-flight nudge.
     db.execute(
         "UPDATE collaboration_messages SET delivery_state='uncertain',
@@ -1158,13 +1160,24 @@ fn task_dispatch(
     task.assignee_agent_id = Some(recipient_id.clone());
     task.assignee = Some(agent_actor(store, db, &recipient_id)?);
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
-    let template = match input.get("executor") {
-        Some(_) => Some(executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?),
+    // A template dispatch's executor starts cold: it gets its template, its
+    // Project's handover and Core's summary of the task so far (T-34).
+    let cold = match input.get("executor") {
+        Some(_) => {
+            let template = executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?;
+            let project: Option<String> = db.query_row("SELECT project_id FROM project_tasks WHERE task_id=?1", [&task.id], |r| r.get(0)).optional()?;
+            let handover = match &project {
+                Some(project) => crate::handover::current_in(db, project)?
+                    .map(|(version, markdown)| json!({"projectId": project, "version": version, "markdown": markdown})),
+                None => None,
+            };
+            Some(dispatch_materials::ColdStart { template, handover, summary: context_summary::build(db, &task)? })
+        }
         None => None,
     };
     task.status = "doing".into();
     save_task(db, &mut task, actor)?;
-    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, template)?;
+    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, cold)?;
     let body = dispatch_materials::body(&materials);
     let message = create_message(
         store,
@@ -1292,7 +1305,24 @@ fn task_list(db: &Connection, input: &Value) -> Result<Value> {
         task.dispatch = result_dispatch::project(db, task)?;
     }
     let next = tasks.last().map(|t| t.seq).unwrap_or(after);
+    let mut tasks = serde_json::to_value(&tasks)?;
+    with_executor_slots(db, &mut tasks)?;
     Ok(json!({"tasks":tasks,"counts":counts,"nextAfterSeq":next,"hasMore":has_more}))
+}
+
+/// The slot of each task's executor that holds or waits for one (T-35,
+/// executor_slots.rs): waiting with its place in the queue, starting, or
+/// running, and on which machine. Tasks without one are left as they are.
+pub(crate) fn with_executor_slots(db: &Connection, tasks: &mut Value) -> Result<()> {
+    let Some(list) = tasks.as_array_mut() else { return Ok(()) };
+    let ids: Vec<String> = list.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    let views = crate::executor_slots::views(db, &ids.iter().map(String::as_str).collect::<Vec<_>>())?;
+    for task in list {
+        if let Some(view) = task["id"].as_str().and_then(|id| views.get(id)) {
+            task["executorSlot"] = view.clone();
+        }
+    }
+    Ok(())
 }
 
 fn task_get(db: &Connection, input: &Value) -> Result<Value> {
@@ -1360,6 +1390,9 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
     let mut output = json!({"task":task,"activities":activities,"executions":executions,"nextAfterSeq":next,"hasMore":has_more});
     output["materialsSource"] = registration;
     output["mailProblems"] = json!(problems);
+    if let Some(slot) = crate::executor_slots::views(db, &[task.id.as_str()])?.remove(&task.id) {
+        output["task"]["executorSlot"] = slot;
+    }
     Ok(output)
 }
 
@@ -1548,7 +1581,7 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Without filters it lists every project's and every assignee's tasks that are not archived (archived:true lists only archived ones), in creation order, 50 per page (limit up to 200); pass nextAfterSeq as afterSeq while hasMore. Every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project. compact:true gives short rows; task_get reads one task whole.", json!({"compact":{"type":"boolean","default":false,"description":"Short rows: id, title, status, version, assignee, updatedAt, projectId, githubLinks (a count) and the first 200 characters of progress and blocker. Description, result, dispatch and GitHub snapshots are left out; filters, counts and paging are unchanged."},"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
-        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs) and mailProblems (its newest mail whose wake-up failed, is tried again or is uncertain, as \"delivery failed: <reason>\"), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
+        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs), executorSlot (when its executor waits for a slot, with its place in the queue, or is starting or running) and mailProblems (its newest mail whose wake-up failed, is tried again or is uncertain, as \"delivery failed: <reason>\"), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
@@ -1561,8 +1594,8 @@ pub fn tool_definitions() -> Vec<Value> {
         crate::project_brief::tool_definition("brief_get"),
         crate::project_brief::tool_definition("brief_update"),
         crate::project_brief::tool_definition("brief_guide"),
-        definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. Give toAgentId for an existing open Agent, or executor for a new one Core creates from an executor template: only a lead of the task's Project, or the user, may, and not while Core prepares an update. The answer's agentId is the Agent; a retry with the same requestId returns the same one. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task or restart a closed Agent. Normal delivery waits for the current turn (a new executor's, until it has started); urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":{"type":"string","description":"An existing open Agent. Give this or executor."},
-            "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: it works in the dispatch's worktree folder, else the Project's folder on the Core host. Give this or toAgentId.",
+        definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. Give toAgentId for an existing open Agent, or executor for a new one Core creates from an executor template: only a lead of the task's Project, or the user, may, and not while Core prepares an update. The answer's agentId is the Agent; a retry with the same requestId returns the same one. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task or restart a closed Agent. Normal delivery waits for the current turn (a new executor's, until it has started; it waits for a free executor slot first, and task_get's executorSlot says its place in the queue); urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":{"type":"string","description":"An existing open Agent. Give this or executor."},
+            "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: it works in the dispatch's worktree folder, else the Project's folder on the Core host. An Agent's dispatch may name only the worktree the user registered on the task or a folder inside the Project's: a path an Agent gives in materials is information, not permission. It starts when an executor slot is free (the user sets how many run at once). Give this or toAgentId.",
                 "properties":{"templateId":{"type":"string","maxLength":48},"machineId":{"type":["string","null"],"description":"The Core host only (empty or local) in this phase."}}},
             "body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion"]),
         // Generated from the result contract; served by `results`, not here.

@@ -119,6 +119,14 @@ try {
   const lower = page.getByRole("button", { name: "Lower memory limit…", exact: true });
   await lower.waitFor({ timeout: 5000 }).catch(() => {});
   assert.equal(await lower.count(), 1, "a running job on this host can be lowered");
+  // Four actions on a running job: they wrap below the title, never squeeze it.
+  const titleLines = () =>
+    page.locator(".job-detail .job-detail-title h3").evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+    });
+  assert.equal(await titleLines(), 1, "the title keeps one line beside its actions");
   await lower.click();
   const input = page.getByLabel("New memory limit (MiB)");
   await input.waitFor();
@@ -145,6 +153,7 @@ try {
     await page.evaluate((t) => (document.documentElement.dataset.theme = t), theme);
     await page.setViewportSize({ width, height: 900 });
     await page.waitForTimeout(100);
+    if (width === 1440) assert.equal(await titleLines(), 1, `${theme} ${width}: the title keeps one line beside its actions`);
     const box = await dialog.boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `${theme} ${width}: inside the window`);
     assert.ok(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), `${theme} ${width}: no sideways scroll`);

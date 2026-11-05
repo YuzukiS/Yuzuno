@@ -233,6 +233,63 @@ async fn a_server_still_starting_is_asked_again_until_it_is_ready() {
     server.shutdown().await.unwrap();
 }
 
+/// A 2.x older than the oldest Core reads (`MIN`, T-32 R2 59b5e3c6) is
+/// refused and ended, naming both versions and saying to update it: by the
+/// version its `/api/info` reports, and, when it fails before that (an
+/// OpenCode before 2.0.6 has no `/api/info`), by what `--version` says. The
+/// oldest one Core reads starts.
+#[tokio::test]
+async fn a_2x_older_than_the_oldest_core_reads_is_refused_naming_both_versions() {
+    let older = lab();
+    older.switch("version", "2.0.6");
+    let error = Server::start(&older.launch).await.err().map(|e| e.to_string());
+    assert_eq!(error.as_deref(), Some("OpenCode 2.0.6 is older than 2.0.7, the oldest Core reads; update it"),
+        "an older 2.x is refused, naming both versions");
+    let (pid, child) = older.pids();
+    assert!(ends(pid).await && ends(child).await, "what it started has ended");
+
+    let before_info = lab();
+    before_info.switch("exit", "1");
+    before_info.switch("exitStderr", "fixture: no");
+    before_info.switch("versionLine", "opencode v2.0.5");
+    assert_eq!(Server::start(&before_info.launch).await.err().expect("not started").to_string(),
+        "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.0.5\u{201d}, \
+        older than 2.0.7, the oldest Core reads; update it): fixture: no", "one that fails before saying its version is named too");
+
+    let oldest = lab();
+    oldest.switch("version", "2.0.7");
+    let server = Server::start(&oldest.launch).await.unwrap();
+    assert_eq!(server.version(), "2.0.7");
+    server.shutdown().await.unwrap();
+}
+
+/// A 2.x is ranked by its MAJOR.MINOR.PATCH as semver ranks a release
+/// (T-32, R4 eef2b7e2): a pre-release below its release, a build as the
+/// release itself; one whose numbers cannot be read is refused, never read in
+/// part.
+#[tokio::test]
+async fn a_2x_version_is_ranked_as_semver_ranks_it_and_one_unreadable_is_refused() {
+    let refused = |version: &'static str| async move {
+        let lab = lab();
+        lab.switch("version", version);
+        let error = Server::start(&lab.launch).await.err().map(|e| e.to_string());
+        let (pid, child) = lab.pids();
+        assert!(ends(pid).await && ends(child).await, "{version}: what it started has ended");
+        error
+    };
+    assert_eq!(refused("2.0.7-rc1").await.as_deref(), Some("OpenCode 2.0.7-rc1 is older than 2.0.7, the oldest Core reads; update it"),
+        "a pre-release ranks below its release");
+    assert_eq!(refused("2.1.x").await.as_deref(), Some("OpenCode 2.1.x: cannot read its version; 2.0.7 is the oldest Core reads"),
+        "a 2.x whose numbers cannot be read is refused, never read in part");
+    for version in ["2.0.8-rc1", "2.0.7+build"] {
+        let lab = lab();
+        lab.switch("version", version);
+        let server = Server::start(&lab.launch).await.unwrap_or_else(|e| panic!("{version}: {e:#}"));
+        assert_eq!(server.version(), version);
+        server.shutdown().await.unwrap();
+    }
+}
+
 /// A 1.x, which starts and says it listens as 1.x does, is refused at once
 /// (not waited past for 2.x's line) and said to be the one installed.
 #[tokio::test]
@@ -274,15 +331,11 @@ async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
     assert_eq!(sent[0]["body"], json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": "hello"}]}),
         "no model, agent, tools or permission rule is sent");
 
-    // Answered 204 and then not stored: still only accepted. OpenCode's
-    // session.error names no message, so it is not that message's failure.
-    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    // Answered 204 and then not stored: still only accepted, and found by
+    // its ID as not there.
     lab.control("mode", json!({"prompt": "unstored"})).await;
     let lost = MessageId::new();
     assert_eq!(server.submit(&session, &lost, "hello").await.unwrap(), Submission::Accepted);
-    let error = next_of(&mut events, "session.error").await;
-    assert_eq!(session_of(&error), Some(session.as_str()));
-    assert!(error["data"].get("messageID").is_none());
     assert_eq!(server.message(&session, &lost).await.unwrap(), None);
 
     // A 5xx is unknown and a 4xx refused, each with OpenCode's status.
@@ -342,12 +395,12 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     // Heartbeats (every 0.2 s here) come between the events and are left out.
     tokio::time::sleep(Duration::from_millis(500)).await;
     lab.control("busy", json!({"sessionID": session})).await;
-    lab.control("event", json!({"type": "message.part.delta", "properties": {"sessionID": session,
-        "messageID": "msg_a", "partID": "prt_a", "field": "text", "delta": "Hel"}})).await;
+    lab.control("event", json!({"type": "session.text.delta", "properties": {"sessionID": session,
+        "assistantMessageID": "msg_a", "ordinal": 0, "delta": "Hel"}})).await;
     let status = events.next().await.unwrap().unwrap();
-    assert_eq!((status["type"].as_str(), status["data"]["status"]["type"].as_str()), (Some("session.status"), Some("busy")));
+    assert_eq!(status["type"].as_str(), Some("session.execution.started"), "2.x's busy");
     let delta = events.next().await.unwrap().unwrap();
-    assert_eq!((delta["type"].as_str(), delta["data"]["delta"].as_str()), (Some("message.part.delta"), Some("Hel")));
+    assert_eq!((delta["type"].as_str(), delta["data"]["delta"].as_str()), (Some("session.text.delta"), Some("Hel")));
     assert_eq!(session_of(&delta), Some(session.as_str()));
 
     // The stream breaks. A request asked meanwhile is not an event here...
@@ -418,7 +471,14 @@ async fn answers_and_abort_stay_within_their_session() {
     // Abort ends a's run and a's requests only.
     let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
     server.abort(&a).await.unwrap();
-    let idle = next_of(&mut events, "session.status").await;
+    let idle = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = events.next().await.unwrap().expect("the stream ended");
+            if event["type"].as_str().is_some_and(|kind| kind.starts_with("session.execution.")) {
+                return event;
+            }
+        }
+    }).await.expect("the execution's end");
     assert_eq!(session_of(&idle), Some(a.as_str()));
     assert!(server.snapshot(&a, &[]).await.unwrap().permissions.is_empty());
     let now_b = server.snapshot(&b, &[]).await.unwrap();
@@ -455,7 +515,7 @@ async fn a_long_session_is_read_whole_oldest_first_page_by_page() {
     let session = session(&server).await;
     let seeded: Vec<String> = serde_json::from_value(lab.control("seed", json!({"sessionID": session, "count": 450})).await).unwrap();
     let read = server.messages(&session).await.unwrap();
-    let ids: Vec<&str> = read.as_array().unwrap().iter().map(|m| m["info"]["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = read.as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert_eq!(ids, seeded, "every message, oldest first");
     let pages: Vec<Value> = lab.calls().into_iter()
         .filter(|c| c["path"] == format!("/api/session/{session}/message")).map(|c| c["query"].clone()).collect();

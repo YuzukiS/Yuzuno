@@ -901,6 +901,8 @@ fn new_attempt(db: &Connection, previous: &Value, number: i64) -> Result<Value> 
     if let Some(map) = job.as_object_mut() {
         map.remove("cursor");
         map.remove("retriedBy");
+        // A new reservation: marked only if it passes a head itself (T-38).
+        map.remove("admission");
     }
     job["id"] = json!(id);
     job["attempt"] = json!(uuid::Uuid::new_v4().to_string());

@@ -143,3 +143,52 @@ test("a refused save keeps the draft and says why", async () => {
     p.close();
   }
 });
+
+test("Restore default with unsaved changes asks first; Keep editing keeps them, and a restore leaves focus on the presentation (T-19 ST:SX-65)", async () => {
+  let kept = core("visual", "Charts first");
+  const p = mount((url, body) => {
+    if (body) kept = core(body.style, body.note.trim().split(/\s+/).join(" "));
+    return kept;
+  });
+  try {
+    p.window.renderSettings({ active: true });
+    await waitFor(() => button(p, "Restore default"));
+    const note = p.doc.querySelector('[aria-label="Your note for Agents"]');
+    const select = p.doc.querySelector('[aria-label="Home presentation"]');
+    type(p, note, "Charts first, please");
+    await waitFor(() => button(p, "Save Home preference"));
+    const puts = () => p.calls.filter((c) => c.method === "PUT");
+    button(p, "Restore default").click();
+    await waitFor(() => p.doc.querySelector(".settings-confirm"));
+    const confirm = p.doc.querySelector('.settings-confirm[role="group"][aria-label="Restore the Home default"]');
+    assert.equal(!!confirm, true, "it asks below the actions");
+    assert.match(confirm.textContent, /What you changed here and haven't saved is discarded\./);
+    assert.equal(p.doc.activeElement === confirm, true, "the question has focus");
+    assert.equal(puts().length, 0, "nothing is saved before it is confirmed");
+    [...confirm.querySelectorAll("button")].find((b) => b.textContent.trim() === "Keep editing").click();
+    await waitFor(() => !p.doc.querySelector(".settings-confirm"));
+    assert.equal(note.value, "Charts first, please", "the unsaved note is kept");
+    assert.equal(p.doc.activeElement === button(p, "Restore default"), true, "focus is back on Restore default");
+    assert.equal(puts().length, 0);
+    button(p, "Restore default").click();
+    await waitFor(() => p.doc.querySelector(".settings-confirm"));
+    [...p.doc.querySelector(".settings-confirm").querySelectorAll("button")].find((b) => b.textContent.trim() === "Restore default").click();
+    await waitFor(() => p.doc.body.textContent.includes("Nothing: Agents follow the general rule."));
+    assert.deepEqual(puts().map((c) => c.body), [{ style: "default", note: "" }]);
+    await waitFor(() => p.doc.activeElement === select);
+    assert.equal(p.doc.activeElement === select, true, "focus is on the presentation, as the actions go");
+    // Saved again, with nothing unsaved: Restore default restores at once.
+    type(p, select, "visual");
+    await waitFor(() => button(p, "Save Home preference"));
+    button(p, "Save Home preference").click();
+    await waitFor(() => button(p, "Restore default") && !button(p, "Save Home preference"));
+    button(p, "Restore default").click();
+    await waitFor(() => puts().length === 3);
+    assert.equal(!!p.doc.querySelector(".settings-confirm"), false, "nothing unsaved: it does not ask");
+    assert.deepEqual(puts().at(-1).body, { style: "default", note: "" });
+    await waitFor(() => p.doc.activeElement === select);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

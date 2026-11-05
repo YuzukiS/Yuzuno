@@ -390,6 +390,18 @@
 .collab-card-heading .collab-task-id {
   margin-left: auto;
 }
+/* Its executor's slot (T-35): queued, starting or running. */
+.collab-executor-slot {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.collab-executor-slot[data-slot-state="running"] {
+  color: var(--green);
+}
 .collab-has-result {
   display: inline-flex;
   align-items: center;

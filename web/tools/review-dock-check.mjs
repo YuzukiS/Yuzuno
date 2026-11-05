@@ -6,9 +6,9 @@
 // - Follow: Core says a review changed (workspace.changed, the jobs scope, as Core's announce sends it):
 //   the dock reads its reviews again, and the round goes preparing, reviewing, then no actionable
 //   findings, the only state marked passed. Nothing plays on its entries as they change but what every
-//   dock entry already does (T-19 1a): the mark's colour eases to its new state's, and a running mark
-//   turns; no entrance, settle or replay, and an ended entry is still once its colour has eased; and
-//   nothing is read again without such an event (no timer).
+//   dock entry already does (T-19 1a, CV:WD-05): the mark's colour eases to its new state's, a running mark
+//   turns, and a mark whose run ends settles once; no entrance or replay, and an ended entry is still once
+//   it has settled; and nothing is read again without such an event (no timer).
 // - Open: the entry opens the Jobs panel's Reviews on that round, in its task, as the panel's own link does.
 // Desktop (motion and reduced motion) and a phone, where the dock is behind its button.
 // Writes: none; anything but a GET is refused and counted. Served from http://127.0.0.1. Chromium is not Safari.
@@ -142,9 +142,9 @@ function pageHelpers() {
       state: [...el.classList].find((c) => c.startsWith("state-")) ?? null,
       text: el.textContent,
       // What plays on it and inside it, its marks' pseudo-elements included: a CSS transition by its property,
-      // a CSS animation by its name, anything else as script.
+      // a CSS animation by its name, anything else as script, by its id where it has one.
       playing: el.getAnimations({ subtree: true }).map((a) => typeof CSSTransition !== "undefined" && a instanceof CSSTransition ? `transition:${a.transitionProperty}`
-        : typeof CSSAnimation !== "undefined" && a instanceof CSSAnimation ? `animation:${a.animationName}` : "script"),
+        : typeof CSSAnimation !== "undefined" && a instanceof CSSAnimation ? `animation:${a.animationName}` : a.id ? `script:${a.id}` : "script"),
     })) : null);
     if (frames.length < 20_000) requestAnimationFrame(step);
   };
@@ -221,12 +221,14 @@ for (const r of runs) {
     ok(`${tag}: Core says the review changed, and the dock reads again: preparing, then reviewing, then no actionable findings, marked passed`,
       /Reviewing/.test(running[0].text) && /No actionable findings/.test(ended[0].text) && ended[0].name === "PR #7 · round 2" && reads() === before + 2,
       { running: running[0], ended: ended[0], reads: reads() - before });
-    // Only what every dock entry does (T-19 1a): its colour eases to the new state's; a running mark turns.
-    const allowed = (e, n) => n === "transition:color" || (n === "animation:spin" && e.state === "state-running");
+    // Only what every dock entry does (T-19 1a): its colour eases to the new state's; a running mark turns; and
+    // since CV:WD-05 a mark whose run ends settles once, its fill fading in and, passed, a small spring (WorkDock.tsx).
+    const allowed = (e, n) => n === "transition:color" || (n === "animation:spin" && e.state === "state-running")
+      || (/^script:dock-settle-(fill|spring)$/.test(n) && e.state === "state-passed");
     const shown = followed.filter(Boolean);
     const extra = shown.flatMap((f) => f.flatMap((e) => e.playing.filter((n) => !allowed(e, n))));
     const endedStill = shown.slice(-10).every((f) => f.every((e) => e.playing.length === 0));
-    ok(`${tag}: nothing plays on the review entries as they change but what every dock entry does (its colour eases to its new state's, a running mark turns): no entrance, settle or replay; an ended entry is still, and the earlier round stays as it was (T-19)`,
+    ok(`${tag}: nothing plays on the review entries as they change but what every dock entry does (its colour eases to its new state's, a running mark turns, an ended one settles once): no entrance or replay; an ended entry is still, and the earlier round stays as it was (T-19)`,
       extra.length === 0 && endedStill && shown.every((f) => f[1]?.state === "state-rejected") && shown.every((f) => f[1]?.playing.length === 0),
       { extra: [...new Set(extra)], endedStill, frames: followed.length,
         kinds: [...new Set(shown.flatMap((f) => f.flatMap((e) => e.playing)))], spinning: shown.filter((f) => f[0]?.playing.includes("animation:spin")).length });

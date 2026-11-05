@@ -61,6 +61,13 @@ type ExecutionSource = {
   sessionId?: string | null;
 };
 type ResultLink = { label: string; url: string };
+export type ExecutorSlot = {
+  agentId: string;
+  state: "waiting" | "starting" | "running";
+  machine: string;
+  position?: number | null;
+  reason?: string | null;
+};
 export interface SharedTask {
   github?: GitHubLink[];
   id: string;
@@ -77,6 +84,9 @@ export interface SharedTask {
   projectId?: string | null;
   /** Registered work materials (full view only); paths are information. */
   materials?: { worktree?: string | null; acceptance?: string | null } | null;
+  /** Its executor's slot (T-35), when one holds or waits for one: waiting
+   * with its place in the queue (1 first), starting, or running. */
+  executorSlot?: ExecutorSlot | null;
   version: number;
   createdAt: string;
   createdBy: Person;
@@ -868,6 +878,15 @@ export function CollaborationBoard({
                 {projectName(task.projectId, projects)}
               </span>
             )}
+          {task.executorSlot && (
+            <span
+              className="collab-executor-slot"
+              data-slot-state={task.executorSlot.state}
+              title={t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason)}
+            >
+              {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
+            </span>
+          )}
           <GitHubSummary links={task.github} openOnly />
           {currentResult(task) && (
             <span className="collab-has-result">
