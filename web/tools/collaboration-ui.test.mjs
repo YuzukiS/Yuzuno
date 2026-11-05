@@ -2391,3 +2391,193 @@ test("a revision while Load more is on its way keeps both pages and only says th
     page.close();
   }
 });
+
+// T-51 plan item 7: the board's own motion rows, as far as jsdom shows them (no layout or animations: a settle lands
+// at once there). board-motion-check.mjs plays them in Chromium.
+const settled = (page) => [...page.document.querySelectorAll("[data-settle]")].map((node) => node.dataset.taskId || node.id || node.className);
+
+test("other filters keep the cards shown, dimmed and busy, until Core answers; a failed read or an empty list keeps nothing (T-19 CB-03)", async () => {
+  const board = quietBoard();
+  const { page, state, held } = board;
+  const list = () => page.document.querySelector(".collab-cards, .collab-groups");
+  const stale = () => !!page.document.querySelector(".collab-task-list.is-stale");
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    state.holding = new Set(["task_list"]);
+    await value(page, field(page, "Show"), "all");
+    assert.equal(stale(), true, "the list other filters replace is marked stale");
+    assert.equal(list()?.getAttribute("aria-busy"), "true", "and busy");
+    assert.equal(page.document.querySelectorAll(".collab-task-card").length, 1, "its cards stay");
+    assert.equal(page.document.querySelector(".collab-loading"), null, "nothing says Gathering");
+    held.task_list();
+    state.holding = new Set();
+    await waitFor(() => !stale(), "Core's answer for them");
+    assert.equal(list()?.getAttribute("aria-busy"), null, "not busy once answered");
+    assert.ok(list()?.classList.contains("collab-list-flip"), "the answer's list fades in");
+    // Other filters whose read fails: the cards they replace go too, and the error shows.
+    state.failList = true;
+    await value(page, field(page, "Show"), "blocked");
+    await waitFor(() => /Core is away/.test(page.document.body.textContent), "the failed read");
+    assert.equal(stale(), false, "a read failing at once leaves no list marked stale");
+    assert.equal(page.document.querySelectorAll(".collab-task-card").length, 0, "no cards from the filters before");
+    // An empty answer is not kept for other filters: they gather, as before.
+    state.failList = false;
+    state.list = () => ({ tasks: [], hasMore: false });
+    await value(page, field(page, "Show"), "todo");
+    await waitFor(() => /No tasks match these filters/.test(page.document.body.textContent), "an empty answer");
+    state.holding = new Set(["task_list"]);
+    await value(page, field(page, "Show"), "doing");
+    assert.equal(stale(), false, "nothing to keep");
+    assert.ok(page.document.querySelector(".collab-loading"), "it gathers");
+    assert.doesNotMatch(page.document.body.textContent, /No tasks match/, "nothing says nothing matches before Core answers");
+    held.task_list();
+    state.holding = new Set();
+    await waitFor(() => /No tasks match these filters/.test(page.document.body.textContent), "Core's answer");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("Refresh tasks, task details and messages say they are busy while the read they asked for is on its way (T-19 GL-07)", async () => {
+  const board = quietBoard();
+  const { page, state, held, refreshButton } = board;
+  const says = (label) => ({ busy: refreshButton(label).getAttribute("aria-busy"), title: refreshButton(label).getAttribute("title") });
+  const during = async (operation, label) => {
+    state.holding = new Set([operation]);
+    refreshButton(label).click();
+    await tick();
+    const seen = says(label);
+    held[operation]();
+    state.holding = new Set();
+    await waitFor(() => !refreshButton(label).disabled, `${label} answered`);
+    return { seen, after: says(label) };
+  };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    assert.deepEqual(await during("task_list", "Refresh tasks"),
+      { seen: { busy: "true", title: "Refreshing tasks…" }, after: { busy: null, title: "Refresh tasks" } });
+    await board.openTask();
+    assert.deepEqual(await during("task_get", "Refresh task details"),
+      { seen: { busy: "true", title: "Refreshing task details…" }, after: { busy: null, title: "Refresh task details" } });
+    click(page, "Messages");
+    await waitFor(() => refreshButton("Refresh messages") && !refreshButton("Refresh messages").disabled, "the mailbox");
+    assert.deepEqual(await during("peer_read", "Refresh messages"),
+      { seen: { busy: "true", title: "Refreshing messages…" }, after: { busy: null, title: "Refresh messages" } });
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("the reader's own save that moves a task's row brings that row into view and settles it, once; a save that moves nothing settles nothing (T-19 CB-12)", async () => {
+  let tasks = [
+    task({ id: "T-1", status: "doing", updatedAt: "2026-10-12T12:00:00Z" }),
+    task({ id: "T-2", status: "todo", title: "Second", updatedAt: "2026-10-12T11:00:00Z" }),
+  ];
+  const page = mount((operation, body) => {
+    if (operation === "task_list") return { tasks, hasMore: false };
+    if (operation === "task_get") return { task: tasks.find((t) => t.id === body.taskId), activities: [], executions: [], hasMore: false };
+    if (operation === "task_update") {
+      const old = tasks.find((t) => t.id === body.taskId);
+      const next = { ...old, ...body.patch, version: old.version + 1, updatedAt: `2026-10-12T13:0${old.version}:00Z` };
+      tasks = tasks.map((t) => (t.id === next.id ? next : t));
+      return { task: next };
+    }
+    if (operation === "workspaces") return { taskId: body.taskId, repositories: [], workspaces: [] };
+    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [] };
+    if (operation === "delivery_get") return { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation.startsWith("pr-reviews")) return { reviews: [], hasMore: false, nextBefore: null };
+    if (operation.startsWith("pr-operations")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
+    return {};
+  });
+  const scrolled = [];
+  page.window.HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this.dataset?.taskId ?? this.className); };
+  const edit = async (label, text) => {
+    click(page, "Edit task");
+    await waitFor(() => field(page, label), "the edit form");
+    await value(page, field(page, label), text);
+    scrolled.length = 0;
+    click(page, "Save changes");
+    await waitFor(() => !button(page, "Save changes"), "saved");
+    await tick(60);
+  };
+  try {
+    page.render();
+    await waitFor(() => page.document.querySelector('.collab-task-card[data-task-id="T-2"]'), "the list");
+    page.document.querySelector('.collab-task-card[data-task-id="T-2"]').click();
+    await waitFor(() => button(page, "Edit task"), "T-2's detail");
+    await tick(400);
+    await edit("Task status", "doing");
+    assert.equal(page.document.querySelector('.collab-task-card[data-task-id="T-2"]').closest(".collab-group")?.classList.contains("group-doing"), true, "its row moved");
+    assert.ok(scrolled.includes("T-2"), "brought into view");
+    assert.deepEqual(settled(page), ["T-2"], "and it alone settles");
+    await waitFor(() => !settled(page).length, "the settle's time up");
+    await edit("Task title", "Second, renamed");
+    assert.deepEqual(settled(page), [], "a save that moves nothing settles nothing");
+    assert.ok(!scrolled.includes("T-2"), "nor scrolls");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a reply's Reply to an earlier message lands on the message it answers, which settles (T-19 MS-03)", async () => {
+  const mail = (n, patch = {}) => ({ id: `m-${n}`, seq: n, sender: { kind: "agent", id: "dev-1", name: "Dev 1" },
+    recipient: { kind: "agent", id: "dev-2", name: "Dev 2" }, body: `Note ${n}`, taskId: null, replyTo: null, threadId: `m-${n}`,
+    createdAt: `2026-10-12T12:0${n}:00Z`, firstReadAt: null, delivery: { state: "delivered", detail: {} }, ...patch });
+  const page = mount((operation) => {
+    if (operation === "task_list") return { tasks: [task()], hasMore: false };
+    if (operation === "peer_read") return { messages: [mail(3, { replyTo: "m-1" }), mail(2), mail(1)], hasMore: false };
+    return {};
+  });
+  try {
+    page.render();
+    await tick();
+    click(page, "Messages");
+    await waitFor(() => page.document.querySelector("#peer-message-m-3 .collab-reply-label"), "the reply");
+    assert.deepEqual(settled(page), []);
+    page.document.querySelector("#peer-message-m-3 .collab-reply-label").click();
+    await tick();
+    assert.equal(page.document.activeElement?.id, "peer-message-m-1", "the message it answers has the focus");
+    assert.deepEqual(settled(page), ["peer-message-m-1"], "and settles");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a review link settles the review it opens, once (T-19 GH-06)", async () => {
+  const review = { id: "run-1", linkId: "7:pull:1", repository: "owner/repo", number: 1, status: "completed", requestedHarness: "codex",
+    requestedModel: "gpt-6.1-sol", actualHarness: "codex", actualModel: "gpt-6.1-sol", baseSha: "a".repeat(40), headSha: "b".repeat(40),
+    mergeBaseSha: "a".repeat(40), conclusion: "no_findings", error: null, createdAt: "2026-10-12T12:00:00Z", outdated: false, findings: [],
+    cursor: 1, round: 1, rawReport: "report" };
+  const page = mount((operation) => {
+    if (operation === "task_list") return { tasks: [task()], hasMore: false };
+    if (operation === "task_get") return { task: task(), activities: [], executions: [], hasMore: false };
+    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [], refreshing: false };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation === "pr-reviews?taskId=T-1") return { reviews: [review], hasMore: false, nextBefore: null };
+    if (operation === "run-1?taskId=T-1") return review;
+    if (operation.startsWith("pr-operations")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
+    return {};
+  });
+  try {
+    page.render();
+    await tick();
+    page.render({ focus: { taskId: "T-1", reviewId: "run-1", at: 1 } });
+    const focused = await waitFor(() => page.document.querySelector(".pr-review-run.focused"), "the linked review");
+    await waitFor(() => focused.hasAttribute("data-settle"), "its settle");
+    assert.equal(settled(page).length, 1, "it alone settles");
+    await waitFor(() => !focused.hasAttribute("data-settle"), "the settle's time up");
+    page.render({ focus: { taskId: "T-1", reviewId: "run-1", at: 1 }, revision: 1 });
+    await tick(100);
+    assert.equal(focused.hasAttribute("data-settle"), false, "once: a render again settles nothing");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
