@@ -4,19 +4,19 @@
 //! executor in its materials.
 //!
 //! Each save is a new version, kept with who wrote it, who approved it and
-//! why; the document is the latest version. Here only the user writes it,
-//! through these browser routes; a lead's proposal that the user approves
-//! comes next (S3b). A Project's versions go with it.
+//! why; the document is the latest version. The user writes it through these
+//! browser routes; a lead proposes a version that the user approves on Home
+//! (handover_proposals.rs, S3b). A Project's versions go with it.
 use crate::{model::now, server::ApiError, store::Store, workspace::Workspace};
 use anyhow::{ensure, Result};
-use axum::{extract::{Path, Query, State}, routing::get, Json, Router};
+use axum::{extract::{Path, Query, State}, routing::{get, post}, Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub const MAX_BYTES: usize = 32 * 1024;
-const MAX_REASON: usize = 1_000;
+pub(crate) const MAX_REASON: usize = 1_000;
 /// Versions a read lists; older ones stay, readable by their number.
 const HISTORY: i64 = 50;
 
@@ -33,7 +33,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             PRIMARY KEY(project_id, version));
         DELETE FROM project_handover_versions WHERE project_id NOT IN (SELECT id FROM projects);",
     )?;
-    Ok(())
+    crate::handover_proposals::migrate(db)
 }
 
 /// The first character a handover may not hold, by line and column (from
@@ -52,6 +52,22 @@ fn first_control(markdown: &str) -> Option<(usize, usize, char)> {
         }
     }
     None
+}
+
+/// A document a save or a proposal may hold: at most 32 KiB of text.
+pub(crate) fn check_markdown(markdown: &str) -> Result<()> {
+    ensure!(markdown.len() <= MAX_BYTES, "A handover document is at most 32 KiB; this one is {} bytes", markdown.len());
+    if let Some((line, column, c)) = first_control(markdown) {
+        anyhow::bail!("A handover document is text: no control characters but line breaks and tabs; U+{:04X} at line {line}, column {column}", c as u32);
+    }
+    Ok(())
+}
+
+/// A reason or a note (`what`): at most 1,000 bytes of text, with line breaks.
+pub(crate) fn check_text(text: &str, what: &str) -> Result<()> {
+    ensure!(text.len() <= MAX_REASON && !text.chars().any(|c| c.is_control() && c != '\n'),
+        "{what} is at most {MAX_REASON} bytes of text");
+    Ok(())
 }
 
 /// The document as a dispatch gives it: its version and text, or None while
@@ -75,7 +91,7 @@ fn version_of(row: &rusqlite::Row) -> rusqlite::Result<Value> {
 const COLUMNS: &str = "version, written_by, markdown, written_by_name, approved_by, reason, at";
 
 /// The document and its history, or one past version of it.
-fn read_in(db: &Connection, project: &str, version: Option<i64>) -> Result<Value> {
+pub(crate) fn read_in(db: &Connection, project: &str, version: Option<i64>) -> Result<Value> {
     crate::projects::ensure_exists(db, project)?;
     if let Some(version) = version {
         let past = db
@@ -103,21 +119,23 @@ fn read_in(db: &Connection, project: &str, version: Option<i64>) -> Result<Value
 }
 
 impl Store {
+    /// The document with the proposal waiting for the user, or one past version.
     pub(crate) fn handover(&self, project: &str, version: Option<i64>) -> Result<Value> {
-        read_in(&*self.db.read()?, project, version)
+        let db = self.db.read()?;
+        let mut answer = read_in(&db, project, version)?;
+        if version.is_none() {
+            answer["proposal"] = json!(crate::handover_proposals::pending_summary(&db, project)?);
+        }
+        Ok(answer)
     }
 
     /// The user's save: a new version, checked against the version read in
     /// the same transaction. An archived Project's document doesn't change.
     pub(crate) fn save_handover(&self, project: &str, expected: i64, markdown: &str, reason: Option<&str>) -> Result<Value> {
-        ensure!(markdown.len() <= MAX_BYTES, "A handover document is at most 32 KiB; this one is {} bytes", markdown.len());
-        if let Some((line, column, c)) = first_control(markdown) {
-            anyhow::bail!("A handover document is text: no control characters but line breaks and tabs; U+{:04X} at line {line}, column {column}", c as u32);
-        }
+        check_markdown(markdown)?;
         let reason = reason.map(str::trim).filter(|r| !r.is_empty());
         if let Some(reason) = reason {
-            ensure!(reason.len() <= MAX_REASON && !reason.chars().any(|c| c.is_control() && c != '\n'),
-                "A reason is at most {MAX_REASON} bytes of text");
+            check_text(reason, "A reason")?;
         }
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
@@ -164,9 +182,13 @@ async fn put_handover(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
     Ok(Json(saved))
 }
 
-/// The user's routes: a browser route, never a collaboration operation.
+/// The user's routes: browser routes, never a collaboration operation. Only
+/// the user decides on a lead's proposal.
 pub fn router() -> Router<Arc<Workspace>> {
-    Router::new().route("/api/projects/{id}/handover", get(get_handover).put(put_handover))
+    Router::new()
+        .route("/api/projects/{id}/handover", get(get_handover).put(put_handover))
+        .route("/api/projects/{id}/handover/proposals/{pid}", get(crate::handover_proposals::get_proposal))
+        .route("/api/projects/{id}/handover/proposals/{pid}/decision", post(crate::handover_proposals::post_decision))
 }
 
 #[cfg(test)]

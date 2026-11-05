@@ -1,4 +1,4 @@
-import { Bell, CircleAlert, CircleCheck, MessageCircleQuestionMark, MessagesSquare, ShieldCheck } from "lucide-react";
+import { Bell, CircleAlert, CircleCheck, FileText, MessageCircleQuestionMark, MessagesSquare, ShieldCheck } from "lucide-react";
 import type { Agent } from "../types";
 import { useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
@@ -12,7 +12,9 @@ export const needsYouKey = (item: NeedsYouItem) =>
     ? `approval:${item.requestId}`
     : item.kind === "question"
       ? `question:${item.agentId}:${item.turnId}:${item.itemId}`
-      : `ask:${item.projectId}:${item.sectionKey}`;
+      : item.kind === "handover"
+        ? `handover:${item.proposalId}`
+        : `ask:${item.projectId}:${item.sectionKey}`;
 
 /** Turn ends this device hasn't shown (T-42), failed and finished. */
 export type UnseenEnds = { failed: Agent[]; finished: Agent[] };
@@ -67,6 +69,8 @@ export function NeedsYou({
                   <ShieldCheck size={14} />
                 ) : item.kind === "question" ? (
                   <MessagesSquare size={14} />
+                ) : item.kind === "handover" ? (
+                  <FileText size={14} />
                 ) : (
                   <MessageCircleQuestionMark size={14} />
                 )}

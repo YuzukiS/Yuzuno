@@ -66,4 +66,6 @@ export function keepUnchanged(previous: HomeData | null, next: HomeData): HomeDa
 export const sectionDomId = (projectId: string, key: string) =>
   `home-section-${projectId}-${key}`;
 export const requestDomId = (requestId: string) => `home-request-${requestId}`;
+/** A lead's handover proposal on Home (T-34 S3b). */
+export const handoverDomId = (proposalId: string) => `home-handover-${proposalId}`;
 export const projectDomId = (projectId: string) => `home-project-${projectId}`;

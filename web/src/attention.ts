@@ -27,13 +27,14 @@ export function unseenEnd(agent: Agent, seen: TurnSeen): "finished" | "failed" |
   return Math.max(seen[agent.id] ?? 0, agent.reviewedSeq ?? 0) >= end.seq ? null : end.outcome;
 }
 
-/** The attention ranks, in order: what waits on the user (requests and open
- * questions), a Turn end not seen here, working, at rest, offline. */
+/** The attention ranks, in order: what waits on the user (requests, open
+ * questions, a handover proposal), a Turn end not seen here, working, at
+ * rest, offline. */
 export const attentionRanks = ["needsYou", "unseen", "working", "idle", "offline"] as const;
 export type AttentionRank = (typeof attentionRanks)[number];
 
-export function attentionRank(agent: Agent, seen: TurnSeen): AttentionRank {
-  if (agent.pendingCount > 0) return "needsYou";
+export function attentionRank(agent: Agent, seen: TurnSeen, waiting?: ReadonlySet<string>): AttentionRank {
+  if (agent.pendingCount > 0 || waiting?.has(agent.id)) return "needsYou";
   if (unseenEnd(agent, seen)) return "unseen";
   if (agent.status === "working" || agent.status === "waiting") return "working";
   if (agent.status === "offline" || agent.disconnectedAt) return "offline";
@@ -45,6 +46,9 @@ export type AttentionContext = {
   /** When each Agent's oldest wait began (ms), from Home's Needs you: what
    * waits longest goes first. An Agent without one keeps its place. */
   since?: ReadonlyMap<string, number>;
+  /** The Agents whose handover proposal waits for the user (T-34 S3b):
+   * waiting on the user as a request is, though not in pendingCount. */
+  waiting?: ReadonlySet<string>;
 };
 
 /**
@@ -62,7 +66,7 @@ export function orderByAttention(
   options: { leads?: ReadonlySet<string> } = {},
 ): Agent[] {
   const keyed = agents.map((agent, index) => {
-    const rank = attentionRank(agent, context.seen);
+    const rank = attentionRank(agent, context.seen, context.waiting);
     const within =
       rank === "needsYou"
         ? (context.since?.get(agent.id) ?? Number.POSITIVE_INFINITY)
@@ -73,6 +77,11 @@ export function orderByAttention(
   });
   keyed.sort((a, b) => a.lead - b.lead || a.rank - b.rank || a.within - b.within || a.index - b.index);
   return keyed.map((k) => k.agent);
+}
+
+/** The Agents a handover proposal in Home's Needs you names (T-34 S3b). */
+export function proposersWaiting(items: readonly NeedsYouItem[] | null): Set<string> {
+  return new Set((items || []).filter((item) => item.kind === "handover").map((item) => item.agentId));
 }
 
 /** When each Agent's oldest Needs you item has waited since (ms). */
@@ -90,12 +99,15 @@ export function waitingSince(items: readonly NeedsYouItem[] | null): Map<string,
 /** Where "next needs you" goes. */
 export type NeedsTarget =
   | { kind: "agent"; agentId: string }
-  | { kind: "ask"; projectId: string | null; sectionKey: string };
+  | { kind: "ask"; projectId: string | null; sectionKey: string }
+  | { kind: "handover"; projectId: string | null; proposalId: string };
 
 const same = (a: NeedsTarget, b: NeedsTarget) =>
   a.kind === "agent" && b.kind === "agent"
     ? a.agentId === b.agentId
-    : a.kind === "ask" && b.kind === "ask" && a.projectId === b.projectId && a.sectionKey === b.sectionKey;
+    : a.kind === "ask" && b.kind === "ask"
+      ? a.projectId === b.projectId && a.sectionKey === b.sectionKey
+      : a.kind === "handover" && b.kind === "handover" && a.proposalId === b.proposalId;
 
 /**
  * Every place "next needs you" goes, in order (T-42): Home's Needs you as
@@ -113,6 +125,9 @@ export function needsYouTargets(items: readonly NeedsYouItem[] | null, agents: r
   for (const item of items || []) {
     if (item.kind === "ask") {
       if (item.sectionKey) add({ kind: "ask", projectId: item.projectId, sectionKey: item.sectionKey });
+    } else if (item.kind === "handover") {
+      // Decided on Home, where its card is (T-34 S3b).
+      if (item.proposalId) add({ kind: "handover", projectId: item.projectId, proposalId: item.proposalId });
     } else if (open.some((agent) => agent.id === item.agentId && agent.pendingCount > 0)) {
       add({ kind: "agent", agentId: item.agentId });
     }

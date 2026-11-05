@@ -11,8 +11,36 @@ export type HandoverVersion = {
   /** Only when one past version is read. */
   markdown?: string;
 };
+/** A lead's proposal for the document (T-34 S3b), as a list shows it. */
+export type HandoverProposalSummary = {
+  id: string;
+  projectId: string;
+  proposer: { id: string; name: string };
+  baseVersion: number;
+  reason?: string | null;
+  bytes: number;
+  at: string;
+  state: "pending" | "approved" | "rejected" | "superseded";
+  note?: string | null;
+  version?: number | null;
+};
+/** One proposal with the text it would replace, for the user's decision. */
+export type HandoverProposalDetail = {
+  proposal: HandoverProposalSummary & { markdown: string };
+  base: { version: number; markdown: string };
+  currentVersion: number;
+  stale: boolean;
+};
 /** The document as Core keeps it: its latest version, and who wrote each. */
-export type Handover = { projectId: string; version: number; markdown: string; history: HandoverVersion[]; limit: number };
+export type Handover = {
+  projectId: string;
+  version: number;
+  markdown: string;
+  history: HandoverVersion[];
+  limit: number;
+  /** The proposal waiting for the user, if any. */
+  proposal?: HandoverProposalSummary | null;
+};
 
 /** The document as this client reads it: a list, even from an answer without one. */
 export const handoverView = (projectId: string, value: Partial<Handover>): Handover => ({
@@ -21,6 +49,7 @@ export const handoverView = (projectId: string, value: Partial<Handover>): Hando
   markdown: typeof value.markdown === "string" ? value.markdown : "",
   history: Array.isArray(value.history) ? value.history : [],
   limit: typeof value.limit === "number" ? value.limit : 32 * 1024,
+  proposal: value.proposal && typeof value.proposal === "object" ? value.proposal : null,
 });
 
 export const readHandover = (projectId: string, signal?: AbortSignal) =>
@@ -32,3 +61,16 @@ export const saveHandover = (projectId: string, expectedVersion: number, markdow
   api<Partial<Handover>>(`/projects/${encodeURIComponent(projectId)}/handover`, {
     method: "PUT", body: JSON.stringify({ expectedVersion, markdown, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
   }).then(value => handoverView(projectId, value));
+
+const proposalPath = (projectId: string, id: string) =>
+  `/projects/${encodeURIComponent(projectId)}/handover/proposals/${encodeURIComponent(id)}`;
+export const readHandoverProposal = (projectId: string, id: string, signal?: AbortSignal) =>
+  api<HandoverProposalDetail>(proposalPath(projectId, id), { signal });
+/** The user's decision, checked against the version read and the proposal; a retry with the same requestId gets the same answer. */
+export const decideHandoverProposal = (projectId: string, id: string, decision: {
+  requestId: string; action: "approve" | "reject"; expectedVersion: number; note?: string;
+}) =>
+  api<{ proposal: HandoverProposalSummary; handover: Partial<Handover> }>(`${proposalPath(projectId, id)}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ ...decision, ...(decision.note?.trim() ? { note: decision.note.trim() } : { note: undefined }) }),
+  });

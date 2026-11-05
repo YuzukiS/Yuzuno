@@ -22,6 +22,7 @@ import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
+import { HandoverProposal } from "./HandoverProposal";
 import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, relative } from "./format";
@@ -469,6 +470,10 @@ export function HomePanel({
                   </div>
                 ))}
               </Approvals>
+            )}
+            {panel.handoverProposal && (
+              <HandoverProposal key={panel.handoverProposal.id} projectId={id} proposal={panel.handoverProposal}
+                readOnly={readOnly} onChanged={onChanged} />
             )}
             <RepoBlock projectId={id} readOnly={readOnly} />
           </div>

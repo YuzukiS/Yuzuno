@@ -1,0 +1,45 @@
+/* A lead's handover proposal on Home (T-34 S3b): its reason, the changed
+   lines, a note and the decision, as an approval card. */
+.home-handover-proposal {
+  scroll-margin: 24px;
+}
+.home-handover-proposal:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.home-handover-proposal .home-from {
+  margin: 0 0 0 auto;
+}
+.home-handover-reason {
+  margin: 0 0 6px;
+  color: var(--home-ink, var(--ink));
+  overflow-wrap: anywhere;
+}
+.home-handover-proposal .changes-lines {
+  max-height: 18rem;
+  overflow: auto;
+  margin: 6px 0;
+}
+.home-handover-note {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.home-handover-note input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.home-handover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
