@@ -95,6 +95,9 @@ fn agent(store: &Store, id: &str, harness: &str) {
     store.insert(&detail).unwrap();
 }
 
+/// What Core says when a Codex start is refused for want of the program.
+const REFUSED: &str = "Could not start Codex";
+
 /// A Codex that can't start: no such program.
 fn missing(dir: &Path) -> String {
     dir.join("no-codex").to_string_lossy().into_owned()
@@ -143,7 +146,7 @@ async fn a_failed_start_is_rebuilt_once_then_the_task_is_blocked_with_both_reaso
 
     let (state, reason, _, _) = lab.slot(&first);
     assert_eq!(state, "released");
-    assert!(reason.as_deref().is_some_and(|r| r.contains("no-codex")), "released with its own reason, not \"closed\": {reason:?}");
+    assert!(reason.as_deref().is_some_and(|r| r.starts_with(REFUSED)), "released with its own reason, not \"closed\": {reason:?}");
     assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_some(), "the first is closed, and kept");
     let second: String = lab.ws.store.db.read().unwrap().query_row(
         "SELECT to_agent FROM executor_rebuilds WHERE from_agent=?1 AND state='done'", [&first], |r| r.get(0)).unwrap();
@@ -157,7 +160,7 @@ async fn a_failed_start_is_rebuilt_once_then_the_task_is_blocked_with_both_reaso
     let view = lab.task_view(&task);
     let blocker = view["task"]["blocker"].as_str().unwrap();
     assert!(blocker.starts_with("Its executor did not start, nor the one Core rebuilt for it."), "{blocker}");
-    assert_eq!(blocker.matches("no-codex").count(), 2, "both reasons: {blocker}");
+    assert_eq!(blocker.matches(REFUSED).count(), 2, "both reasons: {blocker}");
     let d2 = view["task"]["dispatch"]["id"].as_str().unwrap().to_owned();
     assert_ne!(d2, d1, "D2 is a dispatch of its own");
     assert_eq!(view["task"]["dispatch"]["executor"]["id"], json!(second));
@@ -179,7 +182,7 @@ async fn a_failed_start_is_rebuilt_once_then_the_task_is_blocked_with_both_reaso
 
     let fixed = lab.ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"dispatchId":d1})).unwrap();
     assert_eq!(fixed["supersededBy"]["byDispatchId"], json!(d2), "D1 reads as superseded");
-    assert!(fixed["supersededBy"]["reason"].as_str().unwrap().contains("no-codex"), "with why: {}", fixed["supersededBy"]);
+    assert!(fixed["supersededBy"]["reason"].as_str().unwrap().contains(REFUSED), "with why: {}", fixed["supersededBy"]);
     let replay = json!({"requestId":"first","taskId":task,"expectedVersion":1,"executor":{"templateId":"reviewer"}});
     let replayed = lab.ws.collaboration_call(Some("lead"), "task_dispatch", replay).await.unwrap();
     assert_eq!(replayed["agentId"], json!(first), "a replay of the first request returns its recorded answer");
