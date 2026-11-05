@@ -860,14 +860,14 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
     assert.equal(label("u"), "Not confirmed by Claude Code · not sent again");
     assert.equal(label("u1"), undefined, "an ordinary message has no delivery note");
   } finally { unread.close(); }
-  // Only a turn of Claude's own is running: there is no turn of yours to add to.
+  // Only a turn of Claude's own is running: it takes the follow-up too (T-45).
   const own = await mount({ harness: "claude", status: "working", turnStatus: "completed",
     extraTurns: [{ id: "native-x", status: "inProgress", _yuzunoSource: "native", items: [] }] });
   try {
     setValue(own.window, own.document.querySelector("[data-composer-input]"), "Hello");
     await pause();
-    assert.equal(own.document.querySelector('[aria-label="Send message"]')?.disabled, true);
-    assert.equal(!!own.document.querySelector('[aria-label="Send while working"]'), false);
+    assert.equal(own.document.querySelector('[aria-label="Send while working"]')?.disabled, false, "Claude's own turn takes it");
+    assert.equal(!!own.document.querySelector('[aria-label="Send message"]'), false);
   } finally { own.close(); }
   // A kept draft whose delivery became unknown is never sent again under its
   // old id: sending it is a new message, whether or not the page knew yet.
@@ -5136,6 +5136,50 @@ test("working Claude keeps its draft and interrupt, and offers a follow-up to yo
     assert.equal(posts[0].url, "/api/agents/a/interrupt");
     assert.equal(composerText(composer), "Keep this for the next turn.");
     assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// T-45: any running Claude turn takes a follow-up, one of its own included
+// (a mailbox notice's, a reconnect's): the newest running one.
+test("working Claude takes a follow-up into its newest running turn, one of its own included (T-45)", async () => {
+  const native = (extra = {}) => ({ id: "native-n", status: "inProgress", _yuzunoSource: "native",
+    items: [{ id: "n1", type: "agentMessage", text: "Reading the mail." }], ...extra });
+  const field = (page) => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+  const thought = "Add a thought while your agent works…";
+  for (const [name, options, placeholder, turn] of [
+    ["idle", { status: "idle" }, "A task, a question, a new idea for Mori…", null],
+    ["your turn", { status: "working" }, thought, "t1"],
+    ["its own", { status: "working", turnStatus: "completed", extraTurns: [native()] }, thought, "native-n"],
+    ["its own, newest, beside your waiting prompt", { status: "working", extraTurns: [native({ _yuzunoUnmatched: true })] }, thought, "native-n"],
+  ]) {
+    const page = await mount({ harness: "claude", ...options });
+    try {
+      assert.equal(field(page).getAttribute("aria-placeholder"), placeholder, name);
+      setValue(page.window, field(page), `About ${name}.`);
+      await pause();
+      const send = page.document.querySelector(`[aria-label="${turn ? "Send while working" : "Send message"}"]`);
+      assert.equal(send?.disabled, false, name);
+      send.click();
+      await pause();
+      const posts = page.calls.filter((r) => r.url === "/api/agents/a/messages");
+      assert.equal(posts.length, 1, name);
+      assert.equal(JSON.parse(posts[0].init.body).expectedTurnId, turn, name);
+      assert.deepEqual(page.errors, [], name);
+    } finally {
+      page.close();
+    }
+  }
+  // A disconnected agent still holds the draft, as before.
+  const page = await mount({ harness: "claude", status: "working", turnStatus: "completed", extraTurns: [native()],
+    agentFields: { disconnectedAt: "2026-11-04T00:00:00Z" } });
+  try {
+    setValue(page.window, field(page), "Held.");
+    await pause();
+    assert.equal(page.document.querySelector('[aria-label="Send while working"]')?.disabled, true);
+    assert.equal(page.calls.filter((r) => r.url === "/api/agents/a/messages").length, 0);
+    assert.equal(composerText(field(page)), "Held.");
   } finally {
     page.close();
   }
