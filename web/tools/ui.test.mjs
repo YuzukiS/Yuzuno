@@ -860,14 +860,14 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
     assert.equal(label("u"), "Not confirmed by Claude Code · not sent again");
     assert.equal(label("u1"), undefined, "an ordinary message has no delivery note");
   } finally { unread.close(); }
-  // Only a turn of Claude's own is running: there is no turn of yours to add to.
+  // Only a turn of Claude's own is running: it takes the follow-up too (T-45).
   const own = await mount({ harness: "claude", status: "working", turnStatus: "completed",
     extraTurns: [{ id: "native-x", status: "inProgress", _yuzunoSource: "native", items: [] }] });
   try {
     setValue(own.window, own.document.querySelector("[data-composer-input]"), "Hello");
     await pause();
-    assert.equal(own.document.querySelector('[aria-label="Send message"]')?.disabled, true);
-    assert.equal(!!own.document.querySelector('[aria-label="Send while working"]'), false);
+    assert.equal(own.document.querySelector('[aria-label="Send while working"]')?.disabled, false, "Claude's own turn takes it");
+    assert.equal(!!own.document.querySelector('[aria-label="Send message"]'), false);
   } finally { own.close(); }
   // A kept draft whose delivery became unknown is never sent again under its
   // old id: sending it is a new message, whether or not the page knew yet.
@@ -1002,9 +1002,11 @@ test("local Claude takes images and says large ones are scaled for Claude while 
   for (const harness of ["claude", "codex"]) {
     const page = await mount({ harness });
     try {
-      // The composer's image button takes images for both; its tooltip
-      // carries the note for Claude.
-      const button = page.document.querySelector('.composer-tools [aria-label="Add images"]');
+      // The composer's "+" offers images to both; the entry's tooltip
+      // carries the note for Claude (T-44).
+      page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
+      await pause();
+      const button = page.document.querySelector('.composer-add-menu [role="menuitem"][aria-label="Add images"]');
       assert.equal(button?.disabled, false, harness);
       assert.equal(button?.hasAttribute("aria-disabled"), false, harness);
       assert.equal(/scaled or compressed when sent to Claude · originals are kept/.test(button?.title ?? ""), harness === "claude", harness);
@@ -2288,12 +2290,21 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
     assert.match(footer.textContent, /workspace.*test-model/);
     assert.doesNotMatch(footer.textContent, /Core host|Send|New line/);
     assert.ok(footer.querySelector('.context-usage'));
-    // In the box: the tools as icons, then the keys (shown while typing).
+    // In the box: "+" with the tools in its menu (T-44), then the keys
+    // (shown while typing).
     const row = page.document.querySelector('.composer-bottom');
     assert.deepEqual(
-      [...row.querySelectorAll(".composer-tools > button")].map((b) => b.getAttribute("aria-label")),
+      [...row.querySelectorAll(".composer-tools button")].map((b) => b.getAttribute("aria-label")),
+      ["Add"],
+    );
+    row.querySelector('.composer-tools button[aria-label="Add"]').click();
+    await pause();
+    assert.deepEqual(
+      [...row.querySelectorAll('.composer-add-menu [role="menuitem"]')].map((b) => b.getAttribute("aria-label")),
       ["Add images", "Mark up an image", "Ask for an interactive result"],
     );
+    row.querySelector('.composer-tools button[aria-label="Add"]').click();
+    await pause();
     assert.equal(row.querySelector(".composer-keys")?.textContent.replace(/\s+/g, " ").trim(), "↵ Send ⇧ ↵ New line");
     assert.doesNotMatch(page.document.querySelector('.composer-area').textContent, /Pastes of 12|Room for your next idea|work is underway|Interactive result/);
     assert.doesNotMatch(page.document.querySelector('.conversation-header').textContent, /Core host|test-model/);
@@ -3304,7 +3315,9 @@ test("the composer box focuses its input, but not for presses from a portalled d
     assert.ok(page.document.activeElement === field, "the composer field keeps focus");
     assert.equal(composerSelection(field), "Keep this draft".length);
     field.blur();
-    page.document.querySelector('[aria-label="Ask for an interactive result"]').click();
+    page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][aria-label="Ask for an interactive result"]').click();
     await pause();
     const overlay = page.document.querySelector(".modal-overlay");
     assert.ok(overlay, "the result request dialog is open");
@@ -5141,6 +5154,50 @@ test("working Claude keeps its draft and interrupt, and offers a follow-up to yo
   }
 });
 
+// T-45: any running Claude turn takes a follow-up, one of its own included
+// (a mailbox notice's, a reconnect's): the newest running one.
+test("working Claude takes a follow-up into its newest running turn, one of its own included (T-45)", async () => {
+  const native = (extra = {}) => ({ id: "native-n", status: "inProgress", _yuzunoSource: "native",
+    items: [{ id: "n1", type: "agentMessage", text: "Reading the mail." }], ...extra });
+  const field = (page) => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+  const thought = "Add a thought while your agent works…";
+  for (const [name, options, placeholder, turn] of [
+    ["idle", { status: "idle" }, "A task, a question, a new idea for Mori…", null],
+    ["your turn", { status: "working" }, thought, "t1"],
+    ["its own", { status: "working", turnStatus: "completed", extraTurns: [native()] }, thought, "native-n"],
+    ["its own, newest, beside your waiting prompt", { status: "working", extraTurns: [native({ _yuzunoUnmatched: true })] }, thought, "native-n"],
+  ]) {
+    const page = await mount({ harness: "claude", ...options });
+    try {
+      assert.equal(field(page).getAttribute("aria-placeholder"), placeholder, name);
+      setValue(page.window, field(page), `About ${name}.`);
+      await pause();
+      const send = page.document.querySelector(`[aria-label="${turn ? "Send while working" : "Send message"}"]`);
+      assert.equal(send?.disabled, false, name);
+      send.click();
+      await pause();
+      const posts = page.calls.filter((r) => r.url === "/api/agents/a/messages");
+      assert.equal(posts.length, 1, name);
+      assert.equal(JSON.parse(posts[0].init.body).expectedTurnId, turn, name);
+      assert.deepEqual(page.errors, [], name);
+    } finally {
+      page.close();
+    }
+  }
+  // A disconnected agent still holds the draft, as before.
+  const page = await mount({ harness: "claude", status: "working", turnStatus: "completed", extraTurns: [native()],
+    agentFields: { disconnectedAt: "2026-11-04T00:00:00Z" } });
+  try {
+    setValue(page.window, field(page), "Held.");
+    await pause();
+    assert.equal(page.document.querySelector('[aria-label="Send while working"]')?.disabled, true);
+    assert.equal(page.calls.filter((r) => r.url === "/api/agents/a/messages").length, 0);
+    assert.equal(composerText(field(page)), "Held.");
+  } finally {
+    page.close();
+  }
+});
+
 test("task current work visibly highlights and focuses its original user message", async () => {
   const page = await mount({
     workSummary: {
@@ -6304,6 +6361,28 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
     assert.equal(page.calls.some((call) => /codex\/usage/.test(call.url)), false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+// T-46: a skill chosen in a draft is kept with it, under the draft's
+// Workspace and Agent, and comes back as its chip when the page opens again.
+test("a skill chosen in a Codex Agent's draft comes back as its chip after a reload, and its message invokes it (T-46)", async () => {
+  const path = "/w/.codex/skills/deploy/SKILL.md";
+  const key = `yuzuno.composer.v1:${JSON.stringify(["ci-fixture", "a"])}`;
+  const saved = JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Ship it $deploy " }],
+    skills: [{ agentId: "a", name: "deploy", path, scope: "repo" }] });
+  const page = await mount({ stored: { [key]: saved } });
+  try {
+    const chip = page.document.querySelector(".skill-chip");
+    assert.ok(chip, "the saved skill's chip is back");
+    assert.equal(chip.title, path);
+    const sent = () => page.calls.filter((r) => r.url.endsWith("/messages")).map((r) => JSON.parse(r.init.body));
+    page.document.querySelector('[aria-label="Send message"]').click();
+    for (let i = 0; i < 20 && !sent().length; i++) await pause();
+    assert.deepEqual(sent()[0].skills, [{ name: "deploy", path }]);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
 });
 
 // T-29: a skill chosen in a Codex Agent's composer is a chip beside the

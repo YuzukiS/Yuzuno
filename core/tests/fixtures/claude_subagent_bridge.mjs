@@ -6,10 +6,18 @@
 // for permission after the prompt's turn ended. The test answers it ("allow"
 // or "deny" through Core), or with "cancel" Claude withdraws it. The call's
 // result and the sub-agent's end follow. Any other prompt: a plain reply.
+import { existsSync } from 'node:fs';
 import { ClaudeBridge, PromptQueue } from '../../../runtimes/claude/bridge.mjs';
 
 const session = 'session-fixture';
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+// With "cancel", Claude withdraws the request once the test has seen it: when
+// the file $YUZUNO_TEST_SUBAGENT_WITHDRAW names exists, never on a timer a
+// slow test could miss entirely (main 69e9562, CI 41933429242).
+const withdrawn = async () => {
+  const gate = process.env.YUZUNO_TEST_SUBAGENT_WITHDRAW;
+  while (!gate || !existsSync(gate)) await wait(10);
+};
 
 function query({ prompt, options }) {
   const output = new PromptQueue();
@@ -55,7 +63,7 @@ function query({ prompt, options }) {
       await wait(100);
       const controller = new AbortController();
       const asked = options.canUseTool('Bash', { command: 'make' }, { signal: controller.signal, toolUseID: 'sub-make' });
-      if (decision === 'cancel') setTimeout(() => controller.abort(), 300);
+      if (decision === 'cancel') void withdrawn().then(() => controller.abort());
       const allowed = (await asked).behavior === 'allow';
       const status = allowed ? 'completed' : decision === 'cancel' ? 'stopped' : 'failed';
       push({ type: 'user', uuid: `sub-result-${n}`, parent_tool_use_id: 'agent-1', subagent_type: 'general-purpose',

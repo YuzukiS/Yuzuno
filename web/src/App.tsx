@@ -5,7 +5,7 @@ import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
-import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
+import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import {
   memo,
   useCallback,
@@ -37,6 +37,7 @@ import {
   House,
   Link2,
   ImagePlus,
+  Shapes,
   SquareDashedMousePointer,
   Leaf,
   LoaderCircle,
@@ -190,6 +191,8 @@ import { moveWindow, useCustomFrame, WindowControls } from "./WindowControls";
 import { conversationTimeMarks } from "./conversation-time";
 import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
+import { ComposerAddMenu } from "./ComposerAddMenu";
+import { useComposerShape } from "./composer-shape";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
 import { appendDraft, appendDraftOnce, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
@@ -270,6 +273,8 @@ function writeStorage(key: string, value: unknown) {
 const EMPTY_TURNS: never[] = [];
 /** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
 const JOIN_WAIT = 90;
+/** A Turn still working, as its own view tells (components.tsx `running`). */
+const RUNNING_TURN = /inProgress|running/;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -826,7 +831,7 @@ export function App() {
                   : listed.lastSeq > old.lastSeq;
               if (!newer) return w;
               const agents = w.agents.slice();
-              agents[index] = { ...listed, projectId: old.projectId };
+              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind };
               return { ...w, agents };
             });
           }
@@ -1252,12 +1257,13 @@ export function App() {
   [conversationInputs.inputs, conversationInputs.total]);
   const readingInputNumber = conversationInputs.total - inputDockEntries.length
     + (readingInputId ? inputDockEntries.findIndex(entry => entry.id === readingInputId) + 1 : inputDockEntries.length);
-  // Claude takes a follow-up to your running turn, not to a turn of its own.
+  // Claude takes a follow-up to its newest running turn: yours, or one of its
+  // own, such as a mailbox notice's or a reconnect's (T-45).
   const claudeFollowUpTurnId = isClaude && busy
     ? logicalTurns
         .slice()
         .reverse()
-        .find((turn) => turn.status === "inProgress" && turn._yuzunoSource !== "native")?.id || null
+        .find((turn) => turn.status === "inProgress")?.id || null
     : null;
   // OpenCode takes a message into its running turn and answers it from its
   // next step (T-10), but not while it waits for your answer to a request.
@@ -1298,6 +1304,13 @@ export function App() {
             ? "Reconnect above, or send a message to resume this session"
             : "Send a message to resume this session"
           : null;
+  const [composerPlaceholder, shortPlaceholder] = previewMode
+    ? [shell.preview, shell.preview]
+    : cannotSendWhileWorking
+      ? [shell.waitTurn, shell.waitTurnShort]
+      : busy
+        ? [shell.addThought, shell.addThoughtShort]
+        : [shell.ask(agent?.name ?? ""), shell.askShort(agent?.name ?? "")];
   const logicalRunningTurn = busy
     ? logicalTurns
         .slice()
@@ -1328,6 +1341,20 @@ export function App() {
     agent?.harness,
     currentDetail,
   );
+  // One line while the draft, or its placeholder, fits beside "+" and Send
+  // with nothing under it; otherwise the text above the tools (T-44). The
+  // controls' widths count, so what changes them is listed too. A placeholder
+  // too long for the line shows its short form (Lead 2 4757).
+  const [composerBox, setComposerBox] = useState<HTMLFormElement | null>(null);
+  const { shape: composerShape, short: placeholderShort } = useComposerShape(
+    composerBox,
+    () => composer.current?.lineExtent() ?? null,
+    !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
+    [draft, selected, language, busy, interrupting, sending, currentDetail?.codexPlan, previewMode],
+    composerPlaceholder,
+  );
+  const [resultRequestFor, setResultRequestFor] = useState<string | null>(null);
+  const resultRequestFrom = useRef<HTMLElement | null>(null);
   // New Claude messages still sending that their own Turn shows: once, there,
   // with the delivery note (T-120). The same set while its members stay the
   // same, so a streamed change does not draw every Turn again.
@@ -1350,6 +1377,27 @@ export function App() {
   const previewsShown = useCallback((scope: string, ids: ReadonlySet<string>) => {
     shownPreviews.current = { scope, ids };
   }, []);
+  // A shown Turn's own change, live (T-19 CV:T-04, CV:T-09; Lead 2 4591): its working indicator
+  // comes in where the Turn itself does not (a Turn whose message was shown before, now confirmed;
+  // a shown Turn running again), and a Turn Core records completed brings its reply actions and
+  // files in. Once per change: each is named by how many times that Turn has made it in this
+  // conversation, so a Turn that runs again, or completes again, cues again (R1 47f7c0f0). Told
+  // apart as the arrivals above: in the latest window, after Core streamed or announced a change
+  // to this Agent, never what a first read, a window, a reconnect, poll or reset brings.
+  // Interrupted and failed Turns keep their own words with no cue, and the working indicator
+  // always goes at once. Read before the arrivals below take the announcement.
+  const turnAnnounced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+  // The question dock's arrivals too, once this conversation has shown a detail: the questions its
+  // first one lists are what was there, even after an announcement while it loaded (#569 round
+  // cfabe82d P3: opened from Home, with nothing else marking the wait).
+  const dockLive = turnAnnounced && !!turnScope && turnsSeen.current?.scope === turnScope;
+  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>;
+    started: string[]; completed: string[] } | null>(null);
+  // How many times each Turn has started or completed live, per conversation, for as long as the
+  // window is open: kept across leaving it and coming back, as the cues below keep every name they
+  // have played (R2 3578219f).
+  const turnChanges = useRef(new Map<string, number>());
+  const handedRunning: string[] = [];
   // Left (the settle mark is the requests' above): the next detail is a new baseline.
   if (!turnScope && turnsSeen.current) {
     turnsSeen.current = null;
@@ -1380,19 +1428,54 @@ export function App() {
         return !!currentDetail.messageReceipts?.some((receipt) => receipt.binding?.turnId === turn.id
           && turn.items.some((item) => item.id === receipt.binding!.itemId) && shown(receipt.input.clientMessageId));
       };
+      if (announced) for (const turn of fresh) if (handedOver(turn) && RUNNING_TURN.test(turn.status)) handedRunning.push(turn.id);
       turnsSeen.current = { scope: turnScope, latest, ids: new Set([...seen.ids, ...ids].slice(-500)),
         arrived: announced ? [...seen.arrived, ...fresh.filter((turn) => !handedOver(turn)).map((turn) => turn.id)].slice(-20) : seen.arrived };
     }
   }
+  if (!turnScope) turnCues.current = null;
+  else if (currentDetail) {
+    const was = turnCues.current?.scope === turnScope ? turnCues.current : null;
+    const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
+    const now = !!was?.latest && latest && turnAnnounced;
+    // Its cue's name, "n\nid": the how-manieth time this Turn has started or completed live here.
+    const change = (kind: "run" | "done", id: string) => {
+      const key = `${turnScope}\n${kind}\n${id}`;
+      const n = (turnChanges.current.get(key) ?? 0) + 1;
+      turnChanges.current.set(key, n);
+      return `${n}\n${id}`;
+    };
+    const started = [...(was?.started ?? []), ...handedRunning.map((id) => change("run", id))];
+    const completed = [...(was?.completed ?? [])];
+    const status = new Map<string, string>();
+    for (const turn of currentDetail.turns) {
+      status.set(turn.id, turn.status);
+      const before = was?.status.get(turn.id);
+      if (!now || before === undefined) continue;
+      const runs = RUNNING_TURN.test(turn.status);
+      if (runs && !RUNNING_TURN.test(before)) started.push(change("run", turn.id));
+      else if (RUNNING_TURN.test(before) && turn.status === "completed") completed.push(change("done", turn.id));
+    }
+    turnCues.current = { scope: turnScope, latest, status, started: started.slice(-20), completed: completed.slice(-20) };
+  }
+  // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
+  // A key ends with its Turn's ID.
+  const shownTurn = (key: string) => {
+    const id = key.slice(key.lastIndexOf("\n") + 1);
+    return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;
+  };
   useArrivalsIn(
     turnsSeen.current?.scope === turnScope ? turnsSeen.current.arrived.map((id) => `${turnScope}\n${id}`) : [],
-    (key) => {
-      // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
-      const id = key.slice(key.lastIndexOf("\n") + 1);
-      return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;
-    },
+    shownTurn,
     "small",
   );
+  const cues = turnScope && turnCues.current?.scope === turnScope ? turnCues.current : null;
+  useArrivalsIn(cues ? cues.started.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".turn-activity") ?? null, "small");
+  useArrivalsIn(cues ? cues.completed.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".reply-actions") ?? null, "small");
+  useArrivalsIn(cues ? cues.completed.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".turn-files") ?? null, "small");
   // New Claude messages this window shows sending in their Turn, as of this commit. Read by the next
   // render's Turn arrivals above, with the previews (`previewsShown`).
   useLayoutEffect(() => {
@@ -3628,7 +3711,7 @@ export function App() {
             </div>
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}
               detail={detail?.agent.id === selected ? detail : null} shown={currentDetail} known={coreQuestions}
-              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude}
+              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude} live={dockLive}
               onSend={sendQuestionAnswer} onAdd={turnAnswer} onSource={showQuestionSource}
               onCheck={() => reconnectAgent(selected).then(refresh)} />
             {closed ? (
@@ -3732,7 +3815,19 @@ export function App() {
                   )}
                 </div>
                 <form
+                  ref={setComposerBox}
                   className={`composer ${busy ? "is-working" : ""}`}
+                  data-shape={composerShape}
+                  onDragOver={(e) => {
+                    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    // Images dropped on the box go with the draft, as pasted
+                    // ones do; the editor takes those dropped on its text.
+                    if (e.defaultPrevented || !e.dataTransfer.types.includes("Files")) return;
+                    e.preventDefault();
+                    if (!previewMode && !draftBlocked) void imageUploads.add(clipboardImages(e.dataTransfer));
+                  }}
                   onSubmit={(e) => {
                     e.preventDefault();
                     void send();
@@ -3759,15 +3854,7 @@ export function App() {
                     ref={composer}
                     agentId={selected}
                     label={shell.message(agent.name)}
-                    placeholder={
-                      previewMode
-                        ? shell.preview
-                        : cannotSendWhileWorking
-                          ? shell.waitTurn
-                          : busy
-                            ? shell.addThought
-                            : shell.ask(agent.name)
-                    }
+                    placeholder={placeholderShort ? shortPlaceholder : composerPlaceholder}
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
                     slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : "codex"}
@@ -3792,42 +3879,53 @@ export function App() {
                   <div className="composer-bottom" lang={langTag(language)}>
                     <div className="composer-tools">
                       <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
-                      {/* Agents that cannot take images keep the button, quieted, so
-                          its tooltip can say why. */}
-                      <button
-                        type="button"
-                        className="composer-tool"
-                        aria-label={imageUploads.busy ? shell.savingImages : shell.addImages}
-                        aria-disabled={!imageSupported || undefined}
-                        disabled={previewMode || draftBlocked || imageUploads.busy}
-                        title={
-                          imageSupported
-                            ? shell.addImagesTitle(imageNote)
-                            : shell.imagesOnly
-                        }
-                        onClick={() => { if (imageSupported) imagePicker.current?.click(); }}
-                      >
-                        {imageUploads.busy ? <LoaderCircle size={15} className="spin" /> : <ImagePlus size={15} />}
-                      </button>
                       <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark} onChange={event => {
                         const file = event.target.files?.[0];
                         event.target.value = "";
                         if (file) openPointFix({ name: file.name || "Screenshot", ownerId: selected, provenance: `an image you chose (${file.name || "pasted"})`, load: async () => file });
                       }} />
-                      <button
-                        type="button"
-                        className="composer-tool"
-                        aria-label={shell.markUp}
-                        title={shell.markUpTitle}
+                      {/* Agents that cannot take images keep the entry, quieted,
+                          so it can say why. */}
+                      <ComposerAddMenu
+                        label={shell.addMenu}
+                        title={shell.addMenuTitle}
+                        menuLabel={shell.addMenuLabel}
                         disabled={previewMode}
-                        onClick={() => pointFixPicker.current?.click()}
-                      >
-                        <SquareDashedMousePointer size={15} />
-                      </button>
-                      {!previewMode && <ResultRequest key={selected} onDraft={appendToDraft} />}
-                      {!previewMode && !isClaude && !isOpenCode && (
-                        <CodexPlanChip state={currentDetail?.codexPlan}
-                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                        busy={imageUploads.busy}
+                        items={[
+                          {
+                            key: "images",
+                            label: imageUploads.busy ? shell.savingImages : shell.addImages,
+                            icon: <ImagePlus size={16} />,
+                            title: imageSupported ? shell.addImagesTitle(imageNote) : shell.imagesOnly,
+                            note: imageSupported ? undefined : shell.imagesOnly,
+                            unavailable: !imageSupported,
+                            disabled: draftBlocked || imageUploads.busy,
+                            onSelect: () => imagePicker.current?.click(),
+                          },
+                          {
+                            key: "markUp",
+                            label: shell.markUp,
+                            icon: <SquareDashedMousePointer size={16} />,
+                            title: shell.markUpTitle,
+                            onSelect: () => pointFixPicker.current?.click(),
+                          },
+                          {
+                            key: "result",
+                            label: shell.askResult,
+                            icon: <Shapes size={16} />,
+                            title: shell.askResultTitle,
+                            onSelect: (plus) => {
+                              resultRequestFrom.current = plus;
+                              setResultRequestFor(selected);
+                            },
+                          },
+                        ]}
+                      />
+                      {!previewMode && (
+                        <ResultRequest key={selected} open={resultRequestFor === selected}
+                          onOpenChange={open => setResultRequestFor(open ? selected : null)} onDraft={appendToDraft}
+                          returnFocus={() => resultRequestFrom.current?.focus()} />
                       )}
                     </div>
                     <span className="composer-hint" data-notice={composerNotice ? "" : undefined}>
@@ -3853,6 +3951,11 @@ export function App() {
                       )}
                     </span>
                     <div className="composer-send-actions">
+                      {/* Codex's Plan mode, beside Send as a mode is in ChatGPT. */}
+                      {!previewMode && !isClaude && !isOpenCode && (
+                        <CodexPlanChip state={currentDetail?.codexPlan}
+                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                      )}
                       {busy && (
                         <button
                           type="button"

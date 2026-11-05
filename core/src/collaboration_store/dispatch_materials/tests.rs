@@ -489,6 +489,9 @@ fn materials_take_full_shas_of_either_length_and_say_how_to_get_one() {
     let schema = schema();
     assert!(schema["properties"]["baseSha"]["description"].as_str().unwrap().contains("64 in a SHA-256 repository"));
     assert_eq!(schema["properties"]["headSha"]["pattern"], "^([0-9a-fA-F]{4,40}|[0-9a-fA-F]{64})$");
+    // T-31: shaCheck is Core's; one sent back is ignored, not refused.
+    let check = schema["properties"]["shaCheck"]["description"].as_str().unwrap();
+    assert!(check.starts_with("Written by Core: what GitHub said of each baseSha and headSha") && check.contains("is ignored, not refused"), "{check}");
 }
 
 /// T-29: explicit SHAs are checked where they are registered, by the two rules
@@ -537,4 +540,33 @@ fn shas_are_checked_when_registered_not_first_at_dispatch() {
     store.github_link_repo(&other, &Repository { id: 5, full_name: "owner/repo5".into() }).unwrap();
     update("repository-only", json!({"materials":{"repositoryId":5}})).unwrap();
     update("cleared", json!({"materials":null})).unwrap();
+}
+
+/// T-31 (T-29's P3): a move to another Project, or out of every Project, is
+/// checked against the SHAs the task already registered, as a patch that names
+/// them is. A refused move changes nothing.
+#[test]
+fn a_project_move_keeps_registered_shas_only_where_their_repository_is_linked() {
+    let (_dir, store) = fixture();
+    repos(&store);
+    edit(&store, "registered", json!({"materials":{"repositoryId":2,"headSha":"b".repeat(40)}}));
+    let bare = store.create_project("Bare", BTreeMap::from([("local".into(), "/private/bare".into())])).unwrap().id;
+    let move_to = |request: &str, project: Value| {
+        store.collaboration_call(None, "task_update", json!({"requestId":request,"taskId":"T-1",
+            "expectedVersion":task(&store)["task"]["version"],"patch":{"projectId":project}}))
+    };
+    let before = task(&store);
+    for (request, project) in [("to-bare", json!(bare)), ("out", Value::Null)] {
+        let error = move_to(request, project).unwrap_err().to_string();
+        assert!(error.starts_with("invalid_input: selected repository must be linked to this task or its Project: repository 2 is in neither."),
+            "{request}: {error}");
+        assert_eq!(task(&store)["task"], before["task"], "{request}: a refused move changes nothing");
+    }
+    // A Project that has the repository takes the task and its SHAs.
+    let other = store.create_project("Has repo2", BTreeMap::from([("local".into(), "/private/has".into())])).unwrap().id;
+    store.github_link_repo(&other, &Repository { id: 2, full_name: "owner/repo2".into() }).unwrap();
+    move_to("to-other", json!(other)).unwrap();
+    // Without registered SHAs a move checks nothing.
+    edit(&store, "cleared", json!({"materials":null}));
+    move_to("to-bare-now", json!(bare)).unwrap();
 }

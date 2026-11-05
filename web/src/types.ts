@@ -62,6 +62,9 @@ export interface Agent {
   rev?: number | null;
   /** Explicit membership; absent means no project. */
   projectId?: string | null;
+  /** A lead of its Project (set by the user) or a task's executor (T-33);
+   * absent for a standing Agent. */
+  kind?: "lead" | "executor" | null;
 }
 export interface Project {
   id: string;

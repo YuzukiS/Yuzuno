@@ -295,6 +295,11 @@ pub struct Agent {
     /// Agent JSON, so membership never lives in the record itself.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// `lead` or `executor`, projected from `agent_roles` for API responses
+    /// (T-33); absent for a standing Agent. Kept out of the record for the
+    /// same reason as `project_id`.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub cwd: String,
     pub model: String,
     #[serde(default)]

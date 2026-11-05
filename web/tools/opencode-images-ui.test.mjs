@@ -70,7 +70,9 @@ test("an OpenCode Agent's composer takes images and says they need a chosen mode
   for (const harness of ["opencode", "codex"]) {
     const page = await mount(harness);
     try {
-      const button = page.document.querySelector('.composer-tools [aria-label="Add images"]');
+      page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
+      await pause();
+      const button = page.document.querySelector('.composer-add-menu [role="menuitem"][aria-label="Add images"]');
       assert.equal(button?.disabled, false, harness);
       assert.equal(button.hasAttribute("aria-disabled"), false, harness);
       assert.equal(/Images need a model chosen in Settings that reads images/.test(button.title), harness === "opencode", harness);

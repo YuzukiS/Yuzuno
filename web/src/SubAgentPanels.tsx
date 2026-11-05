@@ -16,6 +16,7 @@ import { useConversationReveal, useConversationWindowed } from "./ConversationWi
 import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 import { useLanguage, useStrings, type Language } from "./i18n";
 import { cardWords } from "./subagent-text";
+import { useSurfaceIn } from "./surface";
 import "./subagents.css";
 
 /**
@@ -245,6 +246,10 @@ function SubAgentCard({
   // take no focus) and returns to its node; Escape or a press elsewhere
   // closes it.
   const placed = !!place;
+  // Once placed, it comes in from its node's side, once per opening (T-19
+  // CV:WD-08; Lead 2 4644): placed again as its details arrive or another
+  // child is chosen, it stays where it is drawn, and it goes at once.
+  useSurfaceIn(card, placed, "small", placed, "scale(0.98)");
   useEffect(() => {
     if (placed) card.current?.focus();
   }, [placed]);

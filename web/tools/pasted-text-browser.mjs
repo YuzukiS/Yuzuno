@@ -7,6 +7,20 @@ import { chromium } from "playwright-core";
 import { FIXTURE_WORKSPACE, installConnectionFixture } from "./connection-fixture.mjs";
 import { draftIdentityInPage } from "./browser-fixtures.mjs";
 
+/** A press in the composer box away from its controls and its text, which types at the end
+ * (the whole box is the input). Its one-line shape has no status line (T-44): a free spot. */
+async function pressBox(page) {
+  const point = await page.locator("form.composer").evaluate((form) => {
+    const r = form.getBoundingClientRect();
+    const free = (el) => !!el && form.contains(el) && !el.closest("textarea, button, a, input, select, summary, [role], [tabindex]");
+    for (const [x, y] of [[r.left + 3, r.top + r.height / 2], [r.left + r.width / 2, r.bottom - 3], [r.left + 3, r.bottom - 3]])
+      if (free(document.elementFromPoint(x, y))) return { x, y };
+    return null;
+  });
+  if (!point) throw new Error("no free spot in the composer box");
+  await page.mouse.click(point.x, point.y);
+}
+
 const base = process.env.T33_UI_URL || "http://127.0.0.1:4485";
 const output = new URL("../../target/t33/browser-r2-final/", import.meta.url);
 await mkdir(output, { recursive: true });
@@ -280,7 +294,8 @@ try {
       await input().press("Control+z");
       assert.deepEqual(await ids(), blockIds);
       assert.equal(await page.evaluate(() => pasteFixture.sent.length), 0);
-      await page.getByLabel("Ask for an interactive result").click();
+      await page.locator("form.composer .composer-plus").click();
+      await page.getByRole("menuitem", { name: "Ask for an interactive result" }).click();
       await page.locator('[role="dialog"]').waitFor();
       // The open dialog's overlay, not the closing one's copy still fading (DialogExitGhost).
       await page.locator(".modal-overlay:not(.dialog-exit-ghost *)").click({ position: { x: 5, y: 5 } });
@@ -289,7 +304,7 @@ try {
         false,
       );
       await page.keyboard.press("Escape");
-      await page.locator(".composer-bottom > span").click();
+      await pressBox(page);
       await page.keyboard.type(" end");
       await settled("before   edited\r\n\r\n between " + single + " after end");
     },

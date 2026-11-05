@@ -14,6 +14,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { Modal } from "./components";
+import { useArrivalsIn } from "./surface";
 import { AsyncQuestion } from "./AsyncQuestion";
 import { errorText } from "./api";
 import {
@@ -54,6 +55,9 @@ export const PendingQuestions = memo(
       outgoing: OutgoingMessage[];
       pendingInputs: Readonly<Record<string, MessageInput>>;
       disabled: boolean;
+      /** Core streamed or announced a change to this Agent since the last
+       * baseline (App's `turnAnnounced`): a question now is a live one. */
+      live: boolean;
       onSend: (text: string, source: QuestionSource) => Promise<unknown>;
       onAdd: (text: string) => void;
       onSource: (source: QuestionSource) => void;
@@ -148,6 +152,22 @@ export const PendingQuestions = memo(
     const current =
       pending.find((q) => questionKey(q) === dockKey) || pending[0];
     const index = current ? pending.indexOf(current) : 0;
+    // The dock comes in once when it was not there and a question arrives
+    // live (T-19 CV:Q-07; Lead 2 4591): its opacity only, so it takes its
+    // height at once, the conversation shrinks once and follow keeps its end;
+    // not its height, which would resize the conversation every frame. Not
+    // on first view (this dock is the Agent's own), nor for a dock already
+    // shown whose count changes, nor under reduced motion.
+    const section = useRef<HTMLElement>(null);
+    const dockSeen = useRef<{ shown: boolean; keys: ReadonlySet<string>; arrived: string[] } | null>(null);
+    const seen = dockSeen.current;
+    if (!seen) dockSeen.current = { shown: !!current, keys: sources, arrived: [] };
+    else if (seen.keys !== sources || seen.shown !== !!current) {
+      const fresh = current && !seen.shown && props.live && pending.some((q) => !seen.keys.has(questionKey(q)));
+      dockSeen.current = { shown: !!current, keys: sources,
+        arrived: fresh ? [...seen.arrived, questionKey(current)].slice(-20) : seen.arrived };
+    }
+    useArrivalsIn(dockSeen.current!.arrived, () => section.current, "small");
     const dockDraftKey =
       current && answerDraftKey(workspaceId, agentId, current);
     useEffect(() => {
@@ -225,6 +245,7 @@ export const PendingQuestions = memo(
       <>
         {current && (
           <section
+            ref={section}
             className="pending-questions"
             aria-label="Questions to answer"
           >

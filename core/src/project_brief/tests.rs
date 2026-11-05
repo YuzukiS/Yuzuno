@@ -1067,16 +1067,19 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     assert_eq!(picked.matches("Safe path").count(), 1, "{picked}");
     // The Turn a reply joins, as the composer chooses it.
     let detail = |id: &str| ws.store.detail(id).unwrap();
-    assert_eq!(home::follow_up_turn(&detail("b")).unwrap().as_deref(), Some("t1"));
+    assert_eq!(home::follow_up_turn(&detail("b")).as_deref(), Some("t1"));
     idle(&ws, "b");
-    assert_eq!(home::follow_up_turn(&detail("b")).unwrap(), None);
+    assert_eq!(home::follow_up_turn(&detail("b")), None);
     let mut claude = detail("c");
     claude.agent.harness = "claude".into();
-    assert_eq!(home::follow_up_turn(&claude).unwrap().as_deref(), Some("t1"));
+    assert_eq!(home::follow_up_turn(&claude).as_deref(), Some("t1"));
+    // A turn of Claude's own takes it too (T-45), the newest running one.
     claude.turns.last_mut().unwrap()["_yuzunoSource"] = json!("native");
-    assert!(home::follow_up_turn(&claude).is_err(), "never a follow-up to Claude's own turn");
+    assert_eq!(home::follow_up_turn(&claude).as_deref(), Some("t1"), "a turn of Claude's own takes it too");
+    claude.turns.push(json!({"id":"native-n","status":"inProgress","_yuzunoSource":"native","items":[]}));
+    assert_eq!(home::follow_up_turn(&claude).as_deref(), Some("native-n"));
     claude.agent.status = "idle".into();
-    assert_eq!(home::follow_up_turn(&claude).unwrap(), None);
+    assert_eq!(home::follow_up_turn(&claude), None);
     // A reply that is not sent leaves the ask open.
     close(&ws, "c", true);
     let workspace = ws.store.workspace_id().unwrap();
