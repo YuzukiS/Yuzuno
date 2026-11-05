@@ -640,6 +640,32 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
 }
+/* An existing Agent, or a new executor from a template (T-34). */
+.collab-dispatch-from {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 0.82rem;
+}
+.collab-dispatch-from legend {
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 0;
+  color: var(--muted);
+}
+.collab-dispatch-from label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.collab-dispatch-from input {
+  margin: 0;
+  accent-color: var(--green);
+}
 .collab-urgent-option {
   display: flex;
   align-items: start;

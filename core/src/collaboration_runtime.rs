@@ -57,7 +57,24 @@ impl Workspace {
         } else {
             input
         };
+        if operation == "task_dispatch" && input.get("executor").is_some() {
+            // Its steps are awaited in turn; a dropped request does not stop them.
+            let (ws, actor) = (self.clone(), actor.map(str::to_owned));
+            return tokio::spawn(async move { ws.executor_dispatch(actor.as_deref(), input).await })
+                .await.context("Dispatch from an executor template ended unexpectedly")?;
+        }
         let permit = self.admission.enter_completion()?;
+        self.collaboration_stored(permit, actor, operation, input).await
+    }
+
+    /// The store's part of a collaboration call, under `permit`.
+    pub(crate) async fn collaboration_stored(
+        self: &Arc<Self>,
+        permit: crate::updates::admission::Permit,
+        actor: Option<&str>,
+        operation: &str,
+        input: Value,
+    ) -> Result<Value> {
         // Called from MCP too, whose requests can be dropped: the change and
         // its announcement are one job, so neither happens without the other.
         let (ws, actor, call) = (self.clone(), actor.map(str::to_owned), operation.to_owned());

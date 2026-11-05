@@ -446,6 +446,68 @@ test("task delegation defaults to normal and only requests urgent delivery when 
   }
 });
 
+test("a task goes to a new executor from a template of its project, then the workspace, sent as the template (T-34)", async () => {
+  let current = task({ projectId: "p-app" });
+  const available = [
+    { template: { id: "reviewer", label: "Reviewer", harness: "claude" }, source: "project" },
+    { template: { id: "builder", label: "Builder", harness: "codex" }, source: "workspace" },
+  ];
+  const view = (list) => ({ workspace: { version: 1, templates: [] }, available: list, defaultNamePattern: "{task} · {label}",
+    limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
+  const page = mount((operation) => {
+    if (operation === "task_list") return { tasks: [current], hasMore: false };
+    if (operation === "task_get")
+      return { task: current, activities: [], executions: [], hasMore: false };
+    if (operation === "executor-templates?projectId=p-app") return view(available);
+    if (operation === "executor-templates") return view([]);
+    if (operation === "task_dispatch") {
+      current = { ...current, version: current.version + 1, assigneeAgentId: "executor-1", projectId: null };
+      return { task: current, agentId: "executor-1" };
+    }
+    throw new Error(operation);
+  });
+  try {
+    page.render();
+    (await waitFor(() => page.document.querySelector(".collab-task-card"), "task card")).click();
+    await tick();
+    click(page, "Give to agent");
+    await tick();
+    const choices = () => [...page.document.querySelectorAll(".collab-dispatch-from input")];
+    assert.equal(choices()[0].checked, true, "an existing agent comes first");
+    assert.ok(field(page, "Send to"), "with its agent picker");
+    choices()[1].click();
+    await tick();
+    const picker = await waitFor(() => !field(page, "Template")?.disabled && field(page, "Template"), "templates read");
+    assert.deepEqual([...picker.options].map((option) => option.textContent),
+      ["Choose a template", "Reviewer · this project’s", "Builder"], "the task project templates first, then the workspace ones");
+    assert.equal(field(page, "Send to"), undefined, "no agent picker for a template");
+    assert.match(page.document.querySelector(".collab-inset").textContent, /Core creates an agent for this task from the template/);
+    assert.equal(button(page, "Create and send").disabled, true, "nothing to send before a template is chosen");
+    await value(page, picker, "reviewer");
+    click(page, "Create and send");
+    await tick();
+    const request = page.calls.filter((call) => call.operation === "task_dispatch").at(-1);
+    assert.deepEqual(request.body.executor, { templateId: "reviewer" }, "a template dispatch names the template");
+    assert.equal(request.body.toAgentId, undefined, "a template dispatch names no agent");
+    assert.equal(request.body.expectedVersion, 1);
+    assert.equal(request.body.priority, "normal");
+
+    // A task in no project reads the workspace templates; with none, the
+    // form says where to add them, and sends nothing.
+    await waitFor(() => !page.document.querySelector(".collab-dispatch-from"), "form closed");
+    click(page, "Give to agent");
+    await tick();
+    choices()[1].click();
+    await waitFor(() => page.calls.some((call) => call.operation === "executor-templates"), "workspace templates read");
+    await waitFor(() => page.document.querySelector(".collab-inset").textContent.includes("No executor templates yet"), "empty hint");
+    assert.equal(field(page, "Template").disabled, true);
+    assert.equal(button(page, "Create and send").disabled, true);
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
 test("message delivery shows urgency, precise sources and hook waiting without claiming recipient understanding", async () => {
   const base = {
     sender: { kind: "agent", id: "dev-2", name: "Dev 2" },

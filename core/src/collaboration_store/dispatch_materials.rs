@@ -227,6 +227,17 @@ pub(super) fn registered(db: &Connection, task: &str) -> Result<Value> {
     )
 }
 
+/// The worktree a dispatch with `input` names (T-34): its own materials'
+/// when they say, else the task's registered ones', as `snapshot` reads them.
+pub(super) fn worktree(db: &Connection, task: &str, input: &Value) -> Result<Option<String>> {
+    let worktree = match input.get("materials") {
+        Some(Value::Null) => Value::Null,
+        Some(given) if given.get("worktree").is_some() => given["worktree"].clone(),
+        _ => registered(db, task)?["value"]["worktree"].clone(),
+    };
+    Ok(worktree.as_str().filter(|w| !w.trim().is_empty()).map(str::to_owned))
+}
+
 pub(super) fn read(db: &Connection, task: &str, dispatch: &str) -> Result<Value> {
     let raw: Option<String> = db.query_row("SELECT json_extract(data,'$.materials') FROM collaboration_task_activity
         WHERE task_id=?1 AND json_extract(data,'$.kind')='dispatched' AND json_extract(data,'$.dispatch.id')=?2

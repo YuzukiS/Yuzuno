@@ -121,9 +121,18 @@ fn check_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
+/// Phase 1 makes executors on this Core host only: no machine, or `local`.
+pub(crate) fn this_host_only(machine: Option<&str>) -> Result<()> {
+    if let Some(machine) = machine.filter(|m| *m != "local") {
+        bail!("Executors run on this Core host in this phase, not on {machine}; other machines come with phase 2 (T-35)");
+    }
+    Ok(())
+}
+
 impl Template {
     /// `opencode`: whether this Core creates OpenCode Agents (`opencode_agent::enabled`).
-    fn validate(&self, opencode: bool) -> Result<()> {
+    /// A dispatch checks its template again: a list is read leniently.
+    pub(crate) fn validate(&self, opencode: bool) -> Result<()> {
         ensure!(!self.id.is_empty() && self.id.len() <= 48 && !self.id.starts_with('-')
             && self.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
             "A template's id is 1 to 48 lowercase letters, digits and hyphens");
@@ -157,9 +166,7 @@ impl Template {
                     "OpenCode takes its permissions from its own configuration");
             }
         }
-        if let Some(machine) = self.machine_id.as_deref().filter(|m| *m != "local") {
-            bail!("Executors run on this Core host in this phase, not on {machine}; other machines come with phase 2 (T-35)");
-        }
+        this_host_only(self.machine_id.as_deref())?;
         if let Some(text) = &self.instructions {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }
@@ -167,6 +174,18 @@ impl Template {
             ensure!((1..=MAX_CONCURRENT).contains(&limit), "At most 1 to {MAX_CONCURRENT} executors of one template at once");
         }
         Ok(())
+    }
+
+    /// The name of the executor this template makes for the task `task` (its
+    /// ID): the pattern filled in, cut to the 100 bytes an Agent's name has.
+    pub(crate) fn agent_name(&self, task: &str) -> String {
+        let name = self.name_pattern.as_deref().unwrap_or(DEFAULT_NAME_PATTERN).replace("{task}", task).replace("{label}", &self.label);
+        let name = name.trim();
+        let mut end = name.len().min(100);
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name[..end].trim_end().to_owned()
     }
 
     /// Whether a save must check its model against this host's catalog: it
@@ -232,6 +251,17 @@ fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Res
 
 fn list_at(db: &Connection, key: &str) -> Result<Templates> {
     read_list(db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get(0)).optional()?)
+}
+
+/// The template of this id a dispatch of a task in `project` gets: the
+/// Project's own, else the Workspace's, and which one it is.
+pub(crate) fn template_in(db: &Connection, project: Option<&str>, id: &str) -> Result<Option<(Template, &'static str)>> {
+    if let Some(project) = project {
+        if let Some(own) = list_at(db, &project_key(project))?.templates.into_iter().find(|t| t.id == id) {
+            return Ok(Some((own, "project")));
+        }
+    }
+    Ok(list_at(db, KEY)?.templates.into_iter().find(|t| t.id == id).map(|t| (t, "workspace")))
 }
 
 /// The templates a save names, each checked strictly: no field this Core
@@ -308,17 +338,10 @@ impl Store {
         list_at(&db, &project_key(project))
     }
 
-    /// The template of this id a dispatch of a task in `project` gets: the
-    /// Project's own, else the Workspace's, and which one it is.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `template_in`, read on its own.
+    #[cfg(test)]
     pub(crate) fn executor_template(&self, project: Option<&str>, id: &str) -> Result<Option<(Template, &'static str)>> {
-        let db = self.db.read()?;
-        if let Some(project) = project {
-            if let Some(own) = list_at(&db, &project_key(project))?.templates.into_iter().find(|t| t.id == id) {
-                return Ok(Some((own, "project")));
-            }
-        }
-        Ok(list_at(&db, KEY)?.templates.into_iter().find(|t| t.id == id).map(|t| (t, "workspace")))
+        template_in(&*self.db.read()?, project, id)
     }
 
     /// Replaces the list at `key`, checked against `expected` in the same

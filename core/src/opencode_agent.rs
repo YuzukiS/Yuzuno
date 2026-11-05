@@ -522,9 +522,10 @@ impl Workspace {
         self.listed(id).await
     }
 
+    /// A new OpenCode Agent on this Core host; an executor with `birth` (T-34).
     pub async fn opencode_create_on(
         self: &Arc<Self>, name: String, cwd: String, model: String,
-        machine_id: Option<String>, project_id: Option<String>,
+        machine_id: Option<String>, project_id: Option<String>, birth: Option<crate::workspace::Birth>,
     ) -> Result<crate::model::Agent> {
         let permit = self.admission.enter_work()?;
         ensure!(enabled(), "OpenCode Agent 尚未开放");
@@ -538,7 +539,7 @@ impl Workspace {
         }
         let cwd = std::fs::canonicalize(cwd).context("工作目录不存在或无法读取")?;
         ensure!(cwd.is_dir(), "工作目录必须是文件夹");
-        let id = uuid::Uuid::new_v4().to_string();
+        let (id, then) = crate::workspace::Birth::of(birth);
         let colors = ["yuzu", "sage", "rose", "sky"];
         let count = self.stored(|store| store.agents()).await?.len();
         let agent = crate::model::Agent {
@@ -584,8 +585,12 @@ impl Workspace {
             codex_handoff: None,
             opencode_usage_seen: None,
         };
-        self.stored(move |store| store.insert_created(&detail)).await?;
+        let born = then.is_some();
+        self.stored(move |store| store.insert_created_then(&detail, then)).await?;
         self.changed(&id);
+        if born {
+            return Ok(agent);
+        }
         let ws = self.clone();
         tokio::spawn(async move {
             let _permit = permit;

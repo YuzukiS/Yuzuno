@@ -2,9 +2,9 @@
 //! lead, a task's executor, or, with no row, a standing Agent the user made.
 //! The kind lives in its own table, never in the Agent's JSON: older builds
 //! rewrite that JSON and drop fields they do not know (model.rs, `project_id`
-//! is kept apart the same way). Phase 0 only marks: leads are set by the user
-//! per Project, executors are created from phase 1 on, and nothing behaves
-//! differently by kind yet.
+//! is kept apart the same way). Leads are set by the user per Project;
+//! executors are created by a dispatch from a template (phase 1, T-34),
+//! which only a lead of the task's Project, or the user, may make.
 use crate::{collaboration_store::TaskActor, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Result};
 use axum::{
@@ -86,8 +86,7 @@ pub(crate) fn listed_kind(db: &Connection, agent: &str) -> Result<Option<String>
 }
 
 /// Whether `agent` leads `project`: chosen as a lead of that Project and a
-/// member of it now. Phase 1's template dispatch is its first caller outside tests.
-#[cfg_attr(not(test), allow(dead_code))]
+/// member of it now.
 pub(crate) fn leads(db: &Connection, agent: &str, project: &str) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id
@@ -191,10 +190,9 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
 }
 
 /// Who may dispatch a task from an executor template (phase 1's
-/// `task_dispatch.executor`; reserved here, not called yet): the user, or an
-/// Agent that leads the task's Project, read from its `project_tasks` row.
-/// A task in no Project is dispatched from a template by the user only.
-#[cfg_attr(not(test), allow(dead_code))]
+/// `task_dispatch.executor`, T-34): the user, or an Agent that leads the
+/// task's Project, read from its `project_tasks` row. A task in no Project
+/// is dispatched from a template by the user only.
 pub(crate) fn may_dispatch_from_template(db: &Connection, actor: &TaskActor, task: &str) -> Result<()> {
     if actor.kind != "agent" {
         return Ok(());
