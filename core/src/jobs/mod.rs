@@ -152,6 +152,10 @@ pub(crate) struct Submit {
     timeout_seconds: u64,
     #[serde(default = "yes")]
     guard_git: bool,
+    /// With guardGit, freeze only the tracked content under these paths
+    /// (relative to cwd) instead of the whole checkout (T-50).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    guard_paths: Vec<String>,
     #[serde(default)]
     inputs: Vec<String>,
     #[serde(default)]
@@ -334,6 +338,7 @@ impl Submit {
             ensure!(self.gpu.is_none(), "GPU admission is not available on a remote machine in this version; omit gpu");
             ensure!(!self.exclusive, "exclusive applies to this host's jobs only; omit it for a remote machine");
             ensure!(!self.guard_git, "guardGit reads the working tree on this host; set guardGit to false for a remote machine (its files are not visible to Core)");
+            ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
             ensure!(
                 self.outputs.is_empty(),
                 "outputs are downloaded from this host; on a remote machine they stay there, so declare them as artifacts instead"
@@ -426,6 +431,16 @@ impl Submit {
                     .iter()
                     .all(|p| !p.is_empty() && p.len() <= 4096 && !p.contains('\0')),
             "At most 128 explicit small input paths are supported"
+        );
+        ensure!(
+            self.guard_paths.len() <= 128
+                && self.guard_paths.iter().all(|p| relative_path(p) && !p.chars().any(char::is_control))
+                && self.guard_paths.iter().collect::<std::collections::BTreeSet<_>>().len() == self.guard_paths.len(),
+            "guardPaths are at most 128 distinct paths relative to cwd, never through .. and without control characters"
+        );
+        ensure!(
+            self.guard_paths.is_empty() || self.guard_git,
+            "guardPaths narrows guardGit to those paths: set guardGit to true, or omit guardPaths"
         );
         ensure!(self.outputs.len() <= 20 && self.outputs.iter().all(|p| !p.is_empty() && p.len() <= 4096 && !p.contains('\0') && !std::path::Path::new(p).is_absolute() && !std::path::Path::new(p).components().any(|c|matches!(c,std::path::Component::ParentDir))),"At most 20 output paths relative to cwd are supported; parent traversal is not allowed");
         ensure!(
@@ -1420,7 +1435,15 @@ const INPUTS: &str = "Small files the command reads (at most 2 MiB each, 16 MiB 
 /// guardGit in short (T-29): what it adds to the inputs, and that those count.
 const GUARD_GIT: &str = "Also freeze the Git HEAD of cwd's checkout and its changed tracked files (not untracked or ignored ones), \
     checked like inputs before the command starts. Those files count toward the same limits as inputs: 2 MiB each, 16 MiB and 128 \
-    files together with them. Set it to false for a checkout with large uncommitted files, and list in inputs what the command reads.";
+    files together with them. Set it to false for a checkout with large uncommitted files, and list in inputs what the command reads. \
+    To let commits and edits elsewhere in the checkout go on while it waits or runs, name the paths it depends on in guardPaths.";
+/// guardPaths in short (T-50): what it freezes instead, and what it leaves out.
+const GUARD_PATHS: &str = "With guardGit, freeze only these files or directories (relative to cwd, at most 128) instead of the \
+    whole checkout: their tracked content at HEAD (a directory covers every tracked file below it) and their changed tracked files, \
+    checked again before the command starts (before each stage of a run). A commit or edit elsewhere in the checkout no longer \
+    stops it, and HEAD may move: the job records HEAD at submission and at its start. A change under a guarded path rejects it, \
+    naming that path. Not protected: the rest of the checkout, untracked or ignored files (also under the guarded paths), \
+    submodule contents, and anything the command reads outside them; list such files in inputs.";
 const REMOTE_INPUTS: &str = "With machineId they are files on that machine, read there at submit (on windows by its native \
     helper, never through /mnt): one that is missing, unreadable or too large refuses the submit, and nothing of this host is read for them.";
 const ARTIFACTS: &str = "Files a clean exit must leave behind, relative to cwd. After exit 0 each must be a regular file inside cwd \
@@ -1477,7 +1500,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "resources":{"type":"object","properties":{"cpuMillis":{"type":"integer","minimum":100},"memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["cpuMillis","memoryMiB","swapMiB"],"additionalProperties":false},
         "exclusive":{"type":"boolean","default":false,"description":"Run alone among this Core's managed local jobs. FIFO waits for existing jobs and their process-group cleanup; later jobs remain queued until this reservation releases. Does not stop other applications or reserve the whole host. Request actual CPU/RAM/swap limits as usual."},
         "timeoutSeconds":{"type":"integer","minimum":1,"maximum":604800,"default":86400},
-        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
+        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"guardPaths":{"type":"array","items":string,"maxItems":128,"description":GUARD_PATHS},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
     let artifacts = json!({"type":"array","maxItems":20,"description":ARTIFACTS,
         "items":{"type":"object","properties":{"path":string,"format":{"type":"string","enum":["bytes","json","jsonl"],"default":"bytes"},"minBytes":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}});
     let mut properties = properties;

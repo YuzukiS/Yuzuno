@@ -1265,3 +1265,79 @@ async fn job_submit_and_a_run_stage_refuse_an_input_past_the_guard_in_that_sente
     let count = |table: &str| db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).unwrap();
     assert_eq!((count("local_jobs"), count("local_job_runs")), (0, 0), "nothing saved");
 }
+
+/// T-50 (elasticLM): guardPaths narrows guardGit to the named paths. Their
+/// bounds are checked at submit, and the snapshot job_submit and each stage
+/// take keeps each path's Git object at HEAD and only the changes under it:
+/// a commit elsewhere leaves that, and a stage's code identity for reuse, as
+/// they were, and a commit under a guarded path changes both.
+#[tokio::test]
+async fn guard_paths_are_checked_at_submit_and_freeze_only_the_content_under_them() {
+    fn with(extra: Value) -> Result<Submit, String> {
+        let mut value = json!({"requestId":"g","taskId":"T-1","name":"Guarded","cwd":"/workspace","argv":["/usr/bin/true"],
+            "resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0}});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        let submit: Submit = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        submit.validate().map_err(|e| e.to_string())?;
+        Ok(submit)
+    }
+    async fn snapshot(helper: &std::path::Path, submit: &Submit) -> Value {
+        host::invoke(helper, "snapshot", None, Some(serde_json::to_value(submit).unwrap())).await.unwrap()
+    }
+    assert!(with(json!({"guardPaths":["src","notes/today.md","."]})).is_ok());
+    let bounds = "guardPaths are at most 128 distinct paths relative to cwd, never through .. and without control characters";
+    let many: Vec<String> = (0..129).map(|i| format!("p{i}")).collect();
+    for bad in [json!(["../src"]), json!(["/srv/data"]), json!(["src", "src"]), json!(["a\nb"]), json!([""]), json!(many)] {
+        assert_eq!(with(json!({"guardPaths":bad})).unwrap_err(), bounds, "{bad}");
+    }
+    assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false})).unwrap_err(),
+        "guardPaths narrows guardGit to those paths: set guardGit to true, or omit guardPaths");
+    assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false,"machineId":"m1"})).unwrap_err(),
+        "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
+    // Without guardPaths a submission, and so its record, is as before.
+    assert!(serde_json::to_value(with(json!({})).unwrap()).unwrap().get("guardPaths").is_none());
+
+    let dir = tempfile::tempdir().unwrap();
+    let helper = host::helper(&dir.path().join("data")).await.unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let git = |args: &[&str]| -> String {
+        let done = std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=Lab", "-c", "user.email=lab@example.invalid"])
+            .args(args).output().unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        String::from_utf8(done.stdout).unwrap().trim().to_owned()
+    };
+    std::fs::write(repo.join("src/model.py"), "first").unwrap();
+    std::fs::write(repo.join("notes.md"), "first").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "fixture"]);
+    let cwd = repo.to_string_lossy().into_owned();
+    let guarded = with(json!({"cwd":cwd,"guardPaths":["src"]})).unwrap();
+    let plain = with(json!({"cwd":cwd})).unwrap();
+    let code = |submit: &Submit, snapshot: &Value| runs::spec_identity(submit, snapshot, &[])["parts"]["code"].clone();
+    let frozen = snapshot(&helper, &guarded).await;
+    assert_eq!(frozen["git"]["guardPaths"], json!([{"path":"src","object":git(&["rev-parse", "HEAD:src"]),"type":"tree"}]));
+    assert_eq!(frozen["git"]["head"], git(&["rev-parse", "HEAD"]));
+    let (guarded_code, plain_code) = (code(&guarded, &frozen), code(&plain, &snapshot(&helper, &plain).await));
+
+    // A commit elsewhere: HEAD moves; what is guarded, and its identity, do not.
+    std::fs::write(repo.join("notes.md"), "written during the run").unwrap();
+    git(&["commit", "-qam", "notes"]);
+    std::fs::write(repo.join("notes.md"), "still being edited").unwrap();
+    let later = snapshot(&helper, &guarded).await;
+    assert_ne!(later["git"]["head"], frozen["git"]["head"]);
+    assert_eq!((&later["git"]["guardPaths"], &later["git"]["statusSha256"], &later["files"]),
+        (&frozen["git"]["guardPaths"], &frozen["git"]["statusSha256"], &frozen["files"]));
+    assert_eq!(code(&guarded, &later), guarded_code, "a stage reused across a commit elsewhere keeps its code identity");
+    assert_ne!(code(&plain, &snapshot(&helper, &plain).await), plain_code, "without guardPaths HEAD is the code, as before");
+
+    // A commit under the guarded path changes its object, and the identity.
+    std::fs::write(repo.join("src/model.py"), "changed during the run").unwrap();
+    git(&["commit", "-qam", "model"]);
+    let changed = snapshot(&helper, &guarded).await;
+    assert_ne!(changed["git"]["guardPaths"], frozen["git"]["guardPaths"]);
+    assert_ne!(code(&guarded, &changed), guarded_code);
+}
