@@ -685,12 +685,16 @@ impl Workspace {
     /// `opencode` resolves to now. Until it is attached, the caller is its
     /// only owner: dropping it ends its process group.
     pub(crate) async fn opencode_start(&self, id: &str, cwd: &str) -> Result<Started> {
-        let folder = self.data_dir.join("opencode").join(id);
-        std::fs::create_dir_all(&folder)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
+        // Its own folder, and the cache Core's Agents share (T-32): OpenCode
+        // keeps its data and state in the one, its downloads in the other.
+        let (folder, cache) = (self.data_dir.join("opencode").join(id), self.data_dir.join("opencode").join("cache"));
+        for made in [&folder, &cache] {
+            std::fs::create_dir_all(made)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(made, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
         // What `opencode` resolves to now: a native executable is started by
         // that very file, so what was checked is what runs (T-10 Revert).
@@ -702,10 +706,13 @@ impl Workspace {
             Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
             _ => named,
         };
-        let launch = Launch { program: start, directory: cwd.into(), database: folder.join("opencode.db") };
+        let launch = Launch::new(start, cwd.into(), &folder, cache);
         let server = Arc::new(Server::start(&launch).await?);
         let pid = server.pid();
-        let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, |name| std::env::var_os(name),
+        // OpenCode's folders as it was started: Core's environment with the Agent's own on top.
+        let given: Vec<(&'static str, std::ffi::OsString)> = launch.environment().into_iter().map(|(name, value)| (name, value.to_owned())).collect();
+        let var = move |name: &str| given.iter().find(|(set, _)| *set == name).map(|(_, value)| value.clone()).or_else(|| std::env::var_os(name));
+        let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, var,
             std::env::vars_os().map(|(name, _)| name), dirs::home_dir)).await?;
         Ok(Started { server, files })
     }

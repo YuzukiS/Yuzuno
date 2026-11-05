@@ -32,8 +32,9 @@ use reqwest::{Method, Response, Url};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
+    ffi::OsStr,
     fmt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
@@ -93,6 +94,34 @@ pub struct Launch {
     pub directory: PathBuf,
     /// This Agent's own session database (`OPENCODE_DB`), an absolute path.
     pub database: PathBuf,
+    /// OpenCode's data and state folders, this Agent's own
+    /// (`XDG_DATA_HOME`, `XDG_STATE_HOME`), and its cache, the one Core's
+    /// Agents share (`XDG_CACHE_HOME`), never the user's (T-32, Lead 4870).
+    /// Its config stays the user's.
+    pub data: PathBuf,
+    pub state: PathBuf,
+    pub cache: PathBuf,
+}
+
+impl Launch {
+    /// An Agent's: its database and its own folders in `folder`, and
+    /// `cache`, the cache Core's Agents share.
+    pub fn new(program: PathBuf, directory: PathBuf, folder: &Path, cache: PathBuf) -> Self {
+        let own = folder.join("xdg");
+        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache }
+    }
+
+    /// What OpenCode gets besides Core's own environment: the database and
+    /// folders above, and no update check or models.dev fetch of its own.
+    /// 2.2.5's `serve` never updates itself anyway (only its TUI does,
+    /// cli/src/commands/handlers/default.ts); without the fetch, its models
+    /// are its release's own catalog and the user's config
+    /// (cli/src/server-process.ts, core/src/models-dev.ts).
+    pub fn environment(&self) -> [(&'static str, &OsStr); 6] {
+        [("OPENCODE_DB", self.database.as_os_str()), ("XDG_DATA_HOME", self.data.as_os_str()),
+            ("XDG_STATE_HOME", self.state.as_os_str()), ("XDG_CACHE_HOME", self.cache.as_os_str()),
+            ("OPENCODE_DISABLE_AUTOUPDATE", OsStr::new("1")), ("OPENCODE_DISABLE_MODELS_FETCH", OsStr::new("1"))]
+    }
 }
 
 /// A non-2xx answer, as OpenCode gave it (its body shortened).
@@ -385,7 +414,8 @@ impl Server {
     /// listens, is ready and reports a version of `MAJOR`. On any failure,
     /// what it started is ended.
     pub async fn start(launch: &Launch) -> Result<Self> {
-        ensure!(launch.database.is_absolute(), "The OpenCode database path must be absolute");
+        ensure!([&launch.database, &launch.data, &launch.state, &launch.cache].iter().all(|path| path.is_absolute()),
+            "The OpenCode database and folders must be absolute paths");
         ensure!(launch.directory.is_absolute() && launch.directory.is_dir(),
             "The Agent's folder must be an existing absolute path");
         let directory = launch.directory.to_str().context("The Agent's folder is not valid UTF-8")?.to_owned();
@@ -412,7 +442,7 @@ impl Server {
             .args(["serve", "--hostname", "127.0.0.1", "--port", "0"])
             .current_dir(&launch.directory)
             .env("OPENCODE_PASSWORD", &password)
-            .env("OPENCODE_DB", &launch.database)
+            .envs(launch.environment())
             .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1101,11 +1131,12 @@ pub fn newer_note() -> String {
 
 /// The first line `<program> --version` prints, within VERSION_LIMIT: 1.x
 /// prints `1.19.3`, 2.x `opencode v2.0.16`. It inherits Core's
-/// environment, as the server does, with the Agent's `OPENCODE_DB` added;
-/// the server's username and password are not given to it.
+/// environment, as the server does, with the Agent's own added
+/// (`Launch::environment`); the server's username and password are not
+/// given to it.
 async fn installed(launch: &Launch) -> Option<String> {
     let mut command = Command::new(&launch.program);
-    command.arg("--version").current_dir(&launch.directory).env("OPENCODE_DB", &launch.database)
+    command.arg("--version").current_dir(&launch.directory).envs(launch.environment())
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let out = timeout(VERSION_LIMIT, command.output()).await.ok()?.ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -1370,7 +1401,7 @@ mod tests {
             let (name, value) = switch.split_once('=').unwrap_or((switch, "1"));
             std::fs::write(root.join(name), value).unwrap();
         }
-        let server = Server::start(&Launch { program, directory, database: root.join("opencode.db") }).await.unwrap();
+        let server = Server::start(&Launch::new(program, directory, &root, dir.join("cache"))).await.unwrap();
         let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
         let pids = ["pid", "child", "stubborn"].iter().filter_map(|key| seen[key].as_u64()).collect();
         (server, pids)

@@ -27,7 +27,7 @@ fn lab() -> Lab {
     let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
     std::fs::create_dir(&directory).unwrap();
     std::fs::create_dir(&root).unwrap();
-    let launch = Launch { program, directory, database: root.join("opencode.db") };
+    let launch = Launch::new(program, directory, &root, dir.path().join("cache"));
     Lab { _dir: dir, launch, root }
 }
 

@@ -237,6 +237,9 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
 
 
 WORK = Path.cwd().resolve()
+# OpenCode's folders and switches as Core started it (T-32), before a switch below changes one.
+GIVEN = {name: os.environ.get(name) for name in ('XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME',
+                                                  'OPENCODE_DISABLE_AUTOUPDATE', 'OPENCODE_DISABLE_MODELS_FETCH')}
 # OpenCode's own folders (`core/src/global.ts`: xdg-basedir and `os.homedir()`), from the environment it runs with.
 HOME = os.environ['HOME'] if 'HOME' in os.environ else pwd.getpwuid(os.getuid()).pw_dir
 
@@ -1327,7 +1330,7 @@ def main():
     child = subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
     seen = {'argv': argv, 'cwd': os.getcwd(), 'pid': os.getpid(), 'pgid': os.getpgid(0), 'child': child.pid,
-            'database': os.environ.get('OPENCODE_DB'), 'passwordFrom': PASSWORD_FROM, 'passwordLength': len(PASSWORD),
+            'database': os.environ.get('OPENCODE_DB'), 'env': GIVEN, 'passwordFrom': PASSWORD_FROM, 'passwordLength': len(PASSWORD),
             'passwordInArgv': bool(PASSWORD) and any(PASSWORD in arg for arg in argv)}
     if switch('stubborn'):
         # As a server, or a tool it runs, that does not stop on SIGTERM.

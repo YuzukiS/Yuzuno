@@ -232,6 +232,27 @@ async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() 
     assert_eq!(said, vec![json!({"folder": aside})], "the record says where it went");
 }
 
+/// An Agent's OpenCode keeps its data and state in the Agent's own folder
+/// and its downloads in the cache Core's Agents share, never the user's;
+/// its config stays the user's. It checks for no update and fetches no
+/// models list of its own (T-32, Lead 4870).
+#[tokio::test]
+async fn an_agents_opencode_keeps_its_data_and_state_its_own_and_fetches_nothing_of_its_own() {
+    let lab = lab(&[], false).await;
+    let opencode = lab.dir.path().join("data/opencode");
+    let own = opencode.join(ID).join("xdg");
+    let path = |p: PathBuf| json!(p.to_string_lossy());
+    assert_eq!(lab.seen()["env"], json!({
+        "XDG_DATA_HOME": path(own.join("data")), "XDG_STATE_HOME": path(own.join("state")),
+        "XDG_CACHE_HOME": path(opencode.join("cache")), "XDG_CONFIG_HOME": std::env::var("XDG_CONFIG_HOME").ok(),
+        "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1",
+    }));
+    use std::os::unix::fs::PermissionsExt;
+    for folder in [opencode.join(ID), opencode.join("cache")] {
+        assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700, "{} is Core's alone", folder.display());
+    }
+}
+
 #[tokio::test]
 async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() {
     let lab = lab(&[], false).await;

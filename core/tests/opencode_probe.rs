@@ -24,7 +24,7 @@ async fn a_real_opencode_2x_starts_answers_only_its_password_and_ends_within_its
     let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
     std::fs::create_dir(&directory).unwrap();
     std::fs::create_dir(&root).unwrap();
-    let launch = Launch { program, directory, database: root.join("opencode.db") };
+    let launch = Launch::new(program, directory, &root, dir.path().join("cache"));
     let started = Instant::now();
     let server = Server::start(&launch).await.unwrap();
     println!("probe: listening and ready after {:?}; /api/info says version {}", started.elapsed(), server.version());

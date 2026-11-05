@@ -29,6 +29,25 @@ a new one.
 - **Where:** the machine running Core only, in the folder you choose. Core
   starts one `opencode serve` per Agent, listening on `127.0.0.1` behind a
   password of its own, and ends it with the Agent.
+- **OpenCode's own folders:** an Agent's OpenCode keeps its data (such as
+  its log) and its state in the Agent's own folder in Yuzuno's data
+  (`opencode/<Agent>/xdg`). Its downloads, such as provider
+  packages and tools, go to one cache that Yuzuno's OpenCode Agents share
+  (`opencode/cache`). Your own OpenCode folders under `~/.local` and
+  `~/.cache` are never used. Its configuration stays yours
+  (`~/.config/opencode`): your providers, agents, MCP servers and
+  permission rules. So it does not see a login made with `opencode auth
+  login`, which 2.x keeps in your own OpenCode's database: until Yuzuno
+  offers a login for an Agent, provider keys come from your environment and
+  your OpenCode config.
+- **Updates and the models list:** OpenCode is started with
+  `OPENCODE_DISABLE_AUTOUPDATE=1`, although `opencode serve` 2.2.5 never
+  updates itself anyway. Updating OpenCode is yours to do; Yuzuno takes any
+  2.x and notes one newer than the verified release. It is also started with
+  `OPENCODE_DISABLE_MODELS_FETCH=1`, so an OpenCode Yuzuno starts makes no
+  network request of its own besides your model provider's. Its models are
+  the installed release's own catalog and those in your OpenCode config, so
+  the list moves on with an OpenCode update.
 - **Model, login and permissions:** OpenCode's own configuration, unless a
   model, and one of its variants, is chosen in the Agent's settings from what
   its OpenCode's configured providers list (`/config/providers`, names only).
@@ -78,10 +97,12 @@ a new one.
   as for Codex: send it again once you have seen how that turn ended.
 - **Stopping:** OpenCode runs the commands of its tools (a shell command,
   for example) apart from itself, so they do not end with it. When you close
-  the Agent, or Core stops normally (Ctrl+C), Core first asks that Agent's
-  OpenCode to end them, waits at most 5 seconds, then ends OpenCode. If Core
-  or OpenCode is killed instead, or OpenCode does not answer in time, a
-  command still running goes on until it ends by itself.
+  the Agent, or Core stops normally (Ctrl+C or SIGTERM), Core asks that
+  Agent's OpenCode to end (SIGTERM), and OpenCode 2.x ends them in its own
+  teardown, which it gives 10 seconds. Core waits at most 12 seconds, then
+  ends whatever of OpenCode is left. If Core or OpenCode is killed instead,
+  or OpenCode does not end in time, a command still running goes on until it
+  ends by itself.
 
 ## What OpenCode does by itself
 
@@ -89,9 +110,9 @@ a new one.
   free, otherwise any free port. Core uses the address OpenCode prints, so the
   first OpenCode Agent may hold port 4096; another `opencode serve` you start
   then uses a different port.
-- **Dependencies:** when it starts, OpenCode may download or update its own
-  plugin dependencies into its configuration folder (for example
-  `~/.config/opencode/node_modules`), whatever its other settings.
+- **Dependencies:** OpenCode may download the packages its configured
+  plugins and providers need, into the cache Yuzuno's OpenCode Agents share
+  (`opencode/cache/npm` in Yuzuno's data), whatever its other settings.
 
 ## Not yet
 
