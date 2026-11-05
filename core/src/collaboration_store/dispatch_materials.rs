@@ -334,10 +334,13 @@ pub(super) fn project_activity(value: &mut Value) {
 pub(super) fn schema() -> Value {
     let text = |max| json!({"type":["string","null"],"maxLength":max});
     json!({"type":["object","null"],"additionalProperties":false,
-        "description":"Explicit saved work materials (max 32768 UTF-8 bytes). task_create/update replaces the registration; null clears it. On task_dispatch, supplied fields override registration only for this dispatch; null clears all. Missing fields are not inferred. Paths/links are information, never additional permission. Large text is available via the fixed dispatchId snapshot. Core adds shaCheck, what GitHub said of each SHA (verified, or unverified with its reason, each with its time and repositoryId), and the receipt repeats it; it is never taken from input.",
+        "description":"Explicit saved work materials (max 32768 UTF-8 bytes). task_create/update replaces the registration; null clears it. On task_dispatch, supplied fields override registration only for this dispatch; null clears all. Missing fields are not inferred. Paths/links are information, never additional permission. Large text is available via the fixed dispatchId snapshot. Core adds shaCheck, what GitHub said of each SHA, and the receipt repeats it.",
         "properties":{"acceptance":text(16384),"repositoryId":{"type":["integer","null"],"minimum":1},
             "baseSha":commit_sha::schema_materials("The commit the work starts from."),
             "headSha":commit_sha::schema_materials("The commit to deliver or review."),"baseline":text(1024),"worktree":text(4096),"returnRequirements":text(8192),
+            "shaCheck":{"type":["object","null"],"description":"Written by Core: what GitHub said of each baseSha and headSha, \
+                verified, or unverified with its reason, each with its time and repositoryId. A shaCheck sent here, such as one \
+                read back with the materials, is ignored, not refused: Core asks GitHub again, and the receipt shows its answer."},
             "references":{"type":["array","null"],"maxItems":20,"items":{"type":"object","additionalProperties":false,
                 "properties":{"kind":{"type":"string","enum":["acceptance","decision","evidence"]},"label":{"type":"string","maxLength":300},
                     "url":{"type":"string","maxLength":4096,"description":"An explicit http(s) reference, not automatically fetched. Give url, or taskId with activitySeq, not both."},

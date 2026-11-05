@@ -489,6 +489,9 @@ fn materials_take_full_shas_of_either_length_and_say_how_to_get_one() {
     let schema = schema();
     assert!(schema["properties"]["baseSha"]["description"].as_str().unwrap().contains("64 in a SHA-256 repository"));
     assert_eq!(schema["properties"]["headSha"]["pattern"], "^([0-9a-fA-F]{4,40}|[0-9a-fA-F]{64})$");
+    // T-31: shaCheck is Core's; one sent back is ignored, not refused.
+    let check = schema["properties"]["shaCheck"]["description"].as_str().unwrap();
+    assert!(check.starts_with("Written by Core: what GitHub said of each baseSha and headSha") && check.contains("is ignored, not refused"), "{check}");
 }
 
 /// T-29: explicit SHAs are checked where they are registered, by the two rules
