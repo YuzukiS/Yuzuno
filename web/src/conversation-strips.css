@@ -28,11 +28,16 @@
     animation: none;
   }
 }
-/* Below them: the request pin, and, as scroll padding, a target a jump
-   places at the top. */
+/* Below them: the request pin; the conversation's text, which starts below
+   them, so nothing is ever under a strip that scrolling up cannot bring out
+   (the conversation keeps what is in view where it was as they come and go:
+   ConversationStrips.tsx); and, as scroll padding, a target a jump places at
+   the top. On a phone the strips span the conversation as the pin does
+   (phone-docks.css). */
 .conversation-body > .current-turn-prompt {
   top: var(--strips-height, 0px);
 }
 .conversation-body > .conversation-scroll {
+  padding-top: var(--strips-height, 0px);
   scroll-padding-top: calc(16px + var(--strips-height, 0px));
 }

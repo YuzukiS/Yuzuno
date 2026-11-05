@@ -7,10 +7,17 @@ import "./conversation-strips.css";
  * float over the conversation instead of standing above it, so one that
  * appears while someone reads moves no text; each fades in over small
  * (conversation-strips.css). Their height is the conversation's
- * `--strips-height`, which keeps the request pin below them and, as scroll
- * padding, a target a jump places at the top clear of them. It is set as
- * they render, before the jump that opened a source places its target, and
- * again whenever they change size.
+ * `--strips-height`: the request pin sits below them, the conversation's
+ * text starts below them, so scrolling up brings out whatever they cover,
+ * and as scroll padding it places a target a jump puts at the top clear of
+ * them. It is set as they render, before the jump that opened a source
+ * places its target, and again whenever they change size. What is in view
+ * stays where it was as that padding comes and goes, at the conversation's
+ * very top too (R1 f0b0a715), by the conversation's own hold on its place:
+ * ConversationWindow's ReadingAnchor while it is read, in the commit that
+ * changes the padding, and App's followGrowth while it follows its end (it
+ * watches the pane, whose content box the padding changes). The pane has no
+ * browser scroll anchoring (conversation-window.css), so nothing else moves it.
  */
 export function ConversationStrips({ children }: { children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
