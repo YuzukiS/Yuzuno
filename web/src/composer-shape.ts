@@ -21,6 +21,10 @@ export type LineExtent = {
     back to one line, so a draft at the edge switches once each way. */
 export const LINE_RETURN_MARGIN = 8;
 
+/** From this many rows of text a block offers to expand, as in the ChatGPT
+    app: at two rows it does not, from three it does (T-44 4.png, 5.png). */
+export const EXPAND_FROM_ROWS = 3;
+
 /**
  * The shape for what the editor shows now. A line becomes a block as soon as
  * its text wraps; a block becomes a line only when its text, measured at the
@@ -70,7 +74,8 @@ function textWidth(box: HTMLElement, text: string): number | null {
  * block: something under the text (images, skills, an error, a notice).
  * `placeholder` gives the long placeholder and its short form; `short` says
  * whether the long one is too wide for the line's room (a phone's, or with
- * Interrupt), so the short form shows instead.
+ * Interrupt), so the short form shows instead. `rows` counts the draft's
+ * rows of text, for `tall`: whether it is long enough to offer to expand.
  */
 export function useComposerShape(
   box: HTMLElement | null,
@@ -78,9 +83,11 @@ export function useComposerShape(
   forced: boolean,
   deps: readonly unknown[],
   placeholder?: string,
-): { shape: ComposerShape; short: boolean } {
+  rows?: () => number,
+): { shape: ComposerShape; short: boolean; tall: boolean } {
   const [shape, setShape] = useState<ComposerShape>("block");
   const [short, setShort] = useState(false);
+  const [tall, setTall] = useState(false);
   const current = useRef(shape);
   current.current = shape;
   // A line that wrapped for exactly this content and width stays a block,
@@ -94,6 +101,8 @@ export function useComposerShape(
     const long = placeholder && room > 0 ? textWidth(box, placeholder) : null;
     const tooWide = long !== null && room > 0 && !(long < room - LINE_RETURN_MARGIN);
     if (tooWide !== short) setShort(tooWide);
+    const many = (rows?.() ?? 0) >= EXPAND_FROM_ROWS;
+    if (many !== tall) setTall(many);
     const line = measure();
     let next = nextShape(current.current, forced, line, room);
     const same = (held: typeof wrapped.current) =>
@@ -106,12 +115,12 @@ export function useComposerShape(
     }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useLayoutEffect(() => evaluate.current(), [box, forced, shape, short, placeholder, ...deps]);
+  useLayoutEffect(() => evaluate.current(), [box, forced, shape, short, tall, placeholder, ...deps]);
   useLayoutEffect(() => {
     if (!box || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => evaluate.current());
     observer.observe(box);
     return () => observer.disconnect();
   }, [box]);
-  return { shape, short };
+  return { shape, short, tall };
 }
