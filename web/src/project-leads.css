@@ -1,0 +1,16 @@
+/* A Project's leads (T-33), laid out as Home content editors are
+   (home/home-editors.css), with classes of their own. */
+.project-leads {
+  display: grid;
+  gap: 10px;
+  padding-block: 16px;
+  border-top: 1px solid var(--border);
+}
+.project-leads h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 1em; }
+.project-leads p { margin: 0; color: var(--muted); line-height: 1.5; }
+.project-leads label { display: flex; align-items: flex-start; gap: 9px; overflow-wrap: anywhere; }
+.project-leads input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin-top: 3px; accent-color: var(--green); }
+.project-leads small { display: block; color: var(--muted); font-size: .85em; }
+.project-leads-members { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.project-leads-hint { font-size: .9em; color: var(--muted); }
+.project-leads-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

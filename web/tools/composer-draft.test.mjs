@@ -551,6 +551,20 @@ test("chosen Codex skills survive refresh as this Agent's own; another Agent's o
   assert.throws(() => new DraftStorage(disk).load("a"), /Invalid saved skill references/);
 });
 
+test("a skill chosen in a draft kept under its Workspace and Agent comes back after a refresh, and only for that Agent (T-46)", () => {
+  const disk = memory();
+  const storage = new DraftStorage(disk);
+  const here = draftIdentity("ws-1", "a");
+  const deploy = { agentId: "a", name: "deploy", path: "/w/.codex/skills/deploy/SKILL.md", scope: "repo" };
+  storage.save(here, { ...textDraft("$deploy now"), skills: [deploy] });
+  assert.deepEqual(new DraftStorage(disk).load(here).skills, [deploy]);
+  // Copied under another Agent's identity: the text stays, the skill is not that Agent's.
+  const other = draftIdentity("ws-1", "b");
+  disk.setItem(`yuzuno.composer.v1:${other}`, disk.getItem(`yuzuno.composer.v1:${here}`));
+  assert.equal(new DraftStorage(disk).load(other).skills, undefined);
+  assert.equal(draftText(new DraftStorage(disk).load(other)), "$deploy now");
+});
+
 test("a draft copied to a fork keeps its text and images, never the skills chosen for the original Agent", () => {
   const image = { id: `${"a".repeat(64)}.png`, agentId: "a", name: "shot.png", width: 1, height: 1, bytes: 1 };
   const draft = { ...textDraft("$deploy now"), images: [image], skills: [{ agentId: "a", name: "deploy", path: "/w/SKILL.md", scope: "repo" }] };

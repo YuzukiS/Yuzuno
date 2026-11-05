@@ -175,9 +175,8 @@ const measure = (page) => page.evaluate(() => {
     buttons: buttons.map((el) => ({ label: el.getAttribute("aria-label"), box: box(el) })),
     composerControls: Object.fromEntries([
       ["input", "[data-composer-input]"], ["send", ".send-button"],
-      ["image", '.composer-tools button[aria-label="Add images"]'],
-      ["markUp", '.composer-tools button[aria-label="Mark up an image"]'],
-      ["mode", ".composer-tools .composer-mode"],
+      ["add", ".composer-tools .composer-plus"],
+      ["mode", ".composer-send-actions .composer-mode"],
     ].map(([name, selector]) => { const el = main.querySelector(selector); return [name, { onTop: onTop(el), box: box(el) }]; })),
     notice: hint ? { text: hint.textContent.trim(), box: box(hint), whiteSpace: getComputedStyle(hint).whiteSpace, textOverflow: getComputedStyle(hint).textOverflow, clipped: hint.scrollWidth > hint.clientWidth + 1 } : null,
     replyRows: copy && footer ? { actionsBottom: Math.round(copy.bottom), timeTop: Math.round(footer.top), separate: footer.top >= copy.bottom - 1 } : null,

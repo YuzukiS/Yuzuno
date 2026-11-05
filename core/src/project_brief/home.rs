@@ -467,25 +467,15 @@ pub(super) fn compose_card(workspace: &str, project: &str, project_id: &str, key
     )
 }
 
-/// The Turn a reply joins, as the composer chooses it (App.tsx): Codex
-/// steers its running Turn; Claude takes a follow-up only to a running Turn
-/// of yours, never to one of its own.
-pub(super) fn follow_up_turn(detail: &crate::model::AgentDetail) -> Result<Option<String>> {
-    let running = |turn: &&Value| turn["status"] == "inProgress";
-    if detail.agent.harness != "claude" {
-        return Ok(detail.turns.iter().rev().find(running).and_then(|t| t["id"].as_str()).map(str::to_owned));
-    }
+/// The Turn a reply joins, as the composer chooses it (App.tsx): the newest
+/// running Turn. Claude takes it while it works, whether the Turn is yours
+/// or one of its own (T-45).
+pub(super) fn follow_up_turn(detail: &crate::model::AgentDetail) -> Option<String> {
     let busy = detail.agent.closed_at.is_none() && matches!(detail.agent.status.as_str(), "working" | "waiting");
-    if !busy {
-        return Ok(None);
+    if detail.agent.harness == "claude" && !busy {
+        return None;
     }
-    let yours = detail.turns.iter().rev().filter(running).find(|turn| {
-        turn["_yuzunoSource"] != "native" && turn["id"].as_str().is_some_and(|id| !crate::claude::native_turn(id))
-    });
-    match yours.and_then(|turn| turn["id"].as_str()) {
-        Some(id) => Ok(Some(id.into())),
-        None => bail!("Claude is working on a turn of its own; wait for it to finish, or interrupt it, then reply"),
-    }
+    detail.turns.iter().rev().find(|turn| turn["status"] == "inProgress").and_then(|t| t["id"].as_str()).map(str::to_owned)
 }
 
 /// A sent reply marks its ask replied; one not (yet) delivered does not.
@@ -545,7 +535,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
             text,
             text_blocks: None,
             images: vec![],
-            expected_turn_id: follow_up_turn(&detail)?,
+            expected_turn_id: follow_up_turn(&detail),
             question: None,
             clarification: None,
         },
@@ -632,7 +622,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             text: compose_ask(&workspace, &name, &project, row, chosen.as_ref(), &input.text),
             text_blocks: None,
             images: vec![],
-            expected_turn_id: follow_up_turn(&detail)?,
+            expected_turn_id: follow_up_turn(&detail),
             question: None,
             clarification: None,
         };
@@ -699,7 +689,7 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         text,
         text_blocks: None,
         images: vec![],
-        expected_turn_id: follow_up_turn(&detail)?,
+        expected_turn_id: follow_up_turn(&detail),
         question: None,
         clarification: None,
     };

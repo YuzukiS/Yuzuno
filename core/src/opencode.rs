@@ -3,8 +3,11 @@
 //! the transport; `opencode_agent` connects it to an Agent's record. It adds
 //! no permission rule of its own.
 //!
-//! The protocol is the one read from OpenCode 1.19.3 (`VERSION`); a server
-//! that reports another version is stopped. Native requests, events and
+//! OpenCode 2.x (T-32): it is started, checked and stopped as 2.x is, and
+//! any 2.x its `/api/info` reports is spoken to (`MAJOR`; the release this
+//! was checked against is `VERIFIED`); another major is stopped. The calls
+//! past start and stop are still those of 1.19.3 until their slices of T-32
+//! move them to 2.x. Native requests, events and
 //! results come back as OpenCode sent them. What OpenCode did not say is not
 //! decided here: an accepted prompt (204) is not yet a stored message, a
 //! message not found is not proof it was not delivered, and no message is
@@ -20,10 +23,10 @@
 //! the `Server` is dropped, or (on Unix) when Core ends without either. What
 //! its tools run (a shell command, the bash tool) is in a session of its own
 //! (`cross-spawn-spawner.ts`, detached), out of the group's reach: OpenCode
-//! ends it only when it releases its instances, so `shutdown` first asks it
-//! to (`dispose`). Dropping a `Server`, a Core or an OpenCode that is killed,
-//! or an OpenCode that does not answer in time skips that, and such a process
-//! runs on until it ends by itself.
+//! ends it as it tears down after SIGTERM, so `shutdown` signals and then
+//! gives it TEARDOWN before SIGKILL. Dropping a `Server`, a Core or an
+//! OpenCode that is killed, or one that does not end in time skips that, and
+//! such a process runs on until it ends by itself.
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use reqwest::{Method, Response, Url};
 use serde_json::{json, Value};
@@ -41,17 +44,22 @@ use tokio::{
     time::{timeout, Instant},
 };
 
-/// The release whose server protocol this module speaks.
-pub const VERSION: &str = "1.19.3";
-/// OpenCode's default Basic user, set explicitly so that an inherited
-/// `OPENCODE_SERVER_USERNAME` cannot change it.
+/// The OpenCode major this module speaks (T-32: the latest 2.x, not one
+/// release): any version `/api/info` reports in it is taken.
+pub const MAJOR: &str = "2";
+/// The newest release the stand-in and tests were checked against (T-32). A
+/// later 2.x that breaks a call is a bug to fix here, not a refusal.
+pub const VERIFIED: &str = "2.2.5";
+/// 2.x's Basic user, which it does not let be changed (server/src/process.ts).
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
 const REQUEST_LIMIT: Duration = Duration::from_secs(15);
-const GRACE: Duration = Duration::from_secs(3);
-/// How long a stop waits for OpenCode to end what its tools run: longer than
-/// the 3 s it gives a session's shell command after SIGTERM (`prompt.ts`).
-pub const DISPOSE_LIMIT: Duration = Duration::from_secs(5);
+/// How long `shutdown` waits after SIGTERM before SIGKILL: longer than the
+/// 10 s 2.x gives its own teardown, which ends what its tools run, before it
+/// exits (cli/src/shutdown-deadline.ts). The watcher (`WATCHED`) waits as long.
+pub const TEARDOWN: Duration = Duration::from_secs(12);
+/// How often a start asks again while 2.x says it is still starting (503).
+const READY_POLL: Duration = Duration::from_millis(100);
 /// OpenCode sends `server.heartbeat` every 10 s on an open stream.
 pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
 const BODY_LIMIT: usize = 2048;
@@ -68,11 +76,13 @@ const REASON_CHARS: usize = 300;
 const VERSION_LIMIT: Duration = Duration::from_secs(5);
 /// `sh -c WATCHED opencode PROGRAM ARGS…`: the watcher reads the pipe on fd 3
 /// until it closes, then ends its own process group, OpenCode's, as
-/// `shutdown` does: SIGTERM, GRACE, then SIGKILL. It ignores SIGTERM itself,
+/// `shutdown` does: SIGTERM, TEARDOWN (12 s: 2.x gives its own teardown 10 s
+/// after SIGTERM, cli/src/shutdown-deadline.ts DEADLINE), then SIGKILL. Unix
+/// only; elsewhere `shutdown` ends OpenCode at once. It ignores SIGTERM itself,
 /// so it is still in the group (whose ID then cannot be anyone else's) when
 /// its SIGKILL ends what ignored SIGTERM, and itself with it.
 #[cfg(unix)]
-const WATCHED: &str = r#"exec 3<&0; (trap '' TERM; read _ <&3; kill -TERM 0; sleep 3; kill -KILL 0) >/dev/null 2>&1 </dev/null & exec "$@" 3<&- </dev/null"#;
+const WATCHED: &str = r#"exec 3<&0; (trap '' TERM; read _ <&3; kill -TERM 0; sleep 12; kill -KILL 0) >/dev/null 2>&1 </dev/null & exec "$@" 3<&- </dev/null"#;
 
 /// What one Agent's server is started with.
 pub struct Launch {
@@ -364,13 +374,16 @@ pub struct Server {
     base: String,
     password: String,
     directory: String,
+    /// The version its `/api/info` reported.
+    version: String,
     http: reqwest::Client,
     submitted: Mutex<HashSet<MessageId>>,
 }
 
 impl Server {
     /// Starts OpenCode on 127.0.0.1 with a new password and waits until it
-    /// listens and reports `VERSION`. On any failure, what it started is ended.
+    /// listens, is ready and reports a version of `MAJOR`. On any failure,
+    /// what it started is ended.
     pub async fn start(launch: &Launch) -> Result<Self> {
         ensure!(launch.database.is_absolute(), "The OpenCode database path must be absolute");
         ensure!(launch.directory.is_absolute() && launch.directory.is_dir(),
@@ -390,15 +403,15 @@ impl Server {
         };
         #[cfg(not(unix))]
         let mut command = Command::new(&launch.program);
-        // Every network option is explicit: the user's `server` settings
-        // (hostname, port, mDNS) apply only to options not given (cli/network.ts).
-        // OpenCode reads port 0 as 4096 when free, else any free port
-        // (server/server.ts); the address is taken from what it prints.
+        // Both network options are explicit; 2.x has no mDNS option, and a
+        // flag it does not know ends it. The address is taken from what it
+        // prints. The password is in the environment only: 2.x reads
+        // OPENCODE_PASSWORD before the 1.x name and keeps neither for what it
+        // runs (cli/src/env.ts, server-process.ts).
         command
-            .args(["serve", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false"])
+            .args(["serve", "--hostname", "127.0.0.1", "--port", "0"])
             .current_dir(&launch.directory)
-            .env("OPENCODE_SERVER_USERNAME", USERNAME)
-            .env("OPENCODE_SERVER_PASSWORD", &password)
+            .env("OPENCODE_PASSWORD", &password)
             .env("OPENCODE_DB", &launch.database)
             .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -436,6 +449,7 @@ impl Server {
             base: String::new(),
             password,
             directory,
+            version: String::new(),
             // Never through a proxy: the password goes to loopback only.
             http: reqwest::Client::builder().no_proxy().build()?,
             submitted: Mutex::default(),
@@ -464,7 +478,10 @@ impl Server {
                 let said = said.lock().unwrap().clone();
                 bail!("OpenCode exited before it was listening{}", diagnosis(launch, &said).await);
             }
-            Ok(Err(error)) => return Err(error),
+            Ok(Err(error)) => {
+                let said = said.lock().unwrap().clone();
+                bail!("{error:#}{}", diagnosis(launch, &said).await);
+            }
             Err(_) => {
                 let said = said.lock().unwrap().clone();
                 bail!("OpenCode was not listening after {}s{}", START_LIMIT.as_secs(), diagnosis(launch, &said).await);
@@ -473,11 +490,68 @@ impl Server {
         // Its later output is not read, only drained so that writing it
         // never blocks or fails.
         tokio::spawn(async move { tokio::io::copy(&mut output, &mut tokio::io::sink()).await });
-        let health = server.json(Method::GET, "/global/health", None).await?;
-        let version = health["version"].as_str().unwrap_or_default();
-        ensure!(health["healthy"] == true && version == VERSION,
-            "OpenCode {version} is not supported: Yuzuno speaks the server protocol of OpenCode {VERSION}");
+        let info = server.ready().await?;
+        let version = info["version"].as_str().unwrap_or_default();
+        ensure!(supported(version),
+            "OpenCode {version} is not supported: Yuzuno speaks the server protocol of OpenCode {MAJOR}.x (checked against {VERIFIED})");
+        server.version = version.to_owned();
         Ok(server)
+    }
+
+    /// `/api/info` once 2.x is ready: it answers 503 while it is still
+    /// starting (server/src/process.ts), and is asked again until it is, within
+    /// START_LIMIT. Asked without `?directory=`: it is the server's, not an
+    /// instance's.
+    async fn ready(&self) -> Result<Value> {
+        let url = format!("{}/api/info", self.base);
+        let asked = timeout(START_LIMIT, async {
+            loop {
+                let answer = self.http.get(&url).basic_auth(USERNAME, Some(&self.password)).timeout(REQUEST_LIMIT).send().await
+                    .context("OpenCode did not answer /api/info")?;
+                if answer.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    return success(answer).await?.json::<Value>().await.context("OpenCode's answer to /api/info is not JSON");
+                }
+                tokio::time::sleep(READY_POLL).await;
+            }
+        })
+        .await;
+        asked.map_err(|_| anyhow!("OpenCode was not ready after {}s", START_LIMIT.as_secs()))?
+    }
+
+    /// The version this server's `/api/info` reported.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// The loopback address it listens on (`http://127.0.0.1:PORT`).
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// Asks OpenCode to end (SIGTERM to its group) without waiting: 2.x then
+    /// tears down as for `shutdown`, ending what its tools run. For a server
+    /// that others still hold; the last of them reaps it.
+    pub fn terminate(&self) {
+        #[cfg(unix)]
+        self.group.signal(false);
+    }
+
+    /// Waits at most `limit` for OpenCode to exit, without reaping it, and
+    /// says whether it did. Unix only; elsewhere it does not wait.
+    pub async fn ended_within(&self, limit: Duration) -> bool {
+        #[cfg(unix)]
+        {
+            let deadline = Instant::now() + limit;
+            while !self.exited() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            self.exited()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = limit;
+            false
+        }
     }
 
     /// OpenCode's process ID, while it is not yet reaped.
@@ -485,18 +559,14 @@ impl Server {
         self.group.0
     }
 
-    /// Ends OpenCode and its own children: `dispose` (at most DISPOSE_LIMIT),
-    /// then SIGTERM to the group, up to GRACE for OpenCode to finish, then
-    /// SIGKILL to whatever of it is left. A refused or unanswered dispose only
-    /// goes on to the signals.
+    /// Ends OpenCode and its own children: SIGTERM to the group, up to
+    /// TEARDOWN for OpenCode to tear down (ending what its tools run) and
+    /// exit, then SIGKILL to whatever of it is left.
     pub async fn shutdown(mut self) -> Result<()> {
-        if let Err(error) = self.dispose().await {
-            eprintln!("OpenCode did not end what its tools run before it was stopped: {error:#}");
-        }
         #[cfg(unix)]
         {
             self.group.signal(false);
-            let deadline = Instant::now() + GRACE;
+            let deadline = Instant::now() + TEARDOWN;
             while !self.exited() && Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -508,16 +578,6 @@ impl Server {
         // Reaped: the group's ID may now be reused, so it is not signalled again.
         self.group.0 = None;
         waited.context("OpenCode did not end")?;
-        Ok(())
-    }
-
-    /// Asks this server to release all its instances (`POST /global/dispose`),
-    /// which ends what its tools run; it keeps its sessions (the database) and
-    /// runs on. Its answer is waited for at most DISPOSE_LIMIT. Its event
-    /// stream then ends, after `server.instance.disposed`.
-    pub async fn dispose(&self) -> Result<()> {
-        let sent = self.request(Method::POST, "/global/dispose").timeout(DISPOSE_LIMIT).send().await;
-        success(sent.context("OpenCode did not answer /global/dispose")?).await?;
         Ok(())
     }
 
@@ -987,12 +1047,16 @@ pub fn session_of(event: &Value) -> Option<&str> {
 }
 
 /// Why a start failed, as far as OpenCode says (T-32): which OpenCode it is,
-/// when `--version` names another than VERSION, and its first lines on
-/// stderr. Empty when it says neither.
+/// when `--version` names one not of MAJOR (or, as a note, one newer than
+/// VERIFIED), and its first lines on stderr. Empty when it says neither.
 async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
     let mut out = String::new();
-    if let Some(version) = installed(launch).await.filter(|v| *v != VERSION && *v != format!("opencode v{VERSION}")) {
-        out.push_str(&format!(" (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {VERSION})"));
+    match installed(launch).await {
+        Some(version) if !supported(&version) => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {MAJOR}.x)")),
+        Some(version) if newer_than_verified(&version) => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", newer_note())),
+        _ => {}
     }
     let lines = reason(said);
     if !lines.is_empty() {
@@ -1000,6 +1064,39 @@ async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
         out.push_str(&lines);
     }
     out
+}
+
+/// Whether `version` (`2.2.5`, or as `--version` prints it, `opencode
+/// v2.0.16`) is one of MAJOR.
+pub fn supported(version: &str) -> bool {
+    let version = version.trim();
+    let version = version.strip_prefix("opencode ").unwrap_or(version);
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let mut parts = version.split('.');
+    parts.next() == Some(MAJOR) && parts.next().is_some_and(|minor| !minor.is_empty() && minor.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The major Core keeps for an Agent made by a server reporting `version`
+/// (T-32): MAJOR for one it speaks, none otherwise. Core's gate and the web
+/// read only this, never the version string.
+pub fn major(version: &str) -> Option<String> {
+    supported(version).then(|| MAJOR.to_owned())
+}
+
+/// Whether `version` is a release after VERIFIED (T-32): taken, and said to
+/// be newer than the one checked against.
+pub fn newer_than_verified(version: &str) -> bool {
+    let parts = |v: &str| -> Option<Vec<u64>> {
+        let v = v.trim();
+        let v = v.strip_prefix("opencode ").unwrap_or(v);
+        v.strip_prefix('v').unwrap_or(v).split('.').map(|p| p.parse().ok()).collect()
+    };
+    matches!((parts(version), parts(VERIFIED)), (Some(v), Some(w)) if v > w)
+}
+
+/// What a start or the Agent says of a version newer than VERIFIED.
+pub fn newer_note() -> String {
+    format!("newer than the verified {VERIFIED}")
 }
 
 /// The first line `<program> --version` prints, within VERSION_LIMIT: 1.x
@@ -1054,10 +1151,13 @@ fn clipped(text: &str, chars: usize) -> String {
     }
 }
 
-/// The base URL from `opencode server listening on http://HOST:PORT`
-/// (cli/cmd/serve.ts). Only 127.0.0.1, the address Core asked for, is used.
+/// The base URL from `server listening on http://HOST:PORT` (2.x,
+/// cli/src/server-process.ts). Only 127.0.0.1, the address Core asked for,
+/// is used.
 fn listening(line: &str) -> Result<Option<String>> {
-    let Some(address) = line.trim().strip_prefix("opencode server listening on ") else { return Ok(None) };
+    ensure!(!line.trim().starts_with("opencode server listening on "),
+        "OpenCode started as 1.x does, not as {MAJOR}.x");
+    let Some(address) = line.trim().strip_prefix("server listening on ") else { return Ok(None) };
     let (host, port) = address.strip_prefix("http://").and_then(|a| a.rsplit_once(':'))
         .with_context(|| format!("OpenCode reported an address Yuzuno does not read: {address}"))?;
     ensure!(host == "127.0.0.1", "OpenCode listened on {host}, not on this host's loopback; it was stopped");
@@ -1193,12 +1293,34 @@ mod tests {
 
     #[test]
     fn only_a_loopback_listening_line_gives_an_address() {
-        assert_eq!(listening("opencode server listening on http://127.0.0.1:4096").unwrap().as_deref(), Some("http://127.0.0.1:4096"));
+        assert_eq!(listening("server listening on http://127.0.0.1:4096").unwrap().as_deref(), Some("http://127.0.0.1:4096"));
+        assert!(listening("opencode server listening on http://127.0.0.1:4096").unwrap_err().to_string().contains("as 1.x does"),
+            "1.x's line is refused, not waited past");
         assert_eq!(listening("Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.").unwrap(), None);
-        for line in ["opencode server listening on http://0.0.0.0:4096", "opencode server listening on http://[::1]:4096",
-            "opencode server listening on http://127.0.0.1:0", "opencode server listening on https://127.0.0.1:4096",
-            "opencode server listening on http://127.0.0.1.example:4096"] {
+        for line in ["server listening on http://0.0.0.0:4096", "server listening on http://[::1]:4096",
+            "server listening on http://127.0.0.1:0", "server listening on https://127.0.0.1:4096",
+            "server listening on http://127.0.0.1.example:4096"] {
             assert!(listening(line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn only_a_release_after_the_verified_one_is_newer() {
+        for version in ["2.2.6", "2.3.0", "2.10.0", "3.0.0", "opencode v2.2.6", "v2.3.0"] {
+            assert!(newer_than_verified(version), "{version}");
+        }
+        for version in ["2.2.5", "2.2.4", "2.0.16", "1.19.3", "opencode v2.2.5", "2.x", ""] {
+            assert!(!newer_than_verified(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn any_release_of_the_major_is_supported_and_no_other() {
+        for version in ["2.2.5", "2.0.16", "2.10.0", "v2.3.1", "opencode v2.0.16", " 2.2.5 "] {
+            assert!(supported(version), "{version}");
+        }
+        for version in ["1.19.3", "opencode v1.19.3", "3.0.0", "2", "2.", "2.x", "20.1.0", "", "opencode"] {
+            assert!(!supported(version), "{version}");
         }
     }
 
@@ -1271,7 +1393,7 @@ mod tests {
 
     /// As if Core ended without dropping `Server`: only its end of the pipe
     /// closes, and OpenCode's whole group ends anyway, even what ignores
-    /// SIGTERM (after GRACE, by SIGKILL).
+    /// SIGTERM (after TEARDOWN, by SIGKILL).
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn closing_cores_end_of_the_pipe_ends_opencodes_group() {
@@ -1280,7 +1402,7 @@ mod tests {
             let (mut server, pids) = stand_in(dir.path(), if stubborn { &["stubborn"] } else { &[] }).await;
             assert_eq!(pids.len(), if stubborn { 3 } else { 2 });
             drop(server.child.stdin.take());
-            assert!(all_end(&pids, GRACE + Duration::from_secs(5)).await, "stubborn {stubborn}: OpenCode outlived the pipe: {pids:?}");
+            assert!(all_end(&pids, TEARDOWN + Duration::from_secs(5)).await, "stubborn {stubborn}: OpenCode outlived the pipe: {pids:?}");
         }
     }
 
@@ -1311,9 +1433,10 @@ mod tests {
             .map(|line| serde_json::from_str::<Value>(line).unwrap()).filter(|c| c["path"] == path).collect()
     }
 
-    /// What OpenCode's tools run is out of its group: `shutdown` asks
-    /// OpenCode to end it, while dropping the `Server` (as a killed Core
-    /// would) ends only the group.
+    /// What OpenCode's tools run is out of its group: `shutdown` lets 2.x
+    /// tear down after SIGTERM, which ends it, while dropping the `Server`
+    /// (as a killed Core would) ends only the group. Nothing is asked over
+    /// HTTP to stop: 2.x has no `/global/dispose`.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn only_shutdown_ends_what_opencodes_tools_run() {
@@ -1323,9 +1446,7 @@ mod tests {
         server.shutdown().await.unwrap();
         assert!(all_end(&[tool], Duration::from_secs(1)).await, "the tool's process outlived shutdown");
         assert!(all_end(&pids, Duration::from_secs(5)).await, "after shutdown: {pids:?}");
-        let disposed = calls(dir.path(), "/global/dispose");
-        assert_eq!(disposed.len(), 1);
-        assert_eq!(disposed[0]["authorized"], true, "with the server's own password");
+        assert!(calls(dir.path(), "/global/dispose").is_empty(), "no dispose");
 
         let dir = tempfile::tempdir().unwrap();
         let (server, pids) = stand_in(dir.path(), &["tool"]).await;
@@ -1334,33 +1455,36 @@ mod tests {
         assert!(all_end(&pids, Duration::from_secs(5)).await, "after drop: {pids:?}");
         let ran_on = !all_end(&[tool], Duration::from_millis(500)).await;
         let _ = rustix::process::kill_process_group(rustix::process::Pid::from_raw(tool as i32).unwrap(), rustix::process::Signal::KILL);
-        assert!(ran_on, "dropping skips dispose; if this changed, so did what the module says");
-        assert!(calls(dir.path(), "/global/dispose").is_empty());
+        assert!(ran_on, "dropping skips the teardown; if this changed, so did what the module says");
     }
 
-    /// A dispose refused or not answered goes on to the signals, within
-    /// DISPOSE_LIMIT and GRACE.
+    /// A teardown that takes a while is waited for, and what its tools run
+    /// ends with it; one that does not end is cut short at TEARDOWN.
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn a_refused_or_unanswered_dispose_still_stops_opencode() {
-        for how in ["refuse", "hang"] {
+    async fn shutdown_waits_for_a_slow_teardown_and_cuts_a_stuck_one_short() {
+        for (teardown, ends_itself) in [(5, true), (60, false)] {
             let dir = tempfile::tempdir().unwrap();
-            let (server, pids) = stand_in(dir.path(), &["tool", &format!("dispose={how}")]).await;
+            let (server, pids) = stand_in(dir.path(), &["tool", &format!("teardown={teardown}")]).await;
             let tool = tool_pid(dir.path());
             let started = Instant::now();
             server.shutdown().await.unwrap();
             let took = started.elapsed();
-            assert!(took < DISPOSE_LIMIT + GRACE + Duration::from_secs(2), "{how}: the stop took {took:?}");
-            assert!(all_end(&pids, Duration::from_secs(5)).await, "{how}: {pids:?}");
-            assert_eq!(calls(dir.path(), "/global/dispose").len(), 1, "{how}: asked once, not again");
-            let _ = rustix::process::kill_process_group(rustix::process::Pid::from_raw(tool as i32).unwrap(), rustix::process::Signal::KILL);
+            assert!(all_end(&pids, Duration::from_secs(1)).await, "teardown {teardown}: {pids:?}");
+            if ends_itself {
+                assert!(took >= Duration::from_secs(teardown) && took < TEARDOWN, "teardown {teardown}: waited {took:?}");
+                assert!(all_end(&[tool], Duration::from_secs(1)).await, "teardown {teardown}: the tool's process ran on");
+            } else {
+                assert!(took >= TEARDOWN && took < TEARDOWN + Duration::from_secs(2), "teardown {teardown}: waited {took:?}");
+                let _ = rustix::process::kill_process_group(rustix::process::Pid::from_raw(tool as i32).unwrap(), rustix::process::Signal::KILL);
+            }
         }
     }
 
     #[cfg(unix)]
     #[test]
     fn the_watcher_waits_what_shutdown_waits() {
-        assert!(WATCHED.contains(&format!("sleep {}; kill -KILL 0", GRACE.as_secs())));
+        assert!(WATCHED.contains(&format!("sleep {}; kill -KILL 0", TEARDOWN.as_secs())));
     }
 
     #[test]

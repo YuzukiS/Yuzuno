@@ -304,6 +304,7 @@ impl Workspace {
         self.stored(move |store| {
             let mut agent = store.agent(&id)?;
             agent.project_id = store.agent_project(&id)?;
+            agent.kind = store.agent_kind(&id)?;
             Ok(agent)
         }).await
     }
@@ -512,6 +513,7 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
             cwd,
             model,
             settings,
@@ -519,6 +521,8 @@ impl Workspace {
             harness: "codex".into(),
             claude_session_id: None,
             opencode_session_id: None,
+            opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
@@ -1697,12 +1701,12 @@ impl Workspace {
                     bail!("这条问题的回答已提交；不会重复发送");
                 }
             }
-            // A Claude follow-up goes only to a turn of yours still running. A
-            // draft kept for one that has since ended was never sent; sending
-            // it again starts from the conversation as it is now.
+            // A Claude follow-up goes only to a turn still running, yours or
+            // one of Claude's own (T-45). A draft kept for one that has since
+            // ended was never sent; sending it again starts from the
+            // conversation as it is now.
             if let (true, None, Some(expected)) = (claude, &input.clarification, &input.expected_turn_id) {
-                anyhow::ensure!(!crate::claude::native_turn(expected)
-                    && detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
+                anyhow::ensure!(detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
                     "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
             }
             if !claude && detail.agent.harness != "opencode" {

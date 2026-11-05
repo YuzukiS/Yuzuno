@@ -448,7 +448,7 @@ impl Workspace {
         let mut images = Images { root, from: row.source_agent_id.clone(), to: row.target_agent_id.clone(), files: Vec::new() };
         let turns = remap(&frozen.turns, &verified.ids, &session, &mut images)?;
         tokio::task::spawn_blocking(move || images.copy()).await??;
-        let detail = self.opencode_fork_detail(row, &frozen, &session, turns)?;
+        let detail = self.opencode_fork_detail(row, &frozen, &session, turns, started.server.version())?;
         let (source, request) = (row.source_agent_id.clone(), row.request_id.clone());
         let (agent, project_kept, project) = self.stored(move |s| {
             let project = s.agent_project(&source)?;
@@ -469,14 +469,15 @@ impl Workspace {
         Ok(())
     }
 
-    fn opencode_fork_detail(&self, row: &Row, frozen: &Frozen, session: &str, turns: Vec<Value>) -> Result<AgentDetail> {
+    fn opencode_fork_detail(&self, row: &Row, frozen: &Frozen, session: &str, turns: Vec<Value>, version: &str) -> Result<AgentDetail> {
         let source: crate::model::Agent = serde_json::from_value(frozen.agent.clone())?;
         let at = now();
         Ok(AgentDetail {
             agent: crate::model::Agent {
-                id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, project_id: None,
+                id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, project_id: None, kind: None,
                 cwd: frozen.cwd.clone(), model: source.model.clone(), settings: source.settings.clone(), color: source.color.clone(),
-                harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()), thread_id: None,
+                harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()),
+                opencode_version: Some(version.into()), opencode_major: crate::opencode::major(version), thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
                 created_at: at.clone(), updated_at: at, unread_count: 0, pending_count: 0, open_questions: 0, last_turn_end: None, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),

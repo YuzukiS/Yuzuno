@@ -107,6 +107,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
     let asset_service = tower::service_fn(move |request: Request| crate::updates::assets::serve(assets.clone(), asset_updates.clone(), request));
     Router::new()
         .merge(update_routes)
+        .merge(crate::agent_roles::router())
         .merge(crate::pr_review::router())
         .merge(crate::pr_operations::router())
         .merge(crate::jobs::router())
@@ -583,7 +584,7 @@ async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
     stored_json(&ws, move |store| Ok(
         json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
-            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERSION},
+            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
             "projectUsage":store.project_usage()?}),
     )).await

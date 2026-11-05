@@ -12,6 +12,10 @@ export interface Agent {
   harness?: "codex" | "claude" | "opencode";
   claudeSessionId?: string;
   opencodeSessionId?: string;
+  /** The OpenCode version an OpenCode Agent's database was made with (T-32); none until it first starts, and none for one made with 1.19.3. */
+  opencodeVersion?: string;
+  /** That version's major as Core parsed it ("2"): what the web reads, never the version string. */
+  opencodeMajor?: string;
   id: string;
   name: string;
   goal: string;
@@ -64,6 +68,9 @@ export interface Agent {
   rev?: number | null;
   /** Explicit membership; absent means no project. */
   projectId?: string | null;
+  /** A lead of its Project (set by the user) or a task's executor (T-33);
+   * absent for a standing Agent. */
+  kind?: "lead" | "executor" | null;
 }
 export interface Project {
   id: string;

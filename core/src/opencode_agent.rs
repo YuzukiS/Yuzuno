@@ -291,6 +291,32 @@ async fn sub_agents(server: &Server, session: &str) -> Result<BTreeMap<String, V
     Ok(found)
 }
 
+/// Moves the OpenCode database in an Agent's `folder` into a new
+/// `set-aside-N` folder beside it, its WAL and other files first, so that a
+/// new database never meets an old WAL; that folder, or None when there is
+/// no database. A failed move fails the start, so OpenCode never starts
+/// with part of one left.
+fn set_aside(folder: &std::path::Path) -> Result<Option<PathBuf>> {
+    let files: Vec<_> = ["opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "opencode.db"].into_iter()
+        .filter(|name| folder.join(name).symlink_metadata().is_ok()).collect();
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let mut n = 1;
+    let aside = loop {
+        let path = folder.join(format!("set-aside-{n}"));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(error) => return Err(error).with_context(|| format!("{} 无法创建；OpenCode 没有启动", path.display())),
+        }
+    };
+    for name in files {
+        std::fs::rename(folder.join(name), aside.join(name)).with_context(|| format!("没有记下 Session 的 OpenCode 数据库 {name} 无法移到 {}；OpenCode 没有启动", aside.display()))?;
+    }
+    Ok(Some(aside))
+}
+
 /// The `opencode` this Core starts (`YUZUNO_OPENCODE_BIN`, else from PATH).
 fn program() -> PathBuf {
     std::env::var_os("YUZUNO_OPENCODE_BIN").map(PathBuf::from).unwrap_or_else(|| "opencode".into())
@@ -305,7 +331,7 @@ pub fn enabled() -> bool {
 /// starts with OpenCode's own default (its configuration's); its models are
 /// its own OpenCode's (`opencode_agent_catalog`).
 pub fn catalog() -> Value {
-    json!({"models":[],"opencode":{"version":opencode::VERSION}})
+    json!({"models":[],"opencode":{"version":opencode::VERIFIED}})
 }
 
 /// A model as the Agent settings offer it: named `<provider>/<model>`, shown
@@ -437,7 +463,13 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
         let models = c.server.models().await?;
         c.windows(&models);
-        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERSION}}))
+        // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
+        let version = c.server.version();
+        let mut native = json!({"version":version,"verified":opencode::VERIFIED});
+        if opencode::newer_than_verified(version) {
+            native["note"] = json!(opencode::newer_note());
+        }
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":native}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -515,6 +547,7 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
             cwd: cwd.to_string_lossy().into_owned(),
             model,
             settings: Default::default(),
@@ -522,6 +555,8 @@ impl Workspace {
             harness: "opencode".into(),
             claude_session_id: None,
             opencode_session_id: None,
+            opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -603,6 +638,7 @@ impl Workspace {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         crate::model::ensure_not_disconnected(&d.agent)?;
+        crate::model::ensure_opencode_current(&d.agent)?;
         if let Some(c) = self.opencodes.lock().unwrap().get(id).cloned() {
             return Ok(c);
         }
@@ -630,6 +666,17 @@ impl Workspace {
     }
 
     async fn opencode_connect(self: &Arc<Self>, id: &str, d: &AgentDetail) -> Result<Connection> {
+        // With no session recorded, nothing Core sent is in a database already
+        // in its folder: an earlier start made it, 1.19.3 among them, and its
+        // session never reached the record. 2.x would apply its own schema to
+        // it (2.2.5 core/src/database/migration.ts), so it is moved aside,
+        // never deleted, and 2.x makes a new one (R2 f9cbccce of #575).
+        if d.agent.opencode_session_id.is_none() {
+            let folder = self.data_dir.join("opencode").join(id);
+            if let Some(aside) = tokio::task::spawn_blocking(move || set_aside(&folder)).await?? {
+                self.record_meta(id, "opencode/setAside", json!({"folder": aside}), |_| {}).await?;
+            }
+        }
         let started = self.opencode_start(id, &d.agent.cwd).await?;
         self.opencode_attach(id, d, started).await
     }
@@ -673,10 +720,13 @@ impl Workspace {
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
+                // Its database is made by this server: the version it was made with is kept with its session (T-32).
                 let session = server.create_session(&d.agent.name).await?["id"].as_str().unwrap_or_default().to_owned();
-                let kept = session.clone();
-                self.record_meta(id, "opencode/session", json!({"sessionId":session}), move |m| {
+                let (kept, version) = (session.clone(), server.version().to_owned());
+                self.record_meta(id, "opencode/session", json!({"sessionId":session,"version":version}), move |m| {
                     m.agent.opencode_session_id = Some(kept);
+                    m.agent.opencode_major = opencode::major(&version);
+                    m.agent.opencode_version = Some(version);
                 }).await?;
                 session
             }
@@ -699,7 +749,7 @@ impl Workspace {
         }
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
-        let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
+        let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":server.version()}));
         let usage = c.clone();
         // Compared as before, since it changes Turns, without returning a copy
         // of the record nobody reads (T-140).
@@ -1759,15 +1809,19 @@ impl Workspace {
     }
 }
 
-/// Lets OpenCode end cleanly when nothing else holds it; else it is only asked
-/// to end what its tools run, and dropping the last holder ends its group.
-/// Either way a refused or unanswered dispose does not stop the stop.
+/// Lets OpenCode end cleanly (`shutdown`) when nothing else holds it. Else
+/// it is signalled to end, and this stop holds it until it has exited,
+/// within TEARDOWN as `shutdown` waits: 2.x closes its event stream early in
+/// its teardown, so the task reading it lets go first, and were this the
+/// last hold, its drop (SIGKILL to the group) would cut short the teardown
+/// that ends what its tools run (R1 070d0f95 of #575). The last holder reaps it.
 async fn stop(server: Arc<Server>) -> Result<()> {
     match Arc::try_unwrap(server) {
         Ok(server) => server.shutdown().await,
         Err(server) => {
-            if let Err(error) = server.dispose().await {
-                eprintln!("OpenCode did not end what its tools run before it was stopped: {error:#}");
+            server.terminate();
+            if !server.ended_within(opencode::TEARDOWN).await {
+                eprintln!("OpenCode did not end within {:?} of SIGTERM; what still holds it ends its group", opencode::TEARDOWN);
             }
             Ok(())
         }

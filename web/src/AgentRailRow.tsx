@@ -41,6 +41,8 @@ const text = strings({
   update: "Update · ",
   drop: (name: string) => `Drop to add it to ${name}’s draft`,
   needsYou: (count: number) => `${count} needs you`,
+  lead: "Lead",
+  leadTitle: "A lead of this Project, as set in its settings",
 }, {
   host: "Core 主机",
   open: (name) => `打开 ${name}`,
@@ -51,6 +53,8 @@ const text = strings({
   update: "更新 · ",
   drop: (name) => `放下即可添加到 ${name} 的草稿`,
   needsYou: (count) => `${count} 项需要你`,
+  lead: "负责人",
+  leadTitle: "此 Project 的负责人（在 Project 设置中指定）",
 });
 
 /** How long a touch is held before it opens the actions, and how far it may
@@ -143,6 +147,9 @@ export function AgentRailRow({
   const menu = useRef<AgentActionsMenuHandle>(null);
   const select = useRef<HTMLButtonElement>(null);
   const press = useLongPress((point) => menu.current?.openAt(point, select.current));
+  // A Project's lead says so (T-33); the button's label is its name only.
+  const lead = agent.kind === "lead";
+  const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
   return (
     <article
       className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}`}
@@ -171,9 +178,9 @@ export function AgentRailRow({
         className="agent-select agent-row-top"
         onClick={onSelect}
         aria-label={t.open(agent.name)}
-        aria-description={t.description(label, waiting?.detail ?? null, machine, agent.unreadCount)}
+        aria-description={lead ? `${t.lead} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}
+        title={`${t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}${lead ? ` · ${t.lead}` : ""}`}
       >
         {/* Unread updates ring the avatar, never a dot: dots beside the
             status say what the Agent is doing. */}
@@ -186,6 +193,7 @@ export function AgentRailRow({
         <span className="agent-identity">
           <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
+          {lead && <span className="agent-kind-badge" data-kind="lead" title={t.leadTitle}>{t.lead}</span>}
         </span>
         <span
           className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}

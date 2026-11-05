@@ -25,6 +25,8 @@
   color: var(--text-secondary);
   font-size: calc(9.5px + var(--font-adjust, 3px));
   outline: none;
+  /* It comes in from the node it sits beside (SubAgentPanels.tsx, T-19 WD-08). */
+  transform-origin: left top;
 }
 .subagent-card-heading {
   position: sticky;

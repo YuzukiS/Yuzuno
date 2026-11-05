@@ -688,6 +688,7 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
             cwd,
             model,
             settings,
@@ -695,6 +696,8 @@ impl Workspace {
             harness: "claude".into(),
             claude_session_id: None,
             opencode_session_id: None,
+            opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -1085,8 +1088,9 @@ impl Workspace {
         // Only the Turns' statuses, IDs and sources are read: the send view,
         // not a copy of every Item (T-140).
         let detail = self.send_view(id).await?;
+        // Into the newest running Turn, a prompt's or one of Claude's own,
+        // as a follow-up typed there (T-45).
         if let Some(turn) = detail.turns.iter().rev().find(|t| t["status"] == "inProgress") {
-            anyhow::ensure!(turn["_yuzunoSource"] != "native", "Wait for Claude to finish this recovered turn before submitting the form");
             self.claude_steer_locked(id, &input.text, turn["id"].as_str().context("Missing Claude turn ID")?, &input.client_message_id, &input.images).await
         } else {
             // This start has a durable message/requested receipt. Keep the same
@@ -1238,10 +1242,11 @@ impl Workspace {
         }
     }
 
-    /// Called under the Agent gate (send_message): a follow-up to the user's
-    /// running turn, sent as Claude Code takes a message typed while it works.
-    /// Ok means it is queued at Claude, not read: a `message_delivery` event
-    /// reports Claude naming it (see the bridge's `append`).
+    /// Called under the Agent gate (send_message): a follow-up to the running
+    /// turn, the user's or one of Claude's own (a mailbox notice's, a
+    /// restart's rescue), sent as Claude Code takes a message typed while it
+    /// works. Ok means it is queued at Claude, not read: a `message_delivery`
+    /// event reports Claude naming it (see the bridge's `append`).
     pub(crate) async fn claude_steer_locked(
         self: &Arc<Self>,
         id: &str,
@@ -1257,7 +1262,7 @@ impl Workspace {
         if d.agent.connection_state != "connected" {
             bail!("Claude 连接已结束；补充消息未发送，草稿保留");
         }
-        if native_turn(expected) || !d.turns.iter().any(|t| t["id"] == expected && t["status"] == "inProgress") {
+        if !d.turns.iter().any(|t| t["id"] == expected && t["status"] == "inProgress") {
             bail!("原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
         }
         let c = self.claudes.lock().unwrap().get(id).cloned().context("Claude 连接已断开，补充消息未发送")?;
@@ -5697,6 +5702,156 @@ mod tests {
             "nothing is sent or recorded again");
         let fresh = ws.send_message("a", input("c6", "new while closed")).await.unwrap_err();
         assert!(fresh.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "{fresh}");
+    }
+
+    /// A Claude connection whose bridge queues every follow-up sent to it,
+    /// with each command it was sent.
+    fn queuing_bridge(ws: &Arc<Workspace>) -> Arc<std::sync::Mutex<Vec<Value>>> {
+        let (tx, mut commands) = mpsc::channel(8);
+        let (shutdown, _) = watch::channel(false);
+        let (_, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge { tx, pending: Arc::new(Mutex::new(HashMap::new())), next: AtomicU64::new(1),
+            shutdown, stopped, diagnostics: Default::default(), stderr_closed: watch::channel(true).1, pid: None });
+        ws.claudes.lock().unwrap().insert("a".into(), Connection { remote_instance: None, generation: 7, bridge: bridge.clone(), events: None });
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let calls = seen.clone();
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                let command: Value = command;
+                assert_eq!(command["op"], "append");
+                calls.lock().unwrap().push(command.clone());
+                let id: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                bridge.pending.lock().await.remove(&id).unwrap()
+                    .send(Ok(json!({"queued":true,"uuid":command["uuid"],"turnId":command["expectedTurnId"]}))).unwrap();
+            }
+        });
+        seen
+    }
+
+    /// A form the prompt's Turn published, and the text of its answer.
+    async fn published_form(ws: &Arc<Workspace>) -> (Value, String) {
+        let spec = json!({"root":"r","elements":{
+            "r":{"type":"Result","props":{"title":"Setup","summary":"Answer once"},"children":["f"]},
+            "f":{"type":"Clarification","props":{"id":"setup","title":"Setup","fields":[{"id":"directory","type":"text","label":"Directory","required":true}]}}
+        }});
+        let published = ws.result_publish("a", json!({"requestId":"form","expectedTurnId":"t","spec":spec})).await.unwrap().unwrap();
+        let answer = json!({"resultId":published["resultId"],"formId":"setup","answers":{"directory":"test"}});
+        let text = ws.results.check_answers(&spec, &answer).await.unwrap();
+        (answer, text)
+    }
+
+    /// The Turns showing this message.
+    fn showing(d: &AgentDetail, client: &str) -> Vec<String> {
+        d.turns.iter().filter(|t| t["items"].as_array().unwrap().iter().any(|i| i["clientId"] == client))
+            .map(|t| t["id"].as_str().unwrap().to_owned()).collect()
+    }
+
+    /// T-45: a running Turn of Claude's own (a mailbox notice's, a restart's
+    /// rescue) takes a follow-up and a form answer as a prompt's Turn does:
+    /// shown there as yours, read there, or run next if the Turn ends first.
+    #[tokio::test]
+    async fn a_running_turn_of_claudes_own_takes_follow_ups_and_form_answers() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.claude_session_id = Some("s".into());
+        ws.store.insert(&d).unwrap();
+        let seen = queuing_bridge(&ws);
+        let (answer, form_text) = published_form(&ws).await;
+        let event = |turn: &str, event: Value| json!({"type":"event","turnId":turn,"nativeTurnId":format!("native-of-{turn}"),"event":event});
+        ws.dispatch_claude_event("a", 7, event("t", json!({"type":"result","subtype":"success","session_id":"s",
+            "is_error":false,"duration_ms":10,"result":"Done."}))).await;
+        // Claude runs on its own: a mailbox notice's Turn.
+        ws.dispatch_claude_event("a", 7, event("native-n", json!({"type":"assistant","session_id":"s",
+            "message":{"id":"msg-n","content":[{"type":"text","text":"Reading the mail."}]}}))).await;
+        let d = ws.store.detail("a").unwrap();
+        assert_eq!((d.turns[1]["id"].clone(), d.turns[1]["_yuzunoSource"].clone(), d.agent.status.clone()),
+            (json!("native-n"), json!("native"), "working".to_owned()));
+        let input = serde_json::from_value::<crate::model::MessageInput>(
+            json!({"clientMessageId":"f1","text":"also look at the CI","expectedTurnId":"native-n"})).unwrap();
+        let queued = ws.send_message("a", input).await.expect("Claude's own Turn takes the follow-up");
+        assert_eq!((queued.status.as_str(), queued.turn_id.as_deref()), ("queued", Some("native-n")), "{:?}", queued.error);
+        let d = ws.store.detail("a").unwrap();
+        assert_eq!(showing(&d, "f1"), ["native-n"]);
+        let item = d.turns[1]["items"].as_array().unwrap().iter().find(|i| i["clientId"] == "f1").unwrap().clone();
+        assert_eq!((item["type"].clone(), item["_yuzunoDelivery"].clone()), (json!("userMessage"), json!("queued")), "yours, unread");
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"accepted","turnId":"native-n"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert_eq!(showing(&d, "f1"), ["native-n"]);
+        assert!(d.turns[1]["items"].as_array().unwrap().iter().find(|i| i["clientId"] == "f1").unwrap().get("_yuzunoDelivery").is_none(), "read there");
+        assert_eq!(d.message_receipts.iter().find(|r| r.input.client_message_id == "f1").unwrap().status, "accepted");
+        // A form answer goes into the same Turn, the newest running, as a follow-up.
+        let form = serde_json::from_value::<crate::model::MessageInput>(
+            json!({"clientMessageId":"form-answer","text":form_text,"clarification":answer})).unwrap();
+        let answered = ws.send_message("a", form).await.unwrap();
+        assert_eq!((answered.status.as_str(), answered.turn_id.as_deref()), ("queued", Some("native-n")), "{:?}", answered.error);
+        // The Turn ends first: what it left queued runs as the next Turn.
+        ws.dispatch_claude_event("a", 7, event("native-n", json!({"type":"result","subtype":"success","session_id":"s",
+            "is_error":false,"duration_ms":10,"result":"Read.","origin":{"kind":"task-notification"}}))).await;
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"form-answer","status":"next",
+            "turnId":"follow-2","previousTurnId":"native-n"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert_eq!(showing(&d, "form-answer"), ["follow-2"], "moved off the Turn that ended");
+        let next = d.turns.iter().find(|t| t["id"] == "follow-2").unwrap();
+        assert_eq!((next["status"].clone(), next["items"][0]["_yuzunoDelivery"].clone(), d.agent.status.clone()),
+            (json!("inProgress"), json!("queued"), "working".to_owned()));
+        let sent: Vec<(String, String)> = seen.lock().unwrap().iter()
+            .map(|c| (c["clientMessageId"].as_str().unwrap().into(), c["expectedTurnId"].as_str().unwrap().into())).collect();
+        assert_eq!(sent, [("f1".into(), "native-n".into()), ("form-answer".into(), "native-n".into())]);
+    }
+
+    /// T-45, the unmatched case: a Turn of Claude's own shown beside the
+    /// prompt's waiting Turn is the newest running one, so a follow-up and a
+    /// form answer go to it; each is shown once however that Turn resolves.
+    #[tokio::test]
+    async fn a_follow_up_to_an_unmatched_turn_is_shown_once_however_it_resolves() {
+        for resolved in ["the prompt's", "Claude's own"] {
+            let temp = tempfile::tempdir().unwrap();
+            let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+            let mut d = detail();
+            d.agent.claude_session_id = Some("s".into());
+            ws.store.insert(&d).unwrap();
+            let seen = queuing_bridge(&ws);
+            let (answer, form_text) = published_form(&ws).await;
+            let event = |turn: &str, native: &str, event: Value| json!({"type":"event","turnId":turn,"nativeTurnId":native,"event":event});
+            ws.dispatch_claude_event("a", 7, event("native-u", "native-u", json!({"type":"assistant","session_id":"s",
+                "message":{"id":"msg-u","content":[{"type":"tool_use","id":"tool-u","name":"Bash","input":{"command":"ls"}}]}}))).await;
+            let d = ws.store.detail("a").unwrap();
+            assert_eq!((d.turns[0]["status"].clone(), d.turns[1]["_yuzunoUnmatched"].clone()), (json!("inProgress"), json!(true)), "{resolved}");
+            let typed = serde_json::from_value::<crate::model::MessageInput>(
+                json!({"clientMessageId":"u1","text":"also this","expectedTurnId":"native-u"})).unwrap();
+            let typed = ws.send_message("a", typed).await.expect("the unmatched Turn takes the follow-up");
+            assert_eq!(typed.status, "queued", "{resolved}: {:?}", typed.error);
+            let form = serde_json::from_value::<crate::model::MessageInput>(
+                json!({"clientMessageId":"u2","text":form_text,"clarification":answer})).unwrap();
+            let form = ws.send_message("a", form).await.unwrap();
+            assert_eq!(form.turn_id.as_deref(), Some("native-u"), "{resolved}: the newest running Turn: {:?}", form.error);
+            let d = ws.store.detail("a").unwrap();
+            assert_eq!((showing(&d, "u1"), showing(&d, "u2")), (vec!["native-u".to_owned()], vec!["native-u".to_owned()]), "{resolved}");
+            if resolved == "Claude's own" {
+                // It ends as Claude's own without reading them; they are kept
+                // where they were sent until Claude names them.
+                ws.dispatch_claude_event("a", 7, event("native-u", "native-u", json!({"type":"result","subtype":"success","session_id":"s",
+                    "is_error":false,"duration_ms":10,"result":"","origin":{"kind":"task-notification"}}))).await;
+                let d = ws.store.detail("a").unwrap();
+                assert!(d.turns[1].get("_yuzunoUnmatched").is_none(), "{resolved}");
+                assert_eq!((showing(&d, "u1"), showing(&d, "u2")), (vec!["native-u".to_owned()], vec!["native-u".to_owned()]), "{resolved}");
+            }
+            // The bridge then reads them in the prompt's Turn: the rest of the
+            // Turn shown unmatched, or the prompt's own, after it.
+            for client in ["u1", "u2"] {
+                ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":client,"status":"accepted","turnId":"t"})).await;
+            }
+            ws.dispatch_claude_event("a", 7, event("t", "native-u", json!({"type":"result","subtype":"success","session_id":"s",
+                "is_error":false,"duration_ms":10,"result":"Done."}))).await;
+            let d = ws.store.detail("a").unwrap();
+            assert_eq!((showing(&d, "u1"), showing(&d, "u2")), (vec!["t".to_owned()], vec!["t".to_owned()]), "{resolved}: once, in the Turn that read them");
+            assert!(d.message_receipts.iter().filter(|r| r.input.client_message_id.starts_with('u'))
+                .all(|r| r.status == "accepted" && r.turn_id.as_deref() == Some("t")), "{resolved}");
+            assert_eq!(d.turns[1]["status"], if resolved == "Claude's own" { "completed" } else { "outcomeUnknown" }, "{resolved}");
+            assert_eq!(seen.lock().unwrap().iter().map(|c| c["expectedTurnId"].clone()).collect::<Vec<_>>(),
+                [json!("native-u"), json!("native-u")], "{resolved}");
+        }
     }
 
     /// T-21 R1: Claude acknowledged a follow-up and the connection check
