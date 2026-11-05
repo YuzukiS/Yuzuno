@@ -137,7 +137,7 @@ fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
     let executor = plan.dispatch.agent_id.clone();
     let waiting = json!({"agentId":executor,"state":"waiting","machine":"local","position":1});
     let current = store.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap();
-    assert_eq!(current["current"]["executorSlot"], waiting);
+    assert_eq!(current["current"]["executorSlot"], waiting, "the task's current view shows its executor's slot");
     let full = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"full"})).unwrap();
     assert_eq!(full["task"]["executorSlot"], waiting);
     let listed = store.collaboration_call(None, "task_list", json!({})).unwrap();

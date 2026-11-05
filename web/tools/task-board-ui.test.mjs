@@ -162,7 +162,7 @@ test("a card says where its executor stands: queued with its place, starting wit
   const p = await mount();
   try {
     const slot = (id) => p.row(id).querySelector(".collab-executor-slot");
-    assert.equal(slot("T-3").textContent, "Queued (number 2)");
+    assert.equal(slot("T-3")?.textContent, "Queued (number 2)", "a queued executor's card says its place");
     assert.equal(slot("T-3").dataset.slotState, "waiting");
     assert.match(slot("T-3").title, /waits for a free slot and starts in turn/);
     assert.equal(slot("T-5").textContent, "Starting");

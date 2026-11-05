@@ -21,10 +21,11 @@ fn queued(store: &Store, id: &str, project: Option<&str>, machine: &str) {
     enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, machine, "reviewer").unwrap();
 }
 
+/// Its row's state and reason; "none" without a row.
 fn state(store: &Store, id: &str) -> (String, Option<String>) {
     store.db.read().unwrap()
         .query_row("SELECT state, reason FROM executor_slots WHERE agent_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
+        .optional().unwrap().unwrap_or_else(|| ("none".into(), None))
 }
 
 fn close(store: &Store, id: &str) {
@@ -66,7 +67,9 @@ fn the_workspace_limit_starts_executors_in_dispatch_order_and_a_close_frees_a_sl
     assert_eq!(state(&store, "a"), ("waiting".into(), None));
 
     // A waiting executor cannot be started any other way, and is told its place.
-    let refused = store.executor_slot_gate("d").unwrap_err();
+    let refused = store.executor_slot_gate("d");
+    assert!(refused.is_err(), "a waiting executor is not started any other way");
+    let refused = refused.unwrap_err();
     assert!(refused.downcast_ref::<WaitsForSlot>().is_some(), "a typed refusal: not the executor's failure");
     assert_eq!(refused.to_string(), "executor_queued: this executor waits for an executor slot (number 2 in the queue); \
         it starts when one is free. To run more at once, raise Executors at once in Settings");
@@ -184,7 +187,7 @@ fn projects_take_turns_and_one_waiting_longest_goes_first() {
             assert_eq!(view(&store, "task-x3").unwrap()["position"], 1, "its place in the queue is the order it starts in");
             assert_eq!(started(&store), ["x3", "y1", "x1", "x2"], "the one waiting longest first, then Projects in turn");
         } else {
-            assert_eq!(view(&store, "task-y1").unwrap()["position"], 2);
+            assert_eq!(view(&store, "task-y1").unwrap()["position"], 2, "Projects in turn: y1 is second in the queue");
             assert_eq!(started(&store), ["x1", "y1", "x2", "x3"], "Projects in turn, each in dispatch order");
         }
     }
