@@ -16,9 +16,10 @@
 //! marks `released` the rows of executors that are closed or gone.
 //!
 //! The limits: the Workspace's (`executors.slots`, 3 unless saved), and
-//! optionally a Project's (`executors.slots.project:<id>`) and a machine's
-//! (`executors.slots.machine:<id>`); an unset one adds no limit of its own.
-//! They count executors only, apart from the Jobs' machine slots.
+//! optionally a Project's (`executors.slots.project:<id>`), a machine's
+//! (`executors.slots.machine:<id>`) and a template's own (its
+//! `maxConcurrent`, executor_templates.rs); an unset one adds no limit of its
+//! own. They count executors only, apart from the Jobs' machine slots.
 //!
 //! A fresh executor's start the runtime refused closes it (kept, to see what
 //! happened) and frees its slot. One whose outcome is unknown (its runtime
@@ -128,6 +129,7 @@ struct Waiting {
     agent: String,
     project: Option<String>,
     machine: String,
+    template: String,
 }
 
 /// The waiting executors in queue order (jobs/queue.rs `order`, the Jobs
@@ -137,16 +139,17 @@ struct Waiting {
 fn queue_order(db: &Connection) -> Result<Vec<(Waiting, String)>> {
     let now = chrono::Utc::now();
     let mut q = db.prepare(
-        "SELECT agent_id, seq, project_id, machine_id, queued_at FROM executor_slots WHERE state='waiting' ORDER BY seq",
+        "SELECT agent_id, seq, project_id, machine_id, queued_at, template_id FROM executor_slots WHERE state='waiting' ORDER BY seq",
     )?;
     let rows = q
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let queued: Vec<Queued> = rows
         .iter()
-        .map(|(agent, seq, project, _, queued_at)| Queued {
+        .map(|(agent, seq, project, _, queued_at, _)| Queued {
             id: agent.clone(),
             seq: *seq,
             // Executors without a Project take their turn as one, in the
@@ -165,8 +168,9 @@ fn queue_order(db: &Connection) -> Result<Vec<(Waiting, String)>> {
     Ok(order
         .into_iter()
         .map(|i| {
-            let (agent, _, project, machine, _) = &rows[i];
-            (Waiting { agent: agent.clone(), project: project.clone(), machine: machine.clone() }, queued[i].project.clone())
+            let (agent, _, project, machine, _, template) = &rows[i];
+            (Waiting { agent: agent.clone(), project: project.clone(), machine: machine.clone(), template: template.clone() },
+                queued[i].project.clone())
         })
         .collect())
 }
@@ -211,22 +215,53 @@ fn pending(db: &Connection) -> Result<bool> {
     )?)
 }
 
-/// What holds a slot now (starting or running): in all, by Project and by machine.
+/// A template, for its own limit (T-35 S4): a Project's own template is not
+/// the Workspace's of the same id. Its source, its Project when its own, its id.
+type TemplateKey = (&'static str, Option<String>, String);
+
+/// The templates a pass has looked up, by their row's Project and template id.
+type Templates = HashMap<(Option<String>, String), Option<(TemplateKey, Option<i64>)>>;
+
+/// The template an executor's row names, as a dispatch of its task's Project
+/// finds it now (the Project's own, else the Workspace's), with its limit
+/// (`maxConcurrent`); none once no such template exists, which limits nothing.
+fn template_of(db: &Connection, cache: &mut Templates, project: Option<&str>, id: &str) -> Result<Option<(TemplateKey, Option<i64>)>> {
+    let entry = (project.map(str::to_owned), id.to_owned());
+    if let Some(found) = cache.get(&entry) {
+        return Ok(found.clone());
+    }
+    let found = crate::executor_templates::template_in(db, project, id)?.map(|(template, source)| {
+        let own = if source == "project" { project.map(str::to_owned) } else { None };
+        ((source, own, id.to_owned()), template.max_concurrent.map(i64::from))
+    });
+    cache.insert(entry, found.clone());
+    Ok(found)
+}
+
+/// What holds a slot now (starting or running): in all, by Project, by
+/// machine and by template.
 #[derive(Default)]
 struct Holding {
     total: i64,
     projects: HashMap<String, i64>,
     machines: HashMap<String, i64>,
+    templates: HashMap<TemplateKey, i64>,
 }
 
-fn holding(db: &Connection) -> Result<Holding> {
+fn holding(db: &Connection, cache: &mut Templates) -> Result<Holding> {
     let mut q = db.prepare(
-        "SELECT project_id, machine_id, COUNT(*) FROM executor_slots WHERE state IN ('starting','running') GROUP BY project_id, machine_id",
+        "SELECT project_id, machine_id, template_id, COUNT(*) FROM executor_slots WHERE state IN ('starting','running')
+         GROUP BY project_id, machine_id, template_id",
     )?;
+    let rows = q
+        .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut held = Holding::default();
-    for row in q.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))? {
-        let (project, machine, n) = row?;
+    for (project, machine, template, n) in rows {
         held.total += n;
+        if let Some((key, _)) = template_of(db, cache, project.as_deref(), &template)? {
+            *held.templates.entry(key).or_insert(0) += n;
+        }
         if let Some(project) = project {
             *held.projects.entry(project).or_insert(0) += n;
         }
@@ -235,10 +270,11 @@ fn holding(db: &Connection) -> Result<Holding> {
     Ok(held)
 }
 
-/// An executor's slot row as the task card shows it, and its place in the
-/// queue (1 first) while it waits.
 /// A slot row as a task shows it: its executor, state, machine and reason.
 type SlotRow = (String, String, String, Option<String>);
+
+/// An executor's slot row as the task card shows it, and its place in the
+/// queue (1 first) while it waits.
 
 fn view_row(db: &Connection, task: &str, positions: &HashMap<String, usize>) -> Result<Option<Value>> {
     let row: Option<SlotRow> = db
@@ -332,8 +368,8 @@ type OlderExecutor = (String, Option<String>, Option<String>, Option<String>, St
 impl Store {
     /// The scheduler's one transaction: frees the slots of closed executors,
     /// marks connected ones running, then takes the first waiting executor in
-    /// queue order whose Project and machine have room, when the Workspace
-    /// has, and sets it starting. Returns it, for its runtime to start.
+    /// queue order whose Project, machine and template have room, when the
+    /// Workspace has, and sets it starting. Returns it, for its runtime to start.
     pub(crate) fn executor_slot_next(&self) -> Result<Option<String>> {
         if !pending(&*self.db.read()?)? {
             return Ok(None);
@@ -342,7 +378,8 @@ impl Store {
         let tx = writer.transaction()?;
         release_closed(&tx)?;
         settle_connected(&tx)?;
-        let Holding { total, projects, machines } = holding(&tx)?;
+        let mut templates = Templates::new();
+        let Holding { total, projects, machines, templates: by_template } = holding(&tx, &mut templates)?;
         let mut chosen = None;
         if total < workspace_slots(&tx)? {
             for (waiting, key) in queue_order(&tx)? {
@@ -352,8 +389,11 @@ impl Store {
                     None => None,
                 };
                 let machine_cap = limit_at(&tx, &machine_key(&waiting.machine))?.slots;
+                let template = template_of(&tx, &mut templates, waiting.project.as_deref(), &waiting.template)?;
+                let template_room = template.as_ref().is_none_or(|(key, cap)| room(by_template.get(key), *cap));
                 if room(waiting.project.as_ref().and_then(|p| projects.get(p)), project_cap)
                     && room(machines.get(&waiting.machine), machine_cap)
+                    && template_room
                 {
                     chosen = Some((waiting, key));
                     break;
