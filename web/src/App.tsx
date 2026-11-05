@@ -209,6 +209,7 @@ import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
 import { useArrivalsIn, useDelayedPresence, useSurfaceIn } from "./surface";
+import { ConversationStrips } from "./ConversationStrips";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -3523,36 +3524,6 @@ export function App() {
                 onReconnected={refresh}
               />
             )}
-            {/* Over this browser's own place too, not over a link or a source being read. */}
-            {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
-              <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
-                <span>
-                  {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
-                </span>
-                <button className="secondary-button" onClick={continueReading}>{shell.continue}</button>
-                <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
-              </div>
-            )}
-            {catchupSource?.agentId === selected && (
-              <div className="source-navigation" lang={langTag(language)}>
-                <button
-                  className="quiet-button"
-                  onClick={() =>
-                    sourceOrigin === "home"
-                      ? goHome()
-                      : backToLatest()
-                  }
-                >
-                  <ArrowLeft size={13} />
-                  {sourceOrigin === "home" ? shell.backHome : shell.backLatest}
-                </button>
-                <span role="status">
-                  {sourceNotice?.(shell) || (catchupSource.progress !== undefined ? (catchupSource.where ? shell.readingIn(catchupSource.where) : catchupSource.title)
-                    : catchupSource.restore !== undefined ? shell.leftOff
-                    : catchupSource.link ? shell.linked : shell.original)}
-                </span>
-              </div>
-            )}
             <div
               ref={conversationBody}
               className="conversation-body"
@@ -3562,6 +3533,39 @@ export function App() {
                 if (event.animationName === "phone-dock-in" || event.animationName === "phone-dock-out") dockMotion.end();
               }}
             >
+              {/* Over the conversation's top, not above it: one that appears moves no text (T-19 SH:C08, CV:CW-11). */}
+              <ConversationStrips>
+                {/* Over this browser's own place too, not over a link or a source being read. */}
+                {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
+                  <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
+                    <span>
+                      {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
+                    </span>
+                    <button className="secondary-button" onClick={continueReading}>{shell.continue}</button>
+                    <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
+                  </div>
+                )}
+                {catchupSource?.agentId === selected && (
+                  <div className="source-navigation" lang={langTag(language)}>
+                    <button
+                      className="quiet-button"
+                      onClick={() =>
+                        sourceOrigin === "home"
+                          ? goHome()
+                          : backToLatest()
+                      }
+                    >
+                      <ArrowLeft size={13} />
+                      {sourceOrigin === "home" ? shell.backHome : shell.backLatest}
+                    </button>
+                    <span role="status">
+                      {sourceNotice?.(shell) || (catchupSource.progress !== undefined ? (catchupSource.where ? shell.readingIn(catchupSource.where) : catchupSource.title)
+                        : catchupSource.restore !== undefined ? shell.leftOff
+                        : catchupSource.link ? shell.linked : shell.original)}
+                    </span>
+                  </div>
+                )}
+              </ConversationStrips>
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
