@@ -178,7 +178,8 @@ dispatchId). The mail says where to read them; it doesn't hold them.
   knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
   tabs, but no other control characters; a save with one is refused at its
   line and column. You keep it in the Project's settings,
-  under **Handover**. Each save is a new version, kept with who wrote it and
+  under **Handover**, and a lead can propose a version for you to approve
+  (below). Each save is a new version, kept with who wrote it and
   why, and a save against a document that changed meanwhile is refused. The
   settings page lists the versions and shows any past one. A Project's
   document goes with it when the Project is deleted. An archived Project's
@@ -194,6 +195,34 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 
 A dispatch to an existing Agent gets neither; that Agent already has its own
 context.
+
+### A lead proposes, you decide
+
+A lead of the Project can propose a new handover document; nothing changes
+until you approve it on Home.
+
+- **Reading and proposing.** Agents of the Project read the document with
+  `handover_get`. A lead proposes a whole new document with
+  `handover_propose`, against the version it read. The same rules apply as
+  for a save: 32 KiB of text, and a proposal on an older version is refused
+  with the current one named. An executor never proposes, and no Agent tool
+  approves.
+- **One at a time.** A Project has at most one proposal waiting. A lead's new
+  proposal replaces its own waiting one, which is kept as superseded; another
+  lead's is refused until you decide, naming whose waits and since when.
+- **Waiting on you.** A waiting proposal shows in Home's **Needs you**, named
+  by its lead. That lead counts as waiting on you in the attention order,
+  Ctrl/⌘+J goes to the proposal, and it is in the title's count, the system
+  notification and push. On Home its card shows the reason and the changed
+  lines.
+- **Your decision.** Approve, and it becomes a normal version, written by the
+  lead and approved by you, with the lead's reason; the history shows both.
+  Reject, and nothing changes. Either way, one mail tells the lead, with your
+  note (up to 1,000 bytes). Both are checked against the document you read
+  and the proposal: a proposal made on a version you have since replaced
+  can't be approved, and its rejection tells the lead to propose again on
+  the current version. A decided or replaced proposal leaves Needs you at
+  once.
 
 A dispatch's materials are at most 128 KiB, counting only what the dispatcher
 can shorten: the task's own materials and the dispatch's. The template, the
