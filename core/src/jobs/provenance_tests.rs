@@ -317,6 +317,27 @@ fn an_attempt_that_started_ahead_of_a_blocked_head_says_which_and_why_it_fitted(
     assert!(!report.contains("Started ahead of"), "{report}");
 }
 
+#[test]
+fn an_attempt_whose_memory_limit_was_lowered_says_from_what_to_what_by_whom_and_when() {
+    // T-38 B: field by field; the host's evidence stays on the job.
+    let extent = || Ok(json!({"segments":1,"oldestOffset":0,"totalBytes":10,"truncated":false}));
+    let mut job = local_job();
+    job["limitChanges"] = json!([
+        {"by":{"kind":"user","id":"user","name":"You"},"at":"2026-11-05T08:30:00Z","fromMiB":4096,"toMiB":2048,"evidence":{"controlGroup":"SECRET-GROUP"}},
+        {"by":{"kind":"agent","id":"a","name":"Mori"},"at":"2026-11-05T08:40:00Z","fromMiB":2048,"toMiB":1024,"evidence":{"controlGroup":"SECRET-GROUP"}}]);
+    let (m, report) = export(&[job], vec![extent()]);
+    assert_eq!(m["attempts"][0]["limitChanges"], json!([
+        {"at":"2026-11-05T08:30:00Z","fromMiB":4096,"toMiB":2048,"by":"the user"},
+        {"at":"2026-11-05T08:40:00Z","fromMiB":2048,"toMiB":1024,"by":"Mori"}]));
+    assert!(report.contains("- Memory limit lowered from 4096 MiB to 2048 MiB by the user at 2026-11-05T08:30:00Z\n"), "{report}");
+    assert!(report.contains("- Memory limit lowered from 2048 MiB to 1024 MiB by Mori at 2026-11-05T08:40:00Z\n"), "{report}");
+    assert_absent(&m, &report, &["SECRET-GROUP"]);
+    // Never lowered: an empty list, and nothing said.
+    let (m, report) = export(&[local_job()], vec![extent()]);
+    assert_eq!(m["attempts"][0]["limitChanges"], json!([]));
+    assert!(!report.contains("Memory limit lowered"), "{report}");
+}
+
 /// T-50: with guardPaths the export says which paths were frozen and their
 /// objects, HEAD at submission and at the start, and whether the start found
 /// them unchanged; without that start check it says only declared.

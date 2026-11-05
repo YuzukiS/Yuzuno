@@ -1089,12 +1089,12 @@ def settled(spec, folder, outcome):
 PAUSE_WAIT = 10
 
 def controlled(operation):
-    """Serialize pause, resume and cancel of one attempt. The lock is held
-    only while the operation runs, so one process can run several in turn."""
-    def run(spec, folder):
+    """Serialize pause, resume, limit and cancel of one attempt. The lock is
+    held only while the operation runs, so one process can run several in turn."""
+    def run(spec, folder, *args):
         with (folder / 'control.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            return operation(spec, folder)
+            return operation(spec, folder, *args)
     run.__name__ = operation.__name__
     return run
 
@@ -1188,6 +1188,63 @@ def resume(spec, folder):
     if asked.returncode:
         return {'state': 'notResumed', 'reason': 'systemd did not thaw the job: ' + (asked.stderr.strip()[:300] or 'unknown error'), 'evidence': evidence}
     return {'state': 'resuming', 'reason': f'Thaw requested, but the job was still frozen after {PAUSE_WAIT} s', 'evidence': evidence}
+
+# Lowering a running attempt's memory limit (T-38): only this attempt's own
+# worker invocation, only down, and never to within LIMIT_HEADROOM of what
+# its cgroup uses now. Swap stays as reserved. systemd applies the new
+# MemoryMax to the cgroup at once (--runtime: until the unit ends); the
+# cgroup's own memory.max, read back, is the evidence.
+LIMIT_HEADROOM = 256 * 1024 * 1024
+MIB = 1024 * 1024
+
+def cgroup_bytes(proof, name):
+    """A cgroup v2 byte counter or limit of the worker, or None ('max' too)."""
+    try:
+        text = (Path('/sys/fs/cgroup') / proof['controlGroup'].lstrip('/') / name).read_text().strip()
+        return None if text == 'max' else int(text)
+    except (OSError, ValueError, KeyError, AttributeError):
+        return None
+
+@controlled
+def limit(spec, folder, request):
+    try:
+        mib = int(request['memoryMiB'])
+    except (KeyError, TypeError, ValueError):
+        return {'state': 'notLimited', 'reason': 'No new memory limit was given; nothing was changed'}
+    finished = read(folder / 'result.json')
+    if finished and finished['status'] != 'unknown':
+        return {'state': 'notLimited', 'reason': 'The job has already finished; nothing was changed'}
+    if read(folder / 'cancel.json'):
+        return {'state': 'notLimited', 'reason': 'Cancellation was requested; nothing was changed'}
+    state, proof = live_worker(spec, folder)
+    if state is None:
+        return {'state': 'notLimited', 'reason': proof}
+    if state.get('ActiveState') != 'active':
+        return {'state': 'notLimited', 'reason': f"The job is not running ({state.get('ActiveState')}/{state.get('SubState')}); nothing was changed"}
+    current, before = cgroup_bytes(proof, 'memory.current'), cgroup_bytes(proof, 'memory.max')
+    evidence = {'invocationId': proof['invocationId'], 'controlGroup': proof['controlGroup'],
+                'memoryCurrent': current, 'memoryMaxBefore': before, 'at': time.time()}
+    if current is None or before is None:
+        return {'state': 'notLimited', 'reason': "The worker cgroup's memory could not be read; nothing was changed", 'evidence': evidence}
+    target = mib * MIB
+    if target >= before:
+        return {'state': 'notLimited', 'reason': f'{mib} MiB is not below the current limit of {before // MIB} MiB; a limit is only lowered', 'evidence': evidence}
+    if target < current + LIMIT_HEADROOM:
+        least = -(-(current + LIMIT_HEADROOM) // MIB)
+        return {'state': 'notLimited', 'reason': f'{mib} MiB is below what the job uses now plus 256 MiB ({least} MiB); nothing was changed', 'evidence': evidence}
+    asked = command(['systemctl', '--user', 'set-property', '--runtime', spec['unit'], f'MemoryMax={mib}M'], timeout=15, check=False)
+    after = cgroup_bytes(proof, 'memory.max')
+    still, _ = live_worker(spec, folder)
+    evidence = {**evidence, 'memoryMaxAfter': after, 'setPropertyReturnCode': asked.returncode,
+                'setPropertyError': asked.stderr.strip()[:500]}
+    if after == target:
+        atomic(folder / 'limited.json', {'attempt': spec['attempt'], **evidence})
+        return {'state': 'limited', 'reason': f'Memory limit lowered to {mib} MiB from {before // MIB} MiB; the worker cgroup reads it back', 'evidence': evidence}
+    if still is None:
+        return {'state': 'unknown', 'reason': 'The worker changed or exited while its limit was being lowered', 'evidence': evidence}
+    if asked.returncode:
+        return {'state': 'notLimited', 'reason': 'systemd did not lower the limit: ' + (asked.stderr.strip()[:300] or 'unknown error'), 'evidence': evidence}
+    return {'state': 'unknown', 'reason': f'systemd accepted the change, but the worker cgroup reads {after} bytes', 'evidence': evidence}
 
 def thaw_for_stop(spec, folder, proof, state):
     """systemd refuses to stop a frozen unit. Thaw this attempt's own worker
@@ -1402,6 +1459,8 @@ def main():
         print(json.dumps(pause(spec, folder)))
     elif mode == 'resume':
         print(json.dumps(resume(spec, folder)))
+    elif mode == 'limit':
+        print(json.dumps(limit(spec, folder, json.load(sys.stdin))))
     elif mode == 'checkpoint':
         print(json.dumps(checkpoint_stop(spec, folder)))
     elif mode == 'inspect':

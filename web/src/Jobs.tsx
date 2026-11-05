@@ -127,6 +127,10 @@ type Job = {
   /** How admission started it: ahead of the blocked queue head, within what
    * that head's need left (T-38). */
   admission?: { passed?: PassedHead | null } | null;
+  /** Its memory limit lowered while it ran, newest last (T-38 B). */
+  limitChanges?: { by: { kind: string; name: string }; at: string; fromMiB: number; toMiB: number }[] | null;
+  /** The last lowering that did not take, and why. */
+  limitRefusal?: { at: string; toMiB: number; state: string; reason: string } | null;
 };
 /** The queue head a job started ahead of, as Core recorded it then. */
 type PassedHead = { jobId: string; name: string; waits: string; need: Resources; room: Resources; headNeed: Resources };
@@ -200,6 +204,21 @@ function passedAhead(passed: PassedHead, t: JobsText) {
 }
 // English, for what stays English outside the panel (the conversation's dock).
 const en = jobsText("en");
+/** A systemd byte count as MiB, or null when it is not a measurement. */
+const mibOf = (raw: string | undefined) => {
+  const bytes = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes / 1048576 : null;
+};
+/** The new limit a lowering starts from (T-38 B): twice the peak, at least
+ * what the job uses now plus 256 MiB, below its request; none when the
+ * reading is not there or nothing below the request would do. */
+export function suggestedLimit(job: Job): number | null {
+  const peak = mibOf(job.usage?.MemoryPeak);
+  const now = mibOf(job.usage?.MemoryCurrent);
+  if (peak == null || now == null) return null;
+  const value = Math.ceil(Math.max(peak * 2, now + 256));
+  return value < job.resources.memoryMiB ? value : null;
+}
 const ramReading = (raw: string | undefined, t: JobsText) => {
   const bytes = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
   // systemd uses UINT64_MAX for an unavailable measurement.
@@ -791,6 +810,21 @@ export function Jobs({
       setBusy(false);
     }
   }
+  /** Lower the running job's memory limit (T-38 B). */
+  async function lowerMemory(job: Job, memoryMiB: number) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/jobs/${job.id}/memory`, { memoryMiB });
+      await load();
+      window.dispatchEvent(new CustomEvent("yuzuno:jobs-refresh"));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function pause(job: Job, resume: boolean) {
     if (busy) return;
     setBusy(true);
@@ -1138,6 +1172,7 @@ export function Jobs({
                             the selection's effects have run. */}
                         {detail && detail.id === selected ? (
                           <JobDetail
+                            key={detail.id}
                             job={detail}
                             log={log}
                             now={now}
@@ -1145,6 +1180,7 @@ export function Jobs({
                             revision={revision}
                             onCancel={() => void cancel(detail)}
                             onPause={(resume) => void pause(detail, resume)}
+                            onLowerMemory={(memoryMiB) => void lowerMemory(detail, memoryMiB)}
                             onCheckpoint={(resume) => void checkpoint(detail, resume)}
                             onRerun={() => rerun(detail)}
                             onOpen={setSelected}
@@ -1300,6 +1336,7 @@ function JobDetail({
   revision,
   onCancel,
   onPause,
+  onLowerMemory,
   onCheckpoint,
   onRerun,
   onOpen,
@@ -1312,6 +1349,8 @@ function JobDetail({
   onCancel: () => void;
   /** Pause, or with true resume, the running job. */
   onPause: (resume: boolean) => void;
+  /** Lower the running job's memory limit to this many MiB. */
+  onLowerMemory: (memoryMiB: number) => void;
   /** Stop the running job at a checkpoint, or with true resume from it. */
   onCheckpoint: (resume: boolean) => void;
   onRerun: () => void;
@@ -1326,6 +1365,11 @@ function JobDetail({
   const refused = resume ? null : pauseRefusal(job, t);
   const stop = job.checkpointStop;
   const stopping = stoppingAtCheckpoint(job);
+  // Lowering the memory limit: this host's own running jobs only.
+  const lowerable = job.status === "running" && !stopping && (!job.executor || job.executor.kind === "local");
+  const [lowering, setLowering] = useState(false);
+  const [limitDraft, setLimitDraft] = useState("");
+  const lowered = job.limitChanges?.length ? job.limitChanges[job.limitChanges.length - 1] : null;
   return (
     <>
       <JobDetailHeading
@@ -1352,6 +1396,21 @@ function JobDetail({
           >
             {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
             {resume ? t.resume : t.pauseButton}
+          </button>
+        )}
+        {lowerable && (
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            aria-expanded={lowering}
+            onClick={() => {
+              setLimitDraft(String(suggestedLimit(job) ?? ""));
+              setLowering(!lowering);
+            }}
+            title={t.lowerMemoryTitle}
+          >
+            {t.lowerMemory}
           </button>
         )}
         {job.status === "running" && job.checkpoint && (stop?.state === "failed" || !stopping) && (
@@ -1442,6 +1501,39 @@ function JobDetail({
             {t.mailProblem} {mail.problem}
           </p>
         ))}
+      {lowerable && lowering && (
+        <form
+          className="job-lower-memory"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = Number(limitDraft);
+            if (!Number.isInteger(value) || value < 1 || value >= job.resources.memoryMiB) return;
+            setLowering(false);
+            onLowerMemory(value);
+          }}
+        >
+          <label>
+            {t.newMemoryLimit}
+            <input
+              type="number"
+              min={1}
+              max={job.resources.memoryMiB - 1}
+              step={1}
+              required
+              value={limitDraft}
+              onChange={(event) => setLimitDraft(event.target.value)}
+            />
+          </label>
+          <small>{t.lowerMemoryBounds(memory(job.resources.memoryMiB))}</small>
+          <div className="job-lower-memory-actions">
+            <button type="submit" className="primary-button" disabled={busy}>{t.lowerLimit}</button>
+            <button type="button" className="quiet-button" onClick={() => setLowering(false)}>{t.cancelLowering}</button>
+          </div>
+        </form>
+      )}
+      {job.limitRefusal && (!lowered || job.limitRefusal.at > lowered.at) && (
+        <p className="job-limit-note" role="status">{t.notLowered(job.limitRefusal.reason)}</p>
+      )}
       <JobCard title={t.summary}>
         <dl>
           <dt>{t.sourceLabel}</dt>
@@ -1463,6 +1555,14 @@ function JobDetail({
           )}
           <dt>{t.resources}</dt>
           <dd>{t.resourceLine(job.resources.cpuMillis / 1000, memory(job.resources.memoryMiB), memory(job.resources.swapMiB))}</dd>
+          {lowered && (
+            <>
+              <dt>{t.memoryLimit}</dt>
+              <dd className="job-limit-changes">
+                {t.loweredLine(memory(lowered.fromMiB), memory(lowered.toMiB), lowered.by.name, new Date(lowered.at).toLocaleString())}
+              </dd>
+            </>
+          )}
           {job.gpu && (
             <>
               <dt>GPU</dt>

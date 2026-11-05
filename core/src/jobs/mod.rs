@@ -5,6 +5,8 @@ mod gpu;
 mod backfill_tests;
 #[cfg(test)]
 mod gpu_tests;
+#[cfg(test)]
+mod limit_tests;
 mod checkpoint;
 mod host;
 mod ids;
@@ -13,6 +15,7 @@ mod ids_tests;
 mod list;
 #[cfg(test)]
 mod list_tests;
+mod limit;
 mod pause;
 mod provenance;
 #[cfg(test)]
@@ -479,6 +482,12 @@ struct Reference {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LowerMemory {
+    job_id: String,
+    memory_mi_b: u64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Log {
     job_id: String,
     offset: Option<u64>,
@@ -537,6 +546,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/{id}/cancel", post(cancel))
         .route("/api/jobs/{id}/pause", post(pause_job))
         .route("/api/jobs/{id}/resume", post(resume_job))
+        .route("/api/jobs/{id}/memory", post(lower_memory))
         .route("/api/jobs/{id}/checkpoint", post(checkpoint_stop))
         .route("/api/jobs/{id}/resume-checkpoint", post(checkpoint_resume))
         .route("/api/jobs/gpus/{uuid}/pause", post(pause_gpu))
@@ -612,6 +622,16 @@ async fn resume_job(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(
         call(ws, None, "job_resume".into(), json!({"jobId":id})).await?,
+    ))
+}
+/// The user lowers a running Job's memory limit (T-38 B).
+async fn lower_memory(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Path(id): Path<String>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        call(ws, None, "job_lower_memory".into(), json!({"jobId":id,"memoryMiB":input["memoryMiB"]})).await?,
     ))
 }
 async fn checkpoint_stop(
@@ -1035,6 +1055,10 @@ pub async fn call(
             ws.jobs.wake.notify_one();
             ws.jobs.remote_wake.notify_one();
             Ok(job)
+        }
+        "job_lower_memory" => {
+            let q: LowerMemory = serde_json::from_value(input)?;
+            limit::lower(&ws, actor, q.job_id, q.memory_mi_b).await
         }
         "job_pause" | "job_resume" => {
             let q: Reference = serde_json::from_value(input)?;
@@ -1575,6 +1599,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
         make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
+        make("job_lower_memory", "Lower your running local job's memory limit (MiB) so the budget it frees can start queued work at once. Only down, never below what the job uses now plus 256 MiB, and it is never raised again; swap stays as reserved. systemd applies it to the running job, its reservation is lowered with it, and the change is recorded on the job and its task. A job that then needs more than the new limit is killed for memory, and its reason names this change. Not on SSH machines or Windows.", json!({"jobId":job_ref,"memoryMiB":{"type":"integer","minimum":1}}), vec!["jobId","memoryMiB"]),
         make("job_gpu_admission", "Open or close one local GPU (by UUID, from job_budget) to new managed jobs. Closing only stops new admission there; jobs already running or paused on it keep their reservation. Queued jobs that need it wait with this reason. A device the user closed stays closed until the user opens it.", json!({"uuid":string,"open":{"type":"boolean"},"reason":string}), vec!["uuid","open"]),
     ]
 }

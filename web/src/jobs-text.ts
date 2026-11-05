@@ -124,6 +124,16 @@ export const jobsText = strings({
   startedAhead: (head: string, kind: "cpu" | "ram" | "swap", need: string, room: string, headNeed: string) =>
     `Started ahead of ${head}, which waited for the shared ${kind === "cpu" ? "CPU quota" : kind === "swap" ? "swap reservation" : "RAM reservation"}: this job's ${need} fitted in the ${room} left beside ${head}'s ${headNeed}`,
   aheadAmount: (kind: "cpu" | "ram" | "swap", amount: string) => `${amount} ${kind === "cpu" ? "CPU" : kind === "swap" ? "swap" : "RAM"}`,
+  lowerMemory: "Lower memory limit…",
+  lowerMemoryTitle: "Lower this running job's memory limit, so what it frees can start queued work now. It can't be raised again.",
+  newMemoryLimit: "New memory limit (MiB)",
+  lowerMemoryBounds: (request: string) =>
+    `Below its ${request}, and at least what it uses now plus 256 MiB. Swap stays as reserved. A limit is never raised again; if the job then needs more, it is stopped for memory.`,
+  lowerLimit: "Lower limit",
+  cancelLowering: "Cancel",
+  notLowered: (reason: string) => `Not lowered: ${reason}`,
+  memoryLimit: "Memory limit",
+  loweredLine: (from: string, to: string, by: string, at: string) => `Lowered from ${from} to ${to} by ${by}, ${at}`,
   notReserved: "; not reserved",
   onDevices: (devices: string) => ` on ${devices}`,
   currentRam: "Current RAM",
@@ -282,6 +292,16 @@ export const jobsText = strings({
   startedAhead: (head, kind, need, room, headNeed) =>
     `排在 ${head} 前面启动（${head} 在等共享${kind === "cpu" ? " CPU 配额" : kind === "swap" ? "交换空间预留" : "内存预留"}）：本 Job 的 ${need} 落在 ${head} 所需 ${headNeed} 之外剩下的 ${room} 之内`,
   aheadAmount: (kind, amount) => `${amount} ${kind === "cpu" ? "CPU" : kind === "swap" ? "交换空间" : "内存"}`,
+  lowerMemory: "降低内存上限…",
+  lowerMemoryTitle: "降低这个运行中 Job 的内存上限，让它释放的预算现在就能启动排队的工作。降低后不能再调高。",
+  newMemoryLimit: "新的内存上限（MiB）",
+  lowerMemoryBounds: (request) =>
+    `低于它的 ${request}，且不少于它现在的用量加 256 MiB。交换空间保持原预留。上限不会再调高；之后若需要更多内存，它会因内存不足被停止。`,
+  lowerLimit: "降低上限",
+  cancelLowering: "取消",
+  notLowered: (reason) => `未降低：${reason}`,
+  memoryLimit: "内存上限",
+  loweredLine: (from, to, by, at) => `${at} 由 ${by} 从 ${from} 降到 ${to}`,
   notReserved: "；未预留",
   onDevices: (devices) => `，位于 ${devices}`,
   currentRam: "当前内存",

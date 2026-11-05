@@ -380,6 +380,17 @@ pub(super) async fn control(data: &Path, job: &Value, mode: &str) -> Result<Valu
     invoke(&script, mode, Some(&spec), None).await
 }
 
+/// Lower this attempt's own worker's memory limit (host.py `limit`, T-38).
+pub(super) async fn limit(data: &Path, job: &Value, memory_mib: u64) -> Result<Value> {
+    let script = helper(data).await?;
+    let spec = folder(data, job)?.join("spec.json");
+    ensure!(
+        tokio::fs::try_exists(&spec).await?,
+        "The attempt has no launch record; nothing was changed"
+    );
+    invoke(&script, "limit", Some(&spec), Some(serde_json::json!({"memoryMiB": memory_mib}))).await
+}
+
 /// Whether this attempt's wrapper recorded that its command has exited
 /// (host.py `CHECKPOINT_EXIT`). Unreadable means not known to have exited.
 pub(super) async fn command_exited(data: &Path, job: &Value) -> bool {

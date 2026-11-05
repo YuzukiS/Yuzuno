@@ -183,6 +183,46 @@ test('a job started ahead of a blocked queue head says which and why it fitted; 
   } finally {p.close();}
 });
 
+test('a running job\'s memory limit is lowered from its card: twice the peak at least, sent as asked, then said; a refusal says why; not on another machine (T-38 B)', async () => {
+  const mib = n => String(n * 1048576);
+  const base = {...job,status:'running',reserved:true,reason:'Running with verified cgroup limits',resources:{cpuMillis:500,memoryMiB:4096,swapMiB:0},
+    reservation:{cpuMillis:600,memoryMiB:4160,swapMiB:0},usage:{MemoryCurrent:mib(150),MemoryPeak:mib(200)}};
+  let current = base;
+  const p = mount((url, body) => {
+    if (url === '/api/jobs/job-one/memory') {
+      current = {...base,resources:{...base.resources,memoryMiB:body.memoryMiB},reservation:{...base.reservation,memoryMiB:body.memoryMiB + 64},
+        limitChanges:[{by:{kind:'user',name:'You'},at:'2026-11-05T08:30:00Z',fromMiB:4096,toMiB:body.memoryMiB}]};
+      return current;
+    }
+    return url === '/api/jobs/job-one' ? current : page([current]);
+  });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click(); await until(() => p.doc.querySelector('.job-log'));
+    assert.ok(button(p, 'Lower memory limit…'), 'a running job on this host can be lowered');
+    button(p, 'Lower memory limit…').click(); await wait();
+    // Twice the 200 MiB peak is less than what it uses now plus 256 MiB.
+    assert.equal(field(p, 'New memory limit').value, '406');
+    assert.match(p.doc.querySelector('.job-lower-memory small').textContent, /Swap stays as reserved/);
+    await fill(p, 'New memory limit', '1024');
+    button(p, 'Lower limit').click();
+    await until(() => p.doc.querySelector('.job-limit-changes'));
+    assert.deepEqual(p.calls.filter(c => c.url === '/api/jobs/job-one/memory').map(c => c.body), [{ memoryMiB: 1024 }]);
+    assert.match(p.doc.querySelector('.job-limit-changes').textContent, /^Lowered from 4\.0 GiB to 1\.0 GiB by You, /);
+    assert.equal(p.doc.querySelector('.job-lower-memory'), null, 'the form closes');
+    // A refusal says why, and the request stays.
+    current = {...base,limitRefusal:{at:'2026-11-05T08:31:00Z',toMiB:300,state:'notLimited',reason:'300 MiB is below what the job uses now plus 256 MiB (406 MiB); nothing was changed'}};
+    p.doc.querySelector('[aria-label="Refresh jobs"]').click();
+    await until(() => p.doc.querySelector('.job-limit-note'));
+    assert.equal(p.doc.querySelector('.job-limit-note').textContent, 'Not lowered: 300 MiB is below what the job uses now plus 256 MiB (406 MiB); nothing was changed');
+    // On another machine there is nothing to lower with.
+    current = {...base,executor:{kind:'ssh',machineName:'owl'}};
+    p.doc.querySelector('[aria-label="Refresh jobs"]').click();
+    await until(() => !button(p, 'Lower memory limit…'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('legacy unconfirmed ordinary submission retries with the same payload and request ID', async () => {
   const draft={agentId:'a',taskId:'T-47',name:'legacy',cwd:'/workspace',command:'true',cpu:'1',memory:'512',swap:'0',timeout:'30',env:'{}',inputs:'',outputs:'',guardGit:true};
   const body={agentId:'a',taskId:'T-47',name:'legacy',cwd:'/workspace',argv:['/bin/sh','-c','true'],env:{},inputs:[],outputs:[],guardGit:true,resources:{cpuMillis:1000,memoryMiB:512,swapMiB:0},timeoutSeconds:30};
