@@ -709,7 +709,9 @@ pub async fn plan(store: &Path, worktree: &Path, env: &[(String, String)], targe
         if matches!(expected, State::File { .. }) {
             unconverted(store, worktree, env, &target.rel).await?;
         }
-        let (current, bytes) = current(Path::new(&target.file), folder, root, bounds)?;
+        // Read on the blocking pool: up to `bounds.file` bytes each, for up to `bounds.paths` files (R5 of #534).
+        let (file, at) = (PathBuf::from(&target.file), folder.to_path_buf());
+        let (current, bytes) = tokio::task::spawn_blocking(move || current(&file, &at, root, bounds)).await??;
         total += expected.bytes() + current.bytes();
         ensure!(total <= bounds.total, "The revert's files hold more than {} bytes for Core to check", bounds.total);
         entries.push(Entry { target: target.clone(), expected, current });
