@@ -738,22 +738,23 @@ test("editing a previewed ID keeps the preview, its name and permission, marked 
   try {
     await open(page);
     await read(page);
-    // The preview and its fields, apart from the form's actions row.
-    const form = () => page.document.querySelector(".session-preview")?.closest(".session-preview-body");
-    const nameField = () => [...(form()?.querySelectorAll("label") ?? [])].find((l) => l.textContent.startsWith("Agent name"))?.querySelector("input");
+    // The stale mark and `inert` are read wherever they sit above the preview: since R2 70ad905d, on a wrapper
+    // of the preview and its fields, not on the whole form.
+    const section = () => page.document.querySelector(".session-preview");
+    const nameField = () => [...(section()?.closest("form")?.querySelectorAll("label") ?? [])].find((l) => l.textContent.startsWith("Agent name"))?.querySelector("input");
     await value(page, nameField(), "Kept name");
     await value(page, page.document.querySelector("#import-session-id"), other);
-    assert.equal(!!form(), true, "the preview stays");
-    assert.equal(form().hasAttribute("data-stale"), true, "marked stale");
+    assert.equal(!!section(), true, "the preview stays");
+    assert.equal(!!section().closest("[data-stale]"), true, "marked stale");
     // jsdom has no `inert` property: the attribute React sets is what is read.
-    assert.equal(form().hasAttribute("inert"), true, "out of reach");
+    assert.equal(!!section().closest("[inert]"), true, "out of reach");
     assert.equal(nameField().value, "Kept name", "the name typed for it stays");
     button(page, "Add to workspace").click();
     await tick();
     assert.equal(importCalls(page).length, 0, "a stale preview is never added");
     await value(page, page.document.querySelector("#import-session-id"), id);
-    assert.equal(form().hasAttribute("data-stale"), false, "the ID read again: current again");
-    assert.equal(form().hasAttribute("inert"), false);
+    assert.equal(!!section().closest("[data-stale]"), false, "the ID read again: current again");
+    assert.equal(!!section().closest("[inert]"), false);
     assert.equal(nameField().value, "Kept name");
   } finally {
     page.close();
