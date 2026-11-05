@@ -1442,6 +1442,8 @@ async fn a_refused_wake_up_rings_again_at_the_next_opportunity_and_at_most_three
         |d| { d.apply("turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}})); }).unwrap();
 
     // A harness that keeps refusing: three retries, each after a longer wait, then no more.
+    // A minute later, so the wake-up budget's ten seconds since the last one have passed.
+    later(&ws, &mail, 60);
     let job = a_refused_completion_mail(&ws, dir.path(), "again").await;
     let mail = mailbox_copy(&ws, &job);
     for wait in [31, 61, 121] {
