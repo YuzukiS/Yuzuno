@@ -63,8 +63,8 @@ its settings.
 
 | Field | What it is |
 | --- | --- |
-| **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. |
-| **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. |
+| **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
+| **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, an OpenCode template is kept and saves as it is, but can't be changed, and a dispatch from it is refused. |
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task's materials. |
@@ -79,8 +79,9 @@ its settings.
   against a list changed meanwhile is refused, so the page reloads first.
   Removing a template, or a Project, changes no executor already made.
 - **After a newer Core.** Templates and fields that a newer Core saved and
-  this one can't read are not shown, and a save here keeps them as they
-  were. The page says how many such templates the list holds.
+  this one can't read or use, such as another harness or machine, are not
+  shown or offered to a dispatch, and a save here keeps them as they were.
+  The page says how many such templates the list holds.
 
 ## Phases
 

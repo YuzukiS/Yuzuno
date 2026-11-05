@@ -177,13 +177,23 @@ impl Template {
     }
 }
 
-/// A list read leniently: a template this Core can't read (a later Core's
-/// shape) is left out of what it offers, not an error.
+/// A stored template as this Core can use it: one it reads, whose values it
+/// accepts. A later Core's template that reads but holds what this Core
+/// refuses (another harness or machine, a larger limit) is not this Core's
+/// (R2 70093e91). OpenCode's gate is not part of it: an OpenCode template
+/// saved while OpenCode was enabled stays this Core's own.
+fn readable(value: &Value) -> Option<Template> {
+    let template: Template = serde_json::from_value(value.clone()).ok()?;
+    template.validate(true).ok().map(|_| template)
+}
+
+/// A list read leniently: a template this Core can't use (a later Core's)
+/// is left out of what it offers, not an error.
 fn read_list(raw: Option<String>) -> Result<Templates> {
     let Some(raw) = raw else { return Ok(Templates::default()) };
     let value: Value = serde_json::from_str(&raw)?;
     let all = value["templates"].as_array().cloned().unwrap_or_default();
-    let templates: Vec<Template> = all.iter().filter_map(|t| serde_json::from_value(t.clone()).ok()).collect();
+    let templates: Vec<Template> = all.iter().filter_map(readable).collect();
     Ok(Templates {
         version: value["version"].as_i64().unwrap_or(0),
         later_templates: all.len() - templates.len(),
@@ -211,7 +221,7 @@ fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Res
         items.push(item);
     }
     let named = |old: &Value| old["id"].as_str().is_some_and(|id| templates.iter().any(|t| t.id == id));
-    items.extend(before.iter().filter(|old| serde_json::from_value::<Template>((*old).clone()).is_err() && !named(old)).cloned());
+    items.extend(before.iter().filter(|old| readable(old).is_none() && !named(old)).cloned());
     stored.insert("version".into(), version.into());
     stored.insert("templates".into(), items.into());
     Ok(Value::Object(stored))
@@ -222,8 +232,11 @@ fn list_at(db: &Connection, key: &str) -> Result<Templates> {
 }
 
 /// The templates a save names, each checked strictly: no field this Core
-/// doesn't know, every value valid, each id once.
-fn parse_save(templates: &[Value], opencode: bool) -> Result<Vec<Template>> {
+/// doesn't know, every value valid, each id once. While OpenCode is off
+/// (`opencode` false), an OpenCode template saves only as it was saved
+/// (R2 70093e91): the rest of the list stays editable, and a dispatch from
+/// it is refused.
+fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result<Vec<Template>> {
     ensure!(templates.len() <= MAX_TEMPLATES, "At most {MAX_TEMPLATES} templates");
     let mut parsed = Vec::with_capacity(templates.len());
     for value in templates {
@@ -232,7 +245,7 @@ fn parse_save(templates: &[Value], opencode: bool) -> Result<Vec<Template>> {
             bail!("Unknown template field: {field}");
         }
         let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
-        template.validate(opencode)?;
+        template.validate(opencode || saved.contains(&template))?;
         parsed.push(template);
     }
     let ids: BTreeSet<_> = parsed.iter().map(|t| t.id.as_str()).collect();
@@ -380,7 +393,7 @@ async fn get_templates(State(ws): State<Arc<Workspace>>, Query(query): Query<For
 /// Parses and checks a save, and reads the catalogs its new models need
 /// before the store transaction: a catalog can take long.
 async fn prepared(ws: &Arc<Workspace>, input: &Save, saved: Templates) -> Result<Vec<Template>> {
-    let mut templates = parse_save(&input.templates, crate::opencode_agent::enabled())?;
+    let mut templates = parse_save(&input.templates, crate::opencode_agent::enabled(), &saved.templates)?;
     let local = |harness: &str| templates.iter().any(|t| t.harness == harness && t.names_new_model(&saved.templates));
     let catalogs = Catalogs {
         codex: if local("codex") { Some(ws.catalog().await) } else { None },

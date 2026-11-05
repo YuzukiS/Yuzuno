@@ -111,6 +111,9 @@ test("Executor templates: a new template is added, said as written and saved as 
 
   button(page, "Add template").click();
   await tick();
+  // A label with no Latin letter or digit still gives an id (R2 70093e91).
+  await type(page, "Label", "代码审查");
+  assert.equal(field(page, "Id").value, "template-1", "a label in another script gives a numbered id");
   await type(page, "Label", "Code reviewer");
   assert.equal(field(page, "Id").value, "code-reviewer", "a new template's id follows its label");
   await type(page, "Harness", "claude");

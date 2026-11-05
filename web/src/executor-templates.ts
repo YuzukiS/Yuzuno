@@ -20,7 +20,7 @@ export type ExecutorTemplate = {
   /** Kept for phase 2's slots. */
   maxConcurrent?: number;
 };
-/** `laterTemplates`: templates a newer Core saved that this one can't read; a save keeps them. */
+/** `laterTemplates`: templates a newer Core saved that this one can't read or use; a save keeps them. */
 export type TemplateList = { version: number; templates: ExecutorTemplate[]; laterTemplates?: number };
 export type ExecutorTemplatesView = {
   workspace: TemplateList;

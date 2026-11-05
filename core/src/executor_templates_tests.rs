@@ -90,13 +90,19 @@ async fn a_save_keeps_what_a_later_core_stored() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
     let later = json!({"id":"z","label":"A later shape","laterHarness":{"kind":"remote"}});
+    // A later Core's templates that read, but hold what this Core refuses (R2 70093e91).
+    let refused = [json!({"id":"g","label":"Another harness","harness":"gemini"}),
+        json!({"id":"m","label":"On another machine","harness":"codex","machineId":"lab-mac"})];
     ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![KEY,
-        json!({"version":1,"laterList":"kept","templates":[{"id":"a","label":"A","harness":"codex","laterField":"kept"}, later.clone()]}).to_string()]).unwrap();
+        json!({"version":1,"laterList":"kept","templates":[{"id":"a","label":"A","harness":"codex","laterField":"kept"}, later.clone(),
+            refused[0].clone(), refused[1].clone()]}).to_string()]).unwrap();
     let stored = || -> Value { serde_json::from_str(&ws.store.db.read().unwrap()
         .query_row("SELECT value FROM workspace_meta WHERE key=?1", [KEY], |r| r.get::<_, String>(0)).unwrap()).unwrap() };
     let (_, seen) = call(&ws, "GET", "/api/executor-templates", None).await;
-    assert_eq!((ids(&seen), seen["workspace"]["laterTemplates"].clone()), (vec![("a".into(), "workspace".into())], json!(1)),
-        "the view shows what it can read and says how many it can't");
+    assert!(!ids(&seen).iter().any(|(id, _)| id == "g" || id == "m"), "a later Core template that reads but this Core refuses is not offered");
+    assert!(ws.store.executor_template(None, "m").unwrap().is_none(), "nor given to a dispatch");
+    assert_eq!((ids(&seen), seen["workspace"]["laterTemplates"].clone()), (vec![("a".into(), "workspace".into())], json!(3)),
+        "the view shows what it can use and says how many it can't");
 
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":1,"templates":[
         {"id":"a","label":"A again","harness":"codex"}, template("b", "claude")]}))).await;
@@ -106,13 +112,14 @@ async fn a_save_keeps_what_a_later_core_stored() {
         "a later Core's field of a template is kept");
     assert_eq!(raw["templates"][1], template("b", "claude"));
     assert_eq!(raw["templates"][2], later, "a template a later Core stored is kept");
+    assert_eq!(raw["templates"].as_array().unwrap()[3..], refused, "a later Core template this Core refuses is kept by a save");
     assert_eq!((raw["version"].clone(), raw["laterList"].clone()), (json!(2), json!("kept")));
-    assert_eq!(saved["workspace"]["laterTemplates"], 1);
+    assert_eq!(saved["workspace"]["laterTemplates"], 3);
 
     let (_, replaced) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":2,"templates":[template("z", "codex")]}))).await;
-    assert_eq!(stored()["templates"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect::<Vec<_>>(), [json!("z")],
-        "a save naming its id replaces it; one it leaves out is removed");
-    assert!(replaced["workspace"].get("laterTemplates").is_none(), "{replaced}");
+    assert_eq!(stored()["templates"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect::<Vec<_>>(), [json!("z"), json!("g"), json!("m")],
+        "a save naming its id replaces it; one this Core can use that it leaves out is removed");
+    assert_eq!(replaced["workspace"]["laterTemplates"], 2, "{replaced}");
 }
 
 /// T-34 S1: a save names only fields this Core knows, each valid, each id
@@ -121,7 +128,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
 /// left out, not an error.
 #[test]
 fn a_template_is_checked_strictly_and_read_leniently() {
-    let refused = |template: Value| parse_save(&[template], true).err().map_or_else(|| "accepted".to_owned(), |e| e.to_string());
+    let refused = |template: Value| parse_save(&[template], true, &[]).err().map_or_else(|| "accepted".to_owned(), |e| e.to_string());
     let with = |extra: Value| {
         let mut t = template("t", "codex");
         t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
@@ -147,22 +154,30 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         let got = refused(template.clone());
         assert!(got.starts_with(says), "{template} should be refused with {says}; got: {got}");
     }
-    let off = parse_save(&[template("o", "opencode")], false).unwrap_err().to_string();
+    let off = parse_save(&[template("o", "opencode")], false, &[]).unwrap_err().to_string();
     assert_eq!(off, "OpenCode Agents aren't enabled on this Core");
-    assert!(parse_save(&[template("o", "opencode")], true).is_ok());
-    let twice = parse_save(&[template("a", "codex"), template("a", "claude")], true).unwrap_err().to_string();
+    assert!(parse_save(&[template("o", "opencode")], true, &[]).is_ok());
+    // While OpenCode is off, one saved before saves as it is, so the rest of
+    // the list stays editable; a changed one does not (R2 70093e91).
+    let kept: Template = serde_json::from_value(template("o", "opencode")).unwrap();
+    assert!(parse_save(&[template("o", "opencode"), template("c", "codex")], false, &[kept.clone()]).is_ok(),
+        "an OpenCode template saves unchanged while OpenCode is off");
+    let renamed = json!({"id":"o","label":"Renamed","harness":"opencode"});
+    assert_eq!(parse_save(&[renamed], false, &[kept]).unwrap_err().to_string(), "OpenCode Agents aren't enabled on this Core");
+    let twice = parse_save(&[template("a", "codex"), template("a", "claude")], true, &[]).unwrap_err().to_string();
     assert_eq!(twice, "Each template id must be used once");
     let many: Vec<Value> = (0..=MAX_TEMPLATES).map(|n| template(&format!("t{n}"), "codex")).collect();
-    assert_eq!(parse_save(&many, true).unwrap_err().to_string(), "At most 50 templates");
+    assert_eq!(parse_save(&many, true, &[]).unwrap_err().to_string(), "At most 50 templates");
     let fine = parse_save(&[with(json!({"machineId":"local","namePattern":"{label} — {task}",
-        "instructions":"x".repeat(MAX_INSTRUCTIONS)}))], true).unwrap();
+        "instructions":"x".repeat(MAX_INSTRUCTIONS)}))], true, &[]).unwrap();
     assert_eq!(fine[0].machine_id.as_deref(), Some("local"));
 
     let read = read_list(Some(json!({"version":3,"later":true,"templates":[
         {"id":"a","label":"Label a","harness":"codex","laterField":"kept out"},
         {"label":"no id: a later shape"},
+        {"id":"g","label":"Reads, but another harness","harness":"gemini"},
     ]}).to_string())).unwrap();
-    assert_eq!(read.version, 3);
+    assert_eq!((read.version, read.later_templates), (3, 2));
     assert_eq!(read.templates, vec![serde_json::from_value::<Template>(template("a", "codex").clone()).unwrap()]);
     assert_eq!(read_list(None).unwrap(), Templates::default());
 }
@@ -175,7 +190,7 @@ fn a_named_model_is_confirmed_by_the_core_hosts_catalog() {
     let codex = json!({"models":[{"id":"m-small","model":"m-small","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]});
     let claude = json!({"models":[{"id":"opus","model":"opus","displayName":"Opus","supportsAutoMode":false}]});
     let catalogs = Catalogs { codex: Some(Ok(codex)), claude: Some(Ok(claude)) };
-    let parse = |values: Vec<Value>| parse_save(&values, true).unwrap();
+    let parse = |values: Vec<Value>| parse_save(&values, true, &[]).unwrap();
     let mut fine = parse(vec![json!({"id":"c","label":"C","harness":"codex","model":"m-small","reasoningEffort":"low"})]);
     confirm_models(&mut fine, &[], &catalogs).unwrap();
     assert_eq!(fine[0].model.as_deref(), Some("m-small"));

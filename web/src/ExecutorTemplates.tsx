@@ -105,6 +105,15 @@ const draftOf = (t: ExecutorTemplate): Draft => ({
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "", maxConcurrent: t.maxConcurrent ? String(t.maxConcurrent) : "",
 });
 const slug = (label: string) => label.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+/** A new template's id: its label's, or the first free `template-N` for a
+ * label with no Latin letter or digit (R2 70093e91). */
+const idFor = (label: string, taken: string[]) => {
+  const id = slug(label);
+  if (id || !label.trim()) return id;
+  let n = 1;
+  while (taken.includes(`template-${n}`)) n++;
+  return `template-${n}`;
+};
 const set = (value: string) => (value.trim() ? value.trim() : undefined);
 /** As Core takes it: only what this harness uses, unset left out. */
 const templateOf = (d: Draft): ExecutorTemplate => {
@@ -157,7 +166,7 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
     setDrafts(list => list.map(d => {
       if (d.key !== key) return d;
       const next = { ...d, ...change };
-      if (change.label !== undefined && !d.idTouched) next.id = slug(change.label);
+      if (change.label !== undefined && !d.idTouched) next.id = idFor(change.label, list.filter(o => o.key !== key).map(o => o.id));
       // Permissions differ per harness: a change of harness starts them over.
       if (change.harness && change.harness !== d.harness) next.permission = "";
       // An effort is for its model: clearing the model clears it too (R1 de0ae592).
