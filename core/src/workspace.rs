@@ -304,6 +304,7 @@ impl Workspace {
         self.stored(move |store| {
             let mut agent = store.agent(&id)?;
             agent.project_id = store.agent_project(&id)?;
+            agent.kind = store.agent_kind(&id)?;
             Ok(agent)
         }).await
     }
@@ -512,6 +513,7 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
             cwd,
             model,
             settings,

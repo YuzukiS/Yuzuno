@@ -1,0 +1,68 @@
+# Agent kinds and Project leads
+
+Yuzuno is moving towards an executor model. A Project has one or more lasting
+**leads**. For each task, Core will start an **executor**, an Agent made for
+that one task from a template. A limited number of executors run at once.
+Each executor's result goes back to the lead through the existing dispatch
+and result flow. Review stays with Core, and the lead releases the executor
+when the work is accepted.
+
+The model arrives in phases. Only phase 0 is in place: it marks what kind
+each Agent is and lets you choose a Project's leads. Nothing behaves
+differently by kind yet.
+
+## Kinds
+
+Every Agent has one kind:
+
+| Kind | Who makes it | What it is |
+| --- | --- | --- |
+| **standing** | You | An Agent you created, as every Agent was before. This is every Agent with no other kind. |
+| **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
+| **executor** | Core, from phase 1 | An Agent made for one task from an executor template. Phase 0 makes none. |
+
+- **Where it shows.** The sidebar shows a **Lead** label under a lead's
+  name. Agents see each Agent's kind in `peers_list` (`lead`, `executor` or
+  `standing`), and can list only one kind with its `kind` filter.
+- **How it is stored.** Core keeps the kind in a table of its own,
+  `agent_roles`, not in the Agent's record. Older Core builds rewrite an
+  Agent's record with only the fields they know. Kept apart, a kind survives
+  an older Core opening and changing the Agent, as an Agent's Project
+  membership does. Deleting an Agent removes its kind with it.
+
+## Leads
+
+You choose a Project's leads in its settings, under **Leads**. Only open
+Agents in that Project can be chosen, and an executor cannot lead.
+
+- **Who can set them.** Only you, through `PUT /api/projects/{id}/leads`. The
+  request is `{expectedVersion, leadAgentIds}` and the answer is
+  `{version, leadAgentIds}`. No Agent tool sets leads, so an Agent cannot
+  make itself or another a lead.
+- **Saving.** A save replaces the whole list. An Agent left out stops being a
+  lead. A save against a list someone else changed meanwhile is refused.
+- **A lead belongs to its Project.** Core keeps which Project an Agent was
+  chosen to lead. It leads that Project only while it is a member there, and
+  never leads a Project it is moved to.
+- **Moving a lead.** When Core moves a lead to another Project, or out of every
+  Project, its mark ends. The list it left changes version, so a settings page
+  still showing the old list reloads before saving.
+- **An older Core's move.** Such a move leaves the mark in place, but it
+  applies only if the Agent returns to the Project it was chosen for.
+
+From phase 1, a lead can dispatch a task of its own Project from an executor
+template. You can always dispatch from a template. A task in no Project is
+dispatched from a template by you only.
+
+## Phases
+
+| Phase | What it adds |
+| --- | --- |
+| 0 | Kinds and leads, as above. |
+| 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request. |
+| 2 | A limit on how many executors run at once, with a queue and one retry of a failed start. |
+| 3 | Releasing and archiving executors, routing their late mail to the lead, and grouping them in the sidebar. |
+| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. |
+
+Standing Agents keep working throughout. Tasks already in progress finish on
+the Agents that hold them.
