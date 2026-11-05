@@ -130,7 +130,7 @@ async fn a_closed_executor_is_released_without_a_second_close_and_a_released_one
     assert_eq!(release(&ws, None, "e3").await.unwrap(), answer, "a repeat answers with the same releasedAt");
 
     for reopened in [ws.reopen_agent("e3").await.map(drop), ws.reopen_agent_summary("e3").await.map(drop)] {
-        assert_eq!(reopened.unwrap_err().to_string(), REOPEN_REFUSED, "a released executor is not reopened");
+        assert_eq!(reopened.err().map(|e| e.to_string()).as_deref(), Some(REOPEN_REFUSED), "a released executor is not reopened");
     }
     assert!(closed(store, "e3"));
 
