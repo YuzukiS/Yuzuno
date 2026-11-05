@@ -219,7 +219,11 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         };
         // A lead's handover proposal waits for the user's decision (T-34 S3b),
         // named by its proposer, as an approval is.
-        let handover = crate::handover_proposals::pending_summary(&db, id)?;
+        let mut handover = crate::handover_proposals::pending_summary(&db, id)?;
+        // With the document's version now: the card reads the proposal again when it moves (#612 R1).
+        if let Some(proposal) = handover.as_mut() {
+            proposal["currentVersion"] = json!(crate::handover_proposals::current_version(&db, id)?);
+        }
         if let Some(proposal) = &handover {
             let since = proposal["at"].as_str().unwrap_or_default().to_owned();
             let title: String = proposal["reason"].as_str().and_then(|r| r.lines().find(|l| !l.trim().is_empty()))

@@ -91,7 +91,7 @@ fn summary(p: &Proposal) -> Value {
         "state": p.state, "decidedAt": p.decided_at, "note": p.note, "version": p.version})
 }
 
-fn current_version(db: &Connection, project: &str) -> Result<i64> {
+pub(crate) fn current_version(db: &Connection, project: &str) -> Result<i64> {
     Ok(db.query_row("SELECT COALESCE(MAX(version), 0) FROM project_handover_versions WHERE project_id=?1",
         [project], |r| r.get(0))?)
 }

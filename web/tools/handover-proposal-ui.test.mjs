@@ -147,6 +147,23 @@ test("a stale proposal can't be approved and is rejected; a refusal is shown, th
   assert.deepEqual(page.errors, []);
 });
 
+// #612 R1 6658e4c4: a save in the Project's settings while a proposal waits.
+test("when Home says the document moved, the card reads the proposal again and shows it stale before any click", async () => {
+  let current = 1;
+  const page = mount(() => [200, detail(current)]);
+  page.window.renderCard({ ...summary, currentVersion: 1 });
+  await until(() => card(page)?.querySelector(".changes-lines"), "the changed lines");
+  assert.equal(button(page, "Approve").disabled, false, "a proposal on the current version can be approved");
+  const before = reads(page);
+  current = 2;
+  page.window.renderCard({ ...summary, currentVersion: 2 });
+  await until(() => /it is at version 2 now, not 1/.test(card(page).textContent), "the stale note", 3000);
+  assert.ok(reads(page) > before, "the proposal is read again");
+  assert.equal(button(page, "Approve").disabled, true, "the card shows stale before any click");
+  assert.equal(posts(page).length, 0, "nothing was sent");
+  assert.deepEqual(page.errors, []);
+});
+
 test("on a read-only Home the proposal is shown and can't be decided", async () => {
   const page = mount(() => [200, detail()]);
   page.window.renderCard(summary, true);

@@ -23,6 +23,8 @@ export type HandoverProposalSummary = {
   state: "pending" | "approved" | "rejected" | "superseded";
   note?: string | null;
   version?: number | null;
+  /** On Home: the document's version now; the card reads the proposal again when it moves (#612 R1). */
+  currentVersion?: number;
 };
 /** One proposal with the text it would replace, for the user's decision. */
 export type HandoverProposalDetail = {

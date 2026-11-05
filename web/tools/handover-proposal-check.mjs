@@ -6,8 +6,9 @@
 //  - Home's Needs you lists it, named by its lead; Ctrl+J goes to its card;
 //  - the card shows the lead's reason and the changed lines; approved with a
 //    note, it is sent against the version read and leaves Home;
-//  - a proposal made on a version since replaced can't be approved; rejected,
-//    it is sent as a rejection;
+//  - the user saves the document elsewhere while a proposal waits: Core's
+//    event re-reads Home, and the card shows it stale before any click; it
+//    can't be approved; rejected, it is sent as a rejection (#612 R1);
 //  - on a phone, the card and its fields fit their width.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/handover-proposal-check.mjs
 import assert from "node:assert/strict";
@@ -51,7 +52,8 @@ const home = () => {
     generatedAt: at(0), order: ["p-lab"],
     needsYou: waiting ? [{ kind: "handover", projectId: "p-lab", agentId: "a", agentName: "Mori", proposalId: "h1", title: "Say how to test", since: at(20) }] : [],
     projects: [{ project: { id: "p-lab", name: "Lab" }, agents: { working: 0, idle: 2, waiting: 0, error: 0, offline: 0, total: 2 },
-      errors: [], pending: [], jobs: [], unseen: 0, missing: [], handoverProposal: waiting ? summary() : null,
+      errors: [], pending: [], jobs: [], unseen: 0, missing: [],
+      handoverProposal: waiting ? { ...summary(), currentVersion: scenario.stale ? 2 : 1 } : null,
       brief: { version: 1, history: [], sections: [], teamSections: [] } }],
   };
 };
@@ -113,7 +115,8 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 async function open(viewport) {
   const context = await browser.newContext({ viewport, locale: "en-US", timezoneId: "UTC", reducedMotion: "reduce" });
   await context.addInitScript(() => {
-    window.EventSource = class { constructor() { setTimeout(() => this.onopen?.(), 50); } close() {} };
+    // Kept, so the check can deliver an event as Core sends it.
+    window.EventSource = class { constructor() { window.__events = this; setTimeout(() => this.onopen?.(), 50); } close() {} };
     Object.defineProperty(navigator, "platform", { get: () => "Linux x86_64" });
     if (!localStorage.getItem("yuzuno.appearance")) {
       localStorage.setItem("yuzuno.appearance", JSON.stringify({ agentOrder: "attention", projectGroups: "none" }));
@@ -167,20 +170,25 @@ try {
   check("the card shows the reason and the changed lines; approved with a note against version 1, it leaves Home and the count", { body: report.decisions[0] });
   await context.close();
 
-  // ---- A stale proposal: not approved; rejected.
-  Object.assign(scenario, { state: "pending", stale: true });
+  // ---- Saved elsewhere while it waits: stale before any click; not approved; rejected.
+  Object.assign(scenario, { state: "pending", stale: false });
   ({ context, page } = await open({ width: 1280, height: 900 }));
   await page.goto(`https://${HOST}/`);
   await page.getByRole("button", { name: /^Home/ }).first().click();
   await card(page).locator(".changes-lines").waitFor({ timeout: 10_000 });
+  assert.equal(await card(page).getByRole("button", { name: "Approve" }).isDisabled(), false, "on the current version it can be approved");
+  // The user saves version 2 in the Project's settings; Core announces the Brief scope.
+  scenario.stale = true;
+  await page.evaluate(() => window.__events.onmessage({ data: JSON.stringify({ type: "workspace.changed", scope: "brief", projectId: "p-lab" }), lastEventId: "" }));
   await card(page).getByText("it is at version 2 now, not 1", { exact: false }).waitFor({ timeout: 10_000 });
   assert.equal(await card(page).getByRole("button", { name: "Approve" }).isDisabled(), true, "a stale proposal can't be approved");
+  assert.equal(report.decisions.length, 1, "the card showed it stale before any click");
   await page.screenshot({ path: join(output, "3-stale.png") });
   await card(page).getByRole("button", { name: "Reject" }).click();
   await card(page).waitFor({ state: "detached", timeout: 10_000 });
   assert.deepEqual({ ...report.decisions[1], requestId: typeof report.decisions[1].requestId },
     { requestId: "string", action: "reject", expectedVersion: 2 });
-  check("a proposal made on a version since replaced can't be approved; rejected, it is sent against version 2", { body: report.decisions[1] });
+  check("saved elsewhere while it waits, the card shows it stale before any click; it can't be approved; rejected, it is sent against version 2", { body: report.decisions[1] });
   await context.close();
 
   // ---- On a phone: the card fits.

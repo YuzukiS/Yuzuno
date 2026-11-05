@@ -77,7 +77,8 @@ export function HandoverProposal({ projectId, proposal, readOnly = false, onChan
       if (!controller.signal.aborted) setDetail(next);
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
     return () => controller.abort();
-  }, [projectId, proposal.id, reload]);
+    // Home's data names the document's version: a save elsewhere reads the proposal again (#612 R1).
+  }, [projectId, proposal.id, proposal.currentVersion, reload]);
   const noteSize = bytes(note.trim());
   const tooLong = noteSize > NOTE_BYTES;
   async function decide(action: "approve" | "reject") {
@@ -100,7 +101,9 @@ export function HandoverProposal({ projectId, proposal, readOnly = false, onChan
   }
   const diff = detail ? changedHunks(lineDiff(detail.base.markdown, detail.proposal.markdown)) : [];
   const name = proposal.proposer.name;
-  const locked = readOnly || busy !== null || !detail;
+  // Read before the document moved: nothing is decided until it is read again.
+  const moved = !!detail && proposal.currentVersion !== undefined && proposal.currentVersion !== detail.currentVersion;
+  const locked = readOnly || busy !== null || !detail || moved;
   return (
     <div className="home-widget home-handover-proposal" id={handoverDomId(proposal.id)} tabIndex={-1}
       aria-label={`${t.title} ${t.by(name)}`} lang={langTag(language)}>

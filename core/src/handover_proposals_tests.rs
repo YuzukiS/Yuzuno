@@ -179,6 +179,32 @@ async fn a_stale_proposal_is_refused_and_its_rejection_tells_the_lead_to_propose
     assert_eq!(left, 0, "a deleted Project's proposals go with it");
 }
 
+/// T-34 S3b (#612 R1 6658e4c4): the user's save in the Project's settings
+/// tells Home, and Home's panel carries the document's version with the
+/// waiting proposal, so its card reads the proposal again and shows it stale
+/// before any decision.
+#[tokio::test]
+async fn a_handover_save_tells_home_so_a_waiting_proposals_card_sees_the_new_version() {
+    let (_dir, ws, p) = fixture();
+    ws.collaboration_call(Some("lead"), "handover_propose", propose_input("first", 1, "# Lab\nProposed.")).await.unwrap();
+    let mut events = ws.changes.subscribe(None);
+    let (status, saved) = route(&ws, "PUT", &format!("/api/projects/{p}/handover"),
+        Some(json!({"expectedVersion":1,"markdown":"# Lab\nSaved meanwhile."}))).await;
+    assert_eq!((status, saved["version"].clone()), (StatusCode::OK, json!(2)), "{saved}");
+    let mut said: Vec<Value> = Vec::new();
+    while let Some(event) = events.try_next() {
+        said.push(serde_json::from_str(&event.data).unwrap_or(Value::Null));
+    }
+    assert!(said.iter().any(|e| e["type"] == "workspace.changed" && e["scope"] == "brief" && e["projectId"] == json!(p)),
+        "a handover save tells Home, as a Brief write does: {said:?}");
+    let request = axum::http::Request::builder().uri("/api/home").body(axum::body::Body::empty()).unwrap();
+    let response = crate::project_brief::router().with_state(ws.clone()).oneshot(request).await.unwrap();
+    let home: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 22).await.unwrap()).unwrap();
+    let panel = home["projects"].as_array().unwrap().iter().find(|panel| panel["project"]["id"] == json!(p)).unwrap();
+    assert_eq!((panel["handoverProposal"]["baseVersion"].clone(), panel["handoverProposal"]["currentVersion"].clone()), (json!(1), json!(2)),
+        "the panel carries the document's version, so the card reads it again: {}", panel["handoverProposal"]);
+}
+
 /// T-34 S3b, through the Agents' own MCP endpoint: the lead proposes, a
 /// member is refused, and only the user decides, in the browser.
 #[tokio::test]

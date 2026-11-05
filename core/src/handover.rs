@@ -179,6 +179,8 @@ async fn put_handover(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
     let project = id.clone();
     let saved = ws.stored(move |s| s.save_handover(&project, input.expected_version, &input.markdown, input.reason.as_deref())).await?;
     ws.changes.send(json!({"handover": true, "projectId": id}));
+    // Home reads again, as on a Brief write: a waiting proposal's card sees the new version (#612 R1).
+    crate::project_brief::announce(&ws, Some(&id));
     Ok(Json(saved))
 }
 
