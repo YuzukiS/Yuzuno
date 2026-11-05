@@ -37,7 +37,8 @@ fn due(detail: &Value, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
     let count = detail["retry"]["count"].as_i64().unwrap_or(0);
     let failed = detail["failedAt"]
         .as_str()
-        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())?;
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())?
+        .with_timezone(&chrono::Utc);
     let wait = chrono::Duration::seconds(FIRST_WAIT_SECONDS << count.clamp(0, RETRIES));
     (count < RETRIES && now >= failed + wait).then_some(count)
 }
@@ -137,7 +138,8 @@ pub(crate) fn task_problems(db: &Connection, task: &str, limit: usize) -> Result
     let mut out = Vec::new();
     for row in rows {
         let (seq, id, data, state, detail) = row?;
-        if let Some(problem) = entry(seq, &id, &serde_json::from_str(&data)?, &state, &serde_json::from_str(&detail)?) {
+        let (message, detail): (Value, Value) = (serde_json::from_str(&data)?, serde_json::from_str(&detail)?);
+        if let Some(problem) = entry(seq, &id, &message, &state, &detail) {
             out.push(problem);
             if out.len() == limit {
                 break;

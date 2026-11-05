@@ -1439,7 +1439,7 @@ async fn a_refused_wake_up_rings_again_at_the_next_opportunity_and_at_most_three
     let task = ws.collaboration_call(Some("a"), "task_get", json!({"taskId":"T-1","view":"current"})).await.unwrap();
     assert_eq!(task["current"]["mailProblems"], json!([]));
     ws.store.update("a", "turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}}),
-        |d| d.apply("turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}}))).unwrap();
+        |d| { d.apply("turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}})); }).unwrap();
 
     // A harness that keeps refusing: three retries, each after a longer wait, then no more.
     let job = a_refused_completion_mail(&ws, dir.path(), "again").await;
