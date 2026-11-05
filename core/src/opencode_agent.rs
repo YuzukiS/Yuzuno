@@ -529,6 +529,7 @@ impl Workspace {
             claude_session_id: None,
             opencode_session_id: None,
             opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -686,6 +687,7 @@ impl Workspace {
                 let (kept, version) = (session.clone(), server.version().to_owned());
                 self.record_meta(id, "opencode/session", json!({"sessionId":session,"version":version}), move |m| {
                     m.agent.opencode_session_id = Some(kept);
+                    m.agent.opencode_major = opencode::major(&version);
                     m.agent.opencode_version = Some(version);
                 }).await?;
                 session
@@ -1769,14 +1771,20 @@ impl Workspace {
     }
 }
 
-/// Lets OpenCode end cleanly (`shutdown`) when nothing else holds it; else it
-/// is only signalled to end (2.x tears down, ending what its tools run, as
-/// it would for `shutdown`), and the last holder reaps it.
+/// Lets OpenCode end cleanly (`shutdown`) when nothing else holds it. Else
+/// it is signalled to end, and this stop holds it until it has exited,
+/// within TEARDOWN as `shutdown` waits: 2.x closes its event stream early in
+/// its teardown, so the task reading it lets go first, and were this the
+/// last hold, its drop (SIGKILL to the group) would cut short the teardown
+/// that ends what its tools run (R1 070d0f95 of #575). The last holder reaps it.
 async fn stop(server: Arc<Server>) -> Result<()> {
     match Arc::try_unwrap(server) {
         Ok(server) => server.shutdown().await,
         Err(server) => {
             server.terminate();
+            if !server.ended_within(opencode::TEARDOWN).await {
+                eprintln!("OpenCode did not end within {:?} of SIGTERM; what still holds it ends its group", opencode::TEARDOWN);
+            }
             Ok(())
         }
     }

@@ -173,6 +173,7 @@ async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
     let mut old = agent(&work.to_string_lossy());
     old.agent.opencode_version = None;
+    old.agent.opencode_major = None;
     old.agent.opencode_session_id = Some("ses_made_with_1x".into());
     old.turns = vec![json!({"id": "msg_1", "status": "completed", "items": [
         {"id": "u1", "type": "userMessage", "content": [{"type": "text", "text": "Kept"}]},
@@ -478,6 +479,24 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// Closing an Agent whose server something else still holds (the task that
+/// reads its event stream) waits for 2.x's teardown, within TEARDOWN: 2.x
+/// closes its event stream first and only then ends what its tools run, and
+/// no kill cuts that short (R1 070d0f95 of #575).
+#[tokio::test]
+async fn closing_waits_for_the_teardown_even_once_the_event_stream_has_let_go() {
+    let lab = lab(&[("tool", "1"), ("teardown", "2"), ("closeStreamsFirst", "1")], false).await;
+    let (tool, pid) = (lab.seen()["tool"].as_u64().unwrap(), lab.seen()["pid"].as_u64().unwrap());
+    lab.ws.close_agent(ID).await.unwrap();
+    let ended = ends(tool).await;
+    if !ended {
+        // Not left behind by a red run: its session is its own group.
+        let _ = std::process::Command::new("kill").args(["-KILL", &format!("-{tool}")]).status();
+    }
+    assert!(ended, "the tool's process ended in OpenCode's own teardown, not cut short by a kill of its group");
+    assert!(ends(pid).await, "OpenCode ended");
+}
+
 /// An Agent's database is made by its first 2.x server (T-32): the version
 /// that server reported is kept with its session, and stays when a later 2.x
 /// runs it. Its models say which OpenCode it runs, and note one newer than
@@ -486,6 +505,7 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
 async fn the_version_an_agents_database_was_made_with_is_kept_and_a_newer_one_is_noted() {
     let lab = lab(&[("version", "2.9.1")], false).await;
     assert_eq!(lab.detail().agent.opencode_version.as_deref(), Some("2.9.1"), "kept with its session");
+    assert_eq!(lab.detail().agent.opencode_major.as_deref(), Some("2"), "with the major Core parsed from it");
     let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
     assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "newer than the verified 2.2.5"}));
     let Lab { dir, ws } = lab;

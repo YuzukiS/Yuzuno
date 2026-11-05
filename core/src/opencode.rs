@@ -536,6 +536,24 @@ impl Server {
         self.group.signal(false);
     }
 
+    /// Waits at most `limit` for OpenCode to exit, without reaping it, and
+    /// says whether it did. Unix only; elsewhere it does not wait.
+    pub async fn ended_within(&self, limit: Duration) -> bool {
+        #[cfg(unix)]
+        {
+            let deadline = Instant::now() + limit;
+            while !self.exited() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            self.exited()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = limit;
+            false
+        }
+    }
+
     /// OpenCode's process ID, while it is not yet reaped.
     pub fn pid(&self) -> Option<u32> {
         self.group.0
@@ -1056,6 +1074,13 @@ pub fn supported(version: &str) -> bool {
     let version = version.strip_prefix('v').unwrap_or(version);
     let mut parts = version.split('.');
     parts.next() == Some(MAJOR) && parts.next().is_some_and(|minor| !minor.is_empty() && minor.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The major Core keeps for an Agent made by a server reporting `version`
+/// (T-32): MAJOR for one it speaks, none otherwise. Core's gate and the web
+/// read only this, never the version string.
+pub fn major(version: &str) -> Option<String> {
+    supported(version).then(|| MAJOR.to_owned())
 }
 
 /// Whether `version` is a release after VERIFIED (T-32): taken, and said to

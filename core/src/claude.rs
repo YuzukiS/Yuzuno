@@ -696,6 +696,7 @@ impl Workspace {
             claude_session_id: None,
             opencode_session_id: None,
             opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),

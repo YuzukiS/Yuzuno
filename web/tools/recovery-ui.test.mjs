@@ -117,9 +117,14 @@ test("an OpenCode agent made with OpenCode 1.19.3 is said to be kept to read, wi
   const ended = { turns: [{ id: "t", status: "completed", items: [] }] };
   const old = detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_old" }, ended);
   assert.equal(page.window.recoveryReason(old), "archived");
-  assert.equal(page.window.recoveryReason(detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_new", opencodeVersion: "2.2.5" }, ended)),
+  assert.equal(page.window.recoveryReason(detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_new", opencodeVersion: "2.2.5", opencodeMajor: "2" }, ended)),
     "offline", "one made with 2.x reconnects as any other");
   assert.equal(page.window.recoveryReason({ ...old, agent: { ...old.agent, closedAt: "now" } }), null, "closed, it is as any closed agent");
+  // Core's mark, not the version string, decides (R1 070d0f95 of #575): a version the web would read otherwise changes nothing.
+  assert.equal(page.window.recoveryReason(detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_new",
+    opencodeVersion: "opencode v2.2.5", opencodeMajor: "2" }, ended)), "offline", "Core's 2.x mark");
+  assert.equal(page.window.recoveryReason(detail({ harness: "opencode", threadId: undefined, opencodeSessionId: "ses_old",
+    opencodeVersion: "2.2.5" }, ended)), "archived", "no mark of Core's: kept to read, whatever the version says");
   page.window.renderNotice({ detail: old, disabled: false, hasDraft: true, onRecovered() {} });
   await tick();
   assert.match(text(page), /made with OpenCode 1\.19\.3 and is kept to read/);

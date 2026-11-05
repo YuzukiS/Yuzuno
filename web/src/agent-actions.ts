@@ -57,10 +57,11 @@ export interface AgentActionHandlers {
 }
 
 /** An OpenCode Agent made with OpenCode 1.19.3 (T-32): one with a session
- * but no 2.x version, as Core reads it. Kept to read, never started again,
- * since 2.x would migrate its database in place. */
+ * but not Core's 2.x mark (`opencodeMajor`, as Core parsed the version; the
+ * web never parses it itself). Kept to read, never started again, since 2.x
+ * would migrate its database in place. */
 export function openCodeArchived(agent: Agent): boolean {
-  return agent.harness === "opencode" && !!agent.opencodeSessionId && !/^v?2\.\d+/.test(agent.opencodeVersion ?? "");
+  return agent.harness === "opencode" && !!agent.opencodeSessionId && agent.opencodeMajor !== "2";
 }
 
 /**

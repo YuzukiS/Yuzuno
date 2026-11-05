@@ -75,7 +75,7 @@ pub fn ensure_agent_open(agent: &Agent) -> anyhow::Result<()> {
 pub fn ensure_opencode_current(agent: &Agent) -> anyhow::Result<()> {
     anyhow::ensure!(
         agent.harness != "opencode" || agent.opencode_session_id.is_none()
-            || agent.opencode_version.as_deref().is_some_and(crate::opencode::supported),
+            || agent.opencode_major.as_deref() == Some(crate::opencode::MAJOR),
         "这个 OpenCode Agent 是用 OpenCode 1.19.3 创建的，只能阅读：Yuzuno 现在使用 OpenCode {}.x，不会用它打开这个 Agent 的数据库。要继续工作，请新建一个 OpenCode Agent。",
         crate::opencode::MAJOR
     );
@@ -314,6 +314,11 @@ pub struct Agent {
     /// (`ensure_opencode_current`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_version: Option<String>,
+    /// That version's major as Core parsed it (`opencode::major`), kept with
+    /// it: the gate and the web compare this, not the version string (R1
+    /// 070d0f95 of #575).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_major: Option<String>,
     pub thread_id: Option<String>,
     pub status: String,
     #[serde(default)]

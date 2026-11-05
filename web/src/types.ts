@@ -14,6 +14,8 @@ export interface Agent {
   opencodeSessionId?: string;
   /** The OpenCode version an OpenCode Agent's database was made with (T-32); none until it first starts, and none for one made with 1.19.3. */
   opencodeVersion?: string;
+  /** That version's major as Core parsed it ("2"): what the web reads, never the version string. */
+  opencodeMajor?: string;
   id: string;
   name: string;
   goal: string;

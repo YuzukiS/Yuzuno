@@ -14,7 +14,8 @@ as 2.x does while it starts), `mcp` (the MCP status it reports), `stubborn`
 (it and a child of its own ignore SIGTERM), `tool` (it starts a process in a
 session of its own, as OpenCode's tools run, which only its teardown after
 SIGTERM ends), `teardown` (seconds its teardown takes before it ends that
-process and exits) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
+process and exits), `closeStreamsFirst` (its teardown ends its event streams
+first, before that wait, as 2.x closes them early) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
 if started with it).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
@@ -1268,6 +1269,10 @@ def teardown(signum, frame):
     """As 2.x after SIGTERM (cli/src/shutdown-deadline.ts): its teardown,
     which takes `teardown` seconds here, ends what its tools run (SIGTERM to
     each one's session, then waited for), and it exits."""
+    if switch('closeStreamsFirst'):
+        # 2.x closes what it serves early in its teardown, before its tools' processes end.
+        with lock:
+            generation[0] += 1
     time.sleep(float(switch('teardown') or 0))
     for tool in tools:
         try:
