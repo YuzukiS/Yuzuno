@@ -96,7 +96,11 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    from the template, in the task's Project, and named by the template's
    pattern. It works in the dispatch's worktree when that is a folder on this
    host, else in the Project's folder on this host. Core makes no folder: with
-   neither, the dispatch is refused.
+   neither, the dispatch is refused. When an Agent dispatches, that folder
+   must be the worktree you registered on the task or lie inside the
+   Project's folder; any other is refused, since a path an Agent gives, in a
+   dispatch's or a task's materials, is information, not permission. Your own
+   dispatch may name any folder.
 3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
    result goes back to whoever dispatched.
 4. **Queues it.** It starts when a slot is free; see
