@@ -16,8 +16,10 @@ use serde_json::Value;
 use std::{path::Path, sync::Arc};
 
 /// Why a template dispatch is refused while an update drains, when an
-/// ordinary one is not: it creates an Agent, work an update waits for.
-const UPDATING: &str = "workspace_updating: Workspace is preparing an update, and a dispatch from an executor template creates an Agent, which waits until the update is done; nothing was dispatched. Dispatch to an existing Agent now, or from the template after the update";
+/// ordinary one is not: it creates an Agent, work an update waits for. The
+/// permit comes before the row is read, so a retry of one already made is
+/// refused too, and gets its recorded answer after the update (Lead 5080).
+const UPDATING: &str = "workspace_updating: Workspace is preparing an update, and a dispatch from an executor template waits for it, as creating an Agent does. Retry the same request once the update is done: a dispatch it already made returns its recorded answer, and one it had not made goes ahead then. A dispatch to an existing Agent is not refused";
 
 impl Workspace {
     /// `task_dispatch` with `executor` instead of `toAgentId`.

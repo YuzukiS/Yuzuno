@@ -68,7 +68,7 @@ its settings.
 | **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
-| **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when short. |
+| **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **At most at once** | Kept for phase 2's limit on running executors; not applied yet. |
 
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
@@ -115,8 +115,10 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   next starts, before any Agent's runtime starts.
 - **During an update.** While Core prepares an update, a dispatch from a
   template is refused, because creating an Agent waits for the update. A
-  dispatch to an existing Agent is not refused. Nothing was written, so the
-  same request works once the update is done.
+  dispatch to an existing Agent is not refused. Retry the same request once
+  the update is done: one that had not been made goes ahead then, and nothing
+  was written for it before. A retry of one already made is refused during
+  the update too, and gets its recorded answer after it.
 - **No limit yet.** In phase 1 every executor starts at once.
 - **This host only.** A dispatch's `machineId` may be empty or `local`.
 

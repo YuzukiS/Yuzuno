@@ -118,13 +118,19 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     ws.admission.begin_drain("t34-lab-update").unwrap();
     let third = task(&ws, "Dispatched after the update", &project, None).await;
     let paused = ws.collaboration_call(None, "task_dispatch", dispatch("paused", &third)).await.unwrap_err().to_string();
-    assert!(paused.starts_with("workspace_updating:") && paused.contains("from an executor template creates an Agent"),
+    assert!(paused.starts_with("workspace_updating:") && paused.contains("from an executor template waits for it"),
         "a template dispatch is refused while an update drains: {paused}");
+    assert!(paused.contains("Retry the same request once the update is done"), "the refusal says to retry it: {paused}");
     assert_eq!(ws.store.agents().unwrap().len(), 2, "nothing was created during the update");
+    // A retry of one already made is refused too, then gets its recorded answer.
+    let replayed = ws.collaboration_call(None, "task_dispatch", dispatch("first", &first)).await.unwrap_err().to_string();
+    assert!(replayed.starts_with("workspace_updating:"), "{replayed}");
     let fourth = task(&ws, "Dispatched during the update", &project, None).await;
     ws.collaboration_call(None, "task_dispatch", json!({"requestId":"ordinary","taskId":fourth,"expectedVersion":1,"toAgentId":executor}))
         .await.expect("an ordinary dispatch is not refused while an update drains");
     ws.admission.reopen("t34-lab-update").unwrap();
+    let replayed = ws.collaboration_call(None, "task_dispatch", dispatch("first", &first)).await.unwrap();
+    assert_eq!(replayed["agentId"], json!(executor), "after the update, a retry of one already made gets its recorded answer");
     let after = ws.collaboration_call(None, "task_dispatch", dispatch("paused", &third)).await.unwrap();
     assert_eq!(ws.store.agents().unwrap().len(), 3, "the same requestId dispatches once the update is done");
 
