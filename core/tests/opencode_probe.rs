@@ -340,6 +340,8 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
     let current = server.session(&session).await.unwrap()["model"].clone();
     println!("probe: the session's model {current}");
     assert_eq!((&current["id"], &current["providerID"]), (&json!("fake"), &json!("stub")), "the session's model, as Core made it");
+    // With no variant chosen, 2.x reads the session's as its "default" one, which Core takes as none (D3).
+    assert_eq!(current["variant"], "default", "no variant reads as the default one");
 
     // 2.x's own active list while it runs and after (Lead 4963), every 50 ms.
     let (http, password) = (reqwest::Client::builder().no_proxy().build().unwrap(), password_of(server.pid().unwrap()));

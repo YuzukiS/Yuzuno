@@ -374,7 +374,10 @@ async fn choose_for(c: &Connection, model: Option<&ModelChoice>, variant: Option
     let Some(model) = model else { return Ok(()) };
     let current = c.server.session(&c.session).await.context("没有读到 OpenCode 会话当前的模型；这条消息没有发送，草稿保留")?;
     let current = &current["model"];
-    if current["id"] == model.model.as_str() && current["providerID"] == model.provider.as_str() && current["variant"].as_str() == variant {
+    // 2.x reads a model without a variant as its "default" one, and switches as it does
+    // (core/src/session/info.ts, session.ts switchModel).
+    let same_variant = current["variant"].as_str().unwrap_or("default") == variant.unwrap_or("default");
+    if current["id"] == model.model.as_str() && current["providerID"] == model.provider.as_str() && same_variant {
         return Ok(());
     }
     c.server.switch_model(&c.session, model, variant).await.context("没有把所选模型设为 OpenCode 会话的模型；这条消息没有发送，草稿保留")

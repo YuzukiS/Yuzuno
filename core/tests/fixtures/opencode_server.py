@@ -1197,7 +1197,11 @@ class Handler(BaseHTTPRequestHandler):
         if session not in sessions:
             return self.reply(404, {'_tag': 'SessionNotFoundError', 'message': f'Session not found: {session}'})
         if (method, *rest) == ('GET',):
-            return self.reply(200, {'data': sessions[session]})
+            # 2.x reads a model without a variant as its "default" one (core/src/session/info.ts).
+            info = dict(sessions[session])
+            if info.get('model'):
+                info['model'] = {**info['model'], 'variant': info['model'].get('variant') or 'default'}
+            return self.reply(200, {'data': info})
         if (method, *rest) == ('POST', 'prompt'):
             return self.prompt_v2(session, body or {})
         if (method, *rest) == ('POST', 'model'):
