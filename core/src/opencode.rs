@@ -61,8 +61,12 @@ const REQUEST_LIMIT: Duration = Duration::from_secs(15);
 pub const TEARDOWN: Duration = Duration::from_secs(12);
 /// How often a start asks again while 2.x says it is still starting (503).
 const READY_POLL: Duration = Duration::from_millis(100);
-/// OpenCode sends `server.heartbeat` every 10 s on an open stream.
+/// 2.x writes an SSE comment (`: heartbeat`) every 15 s on an open stream
+/// (server/src/handlers/event.ts), so a silence this long is a broken one.
 pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
+/// Items asked for per page of a 2.x list read: its most (`limit` 1..=200,
+/// protocol/src/groups/message.ts).
+const PAGE: usize = 200;
 const BODY_LIMIT: usize = 2048;
 const LINE_LIMIT: u64 = 64 << 10;
 const EVENT_BUFFER_LIMIT: usize = 16 << 20;
@@ -228,10 +232,10 @@ pub enum Mcp {
 /// What OpenCode holds for one session now.
 #[derive(Debug)]
 pub struct Snapshot {
-    /// `[{info, parts}]`, as `GET /session/:id/message` lists them.
+    /// The session's messages, oldest first, as `GET /api/session/:id/message`
+    /// pages them (`messages`).
     pub messages: Value,
-    /// `{type: busy | retry | idle, …}`. OpenCode lists only sessions that
-    /// are not idle (`session/status.ts`), so an unlisted one is idle.
+    /// `{type: busy | idle}` (`session_status`).
     pub status: Value,
     /// Requests pending in this session and in the sub-agent sessions
     /// given (`snapshot`), each with its `sessionID`; others' are left out.
@@ -622,7 +626,9 @@ impl Server {
 
     /// A new session; OpenCode's record of it (its `id` names it).
     pub async fn create_session(&self, title: &str) -> Result<Value> {
-        let session = self.json(Method::POST, "/session", Some(&json!({"title": title}))).await?;
+        // 2.x takes the session's folder from its body, not from the request (server/src/handlers/session.ts).
+        let body = json!({"title": title, "location": {"directory": self.directory}});
+        let session = self.data(Method::POST, "/api/session", &[], Some(&body)).await?;
         segment(session["id"].as_str().unwrap_or_default()).context("OpenCode created a session without a usable ID")?;
         Ok(session)
     }
@@ -669,7 +675,7 @@ impl Server {
             Ok(message) => Ok(Some(message)),
             Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {
                 // The same 404 answers for an unknown session.
-                self.json(Method::GET, &format!("/session/{session}"), None).await?;
+                self.session(session).await?;
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -680,11 +686,14 @@ impl Server {
     /// `idle_limit` bounds a silence (normally `EVENT_IDLE_LIMIT`).
     pub async fn subscribe(&self, idle_limit: Duration) -> Result<Events> {
         // Not the request's own timeout: that would also end the stream.
-        let sent = self.request(Method::GET, "/event").header("accept", "text/event-stream").send();
+        let sent = self.request(Method::GET, "/api/event").header("accept", "text/event-stream").send();
         let response = timeout(REQUEST_LIMIT, sent).await
-            .map_err(|_| anyhow!("OpenCode did not answer /event"))?
-            .context("OpenCode did not answer /event")?;
+            .map_err(|_| anyhow!("OpenCode did not answer /api/event"))?
+            .context("OpenCode did not answer /api/event")?;
         let response = success(response).await?;
+        let kind = content_type(&response);
+        ensure!(kind.eq_ignore_ascii_case("text/event-stream"),
+            "OpenCode answered /api/event with {}, not an event stream: not the OpenCode {MAJOR}.x API", shown(kind));
         let mut events = Events { response, buffer: Vec::new(), scanned: 0, idle_limit };
         let first = events.next().await?.context("OpenCode closed its event stream at once")?;
         ensure!(first["type"] == "server.connected", "OpenCode's event stream did not begin with server.connected");
@@ -693,23 +702,23 @@ impl Server {
 
     /// The session's messages and status, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
-    /// `session`'s status now (`{type: busy | retry | idle, …}`), idle when
-    /// OpenCode does not list it (`session/status.ts`).
+    /// `session`'s status now, in the shape Core reads until slice 3b:
+    /// `{type: busy}` while 2.x lists it among the sessions this process is
+    /// running (`GET /api/session/active`), else `{type: idle}`. 2.x lists no
+    /// retry there; it is on the answer that retries.
     pub async fn session_status(&self, session: &str) -> Result<Value> {
-        let statuses = self.json(Method::GET, "/session/status", None).await?;
-        Ok(statuses.get(session).cloned().unwrap_or_else(|| json!({"type": "idle"})))
+        Ok(status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session))
     }
 
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
-        let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
-        let statuses = self.json(Method::GET, "/session/status", None).await?;
-        let status = statuses.get(session).cloned().unwrap_or_else(|| json!({"type": "idle"}));
+        let messages = self.messages(session).await?;
+        let status = self.session_status(session).await?;
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
             messages,
             status,
-            permissions: self.pending_in("/permission", &sessions).await?,
-            questions: self.pending_in("/question", &sessions).await?,
+            permissions: self.pending_of("permission", &sessions).await?,
+            questions: self.pending_of("form", &sessions).await?,
         })
     }
 
@@ -788,10 +797,10 @@ impl Server {
         })
     }
 
-    /// The session as OpenCode holds it now (`GET /session/:id`): its
+    /// The session as OpenCode holds it now (`GET /api/session/:id`): its
     /// `revert`, among the rest, set while a revert waits to be applied.
     pub async fn session(&self, session: &str) -> Result<Value> {
-        self.json(Method::GET, &format!("/session/{}", segment(session)?), None).await
+        self.data(Method::GET, &format!("/api/session/{}", segment(session)?), &[], None).await
     }
 
     /// OpenCode's own folders and this instance's worktree and directory
@@ -807,10 +816,10 @@ impl Server {
     }
 
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
+    /// Every page of them, oldest first: 2.x gives 50 at most, newest first,
+    /// unless asked (server/src/handlers/message.ts).
     pub async fn messages(&self, session: &str) -> Result<Value> {
-        let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
-        ensure!(messages.is_array(), "OpenCode's session messages is not a list");
-        Ok(messages)
+        Ok(Value::Array(self.all(&format!("/api/session/{}/message", segment(session)?), &[("order", "asc")]).await?))
     }
 
     /// The request that compacts the session with `provider`'s `model`
@@ -948,12 +957,11 @@ impl Server {
         Ok(())
     }
 
-    /// The sessions OpenCode started under `session` (its `task` tool's
-    /// sub-agents, `parentID` = `session`), as `GET /session/:id/children`
-    /// lists them.
+    /// The sessions OpenCode started under `session` (its sub-agents,
+    /// `parentID` = `session`), as `GET /api/session?parentID=` lists them,
+    /// every page.
     pub async fn children(&self, session: &str) -> Result<Vec<Value>> {
-        let listed = self.json(Method::GET, &format!("/session/{}/children", segment(session)?), None).await?;
-        Ok(listed.as_array().context("OpenCode's session children is not a list")?.clone())
+        self.all("/api/session", &[("parentID", segment(session)?), ("order", "asc")]).await
     }
 
     /// Answers a permission request pending in `session`. A request of
@@ -1005,6 +1013,19 @@ impl Server {
         self.pending_in(path, &[session]).await
     }
 
+    /// What waits in each of `sessions`: its permission requests
+    /// (`permission`) or forms (`form`), from 2.x's own list of each session
+    /// (`GET /api/session/:id/<kind>`).
+    async fn pending_of(&self, kind: &str, sessions: &[&str]) -> Result<Vec<Value>> {
+        let mut all = Vec::new();
+        for session in sessions {
+            let path = format!("/api/session/{}/{kind}", segment(session)?);
+            let listed = self.data(Method::GET, &path, &[], None).await?;
+            all.extend(listed.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?.iter().cloned());
+        }
+        Ok(all)
+    }
+
     async fn pending_in(&self, path: &str, sessions: &[&str]) -> Result<Vec<Value>> {
         let all = self.json(Method::GET, path, None).await?;
         let all = all.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?;
@@ -1019,20 +1040,68 @@ impl Server {
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        self.request_with(method, path, &[])
+    }
+
+    /// A request of `path` with `query`. 1.19.3's routes, used until their
+    /// slices move them (T-32), also name the instance by the query (a
+    /// folder need not be a valid header value); 2.x's under `/api` name
+    /// none here: a session's folder is its own, given when it is made.
+    fn request_with(&self, method: Method, path: &str, query: &[(&str, &str)]) -> reqwest::RequestBuilder {
         let mut url = Url::parse(&format!("{}{path}", self.base)).expect("an OpenCode path");
-        // The query rather than `x-opencode-directory`: a folder need not be
-        // a valid header value (server/.../middleware/workspace-routing.ts).
-        url.query_pairs_mut().append_pair("directory", &self.directory);
+        url.query_pairs_mut().extend_pairs(query);
+        if !path.starts_with("/api/") {
+            url.query_pairs_mut().append_pair("directory", &self.directory);
+        }
         self.http.request(method, url).basic_auth(USERNAME, Some(&self.password))
     }
 
     async fn json(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
-        let mut request = self.request(method, path).timeout(REQUEST_LIMIT);
+        self.json_with(method, path, &[], body).await
+    }
+
+    /// The JSON OpenCode answers. 2.x answers a GET outside `/api` with its
+    /// web UI's page, 200 and HTML, whatever the path
+    /// (cli/src/services/web-ui.ts): any other answer is refused as not one
+    /// of its API's.
+    async fn json_with(&self, method: Method, path: &str, query: &[(&str, &str)], body: Option<&Value>) -> Result<Value> {
+        let mut request = self.request_with(method, path, query).timeout(REQUEST_LIMIT);
         if let Some(body) = body {
             request = request.json(body);
         }
         let response = request.send().await.with_context(|| format!("OpenCode did not answer {path}"))?;
-        success(response).await?.json().await.with_context(|| format!("OpenCode's answer to {path} is not JSON"))
+        let response = success(response).await?;
+        let kind = content_type(&response);
+        ensure!(kind.eq_ignore_ascii_case("application/json"),
+            "OpenCode answered {path} with {}, not JSON: not an answer of the OpenCode {MAJOR}.x API", shown(kind));
+        response.json().await.with_context(|| format!("OpenCode's answer to {path} is not JSON"))
+    }
+
+    /// What a 2.x API answer holds (`{data, …}`).
+    async fn data(&self, method: Method, path: &str, query: &[(&str, &str)], body: Option<&Value>) -> Result<Value> {
+        let mut answer = self.json_with(method, path, query, body).await?;
+        let data = answer.get_mut("data").with_context(|| format!("OpenCode's answer to {path} has no data"))?;
+        Ok(data.take())
+    }
+
+    /// Every item of a 2.x list (`{data: […], cursor: {next}}`): the first
+    /// page with `first`, each next by its cursor alone, which carries the
+    /// rest (server/src/handlers/message.ts; the session list's cursor holds
+    /// its filters, schema/src/session.ts), until a page shorter than PAGE.
+    async fn all(&self, path: &str, first: &[(&str, &str)]) -> Result<Vec<Value>> {
+        let limit = PAGE.to_string();
+        let mut query: Vec<(&str, String)> = first.iter().map(|(name, value)| (*name, (*value).to_owned())).collect();
+        let (mut items, mut seen) = (Vec::new(), HashSet::new());
+        loop {
+            query.push(("limit", limit.clone()));
+            let asked: Vec<(&str, &str)> = query.iter().map(|(name, value)| (*name, value.as_str())).collect();
+            let page = self.json_with(Method::GET, path, &asked, None).await?;
+            let listed = page["data"].as_array().with_context(|| format!("OpenCode's {path} is not a list"))?;
+            items.extend(listed.iter().cloned());
+            let Some(next) = page["cursor"]["next"].as_str().filter(|_| listed.len() >= PAGE) else { return Ok(items) };
+            ensure!(seen.insert(next.to_owned()), "OpenCode gave {path} the same next page twice");
+            query = vec![("cursor", next.to_owned())];
+        }
     }
 }
 
@@ -1046,8 +1115,8 @@ pub struct Events {
 }
 
 impl Events {
-    /// The next event as OpenCode sent it (`{id, type, properties}`), without
-    /// heartbeats. `Ok(None)`: OpenCode ended the stream. An error: it broke,
+    /// The next event as 2.x sends it (`{id, type, data, …}`); its heartbeat
+    /// is a comment, never an event. `Ok(None)`: OpenCode ended the stream. An error: it broke,
     /// sent something that is not an event, or was silent past the idle
     /// limit. Either way events may have been missed; subscribe again, then
     /// read a snapshot.
@@ -1056,9 +1125,7 @@ impl Events {
             while let Some(data) = frame(&mut self.buffer, &mut self.scanned)? {
                 let Some(data) = data else { continue };
                 let event: Value = serde_json::from_str(&data).context("OpenCode sent an event that is not JSON")?;
-                if event["type"] != "server.heartbeat" {
-                    return Ok(Some(event));
-                }
+                return Ok(Some(event));
             }
             let chunk = timeout(self.idle_limit, self.response.chunk()).await
                 .map_err(|_| anyhow!("OpenCode's event stream was silent for {:?}", self.idle_limit))?
@@ -1070,10 +1137,26 @@ impl Events {
     }
 }
 
-/// The session an event belongs to: every session event names it as
-/// `properties.sessionID` (`schema/src/v1/session.ts`, permission, question).
+/// The session an event belongs to: 2.x names it as `data.sessionID`, and a
+/// form's as `data.form.sessionID` (schema/src/session-event.ts, form.ts).
 pub fn session_of(event: &Value) -> Option<&str> {
-    event["properties"]["sessionID"].as_str()
+    event["data"]["sessionID"].as_str().or_else(|| event["data"]["form"]["sessionID"].as_str())
+}
+
+/// `{type: busy}` for a session 2.x's `/api/session/active` lists, else
+/// `{type: idle}`.
+fn status_of(active: &Value, session: &str) -> Value {
+    json!({"type": if active.get(session).is_some() { "busy" } else { "idle" }})
+}
+
+/// An answer's media type, without its parameters ("" for none).
+fn content_type(response: &Response) -> &str {
+    let kind = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("");
+    kind.split(';').next().unwrap_or("").trim()
+}
+
+fn shown(kind: &str) -> String {
+    if kind.is_empty() { "no content type".into() } else { kind.into() }
 }
 
 /// Why a start failed, as far as OpenCode says (T-32): which OpenCode it is,

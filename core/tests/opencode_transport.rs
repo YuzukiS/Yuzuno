@@ -115,17 +115,17 @@ async fn it_listens_on_loopback_behind_its_own_password_and_shutdown_ends_its_pr
     assert_eq!(seen["passwordInArgv"], false, "the password is in the environment only");
 
     // Only Core's password opens it.
-    let url = format!("http://127.0.0.1:{}/session/status", seen["port"]);
+    let url = format!("http://127.0.0.1:{}/api/session/active", seen["port"]);
     assert_eq!(http().get(&url).send().await.unwrap().status(), 401);
     assert_eq!(http().get(&url).basic_auth("opencode", Some("guess")).send().await.unwrap().status(), 401);
     session(&server).await;
     let calls = lab.calls();
     assert_eq!(calls.iter().filter(|c| c["authorized"] == false).count(), 2, "only this test's guesses failed");
     let mine: Vec<_> = calls.iter().filter(|c| c["authorized"] == true).collect();
-    assert_eq!(mine.iter().map(|c| c["path"].as_str().unwrap()).collect::<Vec<_>>(), ["/api/info", "/session"]);
-    assert_eq!(mine[0]["query"], json!({}), "the server's own info names no folder");
-    assert!(mine[1..].iter().all(|c| c["query"]["directory"] == json!([lab.launch.directory.to_str().unwrap()])),
-        "every request of the Agent's names its folder");
+    assert_eq!(mine.iter().map(|c| c["path"].as_str().unwrap()).collect::<Vec<_>>(), ["/api/info", "/api/session"]);
+    assert!(mine.iter().all(|c| c["query"] == json!({})), "no 2.x route names a folder in its query");
+    assert_eq!(mine[1]["body"]["location"], json!({"directory": lab.launch.directory.to_str().unwrap()}),
+        "the session is made in the Agent's folder, named in its body as 2.x takes it");
     assert_eq!(server.version(), "2.2.5", "the version it reported");
 
     let (pid, child) = lab.pids();
@@ -282,7 +282,7 @@ async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
     assert_eq!(server.submit(&session, &lost, "hello").await.unwrap(), Submission::Accepted);
     let error = next_of(&mut events, "session.error").await;
     assert_eq!(session_of(&error), Some(session.as_str()));
-    assert!(error["properties"].get("messageID").is_none());
+    assert!(error["data"].get("messageID").is_none());
     assert_eq!(server.message(&session, &lost).await.unwrap(), None);
 
     // A 5xx is unknown and a 4xx refused, each with OpenCode's status.
@@ -295,7 +295,7 @@ async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
         Submission::Refused(status) => assert_eq!(status.code, 404),
         other => panic!("{other:?}"),
     }
-    lab.control("mode", json!({"fail": {"/session/status": 503}})).await;
+    lab.control("mode", json!({"fail": {"/api/session/active": 503}})).await;
     let error = server.snapshot(&session, &[]).await.unwrap_err();
     assert_eq!(error.downcast_ref::<HttpStatus>().unwrap().code, 503);
     server.shutdown().await.unwrap();
@@ -345,9 +345,9 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     lab.control("event", json!({"type": "message.part.delta", "properties": {"sessionID": session,
         "messageID": "msg_a", "partID": "prt_a", "field": "text", "delta": "Hel"}})).await;
     let status = events.next().await.unwrap().unwrap();
-    assert_eq!((status["type"].as_str(), status["properties"]["status"]["type"].as_str()), (Some("session.status"), Some("busy")));
+    assert_eq!((status["type"].as_str(), status["data"]["status"]["type"].as_str()), (Some("session.status"), Some("busy")));
     let delta = events.next().await.unwrap().unwrap();
-    assert_eq!((delta["type"].as_str(), delta["properties"]["delta"].as_str()), (Some("message.part.delta"), Some("Hel")));
+    assert_eq!((delta["type"].as_str(), delta["data"]["delta"].as_str()), (Some("message.part.delta"), Some("Hel")));
     assert_eq!(session_of(&delta), Some(session.as_str()));
 
     // The stream breaks. A request asked meanwhile is not an event here...
@@ -442,4 +442,94 @@ async fn answers_and_abort_stay_within_their_session() {
     assert_eq!(lab.posts("/permission/").last().unwrap()["body"], json!({"reply": "reject"}));
     assert!(server.snapshot(&b, &[]).await.unwrap().permissions.is_empty());
     server.shutdown().await.unwrap();
+}
+
+/// A long session is read whole, oldest first, page after page: 2.x gives at
+/// most 200 a page, 50 and newest first unless asked, and the next page by a
+/// cursor that is not combined with the order (T-32 slice 3a). A snapshot
+/// reads them the same way.
+#[tokio::test]
+async fn a_long_session_is_read_whole_oldest_first_page_by_page() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let seeded: Vec<String> = serde_json::from_value(lab.control("seed", json!({"sessionID": session, "count": 450})).await).unwrap();
+    let read = server.messages(&session).await.unwrap();
+    let ids: Vec<&str> = read.as_array().unwrap().iter().map(|m| m["info"]["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, seeded, "every message, oldest first");
+    let pages: Vec<Value> = lab.calls().into_iter()
+        .filter(|c| c["path"] == format!("/api/session/{session}/message")).map(|c| c["query"].clone()).collect();
+    assert_eq!(pages.len(), 3, "200, 200, then the 50 left: {pages:?}");
+    assert_eq!(pages[0], json!({"order": ["asc"], "limit": ["200"]}));
+    assert!(pages[1..].iter().all(|q| q["cursor"].is_array() && q.get("order").is_none() && q["limit"] == json!(["200"])), "{pages:?}");
+    assert_eq!(server.snapshot(&session, &[]).await.unwrap().messages.as_array().unwrap().len(), 450);
+    server.shutdown().await.unwrap();
+}
+
+/// A session's sub-agents are 2.x's sessions with it as their parent,
+/// listed oldest first, and only those (T-32 slice 3a).
+#[tokio::test]
+async fn a_sessions_children_are_listed_by_their_parent() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let (session, other) = (session(&server).await, session(&server).await);
+    let mut made = Vec::new();
+    for parent in [&session, &other, &session] {
+        made.push(lab.control("child", json!({"parentID": parent})).await["id"].as_str().unwrap().to_owned());
+    }
+    let listed: Vec<String> = server.children(&session).await.unwrap().iter().map(|c| c["id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(listed, [made[0].clone(), made[2].clone()]);
+    let asked = lab.calls().into_iter().filter(|c| c["method"] == "GET" && c["path"] == "/api/session").map(|c| c["query"].clone()).collect::<Vec<_>>();
+    assert_eq!(asked, [json!({"parentID": [session], "order": ["asc"], "limit": ["200"]})]);
+    server.shutdown().await.unwrap();
+}
+
+/// 2.x answers a GET it has no route for with its web UI's page (200,
+/// HTML): Core refuses that, naming the path, rather than reading it as
+/// an answer (T-32 slice 3a).
+#[tokio::test]
+async fn a_web_page_is_refused_as_no_answer_of_the_2x_api() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    lab.control("mode", json!({"html": ["/api/session/active", "/api/event"]})).await;
+    let read = server.session_status(&session).await.unwrap_err().to_string();
+    assert!(read.contains("OpenCode answered /api/session/active with text/html, not JSON: not an answer of the OpenCode 2.x API"), "{read}");
+    let stream = server.subscribe(EVENT_IDLE_LIMIT).await.err().expect("no stream").to_string();
+    assert!(stream.contains("OpenCode answered /api/event with text/html, not an event stream"), "{stream}");
+    server.shutdown().await.unwrap();
+}
+
+/// 2.x's heartbeat is a comment every 15 s, never an event: it keeps a stream
+/// that says nothing else open past the 30 s limit, and a stream with neither
+/// still breaks at that limit (T-32 slice 3a, Lead 4890). Both at the real
+/// EVENT_IDLE_LIMIT, so it is the limit itself that is checked.
+#[tokio::test]
+async fn a_heartbeat_comment_keeps_a_quiet_stream_open_and_silence_still_breaks_it_at_the_limit() {
+    let (beating, quiet) = (lab(), lab());
+    let (a, b) = (Server::start(&beating.launch).await.unwrap(), Server::start(&quiet.launch).await.unwrap());
+    beating.control("mode", json!({"heartbeat": 15})).await;
+    quiet.control("mode", json!({"heartbeat": 0})).await;
+    let (mut open, mut silent) = (a.subscribe(EVENT_IDLE_LIMIT).await.unwrap(), b.subscribe(EVENT_IDLE_LIMIT).await.unwrap());
+    let started = std::time::Instant::now();
+    let kept = async {
+        let until = started + Duration::from_secs(35);
+        loop {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(left, open.next()).await {
+                Err(_) => return Ok(()),
+                Ok(Ok(Some(_))) => continue,
+                Ok(other) => return Err(format!("{other:?}")),
+            }
+        }
+    };
+    let broke = async { tokio::time::timeout(Duration::from_secs(33), silent.next()).await.map(|next| (next.map(|e| e.is_some()), started.elapsed())) };
+    let (kept, broke) = tokio::join!(kept, broke);
+    assert_eq!(kept, Ok(()), "comments every 15 s kept the stream open for 35 s with nothing else said");
+    let (next, after) = broke.expect("a stream with no comment and no event broke at the limit, not later");
+    let error = next.expect_err("a silence is an error, not an end").to_string();
+    assert!(error.contains("silent for 30s"), "{error}");
+    assert!(after >= EVENT_IDLE_LIMIT, "not before the limit: {after:?}");
+    a.shutdown().await.unwrap();
+    b.shutdown().await.unwrap();
 }

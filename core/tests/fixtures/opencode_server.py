@@ -102,7 +102,7 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
-         'replay': 'ok'}
+         'replay': 'ok', 'html': []}
 # Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
 held_reads = []
 # Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
@@ -133,7 +133,9 @@ def new_id(prefix):
 
 
 def publish(kind, properties):
-    event = {'id': new_id('evt'), 'type': kind, 'properties': properties}
+    # 2.x's envelope (schema/src/event.ts): what 1.19.3 called properties is `data`. Its contents keep 1.19.3's shape
+    # here until their slices (T-32 slice 3a).
+    event = {'id': new_id('evt'), 'type': kind, 'data': properties}
     with lock:
         for stream in streams:
             stream.put(event)
@@ -151,6 +153,40 @@ def publish(kind, properties):
 def log(entry):
     with lock, (ROOT / 'calls.jsonl').open('a') as out:
         out.write(json.dumps(entry) + '\n')
+
+
+def cursor_of(query):
+    try:
+        return json.loads(base64.urlsafe_b64decode(query['cursor'][0].encode())) if 'cursor' in query else {}
+    except ValueError:
+        return {}
+
+
+def page(items, query, kept):
+    """One page of a 2.x list (server/src/handlers/message.ts): `limit` (1..200, 50 by default), newest first unless
+    `order` says, or the page a `cursor` names, which carries the rest and is not combined with `order`. Its
+    `cursor.next` is set on every page that is not empty. The status and body to answer."""
+    if 'cursor' in query and 'order' in query:
+        return 400, {'_tag': 'InvalidRequestError', 'message': 'cursor cannot be combined with order'}
+    if 'cursor' in query:
+        at = cursor_of(query)
+        if not at:
+            return 400, {'_tag': 'InvalidCursorError', 'message': 'Invalid cursor'}
+        start, order = at['at'], at['order']
+        if any(query.get(name, [None])[0] not in (None, at['kept'].get(name)) for name in at['kept']):
+            return 400, {'_tag': 'InvalidCursorError', 'message': 'the cursor is not of this list'}
+    else:
+        start, order = 0, query.get('order', ['desc'])[0]
+    limit = int(query.get('limit', ['50'])[0])
+    if not 1 <= limit <= 200:
+        return 400, {'_tag': 'InvalidRequestError', 'message': 'limit must be 1..200'}
+    ordered = items if order == 'asc' else list(reversed(items))
+    data = ordered[start:start + limit]
+    cursor = {}
+    if data:
+        token = json.dumps({'at': start + limit, 'order': order, 'kept': kept})
+        cursor['next'] = base64.urlsafe_b64encode(token.encode()).decode()
+    return 200, {'data': data, 'cursor': cursor}
 
 
 def save():
@@ -435,6 +471,19 @@ def control(name, body):
             questions.append(request)
         publish('question.asked', request)
         return request
+    if name == 'seed':
+        # `count` stored messages and no event: a session long enough to page through, oldest first by creation.
+        base, made = int(time.time() * 1000), []
+        for i in range(body['count']):
+            message_id = new_id('msg')
+            info = {'id': message_id, 'sessionID': body['sessionID'], 'role': 'user', 'time': {'created': base + i}}
+            part = {'id': new_id('prt'), 'sessionID': body['sessionID'], 'messageID': message_id, 'type': 'text',
+                    'text': f'seeded {i}'}
+            with lock:
+                messages.setdefault(body['sessionID'], {})[message_id] = {'info': info, 'parts': [part]}
+            made.append(message_id)
+        save()
+        return made
     if name == 'child':
         # As OpenCode 1.19.3's task tool starts a sub-agent: a session of its
         # own under the one that called it (`parentID`), announced as created.
@@ -648,6 +697,9 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(modes['slow'][url.path])
         if url.path in modes['fail']:
             return self.reply(modes['fail'][url.path], {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
+        if url.path in modes['html']:
+            # As a route 2.x does not have answers a GET: its web UI's page.
+            return self.page_html()
         key = (method, *parts)
         if key == ('GET', 'api', 'info'):
             # As 2.x (server/src/process.ts): 503 with retry-after while it starts, then its identity.
@@ -662,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             return self.reply(200, {'version': switch('version') or '2.2.5', 'pid': os.getpid(),
                                     'urls': [f'http://127.0.0.1:{self.server.server_address[1]}'], 'paths': {'tmp': '/tmp'}})
-        if key == ('GET', 'event'):
+        if key == ('GET', 'api', 'event'):
             if time.time() < modes['refuseEventsUntil']:
                 return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
             return self.stream()
@@ -673,24 +725,27 @@ class Handler(BaseHTTPRequestHandler):
                                     'directory': modes['directory'] or str(WORK)})
         if key == ('GET', 'project', 'current'):
             return self.reply(200, {'id': current_project[0], 'worktree': str(WORK), 'vcs': 'git'})
-        if key == ('POST', 'session'):
+        if key == ('POST', 'api', 'session'):
+            # 2.x takes the session's folder from the body (server/src/handlers/session.ts).
             session = {'id': new_id('ses'), 'projectID': PROJECT, 'title': (body or {}).get('title', ''),
-                       'directory': parse_qs(url.query).get('directory', [''])[0]}
+                       'directory': ((body or {}).get('location') or {}).get('directory', '')}
             sessions[session['id']] = session
             save()
             publish('session.created', {'sessionID': session['id'], 'info': session})
-            return self.reply(200, session)
-        if key == ('GET', 'session', 'status'):
-            return self.reply(200, statuses)
+            return self.reply(200, {'data': session})
+        if key == ('GET', 'api', 'session', 'active'):
+            # 2.x lists the sessions this process runs, each as running (server/src/handlers/session.ts).
+            return self.reply(200, {'data': {sid: {'type': 'running'} for sid, status in statuses.items()
+                                             if status.get('type') != 'idle'}})
+        if key == ('GET', 'api', 'session'):
+            query = parse_qs(url.query)
+            # A next page's cursor carries the list's filters, as 2.x's does (schema/src/session.ts).
+            parent = query.get('parentID', [None])[0] or cursor_of(query).get('kept', {}).get('parentID')
+            listed = [s for s in sessions.values() if parent is None or s.get('parentID') == parent]
+            return self.reply(*page(listed, query, {'parentID': parent}))
+        if len(parts) >= 3 and parts[:2] == ['api', 'session']:
+            return self.api_session(method, parts[2], parts[3:], parse_qs(url.query))
         if key == ('GET', 'permission'):
-            if modes['holdPermission']:
-                # Once: this read waits for `release`, after the reads before it in a whole
-                # session read (its messages, its status) have answered.
-                modes['holdPermission'] = False
-                waiter = threading.Event()
-                with lock:
-                    held_reads.append(waiter)
-                waiter.wait(30)
             return self.reply(200, permissions)
         if key == ('GET', 'question'):
             return self.reply(200, questions)
@@ -716,15 +771,52 @@ class Handler(BaseHTTPRequestHandler):
             return self.answer(permissions, parts[1], body['reply'], body)
         if method == 'POST' and len(parts) == 3 and parts[0] == 'question' and parts[2] in ('reply', 'reject'):
             return self.answer(questions, parts[1], parts[2], body)
+        if parts[:1] == ['api']:
+            # An /api route 2.x does not have: an empty 404 (cli/src/services/web-ui.ts).
+            return self.reply(404)
+        if method == 'GET':
+            # Any other GET is the web UI's page, 200 and HTML, with no password asked (cli/src/services/web-ui.ts).
+            return self.page_html()
         return self.missing(url.path)
+
+    def page_html(self):
+        data = b'<!doctype html><html><head><title>OpenCode</title></head><body></body></html>'
+        self.send_response(200)
+        self.send_header('content-type', 'text/html; charset=utf-8')
+        self.send_header('content-length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def api_session(self, method, session, rest, query):
+        # 2.x's own routes of one session (protocol/src/groups/session.ts, message.ts); what they hold keeps
+        # 1.19.3's shape here until their slices.
+        if session not in sessions:
+            return self.reply(404, {'_tag': 'SessionNotFoundError', 'message': f'Session not found: {session}'})
+        if (method, *rest) == ('GET',):
+            return self.reply(200, {'data': sessions[session]})
+        if (method, *rest) == ('GET', 'message'):
+            if modes['failListOnce']:
+                modes['failListOnce'] = False
+                return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: list read failed'})
+            stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
+            return self.reply(*page(stored, query, {}))
+        if (method, *rest) == ('GET', 'permission'):
+            if modes['holdPermission']:
+                # Once: this read waits for `release`, after the reads before it in a whole
+                # session read (its messages, its status) have answered.
+                modes['holdPermission'] = False
+                waiter = threading.Event()
+                with lock:
+                    held_reads.append(waiter)
+                waiter.wait(30)
+            return self.reply(200, {'data': [p for p in permissions if p['sessionID'] == session]})
+        if (method, *rest) == ('GET', 'form'):
+            return self.reply(200, {'data': [q for q in questions if q['sessionID'] == session]})
+        return self.reply(404)
 
     def session(self, method, session, rest, body):
         if session not in sessions:
             return self.missing(f'Session {session}')
-        if (method, *rest) == ('GET',):
-            return self.reply(200, sessions[session])
-        if (method, *rest) == ('GET', 'children'):
-            return self.reply(200, [s for s in sessions.values() if s.get('parentID') == session])
         if (method, *rest) == ('POST', 'prompt_async'):
             return self.prompt(session, body)
         if (method, *rest) == ('POST', 'command'):
@@ -739,12 +831,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.fork(session, body)
         if method == 'DELETE' and len(rest) == 4 and rest[0] == 'message' and rest[2] == 'part':
             return self.delete_part(session, rest[1], rest[3])
-        if (method, *rest) == ('GET', 'message'):
-            if modes['failListOnce']:
-                modes['failListOnce'] = False
-                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: list read failed'}})
-            stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
-            return self.reply(200, stored)
         if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
             if modes.get('failMessageReads'):
                 return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: message read failed'}})
@@ -1263,7 +1349,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             # As in OpenCode, the subscriber exists before server.connected.
-            send({'id': new_id('evt'), 'type': 'server.connected', 'properties': {}})
+            send({'id': new_id('evt'), 'type': 'server.connected', 'data': {}})
             beat = time.monotonic()
             while generation[0] == current:
                 try:
@@ -1272,7 +1358,9 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 every = modes['heartbeat']
                 if every and time.monotonic() - beat >= every:
-                    send({'id': new_id('evt'), 'type': 'server.heartbeat', 'properties': {}})
+                    # 2.x's heartbeat is a comment, not an event (server/src/handlers/event.ts).
+                    self.wfile.write(b': heartbeat\n\n')
+                    self.wfile.flush()
                     beat = time.monotonic()
         except (BrokenPipeError, ConnectionResetError):
             pass

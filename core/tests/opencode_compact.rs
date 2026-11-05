@@ -238,7 +238,7 @@ async fn nothing_is_asked_for_without_a_known_model_or_a_readable_idle_session_w
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
     assert!(error.contains("不是空闲状态"), "{error}");
     lab.control("idle", json!({"sessionID":session})).await;
-    lab.control("mode", json!({"fail":{format!("/session/{session}"):500}})).await;
+    lab.control("mode", json!({"fail":{format!("/api/session/{session}"):500}})).await;
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
     assert!(error.contains("没有读到 OpenCode 会话现在的状态"), "{error}");
     assert!(lab.summarized().is_empty(), "{:#?}", lab.calls());
@@ -511,7 +511,7 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
 async fn a_read_from_before_a_removal_never_undoes_it() {
     let lab = lab(true).await;
     let turn = lab.stopped().await;
-    let reads = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/permission").count();
+    let reads = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"].as_str().is_some_and(|p| p.starts_with("/api/session/") && p.ends_with("/permission"))).count();
     let (resynced, before) = (lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), reads(&lab));
     lab.control("mode", json!({"holdPermission": true})).await;
     lab.control("drop", json!({})).await;

@@ -246,7 +246,7 @@ async fn an_agents_opencode_keeps_its_data_and_state_its_own_and_fetches_nothing
         "XDG_DATA_HOME": path(own.join("data")), "XDG_STATE_HOME": path(own.join("state")),
         "XDG_CACHE_HOME": path(opencode.join("cache")), "XDG_CONFIG_HOME": std::env::var("XDG_CONFIG_HOME").ok(),
         "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1",
-    }));
+    }), "its folders and switches as Core started it");
     use std::os::unix::fs::PermissionsExt;
     for folder in [opencode.join(ID), opencode.join("cache")] {
         assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700, "{} is Core's alone", folder.display());
@@ -1058,7 +1058,7 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
         let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
         let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/message.part.updated'").unwrap();
         query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap)
-            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["properties"]["part"].clone())
+            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["data"]["part"].clone())
             .filter(|part| part["type"] == "file").collect::<Vec<_>>()
     };
     for _ in 0..400 {
@@ -1965,7 +1965,7 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
 
     // The stream breaks and can't reopen at once; meanwhile an answer of that model, then a compaction newer than it.
     let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
-    let subscribed = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/event").count();
+    let subscribed = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/api/event").count();
     let (reads, before, opened) = (providers_reads(&lab), resyncs(&lab), subscribed(&lab));
     lab.control("refuseEvents", json!({"seconds":0.4})).await;
     lab.control("drop", json!({})).await;

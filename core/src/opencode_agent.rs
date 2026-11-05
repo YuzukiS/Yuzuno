@@ -251,7 +251,7 @@ impl Connection {
     /// A sub-agent session OpenCode says it started under one of the Agent's:
     /// its `session.created` or `session.updated`, or a `task` call's part.
     fn learn(&self, kind: &str, event: &Value) {
-        let p = &event["properties"];
+        let p = &event["data"];
         match kind {
             "session.created" | "session.updated" => {
                 let info = &p["info"];
@@ -975,7 +975,7 @@ impl Workspace {
                 self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
                     project(d, generation, &c.session, event);
                     if kind == "message.updated" {
-                        measure(d, &c, &event["properties"]["info"]);
+                        measure(d, &c, &event["data"]["info"]);
                     }
                     refresh_status(d);
                 }).map(drop)
@@ -1863,13 +1863,13 @@ const TAIL: usize = 8;
 /// the Agent's ownership, as the change is made). The open and newest ones
 /// come with them (`Sel::Turns`).
 fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
-    let info = &event["properties"]["info"];
+    let info = &event["data"]["info"];
     let mut turns: Vec<String> = [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect();
     // A message added to a running Turn, or an answer to one (T-10).
     for message in [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str) {
         turns.extend(store.turn_holding(id, "_opencodeInputs", message)?);
     }
-    if let Some(message) = event["properties"]["part"]["messageID"].as_str() {
+    if let Some(message) = event["data"]["part"]["messageID"].as_str() {
         turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
     }
     Ok(turns)
@@ -1920,7 +1920,7 @@ fn projected(kind: &str) -> bool {
 }
 
 fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
-    let p = &event["properties"];
+    let p = &event["data"];
     match event["type"].as_str().unwrap_or_default() {
         "message.updated" => message(d, &p["info"]),
         "message.part.updated" => part(d, &p["part"]),
@@ -1949,7 +1949,7 @@ fn requested(kind: &str) -> bool {
 
 /// A request event of `session`: the Agent's own, or its sub-agent `child`'s.
 fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&Value>, event: &Value) {
-    let p = &event["properties"];
+    let p = &event["data"];
     match event["type"].as_str().unwrap_or_default() {
         "permission.asked" => ask(d, PERMISSION, generation, session, child, p),
         "question.asked" => ask(d, QUESTION, generation, session, child, p),

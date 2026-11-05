@@ -8,12 +8,21 @@ the UI does not offer it. The switch decides only creation: an existing
 OpenCode Agent keeps working either way.
 
 **Moving to OpenCode 2.x (T-32).** Core is moving from OpenCode 1.19.3 to 2.x,
-one part of the protocol at a time. It now starts, checks and stops OpenCode
-as 2.x does, and takes any 2.x: it is checked against 2.2.5, and a newer one is
-noted in the Agent's settings, not refused. An OpenCode that is not 2.x is
-refused with the version it says it is. The rest of the protocol is still
-1.19.3's until the following parts land: messages to an OpenCode 2.x Agent do
-not work yet, which is why creating one stays behind the experimental switch.
+one part of the protocol at a time. It starts, checks and stops OpenCode as 2.x
+does, and takes any 2.x: it is checked against 2.2.5, and a newer one is noted
+in the Agent's settings, not refused. An OpenCode that is not 2.x is refused
+with the version it says it is.
+
+Each part moves in two steps. First the routes: what connecting, a session's
+snapshot and its event stream read now uses 2.x's own routes (`/api/…`), in
+2.x's envelope (`{data}`). Then what those carry: until their own parts land,
+the messages and their events (with a session's status), then permission
+requests and questions, keep 1.19.3's shape in Core and in its tests, inside
+2.x's envelope. Calls outside connecting still use 1.19.3's routes until their
+parts: sending a message, a command, compaction, rewind, fork, answering a
+request, interrupting, Workspace MCP and the model list. So messages to an
+OpenCode 2.x Agent do not work yet, which is why creating one stays behind the
+experimental switch.
 
 An OpenCode Agent made before this change was made with 1.19.3. It is kept to
 read: its conversation stays in Yuzuno, and it is never started again, because
@@ -102,7 +111,9 @@ a new one.
   teardown, which it gives 10 seconds. Core waits at most 12 seconds, then
   ends whatever of OpenCode is left. If Core or OpenCode is killed instead,
   or OpenCode does not end in time, a command still running goes on until it
-  ends by itself.
+  ends by itself. On a Core that is not on Linux or macOS, Core ends OpenCode
+  at once and its tools' commands are not ended: the SIGTERM and the wait are
+  Unix-only, and OpenCode 2.2.5 has no route to ask it to stop.
 
 ## What OpenCode does by itself
 
