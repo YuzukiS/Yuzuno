@@ -11,7 +11,8 @@
 //   after leaving for another Agent and coming back (R2 3578219f).
 // - Q-07: a question arrives while the dock is not there: the dock comes in once, its opacity only (its
 //   height at once: the deviation from the 11-03 inventory, T-19 3881), and the conversation's end is
-//   kept. A second question while the dock is shown: no cue.
+//   kept. A second question while the dock is shown: no cue. Opened from Home with its first detail
+//   on its way when Core announces a change to it, another Agent's dock plays nothing (desktop).
 // - Not live: the first view (a running Turn, and another Agent's question), a Turn a Core reset
 //   completes, and one completed while the stream was down that Core replays when it resumes: nothing
 //   plays.
@@ -51,6 +52,8 @@ const usage = { revision: 1, status: "unknown", account: null, accountId: null,
   checkedAt: null, observedAt: null, ordinaryUsageAllowed: null, error: null, buckets: [] };
 const mcp = { state: "observed", reason: "", generation: 1, more: 0, servers: [] };
 let agents, state;
+// Ivo's detail is held while this is set: a first read still on its way.
+let holdIvo = null;
 // Changes Core makes before it says so, applied only when the page asks for /__check/release.
 let staged = [];
 const stage = (change) => staged.push(change);
@@ -59,9 +62,10 @@ const gets = () => ({
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs/live": noLiveJobs, "/api/jobs": noJobs,
   "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
   "/api/agents/a/codex/usage": usage, "/api/agents/b/codex/usage": usage, "/api/agents/a/codex/mcp": mcp, "/api/agents/b/codex/mcp": mcp,
+  "/api/agents/c/codex/usage": usage, "/api/agents/c/codex/mcp": mcp,
   "/api/workspace": { workspace: { id: "fixture" }, agents, projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/w" },
-  "/api/agents/a": detailOf(0, "a"), "/api/agents/b": detailOf(1, "b"),
+  "/api/agents/a": detailOf(0, "a"), "/api/agents/b": detailOf(1, "b"), "/api/agents/c": detailOf(2, "c"),
   "/api/home": { generatedAt: new Date().toISOString(), order: ["p"], needsYou: [], projects: [] },
 });
 const types = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".png": "image/png", ".woff2": "font/woff2",
@@ -82,6 +86,7 @@ async function serve(route) {
       report.writes.push(`${request.method()} ${url.pathname}`);
       return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
     }
+    if (url.pathname === "/api/agents/c" && holdIvo) await holdIvo;
     const known = gets()[url.pathname];
     if (known === undefined && !report.unknownGets.includes(url.pathname)) report.unknownGets.push(url.pathname);
     if (known === undefined && /^\/api\/agents\/[^/]+\/./.test(url.pathname)) return route.fulfill({ status: 404, json: { error: "not in this check's fixture" } });
@@ -219,10 +224,11 @@ const quiet = (frames) => frames.every((f) => !f.dock?.plays?.length && Object.v
 for (const run of runs) {
   const tag = run.name;
   const reduced = run.reducedMotion === "reduce";
-  agents = [agent("a", "Mori"), agent("b", "Hana")];
+  agents = [agent("a", "Mori"), agent("b", "Hana"), agent("c", "Ivo")];
   state = {
     a: { turns: [...base("Mori"), turn("work-1", [user("work-1-u", "Build the prototype"), answer("work-1-r", "Working on it.")], "inProgress")], receipts: [] },
     b: { turns: [...base("Hana"), turn("hq-1", [user("hq-1-u", "Plan it"), question("hq-1-q", "Ship on Friday?")])], receipts: [] },
+    c: { turns: [...base("Ivo"), turn("iq-1", [user("iq-1-u", "Merge it"), question("iq-1-q", "Merge today?")])], receipts: [] },
   };
   staged = [];
   const context = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion,
@@ -385,6 +391,31 @@ for (const run of runs) {
       ended3.length > 5 && !first3.activity && fadeOf(first3.actions?.plays)
         && backDone.calls.length === 1 && backDone.calls[0].turn === "q-2" && backDone.calls[0].part === "actions",
       { first3, calls: backDone.calls });
+    // Opened from Home, an Agent whose first detail is still on its way when Core announces a change
+    // to it (#569 round cfabe82d P3): its questions are what was there, and the dock shows with
+    // nothing playing. Home's own read of Mori's detail has ended the wait that leaving began, and
+    // nothing else marks it. A desktop's rail opens Ivo from Home.
+    if (!run.phone) {
+      await page.getByRole("button", { name: "Home", exact: true }).click();
+      await page.waitForTimeout(300);
+      await page.evaluate(() => window.__announce("a"));
+      await page.waitForTimeout(600);
+      let release;
+      holdIvo = new Promise((done) => { release = done; });
+      const beforeIvo = (await calls()).length;
+      await page.locator('.agent-row .agent-select[aria-label="Open Ivo"]').first().click();
+      await page.waitForTimeout(250);
+      await page.evaluate(() => window.__announce("c"));
+      const sampling = page.evaluate(() => window.__sample(1200, []));
+      await page.waitForTimeout(150);
+      holdIvo = null;
+      release();
+      const ivo = await sampling;
+      const docked = ivo.filter((f) => f.dock);
+      ok(`${tag}: opened from Home, with its first detail on its way when Core announces a change to it, an Agent's question dock shows with nothing playing`,
+        docked.length > 5 && docked.every((f) => !f.dock.plays.length) && !(await calls()).slice(beforeIvo).some((c) => c.part === "dock"),
+        { first: docked[0]?.dock, frames: ivo.length, docked: docked.length });
+    }
     await page.screenshot({ path: join(output, `${tag}.png`) });
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));
