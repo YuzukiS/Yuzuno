@@ -2343,6 +2343,67 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
   } finally { page.close(); }
 });
 
+test("a draft of three lines offers to expand; one button expands and collapses it, and it collapses when sent or another Agent opens (T-44)", async () => {
+  const page = await mount({});
+  try {
+    const composer = (name = "Mori") => page.document.querySelector(`[data-composer-input][aria-label="Message ${name}"]`);
+    const box = () => page.document.querySelector("form.composer");
+    const expand = () => page.document.querySelector("form.composer .composer-expand");
+    // jsdom lays nothing out: the draft's own lines are its rows.
+    setValue(page.window, composer(), "One\nTwo");
+    await pause();
+    assert.equal(expand() === null, true, "two lines offer no expand");
+    assert.equal(box().dataset.expand, undefined);
+    setValue(page.window, composer(), "One\nTwo\nThree");
+    await pause();
+    assert.equal(expand()?.getAttribute("aria-label"), "Expand the draft");
+    assert.equal(box().dataset.expand, "offered");
+    // A press leaves the caret in the text: the button takes no focus.
+    const press = new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+    expand().dispatchEvent(press);
+    assert.equal(press.defaultPrevented, true);
+    expand().click();
+    await pause();
+    assert.equal(box().dataset.expand, "open");
+    assert.equal(expand().getAttribute("aria-label"), "Collapse the draft");
+    // Expanded, a shorter draft stays so until the button collapses it.
+    setValue(page.window, composer(), "One");
+    await pause();
+    assert.equal(box().dataset.expand, "open");
+    expand().click();
+    await pause();
+    assert.equal(expand() === null, true, "collapsed, one line offers no expand");
+    // Another Agent opened, and back: collapsed, the draft kept.
+    setValue(page.window, composer(), "One\nTwo\nThree");
+    await pause();
+    expand().click();
+    await pause();
+    assert.equal(box().dataset.expand, "open");
+    button(page, "Hana").click();
+    await until(() => composer("Hana"), "Hana's conversation");
+    assert.equal(expand() === null, true, "Hana's empty draft offers no expand");
+    button(page, "Mori").click();
+    await until(() => composer(), "Mori's conversation");
+    await pause();
+    assert.equal(composerText(composer()), "One\nTwo\nThree");
+    assert.equal(box().dataset.expand, "offered");
+    // Sent, the draft is emptied and the box collapses with it.
+    expand().click();
+    await pause();
+    assert.equal(box().dataset.expand, "open");
+    page.document.querySelector('[aria-label="Send message"]').click();
+    await until(() => composerText(composer()) === "", "the draft sent");
+    await pause();
+    assert.equal(expand() === null, true);
+    assert.equal(box().dataset.expand, undefined);
+    setValue(page.window, composer(), "Four\nFive\nSix");
+    await pause();
+    assert.equal(box().dataset.expand, "offered", "a new draft starts collapsed");
+    assert.equal(page.calls.filter((r) => r.init.method === "POST" && /\/(messages|turns)$/.test(r.url)).length, 1);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("earlier saved messages load in front of what is being read, within three windows (T-161)", async () => {
   // Five Turns, three Items to a window as Core pages them (T-77): a window
   // before an Item ends at it, a pinned one starts at it.
