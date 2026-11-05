@@ -2443,6 +2443,10 @@ impl Store {
             let receipts = changed_receipts(&receipts_before, &staged.message_receipts);
             record_rows::plan(&*self.db.read()?, id, &staged, &staged.turns, &[], &dirty, &receipts)?
         };
+        // One that may open or answer a question changes what Needs you,
+        // the title and the attention order show (T-42), as a native
+        // request does: written with a synced commit and announced now.
+        let urgent = urgent || plan.may_change_questions();
         // Those of a replaced field are not written. The slice still notes
         // them until this write commits, so a failed one gives all back.
         let pending = self.take_chunks(id);

@@ -107,6 +107,22 @@ fn only_a_question_an_answer_or_a_deletion_reads_the_open_questions_again() {
     assert_eq!(reads(), from + 3);
 }
 
+#[test]
+fn a_stream_event_that_opens_or_closes_a_question_is_written_and_announced_at_once() {
+    // Review 9392d7c2: a write was urgent only for what `Watched` sees (the
+    // native requests among it), so a question reached Needs you, the
+    // title and the attention order with the next tick.
+    let (_dir, store) = lab();
+    store.insert(&detail("a")).unwrap();
+    let event = |item: Value| json!({"threadId":"thread","turnId":"t","item":item});
+    let message = json!({"id":"m1","type":"agentMessage","text":"Hello"});
+    assert!(!stream(&store, "a", "item/completed", &event(message)).urgent, "a plain message waits for the tick");
+    assert!(stream(&store, "a", "item/completed", &event(question("q1", "completed"))).urgent, "a question is announced at once");
+    assert_eq!(counts(&store, "a"), (1, 1, 0));
+    assert!(stream(&store, "a", "item/completed", &event(question("q1", "cancelled"))).urgent, "so is one no longer asked");
+    assert_eq!(counts(&store, "a"), (0, 0, 0));
+}
+
 fn end(store: &Store, id: &str, turn: &str, status: &str) {
     let data = json!({"threadId":"thread","turn":{"id":turn,"status":status}});
     store.record_event_turns(id, "turn/completed", &data, |d| {

@@ -1655,6 +1655,22 @@ impl Plan {
     pub fn body(&self) -> &MetaBody {
         &self.body
     }
+
+    /// Whether writing it may open or close an asynchronous question
+    /// (T-42), known before the write: it writes an asynchronous
+    /// `agentMessage` Item, deletes Items or Turns, or writes a receipt of an
+    /// answer. These cover every write `Written::questions` reports (an
+    /// Item keeps its type and delivery), so a stream event that changes
+    /// the open questions is written and announced at once, as one that
+    /// changes a native request is (review 9392d7c2).
+    pub fn may_change_questions(&self) -> bool {
+        self.ops.iter().any(|op| match op {
+            Op::Item { asks, .. } => *asks,
+            Op::DeleteTurn { .. } | Op::DeleteItems { .. } | Op::DeleteItem { .. } => true,
+            Op::Receipt(row) => row.answers,
+            _ => false,
+        })
+    }
 }
 
 /// One statement of a write, in order. Deleting a Turn or an Item deletes
@@ -1672,8 +1688,10 @@ enum Op {
     Order { keys: Vec<String> },
     /// All Item rows of a Turn now stored whole.
     DeleteItems { turn: String },
+    /// `asks`: an asynchronous `agentMessage`, the only Item that has, or
+    /// may have had, the `question` key (T-42).
     Item { turn: String, key: String, ord: usize, payloads: usize, data: String, previews: Option<String>,
-        keys: Vec<(&'static str, String)> },
+        keys: Vec<(&'static str, String)>, asks: bool },
     ItemOrd { turn: String, key: String, ord: usize },
     /// The Item rows of gaps moved: (stored position, count, new position).
     Shift { turn: String, ranges: Vec<(usize, usize, usize)> },
@@ -1857,7 +1875,8 @@ fn plan_items(db: &Connection, agent: &str, turn: &str, items: &[Value], all: bo
         }
         let payloads = out.payload_count();
         // The Item row first: its payload rows refer to it.
-        ops.push(Op::Item { turn: turn.into(), key: key.clone(), ord: here, payloads, data: out.data, previews: out.previews, keys: out.keys });
+        let asks = item["type"] == "agentMessage" && item["delivery"] == "async";
+        ops.push(Op::Item { turn: turn.into(), key: key.clone(), ord: here, payloads, data: out.data, previews: out.previews, keys: out.keys, asks });
         for (field, data) in out.payloads {
             ops.push(Op::Payload { turn: turn.into(), item: key.clone(), field, data });
         }
@@ -1925,7 +1944,7 @@ pub fn apply(db: &Connection, id: &str, plan: &Plan, agent: &crate::model::Agent
                     .execute(params![id, turn])?;
                 written.questions = true;
             }
-            Op::Item { turn, key, ord, payloads, data, previews, keys } => {
+            Op::Item { turn, key, ord, payloads, data, previews, keys, .. } => {
                 written.items += db.prepare_cached("INSERT INTO agent_items(agent_id,turn_id,item_id,ord,payloads,data,previews) VALUES(?1,?2,?3,?4,?5,?6,?7)
                     ON CONFLICT(agent_id,turn_id,item_id) DO UPDATE SET ord=excluded.ord, payloads=excluded.payloads, data=excluded.data,
                     previews=excluded.previews
