@@ -2458,14 +2458,17 @@ test("Refresh tasks, task details and messages say they are busy while the read 
     page.render({ revision: 0 });
     await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
     assert.deepEqual(await during("task_list", "Refresh tasks"),
-      { seen: { busy: "true", title: "Refreshing tasks…" }, after: { busy: null, title: "Refresh tasks" } });
+      { seen: { busy: "true", title: "Refreshing tasks…" }, after: { busy: null, title: "Refresh tasks" } },
+      "Refresh tasks says it is busy while its read is on its way, then not");
     await board.openTask();
     assert.deepEqual(await during("task_get", "Refresh task details"),
-      { seen: { busy: "true", title: "Refreshing task details…" }, after: { busy: null, title: "Refresh task details" } });
+      { seen: { busy: "true", title: "Refreshing task details…" }, after: { busy: null, title: "Refresh task details" } },
+      "Refresh task details says it is busy while its read is on its way, then not");
     click(page, "Messages");
     await waitFor(() => refreshButton("Refresh messages") && !refreshButton("Refresh messages").disabled, "the mailbox");
     assert.deepEqual(await during("peer_read", "Refresh messages"),
-      { seen: { busy: "true", title: "Refreshing messages…" }, after: { busy: null, title: "Refresh messages" } });
+      { seen: { busy: "true", title: "Refreshing messages…" }, after: { busy: null, title: "Refresh messages" } },
+      "Refresh messages says it is busy while its read is on its way, then not");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
