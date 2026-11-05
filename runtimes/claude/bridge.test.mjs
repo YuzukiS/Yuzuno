@@ -333,6 +333,21 @@ test('initialization failure closes the owned query and does not report ready', 
   assert.equal(events.filter(e => e.type === 'exit').length, 1);
 });
 
+test('a failed start answers before its exit, so Core reads why it failed (T-35)', async () => {
+  const output = new PromptQueue();
+  let closed = false;
+  output.initializationResult = async () => { throw new Error('scripted start failure'); };
+  output.close = () => { closed = true; PromptQueue.prototype.close.call(output); };
+  const events = [];
+  const bridge = new ClaudeBridge({ query: () => output, resolveCli: () => '/native/claude', emit: event => events.push(event) });
+  await bridge.handle({ id: 'start', op: 'start', cwd: process.cwd() });
+  await bridge.reader;
+  assert.deepEqual(events.map(e => e.type).filter(type => type === 'response' || type === 'exit'), ['response', 'exit'],
+    'the reply to the start first, then the exit');
+  assert.match(events.find(e => e.type === 'response').error, /scripted start failure/);
+  assert.equal(closed, true, 'and the query is closed');
+});
+
 test('a delayed interrupt acknowledgement cannot interrupt a newly submitted turn', async () => {
   const f = await fixture();
   await f.bridge.handle({ id: 'send', op: 'send', turnId: 'turn1', text: 'do work' });

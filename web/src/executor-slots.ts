@@ -4,8 +4,9 @@ import { api } from "./api";
  * (`/api/executor-slots`, T-35). A Project's own limit is unset (null)
  * unless saved; then only the Workspace's applies. */
 export type ExecutorSlotsView = {
-  workspace: { version: number; slots: number; saved: boolean; default: number };
-  limits: { min: number; max: number };
+  /** `startLimitSeconds`: how long an executor's start may take before Core cuts it off (S2). */
+  workspace: { version: number; slots: number; saved: boolean; default: number; startLimitSeconds: number };
+  limits: { min: number; max: number; startLimitSeconds: { min: number; max: number; default: number } };
   inUse: { waiting: number; starting: number; running: number };
   project?: { id: string; version: number; slots: number | null };
 };
@@ -16,6 +17,8 @@ const whole = (value: unknown, otherwise: number) => (typeof value === "number" 
 export const slotsView = (value: Partial<ExecutorSlotsView> | null | undefined): ExecutorSlotsView => {
   const workspace = value?.workspace;
   const defaults = whole(workspace?.default, 3);
+  const startLimits = value?.limits?.startLimitSeconds;
+  const startDefault = whole(startLimits?.default, 300);
   const project = value?.project;
   return {
     workspace: {
@@ -23,8 +26,12 @@ export const slotsView = (value: Partial<ExecutorSlotsView> | null | undefined):
       slots: whole(workspace?.slots, defaults),
       saved: workspace?.saved === true,
       default: defaults,
+      startLimitSeconds: whole(workspace?.startLimitSeconds, startDefault),
     },
-    limits: { min: whole(value?.limits?.min, 1), max: whole(value?.limits?.max, 64) },
+    limits: {
+      min: whole(value?.limits?.min, 1), max: whole(value?.limits?.max, 64),
+      startLimitSeconds: { min: whole(startLimits?.min, 30), max: whole(startLimits?.max, 3600), default: startDefault },
+    },
     inUse: {
       waiting: whole(value?.inUse?.waiting, 0),
       starting: whole(value?.inUse?.starting, 0),
@@ -40,8 +47,10 @@ export const readExecutorSlots = (signal?: AbortSignal, projectId?: string) =>
   api<ExecutorSlotsView>(projectId ? `/executor-slots?projectId=${encodeURIComponent(projectId)}` : "/executor-slots", { signal })
     .then(slotsView);
 
-/** Saved against the version it was read at; null unsets a Project's own. */
-export const saveExecutorSlots = (expectedVersion: number, slots: number | null, projectId?: string) =>
+/** Saved against the version it was read at; null unsets a Project's own.
+ * `startLimitSeconds`: the Workspace's only; left out, it stays as saved. */
+export const saveExecutorSlots = (expectedVersion: number, slots: number | null, projectId?: string, startLimitSeconds?: number) =>
   api<ExecutorSlotsView>(projectId ? `/projects/${encodeURIComponent(projectId)}/executor-slots` : "/executor-slots", {
-    method: "PUT", body: JSON.stringify({ expectedVersion, slots }),
+    method: "PUT",
+    body: JSON.stringify(startLimitSeconds === undefined ? { expectedVersion, slots } : { expectedVersion, slots, startLimitSeconds }),
   }).then(slotsView);

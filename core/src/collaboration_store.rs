@@ -18,6 +18,7 @@ pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
 mod context_summary;
 pub(crate) mod executor_dispatch;
+pub(crate) mod executor_start;
 mod current;
 mod research;
 pub(crate) use research::desk_source as research_desk_source;
@@ -95,6 +96,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(result_ack::SCHEMA)?;
     db.execute_batch(research::SCHEMA)?;
     executor_dispatch::migrate(db)?;
+    executor_start::migrate(db)?;
     crate::executor_slots::migrate(db)?;
     // A restart cannot tell whether the Harness accepted an in-flight nudge.
     db.execute(
@@ -1164,7 +1166,10 @@ fn task_dispatch(
     // Project's handover and Core's summary of the task so far (T-34).
     let cold = match input.get("executor") {
         Some(_) => {
-            let template = executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?;
+            let (request, dispatch) = (required_text(input, "requestId", 128)?, task.dispatch.as_ref().unwrap().id.clone());
+            let template = executor_dispatch::dispatched(db, actor, &request, &recipient_id, &dispatch)?;
+            // A rebuild's record is done with its executor's slot (T-35 S2).
+            executor_start::rebuilt(store, db, actor, &request, &recipient_id, &dispatch)?;
             let project: Option<String> = db.query_row("SELECT project_id FROM project_tasks WHERE task_id=?1", [&task.id], |r| r.get(0)).optional()?;
             let handover = match &project {
                 Some(project) => crate::handover::current_in(db, project)?
@@ -1338,8 +1343,13 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
         // Fixed reads never assemble current dispatch state, activity, execution
         // history or repository lists. Read the latest task separately if needed.
         let (id, seq) = task_key(db, &id)?;
-        return Ok(json!({"dispatchMaterials":dispatch_materials::read(db, &id, &dispatch)?,
-            "latestTask":{"taskId":task_number(seq)}}));
+        let mut fixed = json!({"dispatchMaterials":dispatch_materials::read(db, &id, &dispatch)?,
+            "latestTask":{"taskId":task_number(seq)}});
+        // A dispatch a rebuild superseded says so, and why (T-35 S2).
+        if let Some(superseded) = executor_start::superseded(db, &dispatch)? {
+            fixed["supersededBy"] = superseded;
+        }
+        return Ok(fixed);
     }
     let task = load_task(db, &id)?;
     if view == "current" {
@@ -1597,7 +1607,7 @@ pub fn tool_definitions() -> Vec<Value> {
         crate::handover_proposals::tool_definition("handover_get"),
         crate::handover_proposals::tool_definition("handover_propose"),
         definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. Give toAgentId for an existing open Agent, or executor for a new one Core creates from an executor template: only a lead of the task's Project, or the user, may, and not while Core prepares an update. The answer's agentId is the Agent; a retry with the same requestId returns the same one. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task or restart a closed Agent. Normal delivery waits for the current turn (a new executor's, until it has started; it waits for a free executor slot first, and task_get's executorSlot says its place in the queue); urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":{"type":"string","description":"An existing open Agent. Give this or executor."},
-            "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: it works in the dispatch's worktree folder, else the Project's folder on the Core host. An Agent's dispatch may name only the worktree the user registered on the task or a folder inside the Project's: a path an Agent gives in materials is information, not permission. It starts when an executor slot is free (the user sets how many run at once). Give this or toAgentId.",
+            "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: it works in the dispatch's worktree folder, else the Project's folder on the Core host. An Agent's dispatch may name only the worktree the user registered on the task or a folder inside the Project's: a path an Agent gives in materials is information, not permission. It starts when an executor slot is free (the user sets how many run at once). If its start fails, Core rebuilds it once as a new dispatch from you (task_get with the first dispatchId says so); if that fails too, Core blocks the task and mails you. Give this or toAgentId.",
                 "properties":{"templateId":{"type":"string","maxLength":48},"machineId":{"type":["string","null"],"description":"The Core host only (empty or local) in this phase."}}},
             "body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion"]),
         // Generated from the result contract; served by `results`, not here.
