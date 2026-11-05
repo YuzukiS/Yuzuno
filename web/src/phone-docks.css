@@ -13,7 +13,8 @@
   --gutter-left: 8px;
   --gutter-right: 8px;
 }
-.app.phone .conversation-body[class] > .current-turn-prompt[class] {
+.app.phone .conversation-body[class] > .current-turn-prompt[class],
+.app.phone .conversation-body[class] > .conversation-strips[class] {
   left: 0;
   right: var(--conversation-scrollbar);
 }

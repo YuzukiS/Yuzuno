@@ -486,6 +486,7 @@ export class ClaudeBridge {
     this.closed = false;
     this.started = false;
     this.ready = false;
+    this.closeAfterReply = false;
     this.interrupting = false;
     this.configuring = false;
     this.catalogOnly = false;
@@ -553,6 +554,10 @@ export class ClaudeBridge {
       this.emit({ type: 'response', id, result });
     } catch (error) {
       this.emit({ type: 'response', id: validId(id) ? id : null, error: errorText(error, this.credentialMask) });
+    }
+    if (this.closeAfterReply) {
+      this.closeAfterReply = false;
+      this.close();
     }
   }
 
@@ -684,7 +689,11 @@ export class ClaudeBridge {
       ]);
       this.ready = true;
     } catch (error) {
-      this.close();
+      // Closed once the reply to this start is out (`handle`), so Core reads
+      // why the start failed before the exit. Closed first, the exit came
+      // first, and Core could close the bridge before the reply reached it,
+      // leaving the start's outcome unknown (T-35 S2).
+      this.closeAfterReply = true;
       // Name what ran: a CLI this SDK cannot drive fails here, in its own
       // words. Masked before it is shortened, with room left for the name.
       throw new Error(`${errorText(error, this.credentialMask).slice(0, 3000)} (${describeRuntime(runtimeProvenance(cli, undefined, probed, this.sdk))})`);

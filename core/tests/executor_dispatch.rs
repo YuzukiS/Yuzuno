@@ -291,6 +291,80 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     serving.abort();
 }
 
+/// T-35 S2: an executor whose start fails is closed, kept and rebuilt once,
+/// as a new dispatch by the same lead; the rebuilt one starts in the same
+/// folder and gets the dispatch's mail. When the rebuilt one fails too, Core
+/// blocks the task with both reasons and mails the lead once. Only the
+/// Claude SDK stream is scripted: its `fail-starts` file fails starts.
+#[tokio::test]
+async fn a_failed_start_is_rebuilt_once_and_a_second_failure_blocks_the_task() {
+    std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/executor_dispatch_bridge.mjs"));
+    let lab = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let work = folder(lab.path(), "project");
+    let ws = Workspace::new(lab.path().join("data"), lab.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let project = ws.store.create_project("Executor fixture", BTreeMap::from([("local".into(), work.clone())])).unwrap().id;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert_ne!(port, 4317);
+    ws.start_collaboration(port);
+    let app = server::router_on_port(ws.clone(), lab.path().join("no-ui"), port);
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}/api");
+    let saved = client.put(format!("{base}/executor-templates")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .send().await.unwrap();
+    assert_eq!(saved.status(), reqwest::StatusCode::OK);
+    let lead: AgentDetail = serde_json::from_value(json!({"agent":{"id":"lead","name":"Lead fixture","cwd":work,"model":"","harness":"claude",
+        "color":"sage","status":"offline","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&lead).unwrap();
+    ws.store.set_agent_project("lead", Some(&project)).unwrap();
+    let leads = client.put(format!("{base}/projects/{project}/leads")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"leadAgentIds":["lead"]})).send().await.unwrap();
+    assert_eq!(leads.status(), reqwest::StatusCode::OK);
+    let starts = |folder: &str| std::fs::read_to_string(Path::new(folder).join("starts")).unwrap_or_default().lines().count();
+    let current = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"})).unwrap()["current"].clone();
+
+    // Its first start fails once: the rebuilt executor starts in the same
+    // folder and gets the dispatch's mail.
+    let once = folder(lab.path(), "once");
+    std::fs::write(Path::new(&once).join("fail-starts"), "1").unwrap();
+    let task_once = task(&ws, "Review once", &project, Some(&once)).await;
+    let first = ws.collaboration_call(Some("lead"), "task_dispatch", dispatch("once", &task_once)).await.unwrap()["agentId"]
+        .as_str().unwrap().to_owned();
+    until("the rebuilt executor gets its mail", || !prompts(Path::new(&once)).is_empty()).await;
+    assert_eq!(starts(&once), 2, "one failed start, one rebuild that started");
+    assert!(ws.store.agent(&first).unwrap().closed_at.is_some(), "the first is closed, and kept");
+    let now = current(&task_once);
+    let second = now["assignee"]["id"].as_str().or(now["dispatch"]["executor"]["id"].as_str()).unwrap_or_default().to_owned();
+    assert!(!second.is_empty() && second != first, "the task is the rebuilt executor's: {now}");
+    assert_eq!(ws.store.agent(&second).unwrap().cwd, once, "in the same folder");
+    assert_eq!(now["status"], "doing");
+    until("the rebuilt one runs", || current(&task_once)["executorSlot"]["state"] == "running").await;
+
+    // It fails every time: after the one rebuild, Core blocks the task and
+    // tells the lead.
+    let always = folder(lab.path(), "always");
+    std::fs::write(Path::new(&always).join("fail-starts"), "9").unwrap();
+    let task_always = task(&ws, "Review never", &project, Some(&always)).await;
+    ws.collaboration_call(Some("lead"), "task_dispatch", dispatch("always", &task_always)).await.unwrap();
+    until("the task is blocked", || current(&task_always)["status"] == "blocked").await;
+    assert_eq!(starts(&always), 2, "the first start and the one rebuild's");
+    let full = ws.store.collaboration_call(None, "task_get", json!({"taskId":task_always,"view":"full"})).unwrap();
+    let blocker = full["task"]["blocker"].as_str().unwrap();
+    assert_eq!(blocker.matches("scripted start failure").count(), 2, "both reasons: {blocker}");
+    assert!(prompts(Path::new(&always)).is_empty(), "nothing started, so no mail reached an executor");
+    let mail = ws.store.collaboration_call(Some("lead"), "peer_read", json!({})).unwrap();
+    let told: Vec<&Value> = mail["messages"].as_array().unwrap().iter()
+        .filter(|m| m["taskId"] == json!(task_always) && m["metadata"]["kind"] == "executor").collect();
+    assert_eq!(told.len(), 1, "one mail to the lead: {told:?}");
+    assert!(told[0]["body"].as_str().unwrap().contains("is blocked"), "{}", told[0]["body"]);
+
+    ws.close_agent(&second).await.unwrap();
+    serving.abort();
+}
+
 /// T-34 S4: a lead releases the executor it dispatched, over MCP; another
 /// Agent can't. The released executor's slot goes to the next one waiting,
 /// which starts and gets its mail. The released one stays closed: a reopen is

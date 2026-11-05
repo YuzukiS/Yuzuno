@@ -154,6 +154,8 @@ impl Workspace {
         store.recover_pr_operations()?;
         // Before any runtime starts: an executor a stopped Core left half made is closed (T-34).
         store.recover_executor_dispatches()?;
+        // A rebuild a stopped Core left unfinished is completed, or blocks its task (T-35 S2).
+        store.recover_executor_rebuilds()?;
         // A start a stopped Core left unfinished waits for its slot again (T-35).
         store.recover_executor_slots()?;
         Ok(Arc::new(Self {
@@ -1107,7 +1109,9 @@ impl Workspace {
             .or_else(|| self.opencodes.lock().unwrap().get(id).map(|c| c.generation))
     }
 
-    async fn reconcile(self: &Arc<Self>, id: &str) -> Result<()> {
+    /// Ensure, then reconcile the thread with the record, as a Reconnect
+    /// does (also a reopened executor's start, executor_slots.rs).
+    pub(crate) async fn reconcile(self: &Arc<Self>, id: &str) -> Result<()> {
         let connection = self.ensure(id).await?;
         let result = self.reconcile_connection(id, &connection).await;
         if result.is_err() {

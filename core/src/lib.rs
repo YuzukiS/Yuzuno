@@ -7,6 +7,7 @@ pub mod handover_proposals;
 mod executor_dispatch;
 mod executor_release;
 mod executor_slots;
+mod executor_start;
 pub mod appearance_preset;
 pub mod background_shells;
 pub mod backlog;

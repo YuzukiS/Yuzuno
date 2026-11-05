@@ -4,6 +4,8 @@
 // version read, and a number outside 1 to 64 not offered; then the task
 // board, where a card says where its executor stands (queued with its place,
 // starting, running), in English and in Chinese; on a phone, both fit.
+// S2: the Workspace's start time limit: 29 is not offered, 120 is saved with
+// the limit; in Chinese too.
 // S4: a template's own At most at once: a fraction or a negative number holds
 // the save, said at the field (in Chinese too); a whole number is saved.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-slots-check.mjs
@@ -34,8 +36,9 @@ let saved = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harne
 const templates = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })),
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
 // What Core keeps and answers (executor_slots.rs `executor_slots_view`).
-let slots = { version: 0, slots: 3, saved: false };
-const slotsView = () => ({ workspace: { ...slots, default: 3 }, limits: { min: 1, max: 64 }, inUse: { waiting: 2, starting: 1, running: 3 } });
+let slots = { version: 0, slots: 3, saved: false, startLimitSeconds: 300 };
+const slotsView = () => ({ workspace: { ...slots, default: 3 }, limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
+  inUse: { waiting: 2, starting: 1, running: 3 } });
 const you = { kind: "user", id: "user", name: "You" };
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const task = (id, title, status, executorSlot) => ({ id, title, description: "", status, version: 2, projectId: "p1", progress: "", blocker: "",
@@ -68,7 +71,7 @@ await context.route("**/*", async (route) => {
     const body = JSON.parse(request.postData() || "{}");
     report.writes.push({ method, path, body });
     if (body.expectedVersion !== slots.version) return route.fulfill({ status: 400, json: { error: "version_conflict: these executor slots changed; reload before saving" } });
-    slots = { version: slots.version + 1, slots: body.slots, saved: true };
+    slots = { version: slots.version + 1, slots: body.slots, saved: true, startLimitSeconds: body.startLimitSeconds ?? slots.startLimitSeconds };
     return route.fulfill({ json: slotsView() });
   }
   if (path === "/api/executor-templates" && method === "PUT") {
@@ -172,11 +175,32 @@ try {
   await save.click();
   await group.getByText("Saved.").waitFor({ timeout: 10_000 });
   const put = report.writes.find((w) => w.path === "/api/executor-slots");
-  assert.deepEqual(put.body, { expectedVersion: 0, slots: 5 });
+  assert.deepEqual(put.body, { expectedVersion: 0, slots: 5, startLimitSeconds: 300 });
   assert.equal(await save.isDisabled(), true, "what was saved is what is shown");
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
   await group.screenshot({ path: join(output, "2-settings-saved.png") });
   check("the Workspace's limit shown with what holds a slot; 0 not offered; 5 saved against version 0", { body: put.body });
+
+  // ---- S2: the Workspace's start time limit.
+  const limitInput = group.locator('input[aria-label="Start time limit (seconds)"]');
+  assert.equal(await limitInput.inputValue(), "300");
+  await limitInput.fill("29");
+  await group.getByText("A whole number of seconds from 30 to 3600.").waitFor({ timeout: 10_000 });
+  assert.equal(await save.isDisabled(), true, "29 is not offered");
+  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
+  // In Chinese the group has its Chinese name: found by its class here.
+  const slotsGroup = box.locator(".executor-slots");
+  await slotsGroup.getByText("30 到 3600 之间的整数秒。").waitFor({ timeout: 10_000 });
+  await slotsGroup.screenshot({ path: join(output, "2c-start-limit-zh.png") });
+  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
+  await group.getByText("A whole number of seconds from 30 to 3600.").waitFor({ timeout: 10_000 });
+  await limitInput.fill("120");
+  await save.click();
+  await group.getByText("Saved.").waitFor({ timeout: 10_000 });
+  const limitPut = report.writes.filter((w) => w.path === "/api/executor-slots").at(-1);
+  assert.deepEqual(limitPut.body, { expectedVersion: 1, slots: 5, startLimitSeconds: 120 });
+  assert.equal(await limitInput.inputValue(), "120");
+  check("the start time limit: 29 not offered (said in Chinese too); 120 saved with the limit against version 1", { body: limitPut.body });
 
   // ---- A template's own limit (S4).
   const limitField = box.locator('input[aria-label="At most at once"]');
@@ -239,8 +263,8 @@ try {
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
-  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots", "PUT /api/executor-templates"],
-    "the two saves, nothing else written");
+  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots", "PUT /api/executor-slots", "PUT /api/executor-templates"],
+    "the three saves, nothing else written");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";
