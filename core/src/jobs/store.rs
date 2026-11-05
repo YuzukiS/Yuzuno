@@ -144,8 +144,8 @@ pub(super) fn reserved(db: &Connection) -> Result<(Resources, usize)> {
 }
 /// The first queued job short of the configured budget (T-38). Its need is
 /// held open: a later job starts ahead of it only within `allowance`, the
-/// budget less its need and less what the jobs that passed it already hold,
-/// and only within what is free now (`room`).
+/// budget less its need and less what every job that started ahead of a
+/// head still holds (`passed`), and only within what is free now (`room`).
 struct BlockedHead {
     id: String,
     name: String,
@@ -156,7 +156,7 @@ struct BlockedHead {
 }
 impl BlockedHead {
     fn new(db: &Connection, id: &str, name: String, waits: &'static str, need: &Resources, limit: &Resources) -> Result<Self> {
-        let allowance = limit.available(need).available(&passed(db, id)?);
+        let allowance = limit.available(need).available(&passed(db)?);
         Ok(Self { id: id.to_owned(), name, waits, need: need.clone(), allowance })
     }
     /// What may start ahead of it now.
@@ -168,11 +168,13 @@ impl BlockedHead {
         }
     }
 }
-/// What the jobs that started ahead of `head` still hold.
-fn passed(db: &Connection, head: &str) -> Result<Resources> {
-    let mut q = db.prepare_cached("SELECT data FROM local_jobs WHERE reserved=1 AND json_extract(data,'$.admission.passed.jobId')=?1")?;
+/// What the jobs that started ahead of a head, any head, still hold. Counting
+/// those of every head rather than only the current one's is conservative:
+/// it can delay a later pass, never take a head's share (review 1bbccc2a).
+fn passed(db: &Connection) -> Result<Resources> {
+    let mut q = db.prepare_cached("SELECT data FROM local_jobs WHERE reserved=1 AND json_type(data,'$.admission.passed')='object'")?;
     let mut total = Resources::default();
-    for row in q.query_map([head], |r| r.get::<_, String>(0))? {
+    for row in q.query_map([], |r| r.get::<_, String>(0))? {
         let value: Value = serde_json::from_str(&row?)?;
         total.add(&serde_json::from_value::<Resources>(value["reservation"].clone())?);
     }
@@ -799,10 +801,12 @@ impl Store {
     ///
     /// The first job short of the configured budget is the blocked head
     /// (T-38): it keeps its place, and a later job may start ahead of it only
-    /// if it fits what is free now and, in every dimension, it and the jobs
-    /// that already passed this head stay within the budget less the head's
-    /// need (`BlockedHead`). So the head's share is never taken: it starts once
-    /// the jobs running before it free enough. A job short of host memory
+    /// if it fits what is free now and, in every dimension, it and every job
+    /// still holding a reservation it got by starting ahead of a head (any
+    /// head: which job is the head can change between passes, with the
+    /// projects' turns, aging or a cancel) stay within the budget less this
+    /// head's need (`BlockedHead`). So no head's share is taken: the head
+    /// starts once the jobs running before it free enough. A job short of host memory
     /// (free less headroom) is not a reservation that can be held open, so
     /// nothing passes it. A job waiting for a GPU holds only that device, a
     /// disk wait is skipped, an exclusive job holds everything, and stages
