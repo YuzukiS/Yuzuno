@@ -83,6 +83,8 @@ pub struct Workspace {
     pub(crate) pr_reviews: crate::pr_review::State,
     pub(crate) pr_operations: crate::pr_operations::State,
     pub(crate) jobs: crate::jobs::State,
+    /// How many executors run at once, and the queue (T-35); see `executor_slots`.
+    pub(crate) executor_slots: crate::executor_slots::State,
     pub(crate) ci: crate::ci_monitor::State,
     pub(crate) codex_usage: crate::codex_usage::State,
     pub(crate) delivery: crate::delivery::State,
@@ -152,11 +154,14 @@ impl Workspace {
         store.recover_pr_operations()?;
         // Before any runtime starts: an executor a stopped Core left half made is closed (T-34).
         store.recover_executor_dispatches()?;
+        // A start a stopped Core left unfinished waits for its slot again (T-35).
+        store.recover_executor_slots()?;
         Ok(Arc::new(Self {
             github: Default::default(),
             pr_reviews: Default::default(),
             pr_operations: Default::default(),
             jobs: Default::default(),
+            executor_slots: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
             codex_context: Default::default(),
@@ -597,6 +602,8 @@ impl Workspace {
             // Connecting reads and writes the Agent's fields only, so neither
             // reads nor copies its history (T-140).
             let agent = self.listed(id).await?;
+            // An executor waiting for a slot starts only from the queue (T-35).
+            self.executor_slot_admits(id).await?;
             self.record_meta(id, "runtime/connecting", json!({}), |m| {
                 m.agent.connection_state = "connecting".into();
             }).await?;
@@ -1349,6 +1356,8 @@ impl Workspace {
         }
         self.record_update(id, "agent/closed", json!({}), Sel::Open, mark_closed).await?;
         self.changed(id);
+        // An executor's slot is free once it is closed (T-35).
+        self.wake_executor_slots();
         self.answer(id).await
     }
 
@@ -2672,6 +2681,8 @@ fn failure(error: &anyhow::Error) -> anyhow::Error {
     let message = error.to_string();
     if error.downcast_ref::<OutcomeUnknown>().is_some() {
         OutcomeUnknown(message).into()
+    } else if let Some(queued) = error.downcast_ref::<crate::executor_slots::WaitsForSlot>() {
+        queued.clone().into()
     } else {
         anyhow::anyhow!(message)
     }
@@ -2685,6 +2696,8 @@ fn failure(error: &anyhow::Error) -> anyhow::Error {
 fn record_failure(store: &Store, id: &str, error: &anyhow::Error) -> bool {
     let Ok(agent) = store.agent(id) else { return false };
     if agent.closed_at.is_some() { return false; }
+    // An executor waiting for its slot was refused before anything started.
+    if error.downcast_ref::<crate::executor_slots::WaitsForSlot>().is_some() { return false; }
     let unknown = error.downcast_ref::<OutcomeUnknown>().is_some() || agent.status == "uncertain";
     let message = error.to_string();
     if agent.error.as_deref() == Some(&message)

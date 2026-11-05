@@ -6,18 +6,20 @@
 //! after it is a candidate, and it comes after everything submitted before it.
 //! The order only decides who is tried first; whether a job may pass another
 //! that is waiting is decided by the admission scan (store.rs).
+//!
+//! Executor slots (executor_slots.rs, T-35) queue executors in this same order.
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// A job queued this long is tried before the project rotation.
-pub(super) const AGING_SECS: i64 = 30 * 60;
+pub(crate) const AGING_SECS: i64 = 30 * 60;
 /// At most this many candidates are tried per admission.
-pub(super) const WINDOW: usize = 32;
+pub(crate) const WINDOW: usize = 32;
 
 #[derive(Clone, Debug)]
-pub(super) struct Queued {
+pub(crate) struct Queued {
     pub id: String,
     pub seq: i64,
     pub project: String,
@@ -27,7 +29,7 @@ pub(super) struct Queued {
 }
 
 /// Indexes into `queued` (which is in submission order), in admission order.
-pub(super) fn order(queued: &[Queued], last_project: Option<&str>) -> Vec<usize> {
+pub(crate) fn order(queued: &[Queued], last_project: Option<&str>) -> Vec<usize> {
     let barrier = queued.iter().filter(|q| q.exclusive).map(|q| q.seq).min();
     let mut aged = Vec::new();
     let mut by_project: BTreeMap<&str, Vec<usize>> = BTreeMap::new();

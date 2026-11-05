@@ -161,3 +161,92 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     }
     serving.abort();
 }
+
+/// T-35: no more executors run at once than the Workspace's slots. The next
+/// waits: its task says where in the queue, and Connect is refused without
+/// marking it failed. It starts once one is closed, or the limit is raised.
+#[tokio::test]
+async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free() {
+    std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/executor_dispatch_bridge.mjs"));
+    let lab = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let work = folder(lab.path(), "project");
+    let ws = Workspace::new(lab.path().join("data"), lab.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let project = ws.store.create_project("Executor fixture", BTreeMap::from([("local".into(), work)])).unwrap().id;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert_ne!(port, 4317);
+    ws.start_collaboration(port);
+    let app = server::router_on_port(ws.clone(), lab.path().join("no-ui"), port);
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}/api");
+    let saved = client.put(format!("{base}/executor-templates")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .send().await.unwrap();
+    assert_eq!(saved.status(), reqwest::StatusCode::OK);
+    let slots = client.put(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"slots":2})).send().await.unwrap();
+    assert_eq!(slots.status(), reqwest::StatusCode::OK);
+    assert_eq!(slots.json::<Value>().await.unwrap()["workspace"]["slots"], 2);
+
+    // Three dispatches, each executor in a worktree of its own.
+    let (mut tasks, mut executors, mut folders) = (Vec::new(), Vec::new(), Vec::new());
+    for name in ["one", "two", "three"] {
+        let worktree = folder(lab.path(), name);
+        let id = task(&ws, &format!("Review {name}"), &project, Some(&worktree)).await;
+        let answer = ws.collaboration_call(None, "task_dispatch", dispatch(name, &id)).await.unwrap();
+        executors.push(answer["agentId"].as_str().unwrap().to_owned());
+        tasks.push(id);
+        folders.push(worktree);
+    }
+    until("the first two get their mail", || folders[..2].iter().all(|f| !prompts(Path::new(f)).is_empty())).await;
+    let slot = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task})).unwrap()["current"]["executorSlot"].clone();
+    assert_eq!(slot(&tasks[2]), json!({"agentId":executors[2],"state":"waiting","machine":"local","position":1}));
+    let third = ws.store.agent(&executors[2]).unwrap();
+    assert_eq!((third.connection_state.as_str(), third.status.as_str()), ("disconnected", "offline"), "the third waits, unstarted");
+
+    // Connect on it is refused, with its place; it is not marked failed.
+    let refused = client.post(format!("{base}/agents/{}/reconnect", executors[2])).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({})).send().await.unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST);
+    let refused = refused.json::<Value>().await.unwrap()["error"].as_str().unwrap_or_default().to_owned();
+    assert!(refused.starts_with("executor_queued: this executor waits for an executor slot (number 1 in the queue)"), "{refused}");
+    let third = ws.store.agent(&executors[2]).unwrap();
+    assert_eq!((third.connection_state.as_str(), third.status.as_str(), third.error.as_deref()), ("disconnected", "offline", None),
+        "a refused Connect changes nothing");
+    assert!(prompts(Path::new(&folders[2])).is_empty(), "nothing started it");
+    // Once started, the first two are running (recorded as their start returns).
+    for (task, executor) in tasks[..2].iter().zip(&executors) {
+        let running = json!({"agentId":executor,"state":"running","machine":"local"});
+        until("the first two run", || slot(task) == running).await;
+    }
+    let in_use = |client: reqwest::Client, base: String| async move {
+        client.get(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop").send().await.unwrap()
+            .json::<Value>().await.unwrap()["inUse"].clone()
+    };
+    assert_eq!(in_use(client.clone(), base.clone()).await, json!({"waiting":1,"starting":0,"running":2}));
+
+    // A close frees a slot: the third starts and gets its mail.
+    ws.close_agent(&executors[0]).await.unwrap();
+    until("the third gets its mail", || !prompts(Path::new(&folders[2])).is_empty()).await;
+    assert_eq!(ws.store.agent(&executors[2]).unwrap().connection_state, "connected");
+    assert_eq!(slot(&tasks[0]), Value::Null, "a closed executor holds no slot");
+
+    // A fourth waits until the limit is raised.
+    let fourth_folder = folder(lab.path(), "four");
+    let fourth = task(&ws, "Review four", &project, Some(&fourth_folder)).await;
+    let answer = ws.collaboration_call(None, "task_dispatch", dispatch("four", &fourth)).await.unwrap();
+    let fourth_executor = answer["agentId"].as_str().unwrap().to_owned();
+    assert_eq!(slot(&fourth)["state"], "waiting");
+    let raised = client.put(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":1,"slots":3})).send().await.unwrap();
+    assert_eq!(raised.status(), reqwest::StatusCode::OK);
+    until("the fourth gets its mail", || !prompts(Path::new(&fourth_folder)).is_empty()).await;
+    until("the fourth runs", || slot(&fourth)["state"] == "running").await;
+    assert_eq!(in_use(client.clone(), base.clone()).await, json!({"waiting":0,"starting":0,"running":3}));
+
+    for id in executors.iter().skip(1).chain([&fourth_executor]) {
+        ws.close_agent(id).await.unwrap();
+    }
+    serving.abort();
+}

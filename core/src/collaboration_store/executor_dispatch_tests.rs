@@ -117,6 +117,45 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     assert!(forged.contains("whose Agent Core makes"), "{forged}");
 }
 
+/// T-35: a dispatched executor waits for its slot, from the transaction
+/// that dispatches its task; the task shows it, with its place in the queue,
+/// in its current and full views and in the task list.
+#[test]
+fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let t = task(&store, "Review", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    create(&store, &plan);
+    let slots = |store: &Store| -> i64 {
+        store.db.read().unwrap().query_row("SELECT COUNT(*) FROM executor_slots", [], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(slots(&store), 0, "created, not yet dispatched: no slot");
+    store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let executor = plan.dispatch.agent_id.clone();
+    let waiting = json!({"agentId":executor,"state":"waiting","machine":"local","position":1});
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap();
+    assert_eq!(current["current"]["executorSlot"], waiting);
+    let full = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"full"})).unwrap();
+    assert_eq!(full["task"]["executorSlot"], waiting);
+    let listed = store.collaboration_call(None, "task_list", json!({})).unwrap();
+    assert_eq!(listed["tasks"][0]["executorSlot"], waiting);
+    store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    assert_eq!(slots(&store), 1, "a replay queues it once");
+
+    assert_eq!(store.executor_slot_next().unwrap().as_deref(), Some(executor.as_str()));
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap();
+    assert_eq!(current["current"]["executorSlot"], json!({"agentId":executor,"state":"starting","machine":"local"}));
+    // A task without an executor has none; nor a compact row.
+    let other = task(&store, "Plain", Some(&p), None);
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":other})).unwrap();
+    assert_eq!(current["current"].get("executorSlot"), None);
+    let compact = store.collaboration_call(None, "task_list", json!({"compact":true})).unwrap();
+    assert!(compact["tasks"].as_array().unwrap().iter().all(|row| row.get("executorSlot").is_none()));
+}
+
 /// T-34: a dispatch that fails is `failed` with its error, which a retry
 /// gets again; the executor it made is named once, to be closed.
 #[test]
