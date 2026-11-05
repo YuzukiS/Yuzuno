@@ -32,7 +32,7 @@ fn an_answer_answers_the_newest_user_message_before_it_in_its_turn() {
     let parents: Vec<(&str, Value)> = read.iter().filter(|m| m["info"]["role"] == "assistant")
         .map(|m| (m["info"]["id"].as_str().unwrap(), m["info"]["parentID"].clone())).collect();
     assert_eq!(parents, vec![("msg_a1", json!("msg_u1")), ("msg_a2", json!("msg_u2")), ("msg_a3", json!("msg_u2")), ("msg_a4", json!("msg_u3")),
-        ("msg_a5", Value::Null)], "an answer after an idle message answers nothing of a turn that ended");
+        ("msg_a5", Value::Null)], "each answer answers its turn's newest user message before it; one after an idle message, none");
     assert_eq!(read[1]["info"]["modelID"], "m");
     assert_eq!(read[1]["info"]["providerID"], "p");
     assert_eq!(read[1]["info"]["time"]["completed"], 3);
@@ -62,7 +62,7 @@ fn an_answers_entries_are_its_items_and_none_is_keyed_by_position() {
     assert_eq!(read.open.as_deref(), Some("msg_u1"), "a turn not yet ended is open");
     let parts = read.messages[1]["parts"].as_array().unwrap();
     let ids: Vec<&str> = parts.iter().map(|p| p["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["msg_a1:0", "msg_a1:1", "call_1", "call_2", "call_3"]);
+    assert_eq!(ids, ["msg_a1:0", "msg_a1:1", "call_1", "call_2", "call_3"], "a text or reasoning entry by its ordinal, a tool by its call's ID");
     assert!(ids.iter().all(|id| !id.starts_with('~')));
     assert_eq!((&parts[0]["type"], &parts[0]["text"]), (&json!("reasoning"), &json!("think")));
     assert_eq!((&parts[1]["type"], &parts[1]["text"]), (&json!("text"), &json!("hello")));
@@ -220,7 +220,7 @@ fn a_sub_agents_end_is_not_the_agents() {
     c.read(&ev("session.inbox.delivered", 2, json!({"sessionID": "ses_a", "inboxID": "msg_u1"})));
     c.read(&ev("session.execution.succeeded", 3, json!({"sessionID": "ses_child"})));
     let step = c.read(&ev("session.step.started", 4, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a1"})));
-    assert_eq!(step[0]["data"]["info"]["parentID"], "msg_u1");
+    assert_eq!(step[0]["data"]["info"]["parentID"], "msg_u1", "a sub-agent's execution ending is not the Agent's");
     c.resumed("ses_a", Some("msg_u9".into()), vec![("msg_a8".into(), Some("msg_u8".into()))]);
     let resumed = c.read(&ev("session.step.started", 5, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a2"})));
     assert_eq!(resumed[0]["data"]["info"]["parentID"], "msg_u9", "a whole read says which turn is open");

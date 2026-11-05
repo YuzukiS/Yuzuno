@@ -2253,6 +2253,46 @@ async fn an_answers_text_streams_into_its_item_and_its_end_replaces_it() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A whole read in mid-step: 2.x stores no text until its entry ends, so the
+/// read finds the entry empty, and the text streamed so far is kept (T-32
+/// slice 3b; a limit, Lead 4983 note 4).
+#[tokio::test]
+async fn a_whole_read_in_mid_step_keeps_the_text_streamed_so_far() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    let t = chrono::Utc::now().timestamp_millis();
+    let event = |kind: &str, at: i64, data: Value| {
+        let mut properties = json!({"sessionID": session, "assistantMessageID": "msg_s1"});
+        properties.as_object_mut().unwrap().extend(data.as_object().unwrap().clone());
+        json!({"type": kind, "created": at, "properties": properties})
+    };
+    let text = |d: &AgentDetail| turn(d, &id)["items"].as_array().into_iter().flatten()
+        .find(|i| i["id"] == "msg_s1:0").map(|i| i["text"].clone());
+    for (kind, at, data) in [
+        ("session.step.started", t, json!({"model": {"id": "m", "providerID": "p"}})),
+        ("session.text.started", t, json!({"ordinal": 0})),
+        ("session.text.delta", t + 10, json!({"ordinal": 0, "delta": "Hel"})),
+        ("session.text.delta", t + 300, json!({"ordinal": 0, "delta": "lo"})),
+    ] {
+        lab.control("event", event(kind, at, data)).await;
+    }
+    lab.until("the text streamed", |d| text(d) == Some(json!("Hello"))).await;
+    // The stream breaks; OpenCode holds the answer as 2.x does in mid-step, its text entry empty.
+    let before = resyncs(&lab);
+    lab.control("refuseEvents", json!({"seconds":1.0})).await;
+    lab.control("drop", json!({})).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    lab.control("reply", json!({"sessionID":session,"text":"","completed":false,"idle":false,"info":{"id":"msg_s1"}})).await;
+    for _ in 0..400 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read whole");
+    assert_eq!(text(&lab.detail()), Some(json!("Hello")), "the text streamed so far is kept");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// Two user messages in one turn, the answers interleaved: each answer is
 /// the newest one's before it, as 2.x delivers a message steered in at its
 /// next step (T-32 slice 3b, Lead 4983 note 2), and a whole read of the
@@ -2269,7 +2309,7 @@ async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
     // Only 2.x's event of its admission can confirm it: OpenCode's record of the message cannot be read.
     lab.control("mode", json!({"failMessageReads":true})).await;
     let receipt = lab.add("c2", "Also run the tests", &first).await.unwrap();
-    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert_eq!(receipt.status, "accepted", "confirmed once 2.x admits it: {receipt:?}");
     lab.control("mode", json!({"failMessageReads":false})).await;
     let added = lab.detail().turns.iter().find(|t| t["id"] == first.as_str()).unwrap()["_opencodeLastInput"].as_str().unwrap().to_owned();
     let delivered = || {
@@ -2318,8 +2358,10 @@ async fn a_message_admitted_while_the_stream_is_broken_is_confirmed_from_the_inb
     let before = resyncs(&lab);
     lab.control("refuseEvents", json!({"seconds":1.0})).await;
     lab.control("drop", json!({})).await;
+    // The broken stream has ended: the stand-in's looks for the break every 20 ms.
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let receipt = lab.add("c2", "Also run the tests", &first).await.unwrap();
-    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert_eq!(receipt.status, "accepted", "confirmed from the inbox: {receipt:?}");
     assert!(resyncs(&lab) > before, "confirmed by the read after the stream reopened");
     lab.control("mode", json!({"failMessageReads":false})).await;
     let d = lab.detail();

@@ -2325,9 +2325,9 @@ fn part(d: &mut AgentDetail, part: &Value) {
             // 2.x stores no text until its entry ends, so a read in mid-step,
             // or its entry's start, says "" of text already streamed: that is kept (T-32 slice 3b).
             let mut item = item;
-            for (slot, shown) in [("/text", "/text"), ("/summary/0", "/summary/0")] {
-                if item.pointer(slot) == Some(&json!("")) && existing.pointer(shown).is_some_and(|t| t.as_str().is_some_and(|t| !t.is_empty())) {
-                    *item.pointer_mut(slot).expect("slot") = existing.pointer(shown).expect("shown").clone();
+            for slot in ["/text", "/summary/0"] {
+                if item.pointer(slot) == Some(&json!("")) && existing.pointer(slot).is_some_and(|t| t.as_str().is_some_and(|t| !t.is_empty())) {
+                    *item.pointer_mut(slot).expect("slot") = existing.pointer(slot).expect("kept").clone();
                 }
             }
             *existing = item;

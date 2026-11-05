@@ -639,11 +639,13 @@ async fn compaction_rewind_and_fork_refuse_a_session_of_2x_messages() {
     let data = root.join("data");
     let turn = turn_on(&ws, &data, "oc", "hello", json!({})).await;
     let not_yet = crate::opencode_v2::NOT_YET;
-    let compact = ws.opencode_compact("oc").await.unwrap_err().to_string();
+    // What each says, or nothing when it went ahead.
+    let said = |result: anyhow::Result<()>| result.err().map(|e| e.to_string()).unwrap_or_default();
+    let compact = said(ws.opencode_compact("oc").await.map(drop));
     assert!(compact.contains(not_yet) && compact.contains("没有执行 /compact"), "compaction refuses: {compact}");
-    let rewind = ws.opencode_revert_preview("oc", &turn).await.unwrap_err().to_string();
+    let rewind = said(ws.opencode_revert_preview("oc", &turn).await.map(drop));
     assert!(rewind.contains(not_yet) && rewind.contains("没有预览回退"), "rewind refuses: {rewind}");
-    let fork = ws.opencode_fork("oc", request("fork-2x", &turn, "F")).await.unwrap_err().to_string();
+    let fork = said(ws.opencode_fork("oc", request("fork-2x", &turn, "F")).await.map(drop));
     assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
     assert!(asked(&data, "oc", "POST", "/summarize").is_empty() && asked(&data, "oc", "POST", "/revert").is_empty()
         && asked(&data, "oc", "POST", "/fork").is_empty(), "nothing was asked of OpenCode");
