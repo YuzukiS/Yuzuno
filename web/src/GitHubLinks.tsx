@@ -368,7 +368,8 @@ export function GitHubLinks({
           type="button"
           className="icon-button"
           aria-label={t.refresh}
-          title={t.refreshTip}
+          aria-busy={page?.refreshing || undefined}
+          title={page?.refreshing ? `${t.refreshTip}${t.refreshing}` : t.refreshTip}
           disabled={busy || !!page?.refreshing}
           onClick={() => void request("github_refresh")}
         >

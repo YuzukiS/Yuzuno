@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
@@ -65,22 +65,35 @@ const text = strings({
  * move first: a scroll moves further, and the browser cancels the pointer. */
 export const LONG_PRESS_MS = 500;
 const LONG_PRESS_SLOP = 10;
+/** A touch held this long shows it is being held (T-19 SH:R13): the row
+ * presses in before the actions open. */
+const HOLD_CUE_MS = 150;
 
 /** A touch held still opens `onPress` at that point; a move, a cancel or an
  * early lift does nothing. After a long-press (`fired`), the click that
  * follows is swallowed, so the row does not also open; any next press clears
  * it. `claim` takes a pending touch for the browser's own context menu, so
- * the menu opens once. */
+ * the menu opens once. `holding` is true from HOLD_CUE_MS into a hold until
+ * it opens or ends. */
 function useLongPress(onPress: (point: MenuPoint) => void) {
   const timer = useRef<number | undefined>(undefined);
+  const cue = useRef<number | undefined>(undefined);
   const start = useRef<{ x: number; y: number; id: number } | null>(null);
   const fired = useRef(false);
+  const [holding, setHolding] = useState(false);
   const cancel = () => {
     window.clearTimeout(timer.current);
+    window.clearTimeout(cue.current);
     start.current = null;
+    setHolding(false);
   };
+  useEffect(() => () => {
+    window.clearTimeout(timer.current);
+    window.clearTimeout(cue.current);
+  }, []);
   return {
     fired,
+    holding,
     claim: () => {
       if (!start.current) return false;
       cancel();
@@ -95,11 +108,13 @@ function useLongPress(onPress: (point: MenuPoint) => void) {
         if ((event.target as Element).closest?.('[role="menu"]')) return;
         if (event.pointerType !== "touch" || !event.isPrimary) return;
         start.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        cue.current = window.setTimeout(() => setHolding(true), HOLD_CUE_MS);
         timer.current = window.setTimeout(() => {
           const at = start.current;
           if (!at) return;
           start.current = null;
           fired.current = true;
+          setHolding(false);
           onPress({ x: at.x, y: at.y });
         }, LONG_PRESS_MS);
       },
@@ -158,7 +173,7 @@ export function AgentRailRow({
   const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
   return (
     <article
-      className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}`}
+      className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}${press.holding ? " is-holding" : ""}`}
       data-agent-id={agent.id}
       {...drop.handlers}
       {...(actions && {
