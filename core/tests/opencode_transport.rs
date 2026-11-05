@@ -533,3 +533,23 @@ async fn a_heartbeat_comment_keeps_a_quiet_stream_open_and_silence_still_breaks_
     a.shutdown().await.unwrap();
     b.shutdown().await.unwrap();
 }
+
+/// 2.x's active list is an object keyed by session ID: a list, or any other
+/// shape, is refused with the path named, never read as idle (R1 00fe8a2b of
+/// #590), whether or not the session is in it.
+#[tokio::test]
+async fn an_active_list_of_another_shape_is_refused_never_read_as_idle() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    lab.control("busy", json!({"sessionID": session})).await;
+    assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "busy"}));
+    lab.control("mode", json!({"activeShape": "list"})).await;
+    for asked in [session.clone(), "ses_other".to_owned()] {
+        let read = server.session_status(&asked).await;
+        assert!(read.as_ref().is_err_and(|e| e.to_string().contains("OpenCode's /api/session/active is a list, not an object keyed by session")),
+            "another shape is refused, never read as idle: {read:?}");
+    }
+    assert!(server.snapshot(&session, &[]).await.is_err(), "nor read into a snapshot");
+    server.shutdown().await.unwrap();
+}

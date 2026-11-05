@@ -122,6 +122,12 @@ async fn a_real_opencode_2x_serves_every_route_and_envelope_core_connects_with()
     let kinds: Vec<&str> = messages.as_array().unwrap().iter().filter_map(|m| m["type"].as_str()).collect();
     println!("probe: events seen {seen:?}; messages {kinds:?}");
     assert!(kinds.contains(&"shell"), "the shell message is in the page: {messages}");
+    // 2.x's active list is an object keyed by session ID, empty while nothing runs: a shell is no execution, and its
+    // 204 comes once it has ended (core/src/session/session.ts), so the busy entry waits for a probe with a prompt.
+    let active = http.get(format!("{}/api/session/active", server.base())).basic_auth("opencode", Some(&password)).send().await.unwrap()
+        .json::<Value>().await.unwrap();
+    println!("probe: /api/session/active answers {active}");
+    assert!(active["data"].is_object(), "an object keyed by session: {active}");
     let status = server.session_status(&session).await.unwrap();
     let children = server.children(&session).await.unwrap();
     let snapshot = server.snapshot(&session, &[]).await.unwrap();

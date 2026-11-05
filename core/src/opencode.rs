@@ -707,7 +707,7 @@ impl Server {
     /// running (`GET /api/session/active`), else `{type: idle}`. 2.x lists no
     /// retry there; it is on the answer that retries.
     pub async fn session_status(&self, session: &str) -> Result<Value> {
-        Ok(status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session))
+        status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session)
     }
 
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
@@ -1144,9 +1144,30 @@ pub fn session_of(event: &Value) -> Option<&str> {
 }
 
 /// `{type: busy}` for a session 2.x's `/api/session/active` lists, else
-/// `{type: idle}`.
-fn status_of(active: &Value, session: &str) -> Value {
-    json!({"type": if active.get(session).is_some() { "busy" } else { "idle" }})
+/// `{type: idle}`. Its `data` is an object keyed by session ID, each
+/// `{type: "running"}` (protocol/src/groups/session.ts: `Schema.Record(Session.ID,
+/// SessionActive)`; server/src/handlers/session.ts). Any other shape is
+/// refused, never read as idle (R1 00fe8a2b of #590).
+fn status_of(active: &Value, session: &str) -> Result<Value> {
+    let listed = active.as_object().with_context(|| format!(
+        "OpenCode's /api/session/active is {}, not an object keyed by session: not an answer of the OpenCode {MAJOR}.x API", kind_of(active)))?;
+    match listed.get(session) {
+        None => Ok(json!({"type": "idle"})),
+        Some(entry) if *entry == json!({"type": "running"}) => Ok(json!({"type": "busy"})),
+        Some(entry) => bail!("OpenCode's /api/session/active lists {session} as {entry}, not running: not an answer of the OpenCode {MAJOR}.x API"),
+    }
+}
+
+/// What kind of JSON value this is, for a message.
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
+    }
 }
 
 /// An answer's media type, without its parameters ("" for none).
@@ -1425,6 +1446,18 @@ mod tests {
         }
         for version in ["2.2.5", "2.2.4", "2.0.16", "1.19.3", "opencode v2.2.5", "2.x", ""] {
             assert!(!newer_than_verified(version), "{version}");
+        }
+    }
+
+    /// 2.x's active list is read only in its own shape: an object keyed by
+    /// session ID, each `{type: "running"}` (R1 00fe8a2b of #590).
+    #[test]
+    fn the_active_list_is_read_only_in_its_own_shape() {
+        assert_eq!(status_of(&json!({"ses_a": {"type": "running"}}), "ses_a").unwrap(), json!({"type": "busy"}));
+        assert_eq!(status_of(&json!({"ses_b": {"type": "running"}}), "ses_a").unwrap(), json!({"type": "idle"}));
+        assert_eq!(status_of(&json!({}), "ses_a").unwrap(), json!({"type": "idle"}));
+        for other in [json!([{"id": "ses_a", "type": "running"}]), json!([]), json!(null), json!("ses_a"), json!({"ses_a": {"type": "starting"}})] {
+            assert!(status_of(&other, "ses_a").is_err(), "{other} is refused, never read as idle");
         }
     }
 

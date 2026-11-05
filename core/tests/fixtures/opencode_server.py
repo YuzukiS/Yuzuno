@@ -102,7 +102,7 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
-         'replay': 'ok', 'html': []}
+         'replay': 'ok', 'html': [], 'activeShape': 'object'}
 # Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
 held_reads = []
 # Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
@@ -734,9 +734,12 @@ class Handler(BaseHTTPRequestHandler):
             publish('session.created', {'sessionID': session['id'], 'info': session})
             return self.reply(200, {'data': session})
         if key == ('GET', 'api', 'session', 'active'):
-            # 2.x lists the sessions this process runs, each as running (server/src/handlers/session.ts).
-            return self.reply(200, {'data': {sid: {'type': 'running'} for sid, status in statuses.items()
-                                             if status.get('type') != 'idle'}})
+            # 2.x lists the sessions this process runs, each as running (server/src/handlers/session.ts); mode
+            # `activeShape` `list` answers another shape than 2.x's.
+            running = [sid for sid, status in statuses.items() if status.get('type') != 'idle']
+            if modes['activeShape'] == 'list':
+                return self.reply(200, {'data': [{'id': sid, 'type': 'running'} for sid in running]})
+            return self.reply(200, {'data': {sid: {'type': 'running'} for sid in running}})
         if key == ('GET', 'api', 'session'):
             query = parse_qs(url.query)
             # A next page's cursor carries the list's filters, as 2.x's does (schema/src/session.ts).
