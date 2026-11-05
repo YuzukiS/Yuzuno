@@ -96,7 +96,7 @@ impl Plan {
     }
 }
 
-const AGENT_FOLDER: &str = "an executor an Agent dispatches works in the task's registered worktree or inside its Project's folder on this host";
+const AGENT_FOLDER: &str = "an executor an Agent dispatches works in the worktree the user registered on its task or inside its Project's folder on this host";
 
 /// The worktree an Agent's dispatch gives its executor: the task's registered
 /// worktree, or a folder inside the Project's, compared as canonical paths
@@ -110,10 +110,12 @@ fn agent_worktree(db: &Connection, task: &str, request: &Value, worktree: Option
     let given = request.get("materials").is_some_and(|materials| materials.get("worktree").is_some());
     match canonical(&worktree) {
         Some(folder) => {
-            let registered = dispatch_materials::worktree(db, task, &json!({}))?;
-            let allowed = registered.as_deref().and_then(canonical).is_some_and(|registered| registered == folder)
+            // Only as the user registered it: an Agent can write a task's materials too (#600 R2 3a54ae81).
+            let registration = dispatch_materials::registered(db, task)?;
+            let registered = registration["value"]["worktree"].as_str().filter(|_| registration["actor"]["kind"] == "user");
+            let allowed = registered.and_then(canonical).is_some_and(|registered| registered == folder)
                 || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir));
-            ensure!(allowed, "folder_not_allowed: {AGENT_FOLDER}, and {worktree} is neither; a path in a dispatch's materials is information, not permission. Register the worktree on the task, or ask the user to dispatch it");
+            ensure!(allowed, "folder_not_allowed: {AGENT_FOLDER}, and {worktree} is neither; a path an Agent gives, in a dispatch's or a task's materials, is information, not permission. Ask the user to register the worktree on the task, or to dispatch it");
             Ok(Some(folder.to_string_lossy().into_owned()))
         }
         None if given => bail!("folder_not_allowed: {AGENT_FOLDER}, and {worktree} is not a folder here; name one that already is"),

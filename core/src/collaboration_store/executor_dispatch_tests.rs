@@ -263,9 +263,10 @@ async fn an_executor_is_created_under_its_dispatchs_permit_while_an_update_drain
 }
 
 /// T-34 (R6 3458f905): a path in a dispatch's materials is information,
-/// never permission. A lead's executor works in the task's registered
-/// worktree or inside its Project's folder; any other folder is refused,
-/// a sibling sharing the folder's name prefix too. The user's is not.
+/// never permission. A lead's executor works in the worktree the user
+/// registered on its task or inside its Project's folder; any other folder is
+/// refused, a sibling sharing the folder's name prefix too, and a worktree an
+/// Agent registered on the task (#600 R2 3a54ae81). The user's is not.
 #[test]
 fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() {
     let dir = tempfile::tempdir().unwrap();
@@ -308,6 +309,11 @@ fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() 
     assert_eq!(dotted.folders[0], inside, "the executor works in the folder that was checked");
     let own = begun(&store, Some("lead"), dispatch(&t, "registered")).unwrap();
     assert_eq!(own.folders[0], registered, "the task's registered worktree");
+    // Registered by an Agent, the same path is still only information.
+    store.collaboration_call(Some("lead"), "task_update", json!({"requestId":"re-register","taskId":t,"expectedVersion":1,
+        "patch":{"materials":{"worktree":elsewhere}}})).unwrap();
+    let refused = begun(&store, Some("lead"), dispatch(&t, "re-registered")).err().unwrap_or_else(|| "accepted".into());
+    assert!(refused.starts_with("folder_not_allowed:"), "a worktree an Agent registered on the task is no permission either: {refused}");
     let user = begun(&store, None, with("user", &elsewhere)).unwrap();
     assert_eq!(user.folders[0], elsewhere, "the user's executor may work anywhere");
 }
