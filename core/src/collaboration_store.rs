@@ -708,10 +708,17 @@ pub(crate) fn activity(
 }
 
 fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
-    allowed(input, &["includeClosed"])?;
+    allowed(input, &["includeClosed", "kind"])?;
     let include_closed = boolean(input, "includeClosed", false)?;
+    // Lead, executor or standing (T-33); absent lists every kind.
+    let only = optional_text(input, "kind", 32)?;
+    ensure!(
+        only.as_deref().is_none_or(|kind| [crate::agent_roles::LEAD, crate::agent_roles::EXECUTOR, crate::agent_roles::STANDING].contains(&kind)),
+        "invalid_input: kind must be lead, executor or standing"
+    );
     let memberships = crate::projects::agent_projects(db)?;
     let labels = crate::projects::project_labels(db)?;
+    let kinds = crate::agent_roles::kinds(db)?;
     let mut q = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
     let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut peers = Vec::new();
@@ -719,6 +726,10 @@ fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
         let Some(brief) = store.brief_in(db, &id)? else { continue };
         let a = brief.agent;
         if !include_closed && a.closed_at.is_some() {
+            continue;
+        }
+        let kind = kinds.get(&a.id).copied().unwrap_or(crate::agent_roles::STANDING);
+        if only.as_deref().is_some_and(|only| only != kind) {
             continue;
         }
         let project = memberships.get(&a.id).map(|id| {
@@ -729,7 +740,7 @@ fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
             json!({"id":a.id,"name":a.name,"harness":a.harness,"status":a.status,
             "closedAt":a.closed_at,"cwd":a.cwd,"connectionState":a.connection_state,
             "machine":a.remote.map(|r| r.machine.name).unwrap_or_else(|| "Local".into()),
-            "project":project}),
+            "project":project,"kind":kind}),
         );
     }
     Ok(json!({"peers":peers}))
@@ -1470,7 +1481,7 @@ pub fn tool_definitions() -> Vec<Value> {
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
     };
     vec![
-        definition("peers_list", "List existing Workspace Agents, their project and native runtime state. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false}}), &[]),
+        definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (a lead of its Project, set by the user), executor (made by Core for one task) or standing (made by the user); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
         definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Task IDs are shared across projects.", json!({}), &[]),
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
