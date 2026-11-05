@@ -1,6 +1,6 @@
 //! T-38 B: lowering a running Job's memory limit. The host's answer is given
-//! here as host.py `limit` writes it; host_test.py runs the real
-//! set-property and read-back on a systemd unit.
+//! here as host.py `limit` writes it; acceptance/t38-shrink/check.py runs the
+//! real set-property and read-back on systemd user Jobs of a lab Core.
 use super::*;
 use crate::{model::AgentDetail, store::Store};
 
