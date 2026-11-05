@@ -179,11 +179,13 @@ async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
         {"id": "a1", "type": "agentMessage", "text": "Read."}]})];
     ws.store.insert(&old).unwrap();
     let why = "是用 OpenCode 1.19.3 创建的，只能阅读";
-    let reconnected = ws.reconnect(ID).await.err().expect("not reconnected").to_string();
+    let reconnected = ws.reconnect(ID).await.map(|_| ()).expect_err("not reconnected").to_string();
+    let started = dir.path().join("data/opencode").join(ID).join("start.json");
+    assert!(!started.exists(), "OpenCode never started for it");
     assert!(reconnected.contains(why), "{reconnected}");
-    let sent = ws.send(ID, "next".into()).await.err().expect("not sent").to_string();
+    let sent = ws.send(ID, "next".into()).await.map(|_| ()).expect_err("not sent").to_string();
     assert!(sent.contains(why), "{sent}");
-    assert!(!dir.path().join("data/opencode").join(ID).join("start.json").exists(), "OpenCode never started for it");
+    assert!(!started.exists(), "nor for a message");
     let kept = ws.store.detail(ID).unwrap();
     assert_eq!(kept.turns.len(), 1, "its conversation stays readable");
     assert_eq!(kept.agent.opencode_session_id.as_deref(), Some("ses_made_with_1x"));

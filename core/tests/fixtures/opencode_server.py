@@ -1307,11 +1307,11 @@ def main():
     if switch('stubborn'):
         # As a server, or a tool it runs, that does not stop on SIGTERM.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    else:
-        signal.signal(signal.SIGTERM, teardown)
         seen['stubborn'] = subprocess.Popen(
             [sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+    else:
+        signal.signal(signal.SIGTERM, teardown)
     if switch('tool'):
         tool = subprocess.Popen(['sleep', '600'], start_new_session=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -41,7 +41,7 @@ struct Lab {
 
 fn agent(id: &str, cwd: &str, harness: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
-        "id":id, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":harness,
+        "id":id, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":harness, "opencodeMajor":"2",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()

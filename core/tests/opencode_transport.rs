@@ -387,7 +387,7 @@ async fn mcp_is_ready_only_when_opencode_reports_it_connected() {
         assert!(matches!(server.mcp("yuzuno").await.unwrap(), Mcp::NotConnected(_)));
     }
     assert_eq!(server.mcp("absent").await.unwrap(), Mcp::NotConnected(Value::Null));
-    assert!(lab.calls().iter().all(|c| matches!(c["path"].as_str(), Some("/global/health" | "/mcp"))),
+    assert!(lab.calls().iter().all(|c| matches!(c["path"].as_str(), Some("/api/info" | "/mcp"))),
         "nothing else was sent: no permission rule, no configuration");
     server.shutdown().await.unwrap();
 }
