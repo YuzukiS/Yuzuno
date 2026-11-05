@@ -69,6 +69,14 @@ export const boardText = strings({
   loadMore: "Load more tasks",
   notAssigned: "Not assigned yet",
   result: "Result",
+  // Its executor's slot (T-35): waiting in the queue, starting, or running.
+  executorSlot: (state: string, position?: number | null) =>
+    state === "waiting" ? (position ? `Queued (number ${position})` : "Queued")
+      : state === "starting" ? "Starting" : "Running",
+  executorSlotHelp: (state: string, reason?: string | null) =>
+    state === "waiting" ? "Its executor waits for a free slot and starts in turn. Settings → Executor templates sets how many run at once."
+      : state === "starting" ? (reason ? `Its executor holds a slot while its start is unsettled: ${reason}` : "Its executor holds a slot and is starting.")
+      : "Its executor holds a slot and is running.",
   updatedAt: (at: string) => `Updated ${at}`,
   // A new task
   eyebrow: "Something to work on",
@@ -262,6 +270,13 @@ export const boardText = strings({
   loadMore: "加载更多任务",
   notAssigned: "尚未分配",
   result: "结果",
+  executorSlot: (state, position) =>
+    state === "waiting" ? (position ? `排队中（第 ${position} 位）` : "排队中")
+      : state === "starting" ? "启动中" : "运行中",
+  executorSlotHelp: (state, reason) =>
+    state === "waiting" ? "它的执行者在等空位，会按顺序启动。同时运行的数量在 设置 → 执行者模板 中设定。"
+      : state === "starting" ? (reason ? `它的执行者占着一个位置，启动结果尚未确定：${reason}` : "它的执行者占着一个位置，正在启动。")
+      : "它的执行者占着一个位置，正在运行。",
   updatedAt: (at) => `更新于 ${at}`,
   eyebrow: "一件要做的事",
   closeNew: "关闭新建任务",
