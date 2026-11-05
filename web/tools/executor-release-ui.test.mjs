@@ -1,7 +1,8 @@
 // T-34 S4: releasing an executor from Agent management. Release is offered
 // for an executor only and asks first; a released executor offers neither
 // Reopen nor Release again. Core's refusal is shown as it came. Fixture HTTP
-// only; no Core.
+// only; no Core. Presence is asserted as a boolean: a failing assertion on an
+// element would inspect the whole window.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -128,11 +129,11 @@ test("a released executor offers neither Reopen nor Release; a closed one not re
   const page = mount((url) => url === "/api/agents/e1/reopen" ? [200, agent({ kind: "executor" })] : [404, { error: "unexpected" }]);
   page.window.renderAgent(agent({ kind: "executor", closedAt: RELEASED, releasedAt: RELEASED }));
   await until(() => named(page, "Conversation actions"), "the actions button");
-  assert.equal(named(page, "Reopen agent"), undefined, "no Reopen button for a released executor");
-  assert.equal(page.document.querySelector(".agent-close-button"), null);
+  assert.equal(!!named(page, "Reopen agent"), false, "no Reopen button for a released executor");
+  assert.equal(!!page.document.querySelector(".agent-close-button"), false, "nor its header button");
   await openActions(page);
-  assert.equal(card(page, "Reopen agent"), undefined, "nor a Reopen card");
-  assert.equal(card(page, "Release executor"), undefined, "nor Release again");
+  assert.equal(!!card(page, "Reopen agent"), false, "nor a Reopen card");
+  assert.equal(!!card(page, "Release executor"), false, "nor Release again");
   assert.match(dialog(page).textContent, /Released: this executor stays closed\./);
   assert.ok(card(page, "Delete agent…"), "Delete is still offered");
 
@@ -143,10 +144,10 @@ test("a released executor offers neither Reopen nor Release; a closed one not re
 
   page.window.renderAgent(agent({ id: "s1", kind: null }));
   await until(() => card(page, "Close agent"), "a standing Agent's cards");
-  assert.equal(card(page, "Release executor"), undefined, "a standing Agent is not released");
+  assert.equal(!!card(page, "Release executor"), false, "a standing Agent is not released");
   page.window.renderAgent(agent({ id: "l1", kind: "lead" }));
   await until(() => card(page, "Close agent"), "a lead's cards");
-  assert.equal(card(page, "Release executor"), undefined, "nor is a lead");
+  assert.equal(!!card(page, "Release executor"), false, "nor is a lead");
   assert.equal(posts(page).length, 0);
 });
 
