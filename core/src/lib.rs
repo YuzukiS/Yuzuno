@@ -4,6 +4,7 @@ pub mod agent_roles;
 pub mod executor_templates;
 mod executor_dispatch;
 mod executor_slots;
+mod executor_start;
 pub mod appearance_preset;
 pub mod background_shells;
 pub mod backlog;

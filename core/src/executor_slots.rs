@@ -25,6 +25,7 @@
 //! may be running), or a reopened executor's that failed, keeps its slot as
 //! `starting` with why, open, and waits for the user.
 use crate::{
+    executor_start::{cut_off, Failure},
     jobs::queue::{self, Queued},
     model::now,
     server::ApiError,
@@ -70,16 +71,29 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS executor_slots_state ON executor_slots(state);
         CREATE TABLE IF NOT EXISTS executor_queue_state(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);",
     )?;
+    // S2: the executor a rebuilt one replaced. S1's table may exist without it.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('executor_slots') WHERE name='rebuilt_from')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE executor_slots ADD COLUMN rebuilt_from TEXT")?;
+    }
     Ok(())
 }
 
 /// A saved limit: its version, moved on by every save, and its number; none
-/// when it is not set. Read leniently: a value this Core can't use is unset.
+/// when it is not set. The Workspace's also keeps how long a start may take
+/// (S2). Read leniently: a value this Core can't use is unset.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Limit {
     version: i64,
     slots: Option<i64>,
+    start_limit: Option<i64>,
 }
+
+/// How long an executor's start may take before it is cut off, in seconds,
+/// unless the user saved another: the Workspace's own wall-clock limit.
+pub(crate) const DEFAULT_START_LIMIT: i64 = 300;
+const START_LIMITS: std::ops::RangeInclusive<i64> = 30..=3600;
 
 fn limit_at(db: &Connection, key: &str) -> Result<Limit> {
     let raw: Option<String> = db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get(0)).optional()?;
@@ -89,21 +103,36 @@ fn limit_at(db: &Connection, key: &str) -> Result<Limit> {
     Ok(Limit {
         version: value["version"].as_i64().unwrap_or(0),
         slots: value["slots"].as_i64().filter(|n| (1..=MAX_SLOTS).contains(n)),
+        start_limit: value["startLimitSeconds"].as_i64().filter(|n| START_LIMITS.contains(n)),
     })
 }
 
-fn save_limit(db: &Connection, key: &str, expected: i64, slots: Option<i64>) -> Result<Limit> {
+/// `start_limit`: the Workspace's only; none keeps the one saved.
+fn save_limit(db: &Connection, key: &str, expected: i64, slots: Option<i64>, start_limit: Option<i64>) -> Result<Limit> {
     let current = limit_at(db, key)?;
     ensure!(current.version == expected, "version_conflict: these executor slots changed; reload before saving");
     if let Some(n) = slots {
         ensure!((1..=MAX_SLOTS).contains(&n), "invalid_input: executors at once is a whole number from 1 to {MAX_SLOTS}");
     }
-    let saved = Limit { version: current.version + 1, slots };
+    if let Some(n) = start_limit {
+        ensure!(START_LIMITS.contains(&n), "invalid_input: a start's time limit is a whole number of seconds from 30 to 3600");
+    }
+    let saved = Limit { version: current.version + 1, slots, start_limit: start_limit.or(current.start_limit) };
+    let mut value = json!({"version": saved.version, "slots": slots});
+    if let Some(limit) = saved.start_limit {
+        value["startLimitSeconds"] = json!(limit);
+    }
     db.execute(
         "INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![key, json!({"version": saved.version, "slots": slots}).to_string()],
+        params![key, value.to_string()],
     )?;
     Ok(saved)
+}
+
+/// How long a start may take before it is cut off.
+pub(crate) fn start_limit(db: &Connection) -> Result<Duration> {
+    let seconds = limit_at(db, KEY)?.start_limit.unwrap_or(DEFAULT_START_LIMIT);
+    Ok(Duration::from_secs(seconds as u64))
 }
 
 fn workspace_slots(db: &Connection) -> Result<i64> {
@@ -405,6 +434,30 @@ impl Store {
         Ok(close)
     }
 
+    /// Its row's `attempt`: 1 for a fresh dispatch, more once reopened; none
+    /// for an Agent without a row.
+    pub(crate) fn executor_slot_attempt(&self, agent: &str) -> Result<Option<i64>> {
+        Ok(self.db.read()?.query_row("SELECT attempt FROM executor_slots WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?)
+    }
+
+    /// A released slot says why: its start failed, rather than "closed".
+    pub(crate) fn executor_slot_released_because(&self, agent: &str, why: &str) -> Result<()> {
+        self.db.write()?.execute(
+            "UPDATE executor_slots SET reason=?2 WHERE agent_id=?1 AND state='released'",
+            params![agent, why],
+        )?;
+        Ok(())
+    }
+
+    /// The executors starting without a reason: started, or being started,
+    /// with nothing yet settled (S2's P3-1 check reads them).
+    pub(crate) fn executor_slots_starting_unsettled(&self) -> Result<Vec<String>> {
+        Ok(self.db.read()?
+            .prepare("SELECT agent_id FROM executor_slots WHERE state='starting' AND reason IS NULL ORDER BY seq")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Refuses to start an executor waiting in the queue: only the scheduler
     /// starts it, when a slot is free. Any other Agent, and an executor
     /// holding its slot, may start.
@@ -469,8 +522,10 @@ impl Store {
         let count = |state: &str| counts.get(state).copied().unwrap_or(0);
         let mut view = json!({
             "workspace": {"version": workspace.version, "slots": workspace.slots.unwrap_or(DEFAULT_SLOTS),
-                "saved": workspace.slots.is_some(), "default": DEFAULT_SLOTS},
-            "limits": {"min": 1, "max": MAX_SLOTS},
+                "saved": workspace.slots.is_some(), "default": DEFAULT_SLOTS,
+                "startLimitSeconds": workspace.start_limit.unwrap_or(DEFAULT_START_LIMIT)},
+            "limits": {"min": 1, "max": MAX_SLOTS,
+                "startLimitSeconds": {"min": START_LIMITS.start(), "max": START_LIMITS.end(), "default": DEFAULT_START_LIMIT}},
             "inUse": {"waiting": count("waiting"), "starting": count("starting"), "running": count("running")},
         });
         if let Some(project) = project {
@@ -480,12 +535,14 @@ impl Store {
         Ok(view)
     }
 
-    fn save_executor_slots(&self, project: Option<&str>, expected: i64, slots: Option<i64>) -> Result<()> {
+    /// `start_limit`: the Workspace's only (S2); none keeps the one saved.
+    fn save_executor_slots(&self, project: Option<&str>, expected: i64, slots: Option<i64>, start_limit: Option<i64>) -> Result<()> {
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
         let key = match project {
             Some(project) => {
                 crate::projects::ensure_assignable(&tx, project)?;
+                ensure!(start_limit.is_none(), "invalid_input: a start's time limit is the Workspace's, not a project's");
                 project_key(project)
             }
             None => {
@@ -493,7 +550,7 @@ impl Store {
                 KEY.to_owned()
             }
         };
-        save_limit(&tx, &key, expected, slots)?;
+        save_limit(&tx, &key, expected, slots, start_limit)?;
         tx.commit()?;
         Ok(())
     }
@@ -503,8 +560,17 @@ impl Store {
 /// executor, and otherwise every few seconds.
 #[derive(Default)]
 pub(crate) struct State {
-    wakeup: tokio::sync::Notify,
+    /// Shared with the loop, which holds it, not its Workspace, while it
+    /// waits (R3 deaeac79): only a pass holds the Workspace.
+    wakeup: Arc<tokio::sync::Notify>,
     started: OnceLock<()>,
+    /// The executors whose start a pass began and has not settled (S2): a
+    /// pass settles another start that ended without its runtime only when
+    /// it is not one of these.
+    in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// A test's start time limit, below the 30 s a user can save.
+    #[cfg(test)]
+    pub(crate) start_limit: std::sync::Mutex<Option<Duration>>,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become
@@ -522,14 +588,15 @@ impl Workspace {
         if self.executor_slots.started.set(()).is_err() {
             return;
         }
-        let weak = Arc::downgrade(self);
+        let (weak, wakeup) = (Arc::downgrade(self), self.executor_slots.wakeup.clone());
         tokio::spawn(async move {
             loop {
-                let Some(ws) = weak.upgrade() else { break };
+                // Waits holding only the Weak: a dropped Workspace ends the loop.
                 tokio::select! {
-                    _ = ws.executor_slots.wakeup.notified() => {},
+                    _ = wakeup.notified() => {},
                     _ = tokio::time::sleep(TICK) => {},
                 }
+                let Some(ws) = weak.upgrade() else { break };
                 ws.executor_slots_pass().await;
                 drop(ws);
             }
@@ -541,10 +608,14 @@ impl Workspace {
     /// Returns those tasks, for a caller that waits for them (tests).
     pub(crate) async fn executor_slots_pass(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
         let mut started = Vec::new();
+        self.settle_ended_starts(&mut started).await;
         loop {
             let Ok(permit) = self.admission.enter_work() else { break };
             match self.stored(|store| store.executor_slot_next()).await {
-                Ok(Some(agent)) => started.push(self.start_in_slot(agent, permit)),
+                Ok(Some(agent)) => {
+                    self.executor_slots.in_flight.lock().unwrap().insert(agent.clone());
+                    started.push(self.start_in_slot(agent, permit));
+                }
                 Ok(None) => break,
                 Err(error) => {
                     eprintln!("Executor slots: {error:#}");
@@ -558,46 +629,98 @@ impl Workspace {
     fn start_in_slot(self: &Arc<Self>, id: String, permit: Permit) -> tokio::task::JoinHandle<()> {
         let ws = self.clone();
         tokio::spawn(async move {
-            let started = {
-                let gate = ws.gate(&id).await;
-                let _held = gate.lock().await;
-                ws.start_slot_runtime(&id).await
-            };
-            let outcome = match started {
-                Ok(true) => {
-                    let agent = id.clone();
-                    ws.stored(move |store| store.executor_slot_started(&agent)).await
-                        .context("it started, and its slot could not be recorded")
-                }
-                // Already started, closed, or left to the user: the next pass settles it.
-                Ok(false) => Ok(()),
-                Err(error) => {
-                    ws.failed(&id, &error).await;
-                    // Its runtime may be running after all: the slot stays its, for the user.
-                    let uncertain = ws.listed(&id).await.is_ok_and(|a| a.status == "uncertain");
-                    let (agent, why) = (id.clone(), format!("{error:#}"));
-                    match ws.stored(move |store| store.executor_slot_not_started(&agent, uncertain, &why)).await {
-                        // A fresh dispatch's first start: closed, kept to see what happened.
-                        Ok(true) => ws.close_agent_admitted(&id, &permit).await.map(drop)
-                            .context("its start failed, and it could not be closed"),
-                        // A reopened executor stays open, as a failed reconnect leaves an Agent.
-                        Ok(false) => Ok(()),
-                        Err(error) => Err(error.context("its start failed, and its slot could not be recorded")),
-                    }
-                }
-            };
+            let outcome = ws.start_and_settle(&id, &permit).await;
             if let Err(error) = outcome {
                 eprintln!("Executor {id}: {error:#}");
             }
+            ws.executor_slots.in_flight.lock().unwrap().remove(&id);
             drop(permit);
             ws.wake_executor_slots();
         })
     }
 
+    /// Starts its runtime within the Workspace's time limit, then records it
+    /// running, or settles a start that ended without it
+    /// (executor_start.rs `settle_start`).
+    async fn start_and_settle(self: &Arc<Self>, id: &str, permit: &Permit) -> Result<()> {
+        let limit = self.start_limit().await?;
+        let agent = id.to_owned();
+        let attempt = self.stored(move |store| store.executor_slot_attempt(&agent)).await?.unwrap_or(1);
+        let started = tokio::time::timeout(limit, async {
+            let gate = self.gate(id).await;
+            let _held = gate.lock().await;
+            self.start_slot_runtime(id, attempt).await
+        }).await;
+        match started {
+            Ok(Ok(true)) => {
+                let agent = id.to_owned();
+                self.stored(move |store| store.executor_slot_started(&agent)).await
+                    .context("it started, and its slot could not be recorded")
+            }
+            // Already started, closed, or left to the user: a later pass settles it.
+            Ok(Ok(false)) => Ok(()),
+            Ok(Err(error)) => {
+                self.failed(id, &error).await;
+                // Its runtime may be running after all: the slot stays its, for the user.
+                let uncertain = self.listed(id).await.is_ok_and(|a| a.status == "uncertain");
+                let why = format!("{error:#}");
+                let failure = if uncertain { Failure::Uncertain(why) } else { Failure::Definite(why) };
+                self.settle_start(id, permit, failure, false).await
+            }
+            // Cut off: definite only when the close confirms its runtime ended.
+            Err(_) => {
+                let closed = self.close_agent_admitted(id, permit).await.map(drop);
+                let failure = cut_off(&closed, limit);
+                if let Failure::Uncertain(why) = &failure {
+                    self.failed(id, &crate::rpc::OutcomeUnknown(why.clone()).into()).await;
+                }
+                self.settle_start(id, permit, failure, closed.is_ok()).await
+            }
+        }
+    }
+
+    async fn start_limit(&self) -> Result<Duration> {
+        #[cfg(test)]
+        if let Some(limit) = *self.executor_slots.start_limit.lock().unwrap() {
+            return Ok(limit);
+        }
+        self.stored(|store| start_limit(&*store.db.read()?)).await
+    }
+
+    /// R1 1ec1008a P3-1: a starting executor no pass is starting, open and
+    /// disconnected after a start that failed (the user's own Connect that
+    /// won its gate, say), settles as a definite failure with its error.
+    async fn settle_ended_starts(self: &Arc<Self>, started: &mut Vec<tokio::task::JoinHandle<()>>) {
+        let Ok(rows) = self.stored(|store| store.executor_slots_starting_unsettled()).await else { return };
+        for id in rows {
+            if self.executor_slots.in_flight.lock().unwrap().contains(&id) {
+                continue;
+            }
+            let Ok(agent) = self.listed(&id).await else { continue };
+            if agent.closed_at.is_some() || agent.connection_state != "disconnected" || agent.status != "error" {
+                continue;
+            }
+            let Ok(permit) = self.admission.enter_work() else { return };
+            self.executor_slots.in_flight.lock().unwrap().insert(id.clone());
+            let (ws, why) = (self.clone(), agent.error.unwrap_or_else(|| "its start failed".into()));
+            started.push(tokio::spawn(async move {
+                if let Err(error) = ws.settle_start(&id, &permit, Failure::Definite(why), false).await {
+                    eprintln!("Executor {id}: {error:#}");
+                }
+                ws.executor_slots.in_flight.lock().unwrap().remove(&id);
+                drop(permit);
+                ws.wake_executor_slots();
+            }));
+        }
+    }
+
     /// Starts the runtime of an executor whose slot is starting: true once it
     /// started; false when there is nothing to start (closed, already
     /// connecting or connected, or disconnected by the user, who reconnects it).
-    async fn start_slot_runtime(self: &Arc<Self>, id: &str) -> Result<bool> {
+    /// `attempt`: a reopened executor (more than 1) starts as a Reconnect
+    /// starts it; for Codex that also reconciles its thread (`reconcile`, R3
+    /// deaeac79), which Claude's and OpenCode's ensure already are.
+    async fn start_slot_runtime(self: &Arc<Self>, id: &str, attempt: i64) -> Result<bool> {
         let agent = self.listed(id).await?;
         if agent.closed_at.is_some() || agent.disconnected_at.is_some() || agent.connection_state != "disconnected" {
             return Ok(false);
@@ -605,6 +728,7 @@ impl Workspace {
         match agent.harness.as_str() {
             "claude" => self.claude_ensure(id).await.map(drop)?,
             "opencode" => self.opencode_ensure(id).await.map(drop)?,
+            _ if attempt > 1 => self.reconcile(id).await?,
             _ => self.ensure(id).await.map(drop)?,
         }
         Ok(true)
@@ -643,6 +767,9 @@ struct Save {
     expected_version: i64,
     /// Whole numbers 1 to 64; none for a Project's own limit to stop applying.
     slots: Option<Value>,
+    /// The Workspace's only: whole seconds, 30 to 3600; none keeps it.
+    #[serde(default)]
+    start_limit_seconds: Option<Value>,
 }
 
 fn slots_of(input: &Save) -> Result<Option<i64>> {
@@ -655,14 +782,24 @@ fn slots_of(input: &Save) -> Result<Option<i64>> {
     }
 }
 
+fn start_limit_of(input: &Save) -> Result<Option<i64>> {
+    match &input.start_limit_seconds {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_i64().filter(|n| START_LIMITS.contains(n)) {
+            Some(n) if value.is_i64() || value.is_u64() => Ok(Some(n)),
+            _ => bail!("invalid_input: a start's time limit is a whole number of seconds from 30 to 3600"),
+        },
+    }
+}
+
 async fn get_slots(AxumState(ws): AxumState<Arc<Workspace>>, Query(query): Query<ForProject>) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.stored(move |s| s.executor_slots_view(query.project_id.as_deref())).await?))
 }
 
 async fn put_slots(AxumState(ws): AxumState<Arc<Workspace>>, Json(input): Json<Save>) -> Result<Json<Value>, ApiError> {
-    let slots = slots_of(&input)?;
+    let (slots, start_limit) = (slots_of(&input)?, start_limit_of(&input)?);
     let view = ws.stored(move |s| {
-        s.save_executor_slots(None, input.expected_version, slots)?;
+        s.save_executor_slots(None, input.expected_version, slots, start_limit)?;
         s.executor_slots_view(None)
     }).await?;
     ws.changes.send(json!({"executorSlots": true}));
@@ -675,10 +812,10 @@ async fn put_project_slots(
     Path(id): Path<String>,
     Json(input): Json<Save>,
 ) -> Result<Json<Value>, ApiError> {
-    let slots = slots_of(&input)?;
+    let (slots, start_limit) = (slots_of(&input)?, start_limit_of(&input)?);
     let project = id.clone();
     let view = ws.stored(move |s| {
-        s.save_executor_slots(Some(&project), input.expected_version, slots)?;
+        s.save_executor_slots(Some(&project), input.expected_version, slots, start_limit)?;
         s.executor_slots_view(Some(&project))
     }).await?;
     ws.changes.send(json!({"executorSlots": true, "projectId": id}));

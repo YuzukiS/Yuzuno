@@ -63,9 +63,9 @@ const view = (workspace, project, opencodeEnabled = false) => ({
 });
 
 // As Core answers /api/executor-slots (executor_slots.rs `executor_slots_view`).
-const slotsView = ({ version = 0, slots = 3, saved = false, project, inUse = { waiting: 0, starting: 0, running: 0 } } = {}) => ({
-  workspace: { version, slots, saved, default: 3 },
-  limits: { min: 1, max: 64 },
+const slotsView = ({ version = 0, slots = 3, saved = false, project, inUse = { waiting: 0, starting: 0, running: 0 }, startLimitSeconds = 300 } = {}) => ({
+  workspace: { version, slots, saved, default: 3, startLimitSeconds },
+  limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
   inUse,
   ...(project ? { project: { id: "p1", ...project } } : {}),
 });
@@ -245,7 +245,7 @@ test("Executors at once (T-35): the Workspace's limit is saved against its versi
   assert.match(group().textContent, /Unsaved change/);
   save().click();
   await until(() => /Saved\./.test(group().textContent), "the saved limit");
-  assert.deepEqual(slotPuts(page), [{ url: "/api/executor-slots", method: "PUT", body: { expectedVersion: 0, slots: 5 } }]);
+  assert.deepEqual(slotPuts(page), [{ url: "/api/executor-slots", method: "PUT", body: { expectedVersion: 0, slots: 5, startLimitSeconds: 300 } }]);
   assert.equal(field(page, "Executors at once").value, "5");
   assert.equal(save().disabled, true, "what was saved is what is shown");
   assert.deepEqual(puts(page), [], "the templates are saved apart");
@@ -301,5 +301,41 @@ test("Executors at once (T-35): an answer without its fields reads as Core's def
   await until(() => field(page, "Executors at once"), "the limit");
   assert.equal(field(page, "Executors at once").value, "3");
   assert.match(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]').textContent, /0 running, 0 starting, 0 waiting/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("Start time limit (T-35 S2): the Workspace's, a whole number of seconds from 30 to 3600, saved with its limit; a project has none of its own", async () => {
+  let current = { version: 0, slots: 3, saved: false, startLimitSeconds: 300 };
+  const page = mount(() => [200, view({ version: 0, templates: [] })], (url, method, body) => {
+    if (method === "PUT") current = { ...current, version: current.version + 1, slots: body.slots, saved: true, startLimitSeconds: body.startLimitSeconds ?? current.startLimitSeconds };
+    return [200, slotsView(current)];
+  });
+  page.window.renderTemplates();
+  await until(() => field(page, "Start time limit (seconds)"), "the start time limit");
+  const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
+  assert.equal(field(page, "Start time limit (seconds)").value, "300");
+  assert.match(group().textContent, /How long an executor’s start may take before Core cuts it off\. A start that fails is rebuilt once; a second failure blocks its task\. 300 unless you change it\./);
+  const save = () => button(page, "Save executors at once");
+  for (const bad of ["29", "3601", "30.5", ""]) {
+    await type(page, "Start time limit (seconds)", bad);
+    assert.match(group().textContent, /A whole number of seconds from 30 to 3600\./, `${JSON.stringify(bad)} says the range`);
+    assert.equal(field(page, "Start time limit (seconds)").getAttribute("aria-invalid"), "true");
+    assert.equal(save().disabled, true, `${JSON.stringify(bad)} is not saved`);
+  }
+  await type(page, "Start time limit (seconds)", "45");
+  save().click();
+  await until(() => slotPuts(page).length === 1, "the save");
+  assert.deepEqual(slotPuts(page)[0].body, { expectedVersion: 0, slots: 3, startLimitSeconds: 45 });
+  await until(() => /Saved\./.test(group().textContent), "saved");
+  assert.equal(field(page, "Start time limit (seconds)").value, "45");
+  assert.deepEqual(page.errors, []);
+});
+
+test("Start time limit (T-35 S2): a project's limit editor has no start time limit", async () => {
+  const page = mount(() => [200, view({ version: 0, templates: [] }, { version: 0, templates: [] })],
+    () => [200, slotsView({ project: { version: 0, slots: null } })]);
+  page.window.renderProjectTemplates("p1");
+  await until(() => field(page, "Executors at once"), "the project's limit");
+  assert.ok(!field(page, "Start time limit (seconds)"), "the Workspace's alone");
   assert.deepEqual(page.errors, []);
 });

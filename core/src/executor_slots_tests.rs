@@ -43,7 +43,7 @@ fn connected(store: &Store, id: &str) {
 fn limit(store: &Store, key: &str, slots: i64) {
     let db = store.db.write().unwrap();
     let version = limit_at(&db, key).unwrap().version;
-    save_limit(&db, key, version, Some(slots)).unwrap();
+    save_limit(&db, key, version, Some(slots), None).unwrap();
 }
 
 /// What the scheduler starts, pass after pass, until it starts none.
@@ -349,32 +349,43 @@ fn a_restart_queues_unfinished_starts_again_and_counts_executors_from_before() {
 fn executor_slot_limits_are_saved_against_their_version_within_their_range() {
     let (_dir, store) = store();
     let view = store.executor_slots_view(None).unwrap();
-    assert_eq!(view["workspace"], json!({"version":0,"slots":DEFAULT_SLOTS,"saved":false,"default":DEFAULT_SLOTS}));
-    assert_eq!(view["limits"], json!({"min":1,"max":MAX_SLOTS}));
+    assert_eq!(view["workspace"], json!({"version":0,"slots":DEFAULT_SLOTS,"saved":false,"default":DEFAULT_SLOTS,"startLimitSeconds":300}));
+    assert_eq!(view["limits"], json!({"min":1,"max":MAX_SLOTS,"startLimitSeconds":{"min":30,"max":3600,"default":300}}));
     assert_eq!(view.get("project"), None);
-    store.save_executor_slots(None, 0, Some(5)).unwrap();
-    assert_eq!(store.executor_slots_view(None).unwrap()["workspace"], json!({"version":1,"slots":5,"saved":true,"default":3}));
+    store.save_executor_slots(None, 0, Some(5), None).unwrap();
+    assert_eq!(store.executor_slots_view(None).unwrap()["workspace"], json!({"version":1,"slots":5,"saved":true,"default":3,"startLimitSeconds":300}));
     let error = |result: Result<()>| result.unwrap_err().to_string();
-    assert_eq!(error(store.save_executor_slots(None, 0, Some(6))), "version_conflict: these executor slots changed; reload before saving");
+    assert_eq!(error(store.save_executor_slots(None, 0, Some(6), None)), "version_conflict: these executor slots changed; reload before saving");
     for bad in [0, MAX_SLOTS + 1] {
-        assert_eq!(error(store.save_executor_slots(None, 1, Some(bad))), "invalid_input: executors at once is a whole number from 1 to 64");
+        assert_eq!(error(store.save_executor_slots(None, 1, Some(bad), None)), "invalid_input: executors at once is a whole number from 1 to 64");
     }
-    assert!(error(store.save_executor_slots(None, 1, None)).starts_with("invalid_input: the Workspace's executors at once"));
+    assert!(error(store.save_executor_slots(None, 1, None, None)).starts_with("invalid_input: the Workspace's executors at once"));
 
     let project = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into())])).unwrap().id;
     assert_eq!(store.executor_slots_view(Some(&project)).unwrap()["project"], json!({"id":project,"version":0,"slots":null}));
-    store.save_executor_slots(Some(&project), 0, Some(2)).unwrap();
+    store.save_executor_slots(Some(&project), 0, Some(2), None).unwrap();
     assert_eq!(store.executor_slots_view(Some(&project)).unwrap()["project"], json!({"id":project,"version":1,"slots":2}));
-    store.save_executor_slots(Some(&project), 1, None).unwrap();
+    store.save_executor_slots(Some(&project), 1, None, None).unwrap();
     assert_eq!(store.executor_slots_view(Some(&project)).unwrap()["project"], json!({"id":project,"version":2,"slots":null}),
         "unset: only the Workspace's applies");
     assert!(store.executor_slots_view(Some("no-such-project")).is_err());
-    assert!(store.save_executor_slots(Some("no-such-project"), 0, Some(1)).is_err());
+    assert!(store.save_executor_slots(Some("no-such-project"), 0, Some(1), None).is_err());
 
     // A value this Core can't use reads as unset, and is saved over by its version.
     store.db.write().unwrap().execute("UPDATE workspace_meta SET value='{\"version\":4,\"slots\":900}' WHERE key=?1", [KEY]).unwrap();
-    assert_eq!(store.executor_slots_view(None).unwrap()["workspace"], json!({"version":4,"slots":3,"saved":false,"default":3}));
-    store.save_executor_slots(None, 4, Some(2)).unwrap();
+    assert_eq!(store.executor_slots_view(None).unwrap()["workspace"], json!({"version":4,"slots":3,"saved":false,"default":3,"startLimitSeconds":300}));
+    store.save_executor_slots(None, 4, Some(2), None).unwrap();
+    // S2: how long a start may take, the Workspace's, 30 to 3600 seconds;
+    // a save without it keeps it.
+    assert_eq!(error(store.save_executor_slots(None, 5, Some(2), Some(29))),
+        "invalid_input: a start's time limit is a whole number of seconds from 30 to 3600");
+    assert_eq!(error(store.save_executor_slots(None, 5, Some(2), Some(3601))),
+        "invalid_input: a start's time limit is a whole number of seconds from 30 to 3600");
+    store.save_executor_slots(None, 5, Some(2), Some(45)).unwrap();
+    store.save_executor_slots(None, 6, Some(2), None).unwrap();
+    assert_eq!(store.executor_slots_view(None).unwrap()["workspace"]["startLimitSeconds"], 45, "a save without it keeps it");
+    assert_eq!(start_limit(&store.db.read().unwrap()).unwrap(), Duration::from_secs(45));
+    assert!(error(store.save_executor_slots(Some(&project), 2, Some(1), Some(60))).contains("the Workspace's, not a project's"));
 
     queued(&store, "a", None, "local");
     queued(&store, "b", None, "local");
@@ -387,12 +398,20 @@ fn executor_slot_limits_are_saved_against_their_version_within_their_range() {
 /// The routes take whole numbers only; null leaves a Project's unset.
 #[test]
 fn a_saved_limit_is_a_whole_number_or_null() {
-    let save = |slots: Option<Value>| slots_of(&Save { expected_version: 0, slots }).map_err(|e| e.to_string());
+    let save = |slots: Option<Value>| slots_of(&Save { expected_version: 0, slots, start_limit_seconds: None }).map_err(|e| e.to_string());
     assert_eq!(save(Some(json!(4))), Ok(Some(4)));
     assert_eq!(save(Some(json!(64))), Ok(Some(64)));
     assert_eq!(save(Some(Value::Null)), Ok(None));
     assert_eq!(save(None), Ok(None));
     for bad in [json!(0), json!(65), json!(2.5), json!("2"), json!(-1), json!(true)] {
         assert_eq!(save(Some(bad.clone())), Err("invalid_input: executors at once is a whole number from 1 to 64".into()), "{bad}");
+    }
+    let limit = |seconds: Option<Value>| start_limit_of(&Save { expected_version: 0, slots: None, start_limit_seconds: seconds })
+        .map_err(|e| e.to_string());
+    assert_eq!(limit(Some(json!(30))), Ok(Some(30)));
+    assert_eq!(limit(Some(json!(3600))), Ok(Some(3600)));
+    assert_eq!(limit(None), Ok(None));
+    for bad in [json!(29), json!(3601), json!(30.5), json!("60")] {
+        assert_eq!(limit(Some(bad.clone())), Err("invalid_input: a start's time limit is a whole number of seconds from 30 to 3600".into()), "{bad}");
     }
 }

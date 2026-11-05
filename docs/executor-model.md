@@ -150,14 +150,30 @@ only the Workspace's applies. Only you change them.
 - **Connect on a queued executor** is refused, with its place in the queue,
   and changes nothing about it. To run more at once, raise the limit: the next
   ones start right away.
-- **A start that fails.** If the runtime refuses to start a new executor,
-  Core closes it and keeps it, and its slot goes to the next. If Core can't
-  tell whether it started, or a reopened executor fails to start, the
-  executor stays open and keeps its slot. Its task's card says its start did
-  not finish, and why, until you reconnect or close it.
+- **A start that fails.** A start fails when the runtime refuses it, or
+  when it doesn't finish within the **start time limit**: 300 seconds unless
+  you change it, 30 to 3600, set beside Executors at once. Core then closes
+  the executor, keeps it, and rebuilds it once. The rebuild is a new dispatch
+  of the same request by the same dispatcher. Its executor keeps the first
+  one's place in the queue and works in the same folder. If that one fails
+  too, or Core can't make the rebuild, Core blocks the task with every
+  reason, and a dispatching Agent gets one mail. A start cut off by the time
+  limit counts as failed only when closing the executor confirmed its
+  runtime stopped.
+- **When Core can't tell.** If Core can't tell whether a start happened
+  (its runtime may be running), the executor stays open and keeps its slot.
+  Its card says its start did not finish, and why, and a dispatching Agent
+  gets one mail. Core neither closes nor rebuilds it, so two executors never
+  work in one folder: connect it to check, or close it to free its slot. A
+  reopened executor whose start fails stays open the same way.
+- **The first dispatch** reads as superseded once its executor is rebuilt:
+  `task_get` with its `dispatchId` says by which dispatch, and why. A retry
+  of its `requestId` still gets its recorded answer.
 - **After a restart.** An executor that was starting waits again, at its
   place; one that may have started keeps its slot, and so do running ones.
-  Executors open from before this version each hold a slot, as running.
+  Executors open from before this version each hold a slot, as running. A
+  rebuild Core was making when it stopped blocks its task, "Core restarted
+  while it rebuilt" it, unless its dispatch was already made.
 - **Executors only.** Standing Agents don't count, and Jobs keep their own
   machine slots.
 
