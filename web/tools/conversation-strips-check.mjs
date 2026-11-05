@@ -192,6 +192,16 @@ for (const run of runs) {
         await page.locator(".agent-row").first().waitFor({ timeout: 15_000 });
         if (run.phone && (await page.locator(".app.phone-list").count())) await page.locator(".agent-row").first().click();
         else if (!run.phone) await page.locator(".agent-row").first().click();
+        await page.locator('[data-item-id="r13"]').waitFor({ timeout: 10_000 });
+        // Only the rows near what it shows are mounted (ConversationWindow): a phone opened at the end has no r11
+        // yet. Scroll up as a reader would until it is.
+        await page.evaluate(async () => {
+          const scroller = document.querySelector(".conversation-scroll");
+          for (let i = 0; i < 40 && !document.querySelector('[data-item-id="r11"]'); i++) {
+            scroller.scrollTop -= scroller.clientHeight / 2;
+            await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+          }
+        });
         await page.locator('[data-item-id="r11"]').waitFor({ timeout: 10_000 });
         await waiting("GET", "/api/agents/a/reading");
         // Reading in the middle of the conversation.
