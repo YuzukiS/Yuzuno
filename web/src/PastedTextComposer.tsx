@@ -4,7 +4,6 @@ import { touchKeyboard } from "./touch-input";
 import { returnSends, type SendKey } from "./device-preferences";
 import {
   forwardRef,
-  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -58,6 +57,8 @@ export type ComposerHandle = {
   append: (text: string) => void;
   /** The first line as laid out, for the composer's shape (composer-shape.ts). */
   lineExtent: () => LineExtent | null;
+  /** The draft's rows of text as laid out, or its lines where nothing is; 0 when empty. */
+  rows: () => number;
 };
 type Props = {
   agentId: string;
@@ -454,7 +455,10 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
         view.current = null;
       };
     }, [props.agentId]);
-    useEffect(() => {
+    // A draft changed elsewhere (sent, added to, restored) is in the editor
+    // before the composer measures its shape and rows for it (T-44): measured
+    // after it, a sent draft's rows kept the expand button on an empty box.
+    useLayoutEffect(() => {
       const editor = view.current;
       if (!editor) return;
       if (props.draft !== published.current) {
@@ -508,6 +512,16 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
         if (typeof range.getBoundingClientRect !== "function") return null;
         const { width, height } = range.getBoundingClientRect();
         return { lines: v.state.doc.lines, width, height, lineHeight: parseFloat(getComputedStyle(line).lineHeight) || 0 };
+      },
+      rows() {
+        const v = view.current;
+        const line = v?.contentDOM.querySelector<HTMLElement>(".cm-line");
+        if (!v || !line || !v.state.doc.length) return 0;
+        const range = document.createRange();
+        range.selectNodeContents(v.contentDOM);
+        const lineHeight = parseFloat(getComputedStyle(line).lineHeight) || 0;
+        if (typeof range.getBoundingClientRect !== "function" || !lineHeight) return v.state.doc.lines;
+        return Math.max(v.state.doc.lines, Math.round(range.getBoundingClientRect().height / lineHeight));
       },
     }));
     const active = opened?.agent === props.agentId ? opened : null;

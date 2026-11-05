@@ -1407,6 +1407,28 @@ p {
   min-height: calc(var(--composer-control) + 2 * var(--composer-inset-bottom));
   padding: max(2px, calc((var(--composer-control) + 2 * var(--composer-inset-bottom) - 1.75em) / 2)) var(--composer-line-text-x);
 }
+/* A draft of three rows or more offers to expand, at the box's top right,
+   as in the ChatGPT app (T-44); the text keeps clear of it meanwhile.
+   Expanded, the editor has a set height: most of the window, never less than
+   its usual cap, with a strip of the conversation left above it. It changes
+   at once, as the box's other heights do. The docks beside the conversation
+   wait meanwhile: centred in that strip, they would be drawn over the box. */
+.composer-expand {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
+}
+.composer[data-expand] .pasted-text-composer .cm-content {
+  padding-right: 48px;
+}
+.composer[data-expand="open"] .pasted-text-composer .cm-scroller {
+  height: max(min(70dvh, calc(100dvh - 300px)), min(calc(12 * 1.75em + 21px), 40dvh));
+  max-height: none;
+}
+.app:not(.phone) .main-panel:has(.composer[data-expand="open"]) .conversation-body > :is(.turn-dock, .work-dock) {
+  display: none;
+}
 /* Tools start the row as quiet icons; their names are in their tooltips. */
 .composer-tools {
   display: flex;
@@ -3724,6 +3746,21 @@ p {
   .app.phone .pasted-text-composer .cm-scroller {
     max-height: max(64px, 20dvh);
   }
+}
+/* Expanded on a phone: over half the screen, or of what the keyboard leaves,
+   but the header, "+" and Send keep their room on the shortest one. */
+.app.phone .composer-expand {
+  top: 2px;
+  right: 6px;
+  width: 44px;
+  height: 44px;
+}
+.app.phone .composer[data-expand] .pasted-text-composer .cm-content {
+  padding-right: 52px;
+}
+.app.phone .composer[data-expand="open"] .pasted-text-composer .cm-scroller {
+  height: max(64px, min(calc(var(--visual-height, 100dvh) * 0.55), calc(var(--visual-height, 100dvh) - 140px)));
+  max-height: none;
 }
 /* A short screen can leave the conversation itself no height; its dock
    buttons, kept at its foot, then rose over the conversation's header and

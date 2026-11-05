@@ -11,6 +11,9 @@
 // keyboard and moves like the app's other small menus. Images still come in by paste and by drop, without
 // the menu. An image, a skill chip, an error line or the waiting-for-your-answer notice under the text
 // keeps the box a block. Codex's Plan mode sign sits beside Send.
+// From its third row a draft offers to expand (the follow-up, Lead 2 4839): one button at the box's top
+// right expands the editor to most of the window and collapses it again; emptying the draft or opening
+// another Agent collapses it too.
 // Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Writes: none but the images
 // uploaded, which are answered here; anything else but a read is refused and counted. Chromium is not Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/composer-shape-check.mjs
@@ -199,6 +202,12 @@ function pageHelpers({ stored, workspace, select }) {
       modeInTools: !!box.querySelector(".composer-tools .composer-mode"),
       images: box.querySelectorAll(".input-image").length, chips: box.querySelectorAll(".skill-chip, .skill-chips li").length,
       errors: [...box.querySelectorAll(".inline-error")].map((e) => ({ text: e.textContent, ...rect(e) })),
+      expand: rect(box.querySelector(".composer-expand")), expandLabel: box.querySelector(".composer-expand")?.getAttribute("aria-label") ?? null,
+      expandState: box.dataset.expand ?? null, onExpand: document.activeElement?.classList?.contains("composer-expand") ?? false,
+      header: rect(document.querySelector(".conversation-header")),
+      // The docks beside the conversation that are drawn, and any over the box.
+      docks: [...document.querySelectorAll(".conversation-body > :is(.turn-dock, .work-dock)")].filter((d) => getComputedStyle(d).display !== "none")
+        .map((d) => ({ dock: d.classList.contains("turn-dock") ? "turns" : "work", ...rect(d) })),
     };
   };
   // What plays inside the box that would move or size something: an animation or transition of a
@@ -343,11 +352,13 @@ for (const run of runs) {
       { shape: one?.shape, form: one?.form, plus: one?.plus, send: one?.send });
 
     const growPlays = [];
+    let two = null;
     for (const text of ["then the second", "and a third"]) {
       await page.keyboard.press("Shift+Enter");
       growPlays.push(...(await plays()));
       await page.keyboard.type(text);
       await settle();
+      two ??= await geom();
     }
     const three = await geom();
     measured.threeLines = three;
@@ -383,6 +394,100 @@ for (const run of runs) {
       && !!caret && caret.caretTop >= caret.top - 0.5 && caret.caretBottom <= caret.bottom + 0.5,
       { cap, scroller: full?.scroller, form: [full?.form?.h, fuller?.form?.h], caret });
     await page.locator("form.composer").screenshot({ path: join(output, `${tag}-past-cap.png`) });
+
+    // Expand (T-44 follow-up, Lead 2 4839), as with the ChatGPT app's icon: offered from a draft's third
+    // row at the box's top right, the text clear of it; expanded, the editor has a set height, most of the
+    // window (desktop min(70dvh, the window less 300px), phone min(55%, the screen less 140px)), never
+    // less than its cap, and no dock beside the conversation is drawn over it; the same button collapses it.
+    // Nothing plays, and a click leaves the caret.
+    ok(`${tag}: one line or two rows offer no expand; from the third row the box offers it at its top right, beside the first row, the text clear of it`,
+      one?.expand === null && two?.shape === "block" && two.expand === null && two.expandState === null
+      && !!three?.expand && three.expandState === "offered" && three.expandLabel === "Expand the draft"
+      && three.expand.r <= three.form.r - 1 && three.expand.y >= three.form.y && three.expand.y < three.firstLine.b && three.expand.b > three.firstLine.y
+      && three.contentBox.right <= three.expand.x + 0.5 && !!full?.expand,
+      { one: one?.expand, two: [two?.shape, two?.expand], three: { expand: three?.expand, state: three?.expandState, label: three?.expandLabel,
+        firstLine: three?.firstLine, contentRight: three?.contentBox?.right, form: three?.form }, full: full?.expand });
+    const expandButton = page.locator("form.composer .composer-expand");
+    // Only where it is offered: without it (main) each row fails on its own and the sequence goes on.
+    const pressExpand = async () => { if (await expandButton.count()) await expandButton.click(); };
+    const expandedHeight = run.phone ? Math.max(64, Math.min(full.innerHeight * 0.55, full.innerHeight - 140))
+      : Math.max(Math.min(full.innerHeight * 0.7, full.innerHeight - 300), cap);
+    const expandPlays = [];
+    await pressExpand();
+    expandPlays.push(...(await plays()));
+    await settle();
+    const expandedBox = await geom();
+    const over = (g) => (g?.docks ?? []).filter((d) => d.x < g.form.r && d.r > g.form.x && d.y < g.form.b && d.b > g.form.y);
+    measured.expanded = { expandedHeight, scroller: expandedBox?.scroller, form: expandedBox?.form, header: expandedBox?.header, docks: expandedBox?.docks };
+    ok(`${tag}: expanded, the editor is most of the window, at once, no dock drawn over it; "+" and Send stay on the bottom edge, the header in view; focus and the caret stay`,
+      expandedBox?.expandState === "open" && expandedBox.expandLabel === "Collapse the draft" && expandedBox.shape === "block"
+      && Math.abs(expandedBox.scroller.clientHeight - expandedHeight) <= 1 && expandedBox.scroller.clientHeight > full.scroller.clientHeight
+      && onEdge(expandedBox, inset) && samePlace(expandedBox.send, empty.send) && (!expandedBox.header || expandedBox.form.y >= expandedBox.header.b - 0.5)
+      && over(expandedBox).length === 0 && expandedBox.focus && expandedBox.caretAtEnd && expandPlays.length === 0,
+      { expandedHeight, scroller: expandedBox?.scroller, form: expandedBox?.form, header: expandedBox?.header, send: [expandedBox?.send, empty.send], over: over(expandedBox),
+        state: expandedBox?.expandState, focus: expandedBox?.focus, caret: expandedBox?.caretAtEnd, plays: expandPlays });
+    await page.locator("form.composer").screenshot({ path: join(output, `${tag}-expanded.png`) });
+    const collapsePlays = [];
+    await pressExpand();
+    collapsePlays.push(...(await plays()));
+    await settle();
+    const collapsedBox = await geom();
+    ok(`${tag}: the same button collapses it, back to its cap, at once, the conversation's docks as before; "+" and Send where they were; focus and the caret stay`,
+      collapsedBox?.expandState === "offered" && collapsedBox.expandLabel === "Expand the draft"
+      && JSON.stringify(collapsedBox.docks.map((d) => d.dock)) === JSON.stringify(full.docks.map((d) => d.dock))
+      && Math.abs(collapsedBox.scroller.clientHeight - full.scroller.clientHeight) <= 1 && near(collapsedBox.form.h, fuller.form.h)
+      && samePlace(collapsedBox.plus, empty.plus) && samePlace(collapsedBox.send, empty.send)
+      && collapsedBox.focus && collapsedBox.caretAtEnd && collapsePlays.length === 0,
+      { scroller: collapsedBox?.scroller?.clientHeight, cap: full.scroller.clientHeight, form: [collapsedBox?.form?.h, fuller.form.h],
+        docks: [collapsedBox?.docks?.map((d) => d.dock), full.docks.map((d) => d.dock)],
+        state: collapsedBox?.expandState, focus: collapsedBox?.focus, caret: collapsedBox?.caretAtEnd, plays: collapsePlays });
+    // From the keyboard: Enter and Space work it, focus staying on it.
+    let byEnter = null;
+    let bySpace = null;
+    if (await expandButton.count()) {
+      await expandButton.focus();
+      await page.keyboard.press("Enter");
+      await settle();
+      byEnter = await geom();
+      await page.keyboard.press("Space");
+      await settle();
+      bySpace = await geom();
+    }
+    ok(`${tag}: from the keyboard, Enter expands and Space collapses, focus staying on the button`,
+      byEnter?.expandState === "open" && byEnter.onExpand && byEnter.expandLabel === "Collapse the draft"
+      && bySpace?.expandState === "offered" && bySpace.onExpand && bySpace.expandLabel === "Expand the draft",
+      { byEnter: [byEnter?.expandState, byEnter?.onExpand], bySpace: [bySpace?.expandState, bySpace?.onExpand] });
+    // Another Agent opened, and back: collapsed, the draft kept. Tui's restored three rows only offer it.
+    await pressExpand();
+    await settle();
+    const openBefore = (await geom())?.expandState;
+    await open("Tui");
+    const tuiOffered = await geom();
+    await open("Mori");
+    const backHere = await geom();
+    ok(`${tag}: opening another Agent collapses it, and back, the draft is kept, collapsed; a restored three-row draft opens offering it`,
+      openBefore === "open" && tuiOffered?.expandState === "offered" && backHere?.expandState === "offered"
+      && Math.abs(backHere.scroller.clientHeight - full.scroller.clientHeight) <= 1,
+      { openBefore, tui: tuiOffered?.expandState, back: [backHere?.expandState, backHere?.scroller?.clientHeight] });
+    // Emptied, it collapses: a new draft starts collapsed.
+    await input("Mori").click();
+    // The focus glow behind the box settles first, as above.
+    await page.waitForTimeout(400);
+    await pressExpand();
+    await settle();
+    const openAgain = (await geom())?.expandState;
+    await clear();
+    const emptied = await geom();
+    for (const text of ["a", "b", "c"]) {
+      if (text !== "a") await page.keyboard.press("Shift+Enter");
+      await page.keyboard.type(text);
+    }
+    await settle();
+    const anew = await geom();
+    ok(`${tag}: emptied, the box collapses to its empty shape, and a new draft of three rows starts collapsed`,
+      openAgain === "open" && emptied?.expandState === null && emptied.expand === null && emptied.shape === empty.shape && near(emptied.form.h, empty.form.h)
+      && anew?.expandState === "offered",
+      { openAgain, emptied: [emptied?.expandState, emptied?.shape, emptied?.form?.h, empty.form.h], anew: anew?.expandState });
 
     // To the edge and back, one key at a time.
     await clear();
