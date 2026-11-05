@@ -2789,6 +2789,29 @@ test("the rail in attention order once Appearance chooses it: the same Agents, w
   }
 });
 
+test("a Turn end read past on any device is not unseen on a new one; one that ended after the last read still is (review 9392d7c2)", async () => {
+  // Nothing in this browser's storage. Mori's failed Turn was read through
+  // elsewhere (reviewedSeq 30); Hana's ended after her last read (12).
+  const workspaceAgents = [
+    { ...agents[0], ...ended(30, "failed"), status: "error", reviewedSeq: 30 },
+    { ...agents[1], ...ended(20) },
+    { ...agents[2], pendingCount: 2, openQuestions: 1 },
+  ];
+  const p = await mount({ workspaceAgents, home: attentionHome(),
+    storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
+  try {
+    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), "Hana's Turn end is listed");
+    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
+    assert.deepEqual([unseen("failed"), unseen("finished")], [[], ["b"]], "only the end after the last read");
+    assert.equal(railLabel(p, "b"), "Finished · unseen");
+    assert.notEqual(railLabel(p, "a"), "Failed · unseen");
+    assert.deepEqual(railIds(p), ["c", "b", "a"], "Mori's read end no longer moves Mori up");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you, then Turn ends unseen, and round again", async () => {
   const badges = [];
   const p = await mount({

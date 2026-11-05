@@ -5,7 +5,8 @@ import type { Agent } from "./types";
  * Who needs the user, and in what order (T-42). Pure: what this device has
  * seen of each Agent's last Turn end is kept by turn-seen.ts. Core says how
  * and where each Agent's last Turn ended (`lastTurnEnd`); an end the device
- * has not shown yet, on an Agent at rest, is "finished · unseen" or
+ * has not shown yet, and that the conversation has not been read past
+ * (`reviewedSeq`), on an Agent at rest, is "finished · unseen" or
  * "failed · unseen".
  */
 
@@ -14,12 +15,16 @@ export type TurnSeen = Readonly<Record<string, number>>;
 
 /** How the Agent's last Turn ended, when this device has not seen that end
  * and the Agent is at rest (ready, or ended in error): `finished` or
- * `failed`. A closed Agent, or one working or waiting again, has none. */
+ * `failed`. A closed Agent, or one working or waiting again, has none. An
+ * end the conversation was read past, here or on another device
+ * (`reviewedSeq`, the Workspace's), is seen too: a new device, browser
+ * profile or cleared storage does not bring back Turns read long ago
+ * (review 9392d7c2). */
 export function unseenEnd(agent: Agent, seen: TurnSeen): "finished" | "failed" | null {
   const end = agent.lastTurnEnd;
   if (!end || agent.closedAt) return null;
   if (!["idle", "error", "uncertain"].includes(agent.status)) return null;
-  return (seen[agent.id] ?? 0) >= end.seq ? null : end.outcome;
+  return Math.max(seen[agent.id] ?? 0, agent.reviewedSeq ?? 0) >= end.seq ? null : end.outcome;
 }
 
 /** The attention ranks, in order: what waits on the user (requests and open

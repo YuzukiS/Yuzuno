@@ -27,6 +27,16 @@ test("a Turn end is unseen until this device has shown it, and only on an Agent 
   assert.equal(unseenEnd(agent("c"), {}), null, "no Turn end yet");
 });
 
+test("a Turn end the conversation was read past is seen on any device; one after the last read is not (review 9392d7c2)", () => {
+  // A new device, browser profile or cleared storage: no mark here.
+  assert.equal(unseenEnd(agent("read", { ...end(7), reviewedSeq: 7 }), {}), null, "read through the end");
+  assert.equal(unseenEnd(agent("past", { ...end(7), reviewedSeq: 9 }), {}), null, "read past it");
+  assert.equal(unseenEnd(agent("after", { ...end(7, "failed"), status: "error", reviewedSeq: 6 }), {}), "failed", "ended after the last read");
+  // Either mark is enough: this device's, or the read.
+  assert.equal(unseenEnd(agent("here", { ...end(7), reviewedSeq: 3 }), { here: 7 }), null);
+  assert.equal(unseenEnd(agent("old-mark", { ...end(7), reviewedSeq: 7 }), { "old-mark": 4 }), null);
+});
+
 test("the attention order: needs you oldest first, unseen failed before finished, working, ready, offline", () => {
   const agents = [
     agent("offline", { status: "offline" }),

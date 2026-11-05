@@ -31,10 +31,11 @@ const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const base = { harness: "codex", model: "gpt-6", color: "sage", createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0,
   lastSeq: 40, reviewedSeq: 40, goal: "", connectionState: "connected", status: "idle" };
 const ended = (seq, outcome) => ({ lastTurnEnd: { seq, outcome, at: at(4) } });
-// In the list's own order: Mori, Hana, Sora, Kiri.
+// In the list's own order: Mori, Hana, Sora, Kiri. Mori's and Hana's Turns
+// ended after their conversations were last read (reviewedSeq).
 const agents = [
-  { ...base, id: "a", name: "Mori", cwd: "/w/app", projectId: "p-app", status: "error", ...ended(30, "failed") },
-  { ...base, id: "b", name: "Hana", cwd: "/w/app", projectId: "p-app", ...ended(20, "finished") },
+  { ...base, id: "a", name: "Mori", cwd: "/w/app", projectId: "p-app", status: "error", ...ended(30, "failed"), reviewedSeq: 25 },
+  { ...base, id: "b", name: "Hana", cwd: "/w/app", projectId: "p-app", ...ended(20, "finished"), reviewedSeq: 12 },
   // A request and a question sent to be answered later.
   { ...base, id: "c", name: "Sora", cwd: "/w/res", projectId: "p-res", status: "waiting", pendingCount: 2, openQuestions: 1 },
   { ...base, id: "d", name: "Kiri", cwd: "/w/res", projectId: "p-res", status: "working" },
