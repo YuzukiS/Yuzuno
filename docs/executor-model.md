@@ -9,8 +9,8 @@ when the work is accepted.
 
 The model arrives in phases. Phase 0 is in place: it marks what kind each
 Agent is and lets you choose a Project's leads. Phase 1 is arriving: you
-can keep executor templates now; dispatching a task from one comes next.
-Nothing behaves differently by kind yet.
+can keep executor templates and dispatch a task from one, and Core creates
+its executor. Releasing an executor comes next.
 
 ## Kinds
 
@@ -20,11 +20,12 @@ Every Agent has one kind:
 | --- | --- | --- |
 | **standing** | You | An Agent you created, as every Agent was before. This is every Agent with no other kind. |
 | **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
-| **executor** | Core, from phase 1 | An Agent made for one task from an executor template. Phase 0 makes none. |
+| **executor** | Core | An Agent made for one task by a [dispatch from an executor template](#dispatching-from-a-template). |
 
-- **Where it shows.** The sidebar shows a **Lead** label under a lead's
-  name. Agents see each Agent's kind in `peers_list` (`lead`, `executor` or
-  `standing`), and can list only one kind with its `kind` filter.
+- **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
+  the Agent's name. Agents see each Agent's kind in `peers_list` (`lead`,
+  `executor` or `standing`), and can list only one kind with its `kind`
+  filter.
 - **How it is stored.** Core keeps the kind in a table of its own,
   `agent_roles`, not in the Agent's record. Older Core builds rewrite an
   Agent's record with only the fields they know. Kept apart, a kind survives
@@ -51,9 +52,9 @@ Agents in that Project can be chosen, and an executor cannot lead.
 - **An older Core's move.** Such a move leaves the mark in place, but it
   applies only if the Agent returns to the Project it was chosen for.
 
-From phase 1, a lead can dispatch a task of its own Project from an executor
-template. You can always dispatch from a template. A task in no Project is
-dispatched from a template by you only.
+A lead can dispatch a task of its own Project from an executor template.
+You can always dispatch from a template. A task in no Project is dispatched
+from a template by you only.
 
 ## Executor templates
 
@@ -67,7 +68,7 @@ its settings.
 | **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
-| **Instructions** | Up to 8 KiB, given to the executor with its task's materials. |
+| **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **At most at once** | Kept for phase 2's limit on running executors; not applied yet. |
 
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
@@ -82,6 +83,44 @@ its settings.
   this one can't read or use, such as another harness or machine, are not
   shown or offered to a dispatch, and a save here keeps them as they were.
   The page says how many such templates the list holds.
+
+## Dispatching from a template
+
+To dispatch a task from a template, give `executor: {templateId}` instead of
+`toAgentId` in `task_dispatch`, or choose **From a template** in the task's
+**Dispatch** form. Core then:
+
+1. **Checks** the task's version, that it is not archived, who is
+   dispatching, and the template. Nothing is written before these pass.
+2. **Creates the executor**, as **New Agent** creates an Agent. It is made
+   from the template, in the task's Project, and named by the template's
+   pattern. It works in the dispatch's worktree when that is a folder on this
+   host, else in the Project's folder on this host. Core makes no folder: with
+   neither, the dispatch is refused.
+3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
+   result goes back to whoever dispatched.
+4. **Starts it.** The dispatch's mail is delivered once it is connected.
+
+- **Who may.** You, or a lead of the task's Project. A task in no Project,
+  only you.
+- **The answer** is a dispatch's, with `agentId`: the executor.
+- **A retry** with the same `requestId` gets the same executor and answer, and
+  never makes a second executor. The same `requestId` with another payload is
+  refused. If Core stopped after dispatching but before starting the
+  executor, a retry starts it.
+- **When it fails.** If a dispatch fails after its executor exists, Core
+  closes the executor and keeps it, so you can see what happened. A retry gets
+  the same failure; dispatch again with a new `requestId`. If Core stops
+  during a dispatch, it fails the dispatch and closes its executor when it
+  next starts, before any Agent's runtime starts.
+- **During an update.** While Core prepares an update, a dispatch from a
+  template is refused, because creating an Agent waits for the update. A
+  dispatch to an existing Agent is not refused. Retry the same request once
+  the update is done: one that had not been made goes ahead then, and nothing
+  was written for it before. A retry of one already made is refused during
+  the update too, and gets its recorded answer after it.
+- **No limit yet.** In phase 1 every executor starts at once.
+- **This host only.** A dispatch's `machineId` may be empty or `local`.
 
 ## Phases
 

@@ -638,12 +638,13 @@ impl Workspace {
         machine_id: Option<String>,
         project_id: Option<String>,
     ) -> Result<Agent> {
-        self.claude_create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, Default::default()).await
+        self.claude_create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, Default::default(), None).await
     }
 
     /// A new Claude Agent starting with `settings` (the defaults for new
     /// Agents resolved by the caller, T-190): only its permission mode, which
-    /// sessions start in; what the session reports is shown beside it.
+    /// sessions start in; what the session reports is shown beside it. An
+    /// executor with `birth`.
     #[allow(clippy::too_many_arguments)]
     pub async fn claude_create_on_with(
         self: &Arc<Self>,
@@ -654,13 +655,17 @@ impl Workspace {
         machine_id: Option<String>,
         project_id: Option<String>,
         settings: crate::model::AgentSettings,
+        birth: Option<crate::workspace::Birth>,
     ) -> Result<Agent> {
         anyhow::ensure!(
             settings.permission_preset.is_none()
                 && settings.permission_mode.as_deref().is_none_or(|mode| SELECTABLE_PERMISSION_MODES.contains(&mode)),
             "Claude 权限模式无效"
         );
-        let permit = self.admission.enter_work()?;
+        // An executor is made under its dispatch's work permit (T-34, R3
+        // d51396b7): asking for another here would let an update that starts
+        // meanwhile fail a dispatch its refusal says can be retried.
+        let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }
@@ -679,7 +684,7 @@ impl Workspace {
                 cwd.to_string_lossy().into_owned()
             }
         };
-        let id = uuid::Uuid::new_v4().to_string();
+        let (id, then) = crate::workspace::Birth::of(birth);
         let colors = ["yuzu", "sage", "rose", "sky"];
         let count = self.stored(|store| store.agents()).await?.len();
         let agent = Agent {
@@ -725,8 +730,12 @@ impl Workspace {
             codex_handoff: None,
             opencode_usage_seen: None,
         };
-        self.stored(move |store| store.insert_created(&detail)).await?;
+        let born = then.is_some();
+        self.stored(move |store| store.insert_created_then(&detail, then)).await?;
         self.changed(&id);
+        if born {
+            return Ok(agent);
+        }
         let ws = self.clone();
         tokio::spawn(async move {
             let _permit = permit;

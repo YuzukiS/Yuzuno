@@ -42,6 +42,7 @@ import { TaskWorkspaces } from "./TaskWorkspaces";
 import { relative } from "./home/format";
 import { useLanguage, useStrings } from "./i18n";
 import { boardText } from "./collaboration-text";
+import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-templates";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -1297,6 +1298,11 @@ function TaskPane({
   const [dispatching, setDispatching] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [toAgentId, setToAgentId] = useState("");
+  // Or a new executor Core creates from a template (T-34).
+  const [from, setFrom] = useState<"agent" | "template">("agent");
+  const [templateId, setTemplateId] = useState("");
+  const [templates, setTemplates] = useState<ExecutorTemplatesView["available"] | null>(null);
+  const [templatesError, setTemplatesError] = useState("");
   const [instruction, setInstruction] = useState("");
   const [urgent, setUrgent] = useState(false);
   const [comment, setComment] = useState("");
@@ -1382,6 +1388,22 @@ function TaskPane({
   }, [revision, load, reads]);
   const task = detail?.task;
   const owner = agents.find((agent) => agent.id === task?.assigneeAgentId);
+  // The templates a dispatch of this task can use: its Project's, then the Workspace's.
+  const templatesFor = dispatching && from === "template" ? task?.projectId ?? "" : null;
+  useEffect(() => {
+    if (templatesFor === null) return;
+    const read = new AbortController();
+    setTemplates(null);
+    setTemplatesError("");
+    readExecutorTemplates(read.signal, templatesFor || undefined)
+      .then((view) => setTemplates(view.available))
+      .catch((error) => {
+        if (read.signal.aborted) return;
+        setTemplates([]);
+        setTemplatesError(errorText(error));
+      });
+    return () => read.abort();
+  }, [templatesFor]);
   const changed = (next: SharedTask) => {
     if (!alive.current) return;
     setDetail((previous) =>
@@ -1410,13 +1432,13 @@ function TaskPane({
   };
   const dispatch = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!task || !toAgentId) return;
+    if (!task || (from === "agent" ? !toAgentId : !templateId)) return;
     const answer = await mutation.execute<{ task: SharedTask }>(
       "task_dispatch",
       {
         taskId: id,
         expectedVersion: task.version,
-        toAgentId,
+        ...(from === "agent" ? { toAgentId } : { executor: { templateId } }),
         priority: urgent ? "urgent" : "normal",
         ...(instruction.trim() ? { body: instruction.trim() } : {}),
       },
@@ -1690,6 +1712,8 @@ function TaskPane({
                 onClick={() => {
                   setDispatching(!dispatching);
                   setToAgentId(task.assigneeAgentId || "");
+                  setFrom("agent");
+                  setTemplateId("");
                   setUrgent(false);
                   mutation.clearError();
                 }}
@@ -1729,13 +1753,43 @@ function TaskPane({
               className="collab-form collab-inset"
             >
               <h4>{t.sendAlong}</h4>
-              <PersonSelect
-                agents={agents}
-                value={toAgentId}
-                onChange={setToAgentId}
-                label={t.sendTo}
-                empty={t.chooseAgent}
-              />
+              <fieldset className="collab-dispatch-from">
+                <legend>{t.dispatchFrom}</legend>
+                <label>
+                  <input type="radio" name="dispatch-from" checked={from === "agent"} onChange={() => setFrom("agent")} />
+                  <span>{t.toAgent}</span>
+                </label>
+                <label>
+                  <input type="radio" name="dispatch-from" checked={from === "template"} onChange={() => setFrom("template")} />
+                  <span>{t.fromTemplate}</span>
+                </label>
+              </fieldset>
+              {from === "agent" ? (
+                <PersonSelect
+                  agents={agents}
+                  value={toAgentId}
+                  onChange={setToAgentId}
+                  label={t.sendTo}
+                  empty={t.chooseAgent}
+                />
+              ) : (
+                <>
+                  <label className="collab-field">
+                    <span>{t.template}</span>
+                    <select value={templateId} onChange={(event) => setTemplateId(event.target.value)} disabled={!templates?.length}>
+                      <option value="">{t.chooseTemplate}</option>
+                      {templates?.map(({ template, source }) => (
+                        <option key={template.id} value={template.id}>
+                          {source === "project" ? `${template.label} · ${t.projectTemplate}` : template.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {templatesError ? <ErrorNote text={t.templatesUnread(templatesError)} />
+                    : templates?.length === 0 ? <p className="collab-hint">{t.noTemplates}</p>
+                    : <p className="collab-hint">{t.templateHint}</p>}
+                </>
+              )}
               <label className="collab-field">
                 <span>
                   {t.note} <small>{t.optional}</small>
@@ -1760,12 +1814,13 @@ function TaskPane({
                 className="primary-button"
                 disabled={
                   mutation.pending ||
-                  !toAgentId ||
-                  !activeAgents(agents).some((agent) => agent.id === toAgentId)
+                  (from === "agent"
+                    ? !toAgentId || !activeAgents(agents).some((agent) => agent.id === toAgentId)
+                    : !templates?.some(({ template }) => template.id === templateId))
                 }
               >
                 <Send size={14} />
-                {t.assignSend}
+                {from === "agent" ? t.assignSend : t.createSend}
               </button>
             </MutationForm>
           )}

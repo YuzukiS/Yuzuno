@@ -16,6 +16,7 @@ mod result_ack;
 mod result_outcome;
 pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
+pub(crate) mod executor_dispatch;
 mod current;
 mod research;
 pub(crate) use research::desk_source as research_desk_source;
@@ -91,6 +92,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         PRIMARY KEY(actor,operation,request_id));")?;
     db.execute_batch(result_ack::SCHEMA)?;
     db.execute_batch(research::SCHEMA)?;
+    executor_dispatch::migrate(db)?;
     // A restart cannot tell whether the Harness accepted an in-flight nudge.
     db.execute(
         "UPDATE collaboration_messages SET delivery_state='uncertain',
@@ -1129,6 +1131,8 @@ fn task_dispatch(
             "body",
             "priority",
             "materials",
+            // Only from a template dispatch, with the executor it made (executor_dispatch.rs).
+            "executor",
         ],
     )?;
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
@@ -1137,6 +1141,7 @@ fn task_dispatch(
         task.archived_at.is_none(),
         "task_archived: unarchive the task first"
     );
+    ensure!(input.get("toAgentId").is_some(), "invalid_input: give toAgentId, or executor to create the Agent from an executor template");
     let recipient_id = required_text(input, "toAgentId", 128)?;
     let recipient = store.brief_in(db, &recipient_id)?
         .context("agent_not_found: recipient does not exist")?;
@@ -1147,9 +1152,13 @@ fn task_dispatch(
     task.assignee_agent_id = Some(recipient_id.clone());
     task.assignee = Some(agent_actor(store, db, &recipient_id)?);
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
+    let template = match input.get("executor") {
+        Some(_) => Some(executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?),
+        None => None,
+    };
     task.status = "doing".into();
     save_task(db, &mut task, actor)?;
-    let materials = dispatch_materials::snapshot(db, &task, input, sha_check)?;
+    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, template)?;
     let body = dispatch_materials::body(&materials);
     let message = create_message(
         store,
@@ -1167,7 +1176,7 @@ fn task_dispatch(
         source,
         json!({"changes":{"assigneeAgentId":recipient_id,"status":"doing"},"messageId":message["id"],"dispatch":task.dispatch,"materials":materials}),
     )?;
-    let mut output = json!({"task":task,"message":message,"activity":event});
+    let mut output = json!({"task":task,"message":message,"activity":event,"agentId":recipient_id});
     let effective = output["activity"]["materials"]["effective"].clone();
     receipt_sha_check(&mut output, &effective);
     Ok(output)
@@ -1535,7 +1544,10 @@ pub fn tool_definitions() -> Vec<Value> {
         crate::project_brief::tool_definition("brief_get"),
         crate::project_brief::tool_definition("brief_update"),
         crate::project_brief::tool_definition("brief_guide"),
-        definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task, spawn an Agent, or restart a closed Agent. Normal delivery waits for the current turn; urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":string,"body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion","toAgentId"]),
+        definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. Give toAgentId for an existing open Agent, or executor for a new one Core creates from an executor template: only a lead of the task's Project, or the user, may, and not while Core prepares an update. The answer's agentId is the Agent; a retry with the same requestId returns the same one. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task or restart a closed Agent. Normal delivery waits for the current turn (a new executor's, until it has started); urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":{"type":"string","description":"An existing open Agent. Give this or executor."},
+            "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: it works in the dispatch's worktree folder, else the Project's folder on the Core host. Give this or toAgentId.",
+                "properties":{"templateId":{"type":"string","maxLength":48},"machineId":{"type":["string","null"],"description":"The Core host only (empty or local) in this phase."}}},
+            "body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion"]),
         // Generated from the result contract; served by `results`, not here.
         crate::results::tool_definition(),
         crate::results::guide_tool_definition(),

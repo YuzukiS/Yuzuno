@@ -110,6 +110,11 @@ pub(crate) fn ensure_assignable(db: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The folder `id` pre-fills new Agents with on `machine`, if it has one.
+pub(crate) fn default_dir(db: &Connection, id: &str, machine: &str) -> Result<Option<String>> {
+    Ok(load(db, id)?.default_dirs.get(machine).cloned())
+}
+
 pub(crate) fn agent_project(db: &Connection, agent_id: &str) -> Result<Option<String>> {
     Ok(db
         .query_row(
