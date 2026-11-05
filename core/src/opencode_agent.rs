@@ -1221,6 +1221,9 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
+        // The model is made the session's before anything of the message enters the Turn (R1 276dd516): a read or
+        // switch that fails leaves the Turn as it was.
+        choose_for(&c, model.as_ref(), variant.as_deref()).await?;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，补充消息未发送；草稿保留");
         let message = MessageId::new();
         let input = message.as_str().to_owned();
@@ -1255,7 +1258,6 @@ impl Workspace {
         self.changed(id);
         let held = self.send_view(id).await?.turns.iter().any(|t| t["id"] == expected && t["_opencodeInputs"].get(&input).is_some());
         ensure!(held, "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
-        choose_for(&c, model.as_ref(), variant.as_deref()).await?;
         *sent = true;
         let mut submitted = c.server.submit_with(&c.session, &message, text, &files).await;
         // A 400 refuses it only when OpenCode's record, read after it, has no

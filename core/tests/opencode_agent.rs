@@ -1322,6 +1322,52 @@ async fn a_message_added_while_opencode_works_joins_the_running_turn_once() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A message added while OpenCode works whose model can't be made the
+/// session's (T-32 slice 4a, R1 276dd516) is rejected before anything of it
+/// enters the Turn, its draft kept, and a whole read after says the same;
+/// the next one added goes on from the Turn's own last input.
+#[tokio::test]
+async fn an_added_message_whose_model_switch_fails_leaves_the_turn_as_it_was() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    let before = turn(&lab.detail(), &first).clone();
+    // Another model, chosen while it runs: the added message is to switch first, and the switch fails.
+    lab.ws.opencode_set_choice(ID, "deepseek/deepseek-flash".into(), Some(Some("max".into()))).await.unwrap();
+    let mut fail = serde_json::Map::new();
+    fail.insert(format!("/api/session/{session}/model"), json!(500));
+    lab.control("mode", json!({"fail":fail})).await;
+    let failed = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!(failed.status, "rejected", "{failed:?}");
+    assert!(failed.error.as_deref().unwrap().contains("没有把所选模型设为 OpenCode 会话的模型；这条消息没有发送，草稿保留"), "{failed:?}");
+    let unchanged = |d: &AgentDetail| {
+        let now = turn(d, &first);
+        (now["_opencodeInputs"].clone(), now["_opencodeLastInput"].clone(), items(now, "userMessage").len())
+    };
+    let was = (before["_opencodeInputs"].clone(), before["_opencodeLastInput"].clone(), 1);
+    assert_eq!(unchanged(&lab.detail()), was, "nothing of it entered the Turn");
+    assert!(!journal(&lab).iter().any(|k| k == "opencode/inputRequested"), "never recorded as added");
+    assert_eq!(lab.prompts().len(), 1, "never sent");
+    // A whole read after the stream reopens says the same.
+    let reads = resyncs(&lab);
+    lab.control("refuseEvents", json!({"seconds":0.5})).await;
+    lab.control("drop", json!({})).await;
+    lab.until("the read after the stream reopened", |_| resyncs(&lab) > reads).await;
+    assert_eq!(unchanged(&lab.detail()), was, "a whole read says the same");
+
+    // The next one, once the switch works, goes on from the Turn's own last input.
+    lab.control("mode", json!({"fail":{}})).await;
+    let added = lab.add("c3", "Also run the tests", &first).await.unwrap();
+    assert_eq!(added.status, "accepted", "{added:?}");
+    let d = lab.detail();
+    let message = input_of(&d, &first, "c3")["nativeMessageId"].as_str().unwrap().to_owned();
+    assert_eq!(turn(&d, &first)["_opencodeInputs"][&message]["previous"], before["_opencodeLastInput"], "after the Turn's own last input");
+    let switch = json!({"model":{"id":"deepseek-flash","providerID":"deepseek","variant":"max"}});
+    assert_eq!(lab.switches(), [switch.clone(), switch], "the switch that failed, then the one that worked");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// A message is added only to the Agent's running Turn it names, with its
 /// prompt stored and nothing waiting for the user, and never as a command:
 /// otherwise it is refused before its receipt, the draft kept, and nothing
