@@ -166,7 +166,7 @@ async function check(run) {
   const next = async () => {
     if (phone) {
       await toList();
-      await page.locator(".rail-actions .next-needs-you").click();
+      await page.locator(".next-needs-you").click();
     } else {
       await page.evaluate(() => document.activeElement?.blur());
       await page.keyboard.press("Control+j");

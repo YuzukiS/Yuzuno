@@ -151,8 +151,8 @@
   text-decoration: underline;
 }
 
-/* A Turn end this device has not shown yet (T-42), and the rail's way to
-   the next thing that needs you: the attention colour while there is one. */
+/* A Turn end this device has not shown yet (T-42), and the list's way to
+   the next thing that needs you while something does. */
 .agent-select .agent-runtime.unseen-finished {
   color: #6f8a5c;
   font-weight: 600;
@@ -161,10 +161,35 @@
   color: #a96a5b;
   font-weight: 600;
 }
-.rail-actions .next-needs-you.attention {
-  color: #a77b4f;
+.next-needs-you {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: calc(100% - 30px);
+  margin: 6px 15px 2px;
+  padding: 6px 10px;
+  border: 1px solid #e8d9a8;
+  border-radius: 8px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-align: left;
 }
-.rail-actions .next-needs-you:disabled {
-  opacity: 0.45;
-  cursor: default;
+.next-needs-you:hover {
+  border-color: var(--yellow);
+}
+.next-needs-you span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.next-needs-you kbd {
+  flex: none;
+  font: inherit;
+  opacity: 0.7;
+}
+:root[data-theme="dark"] .next-needs-you {
+  border-color: #5a5634;
 }

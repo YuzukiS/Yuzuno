@@ -2806,9 +2806,9 @@ test("the tab title and the app badge count what Home's tab counts; next needs y
     // Sora's request and question, and Mori's Ask.
     await waitFor(() => p.doc.title === "(3) Yuzuno · test", `the title counts: ${p.doc.title}`);
     assert.equal(badges.at(-1), 3);
-    const button = p.doc.querySelector(".rail-actions .next-needs-you");
-    assert.equal(button.disabled, false);
+    const button = p.doc.querySelector(".next-needs-you");
     assert.equal(button.title, "Go to the next thing that needs you (Ctrl J)");
+    assert.match(button.textContent, /^Next needs youCtrl J$/);
     // Home is open: the first is Mori's Ask, there.
     press();
     await waitFor(() => p.scrolled.some((el) => el.id === "home-section-p-app-release"), "the Ask is shown on Home");

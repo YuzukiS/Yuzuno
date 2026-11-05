@@ -3056,21 +3056,9 @@ export function App() {
             onSearch={() => setSearchOpen((v) => !v)}
             onCreate={() => setCreateOpen(true)}
             extra={
-              <>
-                <button
-                  type="button"
-                  className={`icon-button next-needs-you${needsTargets.length ? " attention" : ""}`}
-                  aria-label={shell.nextNeedsYou}
-                  title={shell.nextNeedsYouTitle(`${shortcutModifier} ${boundKeys.nextNeedsYou}`, needsTargets.length)}
-                  disabled={!needsTargets.length}
-                  onClick={goNextNeedsYou}
-                >
-                  <BellRing size={14} />
-                </button>
-                {!previewMode && workspace ? (
-                  <BatchReconnect workspaceId={workspaceId} agents={workspace.agents} scope={scope} onSettled={refresh} />
-                ) : null}
-              </>
+              !previewMode && workspace ? (
+                <BatchReconnect workspaceId={workspaceId} agents={workspace.agents} scope={scope} onSettled={refresh} />
+              ) : null
             }
           />
           {searchOpen && (
@@ -3108,6 +3096,20 @@ export function App() {
             </button>
           )}
         </div>
+        {/* Next needs you (T-42): at the top of the list, on a phone too, while
+            something waits; its own row, so the heading fits any rail. */}
+        {needsTargets.length > 0 && (
+          <button
+            type="button"
+            className="next-needs-you"
+            title={shell.nextNeedsYouTitle(`${shortcutModifier} ${boundKeys.nextNeedsYou}`, needsTargets.length)}
+            onClick={goNextNeedsYou}
+          >
+            <BellRing size={14} />
+            <span>{shell.nextNeedsYou}</span>
+            <kbd>{shortcutModifier} {boundKeys.nextNeedsYou}</kbd>
+          </button>
+        )}
         <nav className="agent-list" aria-label={shell.agents}>
           {(() => {
             const row = (a: Agent) => {
