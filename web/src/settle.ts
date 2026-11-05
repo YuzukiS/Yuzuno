@@ -98,3 +98,18 @@ export function settleWhenLanded(target: HTMLElement, attribute: string, smooth:
   } else land();
   return end;
 }
+
+/**
+ * A jump that lands where its mark already is plays the mark's ring again (T-19 C18, M4: a new jump restarts it):
+ * the same search result chosen again, say, whose `.source-highlight` (styles.css) is still on it, so its CSS
+ * animation does not start again by itself. Nothing while the ring still plays, as on a mark just put there: a jump
+ * during the ring is acknowledged by the ring already playing, not by a restart, which would read as flicker. Nothing
+ * where there is no mark or no Web Animations (jsdom).
+ */
+export function ringAgain(target: HTMLElement) {
+  if (!target.classList.contains("source-highlight") || typeof target.getAnimations !== "function") return;
+  if (target.getAnimations().some((animation) => (animation as CSSAnimation).animationName === "settle-ring")) return;
+  target.style.animationName = "none";
+  void target.offsetWidth;
+  target.style.removeProperty("animation-name");
+}
