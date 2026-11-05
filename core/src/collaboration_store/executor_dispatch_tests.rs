@@ -145,7 +145,7 @@ fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
     store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
     assert_eq!(slots(&store), 1, "a replay queues it once");
 
-    assert_eq!(store.executor_slot_next().unwrap().as_deref(), Some(executor.as_str()));
+    assert_eq!(store.executor_slot_next(&Default::default()).unwrap().as_deref(), Some(executor.as_str()));
     let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
     assert_eq!(current["current"]["executorSlot"], json!({"agentId":executor,"state":"starting","machine":"local"}));
     // A task without an executor has none; nor a compact row.

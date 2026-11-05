@@ -12,6 +12,9 @@ const text = strings({
   inUse: (running: number, starting: number, waiting: number) => `In this Workspace now: ${running} running, ${starting} starting, ${waiting} waiting.`,
   range: (min: number, max: number) => `A whole number from ${min} to ${max}.`,
   rangeProject: (min: number, max: number) => `A whole number from ${min} to ${max}, or empty.`,
+  startLimit: "Start time limit (seconds)",
+  startLimitHelp: (preset: number) => `How long an executor’s start may take before Core cuts it off. A start that fails is rebuilt once; a second failure blocks its task. ${preset} unless you change it.`,
+  startLimitRange: (min: number, max: number) => `A whole number of seconds from ${min} to ${max}.`,
   save: "Save executors at once",
   saved: "Saved.",
   unsaved: "Unsaved change",
@@ -24,6 +27,9 @@ const text = strings({
   inUse: (running, starting, waiting) => `此 Workspace 现在：${running} 个运行中，${starting} 个启动中，${waiting} 个排队中。`,
   range: (min, max) => `${min} 到 ${max} 之间的整数。`,
   rangeProject: (min, max) => `${min} 到 ${max} 之间的整数，或留空。`,
+  startLimit: "启动时限（秒）",
+  startLimitHelp: (preset) => `执行者启动最多可用的时间，超时后 Core 会中止它。启动失败的执行者会重建一次；再次失败则该任务标记为受阻。未更改时为 ${preset}。`,
+  startLimitRange: (min, max) => `${min} 到 ${max} 之间的整数秒。`,
   save: "保存同时运行的执行者",
   saved: "已保存。",
   unsaved: "有未保存的更改",
@@ -40,6 +46,15 @@ const parse = (draft: string, view: ExecutorSlotsView, project: boolean): { slot
   return n >= view.limits.min && n <= view.limits.max ? { slots: n } : null;
 };
 
+/** The Workspace's start time limit for this draft, or none when Core wouldn't take it. */
+const parseLimit = (draft: string, view: ExecutorSlotsView): number | null => {
+  const value = draft.trim();
+  if (!/^\d+$/.test(value)) return null;
+  const n = Number(value);
+  const { min, max } = view.limits.startLimitSeconds;
+  return n >= min && n <= max ? n : null;
+};
+
 /** Settings' limit on executors running at once (T-35): the Workspace's, or
  * with `projectId` that project's own. Saved apart from the templates, each
  * against its own version. Only the user changes it. */
@@ -47,6 +62,7 @@ export function ExecutorSlots({ active, projectId, disabled = false }: { active:
   const t = text(useLanguage());
   const [view, setView] = useState<ExecutorSlotsView | null>(null);
   const [draft, setDraft] = useState("");
+  const [limitDraft, setLimitDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -56,6 +72,7 @@ export function ExecutorSlots({ active, projectId, disabled = false }: { active:
     setView(next);
     const own = saved(next);
     setDraft(own === null ? "" : String(own));
+    setLimitDraft(String(next.workspace.startLimitSeconds));
   };
   useEffect(() => {
     if (!active) return;
@@ -69,15 +86,19 @@ export function ExecutorSlots({ active, projectId, disabled = false }: { active:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, projectId, reload]);
   const parsed = view ? parse(draft, view, !!projectId) : null;
-  const changed = !!view && !!parsed && parsed.slots !== saved(view);
+  // The start time limit is the Workspace's alone (S2).
+  const limit = view && !projectId ? parseLimit(limitDraft, view) : null;
+  const badLimit = !!view && !projectId && limit === null;
   const invalid = !!view && !parsed;
+  const changed = !!view && !!parsed && !badLimit
+    && (parsed.slots !== saved(view) || (!projectId && limit !== view.workspace.startLimitSeconds));
   async function save() {
     if (!view || !parsed) return;
     setBusy(true);
     setError("");
     try {
       const version = projectId ? view.project?.version ?? 0 : view.workspace.version;
-      adopt(await saveExecutorSlots(version, parsed.slots, projectId));
+      adopt(await saveExecutorSlots(version, parsed.slots, projectId, projectId ? undefined : limit ?? undefined));
       setDone(true);
     } catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
@@ -97,6 +118,18 @@ export function ExecutorSlots({ active, projectId, disabled = false }: { active:
             aria-invalid={invalid || undefined}
             onChange={e => { setDone(false); setDraft(e.target.value); }} />
         </label>
+        {!projectId && (
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.startLimit}</span>
+              <span className="settings-row-help">{t.startLimitHelp(view.limits.startLimitSeconds.default)}</span>
+            </span>
+            <input className="settings-input" aria-label={t.startLimit} type="number" inputMode="numeric" step={1}
+              min={view.limits.startLimitSeconds.min} max={view.limits.startLimitSeconds.max} value={limitDraft}
+              disabled={disabled || busy} aria-invalid={badLimit || undefined}
+              onChange={e => { setDone(false); setLimitDraft(e.target.value); }} />
+          </label>
+        )}
         <p className="settings-row-help executor-slots-in-use">
           {t.inUse(view.inUse.running, view.inUse.starting, view.inUse.waiting)}
         </p>
@@ -105,6 +138,7 @@ export function ExecutorSlots({ active, projectId, disabled = false }: { active:
             {busy && <LoaderCircle size={13} className="spin" />} {t.save}
           </button>
           {invalid ? <span className="settings-row-help">{projectId ? t.rangeProject(view.limits.min, view.limits.max) : t.range(view.limits.min, view.limits.max)}</span>
+            : badLimit ? <span className="settings-row-help">{t.startLimitRange(view.limits.startLimitSeconds.min, view.limits.startLimitSeconds.max)}</span>
             : changed ? <span className="settings-row-help">{t.unsaved}</span>
             : done && <span className="settings-row-help" role="status">{t.saved}</span>}
         </div>
