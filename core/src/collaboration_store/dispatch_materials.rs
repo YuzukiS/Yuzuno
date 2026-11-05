@@ -24,8 +24,14 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
             "shaCheck",
         ],
     )?;
+    // Core's own shaCheck (T-31) is bounded by its shape, not by this limit,
+    // so a check Core attaches never makes a registration undispatchable.
+    let mut given = value.clone();
+    if let Some(object) = given.as_object_mut() {
+        object.remove("shaCheck");
+    }
     ensure!(
-        value.to_string().len() <= REGISTERED_LIMIT,
+        given.to_string().len() <= REGISTERED_LIMIT,
         "invalid_input: materials exceed 32768 bytes; register concise references instead"
     );
     for (key, max) in [
@@ -128,7 +134,7 @@ fn sha_check_shape(check: &Value) -> Result<()> {
             "invalid_input: shaCheck state is verified or unverified");
         ensure!(entry["repositoryId"].as_i64().is_some(), "invalid_input: shaCheck names its repositoryId");
         required_text(entry, "at", 64)?;
-        optional_text(entry, "reason", 1_024)?;
+        optional_text(entry, "reason", commit_sha::REASON_BYTES)?;
     }
     Ok(())
 }
@@ -238,12 +244,13 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
             effective.extend(overrides.as_object().unwrap().clone());
         }
     }
-    // An SHA an override names was checked anew; a registered one keeps what
-    // its registration said, or what this dispatch asked again.
-    if let (Some(overrides), Some(entries)) =
-        (overrides.as_ref().and_then(Value::as_object), effective.get_mut("shaCheck").and_then(Value::as_object_mut))
-    {
-        entries.retain(|key, _| !overrides.contains_key(key) && !overrides.contains_key("repositoryId"));
+    // A registered entry still holds for the SHA it was made of in the
+    // repository this dispatch takes; an SHA an override names was checked
+    // anew, and what this dispatch asked again replaces what it says.
+    let repository = effective.get("repositoryId").cloned().unwrap_or(Value::Null);
+    if let Some(entries) = effective.get_mut("shaCheck").and_then(Value::as_object_mut) {
+        let overridden = |key: &str| overrides.as_ref().and_then(Value::as_object).is_some_and(|o| o.contains_key(key));
+        entries.retain(|key, entry| entry["repositoryId"] == repository && !overridden(key));
     }
     let effective = validate(db, &with_check(Value::Object(effective), sha_check))?;
     if let Some(source) = registration.as_object_mut() {
@@ -313,8 +320,10 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
         "supplement":supplement,"returnTo":dispatch.notification_recipient,"requestedBy":dispatch.requested_by,"executor":dispatch.executor,
         "source":dispatch.source,"latestTask":{"taskId":task_number(task.seq)},
         "returnRequirementsDefault":"Report outcome and validation/evidence on this same task using task_submit_result with the original dispatchId. Default review is a submission, not independent approval, merge or release. No extra peer_send is needed for Agent dispatch."});
+    // As for the registration, Core's own shaCheck is not counted (T-31).
+    let own = snapshot["effective"].get("shaCheck").map_or(0, |check| check.to_string().len());
     ensure!(
-        snapshot.to_string().len() <= SNAPSHOT_LIMIT,
+        snapshot.to_string().len() - own <= SNAPSHOT_LIMIT,
         "materials_too_large: snapshot exceeds 128 KiB; use concise registered references; nothing was dispatched"
     );
     Ok(snapshot)

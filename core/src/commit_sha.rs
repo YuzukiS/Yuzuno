@@ -156,9 +156,18 @@ pub async fn check(ws: &Workspace, repo: &str, repository: i64, key: &str, sha: 
     }
 }
 
-/// A reason short enough to save beside the SHA.
+/// The most bytes a shaCheck reason takes, as the store checks its shape.
+pub const REASON_BYTES: usize = 1_024;
+
+/// A reason short enough to save beside the SHA: at most REASON_BYTES bytes,
+/// cut at a character boundary, so that no text GitHub or gh gives can make
+/// the entry one the store refuses.
 fn clip(reason: &str) -> String {
-    reason.chars().take(300).collect()
+    let mut end = reason.len().min(REASON_BYTES);
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    reason[..end].to_owned()
 }
 
 /// Whether the registered materials say `key` was verified in `repository`.
@@ -292,7 +301,8 @@ mod tests {
     /// Of full SHAs there, FULL and e…e are commits, c…c is rate limited, 9…9
     /// gets no answer at all, 5…5 meets a server error until `up` says it is
     /// a commit or `gone` says it is not, and any other is no commit (422).
-    /// Repository 124 is o/private, which GitHub does not show (404).
+    /// Repository 124 is o/private, which GitHub does not show (404), as it
+    /// does not any repository whose name is not ASCII.
     fn lab(dir: &std::path::Path) -> Arc<Workspace> {
         use std::os::unix::fs::PermissionsExt;
         let program = dir.join("gh-fixture");
@@ -300,14 +310,14 @@ mod tests {
 import sys,pathlib
 root=pathlib.Path(__file__).parent
 ep=next(v for v in sys.argv if v.startswith('repos/'))
-with (root/'requests').open('a') as f:f.write(ep+'\n')
+with (root/'requests').open('a',encoding='utf-8',errors='surrogateescape') as f:f.write(ep+'\n')
 c='repos/o/r/commits/'
 five=(200,'5'*40) if (root/'up').exists() else (422,None) if (root/'gone').exists() else (503,None)
 answers={{c+'abc1234':(200,'{FULL}'),c+'ABC1234':(200,'{FULL}'),c+'deadbee':(200,'f'*40),c+'1111111':(503,None),
  c+'{FULL}':(200,'{FULL}'),c+'e'*40:(200,'e'*40),c+'c'*40:(403,None),c+'5'*40:five}}
 assert 'Accept: application/vnd.github.sha' in sys.argv, 'asks for the SHA only'
 if ep==c+'9'*40:sys.exit(1)
-code,data=(404,None) if ep.startswith('repos/o/private/') else answers.get(ep,(422,None))
+code,data=(404,None) if ep.startswith('repos/o/private/') or not ep.isascii() else answers.get(ep,(422,None))
 if code==200:print('HTTP/2.0 200 OK\r\n\r\n'+data);sys.exit(0)
 print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr);sys.exit(1)
 "##)).unwrap();
@@ -557,5 +567,71 @@ print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr
             "each dispatch asks again", "A branch, tag or other revision is not resolved", "git rev-parse"] {
             assert!(text.contains(words), "{words}: {text}");
         }
+    }
+
+    /// Dispatches `task` to dev as it is now.
+    async fn dispatch(ws: &Arc<Workspace>, request: &str, task: &str) -> Result<Value> {
+        let version = ws.store.collaboration_call(None, "task_get", json!({"taskId":task})).unwrap()["task"]["version"].clone();
+        ws.collaboration_call(None, "task_dispatch", json!({"requestId":request,"taskId":task,"expectedVersion":version,"toAgentId":"dev"})).await
+    }
+
+    /// R1 b19659c2: the check Core attaches does not count toward the 32768
+    /// bytes a registration may take, so materials at the limit still dispatch.
+    #[tokio::test]
+    async fn a_check_on_materials_at_the_byte_limit_still_dispatches() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = lab(dir.path());
+        let project = project(&ws).await;
+        let mut materials = json!({"repositoryId":123,"headSha":"5".repeat(40),"acceptance":"a".repeat(16_384),
+            "returnRequirements":"r".repeat(8_192),"worktree":"w".repeat(4_096),"baseline":"b".repeat(1_024),
+            "references":[{"kind":"evidence","label":"padding","url":"https://example.com/"}]});
+        let pad = 32_768 - materials.to_string().len();
+        materials["references"][0]["url"] = json!(format!("https://example.com/{}", "p".repeat(pad)));
+        assert_eq!(materials.to_string().len(), 32_768);
+        let full = create(&ws, &project, "at-limit", materials).await.unwrap();
+        assert_eq!(full["shaCheck"]["headSha"]["state"], "unverified", "{}", full["shaCheck"]);
+        let sent = dispatch(&ws, "at-limit", full["task"]["id"].as_str().unwrap()).await.unwrap();
+        assert_eq!(sent["shaCheck"]["headSha"]["state"], "unverified", "{}", sent["shaCheck"]);
+    }
+
+    /// R1 b19659c2: a reason that GitHub's or gh's text makes long in bytes is
+    /// cut at a character boundary within what the store takes, not refused.
+    #[tokio::test]
+    async fn a_reason_long_in_bytes_is_clipped_not_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = lab(dir.path());
+        let project = project(&ws).await;
+        // A repository whose name makes the 404 reason long in bytes.
+        let wide = format!("o/{}", "😀".repeat(400));
+        ws.store.db.write().unwrap().execute("INSERT INTO github_repositories(id,data) VALUES(125,?1)",
+            [json!({"id":125,"fullName":wide}).to_string()]).unwrap();
+        ws.store.github_link_repo(&project, &crate::github::client::Repository { id: 125, full_name: wide.clone() }).unwrap();
+        let saved = create(&ws, &project, "wide", json!({"repositoryId":125,"headSha":FULL})).await.unwrap();
+        let reason = saved["shaCheck"]["headSha"]["reason"].as_str().unwrap().to_owned();
+        assert!(reason.starts_with("GitHub could not read o/😀") && reason.len() <= REASON_BYTES && reason.len() > REASON_BYTES - 4,
+            "clipped by bytes at a character boundary: {} bytes", reason.len());
+        let sent = dispatch(&ws, "wide", saved["task"]["id"].as_str().unwrap()).await.unwrap();
+        assert_eq!(sent["shaCheck"]["headSha"]["state"], "unverified", "{}", sent["shaCheck"]);
+        assert!(sent["shaCheck"]["headSha"]["reason"].as_str().unwrap().len() <= REASON_BYTES);
+    }
+
+    /// R1 b19659c2: a dispatch whose override names the repository already
+    /// registered keeps what GitHub said of the registered SHAs there, and asks
+    /// nothing again.
+    #[tokio::test]
+    async fn a_dispatch_naming_the_same_repository_keeps_the_registered_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = lab(dir.path());
+        let project = project(&ws).await;
+        let verified = create(&ws, &project, "verified", json!({"repositoryId":123,"headSha":FULL})).await.unwrap();
+        let task = verified["task"]["id"].as_str().unwrap().to_owned();
+        let asked = requests(dir.path()).len();
+        let version = ws.store.collaboration_call(None, "task_get", json!({"taskId":task})).unwrap()["task"]["version"].clone();
+        let sent = ws.collaboration_call(None, "task_dispatch", json!({"requestId":"same","taskId":task,"expectedVersion":version,
+            "toAgentId":"dev","materials":{"repositoryId":123}})).await.unwrap();
+        assert_eq!(sent["shaCheck"]["headSha"], verified["shaCheck"]["headSha"], "{}", sent["shaCheck"]);
+        assert!(sent["message"]["body"].as_str().unwrap().contains(&format!("Explicit head SHA: {FULL} (found on GitHub at ")),
+            "{}", sent["message"]["body"]);
+        assert_eq!(requests(dir.path()).len(), asked);
     }
 }
