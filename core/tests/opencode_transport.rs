@@ -263,6 +263,33 @@ async fn a_2x_older_than_the_oldest_core_reads_is_refused_naming_both_versions()
     server.shutdown().await.unwrap();
 }
 
+/// A 2.x is ranked by its MAJOR.MINOR.PATCH as semver ranks a release
+/// (T-32, R4 eef2b7e2): a pre-release below its release, a build as the
+/// release itself; one whose numbers cannot be read is refused, never read in
+/// part.
+#[tokio::test]
+async fn a_2x_version_is_ranked_as_semver_ranks_it_and_one_unreadable_is_refused() {
+    let refused = |version: &'static str| async move {
+        let lab = lab();
+        lab.switch("version", version);
+        let error = Server::start(&lab.launch).await.err().map(|e| e.to_string());
+        let (pid, child) = lab.pids();
+        assert!(ends(pid).await && ends(child).await, "{version}: what it started has ended");
+        error
+    };
+    assert_eq!(refused("2.0.7-rc1").await.as_deref(), Some("OpenCode 2.0.7-rc1 is older than 2.0.7, the oldest Core reads; update it"),
+        "a pre-release ranks below its release");
+    assert_eq!(refused("2.1.x").await.as_deref(), Some("OpenCode 2.1.x: cannot read its version; 2.0.7 is the oldest Core reads"),
+        "a 2.x whose numbers cannot be read is refused, never read in part");
+    for version in ["2.0.8-rc1", "2.0.7+build"] {
+        let lab = lab();
+        lab.switch("version", version);
+        let server = Server::start(&lab.launch).await.unwrap_or_else(|e| panic!("{version}: {e:#}"));
+        assert_eq!(server.version(), version);
+        server.shutdown().await.unwrap();
+    }
+}
+
 /// A 1.x, which starts and says it listens as 1.x does, is refused at once
 /// (not waited past for 2.x's line) and said to be the one installed.
 #[tokio::test]
