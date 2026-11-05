@@ -285,7 +285,10 @@ export class DraftStorage {
     if (saved.skills !== undefined && !validDraftSkills(saved.skills)) throw new Error("Invalid saved skill references");
     if (saved.origins !== undefined && !validDraftOrigins(saved.origins)) throw new Error("Invalid saved draft origins");
     // A skill is this Agent's: one saved for another is never offered here.
-    const skills = (saved.skills || []).filter((skill) => skill.agentId === agent);
+    // `agent` is the key the draft is kept under, the Workspace and Agent's
+    // identity (T-195), or an Agent's ID alone; a skill names the Agent (T-46).
+    const owner = draftIdentityParts(agent)?.agent ?? agent;
+    const skills = (saved.skills || []).filter((skill) => skill.agentId === owner);
     const keys = new Set<string>();
     const parts = saved.parts.map((p): DraftPart => {
       if (p.kind === "text" && typeof p.text === "string") return p;
