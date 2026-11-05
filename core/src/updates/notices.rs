@@ -95,7 +95,7 @@ impl Workspace {
                 d.agent.closed_at.is_none()
                     && d.agent.status == "idle"
                     && active_turn(d).is_none()
-                    && d.agent.pending_count == 0
+                    && d.agent.native_requests() == 0
             });
             rows.push(json!({"agentId":id,"name":message["recipient"]["name"],
                 "messageId":message["id"],"turnId":message["metadata"]["turnId"],

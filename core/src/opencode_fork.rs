@@ -480,7 +480,7 @@ impl Workspace {
                 harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()),
                 opencode_version: Some(version.into()), opencode_major: crate::opencode::major(version), thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
-                created_at: at.clone(), updated_at: at, unread_count: 0, pending_count: 0, last_message: None,
+                created_at: at.clone(), updated_at: at, unread_count: 0, pending_count: 0, open_questions: 0, last_turn_end: None, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),
             },
             history: None, turns, pending: vec![], artifacts: vec![], context_usage: None, message_receipts: vec![],

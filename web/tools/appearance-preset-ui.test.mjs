@@ -151,7 +151,7 @@ test("opening only reads; one device saves its Appearance, another previews it b
   assert.match(a.said(), /Saved this device’s Appearance as this Workspace’s shared preset \(revision 1\)\./);
   assert.equal(server.puts.length, 1);
   assert.deepEqual(server.puts[0].appearance.palette, "pine");
-  assert.deepEqual(Object.keys(server.puts[0].appearance).sort(), ["agentList", "dock", "fontSize", "palette", "projectGroups", "theme", "turnDock"], "only Appearance");
+  assert.deepEqual(Object.keys(server.puts[0].appearance).sort(), ["agentList", "agentOrder", "dock", "fontSize", "palette", "projectGroups", "theme", "turnDock"], "only Appearance");
   assert.equal(server.puts[0].expectedRevision, 0);
   assert.equal(b.stored(), null, "B follows nothing by itself");
   assert.equal(b.palette(), "garden");

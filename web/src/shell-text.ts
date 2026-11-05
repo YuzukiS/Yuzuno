@@ -18,6 +18,11 @@ export const shellText = strings({
   } as Record<Agent["status"], string>,
   closed: "Closed",
   compacting: "Compacting",
+  // A Turn end this device has not shown yet (T-42).
+  unseen: { finished: "Finished · unseen", failed: "Failed · unseen" },
+  nextNeedsYou: "Next needs you",
+  nextNeedsYouTitle: (shortcut: string, count: number) =>
+    count ? `Go to the next thing that needs you (${shortcut})` : `Nothing needs you now (${shortcut})`,
   backTitle: "Back to the Agent list",
   back: "Agents",
   hideRail: "Hide agent sidebar",
@@ -197,6 +202,9 @@ export const shellText = strings({
   },
   closed: "已关闭",
   compacting: "正在压缩",
+  unseen: { finished: "已完成 · 未看", failed: "失败 · 未看" },
+  nextNeedsYou: "下一个需要我的",
+  nextNeedsYouTitle: (shortcut, count) => (count ? `跳到下一个需要你的（${shortcut}）` : `现在没有需要你的（${shortcut}）`),
   backTitle: "返回 Agent 列表",
   back: "Agent",
   hideRail: "隐藏 Agent 侧栏",

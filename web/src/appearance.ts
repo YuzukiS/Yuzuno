@@ -28,6 +28,12 @@ export type Palette = (typeof palettes)[number];
 /** The Agent list in the left rail: each Agent's latest report or update
  * under its name, or the name and status only. */
 export type AgentListDensity = "detailed" | "compact";
+/** The order of the Agent list (T-42): as the Agents were added, or who
+ * needs the user first (attention.ts: waiting on the user, a Turn end not
+ * seen here, working, at rest, offline). A word, so a shared preset carries
+ * it as it does the others. */
+export const agentOrders = ["list", "attention"] as const;
+export type AgentOrder = (typeof agentOrders)[number];
 /** How the Agent list sets projects apart when it shows All projects. */
 export const projectGroupStyles = ["headers", "cards", "bands", "none"] as const;
 export type ProjectGroupStyle = (typeof projectGroupStyles)[number];
@@ -45,6 +51,7 @@ export type Appearance = {
   fontSize: FontSize;
   palette: Palette;
   agentList: AgentListDensity;
+  agentOrder: AgentOrder;
   projectGroups: ProjectGroupStyle;
   dock: DockLimits;
   turnDock: TurnDock;
@@ -56,6 +63,7 @@ export const defaultAppearance: Appearance = {
   fontSize: 16,
   palette: "garden",
   agentList: "detailed",
+  agentOrder: "list",
   projectGroups: "headers",
   dock: { jobs: 5, actions: 2, reviews: 2, subAgents: 5 },
   turnDock: { numbers: 5, bars: 5 },
@@ -95,6 +103,8 @@ export function appearanceFrom(saved: any): Appearance {
     agentList: ["detailed", "compact"].includes(saved?.agentList)
       ? saved.agentList
       : defaultAppearance.agentList,
+    // Added in T-42: an Appearance saved before it keeps the list's order.
+    agentOrder: agentOrders.includes(saved?.agentOrder) ? saved.agentOrder : defaultAppearance.agentOrder,
     projectGroups: projectGroupStyles.includes(saved?.projectGroups)
       ? saved.projectGroups
       : defaultAppearance.projectGroups,
