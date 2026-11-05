@@ -8,7 +8,8 @@ export function useSnapshot<T>(
   revision: number,
   onData: (data: T) => void,
   onError: (error: unknown) => void,
-  onSettled?: () => void,
+  // `more`: a read asked for meanwhile runs next.
+  onSettled?: (more: boolean) => void,
 ) {
   const callbacks = useRef({ onData, onError, onSettled });
   callbacks.current = { onData, onError, onSettled };
@@ -35,7 +36,7 @@ export function useSnapshot<T>(
       } finally {
         running = false;
         if (!disposed) {
-          callbacks.current.onSettled?.();
+          callbacks.current.onSettled?.(queued);
           if (queued) void run();
         }
       }
