@@ -92,7 +92,8 @@ impl Store {
 
     /// Whether `agent` is still its task's current executor.
     pub(crate) fn executor_still_dispatched(&self, task: &str, agent: &str) -> Result<bool> {
-        Ok(still_its(&load_task(&self.db.read()?, task)?, agent))
+        let db = self.db.read()?;
+        Ok(still_its(&load_task(&db, task)?, agent))
     }
 
     /// The executor a rebuild made `agent` to replace, and why: none when no

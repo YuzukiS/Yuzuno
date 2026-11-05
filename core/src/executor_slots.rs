@@ -567,7 +567,7 @@ pub(crate) struct State {
     /// The executors whose start a pass began and has not settled (S2): a
     /// pass settles another start that ended without its runtime only when
     /// it is not one of these.
-    in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
+    pub(crate) in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
     /// A test's start time limit, below the 30 s a user can save.
     #[cfg(test)]
     pub(crate) start_limit: std::sync::Mutex<Option<Duration>>,
