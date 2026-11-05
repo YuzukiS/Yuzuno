@@ -60,6 +60,8 @@ export function ImportCodexSession({
   const t = newAgentText(language);
   const [threadId, setThreadId] = useState("");
   const [preview, setPreview] = useState<CodexSessionPreview | null>(null);
+  // The ID as typed when the shown preview was read.
+  const [previewFor, setPreviewFor] = useState("");
   const [name, setName] = useState("");
   const [settings, setSettings] = useState<AgentSettings>(defaults);
   const [loading, setLoading] = useState(false);
@@ -77,11 +79,14 @@ export function ImportCodexSession({
     };
   }, []);
 
+  // Editing the ID keeps the preview, its name and permission, dimmed and
+  // still, until a read replaces them (T-19 ST:SX-28): it is the session the
+  // ID named before, so it cannot be added while the ID says another.
+  const stale = !!preview && threadId.trim() !== previewFor;
   function changeId(value: string) {
     request.current?.abort();
     request.current = null;
     setThreadId(value);
-    setPreview(null);
     setLoading(false);
     setError("");
   }
@@ -99,7 +104,6 @@ export function ImportCodexSession({
     request.current = controller;
     setLoading(true);
     setError("");
-    setPreview(null);
     try {
       const result = await api<CodexSessionPreview>("/codex/sessions/preview", {
         method: "POST",
@@ -108,6 +112,7 @@ export function ImportCodexSession({
       });
       if (controller.signal.aborted) return;
       setPreview(result);
+      setPreviewFor(id);
       setName((result.name || "Codex session").slice(0, 60));
       setSettings({ ...defaults, reasoningEffort: result.reasoningEffort });
     } catch (error) {
@@ -128,6 +133,7 @@ export function ImportCodexSession({
       disabled ||
       importing.current ||
       !preview ||
+      stale ||
       (!preview.existingAgentId && !canImport)
     )
       return;
@@ -206,7 +212,7 @@ export function ImportCodexSession({
       </form>
 
       {preview && (
-        <form onSubmit={(event) => void importSession(event)}>
+        <form onSubmit={(event) => void importSession(event)} data-stale={stale || loading ? "" : undefined} inert={stale || loading}>
           <section className="session-preview" aria-label={t.sessionPreview}>
             <div className="session-preview-heading">
               <span>
@@ -300,7 +306,7 @@ export function ImportCodexSession({
           </div>
         </form>
       )}
-      {!preview && errorShown && (
+      {(!preview || stale) && errorShown && (
         <p role="alert" className="remote-field-error">
           {errorShown}
         </p>

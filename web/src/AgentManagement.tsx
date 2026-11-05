@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
+import { useSurfaceIn } from "./surface";
 import { langTag, strings, useLanguage } from "./i18n";
 import { agentHarnessName } from "./machine-checks";
 import type { Agent } from "./types";
@@ -109,6 +110,16 @@ export function AgentManagement({
   projectControl?: React.ReactNode;
 }) {
   const [mode, setMode] = useState<"actions" | "close" | "delete" | null>(null);
+  // Actions → close or delete swaps the content in place (T-19 ST:AG2): the
+  // confirmation fades in over small and Cancel takes focus, as the card that
+  // had it is gone. Opened on its own, it comes in with the dialog.
+  const [swaps, setSwaps] = useState(0);
+  const confirmStep = useRef<HTMLDivElement>(null);
+  const keepButton = useRef<HTMLButtonElement>(null);
+  useSurfaceIn(confirmStep, swaps, "small", swaps > 0);
+  useLayoutEffect(() => {
+    if (swaps) keepButton.current?.focus();
+  }, [swaps]);
   const [busy, setBusy] = useState<AgentAction | "read" | null>(null);
   const [error, setError] = useState("");
   const working = agent.status === "working" || agent.status === "waiting";
@@ -117,6 +128,7 @@ export function AgentManagement({
   function show(next: typeof mode) {
     if (busy) return;
     setError("");
+    if (mode === "actions" && (next === "close" || next === "delete")) setSwaps((n) => n + 1);
     setMode(next);
     onOpenChange(!!next);
   }
@@ -261,7 +273,7 @@ export function AgentManagement({
             </div>
           </div>
         ) : (
-          <>
+          <div ref={confirmStep}>
             <div
               className={`agent-action-explanation ${mode === "delete" ? "delete-explanation" : ""}`}
             >
@@ -291,6 +303,7 @@ export function AgentManagement({
             <p className="agent-files-kept">{t.filesKept(agentHarnessName(agent))}</p>
             <div className="modal-actions">
               <button
+                ref={keepButton}
                 type="button"
                 className="secondary-button"
                 disabled={!!busy}
@@ -318,7 +331,7 @@ export function AgentManagement({
                       : t.close}
               </button>
             </div>
-          </>
+          </div>
         )}
         {busy === "reopen" && (
           <p role="status" className="agent-files-kept">
