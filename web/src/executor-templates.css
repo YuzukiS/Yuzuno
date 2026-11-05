@@ -1,0 +1,25 @@
+/* Executor templates (T-34), in Settings and on a project's page: one group
+   per template, its fields as settings rows, with classes of its own. */
+.executor-templates-settings .executor-template {
+  margin: 0 0 12px;
+  padding: 0;
+}
+.executor-templates-settings .executor-template legend {
+  padding: 10px 16px 0;
+  color: var(--ink);
+  font-weight: 600;
+}
+.executor-templates-settings .settings-input {
+  width: min(18rem, 100%);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.executor-templates-settings .executor-template-instructions { flex-wrap: wrap; }
+.executor-templates-settings .executor-template > .quiet-button { margin: 4px 16px 12px; }
+.executor-templates-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
