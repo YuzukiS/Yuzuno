@@ -112,12 +112,13 @@ try {
   check("the bridge got one append to that turn and no prompt",
     sent.filter((c) => c.op === "append").length === 1 && sent.find((c) => c.op === "append").expectedTurnId === NATIVE
       && !sent.some((c) => c.op === "send"), sent.filter((c) => ["append", "send"].includes(c.op)));
-  check("the draft is cleared", (await composer.innerText()).trim() === "");
+  // CodeMirror shows its placeholder only while the document is empty.
+  check("the draft is cleared", (await composer.locator(".cm-placeholder").count()) === 1, await composer.innerText());
   await page.screenshot({ path: `${out}/2-sent-not-read.png` });
 
   await writeFile(`${native}/read`, "");
   await mine.locator(".message-delivery").waitFor({ state: "detached" });
-  await turn.getByText(`Noted: ${text}`).waitFor();
+  await turn.getByText(`Noted: ${text}`).first().waitFor();
   check("Claude names it in the same turn: the mark goes, its answer follows there",
     (await page.locator(`.conversation-scroll ${item}`).count()) === 1 && (await mine.count()) === 1);
   const done = await until("the turn ends", async () => {
