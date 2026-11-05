@@ -1351,14 +1351,17 @@ export function App() {
     shownPreviews.current = { scope, ids };
   }, []);
   // A shown Turn's own change, live (T-19 CV:T-04, CV:T-09; Lead 2 4591): its working indicator
-  // comes in once where the Turn itself does not (a Turn whose message was shown before, now
-  // confirmed; a shown Turn running again), and a Turn Core records completed brings its reply
-  // actions and files in once. Told apart as the arrivals above: in the latest window, after Core
-  // streamed or announced a change to this Agent, never what a first read, a window, a reconnect,
-  // poll or reset brings. Interrupted and failed Turns keep their own words with no cue, and the
-  // working indicator always goes at once. Read before the arrivals below take the announcement.
+  // comes in where the Turn itself does not (a Turn whose message was shown before, now confirmed;
+  // a shown Turn running again), and a Turn Core records completed brings its reply actions and
+  // files in. Once per change: each is named by how many times that Turn has made it in this
+  // conversation, so a Turn that runs again, or completes again, cues again (R1 47f7c0f0). Told
+  // apart as the arrivals above: in the latest window, after Core streamed or announced a change
+  // to this Agent, never what a first read, a window, a reconnect, poll or reset brings.
+  // Interrupted and failed Turns keep their own words with no cue, and the working indicator
+  // always goes at once. Read before the arrivals below take the announcement.
   const turnAnnounced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
-  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>; started: string[]; completed: string[] } | null>(null);
+  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>; changes: Map<string, number>;
+    started: string[]; completed: string[] } | null>(null);
   const handedRunning: string[] = [];
   // Left (the settle mark is the requests' above): the next detail is a new baseline.
   if (!turnScope && turnsSeen.current) {
@@ -1400,7 +1403,14 @@ export function App() {
     const was = turnCues.current?.scope === turnScope ? turnCues.current : null;
     const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
     const now = !!was?.latest && latest && turnAnnounced;
-    const started = [...(was?.started ?? []), ...handedRunning];
+    // How many times each shown Turn has started or completed live here: its cue's name, "n\nid".
+    const changes = new Map(was?.changes);
+    const change = (kind: "run" | "done", id: string) => {
+      const n = (changes.get(`${kind}\n${id}`) ?? 0) + 1;
+      changes.set(`${kind}\n${id}`, n);
+      return `${n}\n${id}`;
+    };
+    const started = [...(was?.started ?? []), ...handedRunning.map((id) => change("run", id))];
     const completed = [...(was?.completed ?? [])];
     const status = new Map<string, string>();
     for (const turn of currentDetail.turns) {
@@ -1408,12 +1418,13 @@ export function App() {
       const before = was?.status.get(turn.id);
       if (!now || before === undefined) continue;
       const runs = RUNNING_TURN.test(turn.status);
-      if (runs && !RUNNING_TURN.test(before)) started.push(turn.id);
-      else if (RUNNING_TURN.test(before) && turn.status === "completed") completed.push(turn.id);
+      if (runs && !RUNNING_TURN.test(before)) started.push(change("run", turn.id));
+      else if (RUNNING_TURN.test(before) && turn.status === "completed") completed.push(change("done", turn.id));
     }
-    turnCues.current = { scope: turnScope, latest, status, started: started.slice(-20), completed: completed.slice(-20) };
+    turnCues.current = { scope: turnScope, latest, status, changes, started: started.slice(-20), completed: completed.slice(-20) };
   }
   // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
+  // A key ends with its Turn's ID.
   const shownTurn = (key: string) => {
     const id = key.slice(key.lastIndexOf("\n") + 1);
     return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;

@@ -6,6 +6,8 @@
 //   actions and its files come in once; the Turn itself does not play. An interrupted one: no cue.
 // - T-04: a message shown as a preview, then its Turn running (T-01 does not fade it): its working
 //   indicator comes in once. A shown Turn running again: the same.
+// - Once per change, not once per Turn (R1 47f7c0f0): a shown Turn completed a second time brings its
+//   reply actions and files in once more, and running a second time its indicator.
 // - Q-07: a question arrives while the dock is not there: the dock comes in once, its opacity only (its
 //   height at once: the deviation from the 11-03 inventory, T-19 3881), and the conversation's end is
 //   kept. A second question while the dock is shown: no cue.
@@ -296,6 +298,23 @@ for (const run of runs) {
     else ok(`${tag}: a shown Turn running again: its working indicator comes in once over small (opacity only)`,
       rerun.length > 5 && fadeOf(rerun[0].turns["work-1"].activity.plays) && again.calls.length === 1 && again.calls[0].part === "activity",
       { at: rerun[0]?.turns["work-1"], calls: again.calls });
+    // Its second live completion, then a second live start (R1 47f7c0f0): each cues once more.
+    const twice = record("work-1 completes a second time", await bring(statusOf("work-1", "completed"), "__announce"));
+    const ended2 = twice.frames.filter((f) => f.turns["work-1"]?.actions);
+    const first2 = ended2[0]?.turns["work-1"];
+    if (reduced) ok(`${tag}: under reduced motion, a shown Turn completed a second time: its reply actions and files show, nothing playing`,
+      ended2.length > 5 && !first2.activity && quiet(twice.frames) && twice.calls.length === 0, { first2, calls: twice.calls });
+    else ok(`${tag}: a shown Turn Core records completed a second time: its reply actions and its files come in once more over small (opacity only)`,
+      ended2.length > 5 && !first2.activity && fadeOf(first2.actions?.plays) && fadeOf(first2.files?.plays)
+        && twice.calls.length === 2 && twice.calls.every((c) => c.turn === "work-1" && (c.part === "actions" || c.part === "files")),
+      { first2, calls: twice.calls });
+    const thrice = record("work-1 runs a second time", await bring(statusOf("work-1", "inProgress"), "__announce"));
+    const rerun2 = thrice.frames.filter((f) => f.turns["work-1"]?.activity);
+    if (reduced) ok(`${tag}: under reduced motion, a shown Turn running a second time: its working indicator shows, nothing playing`,
+      rerun2.length > 5 && quiet(thrice.frames) && thrice.calls.length === 0, { at: rerun2[0]?.turns["work-1"], calls: thrice.calls });
+    else ok(`${tag}: a shown Turn running a second time: its working indicator comes in once more over small (opacity only)`,
+      rerun2.length > 5 && fadeOf(rerun2[0].turns["work-1"].activity.plays) && thrice.calls.length === 1 && thrice.calls[0].part === "activity",
+      { at: rerun2[0]?.turns["work-1"], calls: thrice.calls });
     await bring(statusOf("work-1", "completed"), "__reset", 600);
 
     // Not live: a Turn a Core reset completes; one completed while the stream was down, replayed.
