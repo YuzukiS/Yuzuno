@@ -26,7 +26,7 @@ fn an_answer_answers_the_newest_user_message_before_it_in_its_turn() {
         {"id": "msg_i2", "type": "idle", "outcome": "failed", "error": {"type": "provider_auth", "message": "no key"}, "time": {"created": 12}},
         {"id": "msg_a5", "type": "assistant", "time": {"created": 13}, "content": []},
     ]);
-    let Read { messages: read, ended, open, steps, tools } = read_messages(&messages);
+    let Read { messages: read, ended, open, steps, tools, .. } = read_messages(&messages);
     assert_eq!(steps, vec![OpenStep { id: "msg_a5".into(), parent: None, created: json!(13), model: Value::Null }],
         "of the answers not yet ended, only the one after the last turn's end is under way, answering nothing");
     assert!(tools.is_empty());
@@ -400,4 +400,26 @@ fn a_runs_end_ends_its_2x_requests_still_open() {
     let end = c.read(&ev("session.execution.succeeded", 6, json!({"sessionID": "ses_1"})));
     assert_eq!((kinds(&end), &end[0]["data"]["requestID"]), (vec!["question.replied", "session.status"], &json!("frm_2")),
         "one a whole read found pending ends with its run");
+}
+
+/// A compaction a whole read finds running ends under the ID its message is
+/// stored by, as one started live does: the stream broke while it ran, and
+/// its end after the read is the entry that read made, not a second one
+/// (T-32 slice 4a, R3 4051b7d4).
+#[test]
+fn a_compaction_a_whole_read_finds_running_ends_as_the_one_entry_it_read() {
+    let messages = json!([
+        {"id": "msg_u1", "type": "user", "time": {"created": 1}},
+        {"id": "msg_C1", "type": "compaction", "status": "running", "reason": "auto", "time": {"created": 2}},
+    ]);
+    let read = read_messages(&messages);
+    let whole: Vec<&Value> = read.messages.iter().filter(|m| m["info"]["summary"] == true).map(|m| &m["info"]["id"]).collect();
+    assert_eq!(whole, [&json!("msg_C1")], "the whole read's entry, under the stored ID");
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read, &json!([]));
+    let ended = c.read(&json!({"id": "evt_E9", "type": "session.compaction.ended", "created": 3, "data": {"sessionID": "ses_1", "reason": "auto"}}));
+    assert_eq!(ended.iter().map(|e| e["data"]["info"]["id"].clone()).collect::<Vec<_>>(), [json!("msg_C1")],
+        "one compaction, one entry, across a whole read");
+    let done = json!([{"id": "msg_C1", "type": "compaction", "status": "completed", "reason": "auto", "time": {"created": 2}}]);
+    assert_eq!(read_messages(&done).compaction, None, "one completed is not running");
 }

@@ -206,11 +206,14 @@ pub struct Read {
     /// Their tools not yet ended: their later events name neither the tool
     /// nor its input.
     pub tools: Vec<OpenTool>,
+    /// A compaction still running: its message's ID, which its end, after
+    /// this read, is under (R3 4051b7d4).
+    pub compaction: Option<String>,
 }
 
 pub fn read_messages(messages: &Value) -> Read {
     let (mut read, mut ended, mut steps, mut tools) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut user: Option<String> = None;
+    let (mut user, mut compaction): (Option<String>, Option<String>) = (None, None);
     for message in messages.as_array().into_iter().flatten() {
         let Some(id) = message["id"].as_str() else { continue };
         match message["type"].as_str() {
@@ -240,8 +243,12 @@ pub fn read_messages(messages: &Value) -> Read {
             Some("shell") => read.push(json!({"info": shell_info(id, user.as_deref(), &message["time"]["created"]),
                 "parts": [shell_part(id, message, &message["output"]["output"])]})),
             // A compaction, running or completed: what was measured before it no longer holds (`measure`).
-            Some("compaction") if message["status"] != "failed" => read.push(json!({"info": compacted(id, &message["time"]["created"]),
-                "parts": []})),
+            Some("compaction") => {
+                compaction = (message["status"] == "running").then(|| id.to_owned());
+                if message["status"] != "failed" {
+                    read.push(json!({"info": compacted(id, &message["time"]["created"]), "parts": []}));
+                }
+            }
             Some("idle") => {
                 steps.clear();
                 tools.clear();
@@ -257,7 +264,7 @@ pub fn read_messages(messages: &Value) -> Read {
             _ => {}
         }
     }
-    Read { messages: read, ended, open: user, steps, tools }
+    Read { messages: read, ended, open: user, steps, tools, compaction }
 }
 
 /// What 2.x admitted into a session and has not delivered into its turn
@@ -331,7 +338,8 @@ impl Cursor {
             .collect();
         let inputs = inbox.as_array().into_iter().flatten()
             .filter_map(|item| Some((item["id"].as_str()?.to_owned(), item["type"].as_str()?.to_owned()))).collect();
-        self.sessions.insert(session.to_owned(), Open { user: read.open.clone(), inputs, steps, tools, ..Open::default() });
+        self.sessions.insert(session.to_owned(), Open { user: read.open.clone(), inputs, steps, tools, compaction: read.compaction.clone(),
+            ..Open::default() });
     }
 
     /// A request a whole read found pending (after `resumed`): one of 2.x's

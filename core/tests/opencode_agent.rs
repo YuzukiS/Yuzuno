@@ -1322,6 +1322,40 @@ async fn a_message_added_while_opencode_works_joins_the_running_turn_once() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A new message whose model can't be made the session's (T-32 slice 4a,
+/// R3 4051b7d4) is rejected before its Turn is recorded, as an added one is:
+/// no Turn of it, nothing sent, its draft kept, and a whole read says the
+/// same; the next one, once the switch works, goes.
+#[tokio::test]
+async fn a_message_whose_model_switch_fails_is_rejected_with_no_turn() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let before = lab.detail().turns.len();
+    lab.ws.opencode_set_choice(ID, "deepseek/deepseek-flash".into(), Some(Some("max".into()))).await.unwrap();
+    let mut fail = serde_json::Map::new();
+    fail.insert(format!("/api/session/{session}/model"), json!(500));
+    lab.control("mode", json!({"fail":fail})).await;
+    let failed = lab.send("c1", "Fix the build").await.unwrap();
+    assert_eq!(lab.detail().turns.len(), before, "no Turn of it");
+    assert_eq!(failed.status, "rejected", "{failed:?}");
+    assert!(failed.error.as_deref().unwrap().contains("没有把所选模型设为 OpenCode 会话的模型；这条消息没有发送，草稿保留"), "{failed:?}");
+    assert!(!journal(&lab).iter().any(|k| k == "opencode/turnRequested"), "never recorded as asked");
+    assert!(lab.prompts().is_empty(), "never sent");
+    // A whole read after the stream reopens says the same.
+    let reads = resyncs(&lab);
+    lab.control("refuseEvents", json!({"seconds":0.5})).await;
+    lab.control("drop", json!({})).await;
+    lab.until("the read after the stream reopened", |_| resyncs(&lab) > reads).await;
+    assert_eq!(lab.detail().turns.len(), before, "a whole read says the same");
+
+    // Once the switch works, the next one goes.
+    lab.control("mode", json!({"fail":{}})).await;
+    let sent = lab.send("c2", "Fix the build").await.unwrap();
+    assert_eq!(sent.status, "accepted", "{sent:?}");
+    assert_eq!(lab.prompts().len(), 1, "sent once");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// A message added while OpenCode works whose model can't be made the
 /// session's (T-32 slice 4a, R1 276dd516) is rejected before anything of it
 /// enters the Turn, its draft kept, and a whole read after says the same;

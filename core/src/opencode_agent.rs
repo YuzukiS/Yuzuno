@@ -1379,6 +1379,11 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
+        // A prompt's model is made the session's before its Turn is recorded (R3 4051b7d4), as an added message's
+        // is: a read or switch that fails rejects it, with no Turn. A command's model goes with the command.
+        if command.is_none() {
+            choose_for(&c, model.as_ref(), variant.as_deref()).await?;
+        }
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
@@ -1414,10 +1419,7 @@ impl Workspace {
                 let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
                 self.opencode_command_started(id, &c, &message, &command.name, arguments, model.as_deref(), variant).await
             }
-            None => match choose_for(&c, model.as_ref(), variant.as_deref()).await {
-                Ok(()) => c.server.submit_with(&c.session, &message, &text, &files).await,
-                Err(error) => Err(error),
-            },
+            None => c.server.submit_with(&c.session, &message, &text, &files).await,
         };
         let refused = match &submitted {
             // 2.x has no 1.19.3 route to run a command: it answers 405 (T-32 slice 4a), until the commands slice.
