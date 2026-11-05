@@ -173,18 +173,19 @@ try {
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Tasks & messages", exact: true }).click({ timeout: 10_000 });
   await page.locator('.collab-task-card[data-task-id="T-43"]').waitFor({ timeout: 10_000 });
-  assert.deepEqual(await slotTexts(page), { "T-41": "Running", "T-42": "Starting", "T-43": "Queued (number 1)", "T-44": "Queued (number 2)", "T-45": null });
+  assert.deepEqual(await slotTexts(page), { "T-41": "Running", "T-42": "Start not finished: its start was not confirmed",
+    "T-43": "Queued (number 1)", "T-44": "Queued (number 2)", "T-45": null });
   assert.equal(await page.locator('.collab-task-card[data-task-id="T-42"] .collab-executor-slot').getAttribute("title"),
-    "Its executor holds a slot while its start is unsettled: its start was not confirmed");
+    "Its executor keeps its slot, open; its start didn't finish: its start was not confirmed. Connect starts it again; Close frees its slot.");
   await page.locator(".collab-cards").screenshot({ path: join(output, "3-board-en.png") });
-  check("each card says queued with its place, starting (with why, on hover) or running; one without an executor says nothing");
+  check("each card says queued with its place, a start not finished with why, or running; one without an executor says nothing");
 
   // ---- In Chinese after a language change elsewhere.
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
   await page.locator('.collab-task-card[data-task-id="T-43"] .collab-executor-slot', { hasText: "排队中（第 1 位）" }).waitFor({ timeout: 10_000 });
-  assert.deepEqual(await slotTexts(page), { "T-41": "运行中", "T-42": "启动中", "T-43": "排队中（第 1 位）", "T-44": "排队中（第 2 位）", "T-45": null });
+  assert.deepEqual(await slotTexts(page), { "T-41": "运行中", "T-42": "启动未完成：its start was not confirmed", "T-43": "排队中（第 1 位）", "T-44": "排队中（第 2 位）", "T-45": null });
   await page.locator(".collab-cards").screenshot({ path: join(output, "4-board-zh.png") });
-  check("in Chinese: 排队中（第 n 位）, 启动中, 运行中");
+  check("in Chinese: 排队中（第 n 位）, 启动未完成：…, 运行中");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
   await page.locator('.collab-task-card[data-task-id="T-43"] .collab-executor-slot', { hasText: "Queued (number 1)" }).waitFor({ timeout: 10_000 });
 
@@ -193,7 +194,7 @@ try {
   await page.reload();
   await page.getByRole("button", { name: "Tasks & messages", exact: true }).click({ timeout: 10_000 });
   await page.locator('.collab-task-card[data-task-id="T-44"]').waitFor({ timeout: 10_000 });
-  for (const id of ["T-41", "T-44"]) {
+  for (const id of ["T-41", "T-42", "T-44"]) {
     assert.deepEqual(await fits(page.locator(`.collab-task-card[data-task-id="${id}"]`)), { box: true, wider: [] }, `${id} fits on a phone`);
   }
   await page.screenshot({ path: join(output, "5-board-phone.png"), fullPage: false });

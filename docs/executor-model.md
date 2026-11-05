@@ -142,7 +142,7 @@ only the Workspace's applies. Only you change them.
   next that has room.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
-  starting, or running.
+  starting (with `reason` when its start did not finish), or running.
 - **Holding a slot.** An executor holds its slot from when it starts until
   it is closed, by anyone and in any way. A disconnect keeps it, so
   reconnecting never passes the limit. Closing one frees its slot for the
@@ -153,8 +153,8 @@ only the Workspace's applies. Only you change them.
 - **A start that fails.** If the runtime refuses to start a new executor,
   Core closes it and keeps it, and its slot goes to the next. If Core can't
   tell whether it started, or a reopened executor fails to start, the
-  executor stays open and keeps its slot, shown as starting with why, until
-  you reconnect or close it.
+  executor stays open and keeps its slot. Its task's card says its start did
+  not finish, and why, until you reconnect or close it.
 - **After a restart.** An executor that was starting waits again, at its
   place; one that may have started keeps its slot, and so do running ones.
   Executors open from before this version each hold a slot, as running.

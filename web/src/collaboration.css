@@ -392,6 +392,10 @@
 }
 /* Its executor's slot (T-35): queued, starting or running. */
 .collab-executor-slot {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-secondary);
 }

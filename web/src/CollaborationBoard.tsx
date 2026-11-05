@@ -884,7 +884,7 @@ export function CollaborationBoard({
               data-slot-state={task.executorSlot.state}
               title={t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason)}
             >
-              {t.executorSlot(task.executorSlot.state, task.executorSlot.position)}
+              {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
             </span>
           )}
           <GitHubSummary links={task.github} openOnly />

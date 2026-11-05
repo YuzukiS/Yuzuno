@@ -165,8 +165,10 @@ test("a card says where its executor stands: queued with its place, starting wit
     assert.equal(slot("T-3")?.textContent, "Queued (number 2)", "a queued executor's card says its place");
     assert.equal(slot("T-3").dataset.slotState, "waiting");
     assert.match(slot("T-3").title, /waits for a free slot and starts in turn/);
-    assert.equal(slot("T-5").textContent, "Starting");
-    assert.equal(slot("T-5").title, "Its executor holds a slot while its start is unsettled: its start was not confirmed");
+    // A start that didn't finish says why on the card itself (R1 1ec1008a P3-2).
+    assert.equal(slot("T-5").textContent, "Start not finished: its start was not confirmed");
+    assert.equal(slot("T-5").title,
+      "Its executor keeps its slot, open; its start didn't finish: its start was not confirmed. Connect starts it again; Close frees its slot.");
     assert.equal(slot("T-2").textContent, "Running");
     assert.equal(slot("T-2").dataset.slotState, "running");
     // Booleans only: a failing assert must never print a jsdom node.

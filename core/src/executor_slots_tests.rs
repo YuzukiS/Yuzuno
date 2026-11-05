@@ -9,8 +9,12 @@ fn store() -> (tempfile::TempDir, Store) {
 }
 
 fn agent(store: &Store, id: &str) {
+    agent_of(store, id, "claude");
+}
+
+fn agent_of(store: &Store, id: &str, harness: &str) {
     let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":format!("Executor {id}"),"cwd":"/synthetic/work",
-        "model":"","harness":"claude","color":"sage","status":"offline","createdAt":"now","updatedAt":"now",
+        "model":"","harness":harness,"color":"sage","status":"offline","createdAt":"now","updatedAt":"now",
         "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
     store.insert(&detail).unwrap();
 }
@@ -151,6 +155,50 @@ fn a_close_releases_the_slot_with_it_and_a_reopen_queues_the_executor_again() {
     close(&store, "standing");
     reopen(&store, "standing");
     store.executor_slot_gate("standing").unwrap();
+}
+
+/// One scheduler pass, waited for until each start it began has ended.
+async fn pass(ws: &Arc<Workspace>) {
+    for started in ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+}
+
+/// R1 1ec1008a P3-2, through the scheduler: a fresh dispatch's start the
+/// runtime refused closes its executor and frees its slot; a reopened
+/// executor's stays open and retryable, holding its slot with the reason the
+/// task shows, as a failed reconnect leaves an Agent.
+#[tokio::test]
+async fn a_reopened_executor_whose_start_fails_stays_open_with_its_slot_and_a_fresh_one_is_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    // A Codex that can't start: every runtime start is refused.
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(),
+        dir.path().join("no-codex").to_string_lossy().into()).unwrap();
+    limit(&ws.store, KEY, 1);
+    agent_of(&ws.store, "fresh", "codex");
+    enqueue(&ws.store.db.write().unwrap(), "fresh", "task-fresh", None, "local", "reviewer").unwrap();
+    pass(&ws).await;
+    assert!(ws.store.agent("fresh").unwrap().closed_at.is_some(), "a fresh dispatch whose start was refused is closed");
+    assert_eq!(state(&ws.store, "fresh").0, "released", "and frees its slot");
+
+    // Dispatched, closed before it started, and reopened: its next start is a later one.
+    agent_of(&ws.store, "again", "codex");
+    enqueue(&ws.store.db.write().unwrap(), "again", "task-again", None, "local", "reviewer").unwrap();
+    close(&ws.store, "again");
+    reopen(&ws.store, "again");
+    pass(&ws).await;
+    let again = ws.store.agent("again").unwrap();
+    assert!(again.closed_at.is_none(), "a reopened executor whose start fails stays open");
+    let (held, reason) = state(&ws.store, "again");
+    assert_eq!(held, "starting", "it keeps its slot");
+    let reason = reason.expect("with the reason");
+    assert!(!reason.is_empty());
+    assert_eq!(view(&ws.store, "task-again").unwrap()["reason"], json!(reason), "the task shows why");
+    ws.store.executor_slot_gate("again").expect("retryable: the user's Connect may start it");
+    agent_of(&ws.store, "next", "codex");
+    enqueue(&ws.store.db.write().unwrap(), "next", "task-next", None, "local", "reviewer").unwrap();
+    pass(&ws).await;
+    assert_eq!(state(&ws.store, "next").0, "waiting", "its slot stays held: the next waits");
 }
 
 /// D6: a Project's or a machine's own limit, when set, holds back only its
