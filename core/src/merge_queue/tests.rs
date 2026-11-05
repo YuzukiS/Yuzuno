@@ -390,3 +390,20 @@ async fn a_job_log_read_stops_at_its_limit() {
     let (bytes, truncated) = client.log_prefix("repos/o/r/actions/jobs/2/logs", 1000).await.unwrap();
     assert_eq!((bytes.len(), truncated), (10, false));
 }
+
+#[test]
+fn the_routes_and_tools_are_well_formed() {
+    let _ = router();
+    let tools = tool_definitions();
+    assert_eq!(
+        tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["merge_enqueue", "merge_get", "merge_list", "merge_cancel", "merge_retry"]
+    );
+    for tool in tools {
+        let _: rmcp::model::Tool = serde_json::from_value(tool).unwrap();
+    }
+    assert!(
+        crate::collaboration_store::tool_definitions().iter().any(|t| t["name"] == "merge_enqueue"),
+        "the queue's tools are offered to Agents"
+    );
+}
