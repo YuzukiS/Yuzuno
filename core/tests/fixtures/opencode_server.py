@@ -14,8 +14,9 @@ as 2.x does while it starts), `mcp` (the MCP status it reports), `stubborn`
 (it and a child of its own ignore SIGTERM), `tool` (it starts a process in a
 session of its own, as OpenCode's tools run, which only its teardown after
 SIGTERM ends), `teardown` (seconds its teardown takes before it ends that
-process and exits), `closeStreamsFirst` (its teardown ends its event streams
-first, before that wait, as 2.x closes them early) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
+process and exits), `closeStreamsFirst` (its teardown first ends its event
+streams and cuts every request still being served, before that wait, as 2.x
+closes what it serves early) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
 if started with it).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
@@ -34,6 +35,7 @@ import pwd
 import queue
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -92,6 +94,8 @@ CONFIG = {
 }
 
 lock = threading.Lock()
+# The connections of the requests being served, for a teardown that cuts them (`closeStreamsFirst`).
+active = set()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
@@ -584,6 +588,15 @@ def finish(session, info, text, completed=True):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+
+    def handle(self):
+        with lock:
+            active.add(self.connection)
+        try:
+            super().handle()
+        finally:
+            with lock:
+                active.discard(self.connection)
 
     def log_message(self, *args):
         pass
@@ -1270,9 +1283,16 @@ def teardown(signum, frame):
     which takes `teardown` seconds here, ends what its tools run (SIGTERM to
     each one's session, then waited for), and it exits."""
     if switch('closeStreamsFirst'):
-        # 2.x closes what it serves early in its teardown, before its tools' processes end.
+        # 2.x closes what it serves early in its teardown, before its tools' processes end: its event streams,
+        # and every request still being served, whose client then lets go of it.
         with lock:
             generation[0] += 1
+            served = list(active)
+        for connection in served:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
     time.sleep(float(switch('teardown') or 0))
     for tool in tools:
         try:

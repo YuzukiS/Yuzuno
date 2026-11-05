@@ -479,14 +479,25 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
-/// Closing an Agent whose server something else still holds (the task that
-/// reads its event stream) waits for 2.x's teardown, within TEARDOWN: 2.x
-/// closes its event stream first and only then ends what its tools run, and
-/// no kill cuts that short (R1 070d0f95 of #575).
+/// Closing an Agent whose server something else still holds (a request
+/// still out, here a read of its models) waits for 2.x's teardown, within
+/// TEARDOWN. 2.x closes what it serves first, so that request fails and lets
+/// go of the server, and only then ends what its tools run: no kill of the
+/// group by the last holder cuts that short (R1 070d0f95 of #575).
 #[tokio::test]
-async fn closing_waits_for_the_teardown_even_once_the_event_stream_has_let_go() {
+async fn closing_waits_for_the_teardown_even_while_a_request_still_holds_the_server() {
     let lab = lab(&[("tool", "1"), ("teardown", "2"), ("closeStreamsFirst", "1")], false).await;
     let (tool, pid) = (lab.seen()["tool"].as_u64().unwrap(), lab.seen()["pid"].as_u64().unwrap());
+    lab.control("mode", json!({"slow": {"/config/providers": 30}})).await;
+    let ws = lab.ws.clone();
+    let read = tokio::spawn(async move { ws.opencode_agent_catalog(ID).await.map(drop) });
+    for _ in 0..200 {
+        if lab.calls().iter().any(|c| c["path"] == "/config/providers") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(lab.calls().iter().any(|c| c["path"] == "/config/providers"), "the read is out, holding the server");
     lab.ws.close_agent(ID).await.unwrap();
     let ended = ends(tool).await;
     if !ended {
@@ -495,6 +506,7 @@ async fn closing_waits_for_the_teardown_even_once_the_event_stream_has_let_go() 
     }
     assert!(ended, "the tool's process ended in OpenCode's own teardown, not cut short by a kill of its group");
     assert!(ends(pid).await, "OpenCode ended");
+    assert!(read.await.unwrap().is_err(), "the read was cut by OpenCode's teardown");
 }
 
 /// An Agent's database is made by its first 2.x server (T-32): the version
