@@ -262,3 +262,72 @@ fn a_job_reserved_again_in_its_own_turn_keeps_no_mark_from_an_earlier_reservatio
     assert!(again.get("admission").is_none(), "a reservation in its own turn keeps no mark from an earlier one: {}", again["admission"]);
     assert_eq!(passers(&s), 0);
 }
+
+/// Three Projects, one task each, whose keys sort P < Q < R (T-1 in P, T-2
+/// in Q, T-3 in R): after P is served the turns go Q, R, P; after R, P, Q, R.
+fn three_projects(s: &Store) {
+    for (request, title) in [("task-2", "Second research"), ("task-3", "Third research")] {
+        s.collaboration_call(None, "task_create", json!({"requestId":request,"title":title,"status":"doing"})).unwrap();
+    }
+    let mut ids: Vec<String> = ["Project 1", "Project 2", "Project 3"].iter()
+        .map(|name| s.create_project(name, Default::default()).unwrap().id).collect();
+    ids.sort();
+    let db = s.db.write().unwrap();
+    for (task, id) in ["T-1", "T-2", "T-3"].iter().zip(&ids) {
+        let (key, _) = crate::collaboration_store::task_key(&db, task).unwrap();
+        crate::projects::set_task_project(&db, &key, Some(id.as_str())).unwrap();
+    }
+}
+
+#[test]
+fn with_three_projects_every_job_that_starts_while_the_head_waits_is_held_to_its_share() {
+    // Review e06d83e8: the head is decided before the scan, so a job whose
+    // project's turn comes before the head's is held to it too; and the head
+    // keeps its place once it fits.
+    let (_dir, s) = setup();
+    s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 10240, swap_mi_b: 0 }).unwrap();
+    three_projects(&s);
+    let running = job_in(&s, "T-1", "a", "running", 2000);
+    assert_eq!(start(&s).unwrap()["id"], running["id"]);
+    // P's head needs 8,500 of the 8,176 MiB free: 1,740 MiB may run beside it.
+    let head = job_in(&s, "T-1", "a", "head", 8436);
+    for round in 0..3 {
+        job_in(&s, "T-2", "a", &format!("q{round}"), 1000);
+        job_in(&s, "T-3", "a", &format!("r{round}"), 1000);
+    }
+    // The turns go Q, R, P: Q's and R's jobs come before the head.
+    let mut started = vec![];
+    while let Some(job) = start(&s) {
+        assert_eq!(job["admission"]["passed"]["jobId"], head["id"],
+            "every job that starts while the head waits is held to its share and marked: {} is not", job["name"]);
+        assert!(passers(&s) <= 10240 - 8500, "running passers {} MiB stay within the 1,740 MiB beside the head", passers(&s));
+        started.push(job["name"].clone());
+    }
+    assert_eq!(started.len(), 1, "one 1,064 MiB job fits the 1,740 MiB beside the head: {started:?}");
+    assert!(read(&s, &head)["reason"].as_str().unwrap().ends_with("Up to 29800 mCPU / 676 MiB RAM / 0 MiB swap may start ahead of it meanwhile"),
+        "{}", read(&s, &head)["reason"]);
+    // The job running before it ends: the head starts next, before R's turn.
+    done(&s, &running);
+    assert_eq!(start(&s).unwrap()["id"], head["id"], "the head keeps its place and starts as soon as the job running before it ends");
+}
+
+#[test]
+fn with_three_projects_a_job_short_of_host_memory_is_still_no_backfill_head() {
+    let (_dir, s) = setup();
+    three_projects(&s);
+    let start_within = |s: &Store| s.reserve_next_job(Some(2000), None, None).unwrap();
+    // R is served last, so the turns go P, Q, R.
+    let running = job_in(&s, "T-3", "a", "running", 500);
+    assert_eq!(start_within(&s).unwrap()["id"], running["id"]);
+    let before = job_in(&s, "T-1", "a", "before", 500);
+    // Within the budget, short of the 2,000 MiB host memory.
+    let short = job_in(&s, "T-2", "a", "short of host memory", 3000);
+    let after = job_in(&s, "T-3", "a", "after", 500);
+    let first = start_within(&s).unwrap();
+    assert_eq!(first["id"], before["id"]);
+    assert!(first.get("admission").is_none(), "a host-memory wait is not a backfill head: nothing is marked as passing it: {}", first["admission"]);
+    // Q's turn: nothing passes it.
+    assert!(start_within(&s).is_none());
+    assert!(read(&s, &short)["reason"].as_str().unwrap().starts_with("Waiting for host memory"), "{}", read(&s, &short)["reason"]);
+    assert_eq!(read(&s, &after)["reason"], "Waiting behind short of host memory, which waits for host memory first; jobs do not pass it");
+}
