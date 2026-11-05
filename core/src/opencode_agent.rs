@@ -291,6 +291,32 @@ async fn sub_agents(server: &Server, session: &str) -> Result<BTreeMap<String, V
     Ok(found)
 }
 
+/// Moves the OpenCode database in an Agent's `folder` into a new
+/// `set-aside-N` folder beside it, its WAL and other files first, so that a
+/// new database never meets an old WAL; that folder, or None when there is
+/// no database. A failed move fails the start, so OpenCode never starts
+/// with part of one left.
+fn set_aside(folder: &std::path::Path) -> Result<Option<PathBuf>> {
+    let files: Vec<_> = ["opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "opencode.db"].into_iter()
+        .filter(|name| folder.join(name).symlink_metadata().is_ok()).collect();
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let mut n = 1;
+    let aside = loop {
+        let path = folder.join(format!("set-aside-{n}"));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(error) => return Err(error).with_context(|| format!("{} 无法创建；OpenCode 没有启动", path.display())),
+        }
+    };
+    for name in files {
+        std::fs::rename(folder.join(name), aside.join(name)).with_context(|| format!("没有记下 Session 的 OpenCode 数据库 {name} 无法移到 {}；OpenCode 没有启动", aside.display()))?;
+    }
+    Ok(Some(aside))
+}
+
 /// The `opencode` this Core starts (`YUZUNO_OPENCODE_BIN`, else from PATH).
 fn program() -> PathBuf {
     std::env::var_os("YUZUNO_OPENCODE_BIN").map(PathBuf::from).unwrap_or_else(|| "opencode".into())
@@ -639,6 +665,17 @@ impl Workspace {
     }
 
     async fn opencode_connect(self: &Arc<Self>, id: &str, d: &AgentDetail) -> Result<Connection> {
+        // With no session recorded, nothing Core sent is in a database already
+        // in its folder: an earlier start made it, 1.19.3 among them, and its
+        // session never reached the record. 2.x would apply its own schema to
+        // it (2.2.5 core/src/database/migration.ts), so it is moved aside,
+        // never deleted, and 2.x makes a new one (R2 f9cbccce of #575).
+        if d.agent.opencode_session_id.is_none() {
+            let folder = self.data_dir.join("opencode").join(id);
+            if let Some(aside) = tokio::task::spawn_blocking(move || set_aside(&folder)).await?? {
+                self.record_meta(id, "opencode/setAside", json!({"folder": aside}), |_| {}).await?;
+            }
+        }
         let started = self.opencode_start(id, &d.agent.cwd).await?;
         self.opencode_attach(id, d, started).await
     }

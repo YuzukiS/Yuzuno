@@ -192,6 +192,46 @@ async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
     assert_eq!(kept.agent.opencode_session_id.as_deref(), Some("ses_made_with_1x"));
 }
 
+/// An Agent whose 1.19.3 started and made its database, but whose session
+/// never reached the record, has nothing of Core's in it. 2.x never opens
+/// that database: it is moved aside whole, never deleted, and 2.x starts on
+/// a new one (R2 f9cbccce of #575).
+#[tokio::test]
+async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let root = dir.path().join("data/opencode").join(ID);
+    std::fs::create_dir_all(&root).unwrap();
+    let old = [("opencode.db", "made by 1.19.3"), ("opencode.db-wal", "its WAL"), ("opencode.db-shm", "its index")];
+    for (name, text) in old {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    std::fs::create_dir(root.join("set-aside-1")).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&work.to_string_lossy())).unwrap();
+    let d = ws.reconnect(ID).await.unwrap();
+    assert_eq!(d.agent.connection_state, "connected");
+    for (name, text) in old {
+        assert_ne!(std::fs::read_to_string(root.join(name)).ok().as_deref(), Some(text),
+            "2.x never opens the database no recorded session is in: {name}");
+    }
+    let aside = root.join("set-aside-2");
+    for (name, text) in old {
+        assert_eq!(std::fs::read_to_string(aside.join(name)).unwrap(), text, "kept whole beside it: {name}");
+    }
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
+    assert_eq!(seen["database"], &*root.join("opencode.db").to_string_lossy(), "2.x got the same path, now free");
+    let kept = ws.store.detail(ID).unwrap();
+    assert_eq!(kept.agent.opencode_major.as_deref(), Some("2"), "made by 2.x now");
+    assert!(kept.agent.opencode_session_id.is_some());
+    let db = rusqlite::Connection::open(dir.path().join("data/workspace.sqlite")).unwrap();
+    let said: Vec<Value> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/setAside'").unwrap()
+        .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+    assert_eq!(said, vec![json!({"folder": aside})], "the record says where it went");
+}
+
 #[tokio::test]
 async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() {
     let lab = lab(&[], false).await;

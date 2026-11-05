@@ -18,7 +18,11 @@ not work yet, which is why creating one stays behind the experimental switch.
 An OpenCode Agent made before this change was made with 1.19.3. It is kept to
 read: its conversation stays in Yuzuno, and it is never started again, because
 2.x would migrate its database in place. To go on, create a new OpenCode Agent.
-A new Agent keeps the version of the OpenCode that made its database.
+A new Agent keeps the version of the OpenCode that made its database. Before
+an Agent has a session, nothing of Yuzuno's is in its database: one already in
+its folder (1.19.3 made it, but its session never reached Yuzuno) is moved
+aside into a `set-aside-N` folder beside it, never deleted, and 2.x starts on
+a new one.
 
 ## What it does
 
