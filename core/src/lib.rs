@@ -2,6 +2,7 @@ mod codex_context;
 pub mod agent_defaults;
 pub mod agent_roles;
 pub mod executor_templates;
+pub mod handover;
 mod executor_dispatch;
 mod executor_slots;
 mod executor_start;

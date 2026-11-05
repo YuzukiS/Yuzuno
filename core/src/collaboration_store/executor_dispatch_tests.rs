@@ -360,3 +360,120 @@ fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() 
     let user = begun(&store, None, user).unwrap();
     assert_eq!(user.folders[0], elsewhere, "the user's executor may work anywhere");
 }
+
+/// T-34 S3a: a template dispatch's executor gets its Project's handover
+/// document and Core's summary of the task so far in its materials, and the
+/// mail says where to read them; an ordinary dispatch gets neither. The
+/// summary is at most 4 KiB, however much there is to tell.
+#[test]
+fn a_template_dispatch_carries_the_projects_handover_and_a_summary_of_the_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    agent(&store, "standing");
+    store.save_handover(&p, 0, "# Lab\nBuild with make.", Some("First notes")).unwrap();
+    let t = task(&store, "Review", Some(&p), None);
+    let uuid = crate::collaboration_store::task_key(&store.db.read().unwrap(), &t).unwrap().0;
+    store.collaboration_call(None, "task_comment", json!({"requestId":"note","taskId":t,"body":format!("Check the narrow viewport first\n{}", "x".repeat(5000))})).unwrap();
+    // Ten linked pull requests, each with a review that left findings open: more than 4 KiB to tell.
+    {
+        let db = store.db.write().unwrap();
+        db.execute("INSERT INTO github_repositories(id,data) VALUES(7,?1)", [json!({"fullName":"lab/app"}).to_string()]).unwrap();
+        for n in 1..=10 {
+            let link = format!("7:pull:{n}");
+            db.execute("INSERT INTO github_objects(id,repo_id,kind,number,data) VALUES(?1,7,'pull',?2,?3)", params![link, n,
+                json!({"snapshot":{"state":"open","headSha":"a".repeat(40),"ci":{"state":"success"}},"syncedAt":"2026-11-05T00:00:00Z"}).to_string()]).unwrap();
+            db.execute("INSERT INTO github_task_links(task_id,object_id) VALUES(?1,?2)", params![uuid, link]).unwrap();
+            let findings: Vec<Value> = (0..7).map(|f| json!({"priority": f % 4, "title": format!("Finding {f} {}", "y".repeat(300)), "path": "core/src/lib.rs"})).collect();
+            db.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'completed',?4)", params![format!("review-{n}"), uuid, link,
+                json!({"id":format!("review-{n}"),"headSha":"a".repeat(40),"conclusion":"changes_requested","findings":findings}).to_string()]).unwrap();
+        }
+    }
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let materials = &given["dispatchMaterials"];
+    assert_eq!(materials["handover"], json!({"projectId":p,"version":1,"markdown":"# Lab\nBuild with make."}), "the handover reaches the executor with its materials");
+    let summary = materials["contextSummary"].as_str().unwrap_or_default();
+    assert!(summary.contains("lab/app #1") && summary.contains("P1 Finding 1") && summary.contains("Check the narrow viewport first"),
+        "the summary tells the linked PRs, their open findings and the newest comments: {summary}");
+    assert!(!summary.contains("P3 Finding 3"), "only P0-P2 findings are told");
+    assert!(summary.len() <= 4 * 1024, "the summary is at most 4 KiB: {} bytes", summary.len());
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("dispatchMaterials.handover.markdown") && body.contains("dispatchMaterials.contextSummary") && !body.contains("Build with make"),
+        "the mail says where to read them, not what they say: {body}");
+
+    let plain = json!({"requestId":"plain","taskId":t,"expectedVersion":answer["task"]["version"],"toAgentId":"standing"});
+    let plain = store.collaboration_call(None, "task_dispatch", plain).unwrap();
+    let plain = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":plain["task"]["dispatch"]["id"]})).unwrap();
+    assert!(plain["dispatchMaterials"].get("handover").is_none() && plain["dispatchMaterials"].get("contextSummary").is_none(),
+        "an ordinary dispatch carries neither");
+}
+
+/// T-34 S3a: what a template dispatch adds is held to its own limits, not to
+/// the task's: the longest handover a Project can keep, beside the longest
+/// description a task can have, still dispatches.
+#[test]
+fn a_long_handover_never_makes_a_template_dispatch_too_large() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    // Quotes, each escaped in the materials' JSON: twice as long there.
+    let long = "\"".repeat(crate::handover::MAX_BYTES);
+    store.save_handover(&p, 0, &long, None).unwrap();
+    let t = store.collaboration_call(None, "task_create", json!({"requestId":"create long","title":"Long","projectId":p,
+        "description":"\"".repeat(32_768)})).unwrap()["task"]["id"].as_str().unwrap().to_owned();
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone());
+    let answer = answer.unwrap_or_else(|e| panic!("a dispatch is not too large for its handover: {e}"));
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    assert_eq!(given["dispatchMaterials"]["handover"]["markdown"].as_str().map(str::len), Some(crate::handover::MAX_BYTES),
+        "the whole handover is given");
+}
+
+/// T-34 S3a (#605 R3 066d114c): the summary reads only the fields it tells of
+/// a review, whatever else the review's record holds, and a review it cannot
+/// read fails the dispatch instead of being told as no review.
+#[test]
+fn a_summary_reads_only_what_it_tells_of_a_review_and_an_unreadable_review_fails_the_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let (told, broken) = (task(&store, "Told", Some(&p), None), task(&store, "Broken", Some(&p), None));
+    {
+        let db = store.db.write().unwrap();
+        db.execute("INSERT INTO github_repositories(id,data) VALUES(7,?1)", [json!({"fullName":"lab/app"}).to_string()]).unwrap();
+        db.execute("INSERT INTO github_objects(id,repo_id,kind,number,data) VALUES('7:pull:1',7,'pull',1,?1)",
+            [json!({"snapshot":{"state":"open","headSha":"a".repeat(40),"ci":{"state":"success"}},"syncedAt":"2026-11-05T00:00:00Z"}).to_string()]).unwrap();
+        for (t, data) in [
+            // A completed review's record carries its evidence as well: here 4 MiB of it.
+            (&told, json!({"id":"review-1","headSha":"a".repeat(40),"conclusion":"changes_requested",
+                "findings":[{"priority":1,"title":"Finding kept","path":"core/src/lib.rs"}],
+                "evidence":{"files":[{"patch":"z".repeat(4 << 20)}]}}).to_string()),
+            (&broken, "{not json".to_owned()),
+        ] {
+            let uuid = crate::collaboration_store::task_key(&db, t).unwrap().0;
+            db.execute("INSERT INTO github_task_links(task_id,object_id) VALUES(?1,'7:pull:1')", [&uuid]).unwrap();
+            db.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:1','completed',?3)",
+                params![format!("row-{t}"), uuid, data]).unwrap();
+        }
+    }
+    let plan = begun(&store, None, dispatch(&told, "told")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":told,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let summary = given["dispatchMaterials"]["contextSummary"].as_str().unwrap_or_default();
+    assert!(summary.contains("latest review review-1") && summary.contains("P1 Finding kept"),
+        "a review whose record holds much more still tells its findings: {summary}");
+
+    let plan = begun(&store, None, dispatch(&broken, "broken")).unwrap();
+    create(&store, &plan);
+    let failed = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).err()
+        .map_or_else(|| "dispatched".to_owned(), |e| format!("{e:#}"));
+    assert!(failed.contains("malformed JSON"), "an unreadable review is an error, not an empty summary: {failed}");
+}

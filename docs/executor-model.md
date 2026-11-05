@@ -100,7 +100,10 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    must be the worktree you registered on the task or lie inside the
    Project's folder; any other is refused, since a path an Agent gives, in a
    dispatch's or a task's materials, is information, not permission. Your own
-   dispatch may name any folder.
+   dispatch may name any folder. An Agent's task_update that re-sends
+   materials becomes the latest registrant, so a worktree you registered
+   outside the Project's folder is refused for that Agent's template dispatch
+   until you register it again or dispatch it yourself.
 3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
    result goes back to whoever dispatched.
 4. **Queues it.** It starts when a slot is free; see
@@ -182,6 +185,41 @@ applies. Only you change them.
   task, "Core restarted while it rebuilt" it, unless that dispatch was made.
 - **Executors only.** Standing Agents don't count, and Jobs keep their own
   machine slots.
+
+## What an executor starts with
+
+An executor starts cold, with no memory of the Project. Besides its task's
+materials and its template's instructions, a dispatch from a template gives it
+two more things. Both are in its dispatch's materials (`task_get` with the
+dispatchId). The mail says where to read them; it doesn't hold them.
+
+- **The Project's handover document** (`handover`): what the Project already
+  knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
+  tabs, but no other control characters; a save with one is refused at its
+  line and column. You keep it in the Project's settings,
+  under **Handover**. Each save is a new version, kept with who wrote it and
+  why, and a save against a document that changed meanwhile is refused. The
+  settings page lists the versions and shows any past one. A Project's
+  document goes with it when the Project is deleted. An archived Project's
+  document can't change.
+- **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
+  written by Core from what it holds, in this order:
+  - the latest result;
+  - the newest comments' first lines;
+  - each linked pull request, as last observed, with the P0–P2 findings
+    of its latest completed review.
+
+  Nothing in it is read again from GitHub or a model.
+
+A dispatch to an existing Agent gets neither; that Agent already has its own
+context.
+
+A dispatch's materials are at most 128 KiB, counting only what the dispatcher
+can shorten: the task's own materials and the dispatch's. The template, the
+handover and the summary are not counted, since each has its own limit
+(instructions 8 KiB, handover 32 KiB, summary 4 KiB). So a template dispatch's
+materials are at most 128 KiB plus those three. Over the limit, the dispatch
+is refused with `materials_too_large` and nothing is dispatched.
 
 ## Phases
 

@@ -377,12 +377,16 @@ test("back online after a failed workspace read, it is read again at once and on
   const p = await mount({ holdPoll: true, deadlineMs: 10_000 });
   const reads = () => p.f.calls.filter(c => c.path === "/api/workspace").length;
   const status = () => p.d.querySelector(".connection")?.dataset.coreStatus;
-  // The reconnected stream resumes, as Core's does: no reset, so no full refresh.
-  const resume = async (count) => {
-    await until(() => p.f.streams.length === count && p.f.streams.at(-1).readyState === 1, "the reconnected stream");
+  // A stream resumes, as Core's does: no reset, so no full refresh.
+  const resume = async (count, label = "the reconnected stream") => {
+    await until(() => p.f.streams.length === count && p.f.streams.at(-1).readyState === 1, label);
     p.f.streams.at(-1).onmessage?.({ data: '{"type":"resumed"}', lastEventId: "" });
   };
   try {
+    // The first stream resumes too. A stream that says nothing is read in
+    // full START_WAIT_MS (800 ms) after it opens; the count below starts
+    // after the banner's 600 ms wait, so that read could land inside it.
+    await resume(1, "the first stream");
     // The last read worked: online reads nothing more.
     p.f.network(false);
     await until(() => banner(p)?.textContent.includes("Browser reports offline"), "the offline report");
