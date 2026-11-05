@@ -575,7 +575,7 @@ fn peer_delivery_possible(a: &Agent, priority: &str) -> bool {
     a.closed_at.is_none()
         && a.connection_state == "connected"
         && match a.status.as_str() {
-            "idle" => a.pending_count == 0,
+            "idle" => a.native_requests() == 0,
             "working" | "waiting" => priority == "urgent" && matches!(a.harness.as_str(), "codex" | "claude"),
             _ => false,
         }

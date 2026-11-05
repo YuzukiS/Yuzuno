@@ -29,6 +29,7 @@ const text = strings({
   anywhere: "Anywhere",
   find: "Find an Agent, or open a message link pasted there (again to close)",
   newAgent: "New Agent",
+  nextNeedsYou: "Go to the next thing that needs you: Home's Needs you in its order, then Turn ends not seen here",
   interrupt: "Interrupt the Agent you are looking at while it works (not while a dialog or menu is open)",
   connection: "Core connection",
   writing: "Writing a message",
@@ -60,6 +61,7 @@ const text = strings({
   anywhere: "任何地方",
   find: "查找 Agent，或打开粘贴在那里的消息链接（再按一次关闭）",
   newAgent: "新建 Agent",
+  nextNeedsYou: "跳到下一个需要你的：按 Home“需要你”的顺序，然后是这台设备还没看过的 Turn 结束",
   interrupt: "在你正在看的 Agent 工作时中断它（对话框或菜单打开时除外）",
   connection: "Core 连接",
   writing: "撰写消息",
@@ -97,7 +99,7 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, keys = de
   touch: boolean;
   /** The desktop app, not a browser. */
   desktopApp: boolean;
-  /** This device's letters for the three it may change. */
+  /** This device's letters for the four it may change. */
   keys?: ShortcutKeys;
   language?: Language;
 }): ShortcutGroup[] {
@@ -109,6 +111,7 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, keys = de
       shortcuts: [
         { keys: [modifier, keys.find], action: t.find, source: "App.tsx", rebind: "find" },
         { keys: [modifier, keys.newAgent], action: t.newAgent, source: "App.tsx", rebind: "newAgent" },
+        { keys: [modifier, keys.nextNeedsYou], action: t.nextNeedsYou, source: "App.tsx", rebind: "nextNeedsYou" },
         { keys: ["Esc"], action: t.interrupt, source: "App.tsx" },
         ...(desktopApp ? [{ keys: [modifier, ","], action: t.connection, source: "App.tsx" }] : []),
       ],

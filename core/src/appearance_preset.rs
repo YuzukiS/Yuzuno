@@ -29,7 +29,8 @@ use std::sync::Arc;
 const KEY: &str = "appearance.preset";
 /// The preset's own format; a later one is refused, never read as this one.
 pub const VERSION: u64 = 1;
-const WORDS: [&str; 4] = ["palette", "theme", "agentList", "projectGroups"];
+// `agentOrder` is the Agent list's order (T-42); a preset kept before it has none, and clients keep the list's order.
+const WORDS: [&str; 5] = ["palette", "theme", "agentList", "agentOrder", "projectGroups"];
 const NUMBERS: [&str; 1] = ["fontSize"];
 // `reviews` is the dock's PR reviews (T-25); a preset kept before it has none, and clients show two.
 const GROUPS: [(&str, &[&str]); 2] = [("dock", &["jobs", "actions", "reviews", "subAgents"]), ("turnDock", &["numbers", "bars"])];

@@ -19,6 +19,7 @@ import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
+import { unseenEnd, type TurnSeen } from "../attention";
 import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -91,6 +92,8 @@ export function Home({
   onNavigate,
   onChanged,
   onNeedsYou,
+  turnSeen,
+  jumpTo = null,
   arrival = null,
   onBackToReply,
   report: incomingReport = null,
@@ -108,6 +111,10 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
+  /** What this device has seen of each Agent's last Turn end (T-42). */
+  turnSeen?: TurnSeen;
+  /** An Ask "next needs you" goes to; another jump is another `n`. */
+  jumpTo?: { projectId: string | null; sectionKey: string; n: number } | null;
   /** "Open on Home" on a reply from Home (T-9): the section and version it
    * answered, and the message to go back to; another opening is another `n`. */
   arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
@@ -131,6 +138,26 @@ export function Home({
   // Workspace's overview (or its cards). Abort is checked before writes.
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
   const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
+  // The Turn ends this device hasn't shown (T-42): failed, then finished.
+  const unseenEnds = useMemo(() => {
+    const open = readOnly || !turnSeen ? [] : agents.filter((a) => !a.closedAt);
+    return {
+      failed: open.filter((a) => unseenEnd(a, turnSeen!) === "failed"),
+      finished: open.filter((a) => unseenEnd(a, turnSeen!) === "finished"),
+    };
+  }, [agents, turnSeen, readOnly]);
+  // An Ask "next needs you" chose: shown as its own row's click shows it.
+  const jumpToItem = useRef<(item: NeedsYouItem) => void>(() => {});
+  const jumped = useRef(0);
+  useEffect(() => {
+    if (!jumpTo || !data || jumped.current === jumpTo.n) return;
+    const item = data.needsYou.find(
+      (n) => n.kind === "ask" && n.projectId === jumpTo.projectId && n.sectionKey === jumpTo.sectionKey,
+    );
+    if (!item) return;
+    jumped.current = jumpTo.n;
+    jumpToItem.current(item);
+  }, [jumpTo, data]);
   // What went wrong, worded when shown so it follows the language (T-189):
   // a reply Home can't use, an order not saved, or Core's reason as it came.
   const activeWorkspace = useRef(workspaceId);
@@ -282,7 +309,13 @@ export function Home({
         onBack={onBackToReply ? () => onBackToReply(arrival.back) : undefined}
       />
     );
+  jumpToItem.current = jump;
   function jump(item: NeedsYouItem) {
+    // A question is answered in its conversation (T-42).
+    if (item.kind === "question") {
+      onNavigate({ kind: "agent", agentId: item.agentId });
+      return;
+    }
     const panel = item.projectId ? panels.find((p) => p.project.id === item.projectId) : undefined;
     if (!panel) {
       // An approval from an Agent outside any project lives in its conversation.
@@ -753,7 +786,13 @@ export function Home({
             onNavigate={onNavigate}
           />
           <div className="home-needs-area" id="home-current-needs" tabIndex={-1}>
-            <NeedsYou items={data.needsYou} projectName={projectName} onJump={jump} />
+            <NeedsYou
+              items={data.needsYou}
+              projectName={projectName}
+              onJump={jump}
+              unseen={unseenEnds}
+              onOpenAgent={(agentId) => onNavigate({ kind: "agent", agentId })}
+            />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}
           <HomeWidgets

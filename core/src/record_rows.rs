@@ -327,6 +327,8 @@ pub struct ReceiptRow {
     pub settled: bool,
     pub turn: Option<String>,
     pub data: String,
+    /// Whether it sends an answer to an asynchronous question (T-42).
+    pub answers: bool,
 }
 
 /// A payload's value as read: parsed from the row's text where SQLite holds
@@ -651,7 +653,8 @@ fn receipt_turn(receipt: &MessageReceipt) -> Option<&str> {
 
 fn receipt_row(receipt: &MessageReceipt) -> Result<ReceiptRow> {
     Ok(ReceiptRow { client: receipt.input.client_message_id.clone(), settled: settled(receipt),
-        turn: receipt_turn(receipt).map(str::to_owned), data: serde_json::to_string(receipt)? })
+        turn: receipt_turn(receipt).map(str::to_owned), data: serde_json::to_string(receipt)?,
+        answers: receipt.input.question.is_some() })
 }
 
 /// The rows of a new record.
@@ -1309,6 +1312,70 @@ pub fn answered(db: &Connection, agent: &str, form: Option<(&str, &str)>, questi
     Ok(found)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread ran `open_questions`: a write that cannot
+    /// change them must not (review 7727a352).
+    pub static OPEN_QUESTION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One open asynchronous question of an Agent (T-42), as `open_questions`
+/// reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenQuestion {
+    pub turn_id: String,
+    pub item_id: String,
+    pub title: Option<String>,
+    /// When the item was first seen, in milliseconds (`_yuzunoTime.at`).
+    pub at_ms: Option<i64>,
+}
+
+/// The Agent's open asynchronous questions, oldest first (T-42): Codex
+/// `agentMessage` items sent `delivery: "async"` with questions (the
+/// `question` key `index_keys` writes), as the web reads them open
+/// (pending-questions.ts): no answer to them accepted, not cancelled or
+/// expired, and not imported with no answer sent from here. Read by SQL
+/// over the key index, so an Agent without questions costs one index seek.
+pub fn open_questions(db: &Connection, agent: &str) -> Result<Vec<OpenQuestion>> {
+    #[cfg(test)]
+    OPEN_QUESTION_READS.with(|n| n.set(n.get() + 1));
+    let mut query = db.prepare_cached("SELECT k.turn_id, k.item_id,
+            COALESCE(json_extract(i.data,'$.questions[0].title'), json_extract(i.data,'$.questions[0].question'),
+                json_extract(i.data,'$.questions[0].header')),
+            json_extract(i.data,'$._yuzunoTime.at')
+        FROM agent_item_keys k JOIN agent_items i ON i.agent_id=k.agent_id AND i.turn_id=k.turn_id AND i.item_id=k.item_id
+        WHERE k.agent_id=?1 AND k.kind='question'
+            AND COALESCE(json_extract(i.data,'$.status'),'') NOT IN ('cancelled','canceled','expired')
+            AND NOT EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=k.agent_id
+                AND json_extract(r.data,'$.input.question.turnId')=k.turn_id AND json_extract(r.data,'$.input.question.itemId')=k.item_id
+                AND json_extract(r.data,'$.status')='accepted')
+            AND NOT (EXISTS(SELECT 1 FROM codex_import_turns c WHERE c.agent_id=k.agent_id AND c.turn_id=k.turn_id)
+                AND NOT EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=k.agent_id
+                    AND json_extract(r.data,'$.input.question.turnId')=k.turn_id AND json_extract(r.data,'$.input.question.itemId')=k.item_id))
+        ORDER BY i.turn_id, i.ord")?;
+    let rows = query.query_map(params![agent], |r| Ok(OpenQuestion {
+        turn_id: r.get(0)?, item_id: r.get(1)?, title: r.get(2)?, at_ms: r.get(3)?,
+    }))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// The Agent's last Turn end that the journal holds as `turn/completed`,
+/// finished or failed (T-42): what an Agent from before `last_turn_end` was
+/// kept starts with. OpenCode writes no such row, so its Agents start
+/// without one.
+pub fn last_journaled_turn_end(db: &Connection, agent: &str) -> Result<Option<crate::model::TurnEnd>> {
+    db.prepare_cached("SELECT seq, json_extract(data,'$.turn.status'), at FROM journal
+            WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.status') IN ('completed','failed')
+            ORDER BY seq DESC LIMIT 1")?
+        .query_row(params![agent], |r| Ok(crate::model::TurnEnd {
+            seq: r.get(0)?,
+            outcome: if r.get::<_, String>(1)? == "failed" { "failed".into() } else { "finished".into() },
+            at: r.get(2)?,
+        }))
+        .optional()
+        .map_err(Into::into)
+}
+
 /// Every receipt of the Agent, oldest first (for deleting its images; one
 /// row at a time is parsed).
 pub fn each_receipt(db: &Connection, agent: &str, mut each: impl FnMut(MessageReceipt)) -> Result<()> {
@@ -1334,6 +1401,11 @@ pub struct Written {
     pub receipts: usize,
     /// Rows deleted directly (their Items and payloads go with them).
     pub deleted: usize,
+    /// Whether it may have changed what `open_questions` reads (T-42): it
+    /// wrote an Item that has or had the `question` key, deleted Items or
+    /// Turns, or wrote a receipt of an answer. Any other write leaves the
+    /// open questions as they were.
+    pub questions: bool,
 }
 
 /// What changed in the Turns of a write since they were read: Turns and
@@ -1578,6 +1650,29 @@ pub struct Plan {
     ops: Vec<Op>,
 }
 
+impl Plan {
+    /// The metadata body the plan writes, for writing it again.
+    pub fn body(&self) -> &MetaBody {
+        &self.body
+    }
+
+    /// Whether writing it may open or close an asynchronous question
+    /// (T-42), known before the write: it writes an asynchronous
+    /// `agentMessage` Item, deletes Items or Turns, or writes a receipt of an
+    /// answer. These cover every write `Written::questions` reports (an
+    /// Item keeps its type and delivery), so a stream event that changes
+    /// the open questions is written and announced at once, as one that
+    /// changes a native request is (review 9392d7c2).
+    pub fn may_change_questions(&self) -> bool {
+        self.ops.iter().any(|op| match op {
+            Op::Item { asks, .. } => *asks,
+            Op::DeleteTurn { .. } | Op::DeleteItems { .. } | Op::DeleteItem { .. } => true,
+            Op::Receipt(row) => row.answers,
+            _ => false,
+        })
+    }
+}
+
 /// One statement of a write, in order. Deleting a Turn or an Item deletes
 /// its Items, keys and payloads first, so nothing depends on foreign keys.
 enum Op {
@@ -1593,8 +1688,10 @@ enum Op {
     Order { keys: Vec<String> },
     /// All Item rows of a Turn now stored whole.
     DeleteItems { turn: String },
+    /// `asks`: an asynchronous `agentMessage`, the only Item that has, or
+    /// may have had, the `question` key (T-42).
     Item { turn: String, key: String, ord: usize, payloads: usize, data: String, previews: Option<String>,
-        keys: Vec<(&'static str, String)> },
+        keys: Vec<(&'static str, String)>, asks: bool },
     ItemOrd { turn: String, key: String, ord: usize },
     /// The Item rows of gaps moved: (stored position, count, new position).
     Shift { turn: String, ranges: Vec<(usize, usize, usize)> },
@@ -1778,7 +1875,8 @@ fn plan_items(db: &Connection, agent: &str, turn: &str, items: &[Value], all: bo
         }
         let payloads = out.payload_count();
         // The Item row first: its payload rows refer to it.
-        ops.push(Op::Item { turn: turn.into(), key: key.clone(), ord: here, payloads, data: out.data, previews: out.previews, keys: out.keys });
+        let asks = item["type"] == "agentMessage" && item["delivery"] == "async";
+        ops.push(Op::Item { turn: turn.into(), key: key.clone(), ord: here, payloads, data: out.data, previews: out.previews, keys: out.keys, asks });
         for (field, data) in out.payloads {
             ops.push(Op::Payload { turn: turn.into(), item: key.clone(), field, data });
         }
@@ -1812,7 +1910,10 @@ pub fn apply(db: &Connection, id: &str, plan: &Plan, agent: &crate::model::Agent
                     AND (items IS NOT ?3 OR data IS NOT ?4)")?
                     .execute(params![id, key, items.map(|n| n as i64), data])?;
             }
-            Op::DeleteTurn { key } => written.deleted += delete_turn(db, id, key)?,
+            Op::DeleteTurn { key } => {
+                written.deleted += delete_turn(db, id, key)?;
+                written.questions = true;
+            }
             Op::Renumber => {
                 let keys: Vec<(String, i64)> = db.prepare_cached("SELECT turn_id, ord FROM agent_turns WHERE agent_id=?1 ORDER BY ord")?
                     .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
@@ -1841,15 +1942,17 @@ pub fn apply(db: &Connection, id: &str, plan: &Plan, agent: &crate::model::Agent
                 db.prepare_cached("DELETE FROM agent_item_keys WHERE agent_id=?1 AND turn_id=?2")?.execute(params![id, turn])?;
                 written.deleted += db.prepare_cached("DELETE FROM agent_items WHERE agent_id=?1 AND turn_id=?2")?
                     .execute(params![id, turn])?;
+                written.questions = true;
             }
-            Op::Item { turn, key, ord, payloads, data, previews, keys } => {
+            Op::Item { turn, key, ord, payloads, data, previews, keys, .. } => {
                 written.items += db.prepare_cached("INSERT INTO agent_items(agent_id,turn_id,item_id,ord,payloads,data,previews) VALUES(?1,?2,?3,?4,?5,?6,?7)
                     ON CONFLICT(agent_id,turn_id,item_id) DO UPDATE SET ord=excluded.ord, payloads=excluded.payloads, data=excluded.data,
                     previews=excluded.previews
                     WHERE ord IS NOT excluded.ord OR payloads IS NOT excluded.payloads OR data IS NOT excluded.data
                     OR previews IS NOT excluded.previews")?
                     .execute(params![id, turn, key, *ord as i64, *payloads as i64, data, previews])?;
-                write_keys(db, id, turn, key, keys)?;
+                let had = write_keys(db, id, turn, key, keys)?;
+                written.questions |= had || keys.iter().any(|(kind, _)| *kind == "question");
             }
             Op::ItemOrd { turn, key, ord } => {
                 written.items += db.prepare_cached("UPDATE agent_items SET ord=?4 WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3")?
@@ -1883,6 +1986,7 @@ pub fn apply(db: &Connection, id: &str, plan: &Plan, agent: &crate::model::Agent
                     .execute(params![id, turn, key])?;
                 written.deleted += db.prepare_cached("DELETE FROM agent_items WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3")?
                     .execute(params![id, turn, key])?;
+                written.questions = true;
             }
             Op::Payload { turn, item, field, data } => {
                 written.payloads += db.prepare_cached("INSERT INTO agent_payloads(agent_id,turn_id,item_id,field,data) VALUES(?1,?2,?3,?4,?5)
@@ -1893,29 +1997,34 @@ pub fn apply(db: &Connection, id: &str, plan: &Plan, agent: &crate::model::Agent
                 written.deleted += db.prepare_cached("DELETE FROM agent_payloads WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3 AND field=?4")?
                     .execute(params![id, turn, item, field])?;
             }
-            Op::Receipt(row) => written.receipts += write_receipt(db, id, row)?,
+            Op::Receipt(row) => {
+                written.receipts += write_receipt(db, id, row)?;
+                written.questions |= row.answers;
+            }
         }
     }
     Ok(written)
 }
 
 /// An Item's keys as `index_keys` gives them, replacing those it had.
-fn write_keys(db: &Connection, agent: &str, turn: &str, item: &str, keys: &[(&'static str, String)]) -> Result<()> {
+/// Returns whether it had a `question` key.
+fn write_keys(db: &Connection, agent: &str, turn: &str, item: &str, keys: &[(&'static str, String)]) -> Result<bool> {
     let stored: Vec<(String, String)> = db.prepare_cached("SELECT kind, key FROM agent_item_keys WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3")?
         .query_map(params![agent, turn, item], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut stored_sorted = stored.clone();
     stored_sorted.sort();
     let mut wanted: Vec<(String, String)> = keys.iter().map(|(kind, key)| ((*kind).to_owned(), key.clone())).collect();
     wanted.sort();
+    let had = stored.iter().any(|(kind, _)| kind == "question");
     if stored_sorted == wanted {
-        return Ok(());
+        return Ok(had);
     }
     db.prepare_cached("DELETE FROM agent_item_keys WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3")?.execute(params![agent, turn, item])?;
     let mut insert = db.prepare_cached("INSERT INTO agent_item_keys(agent_id,turn_id,item_id,kind,key) VALUES(?1,?2,?3,?4,?5)")?;
     for (kind, key) in wanted {
         insert.execute(params![agent, turn, item, kind, key])?;
     }
-    Ok(())
+    Ok(had)
 }
 
 /// A receipt row: a new one goes after the Agent's newest.

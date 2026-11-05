@@ -1977,7 +1977,7 @@ test("legacy appearance preferences keep their font size and palettes apply with
       assert.equal(root.dataset.palette, palette);
       assert.equal(root.dataset.fontSize, "20");
       // Saved again with the choices it lacked at their defaults.
-      assert.deepEqual(JSON.parse(page.window.localStorage.getItem("yuzuno.appearance")), { theme: "dark", fontSize: 20, palette, agentList: "detailed", projectGroups: "headers",
+      assert.deepEqual(JSON.parse(page.window.localStorage.getItem("yuzuno.appearance")), { theme: "dark", fontSize: 20, palette, agentList: "detailed", agentOrder: "list", projectGroups: "headers",
         dock: { jobs: 5, actions: 2, reviews: 2, subAgents: 5 }, turnDock: { numbers: 5, bars: 5 } });
     }
     // Sliders: text size from 10 to 24 px, and how many of each kind the
