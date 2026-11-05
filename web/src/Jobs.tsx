@@ -124,11 +124,16 @@ type Job = {
   checkpointFrom?: { jobId: string } | null;
   /** Its mail by status: delivery, and why when it did not go through (T-50). */
   mail?: Record<string, { messageId: string; delivery: string; problem?: string | null }> | null;
+  /** How admission started it: ahead of the blocked queue head, within what
+   * that head's need left (T-38). */
+  admission?: { passed?: PassedHead | null } | null;
   /** Its memory limit lowered while it ran, newest last (T-38 B). */
   limitChanges?: { by: { kind: string; name: string }; at: string; fromMiB: number; toMiB: number }[] | null;
   /** The last lowering that did not take, and why. */
   limitRefusal?: { at: string; toMiB: number; state: string; reason: string } | null;
 };
+/** The queue head a job started ahead of, as Core recorded it then. */
+type PassedHead = { jobId: string; name: string; waits: string; need: Resources; room: Resources; headNeed: Resources };
 type CheckpointStop = {
   state: "requested" | "signalled" | "pending" | "failed" | "expired" | "checkpointed" | "notResumable";
   reason?: string | null;
@@ -190,6 +195,13 @@ const memory = (miB: number) =>
   miB >= 1024
     ? `${(miB / 1024).toFixed(1)} GiB`
     : `${Number(miB.toFixed(1))} MiB`;
+/** "Started ahead of check, …": in the dimension the head waited for. */
+function passedAhead(passed: PassedHead, t: JobsText) {
+  const kind = passed.waits.includes("CPU") ? "cpu" : passed.waits.includes("swap") ? "swap" : "ram";
+  const amount = (r: Resources) =>
+    t.aheadAmount(kind, kind === "cpu" ? `${r.cpuMillis / 1000}` : memory(kind === "swap" ? r.swapMiB : r.memoryMiB));
+  return t.startedAhead(passed.name, kind, amount(passed.need), amount(passed.room), amount(passed.headNeed));
+}
 // English, for what stays English outside the panel (the conversation's dock).
 const en = jobsText("en");
 /** A systemd byte count as MiB, or null when it is not a measurement. */
@@ -1535,6 +1547,12 @@ function JobDetail({
           </dd>
           <dt>{t.execution}</dt>
           <dd>{job.exclusive ? t.exclusiveExecution : t.normal}</dd>
+          {job.admission?.passed && (
+            <>
+              <dt>{t.admission}</dt>
+              <dd className="job-admission">{passedAhead(job.admission.passed, t)}</dd>
+            </>
+          )}
           <dt>{t.resources}</dt>
           <dd>{t.resourceLine(job.resources.cpuMillis / 1000, memory(job.resources.memoryMiB), memory(job.resources.swapMiB))}</dd>
           {lowered && (

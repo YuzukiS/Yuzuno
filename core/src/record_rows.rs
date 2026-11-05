@@ -1330,7 +1330,8 @@ pub struct OpenQuestion {
     pub at_ms: Option<i64>,
 }
 
-/// The Agent's open asynchronous questions, oldest first (T-42): Codex
+/// The Agent's open asynchronous questions, oldest first: by their Turn's
+/// place in the conversation, then their own within it (T-42): Codex
 /// `agentMessage` items sent `delivery: "async"` with questions (the
 /// `question` key `index_keys` writes), as the web reads them open
 /// (pending-questions.ts): no answer to them accepted, not cancelled or
@@ -1344,6 +1345,7 @@ pub fn open_questions(db: &Connection, agent: &str) -> Result<Vec<OpenQuestion>>
                 json_extract(i.data,'$.questions[0].header')),
             json_extract(i.data,'$._yuzunoTime.at')
         FROM agent_item_keys k JOIN agent_items i ON i.agent_id=k.agent_id AND i.turn_id=k.turn_id AND i.item_id=k.item_id
+        JOIN agent_turns t ON t.agent_id=k.agent_id AND t.turn_id=k.turn_id
         WHERE k.agent_id=?1 AND k.kind='question'
             AND COALESCE(json_extract(i.data,'$.status'),'') NOT IN ('cancelled','canceled','expired')
             AND NOT EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=k.agent_id
@@ -1352,7 +1354,7 @@ pub fn open_questions(db: &Connection, agent: &str) -> Result<Vec<OpenQuestion>>
             AND NOT (EXISTS(SELECT 1 FROM codex_import_turns c WHERE c.agent_id=k.agent_id AND c.turn_id=k.turn_id)
                 AND NOT EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=k.agent_id
                     AND json_extract(r.data,'$.input.question.turnId')=k.turn_id AND json_extract(r.data,'$.input.question.itemId')=k.item_id))
-        ORDER BY i.turn_id, i.ord")?;
+        ORDER BY t.ord, i.ord")?;
     let rows = query.query_map(params![agent], |r| Ok(OpenQuestion {
         turn_id: r.get(0)?, item_id: r.get(1)?, title: r.get(2)?, at_ms: r.get(3)?,
     }))?;

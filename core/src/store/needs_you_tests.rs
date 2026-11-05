@@ -137,6 +137,20 @@ fn start(store: &Store, id: &str, turn: &str) {
 }
 
 #[test]
+fn open_questions_come_in_the_order_of_their_turns_not_of_their_turn_ids() {
+    // Review R4 of #579: the order was the Turn IDs' text.
+    let (_dir, store) = lab();
+    store.insert(&detail("a")).unwrap();
+    start(&store, "a", "z-earlier");
+    start(&store, "a", "a-later");
+    for (turn, item) in [("a-later", "q-later"), ("z-earlier", "q-earlier")] {
+        stream(&store, "a", "item/completed", &json!({"threadId":"thread","turnId":turn,"item":question(item, "completed")}));
+    }
+    let open = store.open_questions("a").unwrap();
+    assert_eq!(open.iter().map(|q| q.item_id.as_str()).collect::<Vec<_>>(), ["q-earlier", "q-later"], "oldest Turn first");
+}
+
+#[test]
 fn the_last_turn_end_is_the_last_finished_or_failed_one() {
     let (dir, store) = lab();
     store.insert(&detail("a")).unwrap();
