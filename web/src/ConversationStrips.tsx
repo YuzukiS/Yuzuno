@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { Children, isValidElement, useLayoutEffect, useRef, type ReactNode } from "react";
 import "./conversation-strips.css";
 
 /**
@@ -10,8 +10,10 @@ import "./conversation-strips.css";
  * `--strips-height`: the request pin sits below them, the conversation's
  * text starts below them, so scrolling up brings out whatever they cover,
  * and as scroll padding it places a target a jump puts at the top clear of
- * them. It is set as they render, before the jump that opened a source
- * places its target, and again whenever they change size. What is in view
+ * them. It is set in the commit that shows or takes away a strip, before
+ * the jump that opened a source places its target, and again whenever they
+ * change size, and written only when it changed: not on every render, as
+ * App renders often while a Turn streams (R2 5db2b3cc). What is in view
  * stays where it was as that padding comes and goes, at the conversation's
  * very top too (R1 f0b0a715), by the conversation's own hold on its place:
  * ConversationWindow's ReadingAnchor while it is read, in the commit that
@@ -21,12 +23,20 @@ import "./conversation-strips.css";
  */
 export function ConversationStrips({ children }: { children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
+  const written = useRef<number | null>(null);
+  // Which strips show, by their place among the children (App's reading offer, then its source strip).
+  const shows = Children.toArray(children).map((child) => (isValidElement(child) ? String(child.key) : "")).join(" ");
   const measure = () => {
     const element = box.current;
-    element?.parentElement?.style.setProperty("--strips-height", `${element.offsetHeight}px`);
+    const body = element?.parentElement;
+    if (!element || !body) return;
+    const height = element.offsetHeight;
+    if (height === written.current) return;
+    written.current = height;
+    body.style.setProperty("--strips-height", `${height}px`);
   };
-  // Each render: a strip shown or gone is measured in the commit that shows it.
-  useLayoutEffect(measure);
+  // A strip shown or gone is measured in the commit that shows it.
+  useLayoutEffect(measure, [shows]);
   useLayoutEffect(() => {
     const element = box.current;
     const body = element?.parentElement;
@@ -37,6 +47,7 @@ export function ConversationStrips({ children }: { children: ReactNode }) {
     return () => {
       observer?.disconnect();
       body.style.removeProperty("--strips-height");
+      written.current = null;
     };
   }, []);
   return (
