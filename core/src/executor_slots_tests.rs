@@ -25,6 +25,20 @@ fn queued(store: &Store, id: &str, project: Option<&str>, machine: &str) {
     enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, machine, "reviewer").unwrap();
 }
 
+/// As `queued` on this host, made from the template `template` (its id).
+fn queued_from(store: &Store, id: &str, project: Option<&str>, template: &str) {
+    agent(store, id);
+    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, "local", template).unwrap();
+}
+
+/// A template list as a save leaves it: the Workspace's, or a Project's own.
+fn templates(store: &Store, project: Option<&str>, list: Value) {
+    let key = project.map_or_else(|| "executors.templates".to_owned(), crate::executor_templates::project_key);
+    store.db.write().unwrap().execute(
+        "INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![key, json!({"version":1,"templates":list}).to_string()]).unwrap();
+}
+
 /// Its row's state and reason; "none" without a row.
 fn state(store: &Store, id: &str) -> (String, Option<String>) {
     store.db.read().unwrap()
@@ -224,6 +238,43 @@ fn a_project_or_machine_at_its_own_limit_lets_the_next_in_the_queue_start() {
     queued(&store, "g", Some("p3"), "local");
     assert_eq!(started(&store), ["f"], "the Workspace's fourth slot");
     assert_eq!(state(&store, "g").0, "waiting", "the Workspace's four are held");
+}
+
+/// T-35 S4: a template's own limit (its `maxConcurrent`) holds back only
+/// its executors. A Project's own template of an id is another template than
+/// the Workspace's; a task in a Project without its own uses the
+/// Workspace's, and counts with it. Unset, or gone, it limits nothing.
+#[test]
+fn a_template_at_its_own_limit_lets_the_next_in_the_queue_start() {
+    let (_dir, store) = store();
+    limit(&store, KEY, 10);
+    let reviewer = |cap: Option<u32>| {
+        let mut t = json!({"id":"reviewer","label":"Reviewer","harness":"claude"});
+        if let Some(cap) = cap {
+            t["maxConcurrent"] = json!(cap);
+        }
+        t
+    };
+    templates(&store, None, json!([reviewer(Some(1)), {"id":"writer","label":"Writer","harness":"claude"}]));
+    templates(&store, Some("p2"), json!([{"id":"reviewer","label":"P2 reviewer","harness":"claude","maxConcurrent":2}]));
+    queued_from(&store, "a", None, "reviewer");
+    queued_from(&store, "b", None, "reviewer");
+    queued_from(&store, "c", Some("p1"), "reviewer");
+    queued_from(&store, "d", None, "writer");
+    for id in ["e", "f", "g"] {
+        queued_from(&store, id, Some("p2"), "reviewer");
+    }
+    assert_eq!(started(&store), ["c", "e", "f", "d"],
+        "the Workspace's reviewer starts one (p1 has none of its own: c counts with a and b); p2's own reviewer two; writer has no limit");
+    for id in ["a", "b", "g"] {
+        assert_eq!(state(&store, id).0, "waiting", "{id} waits for its template");
+    }
+    close(&store, "c");
+    assert_eq!(started(&store), ["a"], "the Workspace's reviewer has room again");
+    templates(&store, None, json!([reviewer(None)]));
+    assert_eq!(started(&store), ["b"], "its limit unset: it limits nothing");
+    templates(&store, Some("p2"), json!([]));
+    assert_eq!(started(&store), ["g"], "p2's own gone: its tasks get the Workspace's, now unlimited");
 }
 
 /// Projects take turns, as in the Jobs queue; one waiting past the aging

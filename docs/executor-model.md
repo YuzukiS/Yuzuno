@@ -69,7 +69,7 @@ its settings.
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
-| **At most at once** | Kept for a limit per template, later in phase 2; not applied yet. The limits that apply now are under [Executors at once](#executors-at-once). |
+| **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
 
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
   that Project's template of the named id, else the Workspace's. A task in no
@@ -131,15 +131,18 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
 
 At most this many executors run at the same time in the Workspace: 3 unless
 you change it, a whole number from 1 to 64, in Settings under **Executor
-templates**. A Project can have a limit of its own, on its page; left empty,
-only the Workspace's applies. Only you change them.
+templates**. A Project can have a limit of its own, on its page, and so can
+a template (its **At most at once**); left empty, only the Workspace's
+applies. Only you change them.
 
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
   order: any waiting more than 30 minutes first, then Projects in turn, each
   Project's in the order they were dispatched. Executors in no Project take
-  their turn together. One whose Project is at its own limit is passed by the
-  next that has room.
+  their turn together. One whose Project or template is at its own limit is
+  passed by the next that has room. A Project's own template of an id has
+  its own limit; a task in a Project without one uses the Workspace's
+  template, and counts with it.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
   starting (with `reason` when its start did not finish), or running.
