@@ -20,6 +20,8 @@ fn tasks(s: &Store) {
     for title in ["Calibration", "Other work"] {
         s.collaboration_call(None, "task_create", json!({"requestId":title,"title":title,"status":"doing"})).unwrap();
     }
+    // Room for every request here, up to the 40,960 MiB sweep.
+    s.set_job_budget(Resources { cpu_millis: 16000, memory_mi_b: 65536, swap_mi_b: 0 }).unwrap();
 }
 fn setup() -> (tempfile::TempDir, Arc<Store>) {
     let dir = tempfile::tempdir().unwrap();
