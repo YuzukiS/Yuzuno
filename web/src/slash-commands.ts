@@ -15,6 +15,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { pathTail } from "./skill-refs";
+import { fadeIn } from "./surface";
 
 /**
  * A command a Claude Agent can be sent, as Claude Code lists it
@@ -474,7 +475,13 @@ function createMenuView(view: EditorView): TooltipView {
   };
   return {
     dom,
-    mount: render,
+    // In once as the list opens (T-19 CV:CO-09; Lead 2 4644): CodeMirror keeps
+    // this view while the list is open, and each keystroke only draws its
+    // rows again (`update`), with nothing played.
+    mount: () => {
+      render();
+      fadeIn(dom, "micro");
+    },
     update: render,
   };
 }
