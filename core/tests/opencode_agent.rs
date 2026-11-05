@@ -289,11 +289,10 @@ async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() 
     let d = lab.until("the bare idle", |d| turn(d, &second)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &second)["status"], "outcomeUnknown");
 
-    // A session error names no message: the Turn goes on until its own answer says.
+    // A failed step names its answer: the Turn ends as it says. (1.19.3's
+    // session error while a run went on, which decided nothing, has no 2.x
+    // counterpart: 2.x reports one only with the execution's end. T-32 slice 3b.)
     let third = lab.send("c3", "fail").await.unwrap().turn_id.unwrap();
-    lab.control("error", json!({"sessionID":session})).await;
-    let d = lab.until("the session error", |d| d.agent.error.is_some()).await;
-    assert_eq!(turn(&d, &third)["status"], "inProgress");
     lab.control("reply", json!({"sessionID":session,"error":{"name":"APIError","data":{"message":"overloaded"}}})).await;
     let d = lab.until("the failure", |d| turn(d, &third)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &third)["status"], "failed");
@@ -461,26 +460,19 @@ async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     let session = lab.session();
     let aborted_answer = |d: &AgentDetail, id: &str| turn(d, id)["_opencodeAnswers"].as_object()
         .is_some_and(|a| a.values().any(|x| x["error"]["name"] == "MessageAbortedError"));
-    // OpenCode 1.19.3: the session's abort and idle come before the aborted answer.
-    lab.control("mode", json!({"abortOrder":"native"})).await;
-    let first = lab.send("c1", "long").await.unwrap().turn_id.unwrap();
-    lab.ws.interrupt(ID).await.unwrap();
-    let d = lab.until("the reported abort", |d| turn(d, &first)["status"] != "inProgress").await;
-    assert_eq!(turn(&d, &first)["status"], "interrupted");
-    assert_eq!(turn(&d, &first)["error"]["native"]["name"], "MessageAbortedError");
-    assert_eq!(d.agent.error, None, "an interrupt is not an error of the Agent");
-    // The aborted answer arrives after; it changes nothing.
-    let d = lab.until("the late answer", |d| aborted_answer(d, &first)).await;
-    assert_eq!(turn(&d, &first)["status"], "interrupted");
-
-    // Idle with no reported abort, the aborted answer only after: still unknown.
-    lab.control("mode", json!({"abortOrder":"late"})).await;
-    let second = lab.send("c2", "long").await.unwrap().turn_id.unwrap();
-    lab.ws.interrupt(ID).await.unwrap();
-    let d = lab.until("the bare idle", |d| turn(d, &second)["status"] != "inProgress").await;
-    assert_eq!(turn(&d, &second)["status"], "outcomeUnknown");
-    let d = lab.until("the late answer", |d| aborted_answer(d, &second)).await;
-    assert_eq!(turn(&d, &second)["status"], "outcomeUnknown", "not decided again after the Turn ended");
+    // 2.x reports an abort with the execution's end, `session.execution.interrupted`
+    // (T-32 slice 3b); 1.19.3's orders of the aborted answer and the idle have
+    // no 2.x counterpart. Its aborted answer comes first, then that end.
+    let _ = aborted_answer;
+    for order in ["answer-first", "native"] {
+        lab.control("mode", json!({"abortOrder":order})).await;
+        let first = lab.send(&format!("c1-{order}"), "long").await.unwrap().turn_id.unwrap();
+        lab.ws.interrupt(ID).await.unwrap();
+        let d = lab.until("the reported abort", |d| turn(d, &first)["status"] != "inProgress").await;
+        assert_eq!(turn(&d, &first)["status"], "interrupted", "{order}");
+        assert_eq!(turn(&d, &first)["error"]["native"]["name"], "MessageAbortedError", "{order}");
+        assert_eq!(d.agent.error, None, "an interrupt is not an error of the Agent");
+    }
 
     // A run that completed before the interrupt reached it: completed, and nothing to abort.
     lab.control("mode", json!({"abortOrder":"native"})).await;
@@ -490,13 +482,13 @@ async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     assert_eq!(turn(&d, &third)["status"], "completed");
     assert!(lab.ws.interrupt(ID).await.is_err(), "nothing runs");
 
-    // A session error that is not an abort, then idle without an answer: unknown, not interrupted.
+    // An execution that failed, with no answer: failed, with its error, not interrupted.
     let fourth = lab.send("c4", "fail").await.unwrap().turn_id.unwrap();
     lab.control("error", json!({"sessionID":session})).await;
-    lab.until("the session error", |d| d.agent.error.is_some()).await;
     lab.control("idle", json!({"sessionID":session})).await;
-    let d = lab.until("the bare idle", |d| turn(d, &fourth)["status"] != "inProgress").await;
-    assert_eq!(turn(&d, &fourth)["status"], "outcomeUnknown");
+    let d = lab.until("the failed end", |d| turn(d, &fourth)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &fourth)["status"], "failed");
+    assert!(d.agent.error.is_some(), "a failed execution is an error of the Agent");
     assert_eq!(lab.posts(&format!("/session/{session}/abort")).len(), 2);
     lab.ws.close_agent(ID).await.unwrap();
 }
@@ -507,27 +499,19 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     let session = lab.session();
     let answered = |d: &AgentDetail, id: &str| turn(d, id)["_opencodeAnswers"].as_object()
         .is_some_and(|a| a.values().any(|x| x["error"].is_object()));
-    // OpenCode 1.19.3 halts a run with these only when it ends: the session's
-    // error and idle first, the answer carrying it after.
-    for (n, name) in ["APIError", "ProviderAuthError", "MessageOutputLengthError"].into_iter().enumerate() {
+    // 2.x ends a run that failed with `session.execution.failed`, carrying
+    // its error: the Turn fails with it, whatever its type (T-32 slice 3b).
+    // 1.19.3's errors that decided nothing while a run went on have no 2.x
+    // counterpart, nor has an answer after the run's end.
+    let _ = answered;
+    for (n, name) in ["APIError", "ProviderAuthError", "ContextOverflowError", "UnknownError"].into_iter().enumerate() {
         let id = lab.send(&format!("f{n}"), "work").await.unwrap().turn_id.unwrap();
         lab.control("halt", json!({"sessionID":session,"name":name,"message":"provider said no"})).await;
         let d = lab.until("the halted end", |d| turn(d, &id)["status"] != "inProgress").await;
         assert_eq!(turn(&d, &id)["status"], "failed", "{name}");
         assert_eq!(turn(&d, &id)["error"]["message"], "provider said no", "{name}");
-        assert_eq!(turn(&d, &id)["error"]["native"]["name"], name);
-        let d = lab.until("the late answer", |d| answered(d, &id)).await;
-        assert_eq!(turn(&d, &id)["status"], "failed", "{name}: the answer after changes nothing");
-    }
-    // These are also reported while a run goes on (auto-compaction, a file
-    // that could not be read): they decide nothing.
-    for (n, name) in ["ContextOverflowError", "UnknownError"].into_iter().enumerate() {
-        let id = lab.send(&format!("u{n}"), "work").await.unwrap().turn_id.unwrap();
-        lab.control("halt", json!({"sessionID":session,"name":name})).await;
-        let d = lab.until("the bare end", |d| turn(d, &id)["status"] != "inProgress").await;
-        assert_eq!(turn(&d, &id)["status"], "outcomeUnknown", "{name}");
-        let d = lab.until("the late answer", |d| answered(d, &id)).await;
-        assert_eq!(turn(&d, &id)["status"], "outcomeUnknown", "{name}: not decided again after the Turn ended");
+        assert_eq!(turn(&d, &id)["error"]["native"]["name"], "ExecutionFailed", "{name}");
+        assert_eq!(turn(&d, &id)["error"]["native"]["data"]["type"], name, "2.x's own type, kept");
     }
     // A completed Turn: an error OpenCode reports afterwards belongs to no Turn.
     let done = lab.send("c1", "quick").await.unwrap().turn_id.unwrap();
@@ -1056,10 +1040,11 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     // bytes are anywhere in Core's database.
     let journaled = || {
         let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
-        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/message.part.updated'").unwrap();
+        // 2.x sends the stored message's files back in its inbox event, as base64 `data` (T-32 slice 3b).
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/session.inbox.enqueued'").unwrap();
         query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap)
-            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["data"]["part"].clone())
-            .filter(|part| part["type"] == "file").collect::<Vec<_>>()
+            .flat_map(|data| serde_json::from_str::<Value>(&data).unwrap()["data"]["item"]["payload"]["files"].as_array().cloned().unwrap_or_default())
+            .collect::<Vec<_>>()
     };
     for _ in 0..400 {
         if journaled().len() == 2 { break; }
@@ -1069,8 +1054,8 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     assert_eq!(kept.len(), 2, "both file parts came back and were journaled");
     for (kept, sent) in kept.iter().zip(&parts[1..]) {
         let url = sent["url"].as_str().unwrap();
-        assert_eq!((&kept["filename"], &kept["url"]), (&sent["filename"], &json!(format!("data:image/png;base64,… ({} characters not kept)", url.len()))));
         let data = url.split_once(',').unwrap().1.as_bytes();
+        assert_eq!((&kept["name"], &kept["data"]), (&sent["filename"], &json!(format!("image/png,… ({} characters not kept)", data.len()))));
         for entry in std::fs::read_dir(lab.dir.path().join("data")).unwrap().map(Result::unwrap) {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with("workspace.sqlite") {

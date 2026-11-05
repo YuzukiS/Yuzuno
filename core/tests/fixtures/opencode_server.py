@@ -238,7 +238,13 @@ def v2_events(kind, p):
             state['delivered'].add(mid)
             stored = messages.get(session, {}).get(mid) or {}
             text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
-            return [('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': {'text': text},
+            payload = {'text': text}
+            # A file as 2.x sends one (schema/src/prompt.ts): its bytes as base64 `data`, not a `data:` URL.
+            files = [{'data': (q.get('url') or '').split(',', 1)[-1], 'mime': q.get('mime'), 'name': q.get('filename'),
+                      'source': {'type': 'inline'}} for q in stored.get('parts', []) if q.get('type') == 'file']
+            if files:
+                payload['files'] = files
+            return [('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': payload,
                                                                                               'delivery': 'queue'}}),
                     ('session.inbox.delivered', {'sessionID': session, 'inboxID': mid})]
         if info.get('summary'):
@@ -260,6 +266,9 @@ def v2_events(kind, p):
         done = (info.get('time') or {}).get('completed') is not None or info.get('error')
         if done and mid not in state['ended']:
             state['ended'].add(mid)
+            if (info.get('error') or {}).get('name') == 'MessageAbortedError':
+                # An aborted answer: 2.x ends that execution as interrupted.
+                state['error'] = info['error']
             if info.get('error'):
                 out.append(('session.step.failed', {'sessionID': session, 'assistantMessageID': mid, 'error': v2_error(info['error'])}))
             else:
@@ -318,7 +327,9 @@ def v2_events(kind, p):
             return [('session.execution.succeeded', {'sessionID': session})]
         return []
     if kind == 'session.error':
-        # 2.x reports it with the execution's end (session-event.ts Execution).
+        # 2.x reports it with the execution's end (session-event.ts Execution); with none running, at once.
+        if session not in statuses:
+            return [('session.execution.failed', {'sessionID': session, 'error': v2_error(p.get('error'))})]
         v2_of(session)['error'] = p.get('error')
         return []
     if kind == 'session.created':
@@ -1135,10 +1146,11 @@ class Handler(BaseHTTPRequestHandler):
             publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
             return None
         if mode == 'unstored':
-            # Answered, then storing failed; OpenCode's session.error names no message.
+            # Answered, then storing failed; OpenCode's session.error names no message. 2.x says nothing of it.
             self.reply(204)
-            publish('session.error', {'sessionID': session,
-                                      'error': {'name': 'UnknownError', 'data': {'message': 'fixture: not stored'}}})
+            if v1():
+                publish('session.error', {'sessionID': session,
+                                          'error': {'name': 'UnknownError', 'data': {'message': 'fixture: not stored'}}})
             return None
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})

@@ -274,15 +274,11 @@ async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
     assert_eq!(sent[0]["body"], json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": "hello"}]}),
         "no model, agent, tools or permission rule is sent");
 
-    // Answered 204 and then not stored: still only accepted. OpenCode's
-    // session.error names no message, so it is not that message's failure.
-    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    // Answered 204 and then not stored: still only accepted, and found by
+    // its ID as not there.
     lab.control("mode", json!({"prompt": "unstored"})).await;
     let lost = MessageId::new();
     assert_eq!(server.submit(&session, &lost, "hello").await.unwrap(), Submission::Accepted);
-    let error = next_of(&mut events, "session.error").await;
-    assert_eq!(session_of(&error), Some(session.as_str()));
-    assert!(error["data"].get("messageID").is_none());
     assert_eq!(server.message(&session, &lost).await.unwrap(), None);
 
     // A 5xx is unknown and a 4xx refused, each with OpenCode's status.
@@ -342,12 +338,12 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     // Heartbeats (every 0.2 s here) come between the events and are left out.
     tokio::time::sleep(Duration::from_millis(500)).await;
     lab.control("busy", json!({"sessionID": session})).await;
-    lab.control("event", json!({"type": "message.part.delta", "properties": {"sessionID": session,
-        "messageID": "msg_a", "partID": "prt_a", "field": "text", "delta": "Hel"}})).await;
+    lab.control("event", json!({"type": "session.text.delta", "properties": {"sessionID": session,
+        "assistantMessageID": "msg_a", "ordinal": 0, "delta": "Hel"}})).await;
     let status = events.next().await.unwrap().unwrap();
-    assert_eq!((status["type"].as_str(), status["data"]["status"]["type"].as_str()), (Some("session.status"), Some("busy")));
+    assert_eq!(status["type"].as_str(), Some("session.execution.started"), "2.x's busy");
     let delta = events.next().await.unwrap().unwrap();
-    assert_eq!((delta["type"].as_str(), delta["data"]["delta"].as_str()), (Some("message.part.delta"), Some("Hel")));
+    assert_eq!((delta["type"].as_str(), delta["data"]["delta"].as_str()), (Some("session.text.delta"), Some("Hel")));
     assert_eq!(session_of(&delta), Some(session.as_str()));
 
     // The stream breaks. A request asked meanwhile is not an event here...
@@ -418,7 +414,14 @@ async fn answers_and_abort_stay_within_their_session() {
     // Abort ends a's run and a's requests only.
     let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
     server.abort(&a).await.unwrap();
-    let idle = next_of(&mut events, "session.status").await;
+    let idle = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = events.next().await.unwrap().expect("the stream ended");
+            if event["type"].as_str().is_some_and(|kind| kind.starts_with("session.execution.")) {
+                return event;
+            }
+        }
+    }).await.expect("the execution's end");
     assert_eq!(session_of(&idle), Some(a.as_str()));
     assert!(server.snapshot(&a, &[]).await.unwrap().permissions.is_empty());
     let now_b = server.snapshot(&b, &[]).await.unwrap();
@@ -455,7 +458,7 @@ async fn a_long_session_is_read_whole_oldest_first_page_by_page() {
     let session = session(&server).await;
     let seeded: Vec<String> = serde_json::from_value(lab.control("seed", json!({"sessionID": session, "count": 450})).await).unwrap();
     let read = server.messages(&session).await.unwrap();
-    let ids: Vec<&str> = read.as_array().unwrap().iter().map(|m| m["info"]["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = read.as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert_eq!(ids, seeded, "every message, oldest first");
     let pages: Vec<Value> = lab.calls().into_iter()
         .filter(|c| c["path"] == format!("/api/session/{session}/message")).map(|c| c["query"].clone()).collect();

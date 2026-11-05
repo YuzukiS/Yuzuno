@@ -1922,9 +1922,15 @@ fn type_of(event: &Value) -> &str {
 /// only (T-10). Image bytes stay in Core's managed files, never in its
 /// database.
 fn journaled(event: &Value) -> Cow<'_, Value> {
+    // 2.x sends a file's bytes as its own base64 `data` beside its `mime`
+    // (schema/src/prompt.ts), not as a `data:` URL (T-32 slice 3b).
+    fn bytes(map: &serde_json::Map<String, Value>, key: &str) -> bool {
+        key == "data" && map.get("mime").is_some_and(Value::is_string) && map[key].is_string()
+    }
     fn inline(value: &Value) -> bool {
         match value {
-            Value::Object(map) => map.iter().any(|(key, v)| (key == "url" && v.as_str().is_some_and(|u| u.starts_with("data:"))) || inline(v)),
+            Value::Object(map) => map.iter().any(|(key, v)| (key == "url" && v.as_str().is_some_and(|u| u.starts_with("data:")))
+                || bytes(map, key) || inline(v)),
             Value::Array(items) => items.iter().any(inline),
             _ => false,
         }
@@ -1932,11 +1938,15 @@ fn journaled(event: &Value) -> Cow<'_, Value> {
     fn strip(value: &mut Value) {
         match value {
             Value::Object(map) => {
+                let mime = map.get("mime").and_then(Value::as_str).map(str::to_owned);
                 for (key, v) in map.iter_mut() {
                     match v.as_str() {
                         Some(url) if key == "url" && url.starts_with("data:") => {
                             let kind = url.split_once(',').map_or("data:", |(kind, _)| kind);
                             *v = format!("{kind},… ({} characters not kept)", url.len()).into();
+                        }
+                        Some(data) if key == "data" && mime.is_some() => {
+                            *v = format!("{},… ({} characters not kept)", mime.as_deref().unwrap_or_default(), data.len()).into();
                         }
                         _ => strip(v),
                     }

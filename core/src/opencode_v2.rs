@@ -110,6 +110,12 @@ fn answer(id: &str, parent: Option<&str>, created: &Value, completed: &Value, fi
         "finish": finish, "error": error, "tokens": tokens, "providerID": model["providerID"], "modelID": model["id"]})
 }
 
+/// A compaction, as Core's record took one from 1.19.3: an answer marked as
+/// the summary, answering nothing of a turn.
+fn compacted(id: &str, at: &Value) -> Value {
+    json!({"id": id, "role": "assistant", "summary": true, "parentID": null, "time": {"created": at, "completed": at}})
+}
+
 /// A turn's end, read from its `idle` message: the user message it was the
 /// turn of, and the error it ended with, if it did not succeed.
 #[derive(Debug, PartialEq)]
@@ -147,6 +153,9 @@ pub(crate) fn read_messages(messages: &Value) -> Read {
                     .filter_map(|(ordinal, entry)| content_part(id, ordinal, entry)).collect();
                 read.push(json!({"info": info, "parts": parts}));
             }
+            // A compaction that completed: what was measured before it no longer holds (`measure`).
+            Some("compaction") if message["status"] == "completed" => read.push(json!({"info": compacted(id, &message["time"]["created"]),
+                "parts": []})),
             Some("idle") => {
                 if let Some(user) = user.take() {
                     let error = match message["outcome"].as_str() {
@@ -296,6 +305,8 @@ impl Cursor {
                 }
                 read
             }
+            // Its event names no message; the event's own ID names it here, once.
+            "session.compaction.ended" => vec![message(compacted(event["id"].as_str().unwrap_or("compaction"), at))],
             "session.execution.started" => vec![status("busy")],
             "session.retry.scheduled" => vec![status("retry")],
             "session.execution.succeeded" => self.ended(vec![status("idle")]),
