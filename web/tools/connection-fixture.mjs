@@ -100,6 +100,8 @@ export function installConnectionFixture(options = {}) {
       }] };
     } else if (path === "/api/machines") body = { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] };
     else if (path === "/api/catchup") body = { items: [], generatedAt: "2026-10-13", source: "records" };
+    // The Workspace's shared Appearance preset, when a test sets one (T-194).
+    else if (path === "/api/appearance-preset" && state.preset) body = { workspaceId: "ws-connection", preset: state.preset };
     const frozen = JSON.parse(JSON.stringify(body));
     // Deliberately ignore AbortSignal: tests can release this old body later and
     // prove a timed-out/abandoned request cannot overwrite newer state.
