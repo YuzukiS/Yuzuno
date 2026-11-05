@@ -477,6 +477,8 @@ for (const run of runs) {
       dialog = await page.getByRole("dialog", { name: "A result you can explore" }).waitFor({ state: "visible", timeout: 2000 }).then(() => true, () => false);
       await page.keyboard.press("Escape");
       await page.getByRole("dialog").waitFor({ state: "detached", timeout: 3000 }).catch(() => {});
+      // Radix gives focus back in a timer after the dialog has gone.
+      await page.waitForFunction(() => document.activeElement?.getAttribute?.("aria-label") === "Add", null, { timeout: 1500 }).catch(() => {});
     }
     ok(`${tag}: Ask for an interactive result opens its dialog, and focus is back on "+" when it closes`,
       dialog === true && (await focused()) === "Add", { dialog, focus: await focused(), log: await page.evaluate(() => window.__focusLog.slice(-16)) });
