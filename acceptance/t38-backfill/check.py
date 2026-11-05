@@ -125,8 +125,11 @@ def main():
         assert passed['room']['memoryMiB'] == 1472, passed
         held = read(head)
         assert held['status'] == 'queued', held
+        # Read after the pass that started it, or the next one: either names
+        # the head's need and what may still start ahead of it.
         REPORT['reasons']['head (small started)'] = held['reason']
-        assert held['reason'].startswith('Waiting for shared RAM reservation: needs 2624 MiB including collector, 2496 MiB available; short 128 MiB.'), held['reason']
+        assert held['reason'].startswith('Waiting for shared RAM reservation: needs 2624 MiB including collector, '), held['reason']
+        assert held['reason'].endswith('may start ahead of it meanwhile'), held['reason']
         check('outcome 1: a 1,088 MiB Job starts ahead of the 2,624 MiB head, marked with it, within the 1,472 MiB its need leaves')
         waiting = wait_for(lambda: read(second), lambda j: j['status'] == 'queued' and (j['reason'] or '').startswith('Waiting behind head'),
                            'the 448 MiB Job waits behind the head')
