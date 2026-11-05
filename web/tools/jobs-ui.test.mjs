@@ -237,6 +237,54 @@ test('legacy unconfirmed ordinary submission retries with the same payload and r
   } finally {p.close();}
 });
 
+test('the submit form shows what earlier runs of the same name or command suggest, and sends the limits as set unless asked to use it (T-38 C)', async () => {
+  // The K4 calibration of 2026-11-04: 20 GiB asked, 2.6 GiB at its peak on 1.2 cores.
+  const suggestion = { memoryMiB: 4096, cpuMillis: 1800, memoryPeakMiB: 2662, averageCpuCores: 1.2, basedOn: [{ jobId: 'k4' }] };
+  const asked = [];
+  const handler = (url, body) => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      const q = Object.fromEntries(new URL(url, 'http://isolated.test').searchParams);
+      asked.push(q);
+      return { suggestion: q.name === 'K4 calibration' ? suggestion : null };
+    }
+    if (url === '/api/jobs' && body) return { ...job, ...body, id: 'job-one', status: 'queued' };
+    return page([]);
+  };
+  const posted = p => p.calls.filter(c => c.url === '/api/jobs' && c.body).map(c => c.body.resources);
+  let p = mount(handler);
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'first of its kind'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await until(() => asked.some(q => q.name === 'first of its kind'));
+    await wait();
+    assert.equal(p.doc.querySelector('.job-suggestion'), null, 'no history, no suggestion');
+    await fill(p, 'Name', 'K4 calibration');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.deepEqual(asked.at(-1), { taskId: 'T-38', name: 'K4 calibration', argv: JSON.stringify(['/bin/sh', '-c', 'python3 calib.py']) });
+    assert.equal(p.doc.querySelector('.job-suggestion p').textContent,
+      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (peak × 1.5, rounded up). Your limits stay as you set them.');
+    // Shown, never applied: what is in the fields is sent.
+    await fill(p, 'RAM limit', '20480'); await fill(p, 'CPU quota', '4');
+    assert.ok(p.doc.querySelector('.job-suggestion'), 'still shown');
+    button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
+    assert.deepEqual(posted(p), [{ cpuMillis: 4000, memoryMiB: 20480, swapMiB: 0 }]);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // Asked to use it, the fields take it, and that is sent.
+  p = mount(handler);
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await fill(p, 'RAM limit', '20480'); await fill(p, 'CPU quota', '4');
+    await until(() => button(p, 'Use suggestion'));
+    button(p, 'Use suggestion').click(); await wait();
+    assert.deepEqual([field(p, 'RAM limit').value, field(p, 'CPU quota').value], ['4096', '1.8']);
+    button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
+    assert.deepEqual(posted(p), [{ cpuMillis: 1800, memoryMiB: 4096, swapMiB: 0 }]);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('known rejection permits editing and a completed job only reruns after a new explicit submit', async () => {
   const finished = { ...job, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
   const p = mount((url, body) => body && url === '/api/jobs' ? { httpStatus: 400, error: 'Never fits budget' } : url === '/api/jobs/job-one' ? finished : page([finished]));

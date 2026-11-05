@@ -1702,6 +1702,43 @@ type Draft = {
   gpuCount?: number;
 };
 
+/** What the task's earlier measured runs of the same name or command suggest
+ * requesting (T-38 C). */
+type Suggestion = {
+  memoryMiB: number;
+  cpuMillis: number | null;
+  memoryPeakMiB: number;
+  averageCpuCores: number | null;
+  basedOn: { jobId: string }[];
+};
+/** The suggestion for the draft, asked again a moment after it changes; null
+ * without one. It is only shown: the limits change only if the user says so. */
+function useSuggestion(taskId: string, name: string, command: string) {
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  useEffect(() => {
+    const task = taskId.trim();
+    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) {
+      setSuggestion(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const query = new URLSearchParams({ taskId: task, name: name.trim() });
+      if (command.trim()) query.set("argv", JSON.stringify(["/bin/sh", "-c", command]));
+      api<{ suggestion?: Suggestion | null }>(`/jobs/suggestion?${query}`, { signal: controller.signal })
+        .then((value) => setSuggestion(typeof value?.suggestion?.memoryMiB === "number" ? value.suggestion : null))
+        .catch(() => {
+          if (!controller.signal.aborted) setSuggestion(null);
+        });
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [taskId, name, command]);
+  return suggestion;
+}
+
 /** A new job: what runs, its limits, then its checks and files. */
 function JobForm({
   draft,
@@ -1720,6 +1757,7 @@ function JobForm({
   onSubmit: (event: React.FormEvent) => void;
 }) {
   const t = useStrings(jobsText);
+  const suggestion = useSuggestion(draft.taskId, draft.name, draft.command);
   return (
     <form className="job-form" onSubmit={onSubmit}>
       <fieldset className="job-form-group">
@@ -1822,6 +1860,32 @@ function JobForm({
             onChange={(e) => setDraft({ ...draft, timeout: e.target.value })}
           />
         </label>
+        {suggestion && (
+          <div className="job-wide job-suggestion" role="note">
+            <p>
+              {t.suggestion(
+                suggestion.basedOn.length,
+                memory(suggestion.memoryPeakMiB),
+                suggestion.averageCpuCores === null ? null : suggestion.averageCpuCores.toFixed(2),
+                memory(suggestion.memoryMiB),
+                suggestion.cpuMillis === null ? null : (suggestion.cpuMillis / 1000).toFixed(1),
+              )}
+            </p>
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  memory: String(suggestion.memoryMiB),
+                  ...(suggestion.cpuMillis === null ? {} : { cpu: String(suggestion.cpuMillis / 1000) }),
+                })
+              }
+            >
+              {t.useSuggestion}
+            </button>
+          </div>
+        )}
         <div className="job-wide">
           <label className="job-checkbox">
             <input
