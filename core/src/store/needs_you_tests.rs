@@ -69,6 +69,44 @@ fn an_imported_question_with_no_answer_sent_here_is_not_open() {
     assert_eq!(counts(&store, "a"), (1, 1, 0));
 }
 
+/// How many times this thread has read the open questions.
+fn reads() -> usize {
+    record_rows::OPEN_QUESTION_READS.with(std::cell::Cell::get)
+}
+
+#[test]
+fn only_a_question_an_answer_or_a_deletion_reads_the_open_questions_again() {
+    // Review 7727a352: the read is two correlated subqueries over the
+    // receipts, in the write transaction of every event that ran it.
+    let (_dir, store) = lab();
+    store.insert(&detail("a")).unwrap();
+    let message = |id: &str, text: &str| json!({"id":id,"type":"agentMessage","text":text});
+    let from = reads();
+    stream(&store, "a", "item/started", &json!({"threadId":"thread","turnId":"t","item":message("m1", "")}));
+    stream(&store, "a", "item/agentMessage/delta", &json!({"threadId":"thread","turnId":"t","itemId":"m1","delta":"Hello"}));
+    stream(&store, "a", "item/completed", &json!({"threadId":"thread","turnId":"t","item":message("m1", "Hello")}));
+    store.update("a", "test/pending", &json!({}), |d| d.pending.push(PendingRequest { id: "r1".into(), agent_id: "a".into(),
+        method: "item/commandExecution/requestApproval".into(), params: json!({}), created_at: now(), stale: false })).unwrap();
+    let plain: MessageReceipt = serde_json::from_value(json!({"input":{"clientMessageId":"send-0","text":"go on"},
+        "status":"accepted","turnId":"t"})).unwrap();
+    store.update("a", "message/receipt", &json!({}), |d| d.message_receipts.push(plain)).unwrap();
+    assert_eq!(reads(), from, "no question, answer or deletion: not read");
+    assert_eq!(counts(&store, "a"), (1, 0, 1));
+    // A question is read; a message beside it is not.
+    stream(&store, "a", "item/completed", &json!({"threadId":"thread","turnId":"t","item":question("q1", "completed")}));
+    assert_eq!(reads(), from + 1);
+    assert_eq!(counts(&store, "a"), (2, 1, 1));
+    stream(&store, "a", "item/completed", &json!({"threadId":"thread","turnId":"t","item":message("m2", "More")}));
+    assert_eq!(reads(), from + 1);
+    // So is the answer to it.
+    answer(&store, "a", "send-1", "q1", "accepted");
+    assert_eq!(reads(), from + 2);
+    assert_eq!(counts(&store, "a"), (1, 0, 1));
+    // And a Turn removed, which may have held one.
+    store.update("a", "test/remove", &json!({}), |d| d.turns.retain(|t| t["id"] != "t")).unwrap();
+    assert_eq!(reads(), from + 3);
+}
+
 fn end(store: &Store, id: &str, turn: &str, status: &str) {
     let data = json!({"threadId":"thread","turn":{"id":turn,"status":status}});
     store.record_event_turns(id, "turn/completed", &data, |d| {

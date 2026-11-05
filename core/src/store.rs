@@ -2450,8 +2450,8 @@ impl Store {
                 params![id, kind, data.to_string(), at.to_rfc3339()])?;
             agent.last_seq = tx.last_insert_rowid();
             agent.unread_count = unread(&tx, id, agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, agent)?;
-            settle_open_questions(&tx, id, plan.body(), agent, native)?;
+            let written = record_rows::apply(&tx, id, &plan, agent)?;
+            settle_open_questions(&tx, id, plan.body(), agent, native, &written)?;
             for (turn, item, field) in &replaced {
                 record_rows::drop_chunks(&tx, id, turn, item, field)?;
             }
@@ -2832,8 +2832,8 @@ impl Store {
             if let Some(outcome) = ended {
                 d.agent.last_turn_end = Some(crate::model::TurnEnd { seq: d.agent.last_seq, outcome: outcome.into(), at });
             }
-            record_rows::apply(&tx, id, &plan, &d.agent)?;
-            settle_open_questions(&tx, id, plan.body(), &mut d.agent, d.pending.len() as u64)?;
+            let written = record_rows::apply(&tx, id, &plan, &d.agent)?;
+            settle_open_questions(&tx, id, plan.body(), &mut d.agent, d.pending.len() as u64, &written)?;
             let project_id = crate::projects::agent_project(&tx, id)?;
             tx.commit()?;
             #[cfg(test)]
@@ -3392,10 +3392,18 @@ impl Store {
 }
 
 /// What the rows now say of the Agent's open asynchronous questions (T-42),
-/// read once the change's items and receipts are written: when the count
-/// changed, `pending_count` follows (`native` requests and the questions)
-/// and the metadata is written again in the same transaction.
-fn settle_open_questions(tx: &Connection, id: &str, body: &record_rows::MetaBody, agent: &mut Agent, native: u64) -> Result<()> {
+/// read once the change's items and receipts are written, and only when
+/// the write may have changed them (`Written::questions`: a question Item,
+/// a deletion, an answer's receipt). Others, a plain stream event among
+/// them, keep the count, and the read is not run in their transaction
+/// (review 7727a352). When the count changed, `pending_count` follows
+/// (`native` requests and the questions) and the metadata is written again
+/// in the same transaction.
+fn settle_open_questions(tx: &Connection, id: &str, body: &record_rows::MetaBody, agent: &mut Agent, native: u64,
+    written: &record_rows::Written) -> Result<()> {
+    if !written.questions {
+        return Ok(());
+    }
     let open = record_rows::open_questions(tx, id)?.len() as u64;
     if open != agent.open_questions {
         agent.open_questions = open;
