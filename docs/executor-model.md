@@ -100,7 +100,10 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    must be the worktree you registered on the task or lie inside the
    Project's folder; any other is refused, since a path an Agent gives, in a
    dispatch's or a task's materials, is information, not permission. Your own
-   dispatch may name any folder.
+   dispatch may name any folder. An Agent's task_update that re-sends
+   materials becomes the latest registrant, so a worktree you registered
+   outside the Project's folder is refused for that Agent's template dispatch
+   until you register it again or dispatch it yourself.
 3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
    result goes back to whoever dispatched.
 4. **Starts it.** The dispatch's mail is delivered once it is connected.
