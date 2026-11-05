@@ -10,6 +10,12 @@ far below the host's free memory:
 - a 1,088 MiB Job passes it; a 448 MiB Job then does not (1,088 + 448 > 1,472)
   although 1,408 MiB are free;
 - the earlier Job ends: the head starts, before the 448 MiB Job.
+Then three Projects take turns (review e06d83e8), their keys sorted P < Q < R:
+- an earlier Job of P holds 1,600 MiB; P's head needs 2,624, short 128;
+- 1,088 MiB Jobs of Q and of R come before the head in the turns: one passes
+  it, marked, and the other waits behind it (1,088 + 1,088 > 1,472);
+- the earlier Job ends: the head starts before the waiting Job, which starts
+  once the passer ends.
 Needs XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS (the user's systemd).
 """
 import json
@@ -78,12 +84,12 @@ def check(name):
     print('PASS ' + name, flush=True)
 
 
-def job(name, memory):
+def job(name, memory, task='T-1'):
     """A Job that holds `memory` MiB declared and waits for its release file."""
     code = ('import pathlib,time\n'
             f'pathlib.Path("started-{name}").write_text(str(time.time()))\n'
             f'while not pathlib.Path("release-{name}").exists(): time.sleep(0.2)\n')
-    body = {'requestId': str(uuid.uuid4()), 'taskId': 'T-1', 'agentId': 'lab-a', 'name': name,
+    body = {'requestId': str(uuid.uuid4()), 'taskId': task, 'agentId': 'lab-a', 'name': name,
             'cwd': str(LAB / 'work'), 'argv': ['/usr/bin/python3', '-u', '-c', code], 'env': {}, 'guardGit': False,
             'resources': {'cpuMillis': 500, 'memoryMiB': memory, 'swapMiB': 0}, 'timeoutSeconds': 300}
     value = request('/jobs', body)
@@ -101,6 +107,50 @@ def release(name):
 
 def note(event):
     REPORT['events'].append({'at': time.time(), 'event': event})
+
+
+def three_projects():
+    """Review e06d83e8: the head is decided before the scan and keeps its place."""
+    ids = sorted(request('/projects', {'name': 'Lab project ' + n})['id'] for n in ('one', 'two', 'three'))
+    tasks = [request('/collaboration/task_create', {'requestId': str(uuid.uuid4()), 'title': 'Lab task ' + str(i),
+                                                     'status': 'doing', 'projectId': pid})['task']['id']
+             for i, pid in enumerate(ids)]
+    p, q, r = tasks
+    REPORT['threeProjects'] = {'projects': ids, 'tasks': tasks}
+    earlier = job('earlier3', 1536, p)
+    wait_for(lambda: read(earlier), lambda j: j['status'] == 'running', 'the earlier Job of P runs')
+    note('earlier3 running')
+    head = job('head3', 2560, p)
+    wait_for(lambda: read(head), lambda j: (j['reason'] or '').endswith('may start ahead of it meanwhile'), "P's head waits")
+    # After P the turns go Q, R: both small Jobs come before P's head.
+    qa, ra = job('q3', 1024, q), job('r3', 1024, r)
+    ran = wait_for(lambda: [read(qa), read(ra)], lambda pair: any(j['status'] == 'running' for j in pair), 'one small Job starts')
+    passer, other = (ran[0], ra) if ran[0]['status'] == 'running' else (ran[1], qa)
+    REPORT['admission']['three projects passer'] = passer.get('admission')
+    assert (passer.get('admission') or {}).get('passed', {}).get('jobId') == head['id'], passer.get('admission')
+    waiting = wait_for(lambda: read(other), lambda j: (j['reason'] or '').startswith('Waiting behind head3'), 'the other waits behind the head')
+    REPORT['reasons']['three projects other'] = waiting['reason']
+    time.sleep(3)
+    assert read(other)['status'] == 'queued' and read(head)['status'] == 'queued'
+    check('three Projects: the head is found before the turns; one 1,088 MiB Job passes it, marked, the other waits behind it')
+    release('earlier3')
+    note('earlier3 released')
+    wait_for(lambda: read(head), lambda j: j['status'] == 'running', "P's head starts once the earlier Job ends")
+    note('head3 running')
+    assert read(other)['status'] == 'queued', 'the head started first'
+    assert read(head).get('admission') is None
+    check('three Projects: the earlier Job ends and the head keeps its place: it starts before the waiting Job')
+    release(passer['name'])
+    wait_for(lambda: read(other), lambda j: j['status'] == 'running', 'the waiting Job starts once the passer ends')
+    for name in ('head3', other['name']):
+        release(name)
+    for value in (earlier, head, qa, ra):
+        ended = wait_for(lambda: read(value), lambda j: j['status'] in ('succeeded', 'failed', 'cancelled', 'rejected'), 'each Job ends')
+        assert ended['status'] == 'succeeded', ended
+    starts = {name: float((LAB / 'work' / ('started-' + name)).read_text()) for name in ('earlier3', 'head3', 'q3', 'r3')}
+    REPORT['threeProjects']['commandStarts'] = starts
+    assert starts[passer['name']] < starts['head3'] < starts[other['name']], starts
+    check('three Projects: the commands started passer, head, other; all four succeeded')
 
 
 def main():
@@ -162,6 +212,7 @@ def main():
         REPORT['commandStarts'] = starts
         assert starts['small'] < starts['head'] < starts['second'], starts
         check('the commands started in that order: small, head, second; all four succeeded')
+        three_projects()
         REPORT['passed'] = True
     finally:
         stop_core()
