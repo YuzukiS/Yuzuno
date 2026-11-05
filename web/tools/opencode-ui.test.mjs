@@ -81,7 +81,9 @@ function mount(handler) {
     const body = (await handler?.(url, init)) ?? (url.endsWith("/machines")
       ? { machines: [local, remote] }
       : /\/models(\?|$)/.test(url) ? { models: [{ id: "m", model: "m", displayName: "Codex model" }] } : {});
-    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    // A handler's `__status` answers as that HTTP status.
+    const status = body?.__status ?? 200;
+    return { ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) };
   };
   window.eval(bundle);
   return { window, document: window.document, calls, errors, close: () => window.close() };
@@ -631,10 +633,12 @@ test("an OpenCode Agent is logged in to a provider from its settings, and the pa
   ] });
   const work = { kind: "credential", id: "crd_1", label: "work", method: "key", needsAuth: null };
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  let refuse = true;
   const page = mount((url, init) => {
     if (url.endsWith("/agents/oc/models")) return { models: [], opencode: { version: "2.2.5", verified: "2.2.5" } };
     if (url.endsWith("/agents/oc/opencode/login")) return view([work]);
-    if (url.endsWith("/opencode/login/key")) return view([work, { ...work, id: "crd_2", label: "home" }]);
+    if (url.endsWith("/opencode/login/key")) return refuse ? { __status: 400, error: "OpenCode 拒绝了登录（HTTP 400，integration_authorization）" }
+      : view([work, { ...work, id: "crd_2", label: "home" }]);
     if (url.endsWith("/opencode/login/oauth")) return { attemptId: "con_1", url: "https://github.com/login/device", instructions: "Enter code WXYZ-0001", mode: "auto", time: {} };
     if (url.endsWith("/opencode/login/credential/crd_1") && init.method === "DELETE") return view([]);
     return undefined;
@@ -665,9 +669,15 @@ test("an OpenCode Agent is logged in to a provider from its settings, and the pa
     assert.ok(keyField !== null, "a password field for the key");
     await value(page, keyField, KEY);
     await press("Log in");
+    // Refused: the form stays, its key field emptied all the same.
+    assert.match(section().textContent, /OpenCode 拒绝了登录（HTTP 400，integration_authorization）/);
+    assert.ok(section().querySelector('input[type="password"]')?.value === "", "the key field is cleared after a refused login");
+    refuse = false;
+    await value(page, section().querySelector('input[type="password"]'), KEY);
+    await press("Log in");
     const sent = page.calls.filter((call) => call.url.endsWith("/opencode/login/key"));
-    assert.equal(sent.length, 1, "logged in once");
-    assert.deepEqual(sent[0].body, { integration: "openrouter", key: KEY });
+    assert.equal(sent.length, 2, "sent once each time");
+    assert.deepEqual(sent[1].body, { integration: "openrouter", key: KEY });
     assert.ok(page.calls.every((call) => !call.url.includes(KEY)), "the key is in no link");
     assert.ok(!section().querySelector('input[type="password"]') || section().querySelector('input[type="password"]').value === "", "the key field is cleared");
     for (const storage of [page.window.localStorage, page.window.sessionStorage]) {

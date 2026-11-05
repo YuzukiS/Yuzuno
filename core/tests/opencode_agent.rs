@@ -2696,8 +2696,9 @@ async fn a_device_sign_in_is_shown_and_one_that_sends_the_browser_back_here_is_c
     assert_eq!(lab.ws.opencode_login_oauth_status(ID, "example", &attempt).await.unwrap()["status"], "complete");
     assert_eq!(logins().await["credentials"].as_object().unwrap().len(), 1, "logged in by it");
 
-    let refused = start("example/browser").await.unwrap_err().to_string();
-    assert!(refused.contains("请在 OpenCode 里登录") && !refused.contains("auth.example.com"), "cancelled, its link never shown: {refused}");
+    let refused = start("example/browser").await.map(|shown| shown.to_string()).unwrap_or_else(|e| format!("refused: {e}"));
+    assert!(refused.starts_with("refused: ") && refused.contains("请在 OpenCode 里登录") && !refused.contains("auth.example.com"),
+        "cancelled, its link never shown: {refused}");
     assert_eq!(logins().await["cancelled"].as_array().unwrap().len(), 1, "its attempt cancelled at OpenCode");
     assert!(journal(&lab).iter().any(|k| k == "opencode/loginNotOffered"));
 
@@ -2717,8 +2718,9 @@ async fn a_login_needs_the_agent_connected_and_its_opencode_at_2_0_20() {
     let note = "update OpenCode to log in here: this Agent runs 2.0.16; logging in needs 2.0.20 or newer";
     let view = serde_json::to_value(lab.ws.opencode_logins(ID).await.unwrap()).unwrap();
     assert_eq!((&view["state"], &view["reason"]), (&json!("update"), &json!(note)), "told to update, naming both versions");
-    let refused = lab.ws.opencode_login_key(ID, key_login("openrouter", "fixture-floor-key", None)).await.unwrap_err().to_string();
-    assert_eq!(refused, note);
+    let refused = lab.ws.opencode_login_key(ID, key_login("openrouter", "fixture-floor-key", None)).await.map(|_| String::new())
+        .unwrap_or_else(|e| e.to_string());
+    assert_eq!(refused, note, "a login refused, naming both versions");
     assert!(lab.calls().iter().all(|c| !c["path"].as_str().unwrap().starts_with("/api/integration")), "nothing reached it");
     lab.control("die", json!({})).await;
     lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
@@ -2739,7 +2741,7 @@ async fn an_opencode_agent_deleted_keeps_its_database_with_no_login_in_it() {
     let lab = lab(&[], false).await;
     let db = lab.root().join("opencode.db");
     std::fs::write(&db, b"not a database").unwrap();
-    let refused = lab.ws.delete_agent(ID).await.unwrap_err().to_string();
+    let refused = lab.ws.delete_agent(ID).await.map(|_| String::new()).unwrap_or_else(|e| e.to_string());
     assert!(refused.contains("登录凭据没有清除") && refused.contains("Agent 没有删除"), "a failed scrub refuses the delete: {refused}");
     assert!(lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "still there");
 

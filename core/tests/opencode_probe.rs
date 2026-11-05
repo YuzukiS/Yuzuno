@@ -561,7 +561,7 @@ async fn a_real_opencode_2x_is_logged_in_through_core_and_its_database_scrubbed_
     let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
     server.switch_model(&session, &model("stub/fake"), None).await.unwrap();
     let stub_entry = |listed: &[Value]| listed.iter().find(|i| i["id"] == "stub").cloned().expect("the stub's integration");
-    let authorizations = || -> Vec<String> { std::fs::read_to_string(&log).unwrap().lines()
+    let authorizations = || -> Vec<String> { std::fs::read_to_string(&log).unwrap_or_default().lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap()["authorization"].as_str().unwrap_or_default().to_owned()).collect() };
 
     // 1. Listed with a key method, nothing secret in the answer.
