@@ -434,3 +434,46 @@ fn a_long_handover_never_makes_a_template_dispatch_too_large() {
     assert_eq!(given["dispatchMaterials"]["handover"]["markdown"].as_str().map(str::len), Some(crate::handover::MAX_BYTES),
         "the whole handover is given");
 }
+
+/// T-34 S3a (#605 R3 066d114c): the summary reads only the fields it tells of
+/// a review, whatever else the review's record holds, and a review it cannot
+/// read fails the dispatch instead of being told as no review.
+#[test]
+fn a_summary_reads_only_what_it_tells_of_a_review_and_an_unreadable_review_fails_the_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let (told, broken) = (task(&store, "Told", Some(&p), None), task(&store, "Broken", Some(&p), None));
+    {
+        let db = store.db.write().unwrap();
+        db.execute("INSERT INTO github_repositories(id,data) VALUES(7,?1)", [json!({"fullName":"lab/app"}).to_string()]).unwrap();
+        db.execute("INSERT INTO github_objects(id,repo_id,kind,number,data) VALUES('7:pull:1',7,'pull',1,?1)",
+            [json!({"snapshot":{"state":"open","headSha":"a".repeat(40),"ci":{"state":"success"}},"syncedAt":"2026-11-05T00:00:00Z"}).to_string()]).unwrap();
+        for (t, data) in [
+            // A completed review's record carries its evidence as well: here 4 MiB of it.
+            (&told, json!({"id":"review-1","headSha":"a".repeat(40),"conclusion":"changes_requested",
+                "findings":[{"priority":1,"title":"Finding kept","path":"core/src/lib.rs"}],
+                "evidence":{"files":[{"patch":"z".repeat(4 << 20)}]}}).to_string()),
+            (&broken, "{not json".to_owned()),
+        ] {
+            let uuid = crate::collaboration_store::task_key(&db, t).unwrap().0;
+            db.execute("INSERT INTO github_task_links(task_id,object_id) VALUES(?1,'7:pull:1')", [&uuid]).unwrap();
+            db.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:1','completed',?3)",
+                params![format!("row-{t}"), uuid, data]).unwrap();
+        }
+    }
+    let plan = begun(&store, None, dispatch(&told, "told")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":told,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let summary = given["dispatchMaterials"]["contextSummary"].as_str().unwrap_or_default();
+    assert!(summary.contains("latest review review-1") && summary.contains("P1 Finding kept"),
+        "a review whose record holds much more still tells its findings: {summary}");
+
+    let plan = begun(&store, None, dispatch(&broken, "broken")).unwrap();
+    create(&store, &plan);
+    let failed = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).err()
+        .map_or_else(|| "dispatched".to_owned(), |e| format!("{e:#}"));
+    assert!(failed.contains("malformed JSON"), "an unreadable review is an error, not an empty summary: {failed}");
+}

@@ -8,7 +8,7 @@
 //! a model.
 use super::SharedTask;
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 pub(super) const LIMIT: usize = 4 * 1024;
@@ -67,15 +67,19 @@ pub(super) fn build(db: &Connection, task: &SharedTask) -> Result<String> {
             repo.unwrap_or_default(), state.unwrap_or_else(|| "unknown".into()), ci.unwrap_or_else(|| "unknown".into()),
             synced.unwrap_or_else(|| "at an unknown time".into()));
         // The latest completed review of this PR for this task, and what it found at P0–P2.
-        let review: Option<String> = db.query_row(
-            "SELECT data FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status='completed' ORDER BY rowid DESC LIMIT 1",
-            params![task.id, link], |r| r.get(0)).ok();
-        if let Some(review) = review.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) {
-            let blocking: Vec<&Value> = review["findings"].as_array().into_iter().flatten()
+        // Only the fields told: a review's record also holds its evidence, often megabytes,
+        // and this runs inside the dispatch's write transaction (#605 R3).
+        let review: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = db.query_row(
+            "SELECT json_extract(data,'$.id'), json_extract(data,'$.headSha'), json_extract(data,'$.conclusion'), json_extract(data,'$.findings')
+             FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status='completed' ORDER BY rowid DESC LIMIT 1",
+            params![task.id, link], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
+        if let Some((id, reviewed, conclusion, findings)) = review {
+            let findings: Vec<Value> = findings.map(|f| serde_json::from_str(&f)).transpose()?.unwrap_or_default();
+            let blocking: Vec<&Value> = findings.iter()
                 .filter(|f| f["priority"].as_i64().is_some_and(|p| p <= 2)).collect();
-            line.push_str(&format!("; latest review {} at {}: {}", review["id"].as_str().unwrap_or("?"),
-                review["headSha"].as_str().map(|h| h.chars().take(12).collect::<String>()).unwrap_or_default(),
-                review["conclusion"].as_str().unwrap_or("unknown")));
+            line.push_str(&format!("; latest review {} at {}: {}", id.as_deref().unwrap_or("?"),
+                reviewed.map(|h| h.chars().take(12).collect::<String>()).unwrap_or_default(),
+                conclusion.as_deref().unwrap_or("unknown")));
             for finding in blocking.iter().take(FINDINGS) {
                 line.push_str(&format!("\n- P{} {} ({})", finding["priority"], first_line(finding["title"].as_str().unwrap_or("")),
                     finding["path"].as_str().unwrap_or("")));
