@@ -1385,6 +1385,10 @@ export function App() {
   // Interrupted and failed Turns keep their own words with no cue, and the working indicator
   // always goes at once. Read before the arrivals below take the announcement.
   const turnAnnounced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+  // The question dock's arrivals too, once this conversation has shown a detail: the questions its
+  // first one lists are what was there, even after an announcement while it loaded (#569 round
+  // cfabe82d P3: opened from Home, with nothing else marking the wait).
+  const dockLive = turnAnnounced && !!turnScope && turnsSeen.current?.scope === turnScope;
   const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>;
     started: string[]; completed: string[] } | null>(null);
   // How many times each Turn has started or completed live, per conversation, for as long as the
@@ -3705,7 +3709,7 @@ export function App() {
             </div>
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}
               detail={detail?.agent.id === selected ? detail : null} shown={currentDetail} known={coreQuestions}
-              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude} live={turnAnnounced}
+              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude} live={dockLive}
               onSend={sendQuestionAnswer} onAdd={turnAnswer} onSource={showQuestionSource}
               onCheck={() => reconnectAgent(selected).then(refresh)} />
             {closed ? (
