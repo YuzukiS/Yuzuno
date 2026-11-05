@@ -744,14 +744,15 @@ test("editing a previewed ID keeps the preview, its name and permission, marked 
     await value(page, page.document.querySelector("#import-session-id"), other);
     assert.equal(!!form(), true, "the preview stays");
     assert.equal(form().hasAttribute("data-stale"), true, "marked stale");
-    assert.equal(form().inert, true, "out of reach");
+    // jsdom has no `inert` property: the attribute React sets is what is read.
+    assert.equal(form().hasAttribute("inert"), true, "out of reach");
     assert.equal(nameField().value, "Kept name", "the name typed for it stays");
     button(page, "Add to workspace").click();
     await tick();
     assert.equal(importCalls(page).length, 0, "a stale preview is never added");
     await value(page, page.document.querySelector("#import-session-id"), id);
     assert.equal(form().hasAttribute("data-stale"), false, "the ID read again: current again");
-    assert.equal(form().inert, false);
+    assert.equal(form().hasAttribute("inert"), false);
     assert.equal(nameField().value, "Kept name");
   } finally {
     page.close();
