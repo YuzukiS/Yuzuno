@@ -98,10 +98,3 @@
   background: var(--accent-wash);
   border-radius: 2px;
 }
-[data-search-highlight="true"] {
-  background: var(--accent-wash);
-  outline: 2px solid var(--focus);
-  outline-offset: 5px;
-  border-radius: 6px;
-  scroll-margin-block: 18px;
-}

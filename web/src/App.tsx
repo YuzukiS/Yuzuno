@@ -16,7 +16,7 @@ import {
   useState,
   type ComponentProps,
 } from "react";
-import { settleWhenLanded } from "./settle";
+import { ringAgain, settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
 import { animates } from "./motion";
 import {
@@ -2001,6 +2001,8 @@ export function App() {
           scroll.current.scrollTop += target.getBoundingClientRect().top - scroll.current.getBoundingClientRect().top - offset;
         }
         target.focus({ preventScroll: true });
+        // Landed on the mark already there (the same message again): its ring plays again.
+        ringAgain(target);
         setSourceJump(false);
       };
       if (disclosures.length) {
