@@ -2293,6 +2293,73 @@ async fn a_whole_read_in_mid_step_keeps_the_text_streamed_so_far() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// Until a whole read's stream is open again: the stream breaks, it is
+/// refused for a second, and `meanwhile` happens with no stream to see it.
+async fn read_whole_meanwhile(lab: &Lab, meanwhile: Value) {
+    let before = resyncs(lab);
+    lab.control("refuseEvents", json!({"seconds":1.0})).await;
+    lab.control("drop", json!({})).await;
+    // The broken stream has ended: the stand-in's looks for the break every 20 ms.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    lab.control("reply", meanwhile).await;
+    for _ in 0..400 {
+        if resyncs(lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(lab) > before, "read whole");
+}
+
+/// A whole read while an answer's step is under way, then the step's end on
+/// the stream, which names neither its model nor its start: the answer ends
+/// with those the read found, so its context usage is measured, not left
+/// stale with the answer taken as considered (T-32 slice 3b, R1 98de4ffb).
+#[tokio::test]
+async fn a_step_under_way_at_a_whole_read_ends_with_its_model_and_is_measured() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    read_whole_meanwhile(&lab, json!({"sessionID":session,"text":"","completed":false,"idle":false,
+        "info":{"id":"msg_s1","providerID":"deepseek","modelID":"deepseek-flash"}})).await;
+    let t = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"session.step.ended","created":t,"properties":{"sessionID":session,"assistantMessageID":"msg_s1",
+        "finish":"stop","tokens":{"total":300}}})).await;
+    let d = lab.until("the usage measured", |d| usage_of(d).is_some_and(|u| !u.3)).await;
+    assert_eq!(usage_of(&d), Some((300, 1000, id.clone(), false)));
+    assert_eq!(d.opencode_usage_seen.as_ref().map(|s| s.answer.as_str()), Some("msg_s1"), "the answer considered is the one measured");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A whole read while a sub-agent's tool runs, then the tool's end on the
+/// stream, which names neither the tool nor its input: the tool keeps those
+/// the read found, so the sub-agent it names is still learnt from it, here
+/// the only way it is (T-32 slice 3b, R1 98de4ffb).
+#[tokio::test]
+async fn a_tool_under_way_at_a_whole_read_ends_with_its_name_and_input() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    // Not among the Agent's children OpenCode lists, and never announced: only its tool names it.
+    let child = lab.control("child", json!({"parentID":"ses_elsewhere","title":"unlisted","announce":false})).await;
+    let child = child["id"].as_str().unwrap().to_owned();
+    let input = json!({"description":"Find the files","subagent_type":"explore","prompt":"find"});
+    read_whole_meanwhile(&lab, json!({"sessionID":session,"completed":false,"idle":false,"info":{"id":"msg_s2"},
+        "parts":[{"type":"tool","tool":"task","callID":"call_1","state":{"status":"running","input":input,"metadata":{"sessionId":child}}}]})).await;
+    let tool = |d: &AgentDetail| turn(d, &id)["items"].as_array().into_iter().flatten().find(|i| i["id"] == "call_1").cloned();
+    assert_eq!(tool(&lab.detail()).map(|t| t["name"].clone()), Some(json!("subagent")), "the read restored it");
+    let t = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"session.tool.success","created":t,"properties":{"sessionID":session,"assistantMessageID":"msg_s2",
+        "id":"call_1","content":[{"type":"text","text":"Found."}],"metadata":{"sessionID":child},"executed":true}})).await;
+    let d = lab.until("the tool's end", |d| tool(d).is_some_and(|t| t["status"] == "completed")).await;
+    let ended = tool(&d).unwrap();
+    assert_eq!((&ended["name"], &ended["input"]), (&json!("subagent"), &input), "the tool keeps its name and input");
+    // The sub-agent it names is the Agent's: its request is shown with it.
+    let asked = lab.control("ask", json!({"sessionID":child})).await;
+    let d = lab.until("the sub-agent's request", |d| d.pending.iter().any(|p| p.params["id"] == asked["id"])).await;
+    let p = d.pending.iter().find(|p| p.params["id"] == asked["id"]).unwrap();
+    assert_eq!(p.params["_opencodeChild"], json!({"title":"Find the files","agent":"explore"}), "learnt from its tool");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// Two user messages in one turn, the answers interleaved: each answer is
 /// the newest one's before it, as 2.x delivers a message steered in at its
 /// next step (T-32 slice 3b, Lead 4983 note 2), and a whole read of the

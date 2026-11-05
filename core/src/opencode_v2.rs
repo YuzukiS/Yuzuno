@@ -130,6 +130,28 @@ pub struct Ended {
     pub error: Option<Value>,
 }
 
+/// An answer under way at a whole read, with what its step's start said,
+/// which its end's event does not repeat.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenStep {
+    pub id: String,
+    /// The user message it answers.
+    pub parent: Option<String>,
+    pub created: Value,
+    pub model: Value,
+}
+
+/// A tool under way at a whole read (its input streaming, or running), with
+/// its answer, name and input, which its later events do not repeat.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenTool {
+    pub id: String,
+    pub message: String,
+    pub name: Value,
+    /// Null while its input still streams.
+    pub input: Value,
+}
+
 /// A session's stored messages, oldest first, as Core reads them.
 pub struct Read {
     /// Each as `{info, parts}`, an answer naming the user message it answers.
@@ -139,13 +161,16 @@ pub struct Read {
     /// The newest user message of a turn not yet ended, which the live
     /// stream goes on from (`Cursor::resumed`).
     pub open: Option<String>,
-    /// That turn's answers not yet ended, with the user message each answers:
-    /// their ends, after this read, are theirs.
-    pub steps: Vec<(String, Option<String>)>,
+    /// That turn's answers not yet ended: their ends, after this read, are
+    /// theirs, with the model and start this read found (R1 98de4ffb).
+    pub steps: Vec<OpenStep>,
+    /// Their tools not yet ended: their later events name neither the tool
+    /// nor its input.
+    pub tools: Vec<OpenTool>,
 }
 
 pub fn read_messages(messages: &Value) -> Read {
-    let (mut read, mut ended, mut steps) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut read, mut ended, mut steps, mut tools) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut user: Option<String> = None;
     for message in messages.as_array().into_iter().flatten() {
         let Some(id) = message["id"].as_str() else { continue };
@@ -161,7 +186,15 @@ pub fn read_messages(messages: &Value) -> Read {
                 let parts: Vec<Value> = message["content"].as_array().into_iter().flatten().enumerate()
                     .filter_map(|(ordinal, entry)| content_part(id, ordinal, entry)).collect();
                 if message["time"]["completed"].is_null() && message["error"].is_null() {
-                    steps.push((id.to_owned(), user.clone()));
+                    steps.push(OpenStep { id: id.to_owned(), parent: user.clone(), created: message["time"]["created"].clone(),
+                        model: message["model"].clone() });
+                    for entry in message["content"].as_array().into_iter().flatten().filter(|e| e["type"] == "tool"
+                        && matches!(e["state"]["status"].as_str(), Some("streaming" | "running"))) {
+                        let Some(tool) = entry["id"].as_str() else { continue };
+                        let input = &entry["state"]["input"];
+                        tools.push(OpenTool { id: tool.to_owned(), message: id.to_owned(), name: entry["name"].clone(),
+                            input: if input.is_object() { input.clone() } else { Value::Null } });
+                    }
                 }
                 read.push(json!({"info": info, "parts": parts}));
             }
@@ -170,6 +203,7 @@ pub fn read_messages(messages: &Value) -> Read {
                 "parts": []})),
             Some("idle") => {
                 steps.clear();
+                tools.clear();
                 if let Some(user) = user.take() {
                     let error = match message["outcome"].as_str() {
                         Some("interrupted") => Some(error(&message["error"], Some(ABORTED))),
@@ -182,7 +216,7 @@ pub fn read_messages(messages: &Value) -> Read {
             _ => {}
         }
     }
-    Read { messages: read, ended, open: user, steps }
+    Read { messages: read, ended, open: user, steps, tools }
 }
 
 /// What 2.x admitted into a session and has not delivered into its turn
@@ -238,11 +272,19 @@ impl Cursor {
         self.sessions.entry(session.to_owned()).or_default().read(event)
     }
 
-    /// After a whole read of `session`: what its live stream goes on from is
-    /// the turn that read found open, if any; nothing of before it is kept.
-    pub(crate) fn resumed(&mut self, session: &str, open: Option<String>, steps: Vec<(String, Option<String>)>) {
-        let steps = steps.into_iter().map(|(id, parent)| (id, Step { parent, ..Step::default() })).collect();
-        self.sessions.insert(session.to_owned(), Open { user: open, steps, ..Open::default() });
+    /// After a whole read of `session` (`read`, and the `inbox` it listed):
+    /// what its live stream goes on from is the turn that read found open, if
+    /// any, its answers and tools under way, and what the inbox holds; nothing
+    /// else of before it is kept. Text that streamed and was not yet written
+    /// is not: an entry's end writes it whole.
+    pub fn resumed(&mut self, session: &str, read: &Read, inbox: &Value) {
+        let steps = read.steps.iter().map(|s| (s.id.clone(), Step { parent: s.parent.clone(), created: s.created.clone(), model: s.model.clone() }))
+            .collect();
+        let tools = read.tools.iter().map(|t| (t.id.clone(), Tool { message: t.message.clone(), name: t.name.clone(), input: t.input.clone() }))
+            .collect();
+        let inputs = inbox.as_array().into_iter().flatten()
+            .filter_map(|item| Some((item["id"].as_str()?.to_owned(), item["type"].as_str()?.to_owned()))).collect();
+        self.sessions.insert(session.to_owned(), Open { user: read.open.clone(), inputs, steps, tools, ..Open::default() });
     }
 }
 

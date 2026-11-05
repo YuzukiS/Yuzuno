@@ -222,11 +222,58 @@ fn a_sub_agents_end_is_not_the_agents() {
     c.read(&ev("session.execution.succeeded", 3, json!({"sessionID": "ses_child"})));
     let step = c.read(&ev("session.step.started", 4, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a1"})));
     assert_eq!(step[0]["data"]["info"]["parentID"], "msg_u1", "a sub-agent's execution ending is not the Agent's");
-    c.resumed("ses_a", Some("msg_u9".into()), vec![("msg_a8".into(), Some("msg_u8".into()))]);
+    let read = read_messages(&json!([
+        {"id": "msg_u8", "type": "user", "time": {"created": 1}},
+        {"id": "msg_a8", "type": "assistant", "time": {"created": 2}, "content": []},
+        {"id": "msg_u9", "type": "user", "time": {"created": 3}},
+    ]));
+    c.resumed("ses_a", &read, &json!([]));
     let resumed = c.read(&ev("session.step.started", 5, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a2"})));
     assert_eq!(resumed[0]["data"]["info"]["parentID"], "msg_u9", "a whole read says which turn is open");
     let ended = c.read(&ev("session.step.ended", 6, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a8"})));
     assert_eq!(ended[0]["data"]["info"]["parentID"], "msg_u8", "a step under way at the read ends as its own");
     let unknown = c.read(&ev("session.step.ended", 7, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a7"})));
     assert_eq!(unknown[0]["data"]["info"]["parentID"], Value::Null, "an end of a step never seen to start answers nothing");
+}
+
+/// What a whole read in mid-turn hands the live stream, which the events
+/// after it do not repeat (R1 98de4ffb): of an answer under way, its start
+/// and model; of a tool under way, its answer, name and input; and what the
+/// inbox holds, so that delivering a compaction asked for is no user's
+/// message.
+#[test]
+fn a_whole_read_gives_the_live_stream_what_its_later_events_do_not_repeat() {
+    let messages = json!([
+        {"id": "msg_u1", "type": "user", "time": {"created": 1}},
+        {"id": "msg_a0", "type": "assistant", "model": {"id": "m", "providerID": "p"}, "time": {"created": 2, "completed": 3},
+            "content": [{"type": "tool", "id": "call_0", "name": "bash", "state": {"status": "running", "input": {"command": "old"}}}]},
+        {"id": "msg_a1", "type": "assistant", "model": {"id": "m", "providerID": "p"}, "time": {"created": 5}, "content": [
+            {"type": "tool", "id": "call_1", "name": "bash", "state": {"status": "running", "input": {"command": "ls"}}},
+            {"type": "tool", "id": "call_2", "name": "read", "state": {"status": "streaming", "input": "{\"pa"}},
+            {"type": "tool", "id": "call_3", "name": "edit", "state": {"status": "completed", "input": {}, "content": []}},
+        ]},
+    ]);
+    let read = read_messages(&messages);
+    assert_eq!(read.steps, vec![OpenStep { id: "msg_a1".into(), parent: Some("msg_u1".into()), created: json!(5),
+        model: json!({"id": "m", "providerID": "p"}) }], "only the answer not yet ended, with its start and model");
+    assert_eq!(read.tools, vec![
+        OpenTool { id: "call_1".into(), message: "msg_a1".into(), name: json!("bash"), input: json!({"command": "ls"}) },
+        OpenTool { id: "call_2".into(), message: "msg_a1".into(), name: json!("read"), input: Value::Null },
+    ], "only its tools under way, an input still streaming as none");
+    let mut c = Cursor::default();
+    let inbox = json!([{"id": "msg_c1", "sessionID": "ses_1", "type": "compaction", "delivery": "queue", "payload": {}, "time": {"created": 6}}]);
+    c.resumed("ses_1", &read, &inbox);
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let ended = c.read(&ev("session.step.ended", 9, d(json!({"assistantMessageID": "msg_a1", "finish": "tool-calls", "tokens": {"total": 7}}))));
+    let info = &ended[0]["data"]["info"];
+    assert_eq!((&info["parentID"], &info["time"]["created"], &info["time"]["completed"], &info["providerID"], &info["modelID"]),
+        (&json!("msg_u1"), &json!(5), &json!(9), &json!("p"), &json!("m")), "the answer ends with the start and model the read found");
+    let done = c.read(&ev("session.tool.success", 10, d(json!({"assistantMessageID": "msg_a1", "id": "call_1",
+        "content": [{"type": "text", "text": "a.txt"}], "executed": true}))));
+    let part = &done[0]["data"]["part"];
+    assert_eq!((&part["tool"], &part["state"]["input"], &part["state"]["status"]), (&json!("bash"), &json!({"command": "ls"}), &json!("completed")),
+        "the tool keeps the name and input the read found");
+    assert!(c.read(&ev("session.inbox.delivered", 11, d(json!({"inboxID": "msg_c1"})))).is_empty(), "a compaction delivered is no user's message");
+    let next = c.read(&ev("session.step.started", 12, d(json!({"assistantMessageID": "msg_a2"}))));
+    assert_eq!(next[0]["data"]["info"]["parentID"], "msg_u1");
 }
