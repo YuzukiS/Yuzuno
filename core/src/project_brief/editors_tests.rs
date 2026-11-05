@@ -136,7 +136,10 @@ async fn a_task_executor_is_never_a_home_editor_with_no_list_or_one() {
         (keys(&view["projects"][0]["brief"]["sections"]), keys(&view["projects"][0]["brief"]["teamSections"]))
     };
     assert_eq!(shown(&ws), (vec!["question".to_owned()], vec!["written".to_owned()]), "its Ask is the Project's, its report the team's");
-    let refused = editors::save(&ws.store, &project, 0, Some(vec!["b".into(), "c".into()])).unwrap_err().to_string();
+    let refused = match editors::save(&ws.store, &project, 0, Some(vec!["b".into(), "c".into()])) {
+        Ok(saved) => panic!("a list cannot name a task executor, but this one was saved: {saved:?}"),
+        Err(error) => error.to_string(),
+    };
     assert!(refused.starts_with("invalid_editor: a task executor is never a Home content editor"), "{refused}");
     assert_eq!(editors::get(&ws.store, &project).unwrap().version, 0, "nothing saved");
     ws.store.db.write().unwrap().execute(

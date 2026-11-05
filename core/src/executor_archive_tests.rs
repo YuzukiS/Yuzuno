@@ -95,8 +95,9 @@ fn mail_and_a_dispatch_to_an_archived_executor_are_refused_with_its_task() {
     executor(&store, "exec", &t, "agent:lead", true);
     executor(&store, "open", &t, "agent:lead", false);
     executor(&store, "mine", &t, "user", true);
-    let refused = |actor: Option<&str>, operation: &str, input: Value| {
-        store.collaboration_call(actor, operation, input).unwrap_err().to_string()
+    let refused = |actor: Option<&str>, operation: &str, input: Value| match store.collaboration_call(actor, operation, input) {
+        Ok(answer) => panic!("{operation} to an archived executor is refused, not answered: {answer}"),
+        Err(error) => error.to_string(),
     };
     for actor in [Some("peer"), None] {
         let error = refused(actor, "peer_send", json!({"requestId":"to exec","toAgentId":"exec","body":"One more thing"}));
@@ -130,7 +131,10 @@ fn an_executor_cannot_set_its_own_task_done_but_its_dispatcher_and_the_user_can(
         store.collaboration_call(actor, "task_update",
             json!({"requestId":request,"taskId":task,"expectedVersion":version,"patch":{"status":status}}))
     };
-    let error = update(Some("exec"), "done", &public, 1, "done").unwrap_err().to_string();
+    let error = match update(Some("exec"), "done", &public, 1, "done") {
+        Ok(answer) => panic!("the executor's own done is refused, not saved: {answer}"),
+        Err(error) => error.to_string(),
+    };
     assert!(error.starts_with("executor_done_refused: an executor does not set its own task done"), "{error}");
     let task = store.collaboration_call(None, "task_get", json!({"taskId":public})).unwrap();
     assert_eq!((task["task"]["status"].as_str(), task["task"]["version"].as_i64()), (Some("todo"), Some(1)), "nothing changed");

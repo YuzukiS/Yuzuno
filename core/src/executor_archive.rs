@@ -9,6 +9,9 @@
 //! - An Agent's or the user's mail to it, and a dispatch naming it, is
 //!   refused with `executor_archived` and its task ([`refuse_mail`]).
 //!
+//! - Its task-status proposals are its dispatcher's to decide
+//!   ([`proposal_decider`]).
+//!
 //! Whether archived or not, an executor never sets its own task done: its
 //! dispatcher, or the user, decides that ([`refuse_own_done`]).
 use crate::collaboration_store::{task_key, TaskActor};
@@ -86,6 +89,18 @@ pub(crate) fn refuse_mail(db: &Connection, to: &str) -> Result<()> {
         "executor_archived: {} is archived since {task}'s work was released, and takes no more mail or work (taskId {task}); {instead}",
         executor.name
     )
+}
+
+/// Who decides a released executor's task-status proposal (result_publish's
+/// TaskStatus, task_proposals.rs), or `None` unless `agent` is one: the Agent
+/// that dispatched it, named, or `Some(None)` for the user, when the user
+/// dispatched it or its dispatcher no longer exists (as for its release).
+pub(crate) fn proposal_decider(db: &Connection, agent: &str) -> Result<Option<Option<String>>> {
+    let Some(executor) = archived(db, agent)? else { return Ok(None) };
+    Ok(Some(match executor.dispatcher {
+        Some(dispatcher) => name(db, &dispatcher)?,
+        None => None,
+    }))
 }
 
 /// An executor never sets its own task done: it submits its result, and its

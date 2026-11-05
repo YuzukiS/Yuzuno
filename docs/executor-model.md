@@ -254,10 +254,16 @@ A released executor takes no more mail or work:
   pull request operation's result for it goes to the Agent that dispatched
   it. The mail names the executor it was for (`originalRecipient`) in its
   first line. An executor you dispatched has no Agent to pass it to: that
-  mail stays with the executor, as a closed Agent's does.
+  mail is kept in the executor's mailbox, never dropped, where you can still
+  read it. Either way the task's own records of the Job, the CI run or the
+  review are written as always.
 - **Other mail is refused.** Mail to it, and a dispatch naming it, is refused
   with `executor_archived`, naming its task and its dispatcher. Write to the
   dispatcher instead, or dispatch the task again for new work.
+- **Its proposals are its dispatcher's.** A task status change it proposed
+  with `result_publish` is decided by the Agent that dispatched it: the
+  proposal shows who, and can't be decided there. You decide it if you
+  dispatched the executor, or if its dispatcher no longer exists.
 
 ## Phases
 
