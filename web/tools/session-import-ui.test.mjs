@@ -303,7 +303,9 @@ test("existing Agent opens without creating another Agent, including a closed on
   try {
     await open(page, { onCreated: (a) => (created = a) });
     await read(page);
-    assert.ok(page.document.querySelector('[aria-label="Permissions"]') === null, '[aria-label="Permissions"] is absent');
+    // In this pane: New agent's own form, with its Permissions, stays in the
+    // dialog, hidden (T-19 ST:SX-02).
+    assert.ok(page.document.querySelector('.session-import [aria-label="Permissions"]') === null, '[aria-label="Permissions"] is absent');
     button(page, "Open agent").click();
     await tick();
     assert.equal(created.id, "agent-a");
@@ -726,6 +728,101 @@ test("Existing Codex session follows a language change from another window; the 
     assert.equal(page.calls.length, before, "changing the language reads and imports nothing");
     assert.equal(importCalls(page).length, 0);
     assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("editing a previewed ID keeps the preview, its name and permission, marked stale and not added, until the ID is the one read again (T-19 ST:SX-28)", async () => {
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page);
+    await read(page);
+    // The stale mark and `inert` are read wherever they sit above the preview: since R2 70ad905d, on a wrapper
+    // of the preview and its fields, not on the whole form.
+    const section = () => page.document.querySelector(".session-preview");
+    const nameField = () => [...(section()?.closest("form")?.querySelectorAll("label") ?? [])].find((l) => l.textContent.startsWith("Agent name"))?.querySelector("input");
+    await value(page, nameField(), "Kept name");
+    await value(page, page.document.querySelector("#import-session-id"), other);
+    assert.equal(!!section(), true, "the preview stays");
+    assert.equal(!!section().closest("[data-stale]"), true, "marked stale");
+    // jsdom has no `inert` property: the attribute React sets is what is read.
+    assert.equal(!!section().closest("[inert]"), true, "out of reach");
+    assert.equal(nameField().value, "Kept name", "the name typed for it stays");
+    button(page, "Add to workspace").click();
+    await tick();
+    assert.equal(importCalls(page).length, 0, "a stale preview is never added");
+    await value(page, page.document.querySelector("#import-session-id"), id);
+    assert.equal(!!section().closest("[data-stale]"), false, "the ID read again: current again");
+    assert.equal(!!section().closest("[inert]"), false);
+    assert.equal(nameField().value, "Kept name");
+  } finally {
+    page.close();
+  }
+});
+
+test("a pane switched away from keeps what was typed and previewed there, and the New form is never remounted (T-19 ST:SX-02)", async () => {
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page);
+    const newForm = page.document.querySelector("form.remote-create");
+    assert.equal(!!newForm, true, "the New form stays in the dialog");
+    assert.equal(!!newForm.closest("[hidden]"), true, "hidden while another pane shows");
+    await read(page);
+    button(page, "New agent").click();
+    await tick();
+    assert.equal(page.document.querySelector("form.remote-create") === newForm, true, "the same New form, not remounted");
+    assert.equal(!!newForm.closest("[hidden]"), false);
+    assert.equal(!!page.document.querySelector(".session-import").closest("[hidden]"), true, "the Codex pane waits, hidden");
+    button(page, "Existing Codex session").click();
+    await tick();
+    assert.equal(page.document.querySelector("#import-session-id").value, id, "the ID typed there is kept");
+    assert.equal(!!page.document.querySelector(".session-preview"), true, "and its preview");
+    assert.equal(page.calls.filter((call) => call.url.endsWith("/preview")).length, 1, "read once");
+  } finally {
+    page.close();
+  }
+});
+
+test("while the preview is stale or read again, Cancel stays in reach and closes New agent; only Add waits (T-19 ST:SX-28, R2 70ad905d)", async () => {
+  let closes = 0;
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page, { close() { closes++; } });
+    await read(page);
+    await value(page, page.document.querySelector("#import-session-id"), other);
+    // The preview form's own Cancel: the New pane, kept hidden, has one too.
+    const cancel = [...(page.document.querySelector(".session-preview")?.closest("form")?.querySelectorAll("button") ?? [])]
+      .find((node) => node.textContent.trim() === "Cancel");
+    assert.equal(!!cancel, true, "Cancel shows");
+    // jsdom does not keep focus out of an inert subtree, so where Cancel sits is what is read.
+    assert.equal(!!cancel.closest("[inert]"), false, "Cancel is not in the out-of-reach part");
+    assert.equal(cancel.disabled, false);
+    assert.equal(!!page.document.querySelector(".session-preview")?.closest("[inert]"), true, "the preview is");
+    assert.equal(button(page, "Add to workspace").disabled, true, "Add waits for the ID read again");
+    cancel.focus();
+    assert.equal(page.document.activeElement === cancel, true, "Cancel takes focus");
+    cancel.click();
+    await tick();
+    assert.equal(closes, 1, "Cancel closes New agent");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+test("a bad ID typed over a kept preview is said once, below it, not again in the preview's out-of-reach form (T-19 ST:SX-28, R1 bd985b53)", async () => {
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page);
+    await read(page);
+    await value(page, page.document.querySelector("#import-session-id"), "not-an-id");
+    // "Read again" over the kept preview; where none is kept, "Preview session".
+    (button(page, "Read again") ?? button(page, "Preview session")).click();
+    await tick();
+    const said = [...page.document.querySelectorAll('[role="alert"]')]
+      .filter((node) => node.textContent.includes("Paste the session ID from Codex"));
+    assert.equal(said.length, 1, "the bad ID is said once");
+    assert.equal(!!said[0].closest("[data-stale]"), false, "and not in the stale preview");
   } finally {
     page.close();
   }

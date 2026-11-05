@@ -6,6 +6,7 @@ import {
   readExecutorTemplates, saveExecutorTemplates,
   type ExecutorHarness, type ExecutorTemplate, type ExecutorTemplatesView,
 } from "./executor-templates";
+import { ExecutorSlots } from "./ExecutorSlots";
 import { langTag, strings, useLanguage } from "./i18n";
 import "./executor-templates.css";
 
@@ -38,7 +39,8 @@ const text = strings({
   instructions: "Instructions",
   instructionsHelp: (used: number, limit: number) => `Given to the executor with its task’s materials. ${used} of ${limit} bytes.`,
   maxConcurrent: "At most at once",
-  maxConcurrentHelp: "Kept for a later phase; not applied yet.",
+  maxConcurrentHelp: "At most this many of this template’s executors run at once, within Executors at once. Empty: no limit of its own.",
+  maxConcurrentInvalid: (max: number) => `At most at once is a whole number from 1 to ${max}.`,
   add: "Add template",
   remove: (label: string) => `Remove ${label}`,
   save: "Save templates",
@@ -74,7 +76,8 @@ const text = strings({
   instructions: "说明",
   instructionsHelp: (used, limit) => `与任务材料一起交给执行者。已用 ${used} / ${limit} 字节。`,
   maxConcurrent: "同时最多",
-  maxConcurrentHelp: "为后续阶段保留，暂不生效。",
+  maxConcurrentHelp: "此模板的执行者同时最多运行这么多个，且不超过“同时运行的执行者”。留空：没有自己的上限。",
+  maxConcurrentInvalid: (max) => `同时最多 是 1 到 ${max} 之间的整数。`,
   add: "添加模板",
   remove: (label) => `移除 ${label}`,
   save: "保存模板",
@@ -115,6 +118,16 @@ const idFor = (label: string, taken: string[]) => {
   return `template-${n}`;
 };
 const set = (value: string) => (value.trim() ? value.trim() : undefined);
+/** A template's own limit as the editor takes it: empty (none), or a whole
+ * number from 1 to `max`; anything else (a negative number, a fraction) is
+ * no limit Core would take (null). */
+const atOnce = (value: string, max: number): number | undefined | null => {
+  const v = value.trim();
+  if (!v) return undefined;
+  if (!/^\d+$/.test(v)) return null;
+  const n = Number(v);
+  return n >= 1 && n <= max ? n : null;
+};
 /** As Core takes it: only what this harness uses, unset left out. */
 const templateOf = (d: Draft): ExecutorTemplate => {
   const template: ExecutorTemplate = { id: d.id.trim(), label: d.label.trim(), harness: d.harness };
@@ -126,7 +139,8 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   if (d.harness === "codex" && d.permission) template.permissionPreset = d.permission;
   if (d.harness === "claude" && d.permission) template.permissionMode = d.permission;
   if (d.instructions.trim()) template.instructions = d.instructions;
-  if (Number(d.maxConcurrent) > 0) template.maxConcurrent = Number(d.maxConcurrent);
+  const limit = atOnce(d.maxConcurrent, Number.MAX_SAFE_INTEGER);
+  if (limit) template.maxConcurrent = limit;
   return template;
 };
 const bytes = (value: string) => new TextEncoder().encode(value).length;
@@ -161,6 +175,9 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
   // Compared as this client writes them: Core's field order may differ.
   const changed = !!view && JSON.stringify(drafts.map(templateOf)) !== JSON.stringify(own(view).templates.map(saved => templateOf(draftOf(saved))));
   const locked = disabled || busy;
+  // A template's own limit Core wouldn't take holds the save, said at its field.
+  const badLimit = (d: Draft) => !!view && atOnce(d.maxConcurrent, view.limits.maxConcurrent) === null;
+  const invalid = drafts.some(badLimit);
   const edit = (key: string, change: Partial<Draft>) => {
     setDone(false);
     setDrafts(list => list.map(d => {
@@ -199,6 +216,7 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
           <p>{projectId ? t.introProject : t.intro}</p>
         </div>
       </header>
+      <ExecutorSlots active={active} projectId={projectId} disabled={disabled} />
       {active && !view && !error && <p className="settings-row-help" role="status">{t.reading}</p>}
       {view && <>
         {inherited.length > 0 && (
@@ -280,9 +298,12 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
               <label className="settings-row">
                 <span className="settings-row-main">
                   <span className="settings-row-title">{t.maxConcurrent}</span>
-                  <span className="settings-row-help">{t.maxConcurrentHelp}</span>
+                  <span className={badLimit(d) ? "inline-error" : "settings-row-help"}>
+                    {badLimit(d) ? t.maxConcurrentInvalid(view.limits.maxConcurrent) : t.maxConcurrentHelp}
+                  </span>
                 </span>
-                <input className="settings-input" aria-label={t.maxConcurrent} type="number" min={1} max={view.limits.maxConcurrent}
+                <input className="settings-input" aria-label={t.maxConcurrent} type="number" inputMode="numeric" step={1}
+                  min={1} max={view.limits.maxConcurrent} aria-invalid={badLimit(d) || undefined}
                   value={d.maxConcurrent} onChange={e => edit(d.key, { maxConcurrent: e.target.value })} />
               </label>
               <button type="button" className="quiet-button" onClick={() => { setDone(false); setDrafts(list => list.filter(x => x.key !== d.key)); }}>
@@ -297,7 +318,7 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
             onClick={() => { setDone(false); setDrafts(list => [...list, { ...draftOf({ id: "", label: "", harness: "codex" }), idTouched: false }]); }}>
             <Plus size={13} /> {t.add}
           </button>
-          <button type="button" className="secondary-button" disabled={locked || !changed} onClick={() => void save()}>
+          <button type="button" className="secondary-button" disabled={locked || !changed || invalid} onClick={() => void save()}>
             {busy && <LoaderCircle size={13} className="spin" />} {t.save}
           </button>
           {changed ? <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}

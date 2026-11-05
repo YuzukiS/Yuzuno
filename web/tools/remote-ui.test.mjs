@@ -464,3 +464,51 @@ test("read-only preview makes no machine or agent requests", async () => {
     page.close();
   }
 });
+
+test("Escape with the SSH machine editor open closes the editor, not New agent, and focus goes back to Add SSH machine; closed with it open, New agent opens again without it (T-19 ST:SX-50)", async () => {
+  let closes = 0;
+  const page = mount(() => undefined);
+  try {
+    await createDialog(page, { close() { closes++; } });
+    button(page, "Add SSH machine").click();
+    await tick();
+    assert.equal(!!page.document.querySelector("#new-ssh-machine"), true, "the editor is open");
+    const field = page.document.querySelector("#new-ssh-machine input");
+    field.focus();
+    field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    assert.equal(!!page.document.querySelector("#new-ssh-machine"), false, "Escape closes the editor");
+    assert.equal(closes, 0, "and not New agent");
+    assert.equal(page.document.activeElement === button(page, "Add SSH machine"), true, "focus is back on Add SSH machine");
+    button(page, "Add SSH machine").click();
+    await tick();
+    page.window.renderCreate({ open: false, close() {}, defaultCwd: "/workspace", disabled: false, onCreated() {} });
+    await tick();
+    await createDialog(page);
+    assert.equal(!!page.document.querySelector("#new-ssh-machine"), false, "closed with the editor open, it opens again without it");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("with the SSH machine editor kept open in the hidden New pane, Escape in another pane closes New agent (T-19 ST:SX-50, R1 bd985b53)", async () => {
+  let closes = 0;
+  const page = mount(() => undefined);
+  try {
+    await createDialog(page, { close() { closes++; } });
+    button(page, "Add SSH machine").click();
+    await tick();
+    assert.equal(!!page.document.querySelector("#new-ssh-machine"), true, "the editor is open in New");
+    button(page, "Existing Codex session").click();
+    await tick();
+    const field = page.document.querySelector("#import-session-id");
+    field.focus();
+    field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    assert.equal(closes, 1, "Escape in another pane closes New agent");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

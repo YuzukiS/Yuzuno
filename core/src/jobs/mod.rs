@@ -20,7 +20,7 @@ mod pause;
 mod provenance;
 #[cfg(test)]
 mod provenance_tests;
-mod queue;
+pub(crate) mod queue;
 mod remote;
 mod ssh_mux;
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]

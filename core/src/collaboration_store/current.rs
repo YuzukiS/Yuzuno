@@ -85,7 +85,7 @@ pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
         }
     };
     let project = crate::projects::task_projects(db, &[task.id.as_str()])?.remove(&task.id);
-    Ok(json!({"current": {
+    let mut view = json!({"current": {
         "taskId": task_number(task.seq),
         "title": task.title,
         "status": task.status,
@@ -105,7 +105,12 @@ pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
         // Its mail whose wake-up failed, is tried again or is uncertain (T-50).
         "mailProblems": super::mail_delivery::task_problems(db, &task.id, super::MAIL_PROBLEMS)?,
         "more": MORE,
-    }}))
+    }});
+    // Its executor's slot, when it holds or waits for one (T-35).
+    if let Some(slot) = crate::executor_slots::views(db, &[task.id.as_str()])?.remove(&task.id) {
+        view["current"]["executorSlot"] = slot;
+    }
+    Ok(view)
 }
 
 /// One page of the task's history, oldest first after `after`, read through

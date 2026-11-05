@@ -133,21 +133,332 @@ def new_id(prefix):
 
 
 def publish(kind, properties):
-    # 2.x's envelope (schema/src/event.ts): what 1.19.3 called properties is `data`. Its contents keep 1.19.3's shape
-    # here until their slices (T-32 slice 3a).
-    event = {'id': new_id('evt'), 'type': kind, 'data': properties}
-    with lock:
-        for stream in streams:
-            stream.put(event)
-        kept = kind in DURABLE and isinstance(properties.get('sessionID'), str)
-        if kept:
+    """An event of the stand-in's own store, kept in 1.19.3's shape: sent as 2.x sends its own (T-32 slice 3b), or as it
+    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of compaction, rewind and fork use until
+    their slices move them. Durable ones are kept for `/sync/history` as they are."""
+    if v1():
+        sent = send(kind, properties)
+    else:
+        sent = None
+        for kind2, data, *created in v2_events(kind, properties):
+            send(kind2, data, *created)
+    kept = kind in DURABLE and isinstance(properties.get('sessionID'), str)
+    if kept:
+        evt = sent or new_id('evt')
+        with lock:
             aggregate = properties['sessionID']
             seq = aggregates.get(aggregate, -1) + 1
             aggregates[aggregate] = seq
-            durable.append({'id': event['id'], 'aggregate_id': aggregate, 'seq': seq, 'type': kind + '.1',
+            durable.append({'id': evt, 'aggregate_id': aggregate, 'seq': seq, 'type': kind + '.1',
                             'data': json.loads(json.dumps(properties))})
-    if kept:
         save()
+    elif sent is None and kind == 'session.status':
+        # What an execution's end changed in 2.x's own store: its idle message, and the inbox it delivered.
+        save()
+
+
+def send(kind, data, created=None):
+    # 2.x's envelope (schema/src/event.ts): `data`, and the time it was made (control `event` may give it).
+    event = {'id': new_id('evt'), 'type': kind, 'created': created or int(time.time() * 1000), 'data': data}
+    with lock:
+        for stream in streams:
+            stream.put(event)
+    return event['id']
+
+
+def v1():
+    # The switch beside every Agent's folder applies to each of them (a fork's new Agent too).
+    return bool(modes.get('v1Messages')) or switch('v1Messages') is not None or (ROOT.parent / 'v1Messages').exists()
+
+
+# What sending the store's events as 2.x's needs to remember, by session (T-32 slice 3b).
+v2_state = {}
+
+
+def v2_of(session):
+    return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
+                                         'error': None, 'idles': [], 'pending': [], 'steer': set()})
+
+
+def v2_deliver(session, upto=None):
+    # 2.x delivers a message steered into a busy session at its next step's start (core/src/session/projector.ts):
+    # those enqueued up to `upto`, or all of them.
+    state = v2_of(session)
+    if upto is not None and upto not in state['pending']:
+        return []
+    count = state['pending'].index(upto) + 1 if upto is not None else len(state['pending'])
+    delivered, state['pending'] = state['pending'][:count], state['pending'][count:]
+    return [('session.inbox.delivered', {'sessionID': session, 'inboxID': mid}) for mid in delivered]
+
+
+def v2_error(error):
+    # 2.x's error (schema/src/session-error.ts) from 1.19.3's {name, data: {message}}.
+    return {'type': (error or {}).get('name') or 'UnknownError', 'message': ((error or {}).get('data') or {}).get('message') or ''}
+
+
+def v2_content_index(session, message_id, part_id):
+    """A part's ordinal among its answer's entries (text, reasoning, tool), as 2.x numbers them."""
+    stored = messages.get(session, {}).get(message_id) or {}
+    entries = [q for q in stored.get('parts', []) if v2_entry(q) is not None]
+    return next((n for n, q in enumerate(entries) if q.get('id') == part_id), len(entries))
+
+
+def v2_tool_name(part):
+    # 2.x's sub-agent tool (core/src/tool/plugin/subagent.ts) is 1.19.3's `task`.
+    return 'subagent' if part.get('tool') == 'task' else part.get('tool')
+
+
+def v2_tool_metadata(part):
+    metadata = dict((part.get('state') or {}).get('metadata') or {})
+    if part.get('tool') == 'task' and metadata.get('sessionId'):
+        metadata = {'sessionID': metadata['sessionId'], 'status': 'running'}
+    return metadata
+
+
+def v2_entry(q):
+    """A stored part as an entry of 2.x's assistant `content`, or None for what 2.x keeps elsewhere."""
+    kind = q.get('type')
+    if kind == 'text' and not q.get('synthetic'):
+        return {'type': 'text', 'text': q.get('text', '')}
+    if kind == 'reasoning':
+        return {'type': 'reasoning', 'text': q.get('text', '')}
+    if kind == 'tool':
+        state = q.get('state') or {}
+        status = state.get('status')
+        name = v2_tool_name(q)
+        if status == 'completed':
+            out = {'status': 'completed', 'input': state.get('input', {}),
+                   'content': [{'type': 'text', 'text': str(state.get('output', ''))}], 'metadata': v2_tool_metadata(q)}
+        elif status == 'error':
+            out = {'status': 'error', 'input': state.get('input', {}), 'error': {'type': 'tool', 'message': str(state.get('error', ''))}}
+        elif status == 'running':
+            out = {'status': 'running', 'input': state.get('input', {}), 'metadata': v2_tool_metadata(q)}
+        else:
+            out = {'status': 'streaming', 'input': ''}
+        return {'type': 'tool', 'id': q.get('callID') or q.get('id'), 'name': name, 'state': out}
+    return None
+
+
+def v2_payload(session, mid):
+    """A stored user message as 2.x's inbox payload (schema/src/session-inbox.ts UserPayload)."""
+    stored = messages.get(session, {}).get(mid) or {}
+    text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
+    payload = {'text': text}
+    # A file as 2.x sends one (schema/src/prompt.ts): its bytes as base64 `data`, not a `data:` URL.
+    files = [{'data': (q.get('url') or '').split(',', 1)[-1], 'mime': q.get('mime'), 'name': q.get('filename'),
+              'source': {'type': 'inline'}} for q in stored.get('parts', []) if q.get('type') == 'file']
+    if files:
+        payload['files'] = files
+    return payload
+
+
+def v2_inbox(session):
+    """What 2.x's `/api/session/:id/inbox` lists: the messages steered in and not yet delivered, oldest first."""
+    state = v2_of(session)
+    return [{'id': mid, 'sessionID': session, 'type': 'user', 'delivery': 'steer', 'payload': v2_payload(session, mid),
+             'time': {'created': ((messages.get(session, {}).get(mid) or {}).get('info') or {}).get('time', {}).get('created', 0)}}
+            for mid in state['pending']]
+
+
+def v2_events(kind, p):
+    """The 2.x events one of the store's 1.19.3-shaped events stands for (schema/src/session-event.ts)."""
+    session = p.get('sessionID')
+    if kind == 'message.updated':
+        info = p['info']
+        state = v2_of(session)
+        mid = info['id']
+        if info.get('role') == 'user':
+            if mid in state['delivered']:
+                return []
+            state['delivered'].add(mid)
+            payload = v2_payload(session, mid)
+            # Steered in: sent while a run went on (`prompt`); a message the store holds already was delivered.
+            steered = mid in state['steer']
+            enqueued = ('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': payload,
+                                                                                               'delivery': 'steer' if steered else 'queue'}})
+            if steered:
+                state['pending'].append(mid)
+                return [enqueued]
+            return [enqueued, ('session.inbox.delivered', {'sessionID': session, 'inboxID': mid})]
+        if info.get('summary'):
+            # A compaction's summary is 2.x's compaction (session-event.ts Compaction).
+            done = (info.get('time') or {}).get('completed')
+            if done and mid not in state['ended']:
+                state['ended'].add(mid)
+                return [('session.compaction.ended', {'sessionID': session, 'reason': 'manual' if info.get('mode') == 'manual' else 'auto',
+                                                      'text': '', 'tokens': info.get('tokens')})]
+            if mid not in state['started']:
+                state['started'].add(mid)
+                return [('session.compaction.started', {'sessionID': session, 'reason': 'auto'})]
+            return []
+        out = []
+        if mid not in state['started']:
+            state['started'].add(mid)
+            # A step answering a message steered in starts once it is delivered; one answering an earlier one, before.
+            out += v2_deliver(session, info.get('parentID'))
+            out.append(('session.step.started', {'sessionID': session, 'assistantMessageID': mid, 'agent': info.get('agent') or 'build',
+                                                 'model': {'id': info.get('modelID') or 'fixture', 'providerID': info.get('providerID') or 'fixture'},
+                                                 'started': (info.get('time') or {}).get('created') or int(time.time() * 1000)}))
+        done = (info.get('time') or {}).get('completed') is not None or info.get('error')
+        if done and mid not in state['ended']:
+            state['ended'].add(mid)
+            if (info.get('error') or {}).get('name') == 'MessageAbortedError':
+                # An aborted answer: 2.x ends that execution as interrupted.
+                state['error'] = info['error']
+            # 2.x stores the answer's end as its end event's time (core/src/session/message-updater.ts).
+            at = (info.get('time') or {}).get('completed') or int(time.time() * 1000)
+            if info.get('error'):
+                out.append(('session.step.failed', {'sessionID': session, 'assistantMessageID': mid, 'error': v2_error(info['error'])}, at))
+            else:
+                out.append(('session.step.ended', {'sessionID': session, 'assistantMessageID': mid, 'finish': info.get('finish') or 'stop',
+                                                   'cost': info.get('cost', 0), 'tokens': info.get('tokens')}, at))
+        return out
+    if kind == 'message.part.updated':
+        q = p['part']
+        mid = q.get('messageID')
+        stored = messages.get(session, {}).get(mid) or {}
+        info = stored.get('info') or {}
+        entry = v2_entry(q)
+        if info.get('role') != 'assistant' or info.get('summary') or entry is None:
+            return []
+        ordinal = v2_content_index(session, mid, q.get('id'))
+        state = v2_of(session)
+        first = (mid, q.get('id')) not in state['parts']
+        state['parts'].add((mid, q.get('id')))
+        if entry['type'] in ('text', 'reasoning'):
+            name = 'session.' + entry['type']
+            out = [(name + '.started', {'sessionID': session, 'assistantMessageID': mid, 'ordinal': ordinal})] if first else []
+            return out + [(name + '.ended', {'sessionID': session, 'assistantMessageID': mid, 'ordinal': ordinal, 'text': entry['text']})]
+        tool = {'sessionID': session, 'assistantMessageID': mid, 'id': entry['id']}
+        status = entry['state']['status']
+        out = [('session.tool.input.started', {**tool, 'name': entry['name']})] if first else []
+        if status == 'running':
+            out.append(('session.tool.called', {**tool, 'input': entry['state']['input'], 'executed': True}))
+            if entry['state'].get('metadata'):
+                out.append(('session.tool.progress', {**tool, 'metadata': entry['state']['metadata']}))
+        elif status == 'completed':
+            out.append(('session.tool.called', {**tool, 'input': entry['state']['input'], 'executed': True}))
+            out.append(('session.tool.success', {**tool, 'content': entry['state']['content'], 'metadata': entry['state'].get('metadata') or {},
+                                                 'executed': True}))
+        elif status == 'error':
+            out.append(('session.tool.failed', {**tool, 'error': entry['state']['error'], 'executed': True}))
+        return out
+    if kind == 'session.status':
+        status = (p.get('status') or {}).get('type')
+        state = v2_of(session)
+        if status == 'busy':
+            return [('session.execution.started', {'sessionID': session})]
+        if status == 'retry':
+            return [('session.retry.scheduled', {'sessionID': session, 'assistantMessageID': '', 'attempt': 1, 'at': 0,
+                                                 'error': {'type': 'retry', 'message': (p.get('status') or {}).get('message', '')}})]
+        if status == 'idle':
+            # An execution's end, and the idle message 2.x writes for it (core/src/session/projector.ts); what was
+            # steered in and not yet taken up is delivered into this turn first.
+            ahead = v2_deliver(session)
+            error, state['error'] = state['error'], None
+            last = next(reversed(messages.get(session, {})), None)
+            if error and error.get('name') == 'MessageAbortedError':
+                state['idles'].append({'after': last, 'outcome': 'interrupted', 'error': v2_error(error)})
+                return ahead + [('session.execution.interrupted', {'sessionID': session, 'reason': 'user'})]
+            if error:
+                state['idles'].append({'after': last, 'outcome': 'failed', 'error': v2_error(error)})
+                return ahead + [('session.execution.failed', {'sessionID': session, 'error': v2_error(error)})]
+            state['idles'].append({'after': last, 'outcome': 'succeeded'})
+            return ahead + [('session.execution.succeeded', {'sessionID': session})]
+        return []
+    if kind == 'session.error':
+        # 2.x reports it with the execution's end (session-event.ts Execution); with none running, at once.
+        if session not in statuses:
+            return [('session.execution.failed', {'sessionID': session, 'error': v2_error(p.get('error'))})]
+        v2_of(session)['error'] = p.get('error')
+        return []
+    if kind == 'session.created':
+        info = p.get('info') or {}
+        return [('session.created', {'sessionID': info.get('id'), 'projectID': info.get('projectID', PROJECT), 'parentID': info.get('parentID'),
+                                     'title': info.get('title'), 'agent': info.get('agent'), 'slug': info.get('id'), 'version': '2.2.5',
+                                     'location': {'directory': info.get('directory') or str(WORK)}})]
+    if kind in ('session.updated', 'message.removed', 'message.part.removed', 'message.part.delta'):
+        return []
+    return [(kind, p)]
+
+
+def v2_view(session):
+    """The session's stored messages as 2.x's `/api/session/:id/message` lists them (schema/src/session-message.ts): in
+    the order 2.x stored them, with each execution's idle message after the message it ended at. A message steered in
+    is stored when 2.x delivers it (`v2_deliver`): before the first step answering it or a later one, or at the
+    execution's end; not yet delivered, it is in the inbox only (`v2_inbox`)."""
+    state = v2_of(session)
+    idles = {}
+    for n, idle in enumerate(state['idles']):
+        idles.setdefault(idle['after'], []).append((n, idle))
+    out, waiting = [], []
+
+    def delivered(upto=None):
+        # Those waiting, up to `upto` (all of them when None), as 2.x stored them on delivery.
+        count = waiting.index(upto) + 1 if upto in waiting else (len(waiting) if upto is None else 0)
+        for mid in waiting[:count]:
+            info = messages[session][mid]['info']
+            out.append({'id': mid, 'type': 'user', 'text': v2_payload(session, mid)['text'],
+                        'time': {'created': (info.get('time') or {}).get('created', 0)}})
+        del waiting[:count]
+
+    for mid, stored in list(messages.get(session, {}).items()):
+        info = stored['info']
+        created = (info.get('time') or {}).get('created', 0)
+        if info.get('role') == 'user' and mid in state['steer']:
+            if mid in state['pending']:
+                continue
+            waiting.append(mid)
+            if mid in idles:
+                # Delivered at the execution's end that came right after it.
+                delivered()
+                for n, idle in idles.pop(mid):
+                    out.append(v2_idle(n, idle, created))
+            continue
+        if info.get('role') == 'assistant' and not info.get('summary'):
+            delivered(info.get('parentID'))
+        if info.get('role') == 'user':
+            if any(q.get('type') == 'compaction' for q in stored.get('parts', [])):
+                pass
+            else:
+                text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
+                out.append({'id': mid, 'type': 'user', 'text': text, 'time': {'created': created}})
+        elif info.get('summary'):
+            text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
+            done = (info.get('time') or {}).get('completed')
+            entry = {'id': mid, 'type': 'compaction', 'status': 'completed' if done else 'running', 'reason': 'auto', 'summary': text,
+                     'time': {'created': created}}
+            if info.get('error'):
+                entry.update(status='failed', error=v2_error(info['error']))
+            out.append(entry)
+        else:
+            content = [e for e in (v2_entry(q) for q in stored.get('parts', [])) if e is not None]
+            answer = {'id': mid, 'type': 'assistant', 'agent': info.get('agent') or 'build',
+                      'model': {'id': info.get('modelID') or 'fixture', 'providerID': info.get('providerID') or 'fixture'},
+                      'content': content, 'time': {'created': created}}
+            done = (info.get('time') or {}).get('completed')
+            if done is not None:
+                answer['time']['completed'] = done
+            for name in ('finish', 'cost', 'tokens'):
+                if info.get(name) is not None:
+                    answer[name] = info[name]
+            if info.get('error'):
+                answer['error'] = v2_error(info['error'])
+            out.append(answer)
+        ending = idles.pop(mid, [])
+        if ending:
+            delivered()
+        for n, idle in ending:
+            out.append(v2_idle(n, idle, created))
+    delivered()
+    return out
+
+
+def v2_idle(n, idle, created):
+    entry = {'id': f'msg_idle{n:06d}', 'type': 'idle', 'outcome': idle['outcome'], 'time': {'created': created}}
+    if idle.get('error'):
+        entry['error'] = idle['error']
+    return entry
 
 
 def log(entry):
@@ -192,7 +503,12 @@ def page(items, query, kept):
 def save():
     with lock:
         (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
-                                                     'durable': durable, 'aggregates': aggregates}))
+                                                     'durable': durable, 'aggregates': aggregates,
+                                                     # 2.x stores its idle messages with the session's others,
+                                                     # and its inbox.
+                                                     'idles': {s: v['idles'] for s, v in v2_state.items()},
+                                                     'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
+                                                               for s, v in v2_state.items()}}))
 
 
 def load():
@@ -204,6 +520,10 @@ def load():
         counter[0] = state['counter']
         durable.extend(state.get('durable', []))
         aggregates.update(state.get('aggregates', {}))
+        for s, idles in state.get('idles', {}).items():
+            v2_of(s)['idles'] = idles
+        for s, inbox in state.get('inbox', {}).items():
+            v2_of(s).update(pending=inbox['pending'], steer=set(inbox['steer']))
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -506,7 +826,11 @@ def control(name, body):
         publish('session.status', {'sessionID': body['sessionID'], 'status': {'type': 'busy'}})
         return True
     if name == 'event':
-        publish(body['type'], body['properties'])
+        if body.get('created'):
+            # A 2.x event as the test times it, sent as it is.
+            send(body['type'], body['properties'], body['created'])
+        else:
+            publish(body['type'], body['properties'])
         return True
     if name == 'store':
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
@@ -801,7 +1125,10 @@ class Handler(BaseHTTPRequestHandler):
             if modes['failListOnce']:
                 modes['failListOnce'] = False
                 return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: list read failed'})
-            stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
+            if v1():
+                stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
+            else:
+                stored = v2_view(session)
             return self.reply(*page(stored, query, {}))
         if (method, *rest) == ('GET', 'permission'):
             if modes['holdPermission']:
@@ -815,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'data': [p for p in permissions if p['sessionID'] == session]})
         if (method, *rest) == ('GET', 'form'):
             return self.reply(200, {'data': [q for q in questions if q['sessionID'] == session]})
+        if (method, *rest) == ('GET', 'inbox'):
+            return self.reply(200, {'data': [] if v1() else v2_inbox(session)})
         return self.reply(404)
 
     def session(self, method, session, rest, body):
@@ -897,6 +1226,9 @@ class Handler(BaseHTTPRequestHandler):
             cleanup(session)
         model = body.get('model') or modes['defaultModel']
         if mode == 'store':
+            if session in statuses:
+                # Sent while a run goes on: 2.x delivers it at that run's next step (v2_deliver).
+                v2_of(session)['steer'].add(message_id)
             store(session, message_id, text, files, model=model)
             self.reply(204)
             # The run starts: OpenCode is busy until it ends.
@@ -904,10 +1236,11 @@ class Handler(BaseHTTPRequestHandler):
             publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
             return None
         if mode == 'unstored':
-            # Answered, then storing failed; OpenCode's session.error names no message.
+            # Answered, then storing failed; OpenCode's session.error names no message. 2.x says nothing of it.
             self.reply(204)
-            publish('session.error', {'sessionID': session,
-                                      'error': {'name': 'UnknownError', 'data': {'message': 'fixture: not stored'}}})
+            if v1():
+                publish('session.error', {'sessionID': session,
+                                          'error': {'name': 'UnknownError', 'data': {'message': 'fixture: not stored'}}})
             return None
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})

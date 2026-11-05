@@ -17,7 +17,7 @@ export type ExecutorTemplate = {
   /** Phase 1: unset or "local", this Core host. */
   machineId?: string;
   instructions?: string;
-  /** Kept for phase 2's slots. */
+  /** At most this many of its executors run at once (T-35); unset, no limit of its own. */
   maxConcurrent?: number;
 };
 /** `laterTemplates`: templates a newer Core saved that this one can't read or use; a save keeps them. */

@@ -10,6 +10,7 @@ import {
 import type { NativeTurn } from "./types";
 import { langTag, strings, useLanguage } from "./i18n";
 import { pressed, shortcutKeys, useShortcutKeys } from "./shortcut-keys";
+import { settleWhenLanded } from "./settle";
 import "./conversation-search.css";
 
 // Kept as this English sentence and said in the language shown (T-189).
@@ -93,8 +94,8 @@ export function ConversationSearch({
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const destination = useRef<ConversationMatch | null>(null);
-  const highlight = useRef<HTMLElement | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Where a result chosen here landed, shown once (T-19 M4); App's own landing is a source's (onLocate).
+  const landed = useRef<(() => void) | null>(null);
   const mounted = useRef(false);
   const localResults = useMemo(
     () => (open ? searchConversation(turns, query) : []),
@@ -117,18 +118,12 @@ export function ConversationSearch({
     return () => { clearTimeout(timer); controller.abort(); };
   }, [savedAgentId, open, query]);
 
-  function clearHighlight() {
-    clearTimeout(timer.current);
-    highlight.current?.removeAttribute("data-search-highlight");
-    highlight.current = null;
-  }
-
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       destination.current = null;
-      clearHighlight();
+      landed.current?.();
     };
   }, []);
 
@@ -223,12 +218,9 @@ export function ConversationSearch({
               setOpen(true);
               return;
             }
-            clearHighlight();
             target.scrollIntoView({ behavior: "instant", block: "start" });
             target.focus({ preventScroll: true });
-            target.dataset.searchHighlight = "true";
-            highlight.current = target;
-            timer.current = setTimeout(clearHighlight, 2600);
+            landed.current = settleWhenLanded(target, "data-settle", false, "animation");
           }}
         >
           <div className="modal-heading">

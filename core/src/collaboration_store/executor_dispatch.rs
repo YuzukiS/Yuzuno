@@ -7,7 +7,8 @@
 //! an executor, written in the transaction that inserts its record) →
 //! `dispatched` (the task is its, in the store's own task_dispatch
 //! transaction); or `failed`, with why, the Agent it made closed but kept.
-//! The runtime's side is executor_dispatch.rs.
+//! The runtime's side is executor_dispatch.rs. A dispatched executor waits
+//! for its slot (executor_slots.rs, T-35) from that same transaction.
 use super::{
     actor_context, allowed, check_version, dispatch_materials, load_task, normalize_task_input, optional_text,
     required_text, take_sha_check, task_number, TaskActor,
@@ -96,6 +97,33 @@ impl Plan {
     }
 }
 
+const AGENT_FOLDER: &str = "an executor an Agent dispatches works in the worktree the user registered on its task or inside its Project's folder on this host";
+
+/// The worktree an Agent's dispatch gives its executor: the task's registered
+/// worktree, or a folder inside the Project's, compared as canonical paths
+/// (whole components: a sibling sharing a prefix is outside). It is resolved
+/// here, so the executor works in exactly the folder checked (#600 R1
+/// a0e42a9f): a worktree the dispatch names itself must already be a folder;
+/// the registered one, when it is none here, gives way to the Project's.
+fn agent_worktree(db: &Connection, task: &str, request: &Value, worktree: Option<String>, project_dir: Option<&str>) -> Result<Option<String>> {
+    let Some(worktree) = worktree else { return Ok(None) };
+    let canonical = |path: &str| std::fs::canonicalize(path).ok();
+    let given = request.get("materials").is_some_and(|materials| materials.get("worktree").is_some());
+    match canonical(&worktree) {
+        Some(folder) => {
+            // Only as the user registered it: an Agent can write a task's materials too (#600 R2 3a54ae81).
+            let registration = dispatch_materials::registered(db, task)?;
+            let registered = registration["value"]["worktree"].as_str().filter(|_| registration["actor"]["kind"] == "user");
+            let allowed = registered.and_then(canonical).is_some_and(|registered| registered == folder)
+                || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir));
+            ensure!(allowed, "folder_not_allowed: {AGENT_FOLDER}, and {worktree} is neither; a path an Agent gives, in a dispatch's or a task's materials, is information, not permission. Ask the user to register the worktree on the task, or to dispatch it");
+            Ok(Some(folder.to_string_lossy().into_owned()))
+        }
+        None if given => bail!("folder_not_allowed: {AGENT_FOLDER}, and {worktree} is not a folder here; name one that already is"),
+        None => Ok(None),
+    }
+}
+
 fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
     let mut input = request.clone();
     input["toAgentId"] = json!(agent);
@@ -107,14 +135,16 @@ fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
 
 /// The store's task_dispatch of a template dispatch (its input names
 /// `executor`): its row, `created` for this Agent, becomes `dispatched` in the
-/// same transaction, so a dispatched task never has a failed executor.
-/// Returns the template the executor was made from, for its materials.
+/// same transaction, so a dispatched task never has a failed executor, and
+/// its executor waits for a slot. Returns the template the executor was made
+/// from, for its materials.
 pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agent: &str, dispatch: &str) -> Result<Value> {
     let at = now();
-    let template: Option<String> = db
+    let row: Option<(String, String, Option<String>, String, String)> = db
         .query_row(
-            "SELECT template_json FROM executor_dispatches WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
-            params![actor_key(actor), request, agent], |r| r.get(0))
+            "SELECT template_json, task_id, project_id, machine_id, template_id FROM executor_dispatches
+             WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
+            params![actor_key(actor), request, agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
         .optional()?;
     let moved = db.execute(
         "UPDATE executor_dispatches SET state='dispatched',dispatch_id=?4,updated_at=?5
@@ -123,7 +153,9 @@ pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agen
     )?;
     ensure!(moved == 1, "invalid_input: executor names a dispatch from an executor template, whose Agent Core makes; give toAgentId alone to dispatch to an existing Agent");
     db.execute("UPDATE agent_roles SET dispatch_id=?2,updated_at=?3 WHERE agent_id=?1 AND kind='executor'", params![agent, dispatch, at])?;
-    Ok(serde_json::from_str(&template.context("the dispatch's template is missing")?)?)
+    let (template, task, project, machine, template_id) = row.context("the dispatch's template is missing")?;
+    crate::executor_slots::enqueue(db, agent, &task, project.as_deref(), &machine, &template_id)?;
+    Ok(serde_json::from_str(&template)?)
 }
 
 impl Store {
@@ -179,10 +211,20 @@ impl Store {
             format!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}")
         })?;
         template.validate(crate::opencode_agent::enabled())?;
-        let mut folders: Vec<String> = dispatch_materials::worktree(&tx, &task.id, &request)?.into_iter().collect();
-        if let Some(project) = &project {
-            folders.extend(crate::projects::default_dir(&tx, project, "local")?);
-        }
+        let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
+        let project_dir = match &project {
+            Some(project) => crate::projects::default_dir(&tx, project, "local")?,
+            None => None,
+        };
+        // A path in a dispatch's materials is information, never permission
+        // (T-34, R6 3458f905): an Agent's executor works in the task's
+        // registered worktree or inside its Project's folder on this host,
+        // with the template's permissions. The user's may work anywhere.
+        let worktree = match author.kind.as_str() {
+            "agent" => agent_worktree(&tx, &task.id, &request, worktree, project_dir.as_deref())?,
+            _ => worktree,
+        };
+        let folders: Vec<String> = worktree.into_iter().chain(project_dir).collect();
         ensure!(
             !folders.is_empty(),
             "no_folder: an executor works in this dispatch's worktree, or else in its Project's folder on this host, and there is neither; Core makes no folder"

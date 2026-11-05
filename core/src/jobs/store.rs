@@ -828,6 +828,9 @@ impl Store {
     /// (never `passed`, so it is never counted as a passer), and once a job so
     /// marked fits, it is tried before the turns, the earliest submitted
     /// first, and starts unmarked; a head cancelled in the queue keeps no mark.
+    /// An older blocked head wins: a former head goes first only if it was
+    /// submitted before the current head, and a younger one waits for the
+    /// current head's room (review fe5c0325).
     /// So no head's share is taken, and the head starts once the jobs running
     /// before it free enough. A job short of host memory
     /// (free less headroom) is not a reservation that can be held open, so
@@ -874,6 +877,7 @@ impl Store {
         // rejects, skips or holds for another cause (a disk wait, an exclusive
         // slot, host memory, a GPU) is not a head.
         let mut head: Option<BlockedHead> = None;
+        let mut head_seq: Option<i64> = None;
         let mut first: Option<(i64, usize, String)> = None;
         if global.is_none() && !state.exclusive_active {
             for &index in &order {
@@ -899,6 +903,7 @@ impl Store {
                         if head.is_none() {
                             let name = job["name"].as_str().unwrap_or("an earlier job").to_owned();
                             head = Some(BlockedHead::new(&tx, &candidate.id, name, waits, &need, &limit)?);
+                            head_seq = Some(candidate.seq);
                         }
                     }
                     None => {
@@ -907,6 +912,11 @@ impl Store {
                         }
                     }
                 }
+            }
+            // An older blocked head wins: a younger former head waits for the
+            // current head's room like any other job (review fe5c0325).
+            if first.as_ref().zip(head_seq).is_some_and(|((seq, _, _), head)| *seq > head) {
+                first = None;
             }
         }
         let order: Vec<usize> = match &first {

@@ -150,10 +150,19 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"instructions":"x".repeat(MAX_INSTRUCTIONS + 1)})), "A template's instructions are at most 8 KiB"),
         (with(json!({"namePattern":"{title} done"})), "A name pattern can use {task} and {label}, not {title}"),
         (with(json!({"namePattern":"{task"})), "A name pattern's `{` is not closed"),
-        (with(json!({"maxConcurrent":0})), "At most 1 to 64 executors of one template at once"),
+        // T-35 S4: one sentence for every value it can't take, serde's included.
+        (with(json!({"maxConcurrent":0})), "At most at once is a whole number from 1 to 64"),
+        (with(json!({"maxConcurrent":65})), "At most at once is a whole number from 1 to 64"),
+        (with(json!({"maxConcurrent":-1})), "At most at once is a whole number from 1 to 64"),
+        (with(json!({"maxConcurrent":2.5})), "At most at once is a whole number from 1 to 64"),
+        (with(json!({"maxConcurrent":"2"})), "At most at once is a whole number from 1 to 64"),
     ] {
         let got = refused(template.clone());
         assert!(got.starts_with(says), "{template} should be refused with {says}; got: {got}");
+    }
+    for (limit, kept) in [(json!(1), Some(1)), (json!(64), Some(64)), (Value::Null, None)] {
+        let saved = parse_save(&[with(json!({"maxConcurrent":limit}))], true, &[]).unwrap();
+        assert_eq!(saved[0].max_concurrent, kept, "{limit}");
     }
     let off = parse_save(&[template("o", "opencode")], false, &[]).unwrap_err().to_string();
     assert_eq!(off, "OpenCode Agents aren't enabled on this Core");

@@ -1198,6 +1198,7 @@ impl Store {
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::agent_roles::migrate(&db)?;
+        crate::handover::migrate(&db)?;
         crate::services::migrate(&db)?;
         crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
@@ -2857,6 +2858,8 @@ impl Store {
             }
             let written = record_rows::apply(&tx, id, &plan, &d.agent)?;
             settle_open_questions(&tx, id, plan.body(), &mut d.agent, d.pending.len() as u64, &written)?;
+            // An executor's slot follows its close and reopen, in this transaction (T-35).
+            crate::executor_slots::follow_agent(&tx, &d.agent, journaled)?;
             let project_id = crate::projects::agent_project(&tx, id)?;
             tx.commit()?;
             #[cfg(test)]

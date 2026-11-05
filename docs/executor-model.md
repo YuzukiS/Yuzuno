@@ -69,7 +69,7 @@ its settings.
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
-| **At most at once** | Kept for phase 2's limit on running executors; not applied yet. |
+| **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
 
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
   that Project's template of the named id, else the Workspace's. A task in no
@@ -96,18 +96,27 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    from the template, in the task's Project, and named by the template's
    pattern. It works in the dispatch's worktree when that is a folder on this
    host, else in the Project's folder on this host. Core makes no folder: with
-   neither, the dispatch is refused.
+   neither, the dispatch is refused. When an Agent dispatches, that folder
+   must be the worktree you registered on the task or lie inside the
+   Project's folder; any other is refused, since a path an Agent gives, in a
+   dispatch's or a task's materials, is information, not permission. Your own
+   dispatch may name any folder. An Agent's task_update that re-sends
+   materials becomes the latest registrant, so a worktree you registered
+   outside the Project's folder is refused for that Agent's template dispatch
+   until you register it again or dispatch it yourself.
 3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
    result goes back to whoever dispatched.
-4. **Starts it.** The dispatch's mail is delivered once it is connected.
+4. **Queues it.** It starts when a slot is free; see
+   [Executors at once](#executors-at-once). The dispatch's mail is delivered
+   once it is connected.
 
 - **Who may.** You, or a lead of the task's Project. A task in no Project,
   only you.
 - **The answer** is a dispatch's, with `agentId`: the executor.
 - **A retry** with the same `requestId` gets the same executor and answer, and
   never makes a second executor. The same `requestId` with another payload is
-  refused. If Core stopped after dispatching but before starting the
-  executor, a retry starts it.
+  refused. If Core stopped after dispatching, the executor waits in the
+  queue and starts in turn.
 - **When it fails.** If a dispatch fails after its executor exists, Core
   closes the executor and keeps it, so you can see what happened. A retry gets
   the same failure; dispatch again with a new `requestId`. If Core stops
@@ -119,8 +128,79 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   the update is done: one that had not been made goes ahead then, and nothing
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
-- **No limit yet.** In phase 1 every executor starts at once.
 - **This host only.** A dispatch's `machineId` may be empty or `local`.
+
+## Executors at once
+
+At most this many executors run at the same time in the Workspace: 3 unless
+you change it, a whole number from 1 to 64, in Settings under **Executor
+templates**. A Project can have a limit of its own, on its page, and so can
+a template (its **At most at once**); left empty, only the Workspace's
+applies. Only you change them.
+
+- **The queue.** An executor dispatched while every slot is taken waits.
+  Core starts the next one as soon as a slot is free, in the Jobs queue's
+  order: any waiting more than 30 minutes first, then Projects in turn, each
+  Project's in the order they were dispatched. Executors in no Project take
+  their turn together. One whose Project or template is at its own limit is
+  passed by the next that has room. A Project's own template of an id has
+  its own limit; a task in a Project without one uses the Workspace's
+  template, and counts with it.
+- **What the task shows.** Its card, and `task_get` as `executorSlot`, say
+  whether its executor is queued, with its place (`position`, 1 first),
+  starting (with `reason` when its start did not finish), or running.
+- **Holding a slot.** An executor holds its slot from when it starts until
+  it is closed, by anyone and in any way. A disconnect keeps it, so
+  reconnecting never passes the limit. Closing one frees its slot for the
+  next.
+- **Connect on a queued executor** is refused, with its place in the queue,
+  and changes nothing about it. To run more at once, raise the limit: the next
+  ones start right away.
+- **A start that fails.** If the runtime refuses to start a new executor,
+  Core closes it and keeps it, and its slot goes to the next. If Core can't
+  tell whether it started, or a reopened executor fails to start, the
+  executor stays open and keeps its slot. Its task's card says its start did
+  not finish, and why, until you reconnect or close it.
+- **After a restart.** An executor that was starting waits again, at its
+  place; one that may have started keeps its slot, and so do running ones.
+  Executors open from before this version each hold a slot, as running.
+- **Executors only.** Standing Agents don't count, and Jobs keep their own
+  machine slots.
+
+## What an executor starts with
+
+An executor starts cold, with no memory of the Project. Besides its task's
+materials and its template's instructions, a dispatch from a template gives it
+two more things. Both are in its dispatch's materials (`task_get` with the
+dispatchId). The mail says where to read them; it doesn't hold them.
+
+- **The Project's handover document** (`handover`): what the Project already
+  knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
+  tabs, but no other control characters; a save with one is refused at its
+  line and column. You keep it in the Project's settings,
+  under **Handover**. Each save is a new version, kept with who wrote it and
+  why, and a save against a document that changed meanwhile is refused. The
+  settings page lists the versions and shows any past one. A Project's
+  document goes with it when the Project is deleted. An archived Project's
+  document can't change.
+- **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
+  written by Core from what it holds, in this order:
+  - the latest result;
+  - the newest comments' first lines;
+  - each linked pull request, as last observed, with the P0–P2 findings
+    of its latest completed review.
+
+  Nothing in it is read again from GitHub or a model.
+
+A dispatch to an existing Agent gets neither; that Agent already has its own
+context.
+
+A dispatch's materials are at most 128 KiB, counting only what the dispatcher
+can shorten: the task's own materials and the dispatch's. The template, the
+handover and the summary are not counted, since each has its own limit
+(instructions 8 KiB, handover 32 KiB, summary 4 KiB). So a template dispatch's
+materials are at most 128 KiB plus those three. Over the limit, the dispatch
+is refused with `materials_too_large` and nothing is dispatched.
 
 ## Phases
 

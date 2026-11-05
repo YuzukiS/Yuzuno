@@ -117,6 +117,45 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     assert!(forged.contains("whose Agent Core makes"), "{forged}");
 }
 
+/// T-35: a dispatched executor waits for its slot, from the transaction
+/// that dispatches its task; the task shows it, with its place in the queue,
+/// in its current and full views and in the task list.
+#[test]
+fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let t = task(&store, "Review", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    create(&store, &plan);
+    let slots = |store: &Store| -> i64 {
+        store.db.read().unwrap().query_row("SELECT COUNT(*) FROM executor_slots", [], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(slots(&store), 0, "created, not yet dispatched: no slot");
+    store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let executor = plan.dispatch.agent_id.clone();
+    let waiting = json!({"agentId":executor,"state":"waiting","machine":"local","position":1});
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
+    assert_eq!(current["current"]["executorSlot"], waiting, "the task's current view shows its executor's slot");
+    let full = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"full"})).unwrap();
+    assert_eq!(full["task"]["executorSlot"], waiting);
+    let listed = store.collaboration_call(None, "task_list", json!({})).unwrap();
+    assert_eq!(listed["tasks"][0]["executorSlot"], waiting);
+    store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    assert_eq!(slots(&store), 1, "a replay queues it once");
+
+    assert_eq!(store.executor_slot_next().unwrap().as_deref(), Some(executor.as_str()));
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
+    assert_eq!(current["current"]["executorSlot"], json!({"agentId":executor,"state":"starting","machine":"local"}));
+    // A task without an executor has none; nor a compact row.
+    let other = task(&store, "Plain", Some(&p), None);
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":other,"view":"current"})).unwrap();
+    assert_eq!(current["current"].get("executorSlot"), None);
+    let compact = store.collaboration_call(None, "task_list", json!({"compact":true})).unwrap();
+    assert!(compact["tasks"].as_array().unwrap().iter().all(|row| row.get("executorSlot").is_none()));
+}
+
 /// T-34: a dispatch that fails is `failed` with its error, which a retry
 /// gets again; the executor it made is named once, to be closed.
 #[test]
@@ -260,4 +299,181 @@ async fn an_executor_is_created_under_its_dispatchs_permit_while_an_update_drain
     let codex = ws.create_on_with("T-2 · Builder".into(), String::new(), cwd, String::new(), None, None, Default::default(), Some(birth)).await;
     assert!(codex.is_ok(), "a Codex executor too: {:?}", codex.err());
     drop(held);
+}
+
+/// T-34 (R6 3458f905): a path in a dispatch's materials is information,
+/// never permission. A lead's executor works in the worktree the user
+/// registered on its task or inside its Project's folder; any other folder is
+/// refused, a sibling sharing the folder's name prefix too, and a worktree an
+/// Agent registered on the task (#600 R2 3a54ae81). The user's is not.
+#[test]
+fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(path).unwrap().to_string_lossy().into_owned()
+    };
+    let (home, inside, sibling, elsewhere, registered) = (real("project"), real("project/sub"), real("project-other"), real("elsewhere"), real("registered"));
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    agent(&store, "lead");
+    let p = store.create_project("Lab", BTreeMap::from([("local".into(), home.clone())])).unwrap().id;
+    store.set_agent_project("lead", Some(&p)).unwrap();
+    crate::agent_roles::save(&store, &p, 0, vec!["lead".into()]).unwrap();
+    templates(&store, json!([reviewer()]));
+    let t = task(&store, "Review", Some(&p), Some(registered.as_str()));
+    let with = |request: &str, folder: &str| {
+        let mut input = dispatch(&t, request);
+        input["materials"] = json!({"worktree":folder});
+        input
+    };
+    // A folder made only after the check, or a link inside the Project to
+    // elsewhere, would let the executor work outside (#600 R1 a0e42a9f).
+    let later = format!("{home}/later");
+    let link = format!("{home}/link");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+    let mut outside = vec![("elsewhere", &elsewhere), ("sibling", &sibling), ("not yet", &later)];
+    if cfg!(unix) {
+        outside.push(("symlink", &link));
+    }
+    for (request, folder) in outside {
+        let refused = begun(&store, Some("lead"), with(request, folder)).err().unwrap_or_else(|| "accepted".into());
+        assert!(refused.starts_with("folder_not_allowed:"),
+            "an Agent cannot point its executor outside the task's worktree and its Project's folder ({request}): {refused}");
+    }
+    let inner = begun(&store, Some("lead"), with("inside", &inside)).unwrap();
+    assert_eq!(inner.folders[0], inside, "inside the Project's folder");
+    let dotted = begun(&store, Some("lead"), with("dotted", &format!("{inside}/../sub"))).unwrap();
+    assert_eq!(dotted.folders[0], inside, "the executor works in the folder that was checked");
+    let own = begun(&store, Some("lead"), dispatch(&t, "registered")).unwrap();
+    assert_eq!(own.folders[0], registered, "the task's registered worktree");
+    // Registered by an Agent, the same path is still only information.
+    store.collaboration_call(Some("lead"), "task_update", json!({"requestId":"re-register","taskId":t,"expectedVersion":1,
+        "patch":{"materials":{"worktree":elsewhere}}})).unwrap();
+    let mut again = dispatch(&t, "re-registered");
+    again["expectedVersion"] = json!(2);
+    let refused = begun(&store, Some("lead"), again).err().unwrap_or_else(|| "accepted".into());
+    assert!(refused.starts_with("folder_not_allowed:"), "a worktree an Agent registered on the task is no permission either: {refused}");
+    let mut user = with("user", &elsewhere);
+    user["expectedVersion"] = json!(2);
+    let user = begun(&store, None, user).unwrap();
+    assert_eq!(user.folders[0], elsewhere, "the user's executor may work anywhere");
+}
+
+/// T-34 S3a: a template dispatch's executor gets its Project's handover
+/// document and Core's summary of the task so far in its materials, and the
+/// mail says where to read them; an ordinary dispatch gets neither. The
+/// summary is at most 4 KiB, however much there is to tell.
+#[test]
+fn a_template_dispatch_carries_the_projects_handover_and_a_summary_of_the_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    agent(&store, "standing");
+    store.save_handover(&p, 0, "# Lab\nBuild with make.", Some("First notes")).unwrap();
+    let t = task(&store, "Review", Some(&p), None);
+    let uuid = crate::collaboration_store::task_key(&store.db.read().unwrap(), &t).unwrap().0;
+    store.collaboration_call(None, "task_comment", json!({"requestId":"note","taskId":t,"body":format!("Check the narrow viewport first\n{}", "x".repeat(5000))})).unwrap();
+    // Ten linked pull requests, each with a review that left findings open: more than 4 KiB to tell.
+    {
+        let db = store.db.write().unwrap();
+        db.execute("INSERT INTO github_repositories(id,data) VALUES(7,?1)", [json!({"fullName":"lab/app"}).to_string()]).unwrap();
+        for n in 1..=10 {
+            let link = format!("7:pull:{n}");
+            db.execute("INSERT INTO github_objects(id,repo_id,kind,number,data) VALUES(?1,7,'pull',?2,?3)", params![link, n,
+                json!({"snapshot":{"state":"open","headSha":"a".repeat(40),"ci":{"state":"success"}},"syncedAt":"2026-11-05T00:00:00Z"}).to_string()]).unwrap();
+            db.execute("INSERT INTO github_task_links(task_id,object_id) VALUES(?1,?2)", params![uuid, link]).unwrap();
+            let findings: Vec<Value> = (0..7).map(|f| json!({"priority": f % 4, "title": format!("Finding {f} {}", "y".repeat(300)), "path": "core/src/lib.rs"})).collect();
+            db.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'completed',?4)", params![format!("review-{n}"), uuid, link,
+                json!({"id":format!("review-{n}"),"headSha":"a".repeat(40),"conclusion":"changes_requested","findings":findings}).to_string()]).unwrap();
+        }
+    }
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let materials = &given["dispatchMaterials"];
+    assert_eq!(materials["handover"], json!({"projectId":p,"version":1,"markdown":"# Lab\nBuild with make."}), "the handover reaches the executor with its materials");
+    let summary = materials["contextSummary"].as_str().unwrap_or_default();
+    assert!(summary.contains("lab/app #1") && summary.contains("P1 Finding 1") && summary.contains("Check the narrow viewport first"),
+        "the summary tells the linked PRs, their open findings and the newest comments: {summary}");
+    assert!(!summary.contains("P3 Finding 3"), "only P0-P2 findings are told");
+    assert!(summary.len() <= 4 * 1024, "the summary is at most 4 KiB: {} bytes", summary.len());
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("dispatchMaterials.handover.markdown") && body.contains("dispatchMaterials.contextSummary") && !body.contains("Build with make"),
+        "the mail says where to read them, not what they say: {body}");
+
+    let plain = json!({"requestId":"plain","taskId":t,"expectedVersion":answer["task"]["version"],"toAgentId":"standing"});
+    let plain = store.collaboration_call(None, "task_dispatch", plain).unwrap();
+    let plain = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":plain["task"]["dispatch"]["id"]})).unwrap();
+    assert!(plain["dispatchMaterials"].get("handover").is_none() && plain["dispatchMaterials"].get("contextSummary").is_none(),
+        "an ordinary dispatch carries neither");
+}
+
+/// T-34 S3a: what a template dispatch adds is held to its own limits, not to
+/// the task's: the longest handover a Project can keep, beside the longest
+/// description a task can have, still dispatches.
+#[test]
+fn a_long_handover_never_makes_a_template_dispatch_too_large() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    // Quotes, each escaped in the materials' JSON: twice as long there.
+    let long = "\"".repeat(crate::handover::MAX_BYTES);
+    store.save_handover(&p, 0, &long, None).unwrap();
+    let t = store.collaboration_call(None, "task_create", json!({"requestId":"create long","title":"Long","projectId":p,
+        "description":"\"".repeat(32_768)})).unwrap()["task"]["id"].as_str().unwrap().to_owned();
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone());
+    let answer = answer.unwrap_or_else(|e| panic!("a dispatch is not too large for its handover: {e}"));
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    assert_eq!(given["dispatchMaterials"]["handover"]["markdown"].as_str().map(str::len), Some(crate::handover::MAX_BYTES),
+        "the whole handover is given");
+}
+
+/// T-34 S3a (#605 R3 066d114c): the summary reads only the fields it tells of
+/// a review, whatever else the review's record holds, and a review it cannot
+/// read fails the dispatch instead of being told as no review.
+#[test]
+fn a_summary_reads_only_what_it_tells_of_a_review_and_an_unreadable_review_fails_the_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let (told, broken) = (task(&store, "Told", Some(&p), None), task(&store, "Broken", Some(&p), None));
+    {
+        let db = store.db.write().unwrap();
+        db.execute("INSERT INTO github_repositories(id,data) VALUES(7,?1)", [json!({"fullName":"lab/app"}).to_string()]).unwrap();
+        db.execute("INSERT INTO github_objects(id,repo_id,kind,number,data) VALUES('7:pull:1',7,'pull',1,?1)",
+            [json!({"snapshot":{"state":"open","headSha":"a".repeat(40),"ci":{"state":"success"}},"syncedAt":"2026-11-05T00:00:00Z"}).to_string()]).unwrap();
+        for (t, data) in [
+            // A completed review's record carries its evidence as well: here 4 MiB of it.
+            (&told, json!({"id":"review-1","headSha":"a".repeat(40),"conclusion":"changes_requested",
+                "findings":[{"priority":1,"title":"Finding kept","path":"core/src/lib.rs"}],
+                "evidence":{"files":[{"patch":"z".repeat(4 << 20)}]}}).to_string()),
+            (&broken, "{not json".to_owned()),
+        ] {
+            let uuid = crate::collaboration_store::task_key(&db, t).unwrap().0;
+            db.execute("INSERT INTO github_task_links(task_id,object_id) VALUES(?1,'7:pull:1')", [&uuid]).unwrap();
+            db.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:1','completed',?3)",
+                params![format!("row-{t}"), uuid, data]).unwrap();
+        }
+    }
+    let plan = begun(&store, None, dispatch(&told, "told")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":told,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let summary = given["dispatchMaterials"]["contextSummary"].as_str().unwrap_or_default();
+    assert!(summary.contains("latest review review-1") && summary.contains("P1 Finding kept"),
+        "a review whose record holds much more still tells its findings: {summary}");
+
+    let plan = begun(&store, None, dispatch(&broken, "broken")).unwrap();
+    create(&store, &plan);
+    let failed = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).err()
+        .map_or_else(|| "dispatched".to_owned(), |e| format!("{e:#}"));
+    assert!(failed.contains("malformed JSON"), "an unreadable review is an error, not an empty summary: {failed}");
 }

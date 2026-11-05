@@ -9,23 +9,49 @@ OpenCode Agent keeps working either way.
 
 **Moving to OpenCode 2.x (T-32).** Core is moving from OpenCode 1.19.3 to 2.x,
 one part of the protocol at a time. It starts, checks and stops OpenCode as 2.x
-does, and takes any 2.x: it is checked against 2.2.5, and a newer one is noted
-in the Agent's settings, not refused. An OpenCode that is not 2.x is refused
-with the version it says it is.
+does, and takes any 2.x from 2.0.7: it is checked against 2.2.5; the routes and
+events Core reads exist from 2.0.7. A newer one is noted in the Agent's
+settings, not refused. Before 2.0.29, a turn that ended unsuccessfully while no
+stream was open shows without OpenCode's error text. An older 2.x is refused
+with both versions, saying to update it, and an OpenCode that is not 2.x is
+refused with the version it says it is.
 
 Each part moves in two steps. First the routes: what connecting, a session's
-snapshot and its event stream read now uses 2.x's own routes (`/api/…`), in
-2.x's envelope (`{data}`). Then what those carry: until their own parts land,
-the messages and their events (with a session's status), then permission
-requests and questions, keep 1.19.3's shape in Core and in its tests, inside
-2.x's envelope. Calls outside connecting still use 1.19.3's routes until their
-parts: sending a message, a command, compaction, rewind, fork, answering a
-request, interrupting, Workspace MCP and the model list. So messages to an
-OpenCode 2.x Agent do not work yet, which is why creating one stays behind the
-experimental switch. A session's status is read from the sessions 2.x lists as
-running (`/api/session/active`). Busy on the real binary is first observed in
-slice 4 (first execution, stub provider): until then only its idle reading and
-its answer's shape are checked against a real OpenCode.
+snapshot and its event stream read uses 2.x's own routes (`/api/…`), in 2.x's
+envelope (`{data}`). Then what those carry. A session's messages and their
+events are now read as 2.x writes them: one answer per step, its text,
+reasoning and tool calls in order, and an `idle` message at each turn's end.
+An answer belongs to the newest message before it in its turn, so a message
+added to a running turn is answered from the step after OpenCode takes it up.
+A message counts as delivered once 2.x admits it, as once 1.19.3 stored it; a
+whole read finds one not yet taken up in the session's inbox. Text appears as
+it streams, in batches: a batch is written out when a further piece arrives a
+quarter of a second or more after the batch began, or when the entry ends, so
+text that streams and then pauses shows at the next piece or the entry's end.
+A turn ends with 2.x's own end of its run: succeeded, failed with its error,
+or interrupted.
+Permission requests and questions still keep 1.19.3's shape inside 2.x's
+envelope until their part. Calls outside connecting still use 1.19.3's routes
+until their parts: sending a message, a command, answering a request,
+interrupting, Workspace MCP and the model list. Compaction, rewind and fork
+still read 1.19.3's messages, so on a session of 2.x's they refuse before
+doing anything ("not yet on OpenCode 2.x"); Core's tests of them use a 1.19.3
+mode of its stand-in OpenCode, removed once their parts land. So messages to
+an OpenCode 2.x Agent do not work yet, which is why creating one stays behind
+the experimental switch. A session's status is read from the sessions 2.x
+lists as running (`/api/session/active`). Busy on the real binary is first
+observed in slice 4 (first execution, stub provider): until then only its
+idle reading and its answer's shape are checked against a real OpenCode.
+
+Two things a reader of a 2.x session sees differently. Text still streaming
+when Yuzuno reads the session whole (after its stream broke, say) is what has
+streamed so far: 2.x keeps no text until its entry ends, so the read keeps
+what Yuzuno already had. And a turn running when OpenCode shut down has no
+end of 2.x's (it would resume it), so Yuzuno shows its outcome as unknown.
+
+An experimental 2.x Agent made before its data and state moved to its own
+folder leaves what OpenCode kept in the user's own folders behind, such as
+its rewind snapshots: they stay there, and the Agent no longer sees them.
 
 An OpenCode Agent made before this change was made with 1.19.3. It is kept to
 read: its conversation stays in Yuzuno, and it is never started again, because
@@ -55,8 +81,8 @@ a new one.
 - **Updates and the models list:** OpenCode is started with
   `OPENCODE_DISABLE_AUTOUPDATE=1`, although `opencode serve` 2.2.5 never
   updates itself anyway. Updating OpenCode is yours to do; Yuzuno takes any
-  2.x and notes one newer than the verified release. It is also started with
-  `OPENCODE_DISABLE_MODELS_FETCH=1`, so an OpenCode Yuzuno starts makes no
+  2.x from 2.0.7 and notes one newer than the verified release. It is also
+  started with `OPENCODE_DISABLE_MODELS_FETCH=1`, so an OpenCode Yuzuno starts makes no
   network request of its own besides your model provider's. Its models are
   the installed release's own catalog and those in your OpenCode config, so
   the list moves on with an OpenCode update.

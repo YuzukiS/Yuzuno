@@ -42,14 +42,19 @@ const fixture = () => [
   task("T-1", { status: "todo", description: "Write the guide.\n\nThen the examples.", progress: "Last slice done", result: earlier, updatedAt: ago(180) }),
   task("T-2", {
     status: "doing", progress: "Halfway through `parsing`", result: earlier, updatedAt: ago(60), description: "Parse the files",
+    executorSlot: { agentId: "e2", state: "running", machine: "local" },
     github: [pr(9, "open", "success", false), pr(8, "merged"), pr(7, "merged")],
   }),
-  task("T-3", { status: "doing", updatedAt: ago(10) }),
+  // Its executor waits for a slot, second in the queue (T-35).
+  task("T-3", { status: "doing", updatedAt: ago(10), executorSlot: { agentId: "e3", state: "waiting", machine: "local", position: 2 } }),
   task("T-4", {
     status: "review", description: "Ship it", updatedAt: ago(300),
     result: { summary: "Delivered as [PR 12](https://github.com/owner/repo/pull/12).", links: [], reportedAt: ago(300), reportedBy: person },
   }),
-  task("T-5", { status: "blocked", blocker: "Waiting on the signing keys", updatedAt: ago(2880) }),
+  task("T-5", {
+    status: "blocked", blocker: "Waiting on the signing keys", updatedAt: ago(2880),
+    executorSlot: { agentId: "e5", state: "starting", machine: "local", reason: "its start was not confirmed" },
+  }),
 ];
 
 async function mount({ reduceMotion = false } = {}) {
@@ -147,6 +152,27 @@ test("open tasks are ordered by what they wait for, newest change first, and eac
     assert.ok(!p.row("T-4").querySelector(".github-summary"), "nothing linked, nothing claimed");
     assert.match(p.row("T-3").querySelector(".collab-row-time").textContent, /min ago/);
     assert.match(p.row("T-5").querySelector(".collab-row-time").textContent, /2 d ago/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a card says where its executor stands: queued with its place, starting with why, or running (T-35)", async () => {
+  const p = await mount();
+  try {
+    const slot = (id) => p.row(id).querySelector(".collab-executor-slot");
+    assert.equal(slot("T-3")?.textContent, "Queued (number 2)", "a queued executor's card says its place");
+    assert.equal(slot("T-3").dataset.slotState, "waiting");
+    assert.match(slot("T-3").title, /waits for a free slot and starts in turn/);
+    // A start that didn't finish says why on the card itself (R1 1ec1008a P3-2).
+    assert.equal(slot("T-5").textContent, "Start not finished: its start was not confirmed");
+    assert.equal(slot("T-5").title,
+      "Its executor keeps its slot, open; its start didn't finish: its start was not confirmed. Connect starts it again; Close frees its slot.");
+    assert.equal(slot("T-2").textContent, "Running");
+    assert.equal(slot("T-2").dataset.slotState, "running");
+    // Booleans only: a failing assert must never print a jsdom node.
+    for (const id of ["T-1", "T-4"]) assert.ok(!slot(id), `${id} has no executor slot`);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
