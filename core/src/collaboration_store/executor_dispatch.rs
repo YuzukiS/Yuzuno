@@ -96,6 +96,33 @@ impl Plan {
     }
 }
 
+const AGENT_FOLDER: &str = "an executor an Agent dispatches works in the worktree the user registered on its task or inside its Project's folder on this host";
+
+/// The worktree an Agent's dispatch gives its executor: the task's registered
+/// worktree, or a folder inside the Project's, compared as canonical paths
+/// (whole components: a sibling sharing a prefix is outside). It is resolved
+/// here, so the executor works in exactly the folder checked (#600 R1
+/// a0e42a9f): a worktree the dispatch names itself must already be a folder;
+/// the registered one, when it is none here, gives way to the Project's.
+fn agent_worktree(db: &Connection, task: &str, request: &Value, worktree: Option<String>, project_dir: Option<&str>) -> Result<Option<String>> {
+    let Some(worktree) = worktree else { return Ok(None) };
+    let canonical = |path: &str| std::fs::canonicalize(path).ok();
+    let given = request.get("materials").is_some_and(|materials| materials.get("worktree").is_some());
+    match canonical(&worktree) {
+        Some(folder) => {
+            // Only as the user registered it: an Agent can write a task's materials too (#600 R2 3a54ae81).
+            let registration = dispatch_materials::registered(db, task)?;
+            let registered = registration["value"]["worktree"].as_str().filter(|_| registration["actor"]["kind"] == "user");
+            let allowed = registered.and_then(canonical).is_some_and(|registered| registered == folder)
+                || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir));
+            ensure!(allowed, "folder_not_allowed: {AGENT_FOLDER}, and {worktree} is neither; a path an Agent gives, in a dispatch's or a task's materials, is information, not permission. Ask the user to register the worktree on the task, or to dispatch it");
+            Ok(Some(folder.to_string_lossy().into_owned()))
+        }
+        None if given => bail!("folder_not_allowed: {AGENT_FOLDER}, and {worktree} is not a folder here; name one that already is"),
+        None => Ok(None),
+    }
+}
+
 fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
     let mut input = request.clone();
     input["toAgentId"] = json!(agent);
@@ -179,10 +206,20 @@ impl Store {
             format!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}")
         })?;
         template.validate(crate::opencode_agent::enabled())?;
-        let mut folders: Vec<String> = dispatch_materials::worktree(&tx, &task.id, &request)?.into_iter().collect();
-        if let Some(project) = &project {
-            folders.extend(crate::projects::default_dir(&tx, project, "local")?);
-        }
+        let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
+        let project_dir = match &project {
+            Some(project) => crate::projects::default_dir(&tx, project, "local")?,
+            None => None,
+        };
+        // A path in a dispatch's materials is information, never permission
+        // (T-34, R6 3458f905): an Agent's executor works in the task's
+        // registered worktree or inside its Project's folder on this host,
+        // with the template's permissions. The user's may work anywhere.
+        let worktree = match author.kind.as_str() {
+            "agent" => agent_worktree(&tx, &task.id, &request, worktree, project_dir.as_deref())?,
+            _ => worktree,
+        };
+        let folders: Vec<String> = worktree.into_iter().chain(project_dir).collect();
         ensure!(
             !folders.is_empty(),
             "no_folder: an executor works in this dispatch's worktree, or else in its Project's folder on this host, and there is neither; Core makes no folder"
