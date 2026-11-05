@@ -316,6 +316,8 @@ fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() 
     again["expectedVersion"] = json!(2);
     let refused = begun(&store, Some("lead"), again).err().unwrap_or_else(|| "accepted".into());
     assert!(refused.starts_with("folder_not_allowed:"), "a worktree an Agent registered on the task is no permission either: {refused}");
-    let user = begun(&store, None, with("user", &elsewhere)).unwrap();
+    let mut user = with("user", &elsewhere);
+    user["expectedVersion"] = json!(2);
+    let user = begun(&store, None, user).unwrap();
     assert_eq!(user.folders[0], elsewhere, "the user's executor may work anywhere");
 }
