@@ -275,7 +275,6 @@ type SlotRow = (String, String, String, Option<String>);
 
 /// An executor's slot row as the task card shows it, and its place in the
 /// queue (1 first) while it waits.
-
 fn view_row(db: &Connection, task: &str, positions: &HashMap<String, usize>) -> Result<Option<Value>> {
     let row: Option<SlotRow> = db
         .query_row(

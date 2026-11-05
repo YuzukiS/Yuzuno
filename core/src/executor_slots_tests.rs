@@ -21,10 +21,11 @@ fn agent_of(store: &Store, id: &str, harness: &str) {
 
 /// Executor `id`, dispatched for the task `task-<id>`, waiting in the queue.
 fn queued(store: &Store, id: &str, project: Option<&str>, machine: &str) {
-    queued_from(store, id, project, "reviewer");
+    agent(store, id);
+    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, machine, "reviewer").unwrap();
 }
 
-/// As `queued`, made from the template `template` (its id).
+/// As `queued` on this host, made from the template `template` (its id).
 fn queued_from(store: &Store, id: &str, project: Option<&str>, template: &str) {
     agent(store, id);
     enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, "local", template).unwrap();
