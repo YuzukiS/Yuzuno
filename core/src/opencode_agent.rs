@@ -142,6 +142,8 @@ pub(crate) struct Connection {
     /// Where this OpenCode keeps its snapshots can be known from how it was
     /// started (T-10 Revert), or why not.
     pub files: Arc<std::result::Result<crate::opencode_revert_files::Started, String>>,
+    /// How this connection's 2.x events read in Core's shapes (T-32 slice 3b).
+    cursor: Arc<std::sync::Mutex<crate::opencode_v2::Cursor>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -188,7 +190,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files) }
+            files: Arc::new(files), cursor: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -266,6 +268,14 @@ impl Connection {
                     if let (Some(child), Some(parent)) = (metadata["sessionId"].as_str(), metadata["parentSessionId"].as_str()) {
                         let title = part["state"]["title"].as_str().or(part["state"]["input"]["description"].as_str());
                         self.adopt(child, parent, json!({"title":title,"agent":part["state"]["input"]["subagent_type"]}));
+                    }
+                }
+                // 2.x's sub-agent tool names the session it runs as it starts (core/src/tool/plugin/subagent.ts),
+                // under the session of the answer it is part of.
+                if part["type"] == "tool" && part["tool"] == "subagent" {
+                    if let (Some(child), Some(parent)) = (metadata["sessionID"].as_str(), p["sessionID"].as_str()) {
+                        let input = &part["state"]["input"];
+                        self.adopt(child, parent, json!({"title":input["description"],"agent":input["subagent_type"].as_str().or(input["agent"].as_str())}));
                     }
                 }
             }
@@ -949,18 +959,39 @@ impl Workspace {
         let Some(c) = self.opencode_current(id, generation) else { return };
         let Some(session) = opencode::session_of(event) else { return };
         let kind = event["type"].as_str().unwrap_or("unknown");
-        c.learn(kind, event);
+        // 1.19.3's text as it streams: the completed part replaces it.
+        if kind == "message.part.delta" {
+            return;
+        }
+        // What it stands for in the shapes Core reads (T-32 slice 3b): a
+        // 2.x event read as 1.19.3's were, a 1.19.3 one as it is.
+        let read = c.cursor.lock().unwrap().read(event);
+        for one in &read {
+            c.learn(type_of(one), one);
+        }
+        // 2.x's text as it streams is written once gathered (opencode_v2),
+        // journaled as the text it wrote; not one row per delta.
+        let streamed = kind.ends_with(".delta");
+        if streamed && read.is_empty() {
+            return;
+        }
         let journal = format!("opencode/{kind}");
-        let kept = journaled(event);
+        let kept = match &read[..] {
+            [gathered] if streamed => journaled(gathered),
+            _ => journaled(event),
+        };
         if session != c.session {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
             let Some(child) = c.child(session) else { return };
-            if !requested(kind) {
+            let asked: Vec<&Value> = read.iter().filter(|one| requested(type_of(one))).collect();
+            if asked.is_empty() {
                 return;
             }
             let written = self.store.record_event(id, &journal, &kept, Sel::Open, |d| {
-                request(d, generation, session, Some(&child), event);
+                for one in &asked {
+                    request(d, generation, session, Some(&child), one);
+                }
                 refresh_status(d);
             });
             if let Err(error) = written {
@@ -969,20 +1000,23 @@ impl Workspace {
             self.changed(id);
             return;
         }
-        let written = match kind {
-            // Text as it streams: the completed part replaces it.
-            "message.part.delta" => return,
-            kind if projected(kind) => event_turns(&self.store, id, event).and_then(|turns| {
-                self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
-                    project(d, generation, &c.session, event);
-                    if kind == "message.updated" {
-                        measure(d, &c, &event["data"]["info"]);
-                    }
-                    refresh_status(d);
-                }).map(drop)
-            }),
+        let applied: Vec<&Value> = read.iter().filter(|one| projected(type_of(one)) || type_of(one) == "message.part.delta").collect();
+        let written = if applied.is_empty() {
             // Kept as evidence; it changes nothing here.
-            _ => self.store.update_meta(id, &journal, &kept, |_| {}).map(drop),
+            self.store.update_meta(id, &journal, &kept, |_| {}).map(drop)
+        } else {
+            applied.iter().try_fold(Vec::new(), |mut turns, one| {
+                turns.extend(event_turns(&self.store, id, one)?);
+                Ok::<_, anyhow::Error>(turns)
+            }).and_then(|turns| self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
+                for one in &applied {
+                    project(d, generation, &c.session, one);
+                    if type_of(one) == "message.updated" {
+                        measure(d, &c, &one["data"]["info"]);
+                    }
+                }
+                refresh_status(d);
+            }).map(drop))
         };
         if let Err(error) = written {
             eprintln!("Workspace OpenCode event not recorded: {error:#}");
@@ -1504,6 +1538,7 @@ impl Workspace {
             "OpenCode 会话里的回退要到这个会话收到下一条消息时才会删去被回退的消息，压缩会先把它应用掉；请先发一条消息，再压缩。没有执行 /compact");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有执行 /compact");
         let messages = c.server.messages(&c.session).await.context(unread)?;
+        ensure!(!crate::opencode_v2::is_v2(&messages), "{}；没有执行 /compact", crate::opencode_v2::NOT_YET);
         let (provider, model) = compact_model(&c.server, &d, &messages).await?;
         let known = compaction_messages(&messages);
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化；没有执行 /compact");
@@ -1870,10 +1905,15 @@ fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
     for message in [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str) {
         turns.extend(store.turn_holding(id, "_opencodeInputs", message)?);
     }
-    if let Some(message) = event["data"]["part"]["messageID"].as_str() {
+    // A part, or 2.x's text streamed into one (T-32 slice 3b).
+    if let Some(message) = event["data"]["part"]["messageID"].as_str().or(event["data"]["messageID"].as_str()) {
         turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
     }
     Ok(turns)
+}
+
+fn type_of(event: &Value) -> &str {
+    event["type"].as_str().unwrap_or_default()
 }
 
 /// An event as the journal keeps it: each `data:` URL in it (a file part's
@@ -1925,6 +1965,15 @@ fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
     match event["type"].as_str().unwrap_or_default() {
         "message.updated" => message(d, &p["info"]),
         "message.part.updated" => part(d, &p["part"]),
+        // 2.x's text as it streams (T-32 slice 3b), into the item of the answer it is part of.
+        "message.part.delta" => {
+            let Some(message) = p["messageID"].as_str() else { return };
+            let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some()) else { return };
+            if !turn["items"].is_array() {
+                turn["items"] = json!([]);
+            }
+            crate::opencode_v2::apply_delta(turn["items"].as_array_mut().expect("turn items"), p);
+        }
         "session.status" => status(d, &p["status"]),
         "session.error" => {
             // It names no message, so it decides no Turn: the idle that
@@ -2092,12 +2141,30 @@ fn stale(d: &mut AgentDetail) {
 /// What a snapshot holds, applied as the events it stands for would be; each
 /// part and message replaces its own, so applying one again changes nothing.
 fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot, children: &BTreeMap<String, Value>, c: &Connection) {
-    for entry in snapshot.messages.as_array().into_iter().flatten() {
+    // 2.x's messages read as 1.19.3's were (T-32 slice 3b); the live stream
+    // goes on from the turn this read finds open. 1.19.3-shaped ones, as the
+    // stand-in's 1.19.3 mode sends, are read as they are.
+    let (entries, ended) = if crate::opencode_v2::is_v2(&snapshot.messages) {
+        let read = crate::opencode_v2::read_messages(&snapshot.messages);
+        c.cursor.lock().unwrap().resumed(read.open);
+        (read.messages, read.ended)
+    } else {
+        (snapshot.messages.as_array().cloned().unwrap_or_default(), Vec::new())
+    };
+    for entry in &entries {
         message(d, &entry["info"]);
         for p in entry["parts"].as_array().into_iter().flatten() {
             part(d, p);
         }
         measure(d, c, &entry["info"]);
+    }
+    // How a turn that ended while no stream was open ended, as its idle message says (2.x).
+    for end in &ended {
+        let Some(error) = &end.error else { continue };
+        if let Some(turn) = d.turns.iter_mut().find(|t| t["status"] == "inProgress"
+            && (t["id"] == end.user.as_str() || t["_opencodeInputs"].get(&end.user).is_some())) {
+            turn["_opencodeSessionError"] = error.clone();
+        }
     }
     // This process's requests are what it has pending now; it answered or
     // dropped the others while no stream was open.
@@ -2240,7 +2307,17 @@ fn part(d: &mut AgentDetail, part: &Value) {
     }
     let items = turn["items"].as_array_mut().expect("turn items");
     match items.iter_mut().find(|i| i["id"] == item["id"]) {
-        Some(existing) => *existing = item,
+        Some(existing) => {
+            // 2.x stores no text until its entry ends, so a read in mid-step,
+            // or its entry's start, says "" of text already streamed: that is kept (T-32 slice 3b).
+            let mut item = item;
+            for (slot, shown) in [("/text", "/text"), ("/summary/0", "/summary/0")] {
+                if item.pointer(slot) == Some(&json!("")) && existing.pointer(shown).is_some_and(|t| t.as_str().is_some_and(|t| !t.is_empty())) {
+                    *item.pointer_mut(slot).expect("slot") = existing.pointer(shown).expect("shown").clone();
+                }
+            }
+            *existing = item;
+        }
         None => items.push(item),
     }
 }
@@ -2524,7 +2601,7 @@ fn settle(turn: &mut Value) {
 fn halted(error: &Value) -> Option<&'static str> {
     match error["name"].as_str()? {
         "MessageAbortedError" => Some("interrupted"),
-        "APIError" | "ProviderAuthError" | "MessageOutputLengthError" => Some("failed"),
+        "APIError" | "ProviderAuthError" | "MessageOutputLengthError" | crate::opencode_v2::EXECUTION_FAILED => Some("failed"),
         _ => None,
     }
 }
