@@ -134,6 +134,42 @@ test("the error banner shows in its own slot over what is below, and leaves when
   } finally { p.close(); }
 });
 
+test("as the next read answers, the banner that leaves is the one that showed, on its way out, never a second alert (T-19 HM:H2, PR 620 R1)", async () => {
+  let fail = true;
+  const p = mount((url) => {
+    if (!url.endsWith("/api/home")) return others(url);
+    if (fail) { fail = false; return { status: 503, body: { error: "Core is restarting" } }; }
+    return home();
+  });
+  // jsdom has no CSS: an exit-small token, so the banner takes its way out as it does in a browser.
+  const computed = p.w.getComputedStyle.bind(p.w);
+  p.w.getComputedStyle = (el, pseudo) => {
+    const style = computed(el, pseudo);
+    if (el !== p.doc.documentElement) return style;
+    return new Proxy(style, { get: (target, key) => (key === "getPropertyValue"
+      ? (name) => (name === "--motion-exit-small" ? "130ms" : target.getPropertyValue(name))
+      : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  };
+  try {
+    p.w.renderHome("ws");
+    await until(() => p.doc.querySelector(".home-error-banner"), "the banner");
+    const banner = p.doc.querySelector(".home-error-banner");
+    const alerts = [];
+    new p.w.MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (node.nodeType === 1 && (node.matches('[role="alert"]') || node.querySelector('[role="alert"]'))) alerts.push(node);
+    }).observe(p.doc.body, { childList: true, subtree: true });
+    refresh(p).click();
+    await until(() => banner.classList.contains("is-leaving") || !banner.isConnected, "the banner leaving");
+    assert.equal(banner.isConnected, true, "the banner that showed is the one that leaves");
+    assert.equal(banner.classList.contains("is-leaving"), true, "on its way out");
+    await until(() => !p.doc.querySelector(".home-error-banner"), "the banner gone");
+    assert.equal(alerts.length === 0, true, "no second alert was put in its place");
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test("a moved panel's arrow keeps the focus while the order saves, after, and as a refused order puts it back; unavailable arrows say so and stay focusable (T-19 HM:H7)", async () => {
   let order = ["p1", "p2"];
   const saves = [];

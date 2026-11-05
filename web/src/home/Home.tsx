@@ -174,7 +174,9 @@ export function Home({
   const banner = useDelayedPresence(!!error, 0);
   const lastError = useRef(errorState);
   if (error) lastError.current = errorState;
-  const bannerError = error ?? (banner.leaving && lastError.current?.workspaceId === workspaceId ? lastError.current : null);
+  // While the banner is shown, the error it says stays: when the next read answers, the same banner takes its way
+  // out (is-leaving, set after that render), never unmounted and put back as a second alert (#620 R1).
+  const bannerError = error ?? (banner.shown && lastError.current?.workspaceId === workspaceId ? lastError.current : null);
   const setError = useCallback((value: HomeError | null) => {
     if (activeWorkspace.current === workspaceId) setErrorState(value ? { workspaceId, ...value } : null);
   }, [workspaceId]);
