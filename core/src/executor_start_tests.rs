@@ -466,3 +466,58 @@ async fn two_passes_settle_an_ended_start_once() {
     assert_eq!(rebuild_state(&lab, &first).map(|r| r.0).as_deref(), Some("done"));
     assert_eq!(lab.ws.store.agents().unwrap().iter().filter(|a| a.kind.as_deref() == Some("executor")).count(), 2, "one rebuild");
 }
+
+/// R2 de2313b7 P3-1: an executor a pass has just taken is that pass's to
+/// start: it joins the in-flight set before its row reads starting. A test
+/// meeting point holds the pass right after its take while another pass
+/// runs; that one settles nothing, though the executor, reopened, still
+/// shows an earlier start's error.
+#[tokio::test]
+async fn a_pass_that_just_took_a_slot_keeps_its_start_from_other_passes() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    let task = lab.task("Review the reopened one, taken again").await;
+    let first = lab.dispatch(&task, "taken-again").await;
+    lab.ws.store.db.write().unwrap().execute("UPDATE executor_slots SET attempt=2 WHERE agent_id=?1", [&first]).unwrap();
+    lab.ws.store.update(&first, "runtime/error", &json!({}), |d| {
+        d.agent.status = "error".into();
+        d.agent.error = Some("an earlier start failed".into());
+    }).unwrap();
+    let meet = Arc::new(tokio::sync::Barrier::new(2));
+    *lab.ws.executor_slots.take_meet.lock().unwrap() = Some(meet.clone());
+    let ws = lab.ws.clone();
+    let taking = tokio::spawn(async move { ws.executor_slots_pass().await });
+    until("the pass took its slot", || lab.slot(&first).0 == "starting").await;
+    *lab.ws.executor_slots.take_meet.lock().unwrap() = None;
+    let other = lab.ws.executor_slots_pass().await;
+    assert!(other.is_empty(), "a pass in the gap settles nothing: it spawned {}", other.len());
+    let _ = tokio::time::timeout(Duration::from_secs(5), meet.wait()).await;
+    for started in taking.await.unwrap() {
+        started.await.unwrap();
+    }
+    // Its own pass started it; that start failed too, and S1's rule keeps it open.
+    assert_eq!(lab.slot(&first).0, "starting");
+    assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_none());
+}
+
+/// R2 de2313b7 P3-2: S1's rule wins for a reopened executor (attempt 2)
+/// whose start passes the time limit: Core neither closes nor rebuilds it;
+/// it keeps its slot, with the cut-off reason, until the user closes it.
+#[tokio::test]
+async fn a_reopened_executor_cut_off_by_the_time_limit_stays_open() {
+    let lab = Lab::new(silent).await;
+    lab.quiet();
+    *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
+    let task = lab.task("Review the reopened slow one").await;
+    let first = lab.dispatch(&task, "reopened-slow").await;
+    lab.ws.store.db.write().unwrap().execute("UPDATE executor_slots SET attempt=2 WHERE agent_id=?1", [&first]).unwrap();
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_none(), "a reopened executor cut off by the limit stays open");
+    let (state, reason, _, _) = lab.slot(&first);
+    assert_eq!((state.as_str(), reason.as_deref()), ("starting", Some("its start did not finish within 1 s, the Workspace's limit")),
+        "with its slot and why");
+    assert_eq!(rebuild_state(&lab, &first), None, "and is not rebuilt");
+    assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
+}

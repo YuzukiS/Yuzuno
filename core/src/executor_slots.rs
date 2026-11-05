@@ -39,7 +39,7 @@ use axum::{extract::{Path, Query, State as AxumState}, routing::{get, put}, Json
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::{Arc, OnceLock}, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex, OnceLock}, time::Duration};
 
 /// Executors running at once in the Workspace, unless the user saved another number.
 pub(crate) const DEFAULT_SLOTS: i64 = 3;
@@ -159,6 +159,19 @@ struct Waiting {
     project: Option<String>,
     machine: String,
     template: String,
+}
+
+/// The executor a pass takes: starting, and its Project the one served last.
+fn take(tx: &Connection, agent: &str, key: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE executor_slots SET state='starting',since=?2,reason=NULL WHERE agent_id=?1 AND state='waiting'",
+        params![agent, now()],
+    )?;
+    tx.execute(
+        "INSERT INTO executor_queue_state(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        [json!({"lastProject": key}).to_string()],
+    )?;
+    Ok(())
 }
 
 /// The waiting executors in queue order (jobs/queue.rs `order`, the Jobs
@@ -398,7 +411,10 @@ impl Store {
     /// marks connected ones running, then takes the first waiting executor in
     /// queue order whose Project, machine and template have room, when the
     /// Workspace has, and sets it starting. Returns it, for its runtime to start.
-    pub(crate) fn executor_slot_next(&self) -> Result<Option<String>> {
+    /// `in_flight`: the executors passes are starting or settling. The one
+    /// taken joins them before its row reads starting, so no other pass
+    /// settles a start this one is making (R2 de2313b7).
+    pub(crate) fn executor_slot_next(&self, in_flight: &Mutex<HashSet<String>>) -> Result<Option<String>> {
         if !pending(&*self.db.read()?)? {
             return Ok(None);
         }
@@ -422,23 +438,24 @@ impl Store {
                 if room(waiting.project.as_ref().and_then(|p| projects.get(p)), project_cap)
                     && room(machines.get(&waiting.machine), machine_cap)
                     && template_room
+                    && in_flight.lock().unwrap().insert(waiting.agent.clone())
                 {
                     chosen = Some((waiting, key));
                     break;
                 }
             }
         }
-        if let Some((waiting, key)) = &chosen {
-            tx.execute(
-                "UPDATE executor_slots SET state='starting',since=?2,reason=NULL WHERE agent_id=?1 AND state='waiting'",
-                params![waiting.agent, now()],
-            )?;
-            tx.execute(
-                "INSERT INTO executor_queue_state(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-                [json!({"lastProject": key}).to_string()],
-            )?;
+        let took = match &chosen {
+            Some((waiting, key)) => take(&tx, &waiting.agent, key),
+            None => Ok(()),
         }
-        tx.commit()?;
+        .and_then(|()| Ok(tx.commit()?));
+        if took.is_err() {
+            if let Some((waiting, _)) = &chosen {
+                in_flight.lock().unwrap().remove(&waiting.agent);
+            }
+        }
+        took?;
         Ok(chosen.map(|(waiting, _)| waiting.agent))
     }
 
@@ -605,8 +622,8 @@ pub(crate) struct State {
     started: OnceLock<()>,
     /// The executors whose start a pass began and has not settled (S2): a
     /// pass settles another start that ended without its runtime only when
-    /// it is not one of these.
-    pub(crate) in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// it is not one of these. Shared with the take that adds one.
+    pub(crate) in_flight: Arc<Mutex<HashSet<String>>>,
     /// A test's start time limit, below the 30 s a user can save.
     #[cfg(test)]
     pub(crate) start_limit: std::sync::Mutex<Option<Duration>>,
@@ -617,6 +634,10 @@ pub(crate) struct State {
     /// A test that runs every pass itself: no dispatch spawns one.
     #[cfg(test)]
     pub(crate) quiet: std::sync::atomic::AtomicBool,
+    /// A test's meeting point for a pass that has just taken a slot, before
+    /// it starts that executor: it waits there, up to five seconds.
+    #[cfg(test)]
+    pub(crate) take_meet: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become
@@ -672,9 +693,16 @@ impl Workspace {
         self.finish_rebuilds(&mut started).await;
         loop {
             let Ok(permit) = self.admission.enter_work() else { break };
-            match self.stored(|store| store.executor_slot_next()).await {
+            let in_flight = self.executor_slots.in_flight.clone();
+            match self.stored(move |store| store.executor_slot_next(&in_flight)).await {
                 Ok(Some(agent)) => {
-                    self.executor_slots.in_flight.lock().unwrap().insert(agent.clone());
+                    #[cfg(test)]
+                    {
+                        let meet = self.executor_slots.take_meet.lock().unwrap().clone();
+                        if let Some(meet) = meet {
+                            let _ = tokio::time::timeout(Duration::from_secs(5), meet.wait()).await;
+                        }
+                    }
                     started.push(self.start_in_slot(agent, permit));
                 }
                 Ok(None) => break,
@@ -732,9 +760,14 @@ impl Workspace {
             // ended; recorded as settling before that close, as a refused
             // start is (R1 dde34160).
             Err(_) => {
-                if attempt == 1 {
-                    self.settling(id, &format!("its start did not finish within {} s, the Workspace's limit", limit.as_secs())).await?;
+                let cut = format!("its start did not finish within {} s, the Workspace's limit", limit.as_secs());
+                // Reopened by the user: S1's rule, the limit does not close it.
+                // It stays open with its slot and why; the user closes it (R2 de2313b7).
+                if attempt > 1 {
+                    self.failed(id, &anyhow::anyhow!(cut.clone())).await;
+                    return self.settle_start(id, permit, Failure::Definite(cut), false).await;
                 }
+                self.settling(id, &cut).await?;
                 let closed = self.close_agent_admitted(id, permit).await.map(drop);
                 let failure = cut_off(&closed, limit);
                 if let Failure::Uncertain(why) = &failure {

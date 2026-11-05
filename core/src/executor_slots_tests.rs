@@ -62,7 +62,7 @@ fn limit(store: &Store, key: &str, slots: i64) {
 
 /// What the scheduler starts, pass after pass, until it starts none.
 fn started(store: &Store) -> Vec<String> {
-    std::iter::from_fn(|| store.executor_slot_next().unwrap()).collect()
+    std::iter::from_fn(|| store.executor_slot_next(&Default::default()).unwrap()).collect()
 }
 
 fn view(store: &Store, task: &str) -> Option<Value> {

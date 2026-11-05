@@ -172,7 +172,9 @@ applies. Only you change them.
   Its card says its start did not finish, and why, and a dispatching Agent
   gets one mail. Core neither closes nor rebuilds it, so two executors never
   work in one folder: connect it to check, or close it to free its slot. A
-  reopened executor whose start fails stays open the same way.
+  reopened executor whose start fails stays open the same way. So does one
+  the time limit cut off: it keeps its slot, with the reason, until you close
+  it.
 - **The first dispatch** reads as superseded once its executor is rebuilt:
   `task_get` with its `dispatchId` says by which dispatch, and why. A retry
   of its `requestId` still gets its recorded answer.
