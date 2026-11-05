@@ -28,6 +28,9 @@ import urllib.request
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
+# The lab Core (core/examples/local_jobs_lab.rs) runs only in a target/t47/lab-*
+# directory, the root every lab check shares; this check's report goes under
+# target/t38 unless the Job names its own path in T38_LAB_REPORT.
 LAB = ROOT / 'target' / 't47' / ('lab-' + uuid.uuid4().hex[:10])
 PORT = int(os.environ.get('T38_LAB_PORT', '4491'))
 BASE = 'http://127.0.0.1:' + str(PORT)
@@ -221,7 +224,8 @@ def main():
             for key in ('supervisorUnit', 'unit'):
                 subprocess.run(['systemctl', '--user', 'stop', saved[key]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
                 subprocess.run(['systemctl', '--user', 'reset-failed', saved[key]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-        out = Path(os.environ.get('T38_LAB_REPORT', str(LAB / 'report.json')))
+        out = Path(os.environ.get('T38_LAB_REPORT', str(ROOT / 'target' / 't38' / ('backfill-report-' + LAB.name + '.json'))))
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(REPORT, ensure_ascii=False, indent=2) + '\n')
         print(str(out), flush=True)
 
