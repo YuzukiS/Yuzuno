@@ -29,3 +29,42 @@
     display: none;
   }
 }
+/* The connection banners reveal over small and leave over exit-small (T-19
+   SH:M04, SH:M06): their row opens from nothing, so what is below moves
+   down with it rather than in one frame. Under reduced motion they are there
+   and gone at once. Retry, while its read is on its way, says so; its icon
+   turns only with motion allowed (SH:M05). */
+.banner-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  flex-shrink: 0;
+  animation: banner-in var(--motion-small) var(--ease-standard);
+}
+.banner-reveal.is-leaving {
+  animation: banner-out var(--motion-exit-small) var(--ease-exit) forwards;
+}
+.banner-reveal-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+@keyframes banner-in {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+@keyframes banner-out {
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .banner-reveal,
+  .banner-reveal.is-leaving {
+    animation: none;
+  }
+  .connection-banner .retrying .spin {
+    animation: none;
+  }
+}

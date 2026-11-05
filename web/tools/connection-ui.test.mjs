@@ -79,9 +79,11 @@ test("Codex catalog failure leaves Core connected and Claude usable; all indicat
   } finally { p.close(); }
 });
 test("SSE failure is separate from HTTP; quiet open streams stay healthy; reopening refreshes", async () => {
-  const p = await mount();
+  // A deadline past the 600 ms a drop must last before its banner shows
+  // (T-19 SH:M06): the stalled stream is replaced only after it.
+  const p = await mount({ deadlineMs: 1000 });
   try {
-    await pause(220); // No business events, including beyond the test read deadline.
+    await pause(1100); // No business events, including beyond the test read deadline.
     core(p, "Core connected");
     assert.ok(p.d.querySelector(".event-connection-banner") === null, ".event-connection-banner is absent");
     p.f.scenario("sse");
@@ -113,6 +115,8 @@ test("HTTP 500 with an open SSE stream reports update failure, not an offline Co
   try {
     p.f.scenario("http500");
     await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core update failed");
+    // The banner, once the failure has held 600 ms (T-19 SH:M04).
+    await until(() => p.d.querySelector(".core-connection-banner"), "the banner");
     core(p, "Core update failed"); retained(p);
     assert.match(p.d.querySelector(".core-connection-banner").textContent, /HTTP 500/);
     assert.match(p.d.querySelector(".core-connection-banner").textContent, /Live updates connected/);
@@ -233,6 +237,7 @@ test("after an offline report, a read with no answer reads Core unreachable thou
     p.f.network(false);
     p.f.scenario("fetch-down");
     await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core unreachable");
+    await until(() => banner(p)?.getAttribute("role") === "alert", "the failure's banner");
     core(p, "Core unreachable"); retained(p);
     assert.equal(banner(p).getAttribute("role"), "alert");
     assert.match(banner(p).textContent, /No answer from Core over the network\./);
@@ -255,6 +260,7 @@ test("an offline report does not hide HTTP, JSON or deadline failures as unreach
     p.f.network(false);
     p.f.scenario("http500");
     await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core update failed");
+    await until(() => banner(p)?.textContent.includes("HTTP 500"), "the failure's banner");
     assert.match(banner(p).textContent, /HTTP 500/);
     assert.doesNotMatch(banner(p).textContent, /No answer from Core/);
     p.f.mode = "invalid-json"; p.f.refresh();
@@ -268,6 +274,88 @@ test("an offline report does not hide HTTP, JSON or deadline failures as unreach
     p.f.mode = "ok"; p.f.release(); p.f.network(true); p.f.refresh();
     await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core connected");
     retained(p);
+  } finally { p.close(); }
+});
+test("the live events down or the browser offline for less than 600 ms show no banner; held longer, it shows (T-19 SH:M04, SH:M06)", async () => {
+  const p = await mount({ deadlineMs: 1000 });
+  try {
+    // Looked for every 15 ms through the drop and past 600 ms after it, so a banner shown even briefly is seen.
+    const seen = async (selector, ms) => {
+      let shown = false;
+      for (const end = Date.now() + ms; Date.now() < end; await pause(15)) if (p.d.querySelector(selector)) shown = true;
+      return shown;
+    };
+    p.f.emit("error");
+    const drop = seen(".event-connection-banner", 900);
+    await pause(300);
+    p.f.emit("open");
+    assert.equal(await drop, false, "no banner for the live events down 300 ms");
+    p.f.network(false);
+    const report = seen(".core-connection-banner", 900);
+    await pause(300);
+    p.f.network(true);
+    assert.equal(await report, false, "no banner for the browser offline 300 ms");
+    p.f.emit("error");
+    await pause(400);
+    assert.equal(!!p.d.querySelector(".event-connection-banner"), false, "none yet 400 ms in");
+    await until(() => p.d.querySelector(".event-connection-banner"), "the live events' banner");
+    p.f.emit("open");
+    await until(() => !p.d.querySelector(".event-connection-banner"), "the banner gone");
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+test("Retry says Retrying… and is busy until the read it asked for is over, after a read already on its way too (T-19 SH:M05)", async () => {
+  const p = await mount({ holdPoll: true, deadlineMs: 10_000 });
+  try {
+    p.f.network(false);
+    await until(() => banner(p)?.textContent.includes("Browser reports offline"), "the offline report");
+    const retry = () => banner(p).querySelector("button");
+    const workspaceHeld = () => p.f.held.some((h) => h.path === "/api/workspace");
+    assert.equal(retry().textContent.trim(), "Retry");
+    p.f.mode = "hang";
+    retry().click();
+    await until(workspaceHeld, "the read Retry asked for");
+    await pause(30);
+    assert.equal(retry().textContent.trim(), "Retrying…", "Retry says it is retrying");
+    assert.equal(retry().getAttribute("aria-busy"), "true");
+    assert.equal(!!retry().querySelector("svg.spin"), true, "its icon turns");
+    p.f.mode = "ok"; p.f.release();
+    await until(() => retry().textContent.trim() === "Retry", "Retry, that read over");
+    assert.equal(retry().hasAttribute("aria-busy"), false);
+    assert.equal(!!retry().querySelector("svg.spin"), false);
+    // Pressed while another read is on its way: the read it asked for runs after that one.
+    p.f.mode = "hang"; p.f.refresh();
+    await until(workspaceHeld, "a read on its way");
+    retry().click();
+    await pause(30);
+    assert.equal(retry().textContent.trim(), "Retrying…");
+    p.f.release();
+    await until(workspaceHeld, "the read Retry asked for, next");
+    await pause(30);
+    assert.equal(retry().textContent.trim(), "Retrying…", "still retrying while the read it asked for waits its turn");
+    p.f.mode = "ok"; p.f.release();
+    await until(() => retry().textContent.trim() === "Retry", "Retry, its read over");
+    p.f.network(true);
+    await until(() => banner(p) === null, "the banner gone");
+    assert.equal(p.f.calls.filter(c => c.method !== "GET").length, 0);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+test("a newer revision of the shared Appearance preset, applied here in the background, says so in a toast (T-19 ST:SA7)", async () => {
+  const p = await mount({
+    storage: {
+      "yuzuno.appearance": JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }),
+      "yuzuno.appearanceFollow": JSON.stringify({ workspaces: { [FIXTURE_WORKSPACE]: { revision: 1 } } }),
+    },
+    before: (f) => { f.preset = { version: 1, revision: 2, savedAt: "2026-11-05T06:00:00.000Z", savedVia: "remote", appearance: { palette: "pine" } }; },
+  });
+  try {
+    await until(() => p.d.documentElement.dataset.palette === "pine", "revision 2 applied");
+    await until(() => [...p.d.querySelectorAll('.toast[role="status"]')]
+      .some((toast) => toast.textContent.includes("Appearance updated from this Workspace's shared preset")), "the toast saying so");
+    assert.equal(JSON.parse(p.w.localStorage.getItem("yuzuno.appearanceFollow")).workspaces[FIXTURE_WORKSPACE].revision, 2);
+    assert.equal(p.f.calls.filter(c => c.method !== "GET").length, 0);
+    assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 test("a page opened while the browser reports offline does not claim a read worked before one has (T-170)", async () => {

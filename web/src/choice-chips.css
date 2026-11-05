@@ -87,6 +87,15 @@
   font-size: calc(8.5px + var(--font-adjust, 3px));
   font-weight: 400;
 }
+/* A status after the choices, such as a catalog still loading, a chip high. */
+.choice-chip-row > .choice-chip-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
 /* An action after the choices, such as "Add SSH machine", reads as a quiet
    chip of its own. */
 .choice-chip-row > .choice-chip-action {

@@ -208,6 +208,23 @@
   gap: 6px;
   white-space: nowrap;
 }
+/* A confirmation that opens below a setting's actions before something is
+   discarded (T-19 ST:SX-65, SX-105): its buttons, like other confirms',
+   never move under the pointer. */
+.settings-confirm {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.settings-confirm p {
+  margin: 0 0 6px;
+}
+.settings-confirm-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 /* A row that only ends a group: its action sits on the right. */
 .settings-row-end {
   justify-content: flex-end;

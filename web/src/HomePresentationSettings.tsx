@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
+import { useRevealIn } from "./surface";
 
 type Style = "default" | "visual";
 type Presentation = {
@@ -37,6 +38,9 @@ const text = strings({
   receiveHelp:
     "Agents that write this Workspace's Home get it with the next Brief they read or result they publish, including sessions already running. It never replaces exact figures, hides limits or risks, or changes what an Agent may do.",
   restore: "Restore default",
+  restoreLabel: "Restore the Home default",
+  restoreAsk: "Restore the default? What you changed here and haven't saved is discarded.",
+  keepEditing: "Keep editing",
   saving: "Saving…",
   save: "Save Home preference",
   loading: "Loading…",
@@ -60,6 +64,9 @@ const text = strings({
   receiveHelp:
     "为此 Workspace 的 Home 撰写内容的 Agent，会在下一次读取 Brief 或发布结果时收到它，包括已在运行的会话。它从不替代确切数字、隐藏限制或风险，也不改变 Agent 可以做的事。",
   restore: "恢复默认",
+  restoreLabel: "恢复 Home 默认设置",
+  restoreAsk: "恢复默认？你在这里做了但尚未保存的更改将被丢弃。",
+  keepEditing: "继续编辑",
   saving: "正在保存…",
   save: "保存 Home 偏好",
   loading: "正在加载…",
@@ -77,6 +84,25 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Restore default with unsaved changes asks first, in a confirmation that
+  // opens below the actions and takes focus; after a restore the
+  // presentation's select has it, as the actions row goes (T-19 ST:SX-65).
+  const [confirming, setConfirming] = useState(false);
+  const revealBox = useRef<HTMLDivElement>(null);
+  const confirmBox = useRef<HTMLDivElement>(null);
+  const restoreButton = useRef<HTMLButtonElement>(null);
+  const select = useRef<HTMLSelectElement>(null);
+  const restored = useRef(false);
+  useRevealIn(revealBox, confirming || null);
+  useLayoutEffect(() => {
+    if (confirming) confirmBox.current?.focus({ preventScroll: true });
+  }, [confirming]);
+  useLayoutEffect(() => {
+    if (restored.current && !saving) {
+      restored.current = false;
+      select.current?.focus();
+    }
+  }, [saving]);
   const adopt = (value: Presentation) => {
     setSaved(value);
     setStyle(value.style);
@@ -109,6 +135,11 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
   }
   const changed = !!saved && (style !== saved.style || collapsed(note) !== saved.note);
   const isDefault = !!saved && saved.style === "default" && !saved.note;
+  function restore() {
+    setConfirming(false);
+    restored.current = true;
+    void save({ style: "default", note: "" });
+  }
   return (
     <section id="settings-home" className="settings-section home-presentation-settings" aria-label={t.section}>
       <header className="settings-section-heading">
@@ -131,6 +162,7 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
               <span className="settings-row-help">{style === "visual" ? t.visualHelp : t.standardHelp}</span>
             </span>
             <select
+              ref={select}
               className="settings-select"
               aria-label={t.presentationLabel}
               value={style}
@@ -168,10 +200,11 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
               <div className="settings-row-action">
                 {!isDefault && (
                   <button
+                    ref={restoreButton}
                     type="button"
                     className="secondary-button"
                     disabled={saving}
-                    onClick={() => void save({ style: "default", note: "" })}
+                    onClick={() => (changed ? setConfirming(true) : restore())}
                   >
                     {t.restore}
                   </button>
@@ -186,6 +219,28 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
                     {saving ? t.saving : t.save}
                   </button>
                 )}
+              </div>
+            </div>
+          )}
+          {confirming && (
+            <div className="reveal" ref={revealBox}>
+              <div className="settings-confirm" role="group" aria-label={t.restoreLabel} ref={confirmBox} tabIndex={-1}>
+                <p>{t.restoreAsk}</p>
+                <span className="settings-confirm-actions">
+                  <button type="button" className="secondary-button" disabled={saving} onClick={restore}>
+                    {t.restore}
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    onClick={() => {
+                      setConfirming(false);
+                      restoreButton.current?.focus();
+                    }}
+                  >
+                    {t.keepEditing}
+                  </button>
+                </span>
               </div>
             </div>
           )}

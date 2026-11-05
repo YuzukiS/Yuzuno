@@ -285,9 +285,11 @@ test("a session already in the workspace opens that Agent and imports nothing", 
     button(page, "Fix the build").click();
     await tick();
     assert.match(page.document.body.textContent, /Already in your workspace/);
+    // In this pane: New agent's own form, with its Project, stays in the
+    // dialog, hidden (T-19 ST:SX-02).
     assert.equal(
-      page.document.querySelector('[aria-label="Project"]'),
-      null,
+      page.document.querySelector('.claude-session-import [aria-label="Project"]') === null,
+      true,
       "nothing to choose for an existing Agent",
     );
     button(page, "Open agent").click();
