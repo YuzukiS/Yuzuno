@@ -232,6 +232,8 @@ test("an OpenCode Agent's settings choose only its model and that model's varian
     const dialog = page.document.querySelector('[role="dialog"]');
     assert.ok(dialog !== null, "the dialog opens");
     assert.match(dialog.textContent, /Permissions stay OpenCode’s own configuration/);
+    assert.match(dialog.textContent, /its release’s own catalog of models and those in your OpenCode config, since an OpenCode Yuzuno starts fetches no newer list/,
+      "where its models come from (T-32, Lead 4870)");
     assert.ok(page.calls.some((call) => call.url.endsWith("/agents/oc/models")), "its own OpenCode's models are read");
     const offered = (label) => [...(group(page, label)?.querySelectorAll("input") || [])].map((input) => input.value);
     assert.deepEqual(offered("Model"), ["", "deepseek/deepseek-flash", "openrouter/anthropic/claude-x"], "OpenCode's default, then its list");

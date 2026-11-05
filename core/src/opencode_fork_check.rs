@@ -260,9 +260,12 @@ pub(crate) fn known(sessions: impl IntoIterator<Item = String>) -> Map<String, V
 }
 
 /// Two folder answers (`GET /path`) and project IDs naming the same place:
-/// a fork's target must keep its snapshots where its source does.
+/// a fork's target must keep its snapshots where its source does. Not its
+/// state: each Agent's OpenCode keeps its data and state in the Agent's own
+/// folder (T-32 slice 3a), so a fork's target has its own; where it finds its
+/// source's snapshots on 2.x is the fork slice's to decide.
 pub(crate) fn same_place(source: &(Value, String), target: &(Value, String)) -> Result<()> {
-    for name in ["home", "state", "config", "worktree", "directory"] {
+    for name in ["home", "config", "worktree", "directory"] {
         ensure!(source.0[name].is_string() && source.0[name] == target.0[name], "新 Agent 的 OpenCode 的 {name} 与原 Agent 的不同；没有登记");
     }
     ensure!(!source.1.is_empty() && source.1 == target.1, "新 Agent 的 OpenCode 的项目与原 Agent 的不同；没有登记");
