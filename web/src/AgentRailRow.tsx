@@ -195,7 +195,7 @@ export function AgentRailRow({
               ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check
               : undefined
           }
-          data-combined={combined || undefined}
+          data-combined={combined || !!unseen || undefined}
         >
           <span className={`status-dot ${agent.status}`} aria-hidden="true" />
           {label}

@@ -2740,7 +2740,7 @@ test("Needs you lists an open question and opens its conversation; Turn ends not
   const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome(), storage: startOnSora });
   try {
     await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "the question is listed");
-    const unseen = (outcome) => [...p.doc.querySelectorAll(`[data-unseen="${outcome}"] [data-unseen-agent]`)].map((b) => b.dataset.unseenAgent);
+    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
     assert.deepEqual(unseen("failed"), ["a"]);
     assert.deepEqual(unseen("finished"), ["b"]);
     // The rail says so too, in the list's order: Appearance chose none.
@@ -2758,8 +2758,8 @@ test("Needs you lists an open question and opens its conversation; Turn ends not
     await waitFor(() => railLabel(p, "b") === "Ready", "Hana's label");
     assert.equal(railLabel(p, "a"), "Failed · unseen");
     p.button("Home").click();
-    await waitFor(() => p.doc.querySelector('[data-unseen="failed"]'), "Home again");
-    assert.equal(p.doc.querySelector('[data-unseen="finished"]'), null, "nothing finished is unseen");
+    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="failed"]'), "Home again");
+    assert.equal(p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), null, "nothing finished is unseen");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

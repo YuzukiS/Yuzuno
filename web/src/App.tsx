@@ -3107,7 +3107,7 @@ export function App() {
           >
             <BellRing size={14} />
             <span>{shell.nextNeedsYou}</span>
-            <kbd>{shortcutModifier} {boundKeys.nextNeedsYou}</kbd>
+            {!phone && <kbd>{shortcutModifier} {boundKeys.nextNeedsYou}</kbd>}
           </button>
         )}
         <nav className="agent-list" aria-label={shell.agents}>

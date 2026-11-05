@@ -183,6 +183,11 @@ async function check(run) {
     assert.equal(await label("a"), "Failed · unseen");
     assert.equal(await label("b"), "Finished · unseen");
     assert.match(await page.locator('.agent-row[data-agent-id="c"]').textContent(), /2 needs you/);
+    // An unseen label takes its own line, so the name beside the avatar is whole.
+    for (const id of ["a", "b"]) {
+      const name = await page.locator(`.agent-row[data-agent-id="${id}"] .agent-name`).evaluate((el) => ({ text: el.textContent, clipped: el.scrollWidth > el.clientWidth + 1 }));
+      assert.equal(name.clipped, false, `${id}'s name is whole: ${JSON.stringify(name)}`);
+    }
     pass("the rail in attention order: Sora waiting on you, Mori's failed and Hana's finished Turn unseen, Kiri working");
 
     // ---- Title and badge: Sora's request and question, and Mori's Ask.
@@ -197,7 +202,11 @@ async function check(run) {
     await page.locator('[data-needs-you="question:c:t3:q1"]').waitFor({ timeout: 10_000 });
     const listed = await page.locator(".home-needs-you [data-needs-you]").evaluateAll((items) => items.map((i) => i.dataset.needsYou));
     assert.deepEqual(listed, ["approval:r-1", "question:c:t3:q1", "ask:p-app:release"]);
-    const unseen = (outcome) => page.locator(`[data-unseen="${outcome}"] [data-unseen-agent]`).evaluateAll((items) => items.map((i) => i.dataset.unseenAgent));
+    const unseen = (outcome) => page.locator(`.home-needs-you [data-unseen="${outcome}"]`).evaluateAll((items) => items.map((i) => i.dataset.unseenAgent));
+    // One row however many: Needs you's card holds every item, none drawn over the cards around it.
+    const card = await page.locator(".home-needs-you").boundingBox();
+    const boxes = await page.locator(".home-needs-you .home-needs-item").evaluateAll((items) => items.map((i) => i.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
+    for (const box of boxes) assert.ok(box.top >= card.y - 1 && box.bottom <= card.y + card.height + 1, `an item inside Needs you's card: ${JSON.stringify({ card, box })}`);
     assert.deepEqual(await unseen("failed"), ["a"]);
     assert.deepEqual(await unseen("finished"), ["b"]);
     await page.screenshot({ path: join(output, `${run.name}-home.png`) });

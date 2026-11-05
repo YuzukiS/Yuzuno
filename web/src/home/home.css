@@ -1571,17 +1571,11 @@ ul.home-widget {
   outline-offset: 1px;
 }
 
-/* Under Needs you, the Turns that failed and then those that finished since
-   this device last showed them (T-42): each row opens its conversation. */
-.home-unseen h3 {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 12px 0 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #7d8a68;
-}
-.home-unseen-failed h3 {
+/* In Needs you's row after what waits, the Turns that failed and then those
+   that finished since this device last showed them (T-42). */
+.home-needs-item.kind-unseen-failed svg {
   color: #a96a5b;
+}
+.home-needs-item.kind-unseen-finished svg {
+  color: #6f8a5c;
 }
