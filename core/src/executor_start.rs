@@ -149,20 +149,38 @@ impl Workspace {
         let mut input = made.input.clone();
         input["requestId"] = json!(rebuild_request(from));
         input["expectedVersion"] = version;
-        let dispatcher = made.dispatcher().map(str::to_owned);
-        match self.executor_dispatch(dispatcher.as_deref(), input).await {
-            Ok(_) => {
-                self.wake_executor_slots();
-                Ok(())
-            }
-            // Nothing of it was written: a pass after the update, or the
-            // next start, makes it (R1 dde34160).
-            Err(error) if error.downcast_ref::<WaitsForUpdate>().is_some() => Ok(()),
-            Err(error) => {
-                let reasons = vec![(from.to_owned(), why)];
-                self.block_start(&made, from, reasons, Some(format!("{error:#}"))).await
+        #[cfg(test)]
+        {
+            let write = self.executor_slots.before_rebuild_dispatch.lock().unwrap().take();
+            if let Some(write) = write {
+                write();
             }
         }
+        let dispatcher = made.dispatcher().map(str::to_owned);
+        let error = match self.executor_dispatch(dispatcher.as_deref(), input).await {
+            Ok(_) => {
+                self.wake_executor_slots();
+                return Ok(());
+            }
+            Err(error) => error,
+        };
+        // Nothing of it was written: a pass after the update, or the next
+        // start, makes it (R1 dde34160).
+        if error.downcast_ref::<WaitsForUpdate>().is_some() {
+            return Ok(());
+        }
+        // The task changed between that read and the dispatch, which wrote
+        // nothing: the next pass makes it, with the version then (R5
+        // 902c2e9b). One refused later, past the executor's creation, has a
+        // failed dispatch on record, and blocks the task as any other.
+        let from_agent = from.to_owned();
+        if format!("{error:#}").starts_with("version_conflict:")
+            && self.stored(move |store| store.executor_rebuild_unbegun(&from_agent)).await?
+        {
+            return Ok(());
+        }
+        let reasons = vec![(from.to_owned(), why)];
+        self.block_start(&made, from, reasons, Some(format!("{error:#}"))).await
     }
 
     /// The rebuilds a pass finishes: pending, their executor closed, and no

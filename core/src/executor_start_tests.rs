@@ -584,3 +584,37 @@ async fn a_deleted_dispatcher_does_not_stop_recovery() {
     assert_eq!(lab.task_view(&cut)["task"]["status"], "blocked");
     assert_eq!(rebuild_state(&lab, &made).map(|r| r.0).as_deref(), Some("failed"));
 }
+
+/// R5 902c2e9b: a task update landing between a rebuild's read of the task's
+/// version and its dispatch is no failure of the rebuild. The dispatch wrote
+/// nothing, so the record stays pending, with no block and no mail, and the
+/// next pass makes the rebuild with the version then.
+#[tokio::test]
+async fn a_rebuild_whose_task_changed_as_it_dispatched_waits_for_the_next_pass() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    lab.occupy_the_slot();
+    let task = lab.task("Review while it changes").await;
+    let first = lab.dispatch(&task, "changed").await;
+    let seq = lab.slot(&first).2;
+    lab.taken(&first, 1);
+    let (store, id) = (lab.ws.store.clone(), task.clone());
+    *lab.ws.executor_slots.before_rebuild_dispatch.lock().unwrap() = Some(Box::new(move || {
+        let version = store.collaboration_call(None, "task_get", json!({"taskId":id,"view":"current"})).unwrap()["current"]["version"].clone();
+        store.collaboration_call(None, "task_update",
+            json!({"requestId":"changed meanwhile","taskId":id,"expectedVersion":version,"patch":{"progress":"Changed meanwhile"}})).unwrap();
+    }));
+    let permit = lab.ws.admission.enter_work().unwrap();
+    lab.ws.settle_start(&first, &permit, Failure::Definite("the runtime refused it".into()), false).await.unwrap();
+    drop(permit);
+    assert_eq!(lab.task_view(&task)["task"]["status"], "doing", "a version conflict is retried, not a block");
+    assert_eq!(lab.executor_mail().len(), 0, "and no mail");
+    assert_eq!(rebuild_state(&lab, &first).map(|r| r.0).as_deref(), Some("pending"));
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    let (state, to) = rebuild_state(&lab, &first).unwrap();
+    assert_eq!(state, "done", "the next pass makes the rebuild");
+    assert_eq!(lab.slot(&to.unwrap()).2, seq, "in the first's place");
+    assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
+}

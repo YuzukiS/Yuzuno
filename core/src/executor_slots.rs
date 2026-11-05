@@ -638,6 +638,10 @@ pub(crate) struct State {
     /// it starts that executor: it waits there, up to five seconds.
     #[cfg(test)]
     pub(crate) take_meet: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's write between a rebuild's read of the task's version and
+    /// its dispatch, run once.
+    #[cfg(test)]
+    pub(crate) before_rebuild_dispatch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become

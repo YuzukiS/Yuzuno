@@ -166,7 +166,9 @@ applies. Only you change them.
   reason, and a dispatching Agent gets one mail. A start cut off by the time
   limit counts as failed only when closing the executor confirmed its
   runtime stopped. A rebuild that meets an update draining waits for it,
-  with no block and no mail: the first pass after the update makes it.
+  with no block and no mail: the first pass after the update makes it. So
+  does one whose task changed while Core dispatched it: the next pass makes
+  it.
 - **When Core can't tell.** If Core can't tell whether a start happened
   (its runtime may be running), the executor stays open and keeps its slot.
   Its card says its start did not finish, and why, and a dispatching Agent

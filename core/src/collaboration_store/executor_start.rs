@@ -147,6 +147,15 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Whether no dispatch of `from`'s rebuild was begun: a refusal before
+    /// anything was written can be retried with the same requestId.
+    pub(crate) fn executor_rebuild_unbegun(&self, from: &str) -> Result<bool> {
+        Ok(self.db.read()?.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM executor_rebuilds r JOIN executor_dispatches d
+                ON d.actor=r.actor AND d.request_id='rebuild:'||r.from_agent WHERE r.from_agent=?1)",
+            [from], |r| r.get(0))?)
+    }
+
     /// No rebuild is made, and why (its task moved on).
     pub(crate) fn executor_rebuild_failed(&self, from: &str, error: &str) -> Result<()> {
         self.db.write()?.execute(
