@@ -860,14 +860,14 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
     assert.equal(label("u"), "Not confirmed by Claude Code · not sent again");
     assert.equal(label("u1"), undefined, "an ordinary message has no delivery note");
   } finally { unread.close(); }
-  // Only a turn of Claude's own is running: there is no turn of yours to add to.
+  // Only a turn of Claude's own is running: it takes the follow-up too (T-45).
   const own = await mount({ harness: "claude", status: "working", turnStatus: "completed",
     extraTurns: [{ id: "native-x", status: "inProgress", _yuzunoSource: "native", items: [] }] });
   try {
     setValue(own.window, own.document.querySelector("[data-composer-input]"), "Hello");
     await pause();
-    assert.equal(own.document.querySelector('[aria-label="Send message"]')?.disabled, true);
-    assert.equal(!!own.document.querySelector('[aria-label="Send while working"]'), false);
+    assert.equal(own.document.querySelector('[aria-label="Send while working"]')?.disabled, false, "Claude's own turn takes it");
+    assert.equal(!!own.document.querySelector('[aria-label="Send message"]'), false);
   } finally { own.close(); }
   // A kept draft whose delivery became unknown is never sent again under its
   // old id: sending it is a new message, whether or not the page knew yet.
