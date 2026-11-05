@@ -97,7 +97,7 @@ async fn a_form_an_opencode_agent_publishes_is_answered_once_as_a_new_message() 
     let message = |value: Value| serde_json::from_value::<crate::model::MessageInput>(value).unwrap();
     let prompts = || std::fs::read_to_string(data.join("opencode/oc/calls.jsonl")).unwrap_or_default().lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|call| call["path"].as_str().unwrap().ends_with("/prompt_async")).collect::<Vec<_>>();
+        .filter(|call| call["path"].as_str().unwrap().ends_with("/prompt")).collect::<Vec<_>>();
 
     let turn = ws.send_message("oc", message(json!({"clientMessageId":"c1","text":"Set it up"}))).await.unwrap().turn_id.unwrap();
     let spec = json!({"root":"r","elements":{
@@ -123,7 +123,7 @@ async fn a_form_an_opencode_agent_publishes_is_answered_once_as_a_new_message() 
     assert_eq!(sent.input.clarification.as_ref().map(|c| c.result_id.as_str()), Some(result.as_str()));
     let calls = prompts();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[1]["body"]["parts"][0]["text"], text);
+    assert_eq!(calls[1]["body"]["text"], text);
     // The same message again is its receipt; the same form's answers again are refused.
     assert_eq!(ws.send_message("oc", form).await.unwrap().turn_id, sent.turn_id);
     assert!(ws.send_message("oc", message(json!({"clientMessageId":"form-2","text":text,"clarification":answer}))).await.is_err());

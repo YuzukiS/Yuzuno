@@ -181,6 +181,27 @@ test("a permission is allowed once or rejected, and nothing lasting is offered",
   } finally { stale.close(); }
 });
 
+test("OpenCode 2.x's own request says why it can't be answered here yet, and sends no answer (T-32 slice 4a)", async () => {
+  const notYet = "这在 OpenCode 2.x 上还不能用（not yet on OpenCode 2.x）：Yuzuno 还读不懂 2.x 这一部分的消息；这个请求还不能在 Yuzuno 里回答，只能中断这一轮";
+  const asked = { _runtimeGeneration: 1, _opencodeSession: "ses_1", _responseSent: false, _opencodeNotYet: notYet };
+  for (const request of [
+    { id: "req-9", agentId: "oc", method: "opencode/permission", createdAt: "now",
+      params: { id: "per_9", sessionID: "ses_1", action: "bash", resources: ["ls"], ...asked } },
+    { id: "req-10", agentId: "oc", method: "opencode/question", createdAt: "now",
+      params: { id: "frm_1", sessionID: "ses_1", title: "Pick one", fields: [{ key: "a", type: "string" }], ...asked } },
+  ]) {
+    const page = mount();
+    try {
+      page.window.renderPending({ request, refresh() {}, disabled: false }); await tick();
+      assert.equal(page.document.body.textContent.includes(notYet), true, `${request.method}: says why it can't be answered here yet`);
+      const buttons = [...page.document.querySelectorAll("button")];
+      assert.equal(buttons.length > 0 && buttons.every((b) => b.disabled), true, `${request.method}: every answer is disabled`);
+      buttons.forEach((b) => b.click()); await tick();
+      assert.equal(page.calls.length, 0, `${request.method}: nothing is sent`);
+    } finally { page.close(); }
+  }
+});
+
 test("a sub-agent's request names the sub-agent that asks, and is answered as any other (T-10)", async () => {
   const child = { ...permission, id: "req-2", params: { ...permission.params, id: "per_2", sessionID: "ses_child",
     _opencodeSession: "ses_child", _opencodeChild: { title: "Find the files (@explore subagent)", agent: "explore" } } };

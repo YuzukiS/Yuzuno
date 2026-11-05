@@ -88,7 +88,7 @@ impl Lab {
     /// Prompts and commands OpenCode was sent.
     fn sent(&self) -> Vec<Value> {
         self.calls().into_iter().filter(|c| c["method"] == "POST"
-            && ["/prompt_async", "/command"].iter().any(|end| c["path"].as_str().unwrap().ends_with(end))).collect()
+            && ["/prompt", "/command"].iter().any(|end| c["path"].as_str().unwrap().ends_with(end))).collect()
     }
 
     fn detail(&self) -> AgentDetail {
@@ -365,7 +365,7 @@ async fn a_stopped_compaction_keeps_new_messages_out_while_opencode_holds_it() {
     let turn = compaction(&d);
     assert_eq!((turn["_opencodeCompact"]["state"].as_str(), turn["_opencodeCompact"]["nativePending"].as_bool()), (Some("stopped"), Some(true)), "{turn:#}");
     assert!(turn["error"]["message"].as_str().unwrap().contains("仍未完成"), "{turn:#}");
-    let aborted = lab.calls().iter().filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().ends_with("/abort")).count();
+    let aborted = lab.calls().iter().filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().ends_with("/interrupt")).count();
     assert_eq!(aborted, 1);
     refuses_new_writes(&lab, "还留着上一次没有完成的压缩").await;
     assert_eq!(lab.summarized().len(), 1);

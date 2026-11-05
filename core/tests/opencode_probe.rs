@@ -6,13 +6,14 @@
 //! stop. Slice 3a (Lead 4870): every route and envelope Core connects with,
 //! run where no request can leave the host. Slice 3b (Lead 4983): a
 //! session's messages, inbox and events read through Core's mapping, there
-//! too.
+//! too. Slice 4a (Lead 5358): prompts run against a stub provider, also
+//! there.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use yuzuno_workspace::opencode::{session_of, supported, Events, Launch, MessageId, Server, EVENT_IDLE_LIMIT, TEARDOWN};
-use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
+use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
 
 fn ended(pid: u64) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -271,4 +272,258 @@ async fn a_real_opencode_2x_session_reads_through_cores_mapping() {
     let pid = u64::from(server.pid().unwrap());
     server.shutdown().await.unwrap();
     assert!(ended(pid), "OpenCode ended and was reaped");
+}
+
+/// The stub provider (tests/fixtures/stub_provider.py), on loopback: its
+/// port, and the file it logs each request to.
+fn stub_provider(dir: &Path) -> (std::process::Child, u16, PathBuf) {
+    let log = dir.join("stub-requests.jsonl");
+    let mut child = std::process::Command::new("python3")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stub_provider.py")).arg(&log)
+        .stdout(std::process::Stdio::piped()).spawn().expect("python3 runs the stub provider");
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut line).unwrap();
+    (child, line.trim().parse().expect("the stub provider's port"), log)
+}
+
+/// The events of `session` until its execution ends, within 60 s.
+async fn one_run(events: &mut Events, session: &str) -> Vec<Value> {
+    let mut ours = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let event = events.next().await.unwrap().expect("the stream ended");
+            if session_of(&event) != Some(session) {
+                continue;
+            }
+            let end = event["type"].as_str().is_some_and(|t| t.starts_with("session.execution.") && t != "session.execution.started");
+            ours.push(event);
+            if end {
+                return;
+            }
+        }
+    }).await;
+    assert!(found.is_ok(), "no end of the run within 60 s; seen {:?}", ours.iter().map(|e| e["type"].clone()).collect::<Vec<_>>());
+    ours
+}
+
+/// A real OpenCode 2.x runs prompts against a stub provider (T-32 slice 4a,
+/// Lead 4963/5358): no network, no real provider, no login of the user's.
+/// Sent through Core's own calls (the model made the session's, the prompt
+/// under Core's ID, an image as a `data:` URI, an interrupt), and what
+/// OpenCode streams and stores is read through Core's mapping, live and
+/// whole: running while it runs and idle after; the answers to Core's
+/// message; a tool through its states; the turn's end; and 2.x's own
+/// permission request and form, which Core can't answer yet (slice 5).
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_cores_mapping() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(directory.join("a.txt"), "stub file\n").unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    // The work folder's own config: one provider, the stub, with a fake key.
+    std::fs::write(directory.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"}, "models": {"fake": {"name": "Fake", "capabilities": {"tools": true, "input": ["text", "image"]}}}}},
+        "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]})
+        .to_string()).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = std::sync::Arc::new(Server::start(&launch).await.unwrap());
+    println!("probe: ready; /api/info says version {}", server.version());
+    let models = server.models().await.unwrap();
+    println!("probe: models {:?}", models.iter().map(|m| m.id()).collect::<Vec<_>>());
+    let model = models.iter().find(|m| m.id() == "stub/fake").cloned().expect("the stub's model is listed");
+    assert!(model.image, "listed as reading images");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let current = server.session(&session).await.unwrap()["model"].clone();
+    println!("probe: the session's model {current}");
+    assert_eq!((&current["id"], &current["providerID"]), (&json!("fake"), &json!("stub")), "the session's model, as Core made it");
+    // With no variant chosen, 2.x reads the session's as its "default" one, which Core takes as none (D3).
+    assert_eq!(current["variant"], "default", "no variant reads as the default one");
+
+    // 2.x's own active list while it runs and after (Lead 4963), every 50 ms.
+    let (http, password) = (reqwest::Client::builder().no_proxy().build().unwrap(), password_of(server.pid().unwrap()));
+    let active = format!("{}/api/session/active", server.base());
+    let watched = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let watcher = tokio::spawn({
+        let (watched, session, http, active, password) = (watched.clone(), session.clone(), http.clone(), active.clone(), password.clone());
+        async move {
+            loop {
+                if let Ok(answer) = http.get(&active).basic_auth("opencode", Some(&password)).send().await {
+                    if let Ok(listed) = answer.json::<Value>().await {
+                        let entry = listed["data"][&session].clone();
+                        let mut watched = watched.lock().unwrap();
+                        if watched.last() != Some(&entry) {
+                            watched.push(entry);
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    });
+
+    // A prompt that calls a tool, under Core's ID.
+    let mut cursor = Cursor::default();
+    let chosen = MessageId::new();
+    assert_eq!(server.submit(&session, &chosen, "probe-4a tools").await.unwrap(), Submission::Accepted, "admitted under Core's ID");
+    let first = one_run(&mut events, &session).await;
+    let kinds: Vec<&str> = first.iter().filter_map(|e| e["type"].as_str()).collect();
+    println!("probe: the first run's events {kinds:?}");
+    assert_eq!(kinds.last(), Some(&"session.execution.succeeded"), "the run succeeded");
+    let delivered: Vec<&Value> = first.iter().filter(|e| e["type"] == "session.inbox.delivered").map(|e| &e["data"]["inboxID"]).collect();
+    assert!(delivered.contains(&&json!(chosen.as_str())), "delivered under Core's ID: {delivered:?}");
+    let live: Vec<Value> = first.iter().flat_map(|e| cursor.read(e)).collect();
+    let answers: Vec<&Value> = live.iter().filter(|e| e["type"] == "message.updated" && e["data"]["info"]["role"] == "assistant")
+        .map(|e| &e["data"]["info"]).collect();
+    assert!(!answers.is_empty() && answers.iter().all(|a| a["parentID"] == chosen.as_str()), "each step answers Core's message: {answers:?}");
+    let tool: Vec<&Value> = live.iter().filter(|e| e["data"]["part"]["type"] == "tool").map(|e| &e["data"]["part"]).collect();
+    println!("probe: the tool's states {:?}", tool.iter().map(|p| p["state"]["status"].clone()).collect::<Vec<_>>());
+    let done = tool.last().expect("a tool call");
+    assert_eq!((&done["tool"], &done["state"]["status"], &done["state"]["input"]["path"]), (&json!("read"), &json!("completed"), &json!("a.txt")));
+    let mut text = std::collections::BTreeMap::<String, String>::new();
+    for event in &live {
+        match event["type"].as_str() {
+            Some("message.part.updated") if event["data"]["part"]["type"] == "text" => {
+                let part = &event["data"]["part"];
+                text.insert(part["id"].as_str().unwrap().to_owned(), part["text"].as_str().unwrap_or_default().to_owned());
+            }
+            Some("message.part.delta") if event["data"]["type"] == "text" => {
+                text.entry(event["data"]["partID"].as_str().unwrap().to_owned()).or_default().push_str(event["data"]["delta"].as_str().unwrap());
+            }
+            _ => {}
+        }
+    }
+    println!("probe: the texts, live {text:?}");
+    assert!(text.values().any(|t| t == "Done."), "the last text, whole");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let seen = watched.lock().unwrap().clone();
+    println!("probe: the session in 2.x's active list, while and after {seen:?}");
+    assert!(seen.contains(&json!({"type": "running"})), "running while it ran (Lead 4963)");
+    assert_eq!(seen.last(), Some(&Value::Null), "not listed after");
+    assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "idle"}), "idle after, as Core reads it");
+
+    // Read whole: the same answers to Core's message, the tool done, the turn's end, the model's note.
+    let snapshot = server.snapshot(&session, &[]).await.unwrap();
+    let raw: Vec<&str> = snapshot.messages.as_array().unwrap().iter().filter_map(|m| m["type"].as_str()).collect();
+    println!("probe: messages {raw:?}");
+    assert!(raw.contains(&"model-switched"), "2.x keeps a note of the model Core made the session's");
+    let read = read_messages(&snapshot.messages);
+    let whole: Vec<&Value> = read.messages.iter().filter(|m| m["info"]["role"] == "assistant").map(|m| &m["info"]).collect();
+    let ids = |infos: &[&Value]| {
+        let mut ids: Vec<String> = infos.iter().map(|i| i["id"].as_str().unwrap().to_owned()).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    assert_eq!(ids(&whole), ids(&answers), "the same answers, live and whole");
+    assert!(whole.iter().all(|a| a["parentID"] == chosen.as_str() && a["time"]["completed"].is_number()), "{whole:?}");
+    let parts: Vec<&Value> = read.messages.iter().flat_map(|m| m["parts"].as_array().unwrap()).collect();
+    assert!(parts.iter().any(|p| p["type"] == "tool" && p["state"]["status"] == "completed"), "the tool done, whole");
+    assert!(parts.iter().any(|p| p["type"] == "text" && p["text"] == "Done."), "the last text, whole");
+    assert_eq!(read.ended.iter().map(|e| (e.user.as_str(), e.error.is_none())).collect::<Vec<_>>(), [(chosen.as_str(), true)],
+        "the turn's end, under Core's message");
+    let requests: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let main: Vec<&Value> = requests.iter().filter(|r| r["tools"] == true).collect();
+    println!("probe: the stub saw {} requests, {} with tools; models {:?}", requests.len(), main.len(),
+        requests.iter().map(|r| r["model"].clone()).collect::<Vec<_>>());
+    assert!(main.len() >= 2 && main.iter().all(|r| r["model"] == "fake" && r["authorization"] == "Bearer fixture-stub-key"),
+        "the stub's model, with its own key");
+
+    // An image, as a `data:` URI.
+    let png = {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 4, image::Rgb([10, 0, 0])).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let pictured = MessageId::new();
+    let file = FilePart { mime: "image/png", filename: "img-1".into(), data: png };
+    assert_eq!(server.submit_with(&session, &pictured, "probe-4a image", &[file]).await.unwrap(), Submission::Accepted, "an image as a data: URI");
+    let second = one_run(&mut events, &session).await;
+    assert_eq!(second.last().map(|e| e["type"].clone()), Some(json!("session.execution.succeeded")));
+    let admitted_as = second.iter().find(|e| e["type"] == "session.inbox.enqueued" && e["data"]["inboxID"] == pictured.as_str())
+        .map(|e| e["data"]["item"]["payload"]["files"].clone());
+    println!("probe: the image, as 2.x admitted it {admitted_as:?}");
+    let pictured_turn = requests_after(&log, requests.len());
+    println!("probe: the stub's next requests' user content {pictured_turn:?}");
+    assert!(pictured_turn.iter().any(|c| c.contains("image")), "the image reached the provider");
+    second.iter().for_each(|e| { cursor.read(e); });
+
+    // 2.x's own permission request and form (until slice 5): told from 1.19.3's, as Core marks them not yet
+    // answerable, and read as Core's; each run waits on it until it is interrupted.
+    for (prompt, kind, as_core) in [("probe-4a ask", "permission.asked", "permission.asked"), ("probe-4a form", "form.created", "question.asked")] {
+        let asking = MessageId::new();
+        assert_eq!(server.submit(&session, &asking, prompt).await.unwrap(), Submission::Accepted);
+        let (asked, read) = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let event = events.next().await.unwrap().expect("the stream ended");
+                if session_of(&event) != Some(session.as_str()) {
+                    continue;
+                }
+                let read = cursor.read(&event);
+                if event["type"] == kind {
+                    return (event, read);
+                }
+            }
+        }).await.unwrap_or_else(|_| panic!("no {kind} within 30 s"));
+        println!("probe: {kind} {}", asked["data"]);
+        let request = if kind == "form.created" { &asked["data"]["form"] } else { &asked["data"] };
+        assert!(is_v2_request(request), "{kind}: told from 1.19.3's shape");
+        assert_eq!(read.iter().map(|e| e["type"].clone()).collect::<Vec<_>>(), [json!(as_core)], "{kind}: read as Core's {as_core}");
+        assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "busy"}), "{kind}: its run waits on it");
+        server.abort(&session).await.unwrap();
+        let ended = one_run(&mut events, &session).await;
+        println!("probe: after {kind}, until the end {:?}", ended.iter().map(|e| e["type"].clone()).collect::<Vec<_>>());
+        assert_eq!(ended.last().unwrap()["type"], "session.execution.interrupted", "{kind}: interrupted");
+        // The run's end ends it: 2.x keeps no request past its run, and Core's reading ends it too.
+        let read: Vec<Value> = ended.iter().flat_map(|e| cursor.read(e)).collect();
+        let replied = if kind == "form.created" { "question.replied" } else { "permission.replied" };
+        assert!(read.iter().any(|e| e["type"] == replied && e["data"]["requestID"] == request["id"]), "{kind}: ended in Core with its run");
+        let after = server.snapshot(&session, &[]).await.unwrap();
+        assert!(after.permissions.is_empty() && after.questions.is_empty(), "{kind}: 2.x keeps no request past its run");
+    }
+
+    // An interrupt: the run ends interrupted by the user, which Core reads as its aborted answer.
+    let slow = MessageId::new();
+    assert_eq!(server.submit(&session, &slow, "probe-4a slow").await.unwrap(), Submission::Accepted);
+    let mut running = false;
+    for _ in 0..100 {
+        running = server.session_status(&session).await.unwrap() == json!({"type": "busy"});
+        if running { break; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(running, "the slow run was under way");
+    server.abort(&session).await.unwrap();
+    let third = one_run(&mut events, &session).await;
+    let end = third.last().unwrap();
+    println!("probe: the interrupted run's end {end}");
+    assert_eq!((&end["type"], &end["data"]["reason"]), (&json!("session.execution.interrupted"), &json!("user")));
+    let read: Vec<Value> = third.iter().flat_map(|e| cursor.read(e)).collect();
+    assert!(read.iter().any(|e| e["type"] == "session.error" && e["data"]["error"]["name"] == "MessageAbortedError"), "read as Core's aborted answer");
+
+    watcher.abort();
+    let _ = watcher.await;
+    stub.kill().ok();
+    stub.wait().ok();
+    let server = std::sync::Arc::try_unwrap(server).ok().expect("the probe's server, alone");
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
+}
+
+/// The newest user message's content kinds in each stub request after the
+/// first `seen`, as text (`text`, `image_url`).
+fn requests_after(log: &Path, seen: usize) -> Vec<String> {
+    std::fs::read_to_string(log).unwrap().lines().skip(seen).map(|l| {
+        let request: Value = serde_json::from_str(l).unwrap();
+        let user = request["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "user").cloned().unwrap_or_default();
+        match &user["content"] {
+            Value::Array(parts) => parts.iter().map(|p| p["type"].as_str().unwrap_or("?").to_owned()).collect::<Vec<_>>().join(","),
+            other => format!("text:{}", other.as_str().is_some()),
+        }
+    }).collect()
 }

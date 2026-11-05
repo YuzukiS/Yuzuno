@@ -32,10 +32,11 @@
 //! for any harness before its receipt is recorded.
 //!
 //! A model (T-10) is OpenCode's own default unless one is chosen for the
-//! Agent from what its OpenCode's configured providers list
-//! (`/config/providers`), and so is that model's variant (`model.variants`,
-//! such as `high`); a chosen one goes with each new message (`prompt_async`'s
-//! `model` and `variant`), and one OpenCode no longer lists refuses the
+//! Agent from what its OpenCode's configured providers list (`/api/model`),
+//! and so is that model's variant (`variants`, such as `high`). 2.x's prompt
+//! carries no model (T-32 slice 4a): a chosen one is made the session's
+//! (`POST /api/session/:id/model`) before a message whenever the session's
+//! is another or not known yet, and one OpenCode no longer lists refuses the
 //! message before anything is sent. Only names are kept, never what else a
 //! provider's record holds (its key, options or headers) or what a variant
 //! sets.
@@ -362,6 +363,24 @@ async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
     let listed = server.models().await.context("没有读到 OpenCode 的模型；这条消息没有发送，草稿保留")?;
     let found = listed.into_iter().find(|m| m.id() == model);
     found.map(Some).with_context(|| format!("所选模型 {model} 已不在 OpenCode 当前的配置中；这条消息没有发送，草稿保留。请在设置里另选模型"))
+}
+
+/// Makes the Agent's chosen model and variant the session's before a message
+/// (T-32 slice 4a, D3): 2.x's prompt carries none. Only when the session's,
+/// as OpenCode says now (`GET /api/session/:id`), is another or none yet;
+/// never without a chosen one, so OpenCode's own default stays. Each switch
+/// is a `model-switched` message of 2.x's.
+async fn choose_for(c: &Connection, model: Option<&ModelChoice>, variant: Option<&str>) -> Result<()> {
+    let Some(model) = model else { return Ok(()) };
+    let current = c.server.session(&c.session).await.context("没有读到 OpenCode 会话当前的模型；这条消息没有发送，草稿保留")?;
+    let current = &current["model"];
+    // 2.x reads a model without a variant as its "default" one, and switches as it does
+    // (core/src/session/info.ts, session.ts switchModel).
+    let same_variant = current["variant"].as_str().unwrap_or("default") == variant.unwrap_or("default");
+    if current["id"] == model.model.as_str() && current["providerID"] == model.provider.as_str() && same_variant {
+        return Ok(());
+    }
+    c.server.switch_model(&c.session, model, variant).await.context("没有把所选模型设为 OpenCode 会话的模型；这条消息没有发送，草稿保留")
 }
 
 /// The variant chosen for an Agent, as its chosen model lists it now; None
@@ -1202,6 +1221,9 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
+        // The model is made the session's before anything of the message enters the Turn (R1 276dd516): a read or
+        // switch that fails leaves the Turn as it was.
+        choose_for(&c, model.as_ref(), variant.as_deref()).await?;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，补充消息未发送；草稿保留");
         let message = MessageId::new();
         let input = message.as_str().to_owned();
@@ -1237,7 +1259,7 @@ impl Workspace {
         let held = self.send_view(id).await?.turns.iter().any(|t| t["id"] == expected && t["_opencodeInputs"].get(&input).is_some());
         ensure!(held, "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
         *sent = true;
-        let mut submitted = c.server.submit_with(&c.session, &message, text, &files, model.as_ref(), variant.as_deref()).await;
+        let mut submitted = c.server.submit_with(&c.session, &message, text, &files).await;
         // A 400 refuses it only when OpenCode's record, read after it, has no
         // message under its ID, as for a command (#435): an event that already
         // confirmed it makes it delivered, and a record that could not be read
@@ -1357,6 +1379,11 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
+        // A prompt's model is made the session's before its Turn is recorded (R3 4051b7d4), as an added message's
+        // is: a read or switch that fails rejects it, with no Turn. A command's model goes with the command.
+        if command.is_none() {
+            choose_for(&c, model.as_ref(), variant.as_deref()).await?;
+        }
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
@@ -1392,9 +1419,12 @@ impl Workspace {
                 let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
                 self.opencode_command_started(id, &c, &message, &command.name, arguments, model.as_deref(), variant).await
             }
-            None => c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await,
+            None => c.server.submit_with(&c.session, &message, &text, &files).await,
         };
         let refused = match &submitted {
+            // 2.x has no 1.19.3 route to run a command: it answers 405 (T-32 slice 4a), until the commands slice.
+            Ok(Submission::Refused(status)) if status.code == 405 && command.is_some() =>
+                Some(format!("{}；命令没有执行", crate::opencode_v2::NOT_YET)),
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.
             Err(error) => Some(format!("消息没有发送：{error}")),
@@ -1767,6 +1797,9 @@ impl Workspace {
             let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
             ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
+            if let Some(not_yet) = p.params["_opencodeNotYet"].as_str() {
+                bail!("{not_yet}");
+            }
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
                 if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
@@ -2166,7 +2199,11 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     // stand-in's 1.19.3 mode sends, are read as they are.
     let (entries, ended) = if crate::opencode_v2::is_v2(&snapshot.messages) {
         let read = crate::opencode_v2::read_messages(&snapshot.messages);
-        c.cursor.lock().unwrap().resumed(session, &read, &snapshot.inbox);
+        let mut cursor = c.cursor.lock().unwrap();
+        cursor.resumed(session, &read, &snapshot.inbox);
+        for request in snapshot.permissions.iter().chain(&snapshot.questions) {
+            cursor.asked(request);
+        }
         (read.messages, read.ended)
     } else {
         (snapshot.messages.as_array().cloned().unwrap_or_default(), Vec::new())
@@ -2245,6 +2282,17 @@ fn message(d: &mut AgentDetail, info: &Value) {
             }
             turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"],"parent":parent});
         }
+        // A shell command of 2.x's (T-32 slice 4a, D2): its Turn's, as the message before it says; no answer.
+        Some("shell") => {
+            let Some(parent) = info["parentID"].as_str() else { return };
+            let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
+                return;
+            };
+            if !turn["_opencodeShells"].is_object() {
+                turn["_opencodeShells"] = json!({});
+            }
+            turn["_opencodeShells"][id] = parent.into();
+        }
         _ => {}
     }
 }
@@ -2314,8 +2362,11 @@ fn part(d: &mut AgentDetail, part: &Value) {
     if compaction_part(d, message, id, part) {
         return;
     }
-    let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some()) else { return };
+    let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some() || t["_opencodeShells"].get(message).is_some())
+        else { return };
     let item = match part["type"].as_str() {
+        Some("shell") => json!({"id":id,"type":"commandExecution","command":part["command"],"status":part["status"],
+            "aggregatedOutput":part["output"],"exitCode":part["exit"],"nativeMessageId":message}),
         Some("text") if part["synthetic"] != true => json!({"id":id,"type":"agentMessage","text":part["text"],"nativeMessageId":message}),
         Some("reasoning") => json!({"id":id,"type":"reasoning","summary":[part["text"]],"nativeMessageId":message}),
         Some("tool") => {
@@ -2703,6 +2754,11 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
         params["_opencodeChild"] = child.clone();
     }
     params["_responseSent"] = false.into();
+    // 2.x's own request: shown with why it can't be answered here yet, so its
+    // run is seen to wait on it (T-32 slice 4a, until slice 5).
+    if crate::opencode_v2::is_v2_request(request) {
+        params["_opencodeNotYet"] = format!("{}；这个请求还不能在 Yuzuno 里回答，只能中断这一轮", crate::opencode_v2::NOT_YET).into();
+    }
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();
     }

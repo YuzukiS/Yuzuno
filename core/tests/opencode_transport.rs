@@ -317,22 +317,23 @@ async fn output_on_stderr_never_blocks_the_server() {
 }
 
 #[tokio::test]
-async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
+async fn an_admitted_prompt_is_accepted_and_rest_errors_keep_their_status() {
     let lab = lab();
     let server = Server::start(&lab.launch).await.unwrap();
     let session = session(&server).await;
 
-    // Stored when OpenCode answered: accepted, then found by its ID.
+    // Admitted when OpenCode answered (2.x's answer is the message as it
+    // admitted it, T-32 slice 4a): accepted, then found by its ID.
     let id = MessageId::new();
     assert_eq!(server.submit(&session, &id, "hello").await.unwrap(), Submission::Accepted);
     let stored = server.message(&session, &id).await.unwrap().unwrap();
-    assert_eq!(stored["info"]["id"], id.as_str());
-    let sent = lab.posts(&format!("/session/{session}/prompt_async"));
-    assert_eq!(sent[0]["body"], json!({"messageID": id.as_str(), "parts": [{"type": "text", "text": "hello"}]}),
+    assert_eq!(stored["id"], id.as_str());
+    let sent = lab.posts(&format!("/api/session/{session}/prompt"));
+    assert_eq!(sent[0]["body"], json!({"id": id.as_str(), "text": "hello"}),
         "no model, agent, tools or permission rule is sent");
 
-    // Answered 204 and then not stored: still only accepted, and found by
-    // its ID as not there.
+    // Answered and then not stored (the stand-in's `unstored`): accepted,
+    // and found by its ID as not there.
     lab.control("mode", json!({"prompt": "unstored"})).await;
     let lost = MessageId::new();
     assert_eq!(server.submit(&session, &lost, "hello").await.unwrap(), Submission::Accepted);
@@ -354,12 +355,62 @@ async fn a_204_is_only_accepted_and_rest_errors_keep_their_status() {
     server.shutdown().await.unwrap();
 }
 
+/// A message sent while a run goes on waits in 2.x's inbox until a step takes
+/// it, and is found there by its ID; an answer admitting another message is
+/// no proof; an ID the session holds already, sent by a server started
+/// anew, is the one sent (T-32 slice 4a).
+#[tokio::test]
+async fn a_prompt_is_found_waiting_in_the_inbox_and_only_its_own_admission_accepts_it() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let first = MessageId::new();
+    assert_eq!(server.submit(&session, &first, "hello").await.unwrap(), Submission::Accepted);
+    let waiting = MessageId::new();
+    assert_eq!(server.submit(&session, &waiting, "also").await.unwrap(), Submission::Accepted);
+    let found = server.message(&session, &waiting).await.unwrap();
+    assert_eq!(found.as_ref().map(|m| &m["id"]), Some(&json!(waiting.as_str())), "found in its inbox while it waits: {found:?}");
+
+    lab.control("mode", json!({"prompt": "renamed"})).await;
+    match server.submit(&session, &MessageId::new(), "hello").await.unwrap() {
+        Submission::Unknown(reason) => assert!(reason.contains("admitted msg_"), "{reason}"),
+        other => panic!("another message admitted is no proof: {other:?}"),
+    }
+    server.shutdown().await.unwrap();
+
+    let again = Server::start(&lab.launch).await.unwrap();
+    assert_eq!(again.submit(&session, &first, "hello").await.unwrap(), Submission::Accepted, "an ID the session holds already is the one sent");
+    again.shutdown().await.unwrap();
+}
+
+/// A message 2.x delivers between Core's two reads of it is found (T-32
+/// slice 4a, R5 728f7e52): the inbox is read before the delivered messages,
+/// and delivery only moves a message from the first to the second.
+#[tokio::test]
+async fn a_message_delivered_between_the_two_reads_of_it_is_found() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    assert_eq!(server.submit(&session, &MessageId::new(), "hello").await.unwrap(), Submission::Accepted);
+    let waiting = MessageId::new();
+    assert_eq!(server.submit(&session, &waiting, "also").await.unwrap(), Submission::Accepted);
+    // It waits in the inbox; 2.x delivers it right after the first read is answered.
+    lab.control("mode", json!({"deliverBetweenReads": true})).await;
+    let found = server.message(&session, &waiting).await.unwrap();
+    assert!(found.is_some(), "found, though delivered between the two reads");
+    let reads: Vec<String> = lab.calls().iter().filter(|c| c["method"] == "GET").filter_map(|c| c["path"].as_str())
+        .filter(|path| path.ends_with("/inbox") || path.contains("/message/")).map(str::to_owned).collect();
+    assert!(reads.first().is_some_and(|path| path.ends_with("/inbox")), "the inbox is read before the delivered messages: {reads:?}");
+    assert!(server.message(&session, &waiting).await.unwrap().is_some(), "found once delivered");
+    server.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_lost_answer_stays_unknown_is_never_sent_again_and_is_found_by_its_id() {
     let lab = lab();
     let server = Server::start(&lab.launch).await.unwrap();
     let session = session(&server).await;
-    let prompts = format!("/session/{session}/prompt_async");
+    let prompts = format!("/api/session/{session}/prompt");
 
     // Stored, then the connection ends without an answer.
     lab.control("mode", json!({"prompt": "store-then-drop"})).await;

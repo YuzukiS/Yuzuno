@@ -157,9 +157,9 @@ def publish(kind, properties):
         save()
 
 
-def send(kind, data, created=None):
+def send(kind, data, created=None, event_id=None):
     # 2.x's envelope (schema/src/event.ts): `data`, and the time it was made (control `event` may give it).
-    event = {'id': new_id('evt'), 'type': kind, 'created': created or int(time.time() * 1000), 'data': data}
+    event = {'id': event_id or new_id('evt'), 'type': kind, 'created': created or int(time.time() * 1000), 'data': data}
     with lock:
         for stream in streams:
             stream.put(event)
@@ -177,7 +177,39 @@ v2_state = {}
 
 def v2_of(session):
     return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
-                                         'error': None, 'idles': [], 'pending': [], 'steer': set()})
+                                         'error': None, 'idles': [], 'pending': [], 'steer': set(), 'shells': []})
+
+
+def v2_models():
+    """What 2.x's `GET /api/model` lists (schema/src/model.ts Model.Info), made of the 1.19.3-shaped providers mode
+    `providers` holds: each with the fields that can hold credentials (`settings`, `headers`), here fake."""
+    out = []
+    for provider in modes['providers']['providers']:
+        for key, m in (provider.get('models') or {}).items():
+            image = ((m.get('capabilities') or {}).get('input') or {}).get('image') is True
+            out.append({'id': m.get('id', key), 'modelID': m.get('id', key), 'providerID': provider['id'], 'name': m.get('name', key),
+                        'capabilities': {'tools': True, 'input': ['text', 'image'] if image else ['text'], 'output': ['text']},
+                        'variants': [{'id': name, 'settings': settings} for name, settings in (m.get('variants') or {}).items()],
+                        'status': m.get('status', 'active'), 'enabled': True, 'limit': m.get('limit') or {'context': 0, 'output': 0},
+                        'cost': [], 'time': {'released': 0},
+                        'settings': {'apiKey': SECRETS[1]}, 'headers': {'Authorization': f'Bearer {SECRETS[2]}'}})
+    return out
+
+
+def v2_providers():
+    """What 2.x's `GET /api/provider` lists (schema/src/provider.ts Provider.Info), with a fake key in its settings."""
+    return [{'id': p['id'], 'name': p['name'], 'activation': 'enabled', 'package': '@ai-sdk/openai-compatible',
+             'settings': {'apiKey': SECRETS[0]}} for p in modes['providers']['providers']]
+
+
+def between_reads(session):
+    """Mode `deliverBetweenReads` (T-32 slice 4a, R5 728f7e52), once: 2.x delivers what waits in the session's inbox
+    right after the first read of one message or of the inbox is answered, so the other read finds it moved."""
+    if modes.get('deliverBetweenReads'):
+        modes['deliverBetweenReads'] = False
+        with lock:
+            v2_deliver(session)
+        save()
 
 
 def v2_deliver(session, upto=None):
@@ -283,14 +315,16 @@ def v2_events(kind, p):
         if info.get('summary'):
             # A compaction's summary is 2.x's compaction (session-event.ts Compaction).
             done = (info.get('time') or {}).get('completed')
-            if done and mid not in state['ended']:
-                state['ended'].add(mid)
-                return [('session.compaction.ended', {'sessionID': session, 'reason': 'manual' if info.get('mode') == 'manual' else 'auto',
-                                                      'text': '', 'tokens': info.get('tokens')})]
+            out = []
             if mid not in state['started']:
                 state['started'].add(mid)
-                return [('session.compaction.started', {'sessionID': session, 'reason': 'auto'})]
-            return []
+                # 2.x names the compaction's message by its input's ID (core/src/session/message-updater.ts), as here.
+                out.append(('session.compaction.started', {'sessionID': session, 'reason': 'auto', 'inputID': mid}))
+            if done and mid not in state['ended']:
+                state['ended'].add(mid)
+                out.append(('session.compaction.ended', {'sessionID': session, 'reason': 'manual' if info.get('mode') == 'manual' else 'auto',
+                                                         'text': '', 'tokens': info.get('tokens')}))
+            return out
         out = []
         if mid not in state['started']:
             state['started'].add(mid)
@@ -391,6 +425,9 @@ def v2_view(session):
     idles = {}
     for n, idle in enumerate(state['idles']):
         idles.setdefault(idle['after'], []).append((n, idle))
+    shells = {}
+    for shell in state['shells']:
+        shells.setdefault(shell['after'], []).append(shell)
     out, waiting = [], []
 
     def delivered(upto=None):
@@ -445,13 +482,27 @@ def v2_view(session):
             if info.get('error'):
                 answer['error'] = v2_error(info['error'])
             out.append(answer)
+        out.extend(v2_shell(shell) for shell in shells.pop(mid, []))
         ending = idles.pop(mid, [])
         if ending:
             delivered()
         for n, idle in ending:
             out.append(v2_idle(n, idle, created))
     delivered()
+    for rest in shells.values():
+        out.extend(v2_shell(shell) for shell in rest)
     return out
+
+
+def v2_shell(shell):
+    """A shell command's message as 2.x stores it (schema/src/session-message.ts Shell)."""
+    entry = {'id': shell['id'], 'type': 'shell', 'shellID': shell['shellID'], 'command': shell['command'], 'status': shell['status'],
+             'time': {'created': shell['created']}}
+    if shell.get('exit') is not None:
+        entry['exit'] = shell['exit']
+        entry['output'] = {'output': shell['output'], 'cursor': len(shell['output']), 'size': len(shell['output']), 'truncated': False}
+        entry['time']['completed'] = shell['created']
+    return entry
 
 
 def v2_idle(n, idle, created):
@@ -508,7 +559,8 @@ def save():
                                                      # and its inbox.
                                                      'idles': {s: v['idles'] for s, v in v2_state.items()},
                                                      'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
-                                                               for s, v in v2_state.items()}}))
+                                                               for s, v in v2_state.items()},
+                                                     'shells': {s: v['shells'] for s, v in v2_state.items()}}))
 
 
 def load():
@@ -524,6 +576,8 @@ def load():
             v2_of(s)['idles'] = idles
         for s, inbox in state.get('inbox', {}).items():
             v2_of(s).update(pending=inbox['pending'], steer=set(inbox['steer']))
+        for s, shells in state.get('shells', {}).items():
+            v2_of(s)['shells'] = shells
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -815,6 +869,30 @@ def control(name, body):
         if body.get('announce', True):
             publish('session.created', {'sessionID': session['id'], 'info': session})
         return session
+    if name == 'shell':
+        # A shell command run in the session, as 2.x runs one (`!`, T-32 slice 4a): its start and end events, and
+        # its message under its start event's ID (core/src/session/message-updater.ts), after the newest message.
+        session = body['sessionID']
+        started = new_id('evt')
+        entry = {'id': 'msg_' + started[len('evt_'):], 'shellID': new_id('sh'), 'command': body['command'], 'status': 'running',
+                 'exit': None, 'output': '', 'created': int(time.time() * 1000), 'after': next(reversed(messages.get(session, {})), None)}
+        with lock:
+            v2_of(session)['shells'].append(entry)
+
+        def shell():
+            info = {'id': entry['shellID'], 'status': entry['status'], 'command': entry['command'], 'cwd': str(WORK), 'shell': '/bin/sh',
+                    'file': '/tmp/fixture-shell.out'}
+            if entry['exit'] is not None:
+                info['exit'] = entry['exit']
+            return info
+        send('session.shell.started', {'sessionID': session, 'shell': shell()}, event_id=started)
+        if body.get('end', True):
+            entry.update(status='exited', exit=body.get('exit', 0), output=body.get('output', ''))
+            size = len(entry['output'])
+            send('session.shell.ended', {'sessionID': session, 'shell': shell(),
+                                         'output': {'output': entry['output'], 'cursor': size, 'size': size, 'truncated': False}})
+        save()
+        return entry['id']
     if name == 'close':
         # A session's run ending: its pending requests go, and nothing says so.
         with lock:
@@ -1071,7 +1149,7 @@ class Handler(BaseHTTPRequestHandler):
             listed = [s for s in sessions.values() if parent is None or s.get('parentID') == parent]
             return self.reply(*page(listed, query, {'parentID': parent}))
         if len(parts) >= 3 and parts[:2] == ['api', 'session']:
-            return self.api_session(method, parts[2], parts[3:], parse_qs(url.query))
+            return self.api_session(method, parts[2], parts[3:], parse_qs(url.query), body)
         if key == ('GET', 'permission'):
             return self.reply(200, permissions)
         if key == ('GET', 'question'):
@@ -1080,6 +1158,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, mcp)
         if key == ('GET', 'config', 'providers'):
             return self.reply(200, modes['providers'])
+        if key == ('GET', 'api', 'command') and modes.get('apiCommands'):
+            # 2.x's own list (protocol/src/groups/command.ts, mode `apiCommands`): each command's name and description.
+            listed = [{'name': name, **({'description': c['description']} if c.get('description') else {})}
+                      for name, c in (modes['config'].get('command') or {}).items()]
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': listed})
+        if key == ('GET', 'api', 'model'):
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_models()})
+        if key == ('GET', 'api', 'provider'):
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_providers()})
         if key == ('GET', 'config'):
             return self.reply(200, modes['config'])
         if key == ('POST', 'mcp'):
@@ -1114,13 +1201,38 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def api_session(self, method, session, rest, query):
+    def api_session(self, method, session, rest, query, body=None):
         # 2.x's own routes of one session (protocol/src/groups/session.ts, message.ts); what they hold keeps
         # 1.19.3's shape here until their slices.
         if session not in sessions:
             return self.reply(404, {'_tag': 'SessionNotFoundError', 'message': f'Session not found: {session}'})
         if (method, *rest) == ('GET',):
-            return self.reply(200, {'data': sessions[session]})
+            # 2.x reads a model without a variant as its "default" one (core/src/session/info.ts).
+            info = dict(sessions[session])
+            if info.get('model'):
+                info['model'] = {**info['model'], 'variant': info['model'].get('variant') or 'default'}
+            return self.reply(200, {'data': info})
+        if (method, *rest) == ('POST', 'prompt'):
+            return self.prompt_v2(session, body or {})
+        if (method, *rest) == ('POST', 'model'):
+            # 2.x's switchModel (T-32 slice 4a): the session's model for its next steps; 204.
+            with lock:
+                sessions[session]['model'] = (body or {}).get('model')
+            save()
+            return self.reply(204)
+        if (method, *rest) == ('POST', 'interrupt'):
+            # 2.x's interrupt: what 1.19.3's abort did, answered with whether a run was going on.
+            return self.session('POST', session, ['abort'], body, interrupt=True)
+        if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
+            # 2.x's one message, as its list holds it: once delivered (a message steered in waits in the inbox).
+            if modes.get('failMessageReads'):
+                return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: message read failed'})
+            listed = list(messages.get(session, {}).values()) if v1() else v2_view(session)
+            found = next((m for m in listed if (m.get('info') or m).get('id') == rest[1]), None)
+            between_reads(session)
+            if found is None:
+                return self.reply(404, {'_tag': 'MessageNotFoundError', 'message': f'Message not found: {rest[1]}'})
+            return self.reply(200, {'data': found})
         if (method, *rest) == ('GET', 'message'):
             if modes['failListOnce']:
                 modes['failListOnce'] = False
@@ -1143,10 +1255,12 @@ class Handler(BaseHTTPRequestHandler):
         if (method, *rest) == ('GET', 'form'):
             return self.reply(200, {'data': [q for q in questions if q['sessionID'] == session]})
         if (method, *rest) == ('GET', 'inbox'):
-            return self.reply(200, {'data': [] if v1() else v2_inbox(session)})
+            listed = [] if v1() else v2_inbox(session)
+            between_reads(session)
+            return self.reply(200, {'data': listed})
         return self.reply(404)
 
-    def session(self, method, session, rest, body):
+    def session(self, method, session, rest, body, interrupt=False):
         if session not in sessions:
             return self.missing(f'Session {session}')
         if (method, *rest) == ('POST', 'prompt_async'):
@@ -1175,7 +1289,7 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 without(permissions, [p for p in permissions if p['sessionID'] == session])
                 without(questions, [q for q in questions if q['sessionID'] == session])
-            self.reply(200, True)
+            self.reply(200, {'interrupted': running} if interrupt else True)
             aborted = {'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}}
             if session in held:
                 # As OpenCode 1.19.3 halts an aborted compaction: the session
@@ -1211,7 +1325,34 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.missing('/'.join(rest))
 
-    def prompt(self, session, body):
+    def prompt_v2(self, session, body):
+        """As 2.x's prompt (protocol/src/groups/session.ts session.prompt, T-32 slice 4a): its text and files, each a
+        `data:` URI, under its `id`; answered with the message as admitted, or a ConflictError (409) for an ID the
+        session holds already. Its model is the session's, as switchModel made it. The 1.19.3 prompt's modes apply."""
+        files = []
+        for f in body.get('files') or []:
+            uri = f.get('uri') or ''
+            if not uri.startswith('data:'):
+                return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a file here is a data: URI'})
+            files.append({'type': 'file', 'mime': uri[5:].split(';', 1)[0], 'filename': f.get('name'), 'url': uri})
+        message_id = body.get('id') or new_id('msg')
+        if message_id in messages.get(session, {}) or message_id in v2_of(session)['pending']:
+            return self.reply(409, {'_tag': 'ConflictError', 'message': f'Message already exists: {message_id}'})
+        old = {'messageID': message_id, 'parts': [{'type': 'text', 'text': body.get('text', '')}, *files]}
+        current = sessions[session].get('model')
+        if current:
+            old['model'] = {'providerID': current.get('providerID'), 'modelID': current.get('id')}
+            if current.get('variant'):
+                old['variant'] = current['variant']
+        return self.prompt(session, old, admitted=True)
+
+    def prompt(self, session, body, admitted=False):
+        # 2.x answers with the message admitted (`admitted`); 1.19.3's prompt_async, 204. Mode `renamed`: stored, and
+        # answered as another message's admission.
+        accepted = lambda: self.reply(200, {'data': {'id': new_id('msg') if mode == 'renamed' else message_id, 'sessionID': session,
+                                                     'type': 'user', 'delivery': 'steer',
+                                                     'payload': {'text': text}, 'time': {'created': int(time.time() * 1000)}}}) \
+            if admitted else self.reply(204)
         message_id = body.get('messageID') or new_id('msg')
         text = ''.join(p.get('text', '') for p in body.get('parts', []) if p.get('type') == 'text')
         # As OpenCode 1.19.3's `FilePartInput` (`schema/src/v1/session.ts`):
@@ -1225,19 +1366,22 @@ class Handler(BaseHTTPRequestHandler):
             # `prompt` applies a revert waiting in the session before its message (`session/prompt.ts`).
             cleanup(session)
         model = body.get('model') or modes['defaultModel']
-        if mode == 'store':
+        if mode in ('store', 'renamed', 'store-unannounced'):
             if session in statuses:
                 # Sent while a run goes on: 2.x delivers it at that run's next step (v2_deliver).
                 v2_of(session)['steer'].add(message_id)
-            store(session, message_id, text, files, model=model)
-            self.reply(204)
+                if mode == 'store-unannounced':
+                    # Admitted into the inbox with no event Core sees (its stream missed it).
+                    v2_of(session)['pending'].append(message_id)
+            store(session, message_id, text, files, model=model, announce=mode != 'store-unannounced')
+            accepted()
             # The run starts: OpenCode is busy until it ends.
             statuses[session] = {'type': 'busy'}
             publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
             return None
         if mode == 'unstored':
             # Answered, then storing failed; OpenCode's session.error names no message. 2.x says nothing of it.
-            self.reply(204)
+            accepted()
             if v1():
                 publish('session.error', {'sessionID': session,
                                           'error': {'name': 'UnknownError', 'data': {'message': 'fixture: not stored'}}})
