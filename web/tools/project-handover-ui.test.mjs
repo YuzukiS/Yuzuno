@@ -179,7 +179,8 @@ test("a reason is counted in bytes, as Core counts it: one over the limit is not
   assert.deepEqual(page.errors, []);
 });
 
-test("a waiting proposal is still said after a save, and leaves with the answer that says it was decided (#612 R4)", async () => {
+// #612 R4: a save answers with the waiting proposal; one that doesn't say keeps it.
+test("a waiting proposal is still said after a save, and leaves with the answer that says it was decided", async () => {
   const versions = [{ version: 1, markdown: "# Lab", writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T08:00:00Z" }];
   // As Core lists a proposal (handover_proposals::summary).
   const proposal = { id: "h1", projectId: "p1", proposer: { id: "a", name: "Mori" }, baseVersion: 1, reason: "Say how to test", at: "2026-11-05T09:00:00Z", state: "pending" };
@@ -200,7 +201,8 @@ test("a waiting proposal is still said after a save, and leaves with the answer 
     [3, true, "a save answer from an older Core leaves the notice"], [4, false, "a decided proposal leaves with the answer"]]) {
     await type(page, "Handover document", `# Lab\nVersion ${n}.`);
     button(page, "Save handover").click();
-    await until(() => new RegExp(`Version ${n}`).test(section().textContent), `version ${n}`);
+    // The version list, not the text typed (a textarea's default value follows it): the save's answer is in.
+    await until(() => [...section().querySelectorAll(".project-handover-version")].some((v) => v.textContent === `Version ${n}`), `version ${n}`);
     assert.equal(said(), still, why);
   }
   assert.deepEqual(page.errors, []);
