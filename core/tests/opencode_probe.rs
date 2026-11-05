@@ -111,9 +111,9 @@ async fn a_real_opencode_2x_serves_every_route_and_envelope_core_connects_with()
     println!("probe: session.created data keys {:?}", created["data"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()));
 
     // A message with no model: one shell command (POST /api/session/:id/shell, 204), its events, then the page.
-    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let (http, password) = (reqwest::Client::builder().no_proxy().build().unwrap(), password_of(server.pid().unwrap()));
     let shell = http.post(format!("{}/api/session/{session}/shell", server.base()))
-        .basic_auth("opencode", Some(password_of(server.pid().unwrap()))).json(&json!({"command": "echo probe-3a"}))
+        .basic_auth("opencode", Some(&password)).json(&json!({"command": "echo probe-3a"}))
         .send().await.unwrap();
     println!("probe: shell answered {}", shell.status());
     assert!(shell.status().is_success(), "{}", shell.status());
@@ -128,6 +128,14 @@ async fn a_real_opencode_2x_serves_every_route_and_envelope_core_connects_with()
     println!("probe: status {status}; children {}; pending permissions {} and forms {}", children.len(), snapshot.permissions.len(), snapshot.questions.len());
     assert_eq!(status, json!({"type": "idle"}), "not running once its shell has ended");
     assert!(children.is_empty() && snapshot.permissions.is_empty() && snapshot.questions.is_empty());
+
+    // No credential is in the Agent's database: its data folder is its own, so 2.x had no 1.x auth.json to import
+    // (T-32 comment 4142). Only the count is read out, since this route answers the secrets themselves.
+    let credentials = http.get(format!("{}/api/credential", server.base())).basic_auth("opencode", Some(&password)).send().await.unwrap();
+    assert!(credentials.status().is_success(), "{}", credentials.status());
+    let stored = credentials.json::<Value>().await.unwrap()["data"].as_array().map(Vec::len);
+    println!("probe: credentials in the Agent's database: {stored:?}");
+    assert_eq!(stored, Some(0), "no credential in the Agent's database");
 
     // A 1.19.3 route answers the web UI's page, which Core refuses as no API answer.
     let old = server.path().await.unwrap_err().to_string();

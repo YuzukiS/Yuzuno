@@ -35,7 +35,7 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
     ws.reconnect("oc").await.unwrap();
     let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
-    let asked = |session: &str| json!({"id":"evt_1","type":"permission.asked","properties":{"id":"per_1",
+    let asked = |session: &str| json!({"id":"evt_1","type":"permission.asked","data":{"id":"per_1",
         "sessionID":session,"permission":"bash","patterns":["ls"],"metadata":{},"always":[]}});
     let before = ws.store.detail("oc").unwrap().agent.last_seq;
     // An older connection's stream, and another session's event, write nothing.
@@ -177,7 +177,7 @@ async fn a_late_part_reaches_the_turn_its_message_answers() {
     ws.store.release_for_test("oc");
     let held = |turn: &str| ws.store.held_for_test("oc").is_some_and(|d| d.read().turns.iter().any(|t| t["id"] == turn));
     assert!(!held("msg_old"), "the ended Turn is read from rows, not memory");
-    let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","properties":{"sessionID":c.session,
+    let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","data":{"sessionID":c.session,
         "part":{"id":id,"sessionID":c.session,"messageID":message,"type":"text","text":text}}});
     ws.dispatch_opencode_event("oc", c.generation, part("prt_late", "msg_answer_old", "late")).await;
     ws.dispatch_opencode_event("oc", c.generation, part("prt_new", "msg_answer_new", "new")).await;

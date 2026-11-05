@@ -615,7 +615,7 @@ async fn reopening_the_workspace_keeps_the_session_and_never_resends() {
     assert_eq!(turn(&d, &running)["status"], "outcomeUnknown", "its result is unknown, not resumed");
     assert_eq!(d.message_receipts[0].status, "accepted", "it was delivered");
     assert_eq!(lab.prompts().len(), 1, "never sent again");
-    assert_eq!(lab.posts("/session").iter().filter(|c| c["path"] == "/session").count(), 1, "no second session");
+    assert_eq!(lab.posts("/api/session").iter().filter(|c| c["path"] == "/api/session").count(), 1, "no second session");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -687,7 +687,7 @@ async fn after_a_restart_a_message_connects_the_session_again_and_goes_only_when
     let clients: Vec<&str> = d.message_receipts.iter().map(|r| r.input.client_message_id.as_str()).collect();
     assert_eq!(clients, ["a1"], "nothing recorded for the message not sent");
     assert_eq!(prompts(&a_root), 1, "not sent");
-    assert_eq!(lab.posts("/session").iter().filter(|c| c["path"] == "/session").count(), 1, "no second session");
+    assert_eq!(lab.posts("/api/session").iter().filter(|c| c["path"] == "/api/session").count(), 1, "no second session");
     // Sent again, it goes.
     let receipt = lab.send("a2", "after").await.unwrap();
     assert_eq!(receipt.status, "accepted");
@@ -1127,7 +1127,7 @@ async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session
     assert!(failed.detail().message_receipts.is_empty(), "refused before any receipt");
     // No permission rule anywhere: not on the session, not in a prompt.
     assert!(failed.calls().iter().all(|c| c["method"] != "PATCH"));
-    assert_eq!(failed.posts("/session")[0]["body"], json!({"title":"OpenCode"}));
+    assert_eq!(failed.posts("/api/session")[0]["body"], json!({"title":"OpenCode","location":{"directory":failed.detail().agent.cwd}}));
     failed.ws.close_agent(ID).await.unwrap();
 
     // Connected: ready, and what the Agent writes names its session and Turn.
