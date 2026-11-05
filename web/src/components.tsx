@@ -82,6 +82,7 @@ import "./input-segments.css";
 import { QuestionAnchor } from "./QuestionAnchor";
 import { ClaudeCheckpointButton } from "./ClaudeCheckpoint";
 import { questionKey } from "./pending-questions";
+import { usePendingMotion } from "./pending-motion";
 import type { QuestionSource } from "./types";
 import { ConversationRows, useConversationDisclosure, useConversationReveal, useConversationTarget, useFirstConversationMount, useConversationWindowed } from "./ConversationWindow";
 
@@ -1355,6 +1356,7 @@ function CodexPendingCard({
   // Core answers 200 only once it has recorded the reply as sent, so the
   // card says so at once instead of waiting for a refetch to bring it.
   const responseSent = !!request.params._responseSent || answered;
+  const motion = usePendingMotion(responseSent, request.agentId);
   disabled = disabled || !!request.stale || responseSent || unconfirmedAnswer.unconfirmed;
   const [error, setError] = useState(draft.attempted ? NO_ANSWER_REPLY : "");
   const [answers, setAnswers] = useState<Record<string, string>>(() => draft.initial ?? {});
@@ -1416,6 +1418,7 @@ function CodexPendingCard({
   };
   return (
     <section
+      ref={motion.card}
       className={`pending-card${highlightSource ? " source-highlight" : ""}`}
       id={`request-${request.id}`}
       tabIndex={-1}
@@ -1437,7 +1440,7 @@ function CodexPendingCard({
         <p className="inline-error">{t.staleCodex}</p>
       )}
       {responseSent && (
-        <p className="field-hint">{t.sentHarness}</p>
+        <p className="field-hint" ref={motion.hint}>{t.sentHarness}</p>
       )}
       {questions ? (
         <form

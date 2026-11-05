@@ -4,6 +4,8 @@
 // version read, and a number outside 1 to 64 not offered; then the task
 // board, where a card says where its executor stands (queued with its place,
 // starting, running), in English and in Chinese; on a phone, both fit.
+// S4: a template's own At most at once: a fraction or a negative number holds
+// the save, said at the field (in Chinese too); a whole number is saved.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-slots-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -28,9 +30,9 @@ const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected" };
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }, createdAt: "", updatedAt: "" }];
 const home = { generatedAt: new Date().toISOString(), order: ["p1"], needsYou: [], projects: [] };
-const templates = { workspace: { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude" }] },
-  available: [{ template: { id: "reviewer", label: "Reviewer", harness: "claude" }, source: "workspace" }],
-  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false };
+let saved = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude" }] };
+const templates = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })),
+  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
 // What Core keeps and answers (executor_slots.rs `executor_slots_view`).
 let slots = { version: 0, slots: 3, saved: false };
 const slotsView = () => ({ workspace: { ...slots, default: 3 }, limits: { min: 1, max: 64 }, inUse: { waiting: 2, starting: 1, running: 3 } });
@@ -69,6 +71,13 @@ await context.route("**/*", async (route) => {
     slots = { version: slots.version + 1, slots: body.slots, saved: true };
     return route.fulfill({ json: slotsView() });
   }
+  if (path === "/api/executor-templates" && method === "PUT") {
+    const body = JSON.parse(request.postData() || "{}");
+    report.writes.push({ method, path, body });
+    if (body.expectedVersion !== saved.version) return route.fulfill({ status: 400, json: { error: "version_conflict: these executor templates changed; reload before saving" } });
+    saved = { version: saved.version + 1, templates: body.templates };
+    return route.fulfill({ json: templates() });
+  }
   if (method !== "GET" && path.startsWith("/api/collaboration/")) {
     const op = path.split("/").at(-1);
     const body = JSON.parse(request.postData() || "{}");
@@ -102,7 +111,7 @@ await context.route("**/*", async (route) => {
     "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] },
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
-    "/api/executor-templates": templates, "/api/executor-slots": slotsView(),
+    "/api/executor-templates": templates(), "/api/executor-slots": slotsView(),
   }[path];
   if (json) return route.fulfill({ json });
   if (path.startsWith("/api/")) return route.fulfill({ json: {} });
@@ -169,6 +178,29 @@ try {
   await group.screenshot({ path: join(output, "2-settings-saved.png") });
   check("the Workspace's limit shown with what holds a slot; 0 not offered; 5 saved against version 0", { body: put.body });
 
+  // ---- A template's own limit (S4).
+  const limitField = box.locator('input[aria-label="At most at once"]');
+  const saveTemplates = box.getByRole("button", { name: "Save templates" });
+  for (const bad of ["2.5", "-1"]) {
+    await limitField.fill(bad);
+    await box.getByText("At most at once is a whole number from 1 to 64.").waitFor({ timeout: 10_000 });
+    assert.equal(await saveTemplates.isDisabled(), true, `${bad} holds the save`);
+  }
+  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
+  await box.getByText("同时最多 是 1 到 64 之间的整数。").waitFor({ timeout: 10_000 });
+  await box.locator('input[aria-label="同时最多"]').screenshot({ path: join(output, "2b-template-limit-zh.png") });
+  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
+  await box.getByText("At most at once is a whole number from 1 to 64.").waitFor({ timeout: 10_000 });
+  await limitField.fill("2");
+  await box.getByText("At most this many of this template’s executors run at once, within Executors at once. Empty: no limit of its own.").waitFor({ timeout: 10_000 });
+  await saveTemplates.click();
+  // The templates' own actions: the limit group above says Saved. too.
+  await box.locator(".executor-templates-actions:not(.executor-slots-actions)").getByText("Saved.", { exact: true }).waitFor({ timeout: 10_000 });
+  const templatesPut = report.writes.find((w) => w.path === "/api/executor-templates");
+  assert.deepEqual(templatesPut.body, { expectedVersion: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 2 }] });
+  assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
+  check("a template's own limit: 2.5 and -1 hold the save, said at the field (in Chinese too); 2 is saved", { body: templatesPut.body });
+
   // ---- The board: each card says where its executor stands.
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Tasks & messages", exact: true }).click({ timeout: 10_000 });
@@ -207,7 +239,8 @@ try {
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
-  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots"], "one save, nothing else written");
+  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots", "PUT /api/executor-templates"],
+    "the two saves, nothing else written");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";

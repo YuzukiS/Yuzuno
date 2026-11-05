@@ -12,8 +12,8 @@
 //! stored that this one can't read. Only the user saves them: these are
 //! browser routes, never a collaboration operation.
 //!
-//! Phase 1 creates executors on this Core host only. `maxConcurrent` is kept
-//! for phase 2's slots and not yet applied.
+//! Executors run on this Core host only. A template's `maxConcurrent` limits
+//! how many of its executors hold a slot at once (executor_slots.rs, T-35).
 use crate::{
     agent_defaults::{catalog_entry, catalog_name, check_in_catalog, CLAUDE_MODES, CODEX_PRESETS},
     server::ApiError,
@@ -38,6 +38,9 @@ pub const DEFAULT_NAME_PATTERN: &str = "{task} · {label}";
 const MAX_TEMPLATES: usize = 50;
 pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 const MAX_CONCURRENT: u32 = 64;
+/// What a save says of a `maxConcurrent` it can't take, whatever was wrong
+/// with it (a negative number, a fraction, text): the editor says the same.
+const AT_ONCE: &str = "At most at once is a whole number from 1 to 64";
 const FIELDS: [&str; 11] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
     "permissionMode", "machineId", "instructions", "maxConcurrent"];
 
@@ -70,7 +73,9 @@ pub struct Template {
     /// Given to the executor with its dispatch's materials, at most 8 KiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-    /// For phase 2's slots; not applied yet.
+    /// At most this many of its executors hold a slot at once, within the
+    /// Workspace's, Project's and machine's limits (executor_slots.rs); unset
+    /// adds no limit of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<u32>,
 }
@@ -171,7 +176,7 @@ impl Template {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }
         if let Some(limit) = self.max_concurrent {
-            ensure!((1..=MAX_CONCURRENT).contains(&limit), "At most 1 to {MAX_CONCURRENT} executors of one template at once");
+            ensure!((1..=MAX_CONCURRENT).contains(&limit), "{AT_ONCE}");
         }
         Ok(())
     }
@@ -276,6 +281,11 @@ fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result
         let Some(object) = value.as_object() else { bail!("A template is an object") };
         if let Some(field) = object.keys().find(|k| !FIELDS.contains(&k.as_str())) {
             bail!("Unknown template field: {field}");
+        }
+        // Before serde, whose own words for a negative number or a fraction
+        // the user would see instead.
+        if let Some(limit) = object.get("maxConcurrent").filter(|v| !v.is_null()) {
+            ensure!(limit.as_u64().is_some_and(|n| (1..=u64::from(MAX_CONCURRENT)).contains(&n)), "{AT_ONCE}");
         }
         let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
         let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
