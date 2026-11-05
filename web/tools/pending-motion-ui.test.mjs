@@ -21,7 +21,7 @@ try {
   const entry = path.join(fixture, 'entry.tsx');
   // As App.tsx: one conversation element that stays across Agents and says whose it is (data-agent-id), its rows
   // and cards keyed by the Agent, as ConversationWindow is.
-  await writeFile(entry, `import React from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {PendingCard} from ${JSON.stringify(path.join(root, 'src/components.tsx'))};const r=createRoot(document.getElementById('root'));window.renderCards=(requests,agent='a')=>flushSync(()=>r.render(<div className="conversation-scroll" data-agent-id={agent}><React.Fragment key={agent}>{requests.map((q)=><PendingCard key={q.id} request={{...q,agentId:agent}} refresh={()=>{}} disabled={false} onViewChanges={()=>{}}/>)}</React.Fragment><p className="read-end-marker"/></div>));`);
+  await writeFile(entry, `import React from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {PendingCard} from ${JSON.stringify(path.join(root, 'src/components.tsx'))};const r=createRoot(document.getElementById('root'));window.renderCards=(requests,agent='a',key=agent)=>flushSync(()=>r.render(<div className="conversation-scroll" data-agent-id={agent}><React.Fragment key={key}>{requests.map((q)=><PendingCard key={q.id} request={{...q,agentId:agent}} refresh={()=>{}} disabled={false} onViewChanges={()=>{}}/>)}</React.Fragment><p className="read-end-marker"/></div>));`);
   const result = await build({ root, configFile: false, define: { 'process.env.NODE_ENV': JSON.stringify('production') }, logLevel: 'silent', plugins: [react()], build: { write: false, lib: { entry, name: 'PendingMotionUI', formats: ['iife'] } } });
   bundle = (Array.isArray(result) ? result[0] : result).output.find(v => v.type === 'chunk').code;
 } finally { await rm(fixture, { recursive: true, force: true }); }
@@ -54,7 +54,7 @@ function mount({ reduced = false } = {}) {
     return animation;
   };
   w.eval(bundle);
-  page.render = async (requests, agent) => { w.renderCards(requests, agent); await wait(); };
+  page.render = async (requests, agent, key) => { w.renderCards(requests, agent, key); await wait(); };
   page.take = () => page.played.splice(0).map((p) => p.id).sort();
   page.close = () => w.close();
   return page;
@@ -129,4 +129,23 @@ test('a card that opens sent plays nothing, another Agent opened leaves no copy,
     assert.deepEqual(q.take(), [], 'nothing plays');
     assert.deepEqual(q.errors, []);
   } finally { q.close(); }
+});
+
+test('a card taken out while its request still waits leaves no copy, nor one put in again under a parent keyed anew; a resolved one still leaves through the copy (T-19 CV:Q-03, R1 4a8e5cfe)', async () => {
+  const p = mount();
+  try {
+    await p.render([codex('waits')]);
+    await p.render([]);
+    assert.equal(copies(p).length, 0, 'a card taken out while its request still waits leaves no copy');
+    assert.deepEqual(p.take(), [], 'and plays nothing');
+    await p.render([codex('sent', true)], 'a', 'one');
+    await p.render([codex('sent', true)], 'a', 'two');
+    assert.equal(!!card(p, 'sent'), true);
+    assert.equal(copies(p).length, 0, 'the same request put in again under a parent keyed anew leaves no copy');
+    assert.deepEqual(p.take(), []);
+    await p.render([], 'a', 'two');
+    assert.equal(copies(p).length, 1, 'a resolved card still leaves through the copy');
+    assert.deepEqual(p.take(), ['pending-card-exit']);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });

@@ -20,8 +20,12 @@ const tokenMs = (name: string, otherwise: number) => {
  * over small when it appears while the card shows; a card that opens with it shows it as it is. A resolved card leaves
  * over exit-small through a copy where it was: aria-hidden, inert and without the ids, names and tab stops of the
  * card, removed when its fade ends, so the request's card itself is gone at once, focus and all. Under reduced motion,
- * or without the Web Animations API, the hint shows and the card goes at once. A card that goes because another Agent
- * is opened leaves nothing: the conversation it was in (its `data-agent-id`) now shows another Agent, or is gone.
+ * or without the Web Animations API, the hint shows and the card goes at once.
+ *
+ * Only a card whose answer Core has recorded (`sent`) is resolved as it goes; any other leaves at once, with no copy
+ * (R1 4a8e5cfe): one taken out while its request still waits. Neither leaves one where the card is put in again (a
+ * parent keyed anew: its id is in the page again), nor where the conversation it was in (its `data-agent-id`) now
+ * shows another Agent, or is gone.
  *
  * `card` goes on the card's root, `hint` on the hint; `sent` is whether the hint shows; `agentId` is the request's.
  */
@@ -41,18 +45,22 @@ export function usePendingMotion(sent: boolean, agentId: string) {
   }, [sent]);
   const agent = useRef(agentId);
   agent.current = agentId;
+  // As it last rendered: whether Core had recorded the answer, read as the card goes.
+  const resolved = useRef(sent);
+  resolved.current = sent;
   useLayoutEffect(() => {
     const element = card.current;
     return () => {
-      if (element) leave(element, agent.current);
+      if (element && resolved.current) leave(element, agent.current);
     };
   }, []);
   return { card, hint };
 }
 
 /** Puts a copy of `element` where it is as it unmounts, and fades the copy out once React has removed the card, if
-    the conversation still shows `agentId`'s. StrictMode's unmount and mount again in development leaves the card
-    where it was: then the copy goes at once, as it does in another Agent's conversation. */
+    the conversation still shows `agentId`'s and no card of the same request was put in meanwhile. StrictMode's unmount
+    and mount again in development leaves the card where it was: then the copy goes at once, as it does in another
+    Agent's conversation. */
 function leave(element: HTMLElement, agentId: string) {
   if (!element.isConnected || !animates()) return;
   const copy = element.cloneNode(true) as HTMLElement;
@@ -78,7 +86,8 @@ function leave(element: HTMLElement, agentId: string) {
     // Still there: not removed after all (StrictMode). Gone with its conversation, or in another Agent's (the
     // conversation's attributes change after its cards go, in the same commit): nothing to show.
     const shows = copy.closest("[data-agent-id]")?.getAttribute("data-agent-id");
-    if (element.isConnected || !copy.isConnected || (shows != null && shows !== agentId)) {
+    const again = !!element.id && !!document.getElementById(element.id);
+    if (element.isConnected || !copy.isConnected || again || (shows != null && shows !== agentId)) {
       copy.remove();
       return;
     }
