@@ -212,76 +212,80 @@ export function ImportCodexSession({
       </form>
 
       {preview && (
-        <form onSubmit={(event) => void importSession(event)} data-stale={stale || loading ? "" : undefined} inert={stale || loading}>
-          <section className="session-preview" aria-label={t.sessionPreview}>
-            <div className="session-preview-heading">
-              <span>
-                <CheckCircle2 size={14} /> {preview.existingAgentId ? t.alreadyIn : t.found}
-              </span>
-              <span>{t.turns(preview.turnCount)}</span>
-            </div>
-            <p className="session-preview-excerpt">
-              {preview.preview || t.noExcerpt}
-            </p>
-            <div className="session-preview-folder">
-              <Folder size={14} />
-              <span>{preview.cwd}</span>
-            </div>
-            <p className="session-preview-model">
-              {preview.model || t.codexDefaultModel}
-              {preview.reasoningEffort ? t.reasoning(preview.reasoningEffort) : ""}
-            </p>
-          </section>
-          {preview.warnings.length > 0 && (
-            <div className="session-import-warnings" role="status">
-              {preview.warnings.map((warning, index) => (
-                <p key={index}>{warning}</p>
-              ))}
-            </div>
-          )}
-          {!preview.existingAgentId && (
-            <fieldset
-              className="remote-form-fields"
-              disabled={disabled || busy}
-            >
-              <label>
-                {t.agentName}
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  required
-                  maxLength={60}
-                />
-              </label>
-              <CodexPermissions
-                settings={settings}
-                catalog={preview.permissions}
+        <form onSubmit={(event) => void importSession(event)}>
+          {/* A preview whose ID has since been edited, or that is being read again, is out of
+              reach; its actions row is not, so Cancel still works (T-19 ST:SX-28, R2 70ad905d). */}
+          <div className="session-preview-body" data-stale={stale || loading ? "" : undefined} inert={stale || loading}>
+            <section className="session-preview" aria-label={t.sessionPreview}>
+              <div className="session-preview-heading">
+                <span>
+                  <CheckCircle2 size={14} /> {preview.existingAgentId ? t.alreadyIn : t.found}
+                </span>
+                <span>{t.turns(preview.turnCount)}</span>
+              </div>
+              <p className="session-preview-excerpt">
+                {preview.preview || t.noExcerpt}
+              </p>
+              <div className="session-preview-folder">
+                <Folder size={14} />
+                <span>{preview.cwd}</span>
+              </div>
+              <p className="session-preview-model">
+                {preview.model || t.codexDefaultModel}
+                {preview.reasoningEffort ? t.reasoning(preview.reasoningEffort) : ""}
+              </p>
+            </section>
+            {preview.warnings.length > 0 && (
+              <div className="session-import-warnings" role="status">
+                {preview.warnings.map((warning, index) => (
+                  <p key={index}>{warning}</p>
+                ))}
+              </div>
+            )}
+            {!preview.existingAgentId && (
+              <fieldset
+                className="remote-form-fields"
                 disabled={disabled || busy}
-                onChange={setSettings}
-                language={language}
-              />
-              {!preview.permissions && (
-                <p className="remote-field-note">{t.readForPermissions}</p>
-              )}
-            </fieldset>
-          )}
-          <p className="session-handoff-note">
-            {t.codexHandoff}
-            {!preview.existingAgentId && t.codexAddsNothing}
-          </p>
-          {/* The error's two lines are kept while empty: a failure fills them instead of
-              pushing the buttons down under the pointer. Below them it could fall out of this
-              dialog's scrolled view (T-19 SX-35). */}
-          {/* A stale preview's form is out of reach: its error shows below it, once. */}
-          {errorShown && !stale ? (
-            <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
-              <span>{errorShown}</span>
+              >
+                <label>
+                  {t.agentName}
+                  <input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    required
+                    maxLength={60}
+                  />
+                </label>
+                <CodexPermissions
+                  settings={settings}
+                  catalog={preview.permissions}
+                  disabled={disabled || busy}
+                  onChange={setSettings}
+                  language={language}
+                />
+                {!preview.permissions && (
+                  <p className="remote-field-note">{t.readForPermissions}</p>
+                )}
+              </fieldset>
+            )}
+            <p className="session-handoff-note">
+              {t.codexHandoff}
+              {!preview.existingAgentId && t.codexAddsNothing}
             </p>
-          ) : (
-            <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
-              <span>&nbsp;</span>
-            </p>
-          )}
+            {/* The error's two lines are kept while empty: a failure fills them instead of
+                pushing the buttons down under the pointer. Below them it could fall out of this
+                dialog's scrolled view (T-19 SX-35). */}
+            {/* A stale preview is out of reach: its error shows below the form, once. */}
+            {errorShown && !stale ? (
+              <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
+                <span>{errorShown}</span>
+              </p>
+            ) : (
+              <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
+                <span>&nbsp;</span>
+              </p>
+            )}
+          </div>
           <div className="modal-actions">
             <button
               className="secondary-button"
@@ -294,7 +298,7 @@ export function ImportCodexSession({
             <button
               className="primary-button"
               disabled={
-                disabled || busy || (!preview.existingAgentId && !canImport)
+                disabled || busy || stale || loading || (!preview.existingAgentId && !canImport)
               }
             >
               {busy ? (

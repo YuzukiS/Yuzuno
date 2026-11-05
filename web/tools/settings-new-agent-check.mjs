@@ -344,34 +344,50 @@ for (const run of runs) {
 
     // ---- ST:SX-28: the preview, its ID edited (Existing Codex is shown).
     {
+      let before = null;
       let edited = null;
       let restored = null;
       try {
+        const state = () => page.evaluate(() => {
+          const section = document.querySelector('[role="dialog"] .session-preview');
+          // The preview and its fields; the form's actions row is not part of it (R2 70ad905d).
+          const part = section?.closest(".session-preview-body");
+          const nameInput = part ? [...part.querySelectorAll("input")].find((i) => i.closest("label")?.textContent.includes("Agent name")) : null;
+          const buttons = [...(section?.closest("form")?.querySelectorAll(".modal-actions button") ?? [])];
+          const cancel = buttons.find((b) => b.textContent.trim() === "Cancel");
+          const add = buttons.find((b) => b.textContent.trim() === "Add to workspace");
+          // Chromium keeps focus out of an inert subtree: Cancel taking focus says it is in reach.
+          const was = document.activeElement;
+          cancel?.focus();
+          const reach = { cancel: !!cancel && document.activeElement === cancel && !cancel.disabled, addDisabled: add?.disabled ?? null };
+          if (was instanceof HTMLElement) was.focus();
+          return { preview: !!section, stale: part?.hasAttribute("data-stale") ?? null, inert: part?.inert ?? null,
+            opacity: part ? getComputedStyle(part).opacity : null, name: nameInput?.value ?? null, ...reach };
+        });
         const name = dialog.getByLabel("Agent name", { exact: true });
         await name.fill("Kept name");
+        await frames();
+        before = await state();
         const id = dialog.getByLabel("Codex session ID");
         await id.click();
         await page.keyboard.press("End");
         await page.keyboard.type("x");
         await frames();
-        const state = () => page.evaluate(() => {
-          const section = document.querySelector('[role="dialog"] .session-preview');
-          const form = section?.closest("form");
-          const nameInput = form ? [...form.querySelectorAll("input")].find((i) => i.closest("label")?.textContent.includes("Agent name")) : null;
-          return { preview: !!section, stale: form?.hasAttribute("data-stale") ?? null, inert: form?.inert ?? null,
-            opacity: form ? getComputedStyle(form).opacity : null, name: nameInput?.value ?? null };
-        });
         edited = await state();
+        await id.click();
+        await page.keyboard.press("End");
         await page.keyboard.press("Backspace");
         await frames();
         restored = await state();
       } catch (error) {
         edited = { error: String(error).slice(0, 200) };
       }
-      measured.sx28 = { edited, restored };
-      ok(`${tag}: editing a previewed session ID keeps the preview, dimmed and out of reach with its name, until the ID is the one read again`,
+      measured.sx28 = { before, edited, restored };
+      ok(`${tag}: editing a previewed session ID keeps the preview, dimmed and out of reach with its name, until the ID is the one read again; Cancel stays in reach and only Add waits`,
         edited?.preview === true && edited.stale === true && edited.inert === true && edited.opacity === "0.55" && edited.name === "Kept name"
-        && restored?.preview === true && restored.stale === false && restored.inert === false && restored.name === "Kept name", measured.sx28);
+        && edited.cancel === true && edited.addDisabled === true
+        && restored?.preview === true && restored.stale === false && restored.inert === false && restored.name === "Kept name"
+        && restored.cancel === true && typeof before?.addDisabled === "boolean" && restored.addDisabled === before.addDisabled, measured.sx28);
     }
 
     // ---- ST:SX-50: the SSH machine editor and Escape.

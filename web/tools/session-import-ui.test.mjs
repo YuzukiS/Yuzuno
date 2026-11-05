@@ -738,7 +738,8 @@ test("editing a previewed ID keeps the preview, its name and permission, marked 
   try {
     await open(page);
     await read(page);
-    const form = () => page.document.querySelector(".session-preview")?.closest("form");
+    // The preview and its fields, apart from the form's actions row.
+    const form = () => page.document.querySelector(".session-preview")?.closest(".session-preview-body");
     const nameField = () => [...(form()?.querySelectorAll("label") ?? [])].find((l) => l.textContent.startsWith("Agent name"))?.querySelector("input");
     await value(page, nameField(), "Kept name");
     await value(page, page.document.querySelector("#import-session-id"), other);
@@ -782,6 +783,32 @@ test("a pane switched away from keeps what was typed and previewed there, and th
   }
 });
 
+test("while the preview is stale or read again, Cancel stays in reach and closes New agent; only Add waits (T-19 ST:SX-28, R2 70ad905d)", async () => {
+  let closes = 0;
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page, { close() { closes++; } });
+    await read(page);
+    await value(page, page.document.querySelector("#import-session-id"), other);
+    // The preview form's own Cancel: the New pane, kept hidden, has one too.
+    const cancel = [...(page.document.querySelector(".session-preview")?.closest("form")?.querySelectorAll("button") ?? [])]
+      .find((node) => node.textContent.trim() === "Cancel");
+    assert.equal(!!cancel, true, "Cancel shows");
+    // jsdom does not keep focus out of an inert subtree, so where Cancel sits is what is read.
+    assert.equal(!!cancel.closest("[inert]"), false, "Cancel is not in the out-of-reach part");
+    assert.equal(cancel.disabled, false);
+    assert.equal(!!page.document.querySelector(".session-preview")?.closest("[inert]"), true, "the preview is");
+    assert.equal(button(page, "Add to workspace").disabled, true, "Add waits for the ID read again");
+    cancel.focus();
+    assert.equal(page.document.activeElement === cancel, true, "Cancel takes focus");
+    cancel.click();
+    await tick();
+    assert.equal(closes, 1, "Cancel closes New agent");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
 test("a bad ID typed over a kept preview is said once, below it, not again in the preview's out-of-reach form (T-19 ST:SX-28, R1 bd985b53)", async () => {
   const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
   try {
@@ -794,7 +821,7 @@ test("a bad ID typed over a kept preview is said once, below it, not again in th
     const said = [...page.document.querySelectorAll('[role="alert"]')]
       .filter((node) => node.textContent.includes("Paste the session ID from Codex"));
     assert.equal(said.length, 1, "the bad ID is said once");
-    assert.equal(!!said[0].closest("form[data-stale]"), false, "and not in the stale preview's form");
+    assert.equal(!!said[0].closest("[data-stale]"), false, "and not in the stale preview");
   } finally {
     page.close();
   }

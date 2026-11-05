@@ -135,7 +135,8 @@
   background: color-mix(in srgb, var(--surface-raised) 60%, transparent);
 }
 /* A preview whose ID has since been edited, or is being read again: still,
-   dimmed and out of reach until the read replaces it (T-19 ST:SX-28). */
-.session-import form[data-stale] {
+   dimmed and out of reach until the read replaces it (T-19 ST:SX-28). Its
+   actions row is not part of it. */
+.session-preview-body[data-stale] {
   opacity: 0.55;
 }
