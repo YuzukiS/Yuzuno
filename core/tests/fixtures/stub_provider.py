@@ -10,6 +10,9 @@ messages. It answers by the newest user message's keyword:
   `a.txt`; once that tool's result is back, a last text.
 - `probe-4a image`: a short text.
 - `probe-4a slow`: nothing for 30 seconds, so the run can be interrupted.
+- `probe-4a ask`: one call of OpenCode's `shell` tool, which the probe's
+  config makes OpenCode ask permission for.
+- `probe-4a form`: one call of OpenCode's `question` tool, which opens a form.
 A request without tools (OpenCode's own title, say) is answered with a
 title, streamed when it asks for a stream, as OpenCode does.
 """
@@ -61,6 +64,12 @@ class Handler(BaseHTTPRequestHandler):
         if 'probe-4a slow' in asked:
             time.sleep(30)
             return self.stream([chunk({'role': 'assistant', 'content': 'Too late.'}), chunk({}, 'stop')])
+        if last != 'tool' and ('probe-4a ask' in asked or 'probe-4a form' in asked):
+            name, arguments = ('shell', {'command': 'echo probe-4a'}) if 'probe-4a ask' in asked else \
+                ('question', {'questions': [{'question': 'Which one?', 'header': 'Pick',
+                                             'options': [{'label': 'A', 'description': 'the first'}]}]})
+            call = {'index': 0, 'id': 'call_stub_2', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}
+            return self.stream([chunk({'role': 'assistant', 'tool_calls': [call]}), chunk({}, 'tool_calls')])
         if 'probe-4a tools' in asked and last != 'tool':
             call = {'index': 0, 'id': 'call_stub_1', 'type': 'function',
                     'function': {'name': 'read', 'arguments': json.dumps({'path': 'a.txt'})}}

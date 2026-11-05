@@ -13,7 +13,7 @@
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
-use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
 
 fn ended(pid: u64) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -312,7 +312,8 @@ async fn one_run(events: &mut Events, session: &str) -> Vec<Value> {
 /// under Core's ID, an image as a `data:` URI, an interrupt), and what
 /// OpenCode streams and stores is read through Core's mapping, live and
 /// whole: running while it runs and idle after; the answers to Core's
-/// message; a tool through its states; the turn's end.
+/// message; a tool through its states; the turn's end; and 2.x's own
+/// permission request and form, which Core can't answer yet (slice 5).
 #[tokio::test]
 #[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
 async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_cores_mapping() {
@@ -325,7 +326,8 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
     let (mut stub, port, log) = stub_provider(dir.path());
     // The work folder's own config: one provider, the stub, with a fake key.
     std::fs::write(directory.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
-        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"}, "models": {"fake": {"name": "Fake", "capabilities": {"tools": true, "input": ["text", "image"]}}}}}})
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"}, "models": {"fake": {"name": "Fake", "capabilities": {"tools": true, "input": ["text", "image"]}}}}},
+        "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]})
         .to_string()).unwrap();
     let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
     let server = std::sync::Arc::new(Server::start(&launch).await.unwrap());
@@ -450,6 +452,35 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
     println!("probe: the stub's next requests' user content {pictured_turn:?}");
     assert!(pictured_turn.iter().any(|c| c.contains("image")), "the image reached the provider");
     second.iter().for_each(|e| { cursor.read(e); });
+
+    // 2.x's own permission request and form (until slice 5): told from 1.19.3's, as Core marks them not yet
+    // answerable, and read as Core's; each run waits on it until it is interrupted.
+    for (prompt, kind, as_core) in [("probe-4a ask", "permission.asked", "permission.asked"), ("probe-4a form", "form.created", "question.asked")] {
+        let asking = MessageId::new();
+        assert_eq!(server.submit(&session, &asking, prompt).await.unwrap(), Submission::Accepted);
+        let (asked, read) = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let event = events.next().await.unwrap().expect("the stream ended");
+                if session_of(&event) != Some(session.as_str()) {
+                    continue;
+                }
+                let read = cursor.read(&event);
+                if event["type"] == kind {
+                    return (event, read);
+                }
+            }
+        }).await.unwrap_or_else(|_| panic!("no {kind} within 30 s"));
+        println!("probe: {kind} {}", asked["data"]);
+        let request = if kind == "form.created" { &asked["data"]["form"] } else { &asked["data"] };
+        assert!(is_v2_request(request), "{kind}: told from 1.19.3's shape");
+        assert_eq!(read.iter().map(|e| e["type"].clone()).collect::<Vec<_>>(), [json!(as_core)], "{kind}: read as Core's {as_core}");
+        assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "busy"}), "{kind}: its run waits on it");
+        server.abort(&session).await.unwrap();
+        let ended = one_run(&mut events, &session).await;
+        println!("probe: after {kind}, until the end {:?}", ended.iter().map(|e| e["type"].clone()).collect::<Vec<_>>());
+        assert_eq!(ended.last().unwrap()["type"], "session.execution.interrupted", "{kind}: interrupted");
+        ended.iter().for_each(|e| { cursor.read(e); });
+    }
 
     // An interrupt: the run ends interrupted by the user, which Core reads as its aborted answer.
     let slow = MessageId::new();

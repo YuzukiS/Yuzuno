@@ -45,7 +45,7 @@ pub fn is_v2(messages: &Value) -> bool {
 /// answer one of these yet. 2.x's permission request names an `action`, not
 /// a `permission` (schema/src/permission.ts); its form has `fields`, not
 /// `questions` (schema/src/form.ts).
-pub(crate) fn is_v2_request(request: &Value) -> bool {
+pub fn is_v2_request(request: &Value) -> bool {
     (request["action"].is_string() && request.get("permission").is_none())
         || (request["fields"].is_array() && request.get("questions").is_none())
 }
