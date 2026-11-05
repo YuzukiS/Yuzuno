@@ -479,7 +479,12 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
         let ended = one_run(&mut events, &session).await;
         println!("probe: after {kind}, until the end {:?}", ended.iter().map(|e| e["type"].clone()).collect::<Vec<_>>());
         assert_eq!(ended.last().unwrap()["type"], "session.execution.interrupted", "{kind}: interrupted");
-        ended.iter().for_each(|e| { cursor.read(e); });
+        // The run's end ends it: 2.x keeps no request past its run, and Core's reading ends it too.
+        let read: Vec<Value> = ended.iter().flat_map(|e| cursor.read(e)).collect();
+        let replied = if kind == "form.created" { "question.replied" } else { "permission.replied" };
+        assert!(read.iter().any(|e| e["type"] == replied && e["data"]["requestID"] == request["id"]), "{kind}: ended in Core with its run");
+        let after = server.snapshot(&session, &[]).await.unwrap();
+        assert!(after.permissions.is_empty() && after.questions.is_empty(), "{kind}: 2.x keeps no request past its run");
     }
 
     // An interrupt: the run ends interrupted by the user, which Core reads as its aborted answer.

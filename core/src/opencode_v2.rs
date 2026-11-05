@@ -333,6 +333,16 @@ impl Cursor {
             .filter_map(|item| Some((item["id"].as_str()?.to_owned(), item["type"].as_str()?.to_owned()))).collect();
         self.sessions.insert(session.to_owned(), Open { user: read.open.clone(), inputs, steps, tools, ..Open::default() });
     }
+
+    /// A request a whole read found pending (after `resumed`): one of 2.x's
+    /// own ends with its run, as one asked live does.
+    pub fn asked(&mut self, request: &Value) {
+        let Some(session) = request["sessionID"].as_str() else { return };
+        if is_v2_request(request) {
+            let replied = if request["fields"].is_array() { "question.replied" } else { "permission.replied" };
+            self.sessions.entry(session.to_owned()).or_default().asked(request["id"].as_str(), replied);
+        }
+    }
 }
 
 /// One session's: the newest user message of the turn now open, and of each
@@ -349,12 +359,23 @@ struct Open {
     shells: HashMap<String, String>,
     /// The compaction running: its message's ID.
     compaction: Option<String>,
+    /// 2.x's own requests still open, oldest first, each with the kind of
+    /// Core's event that ends it. A request lives only while its run does:
+    /// 2.2.5 sends no reply for a permission request its interrupt ended
+    /// (probe p3), so the run's end ends them in Core too (`ended`).
+    requests: Vec<(String, &'static str)>,
 }
 
 impl Open {
     fn is_empty(&self) -> bool {
         self.user.is_none() && self.inputs.is_empty() && self.steps.is_empty() && self.tools.is_empty() && self.gathered.is_empty()
-            && self.shells.is_empty() && self.compaction.is_none()
+            && self.shells.is_empty() && self.compaction.is_none() && self.requests.is_empty()
+    }
+
+    fn asked(&mut self, id: Option<&str>, replied: &'static str) {
+        if let Some(id) = id.filter(|id| !self.requests.iter().any(|(open, _)| open == id)) {
+            self.requests.push((id.to_owned(), replied));
+        }
     }
 
     /// The events of Core's shape one 2.x event stands for, in order. Another
@@ -389,8 +410,23 @@ impl Open {
         let failed = |error: Value| made("session.error", json!({"sessionID": session, "error": error}));
         match kind {
             // 2.x's form, asked and ended as Core's question is (`is_v2_request` marks it unanswerable yet).
-            "form.created" => vec![made("question.asked", d["form"].clone())],
-            "form.replied" | "form.cancelled" => vec![made("question.replied", json!({"sessionID": session, "requestID": d["id"]}))],
+            "form.created" => {
+                self.asked(d["form"]["id"].as_str(), "question.replied");
+                vec![made("question.asked", d["form"].clone())]
+            }
+            "form.replied" | "form.cancelled" => {
+                self.requests.retain(|(open, _)| d["id"] != open.as_str());
+                vec![made("question.replied", json!({"sessionID": session, "requestID": d["id"]}))]
+            }
+            // 2.x's own permission request passes as it is (Core marks it unanswerable yet), kept until it ends.
+            "permission.asked" if is_v2_request(d) => {
+                self.asked(d["id"].as_str(), "permission.replied");
+                vec![event.clone()]
+            }
+            "permission.replied" => {
+                self.requests.retain(|(open, _)| d["requestID"] != open.as_str());
+                vec![event.clone()]
+            }
             "session.created" if d.get("info").is_none() => vec![made("session.created", json!({"sessionID": session,
                 "info": {"id": session, "parentID": d["parentID"], "title": d["title"], "agent": d["agent"]}}))],
             "session.inbox.enqueued" => {
@@ -512,6 +548,9 @@ impl Open {
     fn ended(&mut self, event: &Value, read: Vec<Value>) -> Vec<Value> {
         let session = event["data"]["sessionID"].clone();
         let mut out: Vec<Value> = self.gathered.drain().map(|(id, gathered)| written(event, &session, &id, gathered)).collect();
+        // Its requests still open end with it.
+        out.extend(self.requests.drain(..).map(|(id, replied)| json!({"id": event["id"], "type": replied,
+            "data": {"sessionID": session, "requestID": id}})));
         out.extend(read);
         self.user = None;
         self.steps.clear();

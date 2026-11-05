@@ -2195,7 +2195,11 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     // stand-in's 1.19.3 mode sends, are read as they are.
     let (entries, ended) = if crate::opencode_v2::is_v2(&snapshot.messages) {
         let read = crate::opencode_v2::read_messages(&snapshot.messages);
-        c.cursor.lock().unwrap().resumed(session, &read, &snapshot.inbox);
+        let mut cursor = c.cursor.lock().unwrap();
+        cursor.resumed(session, &read, &snapshot.inbox);
+        for request in snapshot.permissions.iter().chain(&snapshot.questions) {
+            cursor.asked(request);
+        }
         (read.messages, read.ended)
     } else {
         (snapshot.messages.as_array().cloned().unwrap_or_default(), Vec::new())

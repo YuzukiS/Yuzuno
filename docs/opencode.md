@@ -48,7 +48,7 @@ compaction, rewind and fork.
 - **Permission requests and questions:** answered in 1.19.3's shape until
   their part. One of 2.x's own is shown at once with "not yet on OpenCode
   2.x", and can't be answered in Yuzuno: its run waits on it until you
-  interrupt the turn.
+  interrupt the turn, which ends the request too.
 - **Commands:** listed from 2.x's own list (names and descriptions), but
   running one is still 1.19.3's route, which 2.x doesn't have, so a command
   is refused with "not yet on OpenCode 2.x".

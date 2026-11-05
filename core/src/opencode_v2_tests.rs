@@ -374,3 +374,30 @@ fn a_2x_request_is_told_from_a_1_19_3_one_and_a_2x_form_is_read_as_a_question() 
     let replied = c.read(&ev("form.cancelled", 2, json!({"id": "frm_1", "sessionID": "ses_1"})));
     assert_eq!((kinds(&replied), &replied[0]["data"]), (vec!["question.replied"], &json!({"sessionID": "ses_1", "requestID": "frm_1"})));
 }
+
+/// A 2.x request lives only while its run does: the run's end ends each of
+/// its own still open in Core too, as 2.2.5 sends no reply for a permission
+/// request its interrupt ended (T-32 slice 4a, probe p3). One answered or
+/// cancelled before is not ended again, nor one of 1.19.3's shape, and one a
+/// whole read found pending ends as one asked live.
+#[test]
+fn a_runs_end_ends_its_2x_requests_still_open() {
+    let mut c = Cursor::default();
+    let asked = c.read(&ev("permission.asked", 1, json!({"id": "per_1", "sessionID": "ses_1", "action": "shell", "resources": ["ls"]})));
+    assert_eq!(kinds(&asked), ["permission.asked"]);
+    c.read(&ev("form.created", 2, json!({"form": {"id": "frm_1", "sessionID": "ses_1", "title": "Pick", "fields": []}})));
+    c.read(&ev("form.cancelled", 3, json!({"id": "frm_1", "sessionID": "ses_1"})));
+    c.read(&ev("permission.asked", 4, json!({"id": "per_old", "sessionID": "ses_1", "permission": "bash", "patterns": ["ls"]})));
+    let end = c.read(&ev("session.execution.interrupted", 5, json!({"sessionID": "ses_1", "reason": "user"})));
+    assert_eq!((kinds(&end), &end[0]["data"]), (vec!["permission.replied", "session.error", "session.status"],
+        &json!({"sessionID": "ses_1", "requestID": "per_1"})), "a run's end ends its 2.x requests still open, and only those");
+    assert!(c.sessions.is_empty());
+
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read_messages(&json!([])), &json!([]));
+    c.asked(&json!({"id": "frm_2", "sessionID": "ses_1", "title": "Pick", "fields": []}));
+    c.asked(&json!({"id": "per_old", "sessionID": "ses_1", "permission": "bash", "patterns": ["ls"]}));
+    let end = c.read(&ev("session.execution.succeeded", 6, json!({"sessionID": "ses_1"})));
+    assert_eq!((kinds(&end), &end[0]["data"]["requestID"]), (vec!["question.replied", "session.status"], &json!("frm_2")),
+        "one a whole read found pending ends with its run");
+}

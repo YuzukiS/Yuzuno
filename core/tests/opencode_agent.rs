@@ -2334,6 +2334,9 @@ async fn a_2x_request_is_shown_waiting_for_an_answer_yuzuno_cannot_give_yet() {
     // 2.x's form ends as Core's question does: no longer waiting.
     lab.control("event", json!({"type":"form.cancelled","properties":{"id":"frm_v2","sessionID":session}})).await;
     lab.until("the form's end", |d| d.pending.iter().all(|p| p.params["id"] != "frm_v2")).await;
+    // Interrupting is the way on: the run's end ends the permission request, which 2.x answers with no event.
+    lab.control("event", json!({"type":"session.execution.interrupted","properties":{"sessionID":session,"reason":"user"}})).await;
+    lab.until("the run's end ending its request", |d| d.pending.is_empty() && d.agent.status != "waiting").await;
     lab.ws.close_agent(ID).await.unwrap();
 }
 
