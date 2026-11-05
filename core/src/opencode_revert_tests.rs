@@ -20,7 +20,7 @@ fn program() {
 
 fn agent(cwd: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
-        "id":"oc", "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode", "opencodeMajor":"2",
+        "id":"oc", "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()

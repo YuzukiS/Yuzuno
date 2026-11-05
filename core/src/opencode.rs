@@ -57,7 +57,7 @@ const REQUEST_LIMIT: Duration = Duration::from_secs(15);
 /// How long `shutdown` waits after SIGTERM before SIGKILL: longer than the
 /// 10 s 2.x gives its own teardown, which ends what its tools run, before it
 /// exits (cli/src/shutdown-deadline.ts). The watcher (`WATCHED`) waits as long.
-const TEARDOWN: Duration = Duration::from_secs(12);
+pub const TEARDOWN: Duration = Duration::from_secs(12);
 /// How often a start asks again while 2.x says it is still starting (503).
 const READY_POLL: Duration = Duration::from_millis(100);
 /// OpenCode sends `server.heartbeat` every 10 s on an open stream.
@@ -76,7 +76,9 @@ const REASON_CHARS: usize = 300;
 const VERSION_LIMIT: Duration = Duration::from_secs(5);
 /// `sh -c WATCHED opencode PROGRAM ARGS…`: the watcher reads the pipe on fd 3
 /// until it closes, then ends its own process group, OpenCode's, as
-/// `shutdown` does: SIGTERM, TEARDOWN (12 s), then SIGKILL. It ignores SIGTERM itself,
+/// `shutdown` does: SIGTERM, TEARDOWN (12 s: 2.x gives its own teardown 10 s
+/// after SIGTERM, cli/src/shutdown-deadline.ts DEADLINE), then SIGKILL. Unix
+/// only; elsewhere `shutdown` ends OpenCode at once. It ignores SIGTERM itself,
 /// so it is still in the group (whose ID then cannot be anyone else's) when
 /// its SIGKILL ends what ignored SIGTERM, and itself with it.
 #[cfg(unix)]
@@ -519,6 +521,11 @@ impl Server {
     /// The version this server's `/api/info` reported.
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// The loopback address it listens on (`http://127.0.0.1:PORT`).
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     /// Asks OpenCode to end (SIGTERM to its group) without waiting: 2.x then
@@ -1022,12 +1029,16 @@ pub fn session_of(event: &Value) -> Option<&str> {
 }
 
 /// Why a start failed, as far as OpenCode says (T-32): which OpenCode it is,
-/// when `--version` names one not of MAJOR, and its first lines on stderr.
-/// Empty when it says neither.
+/// when `--version` names one not of MAJOR (or, as a note, one newer than
+/// VERIFIED), and its first lines on stderr. Empty when it says neither.
 async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
     let mut out = String::new();
-    if let Some(version) = installed(launch).await.filter(|v| !supported(v)) {
-        out.push_str(&format!(" (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {MAJOR}.x)"));
+    match installed(launch).await {
+        Some(version) if !supported(&version) => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {MAJOR}.x)")),
+        Some(version) if newer_than_verified(&version) => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", newer_note())),
+        _ => {}
     }
     let lines = reason(said);
     if !lines.is_empty() {
@@ -1039,12 +1050,28 @@ async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
 
 /// Whether `version` (`2.2.5`, or as `--version` prints it, `opencode
 /// v2.0.16`) is one of MAJOR.
-fn supported(version: &str) -> bool {
+pub fn supported(version: &str) -> bool {
     let version = version.trim();
     let version = version.strip_prefix("opencode ").unwrap_or(version);
     let version = version.strip_prefix('v').unwrap_or(version);
     let mut parts = version.split('.');
     parts.next() == Some(MAJOR) && parts.next().is_some_and(|minor| !minor.is_empty() && minor.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `version` is a release after VERIFIED (T-32): taken, and said to
+/// be newer than the one checked against.
+pub fn newer_than_verified(version: &str) -> bool {
+    let parts = |v: &str| -> Option<Vec<u64>> {
+        let v = v.trim();
+        let v = v.strip_prefix("opencode ").unwrap_or(v);
+        v.strip_prefix('v').unwrap_or(v).split('.').map(|p| p.parse().ok()).collect()
+    };
+    matches!((parts(version), parts(VERIFIED)), (Some(v), Some(w)) if v > w)
+}
+
+/// What a start or the Agent says of a version newer than VERIFIED.
+pub fn newer_note() -> String {
+    format!("newer than the verified {VERIFIED}")
 }
 
 /// The first line `<program> --version` prints, within VERSION_LIMIT: 1.x
@@ -1249,6 +1276,16 @@ mod tests {
             "server listening on http://127.0.0.1:0", "server listening on https://127.0.0.1:4096",
             "server listening on http://127.0.0.1.example:4096"] {
             assert!(listening(line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn only_a_release_after_the_verified_one_is_newer() {
+        for version in ["2.2.6", "2.3.0", "2.10.0", "3.0.0", "opencode v2.2.6", "v2.3.0"] {
+            assert!(newer_than_verified(version), "{version}");
+        }
+        for version in ["2.2.5", "2.2.4", "2.0.16", "1.19.3", "opencode v2.2.5", "2.x", ""] {
+            assert!(!newer_than_verified(version), "{version}");
         }
     }
 

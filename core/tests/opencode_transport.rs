@@ -191,6 +191,13 @@ async fn a_start_that_fails_says_what_opencode_said_and_which_one_it_is() {
     other.switch("exitStderr", "fixture: no");
     other.switch("versionLine", "opencode v2.0.16");
     assert_eq!(Server::start(&other.launch).await.err().expect("not started").to_string(), "OpenCode exited before it was listening: fixture: no");
+    // One newer than the verified release is noted, not refused (Lead 4669).
+    let newer = lab();
+    newer.switch("exit", "1");
+    newer.switch("exitStderr", "fixture: no");
+    newer.switch("versionLine", "opencode v2.9.0");
+    assert_eq!(Server::start(&newer.launch).await.err().expect("not started").to_string(),
+        "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.9.0\u{201d}, newer than the verified 2.2.5): fixture: no");
     let (pid, child) = refused.pids();
     assert!(ends(pid).await && ends(child).await, "what it started has ended");
 

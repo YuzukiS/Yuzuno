@@ -56,10 +56,11 @@ export interface AgentActionHandlers {
   copyLink?: (id: string) => void;
 }
 
-/** An OpenCode Agent made with OpenCode 1.19.3 (T-32): kept to read, never
- * started again, since 2.x would migrate its database in place. */
+/** An OpenCode Agent made with OpenCode 1.19.3 (T-32): one with a session
+ * but no 2.x version, as Core reads it. Kept to read, never started again,
+ * since 2.x would migrate its database in place. */
 export function openCodeArchived(agent: Agent): boolean {
-  return agent.harness === "opencode" && agent.opencodeMajor !== "2";
+  return agent.harness === "opencode" && !!agent.opencodeSessionId && !/^v?2\.\d+/.test(agent.opencodeVersion ?? "");
 }
 
 /**

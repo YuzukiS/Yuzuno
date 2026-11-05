@@ -12,8 +12,8 @@ export interface Agent {
   harness?: "codex" | "claude" | "opencode";
   claudeSessionId?: string;
   opencodeSessionId?: string;
-  /** The OpenCode major an OpenCode Agent was made with (T-32): "2", or none for one made with 1.19.3. */
-  opencodeMajor?: string;
+  /** The OpenCode version an OpenCode Agent's database was made with (T-32); none until it first starts, and none for one made with 1.19.3. */
+  opencodeVersion?: string;
   id: string;
   name: string;
   goal: string;

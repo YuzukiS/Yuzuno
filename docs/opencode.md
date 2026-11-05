@@ -9,14 +9,16 @@ OpenCode Agent keeps working either way.
 
 **Moving to OpenCode 2.x (T-32).** Core is moving from OpenCode 1.19.3 to 2.x,
 one part of the protocol at a time. It now starts, checks and stops OpenCode
-as 2.x does, and takes any 2.x (checked against 2.2.5); an OpenCode that is not
-2.x is refused with the version it says it is. The rest of the protocol is
-still 1.19.3's until the following parts land, so an OpenCode Agent does not
-yet work end to end.
+as 2.x does, and takes any 2.x: it is checked against 2.2.5, and a newer one is
+noted in the Agent's settings, not refused. An OpenCode that is not 2.x is
+refused with the version it says it is. The rest of the protocol is still
+1.19.3's until the following parts land: messages to an OpenCode 2.x Agent do
+not work yet, which is why creating one stays behind the experimental switch.
 
 An OpenCode Agent made before this change was made with 1.19.3. It is kept to
 read: its conversation stays in Yuzuno, and it is never started again, because
 2.x would migrate its database in place. To go on, create a new OpenCode Agent.
+A new Agent keeps the version of the OpenCode that made its database.
 
 ## What it does
 

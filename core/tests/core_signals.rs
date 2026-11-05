@@ -24,7 +24,7 @@ const ID: &str = "oc";
 
 fn agent(cwd: &Path) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
-        "id":ID, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode", "opencodeMajor":"2",
+        "id":ID, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()

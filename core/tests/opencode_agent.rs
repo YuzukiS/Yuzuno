@@ -39,7 +39,7 @@ struct Lab {
 
 fn agent(cwd: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
-        "id":ID, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode", "opencodeMajor":"2",
+        "id":ID, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
@@ -161,7 +161,7 @@ fn journal(lab: &Lab) -> Vec<String> {
 }
 
 /// An OpenCode Agent made with 1.19.3, the release Core pinned before T-32
-/// (a record without `opencodeMajor`), is kept to read: it is never started,
+/// (a record with a session and no `opencodeVersion`), is kept to read: it is never started,
 /// so that 2.x never opens, and so migrates, its database; asking it for
 /// anything says why, and its conversation stays in Core's record.
 #[tokio::test]
@@ -172,7 +172,7 @@ async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
     std::fs::create_dir(&work).unwrap();
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
     let mut old = agent(&work.to_string_lossy());
-    old.agent.opencode_major = None;
+    old.agent.opencode_version = None;
     old.agent.opencode_session_id = Some("ses_made_with_1x".into());
     old.turns = vec![json!({"id": "msg_1", "status": "completed", "items": [
         {"id": "u1", "type": "userMessage", "content": [{"type": "text", "text": "Kept"}]},
@@ -475,6 +475,28 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     let d = lab.until("the late error", |d| d.agent.error.as_deref().is_some_and(|e| e.contains("late"))).await;
     assert_eq!(turn(&d, &done)["status"], "completed");
     assert!(turn(&d, &done)["_opencodeSessionError"].is_null(), "recorded on no Turn");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// An Agent's database is made by its first 2.x server (T-32): the version
+/// that server reported is kept with its session, and stays when a later 2.x
+/// runs it. Its models say which OpenCode it runs, and note one newer than
+/// the verified release.
+#[tokio::test]
+async fn the_version_an_agents_database_was_made_with_is_kept_and_a_newer_one_is_noted() {
+    let lab = lab(&[("version", "2.9.1")], false).await;
+    assert_eq!(lab.detail().agent.opencode_version.as_deref(), Some("2.9.1"), "kept with its session");
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "newer than the verified 2.2.5"}));
+    let Lab { dir, ws } = lab;
+    drop(ws);
+    // A later start, with the verified release: the version it was made with stays; nothing is noted.
+    std::fs::write(dir.path().join("data/opencode").join(ID).join("version"), "2.2.5").unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let lab = Lab { dir, ws };
+    assert_eq!(lab.ws.reconnect(ID).await.unwrap().agent.opencode_version.as_deref(), Some("2.9.1"), "the one it was made with");
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["opencode"], json!({"version": "2.2.5", "verified": "2.2.5"}));
     lab.ws.close_agent(ID).await.unwrap();
 }
 

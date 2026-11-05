@@ -43,7 +43,7 @@ struct Lab {
 /// An OpenCode Agent whose context was last measured long ago, at 400 of 1000.
 fn agent(id: &str, cwd: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
-        "id":id, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode", "opencodeMajor":"2",
+        "id":id, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
     },"turns":[],"pending":[],"artifacts":[],

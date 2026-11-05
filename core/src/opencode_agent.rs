@@ -437,7 +437,13 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
         let models = c.server.models().await?;
         c.windows(&models);
-        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERIFIED}}))
+        // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
+        let version = c.server.version();
+        let mut native = json!({"version":version,"verified":opencode::VERIFIED});
+        if opencode::newer_than_verified(version) {
+            native["note"] = json!(opencode::newer_note());
+        }
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":native}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -522,7 +528,7 @@ impl Workspace {
             harness: "opencode".into(),
             claude_session_id: None,
             opencode_session_id: None,
-            opencode_major: Some(opencode::MAJOR.into()),
+            opencode_version: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -672,10 +678,12 @@ impl Workspace {
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
+                // Its database is made by this server: the version it was made with is kept with its session (T-32).
                 let session = server.create_session(&d.agent.name).await?["id"].as_str().unwrap_or_default().to_owned();
-                let kept = session.clone();
-                self.record_meta(id, "opencode/session", json!({"sessionId":session}), move |m| {
+                let (kept, version) = (session.clone(), server.version().to_owned());
+                self.record_meta(id, "opencode/session", json!({"sessionId":session,"version":version}), move |m| {
                     m.agent.opencode_session_id = Some(kept);
+                    m.agent.opencode_version = Some(version);
                 }).await?;
                 session
             }

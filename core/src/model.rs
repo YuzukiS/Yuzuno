@@ -74,7 +74,8 @@ pub fn ensure_agent_open(agent: &Agent) -> anyhow::Result<()> {
 /// conversation stays in Core's record.
 pub fn ensure_opencode_current(agent: &Agent) -> anyhow::Result<()> {
     anyhow::ensure!(
-        agent.harness != "opencode" || agent.opencode_major.as_deref() == Some(crate::opencode::MAJOR),
+        agent.harness != "opencode" || agent.opencode_session_id.is_none()
+            || agent.opencode_version.as_deref().is_some_and(crate::opencode::supported),
         "这个 OpenCode Agent 是用 OpenCode 1.19.3 创建的，只能阅读：Yuzuno 现在使用 OpenCode {}.x，不会用它打开这个 Agent 的数据库。要继续工作，请新建一个 OpenCode Agent。",
         crate::opencode::MAJOR
     );
@@ -306,12 +307,13 @@ pub struct Agent {
     /// The OpenCode session (`ses_…`) in this Agent's own OpenCode database.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_session_id: Option<String>,
-    /// The OpenCode major this Agent was made with (T-32): `2` for one made
-    /// since Core speaks 2.x. None for every other: an OpenCode Agent without
-    /// it was made with 1.19.3, the release Core pinned before, and is kept
-    /// to read only (`ensure_opencode_current`).
+    /// The OpenCode version this Agent's database was made with (T-32), as
+    /// its first 2.x server reported it; kept with its session when that is
+    /// made. None for one not yet started, and for one made with 1.19.3 (a
+    /// session but no version), which is kept to read only
+    /// (`ensure_opencode_current`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opencode_major: Option<String>,
+    pub opencode_version: Option<String>,
     pub thread_id: Option<String>,
     pub status: String,
     #[serde(default)]
