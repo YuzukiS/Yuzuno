@@ -339,3 +339,52 @@ fn with_three_projects_a_job_short_of_host_memory_is_still_no_backfill_head() {
     assert!(read(&s, &short)["reason"].as_str().unwrap().starts_with("Waiting for host memory"), "{}", read(&s, &short)["reason"]);
     assert_eq!(read(&s, &after)["reason"], "Waiting behind short of host memory, which waits for host memory first; jobs do not pass it");
 }
+
+/// Two Jobs that were each the blocked head once (review fe5c0325): two Jobs
+/// of P run (2,064 + 3,064 MiB), F of Q needs 5,564 and H of P 7,064, both
+/// short. Q's turn makes F the head and a 1,064 MiB job of Q passes it; P's
+/// turn makes H the head. Then the first of P's running jobs ends: F fits the
+/// 6,112 MiB free, H does not. `f_first` submits F before H.
+fn two_former_heads(s: &Store, f_first: bool) -> (Value, Value, Value) {
+    s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 10240, swap_mi_b: 0 }).unwrap();
+    three_projects(s);
+    let x1 = job_in(s, "T-1", "a", "running 1", 2000);
+    assert_eq!(start(s).unwrap()["id"], x1["id"]);
+    let x2 = job_in(s, "T-1", "a", "running 2", 3000);
+    assert_eq!(start(s).unwrap()["id"], x2["id"]);
+    let (f, h) = if f_first {
+        let f = job_in(s, "T-2", "a", "former head f", 5500);
+        (f, job_in(s, "T-1", "a", "head h", 7000))
+    } else {
+        let h = job_in(s, "T-1", "a", "head h", 7000);
+        (job_in(s, "T-2", "a", "former head f", 5500), h)
+    };
+    let small = job_in(s, "T-2", "a", "small", 1000);
+    let passed = start(s).unwrap();
+    assert_eq!((passed["id"].clone(), passed["admission"]["passed"]["jobId"].clone()), (small["id"].clone(), f["id"].clone()));
+    assert!(start(s).is_none());
+    assert!(read(s, &f)["admission"]["head"].is_object() && read(s, &h)["admission"]["head"].is_object(), "both were the head");
+    done(s, &x1);
+    (x2, f, h)
+}
+
+#[test]
+fn a_younger_former_head_that_fits_waits_for_the_older_heads_room() {
+    let (_dir, s) = setup();
+    let (x2, f, h) = two_former_heads(&s, false);
+    // H, submitted before F, is the head: F is held to what H's need leaves.
+    assert!(start(&s).is_none(), "a younger former head waits for the current head's room");
+    assert!(read(&s, &f)["reason"].as_str().unwrap().starts_with("Waiting behind head h"), "{}", read(&s, &f)["reason"]);
+    assert!(read(&s, &f)["admission"]["head"].is_object(), "it keeps its mark");
+    done(&s, &x2);
+    assert_eq!(start(&s).unwrap()["id"], h["id"], "the older head starts first once the jobs before it end");
+}
+
+#[test]
+fn an_older_former_head_that_fits_starts_before_the_current_head() {
+    let (_dir, s) = setup();
+    let (_x2, f, _h) = two_former_heads(&s, true);
+    let started = start(&s).unwrap();
+    assert_eq!(started["id"], f["id"], "an older blocked head wins");
+    assert!(started.get("admission").is_none(), "{}", started["admission"]);
+}
