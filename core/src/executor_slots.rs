@@ -610,6 +610,10 @@ pub(crate) struct State {
     /// A test's start time limit, below the 30 s a user can save.
     #[cfg(test)]
     pub(crate) start_limit: std::sync::Mutex<Option<Duration>>,
+    /// A test's meeting point for passes settling one ended start: each
+    /// waits there, up to a second, once it has read the Agent.
+    #[cfg(test)]
+    pub(crate) settle_meet: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become
@@ -658,6 +662,7 @@ impl Workspace {
     pub(crate) async fn executor_slots_pass(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
         let mut started = Vec::new();
         self.settle_ended_starts(&mut started).await;
+        self.finish_rebuilds(&mut started).await;
         loop {
             let Ok(permit) = self.admission.enter_work() else { break };
             match self.stored(|store| store.executor_slot_next()).await {
@@ -716,8 +721,13 @@ impl Workspace {
                 let failure = if uncertain { Failure::Uncertain(why) } else { Failure::Definite(why) };
                 self.settle_start(id, permit, failure, false).await
             }
-            // Cut off: definite only when the close confirms its runtime ended.
+            // Cut off: definite only when the close confirms its runtime
+            // ended; recorded as settling before that close, as a refused
+            // start is (R1 dde34160).
             Err(_) => {
+                if attempt == 1 {
+                    self.settling(id, &format!("its start did not finish within {} s, the Workspace's limit", limit.as_secs())).await?;
+                }
                 let closed = self.close_agent_admitted(id, permit).await.map(drop);
                 let failure = cut_off(&closed, limit);
                 if let Failure::Uncertain(why) = &failure {
@@ -741,16 +751,26 @@ impl Workspace {
     /// won its gate, say), settles as a definite failure with its error.
     async fn settle_ended_starts(self: &Arc<Self>, started: &mut Vec<tokio::task::JoinHandle<()>>) {
         let Ok(rows) = self.stored(|store| store.executor_slots_starting_unsettled()).await else { return };
+        let release = |id: &str| { self.executor_slots.in_flight.lock().unwrap().remove(id); };
         for id in rows {
-            if self.executor_slots.in_flight.lock().unwrap().contains(&id) {
+            // The one check: a pass that did not add it leaves it to the one
+            // that did, or to the pass starting it (R1 dde34160).
+            if !self.executor_slots.in_flight.lock().unwrap().insert(id.clone()) {
                 continue;
             }
-            let Ok(agent) = self.listed(&id).await else { continue };
+            let Ok(agent) = self.listed(&id).await else { release(&id); continue };
+            #[cfg(test)]
+            {
+                let meet = self.executor_slots.settle_meet.lock().unwrap().clone();
+                if let Some(meet) = meet {
+                    let _ = tokio::time::timeout(Duration::from_secs(1), meet.wait()).await;
+                }
+            }
             if agent.closed_at.is_some() || agent.connection_state != "disconnected" || agent.status != "error" {
+                release(&id);
                 continue;
             }
-            let Ok(permit) = self.admission.enter_work() else { return };
-            self.executor_slots.in_flight.lock().unwrap().insert(id.clone());
+            let Ok(permit) = self.admission.enter_work() else { release(&id); return };
             let (ws, why) = (self.clone(), agent.error.unwrap_or_else(|| "its start failed".into()));
             started.push(tokio::spawn(async move {
                 if let Err(error) = ws.settle_start(&id, &permit, Failure::Definite(why), false).await {

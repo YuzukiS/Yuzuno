@@ -4,11 +4,12 @@
 //!
 //! The first definite failure of a fresh dispatch's executor is rebuilt
 //! once: a new dispatch of the same request by the same dispatcher, made as
-//! that request was. Its record here is pending while Core makes it, done
-//! with the Agent and dispatch it made, or failed with why. A second
-//! failure, or a rebuild Core can't make, blocks the task. Core writes that
-//! itself, as a system actor, and mails the dispatcher when it is an Agent.
-use super::{activity, agent_actor, insert_message, load_task, save_task, task_number, SharedTask, TaskActor};
+//! that request was. Its record here is written pending before Core closes
+//! the executor, done with the Agent and dispatch it made (in that dispatch's
+//! own transaction), or failed with why. A second failure, or a rebuild Core
+//! can't make, blocks the task. Core writes that itself, as a system actor,
+//! and mails the dispatcher when it is an Agent.
+use super::{activity, agent_actor, executor_dispatch::actor_key, insert_message, load_task, save_task, task_number, SharedTask, TaskActor};
 use crate::{model::now, store::Store};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -104,29 +105,45 @@ impl Store {
             [agent], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
     }
 
-    /// A rebuild begins: recorded before the executor it replaces is closed,
-    /// so a stop in between can't leave the task on a closed executor.
+    /// A failed start is being settled: recorded, pending, before Core closes
+    /// the executor, so a stop after the close leaves this row for a pass or
+    /// the next start to finish (R1 dde34160). Written again, it keeps the
+    /// latest reason while pending.
     pub(crate) fn executor_rebuild_begin(&self, made: &Made, agent: &str, reason: &str) -> Result<()> {
         let at = now();
         self.db.write()?.execute(
-            "INSERT OR IGNORE INTO executor_rebuilds(from_agent,actor,request_id,task_id,from_dispatch,reason,state,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?7)",
+            "INSERT INTO executor_rebuilds(from_agent,actor,request_id,task_id,from_dispatch,reason,state,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?7)
+             ON CONFLICT(from_agent) DO UPDATE SET reason=excluded.reason,updated_at=excluded.updated_at
+             WHERE executor_rebuilds.state='pending'",
             params![agent, made.actor, made.request_id, made.task_id, made.dispatch_id, reason, at],
         )?;
         Ok(())
     }
 
-    /// The rebuild made `to` (its dispatch `dispatch`): it keeps the place in
-    /// the queue the executor it replaces had, and the task says so, from Core.
-    pub(crate) fn executor_rebuild_done(&self, from: &str, to: &str, dispatch: &str) -> Result<()> {
-        let mut writer = self.db.write()?;
-        let tx = writer.transaction()?;
-        complete(self, &tx, from, to, dispatch)?;
-        tx.commit()?;
+    /// Its start may have happened after all: Core neither closes nor
+    /// rebuilds it, so its pending record goes.
+    pub(crate) fn executor_rebuild_discard(&self, agent: &str) -> Result<()> {
+        self.db.write()?.execute("DELETE FROM executor_rebuilds WHERE from_agent=?1 AND state='pending'", [agent])?;
         Ok(())
     }
 
-    /// The rebuild could not be made, and why.
+    /// The pending rebuilds a pass finishes: their executor is closed, and
+    /// no dispatch of the rebuild was begun (an update drained, or Core
+    /// stopped before it). Each with its reason.
+    pub(crate) fn executor_rebuilds_waiting(&self) -> Result<Vec<(String, String)>> {
+        Ok(self.db.read()?
+            .prepare(
+                "SELECT r.from_agent, r.reason FROM executor_rebuilds r JOIN agents a ON a.id=r.from_agent
+                 WHERE r.state='pending' AND json_extract(a.data,'$.agent.closedAt') IS NOT NULL
+                   AND NOT EXISTS(SELECT 1 FROM executor_dispatches d WHERE d.actor=r.actor AND d.request_id='rebuild:'||r.from_agent)
+                 ORDER BY r.created_at",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// No rebuild is made, and why (its task moved on).
     pub(crate) fn executor_rebuild_failed(&self, from: &str, error: &str) -> Result<()> {
         self.db.write()?.execute(
             "UPDATE executor_rebuilds SET state='failed',error=?2,updated_at=?3 WHERE from_agent=?1 AND state='pending'",
@@ -163,23 +180,40 @@ impl Store {
     }
 
     /// At startup, after the dispatches a stopped Core left unfinished have
-    /// failed (`recover_executor_dispatches`): a rebuild whose dispatch was
-    /// made is completed; one that wasn't blocks its task, which would
-    /// otherwise wait on a closed executor.
+    /// failed (`recover_executor_dispatches`), each pending record by where
+    /// Core stopped:
+    /// - before it closed the executor: the record goes, and the start waits
+    ///   again (`recover_executor_slots`), to be settled anew if it fails;
+    /// - after the close, before a rebuild's dispatch began: it stays, and
+    ///   the first pass finishes it (`executor_rebuilds_waiting`);
+    /// - while the rebuild's dispatch was being made: it is completed when
+    ///   that dispatch was made, else the task is blocked, "Core restarted
+    ///   while it rebuilt" it, as it would otherwise wait on a closed executor.
     pub(crate) fn recover_executor_rebuilds(&self) -> Result<()> {
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
-        let pending: Vec<(String, String, String, String)> = tx
-            .prepare("SELECT from_agent, actor, request_id, task_id FROM executor_rebuilds WHERE state='pending'")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        let pending: Vec<(String, String, String, bool)> = tx
+            .prepare(
+                "SELECT r.from_agent, r.actor, r.task_id, json_extract(a.data,'$.agent.closedAt') IS NOT NULL
+                 FROM executor_rebuilds r LEFT JOIN agents a ON a.id=r.from_agent WHERE r.state='pending'",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<bool>>(3)?.unwrap_or(false))))?
             .collect::<rusqlite::Result<_>>()?;
-        for (from, actor, _, task) in pending {
-            let made: Option<(String, String)> = tx.query_row(
-                "SELECT agent_id, dispatch_id FROM executor_dispatches WHERE actor=?1 AND request_id=?2 AND state='dispatched'",
-                params![actor, rebuild_request(&from)], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
-            if let Some((to, dispatch)) = made {
-                complete(self, &tx, &from, &to, &dispatch)?;
+        for (from, actor, task, closed) in pending {
+            if !closed {
+                tx.execute("DELETE FROM executor_rebuilds WHERE from_agent=?1", [&from])?;
                 continue;
+            }
+            let made: Option<(String, Option<String>, String)> = tx.query_row(
+                "SELECT agent_id, dispatch_id, state FROM executor_dispatches WHERE actor=?1 AND request_id=?2",
+                params![actor, rebuild_request(&from)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+            match made {
+                None => continue,
+                Some((to, Some(dispatch), state)) if state == "dispatched" => {
+                    complete(self, &tx, &from, &to, &dispatch)?;
+                    continue;
+                }
+                Some(_) => {}
             }
             let why = "core_restarted: Core restarted while it rebuilt this task's executor, so no executor works on it";
             tx.execute(
@@ -197,7 +231,26 @@ impl Store {
     }
 }
 
-/// `executor_rebuild_done`, in the caller's transaction.
+/// In the transaction that dispatches a task to a template executor: when
+/// that dispatch is a rebuild (`rebuild:<agent>` by the same actor, with that
+/// agent's rebuild pending), its record is done here, and the executor takes
+/// the first one's place in the queue, before any pass can start it. So a
+/// rebuilt executor that fails at once is known as one, and never rebuilt
+/// again (R1 dde34160).
+pub(super) fn rebuilt(store: &Store, tx: &Connection, actor: &TaskActor, request: &str, to: &str, dispatch: &str) -> Result<()> {
+    let Some(from) = request.strip_prefix("rebuild:") else { return Ok(()) };
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM executor_rebuilds WHERE from_agent=?1 AND actor=?2 AND state='pending')",
+        params![from, actor_key(actor)], |r| r.get(0))?;
+    if pending {
+        complete(store, tx, from, to, dispatch)?;
+    }
+    Ok(())
+}
+
+/// A rebuild's record done with the executor `to` it made (its dispatch
+/// `dispatch`), which keeps the queue place of the one it replaces; the task
+/// says so, from Core. In the caller's transaction.
 fn complete(store: &Store, tx: &Connection, from: &str, to: &str, dispatch: &str) -> Result<()> {
     let (task, reason): (String, String) = tx.query_row(
         "SELECT task_id, reason FROM executor_rebuilds WHERE from_agent=?1", [from], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -219,12 +272,19 @@ fn complete(store: &Store, tx: &Connection, from: &str, to: &str, dispatch: &str
     Ok(())
 }
 
-/// `executor_start_blocked`, in the caller's transaction.
+/// `executor_start_blocked`, in the caller's transaction. The pending record
+/// of `agent`'s settling, if any, fails with it: blocked, or its task moved
+/// on, nothing is left for a pass to finish.
 #[allow(clippy::too_many_arguments)]
 fn block(store: &Store, tx: &Connection, task: &str, agent: &str, dispatcher: Option<&str>, blocker: &str,
     detail: Value, mail_body: String) -> Result<bool> {
     let mut current = load_task(tx, task)?;
-    if !still_its(&current, agent) {
+    let blocked = still_its(&current, agent);
+    tx.execute(
+        "UPDATE executor_rebuilds SET state='failed',error=?2,updated_at=?3 WHERE from_agent=?1 AND state='pending'",
+        params![agent, if blocked { blocker } else { "task_moved_on: the task no longer waits on this executor" }, now()],
+    )?;
+    if !blocked {
         return Ok(false);
     }
     current.status = "blocked".into();

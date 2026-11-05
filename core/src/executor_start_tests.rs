@@ -285,23 +285,174 @@ async fn a_pass_settles_a_start_that_ended_without_it() {
     assert_eq!(lab.slot(&other).0, "starting", "one in flight is its pass's to settle");
 }
 
-/// A stop between the first executor's close and its rebuild's dispatch
-/// leaves no executor working on the task: at the next start Core blocks it,
-/// "Core restarted during the rebuild", and mails the lead.
+/// The pending record of a settling start, as Core leaves it when it stops
+/// at one point of the settling.
+fn settling_as_left(lab: &Lab, agent: &str) {
+    let made = lab.ws.store.executor_made(agent).unwrap().unwrap();
+    lab.ws.store.executor_rebuild_begin(&made, agent, "the runtime refused it").unwrap();
+}
+
+fn rebuild_state(lab: &Lab, from: &str) -> Option<(String, Option<String>)> {
+    lab.ws.store.db.read().unwrap().query_row(
+        "SELECT state, to_agent FROM executor_rebuilds WHERE from_agent=?1", [from], |r| Ok((r.get(0)?, r.get(1)?))).optional().unwrap()
+}
+
+/// What Core does at its next start, after the dispatches and before the
+/// slots (workspace.rs).
+fn restart(lab: &Lab) {
+    lab.ws.store.recover_executor_dispatches().unwrap();
+    lab.ws.store.recover_executor_rebuilds().unwrap();
+    lab.ws.store.recover_executor_slots().unwrap();
+}
+
+/// R1 dde34160 P2-1: a failed start's record is written before its executor
+/// is closed, so no stop can leave the task on a closed executor with nothing
+/// to finish. A test trigger notes, as each close releases a slot, whether
+/// that executor's record was there.
 #[tokio::test]
-async fn a_rebuild_a_restart_cut_short_blocks_its_task() {
+async fn a_failed_start_is_recorded_before_its_executor_is_closed() {
+    let lab = Lab::new(missing).await;
+    lab.ws.store.db.write().unwrap().execute_batch(
+        "CREATE TABLE closes_saw(agent_id TEXT, recorded INTEGER);
+         CREATE TRIGGER closes_saw AFTER UPDATE OF state ON executor_slots WHEN NEW.state='released' AND OLD.state!='released'
+         BEGIN INSERT INTO closes_saw VALUES(NEW.agent_id, (SELECT COUNT(*) FROM executor_rebuilds WHERE from_agent=NEW.agent_id)); END;").unwrap();
+    let task = lab.task("Review the recorded one").await;
+    let first = lab.dispatch(&task, "recorded").await;
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    until("the task is blocked", || lab.task_view(&task)["task"]["status"] == "blocked").await;
+    let saw: Vec<(String, i64)> = lab.ws.store.db.read().unwrap().prepare("SELECT agent_id, recorded FROM closes_saw ORDER BY rowid").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(saw.len(), 2, "the first and its rebuild were closed: {saw:?}");
+    assert_eq!(saw[0], (first, 1), "recorded before its close released its slot");
+    assert_eq!(saw[1].1, 1, "the rebuilt one too: {saw:?}");
+}
+
+/// R1 dde34160 P2-1, at the next start: Core stopped while a failed start
+/// settled. Before the close, the record goes and the start waits again.
+/// After the close, before the rebuild's dispatch began, the first pass makes
+/// the rebuild. While that dispatch was being made, the task is blocked,
+/// "Core restarted while it rebuilt" it, and the lead is told once.
+#[tokio::test]
+async fn a_stop_while_a_failed_start_settles_is_finished_at_the_next_start() {
     let lab = Lab::new(missing).await;
     lab.occupy_the_slot();
-    let task = lab.task("Review across a restart").await;
-    let first = lab.dispatch(&task, "restart").await;
-    let made = lab.ws.store.executor_made(&first).unwrap().unwrap();
-    lab.ws.store.executor_rebuild_begin(&made, &first, "the runtime refused it").unwrap();
-    lab.ws.store.recover_executor_rebuilds().unwrap();
-    let view = lab.task_view(&task);
+    // Stopped before the close.
+    let task = lab.task("Review across a stop before the close").await;
+    let open = lab.dispatch(&task, "before-close").await;
+    lab.taken(&open, 1);
+    settling_as_left(&lab, &open);
+    // Stopped after the close, before the rebuild's dispatch.
+    let task = lab.task("Review across a stop after the close").await;
+    let closed = lab.dispatch(&task, "after-close").await;
+    let seq = lab.slot(&closed).2;
+    settling_as_left(&lab, &closed);
+    lab.ws.close_agent(&closed).await.unwrap();
+    // Stopped while the rebuild's dispatch was being made.
+    let cut = lab.task("Review across a stop in the rebuild").await;
+    let made = lab.dispatch(&cut, "in-rebuild").await;
+    settling_as_left(&lab, &made);
+    lab.ws.close_agent(&made).await.unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at)
+         VALUES('agent:lead',?1,'{}',?2,'reviewer',?3,'local','{}','half-made','pending','now','now')",
+        params![rebuild_request(&made), cut, lab.project]).unwrap();
+
+    restart(&lab);
+    assert_eq!(rebuild_state(&lab, &open), None, "before the close: the record goes");
+    assert_eq!(lab.slot(&open).0, "waiting", "and its start waits again, to be settled anew");
+    assert_eq!(rebuild_state(&lab, &closed).map(|r| r.0).as_deref(), Some("pending"), "after the close: left for a pass");
+    let view = lab.task_view(&cut);
     assert_eq!(view["task"]["status"], "blocked", "a rebuild cut short blocks its task");
     assert!(view["task"]["blocker"].as_str().unwrap().contains("Core restarted while it rebuilt"), "{}", view["task"]["blocker"]);
-    let state: String = lab.ws.store.db.read().unwrap().query_row(
-        "SELECT state FROM executor_rebuilds WHERE from_agent=?1", [&first], |r| r.get(0)).unwrap();
-    assert_eq!(state, "failed");
+    assert_eq!(rebuild_state(&lab, &made).map(|r| r.0).as_deref(), Some("failed"));
     assert_eq!(lab.executor_mail().len(), 1, "the lead is told once");
+
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    let (state, to) = rebuild_state(&lab, &closed).unwrap();
+    assert_eq!(state, "done", "the first pass makes the rebuild Core stopped before");
+    let second = to.unwrap();
+    assert_eq!((lab.slot(&second).0.as_str(), lab.slot(&second).2), ("waiting", seq), "in the first's place");
+    assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
+}
+
+/// R1 dde34160 P2-2: a rebuild is known as one, in the first's place in the
+/// queue, once its own dispatch commits: before any pass can start it, so a
+/// rebuilt executor that fails at once is blocked, never rebuilt again.
+#[tokio::test]
+async fn a_rebuild_is_known_in_its_place_once_its_own_dispatch_commits() {
+    let lab = Lab::new(missing).await;
+    lab.occupy_the_slot();
+    let task = lab.task("Review the rebuilt one").await;
+    let first = lab.dispatch(&task, "first").await;
+    let seq = lab.slot(&first).2;
+    settling_as_left(&lab, &first);
+    lab.ws.close_agent(&first).await.unwrap();
+    let made = lab.ws.store.executor_made(&first).unwrap().unwrap();
+    let mut input = made.input.clone();
+    input["requestId"] = json!(rebuild_request(&first));
+    input["expectedVersion"] = lab.task_view(&task)["task"]["version"].clone();
+    let second = lab.ws.executor_dispatch(Some("lead"), input).await.unwrap()["agentId"].as_str().unwrap().to_owned();
+    // Nothing but that dispatch has run: its own transaction wrote these.
+    assert_eq!(lab.ws.store.executor_rebuilt_from(&second).unwrap(), Some((first.clone(), "the runtime refused it".into())),
+        "known as a rebuild once its dispatch commits");
+    let (state, _, kept, from) = lab.slot(&second);
+    assert_eq!((state.as_str(), kept, from.as_deref()), ("waiting", seq, Some(first.as_str())), "in the first's place, before any pass");
+}
+
+/// R1 dde34160 P2-3: a rebuild an update's drain refuses is waited out: no
+/// block and no mail; it stays pending through the drain, and the first pass
+/// after it makes the rebuild.
+#[tokio::test]
+async fn a_rebuild_an_update_drain_refuses_waits_and_a_later_pass_makes_it() {
+    let lab = Lab::new(missing).await;
+    lab.occupy_the_slot();
+    let task = lab.task("Review during an update").await;
+    let first = lab.dispatch(&task, "drained").await;
+    let seq = lab.slot(&first).2;
+    lab.taken(&first, 1);
+    let permit = lab.ws.admission.enter_work().unwrap();
+    lab.ws.admission.begin_drain("t35-drain").unwrap();
+    lab.ws.settle_start(&first, &permit, Failure::Definite("the runtime refused it".into()), false).await.unwrap();
+    drop(permit);
+    assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_some(), "closed, as any definite failure");
+    assert_eq!(lab.task_view(&task)["task"]["status"], "doing", "a drain is waited out, not a block");
+    assert_eq!(lab.executor_mail().len(), 0, "and no mail");
+    assert!(lab.ws.executor_slots_pass().await.is_empty(), "no pass works while it drains");
+    assert_eq!(rebuild_state(&lab, &first).map(|r| r.0).as_deref(), Some("pending"));
+    lab.ws.admission.reopen("t35-drain").unwrap();
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    let (state, to) = rebuild_state(&lab, &first).unwrap();
+    assert_eq!(state, "done", "the pass after the drain makes the rebuild");
+    assert_eq!(lab.slot(&to.unwrap()).2, seq);
+    assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
+}
+
+/// R1 dde34160 P3: two passes that meet one ended start settle it once. A
+/// test meeting point holds each pass, once it has read the Agent, until the
+/// other is there too (or a second goes by).
+#[tokio::test]
+async fn two_passes_settle_an_ended_start_once() {
+    let lab = Lab::new(missing).await;
+    lab.occupy_the_slot();
+    let task = lab.task("Review the one two passes see").await;
+    let first = lab.dispatch(&task, "twice").await;
+    lab.taken(&first, 1);
+    lab.ws.store.update(&first, "runtime/error", &json!({}), |d| {
+        d.agent.status = "error".into();
+        d.agent.error = Some("the user's Connect failed".into());
+    }).unwrap();
+    *lab.ws.executor_slots.settle_meet.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(2)));
+    let (one, other) = tokio::join!(lab.ws.executor_slots_pass(), lab.ws.executor_slots_pass());
+    assert_eq!(one.len() + other.len(), 1, "two passes settle an ended start once");
+    for settled in one.into_iter().chain(other) {
+        settled.await.unwrap();
+    }
+    assert_eq!(rebuild_state(&lab, &first).map(|r| r.0).as_deref(), Some("done"));
+    assert_eq!(lab.ws.store.agents().unwrap().iter().filter(|a| a.kind.as_deref() == Some("executor")).count(), 2, "one rebuild");
 }

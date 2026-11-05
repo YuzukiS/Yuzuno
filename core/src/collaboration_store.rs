@@ -1162,7 +1162,13 @@ fn task_dispatch(
     task.assignee = Some(agent_actor(store, db, &recipient_id)?);
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
     let template = match input.get("executor") {
-        Some(_) => Some(executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?),
+        Some(_) => {
+            let (request, dispatch) = (required_text(input, "requestId", 128)?, task.dispatch.as_ref().unwrap().id.clone());
+            let template = executor_dispatch::dispatched(db, actor, &request, &recipient_id, &dispatch)?;
+            // A rebuild's record is done with its executor's slot (T-35 S2).
+            executor_start::rebuilt(store, db, actor, &request, &recipient_id, &dispatch)?;
+            Some(template)
+        }
         None => None,
     };
     task.status = "doing".into();

@@ -162,7 +162,8 @@ applies. Only you change them.
   too, or Core can't make the rebuild, Core blocks the task with every
   reason, and a dispatching Agent gets one mail. A start cut off by the time
   limit counts as failed only when closing the executor confirmed its
-  runtime stopped.
+  runtime stopped. A rebuild that meets an update draining waits for it,
+  with no block and no mail: the first pass after the update makes it.
 - **When Core can't tell.** If Core can't tell whether a start happened
   (its runtime may be running), the executor stays open and keeps its slot.
   Its card says its start did not finish, and why, and a dispatching Agent
@@ -175,8 +176,10 @@ applies. Only you change them.
 - **After a restart.** An executor that was starting waits again, at its
   place; one that may have started keeps its slot, and so do running ones.
   Executors open from before this version each hold a slot, as running. A
-  rebuild Core was making when it stopped blocks its task, "Core restarted
-  while it rebuilt" it, unless its dispatch was already made.
+  failed start Core was settling when it stopped is finished. If Core had
+  not yet closed the executor, its start waits again. If it had, the first
+  pass makes the rebuild. A rebuild whose dispatch was under way blocks its
+  task, "Core restarted while it rebuilt" it, unless that dispatch was made.
 - **Executors only.** Standing Agents don't count, and Jobs keep their own
   machine slots.
 

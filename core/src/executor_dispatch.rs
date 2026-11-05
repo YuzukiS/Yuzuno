@@ -11,7 +11,7 @@ use crate::{
     updates::admission::Permit,
     workspace::{Birth, Workspace},
 };
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde_json::Value;
 use std::{path::Path, sync::Arc};
 
@@ -21,11 +21,25 @@ use std::{path::Path, sync::Arc};
 /// refused too, and gets its recorded answer after the update (Lead 5080).
 const UPDATING: &str = "workspace_updating: Workspace is preparing an update, and a dispatch from an executor template waits for it, as creating an Agent does. Retry the same request once the update is done: a dispatch it already made returns its recorded answer, and one it had not made goes ahead then. A dispatch to an existing Agent is not refused";
 
+/// That refusal, typed: nothing of the dispatch was written, so a rebuild it
+/// meets stays pending for a later pass instead of blocking its task
+/// (executor_start.rs, R1 dde34160).
+#[derive(Debug)]
+pub(crate) struct WaitsForUpdate;
+
+impl std::fmt::Display for WaitsForUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(UPDATING)
+    }
+}
+
+impl std::error::Error for WaitsForUpdate {}
+
 impl Workspace {
     /// `task_dispatch` with `executor` instead of `toAgentId`.
     pub(crate) async fn executor_dispatch(self: &Arc<Self>, actor: Option<&str>, input: Value) -> Result<Value> {
         // Taken as POST /api/agents takes it, before anything is written.
-        let permit = self.admission.enter_work().map_err(|_| anyhow!(UPDATING))?;
+        let permit = self.admission.enter_work().map_err(|_| anyhow::Error::new(WaitsForUpdate))?;
         ensure!(input.get("toAgentId").is_none(), "invalid_input: give toAgentId or executor, not both");
         let who = actor.map(str::to_owned);
         let next = self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input)).await?;

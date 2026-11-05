@@ -10,15 +10,17 @@
 //! dispatcher gets one mail; Core neither closes nor rebuilds it, for two
 //! executors must never work in one folder (D4; Lead 2, mail 5367).
 //!
-//! After a definite failure, a fresh dispatch's executor is closed and kept,
-//! and rebuilt once: a new dispatch of the same request by the same
-//! dispatcher (D3), whose executor keeps the queue place of the one it
-//! replaces. When that one fails too, or no rebuild can be made, the task is
-//! blocked, by Core, with every reason, and an Agent dispatcher gets one
-//! mail. An executor the user reopened keeps S1's rule: it stays open with
-//! its slot and the reason, for the user's Connect or Close.
+//! After a definite failure, a fresh dispatch's executor is recorded as
+//! settling, then closed and kept, and rebuilt once: a new dispatch of the
+//! same request by the same dispatcher (D3), whose executor keeps the queue
+//! place of the one it replaces. When that one fails too, or no rebuild can
+//! be made, the task is blocked, by Core, with every reason, and an Agent
+//! dispatcher gets one mail. A rebuild an update's drain refuses waits, and a
+//! later pass makes it. An executor the user reopened keeps S1's rule: it
+//! stays open with its slot and the reason, for the user's Connect or Close.
 use crate::{
     collaboration_store::executor_start::{rebuild_request, Made},
+    executor_dispatch::WaitsForUpdate,
     updates::admission::Permit,
     workspace::Workspace,
 };
@@ -46,6 +48,22 @@ pub(crate) fn cut_off(closed: &Result<()>, limit: Duration) -> Failure {
 }
 
 impl Workspace {
+    /// Records a fresh executor's failed start as settling, before Core
+    /// closes it (R1 dde34160): its dispatch made it from a template and is
+    /// still its task's. A stop after the close then leaves the record for a
+    /// pass, or the next start, to finish. Its dispatch, or none.
+    pub(crate) async fn settling(&self, id: &str, why: &str) -> Result<Option<Made>> {
+        let agent = id.to_owned();
+        let Some(made) = self.stored(move |store| store.executor_made(&agent)).await? else { return Ok(None) };
+        let (task, agent) = (made.task_id.clone(), id.to_owned());
+        if !self.stored(move |store| store.executor_still_dispatched(&task, &agent)).await? {
+            return Ok(None);
+        }
+        let (record, agent, reason) = (made.clone(), id.to_owned(), why.to_owned());
+        self.stored(move |store| store.executor_rebuild_begin(&record, &agent, &reason)).await?;
+        Ok(Some(made))
+    }
+
     /// Settles a start from the slot that ended without its runtime.
     /// `closed`: a cut-off start whose close confirmed its runtime ended.
     pub(crate) async fn settle_start(self: &Arc<Self>, id: &str, permit: &Permit, failure: Failure, closed: bool) -> Result<()> {
@@ -63,6 +81,7 @@ impl Workspace {
             }
             return Ok(());
         }
+        let made = self.settling(id, &why).await?;
         if !closed {
             // Its runtime ended; closing is what releases its slot. A close
             // that can't confirm the runtime stopped leaves it uncertain.
@@ -73,11 +92,15 @@ impl Workspace {
         }
         let (agent, reason) = (id.to_owned(), why.clone());
         self.stored(move |store| store.executor_slot_released_because(&agent, &reason)).await?;
-        let agent = id.to_owned();
-        let Some(made) = self.stored(move |store| store.executor_made(&agent)).await? else {
-            // Not made by a template dispatch Core can repeat: closed, as in S1.
-            return Ok(());
-        };
+        // Not made by a template dispatch Core can repeat: closed, as in S1.
+        let Some(made) = made else { return Ok(()) };
+        self.finish(made, id, why).await
+    }
+
+    /// After a settling executor's close: blocks its task when the executor
+    /// was itself a rebuild (rebuilt once), else rebuilds it. Its record says
+    /// which at once: a rebuild's is done in the transaction of its dispatch.
+    async fn finish(self: &Arc<Self>, made: Made, id: &str, why: String) -> Result<()> {
         let agent = id.to_owned();
         match self.stored(move |store| store.executor_rebuilt_from(&agent)).await? {
             Some((first, first_why)) => {
@@ -89,8 +112,11 @@ impl Workspace {
     }
 
     /// An uncertain start: its slot is held as starting with why, and an
-    /// Agent dispatcher gets one mail. Nothing is closed or rebuilt.
+    /// Agent dispatcher gets one mail. Nothing is closed or rebuilt, and a
+    /// record of its settling goes.
     async fn hold_uncertain(self: &Arc<Self>, id: &str, why: String) -> Result<()> {
+        let agent = id.to_owned();
+        self.stored(move |store| store.executor_rebuild_discard(&agent)).await?;
         let (agent, reason) = (id.to_owned(), why.clone());
         self.stored(move |store| store.executor_slot_not_started(&agent, true, &reason)).await?;
         let agent = id.to_owned();
@@ -106,16 +132,16 @@ impl Workspace {
     }
 
     /// The one rebuild: a new dispatch of the same request by the same
-    /// dispatcher, made as it was (executor_dispatch.rs). Its executor keeps
-    /// the queue place of the one it replaces. One Core can't make blocks
-    /// the task with why.
+    /// dispatcher, made as it was (executor_dispatch.rs); its record is done,
+    /// and its executor keeps the queue place of the one it replaces, in that
+    /// dispatch's transaction. Refused while an update drains, it stays
+    /// pending; one Core can't make otherwise blocks the task with why.
     async fn rebuild(self: &Arc<Self>, made: Made, from: &str, why: String) -> Result<()> {
         let (task, agent) = (made.task_id.clone(), from.to_owned());
         if !self.stored(move |store| store.executor_still_dispatched(&task, &agent)).await? {
-            return Ok(());
+            let agent = from.to_owned();
+            return self.stored(move |store| store.executor_rebuild_failed(&agent, "task_moved_on: the task no longer waits on this executor")).await;
         }
-        let (record, agent, reason) = (made.clone(), from.to_owned(), why.clone());
-        self.stored(move |store| store.executor_rebuild_begin(&record, &agent, &reason)).await?;
         let task = made.task_id.clone();
         let version = self.stored(move |store| {
             Ok(store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"}))?["current"]["version"].clone())
@@ -125,25 +151,59 @@ impl Workspace {
         input["expectedVersion"] = version;
         let dispatcher = made.dispatcher().map(str::to_owned);
         match self.executor_dispatch(dispatcher.as_deref(), input).await {
-            Ok(answer) => {
-                let to = answer["agentId"].as_str().unwrap_or_default().to_owned();
-                let dispatch = answer["task"]["dispatch"]["id"].as_str().unwrap_or_default().to_owned();
-                let from = from.to_owned();
-                self.stored(move |store| store.executor_rebuild_done(&from, &to, &dispatch)).await?;
+            Ok(_) => {
                 self.wake_executor_slots();
                 Ok(())
             }
+            // Nothing of it was written: a pass after the update, or the
+            // next start, makes it (R1 dde34160).
+            Err(error) if error.downcast_ref::<WaitsForUpdate>().is_some() => Ok(()),
             Err(error) => {
-                let (agent, message) = (from.to_owned(), format!("{error:#}"));
-                self.stored(move |store| store.executor_rebuild_failed(&agent, &message)).await?;
                 let reasons = vec![(from.to_owned(), why)];
                 self.block_start(&made, from, reasons, Some(format!("{error:#}"))).await
             }
         }
     }
 
+    /// The rebuilds a pass finishes: pending, their executor closed, and no
+    /// dispatch of them begun (an update drained, or Core stopped before it).
+    /// Each in a task of its own under a work permit, unless its settling is
+    /// still in flight; while an update drains, none.
+    pub(crate) async fn finish_rebuilds(self: &Arc<Self>, started: &mut Vec<tokio::task::JoinHandle<()>>) {
+        let Ok(rows) = self.stored(|store| store.executor_rebuilds_waiting()).await else { return };
+        for (from, why) in rows {
+            if !self.executor_slots.in_flight.lock().unwrap().insert(from.clone()) {
+                continue;
+            }
+            let Ok(permit) = self.admission.enter_work() else {
+                self.executor_slots.in_flight.lock().unwrap().remove(&from);
+                return;
+            };
+            let ws = self.clone();
+            started.push(tokio::spawn(async move {
+                let agent = from.clone();
+                let finished = match ws.stored(move |store| store.executor_made(&agent)).await {
+                    Ok(Some(made)) => ws.finish(made, &from, why).await,
+                    // Its dispatch is no longer its: nothing to rebuild.
+                    Ok(None) => {
+                        let agent = from.clone();
+                        ws.stored(move |store| store.executor_rebuild_failed(&agent, "task_moved_on: its dispatch is no longer the task's")).await
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = finished {
+                    eprintln!("Executor {from}: {error:#}");
+                }
+                ws.executor_slots.in_flight.lock().unwrap().remove(&from);
+                drop(permit);
+                ws.wake_executor_slots();
+            }));
+        }
+    }
+
     /// Blocks the task that `agent` is still the executor of, from Core,
     /// with every executor's reason, and `rebuild`: why no rebuild was made.
+    /// The record of `agent`'s settling fails with it, in its transaction.
     async fn block_start(self: &Arc<Self>, made: &Made, agent: &str, reasons: Vec<(String, String)>, rebuild: Option<String>) -> Result<()> {
         let mut said = Vec::new();
         let mut executors = Vec::new();
