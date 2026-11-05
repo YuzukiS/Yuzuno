@@ -20,7 +20,8 @@ export type ExecutorTemplate = {
   /** Kept for phase 2's slots. */
   maxConcurrent?: number;
 };
-export type TemplateList = { version: number; templates: ExecutorTemplate[] };
+/** `laterTemplates`: templates a newer Core saved that this one can't read; a save keeps them. */
+export type TemplateList = { version: number; templates: ExecutorTemplate[]; laterTemplates?: number };
 export type ExecutorTemplatesView = {
   workspace: TemplateList;
   /** Read for a project: its own list. */
@@ -37,6 +38,7 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
   const list = (from?: Partial<TemplateList>): TemplateList => ({
     version: typeof from?.version === "number" ? from.version : 0,
     templates: Array.isArray(from?.templates) ? from.templates : [],
+    laterTemplates: typeof from?.laterTemplates === "number" ? from.laterTemplates : 0,
   });
   return {
     workspace: list(value.workspace),

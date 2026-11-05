@@ -8,7 +8,8 @@
 //! and gets the task's Project's template of that id first, else the
 //! Workspace's. Lists are read leniently, so a later Core's further fields do
 //! not stop this one; a save is checked strictly, against the version it was
-//! read at, and replaces the whole list. Only the user saves them: these are
+//! read at, and replaces the whole list, keeping as it was what a later Core
+//! stored that this one can't read. Only the user saves them: these are
 //! browser routes, never a collaboration operation.
 //!
 //! Phase 1 creates executors on this Core host only. `maxConcurrent` is kept
@@ -80,6 +81,17 @@ pub struct Template {
 pub struct Templates {
     pub version: i64,
     pub templates: Vec<Template>,
+    /// Templates in the list this Core can't read (a later Core's shape):
+    /// not offered here, and kept as they are by a save here.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub later_templates: usize,
+    /// The list as stored, for what a save keeps.
+    #[serde(skip)]
+    stored: Option<Value>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 fn single_line(value: &str, what: &str, max: usize) -> Result<()> {
@@ -170,11 +182,39 @@ impl Template {
 fn read_list(raw: Option<String>) -> Result<Templates> {
     let Some(raw) = raw else { return Ok(Templates::default()) };
     let value: Value = serde_json::from_str(&raw)?;
+    let all = value["templates"].as_array().cloned().unwrap_or_default();
+    let templates: Vec<Template> = all.iter().filter_map(|t| serde_json::from_value(t.clone()).ok()).collect();
     Ok(Templates {
         version: value["version"].as_i64().unwrap_or(0),
-        templates: value["templates"].as_array().into_iter().flatten()
-            .filter_map(|t| serde_json::from_value(t.clone()).ok()).collect(),
+        later_templates: all.len() - templates.len(),
+        templates,
+        stored: Some(value),
     })
+}
+
+/// What a save stores: the templates it names, with what a later Core
+/// stored that this Core doesn't read kept as it was, so a save here never
+/// drops it: each named template's fields this Core doesn't know, the
+/// templates it can't read (unless the save names their id), and the
+/// list's own fields.
+fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Result<Value> {
+    let mut stored = current.stored.as_ref().and_then(Value::as_object).cloned().unwrap_or_default();
+    let before: Vec<Value> = stored.get("templates").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut items = Vec::with_capacity(templates.len());
+    for template in templates {
+        let mut item = serde_json::to_value(template)?;
+        if let Some(old) = before.iter().find(|old| old["id"] == template.id.as_str()).and_then(Value::as_object) {
+            for (field, value) in old.iter().filter(|(field, _)| !FIELDS.contains(&field.as_str())) {
+                item[field] = value.clone();
+            }
+        }
+        items.push(item);
+    }
+    let named = |old: &Value| old["id"].as_str().is_some_and(|id| templates.iter().any(|t| t.id == id));
+    items.extend(before.iter().filter(|old| serde_json::from_value::<Template>((*old).clone()).is_err() && !named(*old)).cloned());
+    stored.insert("version".into(), version.into());
+    stored.insert("templates".into(), items.into());
+    Ok(Value::Object(stored))
 }
 
 fn list_at(db: &Connection, key: &str) -> Result<Templates> {
@@ -274,13 +314,13 @@ impl Store {
         }
         let current = list_at(&tx, key)?;
         ensure!(current.version == expected, "version_conflict: these executor templates changed; reload before saving");
-        let saved = Templates { version: current.version + 1, templates };
+        let stored = stored_list(&current, &templates, current.version + 1)?.to_string();
         tx.execute(
             "INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![key, serde_json::to_string(&saved)?],
+            params![key, stored],
         )?;
         tx.commit()?;
-        Ok(saved)
+        read_list(Some(stored))
     }
 }
 
@@ -303,6 +343,9 @@ fn view(workspace: &Templates, project: Option<(&str, &Templates)>) -> Value {
     });
     if let Some((id, own)) = project {
         view["project"] = json!({"id": id, "version": own.version, "templates": own.templates});
+        if own.later_templates > 0 {
+            view["project"]["laterTemplates"] = own.later_templates.into();
+        }
     }
     view
 }

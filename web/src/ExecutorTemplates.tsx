@@ -20,6 +20,7 @@ const text = strings({
   fromWorkspace: (names: string) => `Also available here, from the Workspace: ${names}.`,
   replaced: "replaced here",
   host: "Executors run on this Core host.",
+  later: (n: number) => `This list also holds ${n} ${n === 1 ? "template" : "templates"} saved by a newer Core. This Core can’t show ${n === 1 ? "it" : "them"}; saving here keeps ${n === 1 ? "it" : "them"} as ${n === 1 ? "it is" : "they are"}.`,
   newTemplate: "New template",
   label: "Label",
   id: "Id",
@@ -55,6 +56,7 @@ const text = strings({
   fromWorkspace: (names) => `这里也可用 Workspace 的模板：${names}。`,
   replaced: "已在此替换",
   host: "执行者在此 Core 主机上运行。",
+  later: (n) => `此列表还有 ${n} 个由较新的 Core 保存的模板。此 Core 无法显示；在此保存会原样保留它们。`,
   newTemplate: "新模板",
   label: "标签",
   id: "Id",
@@ -110,7 +112,8 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   const pattern = set(d.namePattern);
   if (pattern) template.namePattern = pattern;
   if (d.harness !== "opencode" && set(d.model)) template.model = set(d.model);
-  if (d.harness === "codex" && set(d.reasoningEffort)) template.reasoningEffort = set(d.reasoningEffort);
+  // An effort goes with the model it is for.
+  if (d.harness === "codex" && set(d.model) && set(d.reasoningEffort)) template.reasoningEffort = set(d.reasoningEffort);
   if (d.harness === "codex" && d.permission) template.permissionPreset = d.permission;
   if (d.harness === "claude" && d.permission) template.permissionMode = d.permission;
   if (d.instructions.trim()) template.instructions = d.instructions;
@@ -157,6 +160,8 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
       if (change.label !== undefined && !d.idTouched) next.id = slug(change.label);
       // Permissions differ per harness: a change of harness starts them over.
       if (change.harness && change.harness !== d.harness) next.permission = "";
+      // An effort is for its model: clearing the model clears it too (R1 de0ae592).
+      if (change.model !== undefined && !change.model.trim()) next.reasoningEffort = "";
       return next;
     }));
   };
@@ -192,6 +197,7 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
             {t.fromWorkspace(inherited.map(w => (replaced(w.id) ? `${w.label} (${t.replaced})` : w.label)).join(" · "))}
           </p>
         )}
+        {(own(view).laterTemplates ?? 0) > 0 && <p className="settings-row-help">{t.later(own(view).laterTemplates ?? 0)}</p>}
         {drafts.length === 0 && <p className="settings-row-help">{t.none}</p>}
         {drafts.map(d => {
           const name = d.label.trim() || t.newTemplate;

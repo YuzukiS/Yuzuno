@@ -78,6 +78,9 @@ its settings.
 - **Who changes them.** Only you. Saving replaces the whole list, and a save
   against a list changed meanwhile is refused, so the page reloads first.
   Removing a template, or a Project, changes no executor already made.
+- **After a newer Core.** Templates and fields that a newer Core saved and
+  this one can't read are not shown, and a save here keeps them as they
+  were. The page says how many such templates the list holds.
 
 ## Phases
 

@@ -80,6 +80,41 @@ async fn templates_are_saved_against_the_version_read_and_a_project_s_own_come_f
     assert_eq!(rows, 0, "a deleted Project's templates go with it");
 }
 
+/// T-34 S1, R1 de0ae592: a save keeps as it was what a later Core stored
+/// that this one can't read: a saved template's fields it doesn't know, the
+/// templates it can't read, and the list's own fields. The view says how
+/// many templates it can't show; a save naming such a template's id
+/// replaces it.
+#[tokio::test]
+async fn a_save_keeps_what_a_later_core_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let later = json!({"id":"z","label":"A later shape","laterHarness":{"kind":"remote"}});
+    ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![KEY,
+        json!({"version":1,"laterList":"kept","templates":[{"id":"a","label":"A","harness":"codex","laterField":"kept"}, later.clone()]}).to_string()]).unwrap();
+    let stored = || -> Value { serde_json::from_str(&ws.store.db.read().unwrap()
+        .query_row("SELECT value FROM workspace_meta WHERE key=?1", [KEY], |r| r.get::<_, String>(0)).unwrap()).unwrap() };
+    let (_, seen) = call(&ws, "GET", "/api/executor-templates", None).await;
+    assert_eq!((ids(&seen), seen["workspace"]["laterTemplates"].clone()), (vec![("a".into(), "workspace".into())], json!(1)),
+        "the view shows what it can read and says how many it can't");
+
+    let (status, saved) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":1,"templates":[
+        {"id":"a","label":"A again","harness":"codex"}, template("b", "claude")]}))).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let raw = stored();
+    assert_eq!(raw["templates"][0], json!({"id":"a","label":"A again","harness":"codex","laterField":"kept"}),
+        "a later Core's field of a template is kept");
+    assert_eq!(raw["templates"][1], template("b", "claude"));
+    assert_eq!(raw["templates"][2], later, "a template a later Core stored is kept");
+    assert_eq!((raw["version"].clone(), raw["laterList"].clone()), (json!(2), json!("kept")));
+    assert_eq!(saved["workspace"]["laterTemplates"], 1);
+
+    let (_, replaced) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":2,"templates":[template("z", "codex")]}))).await;
+    assert_eq!(stored()["templates"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect::<Vec<_>>(), [json!("z")],
+        "a save naming its id replaces it; one it leaves out is removed");
+    assert!(replaced["workspace"].get("laterTemplates").is_none(), "{replaced}");
+}
+
 /// T-34 S1: a save names only fields this Core knows, each valid, each id
 /// once; phase 1's executors are on this Core host. A stored list is read
 /// leniently: a later Core's fields and templates this Core can't read are

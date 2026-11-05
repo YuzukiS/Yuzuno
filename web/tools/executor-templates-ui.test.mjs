@@ -133,12 +133,17 @@ test("Executor templates: a new template is added, said as written and saved as 
   assert.equal(field(page, "Reasoning effort").disabled, true);
   await type(page, "Model", "gpt-test");
   assert.equal(field(page, "Reasoning effort").disabled, false);
+  await type(page, "Reasoning effort", "high");
+  await type(page, "Model", "");
+  assert.equal(field(page, "Reasoning effort").value, "", "clearing the model clears its effort");
   await type(page, "Label", "Lead reviewer");
   assert.equal(field(page, "Id").value, "code-reviewer", "a saved template's id stays when its label changes");
 
   conflict = true;
   button(page, "Save templates").click();
   await until(() => page.document.querySelector('[role="alert"]'), "the refusal");
+  assert.deepEqual(puts(page).at(-1).body.templates[0], { id: "code-reviewer", label: "Lead reviewer", harness: "codex" },
+    "an effort is sent only with its model");
   assert.match(page.document.querySelector('[role="alert"]').textContent, /version_conflict: these executor templates changed/);
   conflict = false;
   button(page, "Reload saved templates").click();
@@ -178,9 +183,11 @@ test("a project's own templates: the Workspace's are named, those it replaces sa
 
 test("OpenCode is offered only where this Core creates OpenCode Agents, with no model or permissions of its own", async () => {
   for (const enabled of [false, true]) {
-    const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }] }, undefined, enabled)]);
+    const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, undefined, enabled)]);
     page.window.renderTemplates();
     await until(() => field(page, "Harness"), "the list");
+    assert.match(page.document.querySelector(".executor-templates-settings").textContent,
+      /This list also holds 1 template saved by a newer Core\. This Core can’t show it; saving here keeps it as it is\./);
     const options = [...field(page, "Harness").options].map((o) => o.value);
     assert.deepEqual(options, enabled ? ["codex", "claude", "opencode"] : ["codex", "claude"], String(enabled));
     if (enabled) {
