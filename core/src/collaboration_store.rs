@@ -929,6 +929,9 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
             STATUSES.contains(&status.as_str()),
             "invalid_input: invalid task status"
         );
+        if status == "done" {
+            crate::executor_archive::refuse_own_done(db, actor, &task.id)?;
+        }
         task.status = status;
     }
     if patch.get("assigneeAgentId").is_some() {
@@ -1153,6 +1156,8 @@ fn task_dispatch(
     let recipient_id = required_text(input, "toAgentId", 128)?;
     let recipient = store.brief_in(db, &recipient_id)?
         .context("agent_not_found: recipient does not exist")?;
+    // Said before that it is closed: an archived executor is never reopened (T-36).
+    crate::executor_archive::refuse_mail(db, &recipient_id)?;
     ensure!(
         recipient.agent.closed_at.is_none(),
         "agent_closed: reopen the recipient before dispatching work"
@@ -1445,6 +1450,8 @@ fn create_message(
         "invalid_input: choose another Agent as recipient"
     );
     let recipient = agent_actor(store, db, &to)?;
+    // An archived executor takes no more mail or work (T-36).
+    crate::executor_archive::refuse_mail(db, &to)?;
     let body = required_text(input, "body", 16_384)?;
     let priority = message_priority(input)?;
     let mut task_id = optional_text(input, "taskId", 128)?;
@@ -1499,6 +1506,8 @@ fn create_message(
 /// Persist a validated message inside the caller's transaction. System-owned
 /// operations use this same mailbox; their author is never a user or Agent.
 pub(crate) fn insert_message(db: &Connection, mut message: Value) -> Result<Value> {
+    // Core's mail to an archived executor goes to its dispatcher (T-36).
+    crate::executor_archive::redirect(db, &mut message)?;
     message["notice"] = crate::mailbox_notice::message_notice(&message);
     let id = message["id"].as_str().context("Missing message identity")?.to_owned();
     let sender_id = message["sender"]["id"].as_str().context("Missing message sender")?;

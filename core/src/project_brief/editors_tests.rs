@@ -112,3 +112,36 @@ fn editor_policy_is_project_scoped_persistent_and_explicit_empty_is_not_default(
     assert_eq!(editors::get(&reopened.store, &project).unwrap().editor_agent_ids, Some(vec!["a".into()]));
     assert_eq!(agent_edits_brief(&reopened.store, "new").unwrap(), None);
 }
+
+/// T-36: a task executor is never a Home content editor. With no list it is
+/// the one member that does not edit; a list cannot name it, and one that
+/// named it before (an older Core's, or a hand edit) does not make it one.
+/// It still asks its own questions, and Home shows what it wrote before as
+/// the team's, not as the Project's.
+#[tokio::test]
+async fn a_task_executor_is_never_a_home_editor_with_no_list_or_one() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "c", input("before", 0, vec![put("written", "report")])).await;
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,project_id,template_id,created_by,created_at,updated_at)
+         VALUES('c','executor',?1,'reviewer','agent:a','now','now')", [&project]).unwrap();
+    let ask_only = json!({"editContent":false,"requiresTurnUpdate":false,"writeOwnAsk":true});
+    assert_eq!(brief(&ws, "c")["you"]["capabilities"], ask_only, "no list: every member edits but the executor");
+    assert_eq!(brief(&ws, "b")["you"]["capabilities"]["editContent"], true);
+    assert!(codes(&reject(&ws, "c", input("after", 1, vec![put("new", "report")])).await).contains(&"ask_only".into()));
+    accept(&ws, "c", input("ask", 1, vec![put("question", "ask")])).await;
+    let shown = |ws: &Workspace| {
+        let view = home::build(&ws.store).unwrap();
+        let keys = |list: &Value| list.as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        (keys(&view["projects"][0]["brief"]["sections"]), keys(&view["projects"][0]["brief"]["teamSections"]))
+    };
+    assert_eq!(shown(&ws), (vec!["question".to_owned()], vec!["written".to_owned()]), "its Ask is the Project's, its report the team's");
+    let refused = editors::save(&ws.store, &project, 0, Some(vec!["b".into(), "c".into()])).unwrap_err().to_string();
+    assert!(refused.starts_with("invalid_editor: a task executor is never a Home content editor"), "{refused}");
+    assert_eq!(editors::get(&ws.store, &project).unwrap().version, 0, "nothing saved");
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'[\"b\",\"c\"]')", [&project]).unwrap();
+    assert_eq!(brief(&ws, "c")["you"]["capabilities"], ask_only, "a list that names it does not make it an editor");
+    assert_eq!(brief(&ws, "b")["you"]["capabilities"]["editContent"], true);
+    assert_eq!(shown(&ws), (vec!["question".to_owned()], vec!["written".to_owned()]));
+}
