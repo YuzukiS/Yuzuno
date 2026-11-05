@@ -5,6 +5,10 @@
 // - CV:CW-11: Not now takes the offer away with nothing in view moving; a message link opens the message with its
 //   source strip over the conversation's top, fading in, the message placed clear below the strip, the conversation
 //   at its full height.
+// - R1 f0b0a715: with Jobs and Turns docked, the strips line up with the request pin (between the docks; on a phone
+//   across the whole conversation but its scrollbar). A strip shown while the conversation follows its end, or at its
+//   very top, moves no text in view; what it covers can be scrolled clear below it; and a link to the first Turn
+//   places it, its header too, clear below the source strip.
 // Under reduced motion the strips are there at once. Desktop 1280×860 and phone 390×844, each with normal and reduced
 // motion. Writes: the app's own saves of where an Agent was read; anything else is refused and counted. Chromium is
 // not Safari.
@@ -13,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { launchBrowser } from "./browser-engine.mjs";
-import { emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { emptyHome, idleJobsBudget, noCiRuns, noConversationInputs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -44,6 +48,13 @@ const usage = { revision: 1, status: "unknown", account: null, accountId: null,
   checkedAt: null, observedAt: null, ordinaryUsageAllowed: null, error: null, buckets: [] };
 // Another browser's place: in turn 3, by Core's count its 4th accepted write.
 const handoff = { mode: "anchor", turnId: "t3", itemId: "r3", progress: 0.2, source: "other-browser", label: "desktop", version: 4, ageSeconds: 240 };
+// Mori's finished Jobs, so the work dock shows (R1 f0b0a715: a phone keeps it hidden, its insets must not stay).
+const resources = { cpuMillis: 1000, memoryMiB: 512, swapMiB: 0 };
+const job = (id, name, status) => ({ id, requestId: id, name, taskRef: "T-51", agentId: "a", agent: { name: "Mori" },
+  machine: { name: "Core host" }, status, reserved: false, reason: status === "failed" ? "exit-code" : null, resources,
+  reservation: resources, cursor: 1, createdAt: "2026-11-05T10:00:00Z", startedAt: "2026-11-05T10:00:01Z",
+  finishedAt: "2026-11-05T10:01:00Z", argv: ["/usr/bin/true"], cwd: "/fixture", env: {}, outputs: [] });
+const jobs = { jobs: [job("j1", "the layout check", "failed"), job("j2", "unit tests", "succeeded")], liveJobs: [], hasMore: false, nextBefore: null };
 const gets = {
   "/api/workspace": { workspace: { id: WORKSPACE }, agents: [agent], projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/fixture" },
@@ -52,7 +63,7 @@ const gets = {
   "/api/agents/a/conversation/inputs": noConversationInputs,
   "/api/backlog": { observedAt: "2026-11-05T00:00:00Z", agents: {} },
   "/api/models": { models: [] }, "/api/home": emptyHome, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
-  "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+  "/api/jobs": jobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
 };
 let offer = null;
 const holding = new Set();
@@ -268,11 +279,160 @@ for (const run of runs) {
           && typeof placed?.rowTop === "number" && placed.rowTop >= placed.stripBottom - 0.5 && placed.rowTop - placed.stripBottom < 48
           && placed.scrollerHeight === before?.scrollerHeight, measured.link);
     }
+
+    // ---- R1 f0b0a715 (1): the strips line up with the request pin, which shows only with a Turn running: an element
+    // of its kind put in the same body for a moment says where its rules place it.
+    {
+      let lined = null;
+      try {
+        lined = await page.evaluate(() => {
+          const body = document.querySelector(".conversation-body");
+          const pin = document.createElement("details");
+          pin.className = "current-turn-prompt";
+          body.insertBefore(pin, body.querySelector(":scope > .conversation-scroll"));
+          const p = pin.getBoundingClientRect();
+          pin.remove();
+          const s = document.querySelector(".conversation-strips")?.getBoundingClientRect();
+          const b = body.getBoundingClientRect();
+          return { work: body.matches(":has(> .work-dock:not(:empty))"), turns: body.matches(":has(.turn-dock)"),
+            strips: s ? { left: s.left, right: s.right } : null, pin: { left: p.left, right: p.right },
+            body: { left: b.left, right: b.right }, scrollbar: parseFloat(getComputedStyle(body).getPropertyValue("--conversation-scrollbar")) || 0 };
+        });
+      } catch (error) {
+        lined = { error: String(error).slice(0, 200) };
+      }
+      measured.lined = lined;
+      const whole = !run.phone || (near(lined?.strips?.left, lined?.body?.left) && near(lined?.strips?.right, lined.body.right - lined.scrollbar));
+      ok(`${tag}: with Jobs and Turns docked, the strips line up with the request pin, ${run.phone ? "across the whole conversation but its scrollbar" : "between the docks"}`,
+        !!lined?.work && !!lined.turns && near(lined.strips?.left, lined.pin.left) && near(lined.strips?.right, lined.pin.right) && whole, lined);
+    }
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));
   }
   await page.screenshot({ path: join(output, `${tag}-end.png`) }).catch(() => {});
   await context.close();
+
+  // ---- R1 f0b0a715 (2), each in a browser of its own (nothing saved of the runs before): the conversation opened with
+  // another browser's place held back until the test says.
+  const openFresh = async (label, version) => {
+    const fresh = await browser.newContext({ viewport: run.viewport, reducedMotion: run.reducedMotion, locale: "en-US",
+      hasTouch: !!run.phone, isMobile: !!run.phone, deviceScaleFactor: run.phone ? 2 : 1 });
+    const fpage = await fresh.newPage();
+    fpage.on("pageerror", (e) => report.errors.push(`${tag} (${label}): ${String(e).slice(0, 300)}`));
+    await fpage.route("http://yuzuno-t51-strips.test/**", serve);
+    await fpage.addInitScript(pageHelpers);
+    holding.add("GET /api/agents/a/reading");
+    offer = { ...handoff, version };
+    await fpage.goto("http://yuzuno-t51-strips.test/");
+    await fpage.locator(".agent-row").first().waitFor({ timeout: 15_000 });
+    if (run.phone && (await fpage.locator(".app.phone-list").count())) await fpage.locator(".agent-row").first().click();
+    else if (!run.phone) await fpage.locator(".agent-row").first().click();
+    await fpage.locator('[data-item-id="r13"]').waitFor({ timeout: 10_000 });
+    return { fresh, fpage };
+  };
+
+  // While the conversation follows its end: the app's own hold on a place read (ConversationWindow's ReadingAnchor)
+  // stands aside then, so the strips' own adjustment is all that keeps the end where it was.
+  {
+    let opened = null;
+    let before = null;
+    let after = null;
+    try {
+      opened = await openFresh("end", 5);
+      const end = opened.fpage;
+      await end.evaluate(() => { const s = document.querySelector(".conversation-scroll"); s.scrollTop = s.scrollHeight; });
+      await waiting("GET", "/api/agents/a/reading");
+      await end.waitForTimeout(600);
+      before = await end.evaluate(() => {
+        const s = document.querySelector(".conversation-scroll");
+        return { ...window.__view("r13"), atEnd: s.scrollHeight - s.clientHeight - s.scrollTop < 2 };
+      });
+      await release("GET", "/api/agents/a/reading");
+      await end.locator(".reading-offer").waitFor({ timeout: 5000 });
+      await end.waitForTimeout(400);
+      after = await end.evaluate(() => window.__view("r13"));
+    } catch (error) {
+      after = { error: String(error).slice(0, 200), after };
+    }
+    measured.end = { before, after };
+    ok(`${tag}: another browser's place, offered while the conversation follows its end, moves no text in view`,
+      !!before?.atEnd && !after?.error && near(before.rowTop, after.rowTop) && before.scrollerHeight === after.scrollerHeight, measured.end);
+    await opened?.fpage.screenshot({ path: join(output, `${tag}-end-offer.png`) }).catch(() => {});
+    await opened?.fresh.close();
+  }
+
+  // At the conversation's very top.
+  let fresh = null;
+  let top = null;
+  try {
+    let before = null;
+    let after = null;
+    let reach = null;
+    try {
+      ({ fresh, fpage: top } = await openFresh("top", 6));
+      // Up to the conversation's first message, as a reader would: rows mount as they come near (ConversationWindow).
+      await top.evaluate(async () => {
+        const scroller = document.querySelector(".conversation-scroll");
+        for (let i = 0; i < 80 && (scroller.scrollTop > 0 || !document.querySelector('[data-item-id="u0"]')); i++) {
+          scroller.scrollTop -= scroller.clientHeight;
+          await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+        }
+      });
+      await top.locator('[data-item-id="u0"]').waitFor({ timeout: 10_000 });
+      await waiting("GET", "/api/agents/a/reading");
+      await top.waitForTimeout(600);
+      before = await top.evaluate(() => window.__view("u0"));
+      await release("GET", "/api/agents/a/reading");
+      await top.locator(".reading-offer").waitFor({ timeout: 5000 });
+      await top.waitForTimeout(400);
+      after = await top.evaluate(() => window.__view("u0"));
+      reach = await top.evaluate(async () => {
+        const scroller = document.querySelector(".conversation-scroll");
+        scroller.scrollTop = 0;
+        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+        return { scrollTop: scroller.scrollTop, rowTop: document.querySelector('[data-item-id="u0"]')?.getBoundingClientRect().top ?? null,
+          stripsBottom: document.querySelector(".conversation-strips")?.getBoundingClientRect().bottom
+            ?? document.querySelector(".reading-offer")?.getBoundingClientRect().bottom ?? null };
+      });
+    } catch (error) {
+      after = { error: String(error).slice(0, 200), after };
+    }
+    measured.top = { before, after, reach };
+    ok(`${tag}: another browser's place, offered at the conversation's very top, moves no text in view`,
+      before?.scrollTop === 0 && !after?.error && near(before.rowTop, after.rowTop) && before.scrollerHeight === after.scrollerHeight, measured.top);
+    ok(`${tag}: scrolled back up, the conversation's first message is clear below the strip`,
+      reach?.scrollTop === 0 && typeof reach.rowTop === "number" && typeof reach.stripsBottom === "number" && reach.rowTop >= reach.stripsBottom - 0.5, measured.top);
+
+    // A link to the first Turn itself: its top, the Turn's header above its first message, is what a strip covered.
+    let placed = null;
+    try {
+      await top.locator(".reading-offer").getByRole("button", { name: "Not now" }).click();
+      await top.locator(".reading-offer").waitFor({ state: "detached", timeout: 5000 });
+      await top.evaluate(() => { const s = document.querySelector(".conversation-scroll"); s.scrollTop = s.scrollHeight; });
+      await top.waitForTimeout(300);
+      await top.evaluate((ws) => { location.hash = `#/message?w=${ws}&a=a&t=t0`; }, WORKSPACE);
+      await top.locator(".source-navigation", { hasText: "Linked message" }).waitFor({ timeout: 5000 });
+      await top.waitForTimeout(500);
+      placed = await top.evaluate(() => {
+        const scroller = document.querySelector(".conversation-scroll").getBoundingClientRect();
+        const row = document.getElementById("turn-t0")?.getBoundingClientRect();
+        return { rowTop: row?.top ?? null, rowBottom: row?.bottom ?? null, scrollerBottom: scroller.bottom,
+          focused: document.activeElement?.id ?? null,
+          stripsBottom: document.querySelector(".conversation-strips")?.getBoundingClientRect().bottom
+            ?? [...document.querySelectorAll(".source-navigation")].find((el) => el.textContent.includes("Linked message"))?.getBoundingClientRect().bottom ?? null };
+      });
+    } catch (error) {
+      placed = { error: String(error).slice(0, 200), placed };
+    }
+    measured.first = placed;
+    ok(`${tag}: a link to the conversation's first Turn places it, its header too, clear below the source strip`,
+      typeof placed?.rowTop === "number" && typeof placed.stripsBottom === "number" && placed.rowTop >= placed.stripsBottom - 0.5
+        && placed.rowTop < placed.scrollerBottom && placed.focused === "turn-t0", placed);
+  } catch (error) {
+    ok(`${tag} (top): the sequence ran to its end`, false, String(error).slice(0, 400));
+  }
+  await top?.screenshot({ path: join(output, `${tag}-top-end.png`) }).catch(() => {});
+  await fresh?.close();
 }
 await browser.close();
 
