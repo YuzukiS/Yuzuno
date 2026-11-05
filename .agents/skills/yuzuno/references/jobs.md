@@ -57,7 +57,7 @@ A local `job_submit` may declare `service` to link its command to a Project's pr
 
 The user can pause a running Job to free the machine, for example for a game. Every process of the Job is frozen in place. It keeps `status: running`, its memory, GPU memory and whole reservation, so nothing else is admitted into its share. Work it had already sent to a GPU still finishes.
 
-- `job_get` shows `pause.state`, which is one of `requested`, `paused`, `resuming`, `failed` or `unknown`. A system mail tells you when the Job is paused and when it is resumed.
+- `job_get` shows `pause.state`, which is one of `requested`, `paused`, `resuming`, `failed` or `unknown`. A system mail tells you when the Job is paused, with how long it had run and how much of its timeout remained at that moment, and when it is resumed.
 - Only the user resumes a Job. Do not cancel it, resubmit it or read its silence as a failure; report it as paused.
 - Its `timeoutSeconds` keeps counting while it is paused. A paused Job that reaches its timeout is stopped as failed with reason `timeout`, without running again.
 - Connections, leases or API sessions it held may have expired by the time it resumes. The command has to cope with that; Core never replays a call.
