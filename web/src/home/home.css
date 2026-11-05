@@ -1570,3 +1570,18 @@ ul.home-widget {
   outline: 2px solid var(--accent-ink, currentColor);
   outline-offset: 1px;
 }
+
+/* Under Needs you, the Turns that failed and then those that finished since
+   this device last showed them (T-42): each row opens its conversation. */
+.home-unseen h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7d8a68;
+}
+.home-unseen-failed h3 {
+  color: #a96a5b;
+}

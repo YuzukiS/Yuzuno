@@ -110,12 +110,15 @@ export function AgentRailRow({
   selected,
   statusLabel,
   idle = false,
+  unseen = null,
   onSelect,
   actions,
 }: {
   agent: Agent;
   selected: boolean;
   statusLabel: string;
+  /** Its last Turn ended this way and this device hasn't shown it (T-42). */
+  unseen?: "finished" | "failed" | null;
   /** Only an Agent shown as plainly idle can show its unfinished Job/CI work; any
    * other state (working, waiting for you, compacting, closed…) comes first. */
   idle?: boolean;
@@ -129,7 +132,8 @@ export function AgentRailRow({
   const machine = agent.remote?.machine.name || t.host;
   const jobs = useAgentJobs(agent.id);
   const ci = useAgentCI(agent.id);
-  const waiting = idle ? waitingSummary(jobs, ci, language) : null;
+  // Unfinished Job/CI work shows on a plainly idle Agent, not over a Turn end not seen yet.
+  const waiting = idle && !unseen ? waitingSummary(jobs, ci, language) : null;
   const label = waiting?.label ?? statusLabel;
   // Two waits or checks at once ("Waiting · Job / CI") take their own line
   // under the name; one ("Waiting · CI") fits beside it like any status.
@@ -184,7 +188,7 @@ export function AgentRailRow({
           <span className="agent-name">{agent.name}</span>
         </span>
         <span
-          className={`agent-runtime runtime-${agent.status}`}
+          className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
           data-jobs={waiting ? jobs?.active : undefined}
           data-ci={
             waiting && ci

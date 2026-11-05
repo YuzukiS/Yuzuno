@@ -32,7 +32,13 @@ export interface Agent {
    * runtime stopped; held as disconnected all the same. */
   disconnectUnconfirmed?: boolean;
   unreadCount: number;
+  /** What waits on the user: native requests and open async questions. */
   pendingCount: number;
+  /** Open questions an Agent sent to be answered later (T-42), counted in
+   * pendingCount without holding the Agent. */
+  openQuestions?: number;
+  /** How and where its last Turn ended, finished or failed (T-42). */
+  lastTurnEnd?: { seq: number; outcome: "finished" | "failed"; at: string } | null;
   lastMessage?: string;
   lastSeq: number;
   reviewedSeq: number;

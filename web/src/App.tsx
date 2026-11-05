@@ -28,6 +28,7 @@ import {
   ArrowUp,
   ArrowUpRight,
   Bell,
+  BellRing,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -208,6 +209,16 @@ import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
 import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
+import {
+  needsYouTargets,
+  nextTarget,
+  orderByAttention,
+  unseenEnd,
+  waitingSince,
+  type NeedsJump,
+  type NeedsTarget,
+} from "./attention";
+import { markTurnSeen, useTurnSeen } from "./turn-seen";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
 import { OpenCodeRevertHost } from "./Rewind";
@@ -268,6 +279,8 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** The page's own title, which a count of what needs the user prefixes (T-42). */
+const PAGE_TITLE = typeof document === "undefined" ? "Yuzuno" : document.title;
 /** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
 const JOIN_WAIT = 90;
 /** Where a held message is read: its text, below its minute mark. A run of
@@ -1433,6 +1446,58 @@ export function App() {
     if (!updatesOpen) setSettingsAt(null);
   }, [updatesOpen]);
   const needsYou = totalPending + openAsks;
+  // Who needs the user (T-42). What this device has seen of each Agent's last
+  // Turn end, kept here only; a preview's sample Workspace keeps none.
+  const turnSeen = useTurnSeen(previewMode ? "" : workspaceId);
+  // A Turn end is seen once its conversation is shown while the window is.
+  const shownEnd = !homeOpen && agent?.lastTurnEnd ? agent.lastTurnEnd.seq : 0;
+  useEffect(() => {
+    if (previewMode || !selected || !shownEnd) return;
+    const mark = () => {
+      if (document.visibilityState === "visible") markTurnSeen(workspaceId, selected, shownEnd);
+    };
+    mark();
+    document.addEventListener("visibilitychange", mark);
+    return () => document.removeEventListener("visibilitychange", mark);
+  }, [previewMode, workspaceId, selected, shownEnd]);
+  // The tab's title and the app's badge count what Home's tab counts. The
+  // badge only where this browser or installed app has one; nothing else
+  // depends on it.
+  useEffect(() => {
+    if (previewMode) return;
+    document.title = needsYou > 0 ? `(${needsYou}) ${PAGE_TITLE}` : PAGE_TITLE;
+    const badge = navigator as Navigator & {
+      setAppBadge?: (count?: number) => Promise<void>;
+      clearAppBadge?: () => Promise<void>;
+    };
+    const done = needsYou > 0 ? badge.setAppBadge?.(needsYou) : badge.clearAppBadge?.();
+    done?.catch(() => {});
+  }, [previewMode, needsYou]);
+  // Next needs you: Home's Needs you in Core's order, then the Turn ends not
+  // seen here (attention.ts). After an Ask, Home stays the place shown.
+  const needsTargets = useMemo(
+    () => needsYouTargets(needsYouItems, activeAgents, turnSeen),
+    [needsYouItems, activeAgents, turnSeen],
+  );
+  const lastNeedsJump = useRef<NeedsJump | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey: string; n: number } | null>(null);
+  const goNextNeedsYou = () => {
+    const shown: NeedsTarget | null = homeOpen
+      ? lastNeedsJump.current?.target.kind === "ask" ? lastNeedsJump.current.target : null
+      : selected ? { kind: "agent", agentId: selected } : null;
+    const jump = nextTarget(needsTargets, shown, lastNeedsJump.current);
+    if (!jump) return;
+    lastNeedsJump.current = jump;
+    const { target } = jump;
+    if (target.kind === "agent") {
+      selectAgent(target.agentId);
+    } else {
+      goHome();
+      setHomeJump((last) => ({ projectId: target.projectId, sectionKey: target.sectionKey, n: (last?.n ?? 0) + 1 }));
+    }
+  };
+  const nextNeedsYou = useRef(goNextNeedsYou);
+  nextNeedsYou.current = goNextNeedsYou;
   const reviewDisplayed = useCallback(
     async (id: string, throughSeq: number) => {
       await post(`/agents/${encodeURIComponent(id)}/review`, { throughSeq });
@@ -1873,6 +1938,10 @@ export function App() {
         event.preventDefault();
         setSearchOpen((v) => !v);
         setRailOpen(true);
+      }
+      if (pressed(event, shortcutKeys().nextNeedsYou)) {
+        event.preventDefault();
+        nextNeedsYou.current();
       }
     };
     window.addEventListener("keydown", keyboard);
@@ -2829,12 +2898,18 @@ export function App() {
     setCatchupSource(null);
     refresh();
   }
-  const filteredAgents =
+  const searched =
     (agentScope === "closed" ? scopedClosed : scopedActive).filter((a) =>
       `${a.name} ${a.workSummary?.text || ""} ${a.cwd} ${a.remote?.machine.name || ""}`
         .toLowerCase()
         .includes(search.toLowerCase()),
     ) || [];
+  // In attention order when Appearance chooses it (T-42): the same Agents,
+  // ordered within each group as grouping keeps the list's order.
+  const filteredAgents =
+    appearance.agentOrder === "attention"
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems) })
+      : searched;
 
   return (
     <HandoffContext.Provider value={handoffApi}>
@@ -2973,9 +3048,21 @@ export function App() {
             onSearch={() => setSearchOpen((v) => !v)}
             onCreate={() => setCreateOpen(true)}
             extra={
-              !previewMode && workspace ? (
-                <BatchReconnect workspaceId={workspaceId} agents={workspace.agents} scope={scope} onSettled={refresh} />
-              ) : null
+              <>
+                <button
+                  type="button"
+                  className={`icon-button next-needs-you${needsTargets.length ? " attention" : ""}`}
+                  aria-label={shell.nextNeedsYou}
+                  title={shell.nextNeedsYouTitle(`${shortcutModifier} ${boundKeys.nextNeedsYou}`, needsTargets.length)}
+                  disabled={!needsTargets.length}
+                  onClick={goNextNeedsYou}
+                >
+                  <BellRing size={14} />
+                </button>
+                {!previewMode && workspace ? (
+                  <BatchReconnect workspaceId={workspaceId} agents={workspace.agents} scope={scope} onSettled={refresh} />
+                ) : null}
+              </>
             }
           />
           {searchOpen && (
@@ -3015,17 +3102,22 @@ export function App() {
         </div>
         <nav className="agent-list" aria-label={shell.agents}>
           {(() => {
-            const row = (a: Agent) => (
+            const row = (a: Agent) => {
+            const unseen = unseenEnd(a, turnSeen);
+            return (
             <AgentRailRow
               key={a.id}
               agent={a}
               selected={selected === a.id && !homeOpen}
+              unseen={unseen}
               statusLabel={
                 a.closedAt
                   ? shell.closed
                   : a.id === selected && compacting
                     ? shell.compacting
-                    : shell.status[a.status]
+                    : unseen
+                      ? shell.unseen[unseen]
+                      : shell.status[a.status]
               }
               idle={
                 !a.closedAt &&
@@ -3036,6 +3128,7 @@ export function App() {
               actions={agentActions}
             />
             );
+            };
             // All projects, grouped as Settings chooses; a project's own
             // list, or No grouping, stays one list.
             const groups =
@@ -3154,6 +3247,8 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
+            turnSeen={turnSeen}
+            jumpTo={homeJump}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
             report={homeReport}

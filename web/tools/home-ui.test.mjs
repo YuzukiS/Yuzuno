@@ -118,7 +118,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -202,6 +202,8 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
   const button = (text, root = doc) =>
     [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text) || (!b.textContent.trim() && (b.title ?? "").startsWith(text)));
   const panel = (id) => doc.querySelector(`[data-home-project="${id}"]`);
+  // Anything the page has before the app starts (the tab title, an app badge).
+  before?.(w);
   try {
     w.eval(bundle);
     // Home's memory is per workspace: open it once the workspace is read.
@@ -2707,6 +2709,117 @@ test("T-9 a copied research desk keeps each row's and part's own source and defi
     assert.equal(basisOf("High dose · High dose"), "Protocol, lines 50-52 · Recovery v1", "the part's own, not its row's");
     assert.equal(basisOf("High dose · Placebo"), "no source of its own · no definition of its own", "a part naming none takes none from its row");
     assert.equal(table.querySelectorAll("a").length, 0);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-42: who needs the user. Core says how each Agent's last Turn ended; what
+// this device has seen of it is kept here only.
+const ended = (seq, outcome = "finished") => ({ lastTurnEnd: { seq, outcome, at: at(4) } });
+const attentionAgents = () => [
+  // Mori's last Turn failed, Hana's finished, neither shown here yet.
+  { ...agents[0], ...ended(30, "failed"), status: "error" },
+  { ...agents[1], ...ended(20) },
+  // Sora: a request and a question sent to be answered later.
+  { ...agents[2], pendingCount: 2, openQuestions: 1 },
+];
+const attentionHome = () => {
+  const home = homeFixture();
+  home.needsYou.push({ kind: "question", projectId: "p-res", agentId: "c", agentName: "Sora", turnId: "t3", itemId: "q1", title: "Which seed?", since: at(5) });
+  return home;
+};
+const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map((row) => row.dataset.agentId);
+const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
+const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
+
+test("Needs you lists an open question and opens its conversation; Turn ends not seen here follow, failed then finished, and stay this device's", async () => {
+  const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome() });
+  try {
+    await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "the question is listed");
+    const unseen = (outcome) => [...p.doc.querySelectorAll(`[data-unseen="${outcome}"] [data-unseen-agent]`)].map((b) => b.dataset.unseenAgent);
+    assert.deepEqual(unseen("failed"), ["a"]);
+    assert.deepEqual(unseen("finished"), ["b"]);
+    // The rail says so too, in the list's order: Appearance chose none.
+    assert.deepEqual(railIds(p), ["a", "b", "c"]);
+    assert.equal(railLabel(p, "a"), "Failed · unseen");
+    assert.equal(railLabel(p, "b"), "Finished · unseen");
+    p.doc.querySelector('[data-needs-you="question:c:t3:q1"]').click();
+    await waitFor(() => shown(p) === "Sora", "the question opens Sora's conversation");
+    // Shown here, Hana's Turn end is seen on this device, and only here.
+    p.button("Home").click();
+    await waitFor(() => p.doc.querySelector('[data-unseen-agent="b"]'), "Home again");
+    p.doc.querySelector('[data-unseen-agent="b"]').click();
+    await waitFor(() => shown(p) === "Hana", "Hana's conversation");
+    await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"b":20}', "seen on this device");
+    await waitFor(() => railLabel(p, "b") === "Ready", "Hana's label");
+    assert.equal(railLabel(p, "a"), "Failed · unseen");
+    p.button("Home").click();
+    await waitFor(() => p.doc.querySelector('[data-unseen="failed"]'), "Home again");
+    assert.equal(p.doc.querySelector('[data-unseen="finished"]'), null, "nothing finished is unseen");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the rail in attention order once Appearance chooses it: the same Agents, who needs you first, within each project group", async () => {
+  const one = await mount({ workspaceAgents: attentionAgents(), storage: { "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
+  try {
+    assert.deepEqual(railIds(one), ["c", "a", "b"], "waiting on you, failed unseen, finished unseen");
+  } finally {
+    one.close();
+  }
+  const listed = await mount({ workspaceAgents: attentionAgents(), storage: { "yuzuno.appearance": JSON.stringify({ projectGroups: "none" }) } });
+  try {
+    assert.deepEqual(railIds(listed), ["a", "b", "c"], "by default the list keeps its order");
+  } finally {
+    listed.close();
+  }
+  // Grouped by project: each group ordered, the groups as the project menu has them.
+  const grouped = [{ ...agents[0], ...ended(30) }, { ...agents[1], pendingCount: 1 }, agents[2]];
+  const groups = await mount({ workspaceAgents: grouped, storage: { "yuzuno.appearance": JSON.stringify({ agentOrder: "attention" }) } });
+  try {
+    assert.deepEqual(railIds(groups), ["b", "a", "c"]);
+  } finally {
+    groups.close();
+  }
+});
+
+test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you, then Turn ends unseen, and round again", async () => {
+  const badges = [];
+  const p = await mount({
+    workspaceAgents: attentionAgents(),
+    home: attentionHome(),
+    before: (w) => {
+      w.document.title = "Yuzuno · test";
+      w.navigator.setAppBadge = async (count) => badges.push(count);
+      w.navigator.clearAppBadge = async () => badges.push(0);
+    },
+  });
+  const press = () => p.w.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "j", ctrlKey: true, bubbles: true }));
+  try {
+    // Sora's request and question, and Mori's Ask.
+    await waitFor(() => p.doc.title === "(3) Yuzuno · test", `the title counts: ${p.doc.title}`);
+    assert.equal(badges.at(-1), 3);
+    const button = p.doc.querySelector(".rail-actions .next-needs-you");
+    assert.equal(button.disabled, false);
+    assert.equal(button.title, "Go to the next thing that needs you (Ctrl J)");
+    // Home is open: the first is Mori's Ask, there.
+    press();
+    await waitFor(() => p.scrolled.some((el) => el.id === "home-section-p-app-release"), "the Ask is shown on Home");
+    assert.ok(p.doc.querySelector(".home-view"), "still Home");
+    press();
+    await waitFor(() => shown(p) === "Sora", "then Sora, whose request and question wait");
+    press();
+    await waitFor(() => shown(p) === "Mori", "then the failed Turn not seen here");
+    // Shown, Mori's is seen and leaves the round; it goes on from there.
+    await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"a":30}', "seen on this device");
+    button.click();
+    await waitFor(() => shown(p) === "Hana", "then the finished one");
+    press();
+    await waitFor(() => p.doc.querySelector(".home-view"), "and round again to the Ask");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

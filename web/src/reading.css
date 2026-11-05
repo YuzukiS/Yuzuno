@@ -150,3 +150,21 @@
 .inspector-work-source:hover {
   text-decoration: underline;
 }
+
+/* A Turn end this device has not shown yet (T-42), and the rail's way to
+   the next thing that needs you: the attention colour while there is one. */
+.agent-select .agent-runtime.unseen-finished {
+  color: #6f8a5c;
+  font-weight: 600;
+}
+.agent-select .agent-runtime.unseen-failed {
+  color: #a96a5b;
+  font-weight: 600;
+}
+.rail-actions .next-needs-you.attention {
+  color: #a77b4f;
+}
+.rail-actions .next-needs-you:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

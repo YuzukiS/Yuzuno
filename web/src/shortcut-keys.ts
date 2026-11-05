@@ -10,18 +10,19 @@ import {
 } from "./device-storage";
 
 /**
- * The shortcuts this device may give another key (T-189 P2): three of those
- * the help lists, each Ctrl/⌘ with one letter. Kept in this browser or app
+ * The shortcuts this device may give another key (T-189 P2): four of those
+ * the help lists, each Ctrl/⌘ with one letter; Next needs you (T-42) is the
+ * fourth. Kept in this browser or app
  * only (device-storage.ts), on their own key, so restoring them leaves the
  * send key and the other preferences alone. They don't travel to other
  * devices. Return, Shift+Return and Ctrl/⌘+Return (the send key and input
  * methods), Esc, Tab, the arrows, Home, End, the composer's "/" and "$",
  * Ctrl/⌘+Z and Ctrl/⌘+, keep their keys.
  */
-export const rebindable = ["find", "newAgent", "search"] as const;
+export const rebindable = ["find", "newAgent", "search", "nextNeedsYou"] as const;
 export type Rebindable = (typeof rebindable)[number];
 export type ShortcutKeys = Record<Rebindable, string>;
-export const defaultShortcutKeys: ShortcutKeys = { find: "K", newAgent: "N", search: "F" };
+export const defaultShortcutKeys: ShortcutKeys = { find: "K", newAgent: "N", search: "F", nextNeedsYou: "J" };
 /** With Ctrl/⌘, text editing's (A, C, V, X, Y, Z) and the browser's own
  * (W, T, Q, R, L): never offered. */
 export const reservedLetters = ["A", "C", "V", "X", "Y", "Z", "W", "T", "Q", "R", "L"];

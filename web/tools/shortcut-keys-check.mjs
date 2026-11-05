@@ -1,12 +1,12 @@
-// T-189 P2: three shortcuts take another letter on this device, in Chromium
+// T-189 P2: four shortcuts take another letter on this device (Next needs you since T-42), in Chromium
 // (en-US, not an Apple device: Ctrl), with every API answered here (no Core,
 // no daily configuration). Through the production build's real Settings:
-//  - Keyboard shortcuts, Find an Agent → J: Ctrl+J opens and closes Find,
-//    Ctrl+K no longer does, and the rail's search button says Ctrl J;
-//  - New Agent → J is refused, naming Find an Agent; Ctrl+N still opens New
+//  - Keyboard shortcuts, Find an Agent → U: Ctrl+U opens and closes Find,
+//    Ctrl+K no longer does, and the rail's search button says Ctrl U;
+//  - New Agent → U is refused, naming Find an Agent; Ctrl+N still opens New
 //    Agent;
 //  - Search this conversation → G: its button announces Control+G Meta+G;
-//  - after a reload Ctrl+J still opens Find;
+//  - after a reload Ctrl+U still opens Find;
 //  - Restore defaults: Ctrl+K opens Find again; the send key's preference is
 //    never written;
 //  - nothing is sent to Core.
@@ -102,30 +102,30 @@ try {
   await press("Control+k");
   assert.equal(await findShown(), false, "again to close");
 
-  // ---- Find an Agent → J.
+  // ---- Find an Agent → U (J is Next needs you).
   await openShortcuts();
-  await choose("Find an Agent", "J");
-  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
+  await choose("Find an Agent", "U");
+  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"U","newAgent":"N","search":"F","nextNeedsYou":"J"}');
   // New Agent → J: refused, named; nothing changed.
-  await choose("New Agent", "J");
+  await choose("New Agent", "U");
   const refused = await page.locator(".shortcut-refused").textContent();
-  assert.equal(refused, "Ctrl+J is already Find an Agent. Nothing was changed: choose another letter, or give Find an Agent another one first.");
+  assert.equal(refused, "Ctrl+U is already Find an Agent. Nothing was changed: choose another letter, or give Find an Agent another one first.");
   assert.equal(await page.getByRole("combobox", { name: "Key for New Agent" }).inputValue(), "N");
-  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
+  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"U","newAgent":"N","search":"F","nextNeedsYou":"J"}');
   await choose("Search this conversation", "G");
-  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"G"}');
+  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"U","newAgent":"N","search":"G","nextNeedsYou":"J"}');
   await page.screenshot({ path: join(output, "shortcut-keys.png") });
   await closeDialog();
   // The conversation's search button announces its letter in effect.
   assert.equal(await page.locator("[aria-keyshortcuts]").first().getAttribute("aria-keyshortcuts"), "Control+G Meta+G");
-  await press("Control+j");
-  assert.equal(await findShown(), true, "Ctrl+J opens Find");
-  await press("Control+j");
+  await press("Control+u");
+  assert.equal(await findShown(), true, "Ctrl+U opens Find");
+  await press("Control+u");
   assert.equal(await findShown(), false);
   await press("Control+k");
   assert.equal(await findShown(), false, "Ctrl+K no longer does");
-  assert.equal(await page.getByRole("button", { name: "Search agents" }).getAttribute("title"), "Search agents · Ctrl J");
-  check("Find an Agent → J: Ctrl+J opens and closes Find, Ctrl+K doesn't; New Agent → J is refused, named, nothing changed", { refused });
+  assert.equal(await page.getByRole("button", { name: "Search agents" }).getAttribute("title"), "Search agents · Ctrl U");
+  check("Find an Agent → U: Ctrl+U opens and closes Find, Ctrl+K doesn't; New Agent → U is refused, named, nothing changed", { refused });
 
   // ---- Ctrl+N still opens New Agent.
   await press("Control+n");
@@ -137,10 +137,10 @@ try {
   // ---- After a reload.
   await page.reload();
   await page.locator('.agent-row[data-agent-id="a"]').waitFor({ timeout: 10_000 });
-  await press("Control+j");
+  await press("Control+u");
   assert.equal(await findShown(), true, "kept after a reload");
-  await press("Control+j");
-  check("after a reload Ctrl+J still opens Find");
+  await press("Control+u");
+  check("after a reload Ctrl+U still opens Find");
 
   // ---- Restore defaults.
   await openShortcuts();
