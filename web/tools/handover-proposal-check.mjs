@@ -141,9 +141,11 @@ try {
   let { context, page } = await open({ width: 1280, height: 900 });
   await page.goto(`https://${HOST}/`);
   await page.locator('.agent-row[data-agent-id="a"]').waitFor({ timeout: 10_000 });
+  // The rail comes in the Workspace's order and takes the attention order
+  // from Home's data, which the title counts too: read it once that is in.
+  await page.waitForFunction(() => document.title.startsWith("(1) "), null, { timeout: 10_000 });
   const rail = await page.locator(".agent-list .agent-row").evaluateAll((rows) => rows.map((row) => row.dataset.agentId));
   assert.deepEqual(rail, ["a", "b"], "the lead whose proposal waits comes first in the attention order");
-  await page.waitForFunction(() => document.title.startsWith("(1) "), null, { timeout: 10_000 });
   check("the lead whose proposal waits comes first in the rail, and the tab title counts the proposal", { title: await page.title() });
   await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.press("Control+j");
