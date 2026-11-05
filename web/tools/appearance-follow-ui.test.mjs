@@ -32,6 +32,7 @@ import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {SharedAppearanceSection} from ${src("SharedAppearance.tsx")};
 import {useAppearanceFollow} from ${src("appearance-follow.ts")};
+import * as follow from ${src("appearance-follow.ts")};
 import {appearanceInEffect, importAppearance, initializeAppearance, saveAppearance} from ${src("appearance.ts")};
 const root = createRoot(document.getElementById('root'));
 // As App.tsx: the Workspace shown, the live events' state, and a count of announced saves.
@@ -40,6 +41,9 @@ function Harness({workspaceId, connection, nudge}) {
   return <SharedAppearanceSection active/>;
 }
 window.start = () => initializeAppearance();
+// What this window is told it applied by itself, as App.tsx's toast hears it (T-19 ST:SA7).
+window.applied = [];
+follow.onFollowApplied?.((workspaceId, revision) => window.applied.push({ workspaceId, revision }));
 window.render = (props) => flushSync(() => root.render(<Harness {...props}/>));
 // The Appearance controls save a choice so; a file import imports it so.
 window.choose = (palette) => saveAppearance({ ...appearanceInEffect(), palette });
@@ -346,5 +350,26 @@ test("following paused, in Chinese (T-189): a pause said before a language chang
   assert.equal(b.palette(), "pine", "and applies nothing");
   assert.equal(b.follow().workspaces[W1].revision, 1);
   assert.equal(server.puts.length, 0);
+  b.close();
+});
+test("only a revision applied by itself, in the background, is told, once each; following turned on here is not (T-19 ST:SA7)", async () => {
+  const server = core();
+  const a = client(server, "A", { palette: "pine" });
+  const b = client(server, "B");
+  await read(a);
+  await read(b);
+  a.press("Save this device’s Appearance here");
+  await until(() => server.preset?.revision === 1, "A's save");
+  await follow(b);
+  await tick(100);
+  assert.equal(b.window.applied.length, 0, "following turned on here is not told");
+  server.saved({ palette: "yuzu" });
+  await until(() => b.palette() === "yuzu", "B applies revision 2");
+  await tick(50);
+  // Read out of the page's own realm, whose arrays and objects deepEqual would tell apart from these.
+  const told = (page) => JSON.parse(JSON.stringify(page.window.applied));
+  assert.deepEqual(told(b), [{ workspaceId: W1, revision: 2 }], "a revision applied in the background is told once");
+  assert.deepEqual(told(a), [], "a device that doesn't follow is told nothing");
+  a.close();
   b.close();
 });

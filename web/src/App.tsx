@@ -99,7 +99,7 @@ import type {
 } from "./types";
 import type { SettingsDestination, SettingsEditor } from "./settings-catalog";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
-import { useAppearanceFollow } from "./appearance-follow";
+import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
@@ -208,7 +208,7 @@ import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
-import { useArrivalsIn, useSurfaceIn } from "./surface";
+import { useArrivalsIn, useDelayedPresence, useSurfaceIn } from "./surface";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
@@ -352,6 +352,9 @@ export function App() {
   // The shared Appearance preset, for a device that follows it (T-194).
   const [presetRevision, presetRefresh] = useRefreshTrigger();
   const [loading, setLoading] = useState(!previewMode);
+  // Retry in the connection banner, from its press until the read it starts
+  // is over (T-19 SH:M05).
+  const [retrying, setRetrying] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   // A project chosen by a group's "+": its id, "" for none, null to follow
   // the project scope.
@@ -961,6 +964,22 @@ export function App() {
   const shellNow = useRef(shell);
   shellNow.current = shell;
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
+  // The connection banners show once their cause has held 600 ms, so a flap
+  // never flashes one; they reveal over small, leave over exit-small and keep
+  // what they said while they leave (T-19 SH:M04, SH:M06).
+  const coreWanted = !!(workspaceError || core.browser);
+  const coreBanner = useDelayedPresence(coreWanted, 600);
+  const coreSaid = useRef({ error: workspaceError, label: core.label, detail: core.detail, browser: core.browser, stream: core.stream, loaded: !!workspace });
+  if (coreWanted) coreSaid.current = { error: workspaceError, label: core.label, detail: core.detail, browser: core.browser, stream: core.stream, loaded: !!workspace };
+  const liveBanner = useDelayedPresence(!previewMode && !workspaceError && !core.browser && eventConnection === "reconnecting", 600);
+  // A newer revision of the shared Appearance preset applied here in the
+  // background says so, as the look changed with no action here (T-19 ST:SA7).
+  useEffect(() => {
+    if (previewMode || !workspaceId) return;
+    return onFollowApplied((id) => {
+      if (id === workspaceId) setNotice(shellNow.current.appearanceFollowed);
+    });
+  }, [workspaceId, setNotice]);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
@@ -1690,7 +1709,11 @@ export function App() {
       workspaceFailed.current = true;
       setWorkspaceFailure(error);
     },
-    () => setLoading(false),
+    (more) => {
+      setLoading(false);
+      // Not while the read a Retry asked for still waits its turn.
+      if (!more) setRetrying(false);
+    },
   );
   // Remembered for this Workspace only, and not at all until it is known.
   // Its own effect, so a Workspace that arrives or changes records what is
@@ -3305,33 +3328,49 @@ export function App() {
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
-        {(workspaceError || core.browser) && (
-          <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
-            <WifiOff size={15} />
-            <div>
-              <strong>{workspaceError ? core.label : core.browser}</strong>
-              <span>
-                {workspaceError
-                  ? core.detail
-                  : workspace
-                    ? shell.lastReadWorked
-                    : shell.noneLoaded}
-              </span>
-              {workspaceError && core.browser && <span>{shell.sentence(core.browser)}</span>}
-              <span>{core.stream}</span>
+        {coreBanner.shown && (
+          <div className={`banner-reveal${coreBanner.leaving ? " is-leaving" : ""}`}>
+            <div className="banner-reveal-clip">
+              <div className="connection-banner core-connection-banner" role={coreSaid.current.error ? "alert" : "status"} lang={langTag(language)}>
+                <WifiOff size={15} />
+                <div>
+                  <strong>{coreSaid.current.error ? coreSaid.current.label : coreSaid.current.browser}</strong>
+                  <span>
+                    {coreSaid.current.error
+                      ? coreSaid.current.detail
+                      : coreSaid.current.loaded
+                        ? shell.lastReadWorked
+                        : shell.noneLoaded}
+                  </span>
+                  {coreSaid.current.error && coreSaid.current.browser && <span>{shell.sentence(coreSaid.current.browser)}</span>}
+                  <span>{coreSaid.current.stream}</span>
+                </div>
+                <button
+                  className={`quiet-button${retrying ? " retrying" : ""}`}
+                  aria-busy={retrying || undefined}
+                  disabled={coreBanner.leaving}
+                  onClick={() => {
+                    setRetrying(true);
+                    refresh();
+                  }}
+                >
+                  <RefreshCw size={13} className={retrying ? "spin" : undefined} />
+                  {retrying ? shell.retrying : shell.retry}
+                </button>
+              </div>
             </div>
-            <button className="quiet-button" onClick={refresh}>
-              <RefreshCw size={13} />
-              {shell.retry}
-            </button>
           </div>
         )}
-        {!previewMode && !workspaceError && !core.browser && eventConnection === "reconnecting" && (
-          <div className="connection-banner core-connection-banner event-connection-banner" role="status" lang={langTag(language)}>
-            <RefreshCw size={15} />
-            <div>
-              <strong>{shell.liveReconnecting}</strong>
-              <span>{shell.liveReconnectingLine}</span>
+        {liveBanner.shown && (
+          <div className={`banner-reveal${liveBanner.leaving ? " is-leaving" : ""}`}>
+            <div className="banner-reveal-clip">
+              <div className="connection-banner core-connection-banner event-connection-banner" role="status" lang={langTag(language)}>
+                <RefreshCw size={15} />
+                <div>
+                  <strong>{shell.liveReconnecting}</strong>
+                  <span>{shell.liveReconnectingLine}</span>
+                </div>
+              </div>
             </div>
           </div>
         )}
