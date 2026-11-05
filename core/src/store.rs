@@ -1198,6 +1198,7 @@ impl Store {
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::agent_roles::migrate(&db)?;
+        crate::handover::migrate(&db)?;
         crate::services::migrate(&db)?;
         crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;

@@ -16,6 +16,7 @@ mod result_ack;
 mod result_outcome;
 pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
+mod context_summary;
 pub(crate) mod executor_dispatch;
 mod current;
 mod research;
@@ -1158,13 +1159,24 @@ fn task_dispatch(
     task.assignee_agent_id = Some(recipient_id.clone());
     task.assignee = Some(agent_actor(store, db, &recipient_id)?);
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
-    let template = match input.get("executor") {
-        Some(_) => Some(executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?),
+    // A template dispatch's executor starts cold: it gets its template, its
+    // Project's handover and Core's summary of the task so far (T-34).
+    let cold = match input.get("executor") {
+        Some(_) => {
+            let template = executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?;
+            let project: Option<String> = db.query_row("SELECT project_id FROM project_tasks WHERE task_id=?1", [&task.id], |r| r.get(0)).optional()?;
+            let handover = match &project {
+                Some(project) => crate::handover::current_in(db, project)?
+                    .map(|(version, markdown)| json!({"projectId": project, "version": version, "markdown": markdown})),
+                None => None,
+            };
+            Some(dispatch_materials::ColdStart { template, handover, summary: context_summary::build(db, &task)? })
+        }
         None => None,
     };
     task.status = "doing".into();
     save_task(db, &mut task, actor)?;
-    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, template)?;
+    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, cold)?;
     let body = dispatch_materials::body(&materials);
     let message = create_message(
         store,

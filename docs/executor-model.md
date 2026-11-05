@@ -126,6 +126,32 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
 - **No limit yet.** In phase 1 every executor starts at once.
 - **This host only.** A dispatch's `machineId` may be empty or `local`.
 
+## What an executor starts with
+
+An executor starts cold, with no memory of the Project. Besides its task's
+materials and its template's instructions, a dispatch from a template gives it
+two more things. Both are in its dispatch's materials (`task_get` with the
+dispatchId). The mail says where to read them; it doesn't hold them.
+
+- **The Project's handover document** (`handover`): what the Project already
+  knows, in Markdown, up to 32 KiB. You keep it in the Project's settings,
+  under **Handover**. Each save is a new version, kept with who wrote it and
+  why, and a save against a document that changed meanwhile is refused. The
+  settings page lists the versions and shows any past one. A Project's
+  document goes with it when the Project is deleted. An archived Project's
+  document can't change.
+- **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
+  written by Core from what it holds, in this order:
+  - the latest result;
+  - the newest comments' first lines;
+  - each linked pull request, as last observed, with the P0–P2 findings
+    of its latest completed review.
+
+  Nothing in it is read again from GitHub or a model.
+
+A dispatch to an existing Agent gets neither; that Agent already has its own
+context.
+
 ## Phases
 
 | Phase | What it adds |

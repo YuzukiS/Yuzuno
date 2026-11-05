@@ -245,9 +245,16 @@ pub(super) fn read(db: &Connection, task: &str, dispatch: &str) -> Result<Value>
     serde_json::from_str(&raw.context("dispatch_materials_not_found: no materials for this task and dispatch; legacy dispatches may have none")?).map_err(Into::into)
 }
 
-/// `template`: the executor template a template dispatch made its Agent
-/// from (T-34), given whole with its instructions.
-pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_check: &Value, template: Option<Value>) -> Result<Value> {
+/// What a template dispatch's executor gets beyond the task's own materials
+/// (T-34): its template with its instructions, its Project's handover
+/// document, and Core's summary of the task's past.
+pub(super) struct ColdStart {
+    pub(super) template: Value,
+    pub(super) handover: Option<Value>,
+    pub(super) summary: String,
+}
+
+pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_check: &Value, cold: Option<ColdStart>) -> Result<Value> {
     let dispatch = task
         .dispatch
         .as_ref()
@@ -344,11 +351,22 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
         "supplement":supplement,"returnTo":dispatch.notification_recipient,"requestedBy":dispatch.requested_by,"executor":dispatch.executor,
         "source":dispatch.source,"latestTask":{"taskId":task_number(task.seq)},
         "returnRequirementsDefault":"Report outcome and validation/evidence on this same task using task_submit_result with the original dispatchId. Default review is a submission, not independent approval, merge or release. No extra peer_send is needed for Agent dispatch."});
-    if let Some(template) = template {
-        snapshot["template"] = template;
+    if let Some(cold) = cold {
+        snapshot["template"] = cold.template;
+        if let Some(handover) = cold.handover {
+            snapshot["handover"] = handover;
+        }
+        if !cold.summary.is_empty() {
+            snapshot["contextSummary"] = json!(cold.summary);
+        }
     }
-    // As for the registration, Core's own shaCheck is not counted (T-31).
-    let own = snapshot["effective"].get("shaCheck").map_or(0, |check| check.to_string().len());
+    // As for the registration, Core's own shaCheck is not counted (T-31), nor
+    // what a template dispatch adds, each held to its own limit (T-34): a
+    // dispatcher can't shorten them.
+    let own = snapshot["effective"].get("shaCheck").into_iter()
+        .chain(["template", "handover", "contextSummary"].iter().filter_map(|key| snapshot.get(*key)))
+        .map(|part| part.to_string().len())
+        .sum::<usize>();
     ensure!(
         snapshot.to_string().len() - own <= SNAPSHOT_LIMIT,
         "materials_too_large: snapshot exceeds 128 KiB; use concise registered references; nothing was dispatched"
@@ -454,6 +472,13 @@ pub(super) fn body(snapshot: &Value) -> String {
             200,
         );
         field("Its instructions", &template["instructions"], "template.instructions", 2_000);
+    }
+    // Read whole from the materials, never in the mail (T-34).
+    if snapshot["handover"].is_object() {
+        field("Project handover", &snapshot["handover"]["markdown"], "handover.markdown", 0);
+    }
+    if snapshot["contextSummary"].is_string() {
+        field("What happened so far", &snapshot["contextSummary"], "contextSummary", 0);
     }
     let selected = snapshot["effective"]["repositoryId"]
         .as_i64()
