@@ -70,6 +70,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .merge(crate::workspace_backup::retention::changes())
         // Only on Core's own port: a phone cannot change its own access.
         .merge(crate::remote_access::changes())
+        // Only on Core's own port: an OpenCode Agent's login passes a key (T-32 slice 4b).
+        .merge(crate::opencode_login::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);

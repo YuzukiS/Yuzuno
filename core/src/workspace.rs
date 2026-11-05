@@ -1419,6 +1419,13 @@ impl Workspace {
         let _held = gate.lock().await;
         self.close_agent_locked(id).await?;
         let closed = self.listed(id).await?;
+        if closed.harness == "opencode" {
+            // Its OpenCode database stays with the Agent's files, and no login stays in it (T-32 slice 4b, D6): its
+            // server stopped above, its credentials are scrubbed before anything of the Agent is deleted.
+            let db = self.data_dir.join("opencode").join(id).join("opencode.db");
+            tokio::task::spawn_blocking(move || crate::opencode_login::scrub(&db)).await?
+                .map_err(|error| anyhow::anyhow!("OpenCode Agent 的登录凭据没有清除（{error:#}）；Agent 没有删除"))?;
+        }
         if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             // Older image-transfer builds had no dedicated cleanup marker.

@@ -308,11 +308,16 @@ async fn sub_agents(server: &Server, session: &str) -> Result<BTreeMap<String, V
 /// no database. A failed move fails the start, so OpenCode never starts
 /// with part of one left.
 fn set_aside(folder: &std::path::Path) -> Result<Option<PathBuf>> {
-    let files: Vec<_> = ["opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "opencode.db"].into_iter()
-        .filter(|name| folder.join(name).symlink_metadata().is_ok()).collect();
-    if files.is_empty() {
+    let present = || -> Vec<&str> { ["opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "opencode.db"].into_iter()
+        .filter(|name| folder.join(name).symlink_metadata().is_ok()).collect() };
+    if present().is_empty() {
         return Ok(None);
     }
+    // No login leaves with it (T-32 slice 4b, D6): its credentials are scrubbed first, with no server running yet.
+    // SQLite may remove its WAL and index as it closes, so what is moved is what is left after.
+    crate::opencode_login::scrub(&folder.join("opencode.db"))
+        .map_err(|error| anyhow!("OpenCode 数据库的登录凭据没有清除（{error:#}）；数据库没有挪开，OpenCode 没有启动"))?;
+    let files = present();
     let mut n = 1;
     let aside = loop {
         let path = folder.join(format!("set-aside-{n}"));

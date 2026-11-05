@@ -58,6 +58,10 @@ pub const VERIFIED: &str = "2.2.5";
 /// Core reads (2.0.0). An older one, a pre-release of it included, and a 2.x
 /// whose version cannot be read, are refused, never read in part (`release`).
 pub const MIN: &str = "2.0.7";
+
+/// The oldest 2.x an Agent can be logged in through (T-32 slice 4b, D4): its
+/// integration and credential routes are all there from 2.0.20.
+pub const LOGIN_MIN: &str = "2.0.20";
 /// 2.x's Basic user, which it does not let be changed (server/src/process.ts).
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
@@ -149,6 +153,25 @@ impl fmt::Display for HttpStatus {
 }
 
 impl std::error::Error for HttpStatus {}
+
+/// A login request OpenCode refused (T-32 slice 4b): its status and kind,
+/// never its answer.
+#[derive(Debug, PartialEq)]
+pub struct LoginRefused {
+    pub code: u16,
+    pub kind: Option<String>,
+}
+
+impl std::fmt::Display for LoginRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            Some(kind) => write!(f, "OpenCode refused the login (HTTP {}, {kind})", self.code),
+            None => write!(f, "OpenCode refused the login (HTTP {})", self.code),
+        }
+    }
+}
+
+impl std::error::Error for LoginRefused {}
 
 /// What a prompt submission is known to have done.
 #[derive(Debug, PartialEq)]
@@ -1063,6 +1086,98 @@ impl Server {
         Ok(())
     }
 
+    /// The integrations this OpenCode can log in to, with their methods and
+    /// connections (`GET /api/integration`, T-32 slice 4b). Its answer
+    /// carries no secret (core/src/integration.ts); Core never reads
+    /// `/api/credential`, which answers them.
+    pub async fn integrations(&self) -> Result<Vec<Value>> {
+        let listed = self.data(Method::GET, "/api/integration", &[], None).await?;
+        listed.as_array().cloned().context("OpenCode's integrations is not a list")
+    }
+
+    /// Logs `integration` in with `key` (`POST
+    /// /api/integration/:id/connect/key`, 204), which 2.x keeps in its own
+    /// database as the active credential. The key goes in this request's
+    /// body only, and a refusal says its status and kind, never what
+    /// OpenCode answered (`login`).
+    pub async fn connect_key(&self, integration: &str, key: &str, label: Option<&str>, answer: Option<&Value>) -> Result<()> {
+        let mut body = json!({"key": key});
+        if let Some(label) = label {
+            body["label"] = label.into();
+        }
+        if let Some(answer) = answer {
+            body["answer"] = answer.clone();
+        }
+        self.login(Method::POST, &format!("/api/integration/{}/connect/key", segment(integration)?), Some(&body)).await?;
+        Ok(())
+    }
+
+    /// Starts an OAuth sign-in by `method` (`POST …/connect/oauth`): the
+    /// attempt, its link and instructions, mode and expiry.
+    pub async fn oauth_start(&self, integration: &str, method: &str, answer: Option<&Value>) -> Result<Value> {
+        let mut body = json!({"methodID": method});
+        if let Some(answer) = answer {
+            body["answer"] = answer.clone();
+        }
+        let path = format!("/api/integration/{}/connect/oauth", segment(integration)?);
+        let answered = self.login(Method::POST, &path, Some(&body)).await?.context("OpenCode started no sign-in")?;
+        Ok(answered.get("data").cloned().unwrap_or(answered))
+    }
+
+    /// Where an OAuth attempt is: pending, complete, failed or expired.
+    pub async fn oauth_status(&self, integration: &str, attempt: &str) -> Result<Value> {
+        let path = format!("/api/integration/{}/connect/oauth/{}", segment(integration)?, segment(attempt)?);
+        let answered = self.login(Method::GET, &path, None).await?.context("OpenCode said nothing of the sign-in")?;
+        Ok(answered.get("data").cloned().unwrap_or(answered))
+    }
+
+    /// Completes a code-mode attempt with the code the user was given
+    /// (`POST …/:attemptID/complete`). Never sent for an auto one: 2.x
+    /// completes those itself.
+    pub async fn oauth_complete(&self, integration: &str, attempt: &str, code: &str) -> Result<()> {
+        let path = format!("/api/integration/{}/connect/oauth/{}/complete", segment(integration)?, segment(attempt)?);
+        self.login(Method::POST, &path, Some(&json!({"code": code}))).await?;
+        Ok(())
+    }
+
+    /// Cancels an attempt (`DELETE …/:attemptID`, 204 whatever became of it).
+    pub async fn oauth_cancel(&self, integration: &str, attempt: &str) -> Result<()> {
+        let path = format!("/api/integration/{}/connect/oauth/{}", segment(integration)?, segment(attempt)?);
+        self.login(Method::DELETE, &path, None).await?;
+        Ok(())
+    }
+
+    /// Logs a connection out (`DELETE /api/credential/:id`, 204): 2.x
+    /// removes the credential from its database and makes its newest other
+    /// one, if any, active.
+    pub async fn delete_credential(&self, credential: &str) -> Result<()> {
+        self.login(Method::DELETE, &format!("/api/credential/{}", segment(credential)?), None).await?;
+        Ok(())
+    }
+
+    /// A login request: its JSON answer, or None for 204. A refusal says its
+    /// status and 2.x's `kind` (or `_tag`) only: OpenCode's answer to a
+    /// request that carried a key is never repeated, so nothing it echoed
+    /// can reach Core's answer, record or error.
+    async fn login(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Option<Value>> {
+        let mut request = self.request(method, path).timeout(REQUEST_LIMIT);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.map_err(|error| anyhow!("OpenCode did not answer the login request ({})", error.without_url()))?;
+        let code = response.status();
+        if code.is_success() {
+            if code.as_u16() == 204 {
+                return Ok(None);
+            }
+            return Ok(Some(response.json().await.context("OpenCode's answer to the login request is not JSON")?));
+        }
+        let answered: Value = response.json().await.unwrap_or_default();
+        let kind = answered["kind"].as_str().or(answered["_tag"].as_str()).filter(|kind| kind.len() <= 64
+            && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.'));
+        bail!(LoginRefused { code: code.as_u16(), kind: kind.map(str::to_owned) })
+    }
+
     /// Adds a remote MCP server to this instance, held in OpenCode's memory
     /// only (no config file), with OAuth discovery off.
     pub async fn add_mcp(&self, name: &str, url: &str, bearer: &str) -> Result<Mcp> {
@@ -1314,6 +1429,18 @@ pub fn newer_than_verified(version: &str) -> bool {
 }
 
 /// Whether `version` is a release before MIN (T-32): refused.
+/// Whether an Agent can be logged in through an OpenCode of `version`
+/// (T-32 slice 4b, D4): one of LOGIN_MIN or newer, ranked as `release` ranks
+/// them.
+pub fn login_supported(version: &str) -> bool {
+    matches!((release(version), release(LOGIN_MIN)), (Some(v), Some(m)) if v >= m)
+}
+
+/// What the login says of an OpenCode older than LOGIN_MIN, naming both.
+pub fn login_update_note(version: &str) -> String {
+    format!("update OpenCode to log in here: this Agent runs {version}; logging in needs {LOGIN_MIN} or newer")
+}
+
 pub fn older_than_min(version: &str) -> bool {
     matches!((release(version), release(MIN)), (Some(v), Some(m)) if v < m)
 }
