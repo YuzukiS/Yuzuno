@@ -582,6 +582,7 @@ impl Workspace {
             project_id,
             kind: None,
             released_at: None,
+            released_by: None,
             cwd: cwd.to_string_lossy().into_owned(),
             model,
             settings: Default::default(),

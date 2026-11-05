@@ -304,6 +304,9 @@ pub struct Agent {
     /// projected for API responses like `kind`; absent for every other Agent.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
+    /// Who released it: `agent:<id>` or `user`, as `agent_roles.released_by`.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub released_by: Option<String>,
     pub cwd: String,
     pub model: String,
     #[serde(default)]

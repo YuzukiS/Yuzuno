@@ -170,8 +170,8 @@ export function AgentManagement({
         action === "delete"
           ? await api<undefined>(path, { method: "DELETE" })
           : action === "release"
-            ? await post<Pick<Agent, "closedAt" | "releasedAt">>(`${path}/release`)
-              .then(({ closedAt, releasedAt }) => ({ ...agent, closedAt, releasedAt }))
+            ? await post<Pick<Agent, "closedAt" | "releasedAt" | "releasedBy">>(`${path}/release`)
+              .then(({ closedAt, releasedAt, releasedBy }) => ({ ...agent, closedAt, releasedAt, releasedBy }))
             : await post<Agent>(`${path}/${action}`);
       onChanged(action, updated);
       setMode(null);

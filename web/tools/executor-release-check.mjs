@@ -58,8 +58,8 @@ const server = createServer(async (req, res) => {
       else if (url.pathname.endsWith("/release") && req.method === "POST") {
         // As Core answers executor_release: the close's time is the release's.
         const at = new Date().toISOString();
-        Object.assign(agent, { closedAt: at, releasedAt: at, status: "offline" });
-        result = { agentId: agent.id, closedAt: at, releasedAt: at };
+        Object.assign(agent, { closedAt: at, releasedAt: at, releasedBy: "user", status: "offline" });
+        result = { agentId: agent.id, closedAt: at, releasedAt: at, releasedBy: "user" };
       } else if (agent)
         result = {
           agent, pending: [], artifacts: [],

@@ -73,6 +73,8 @@ export interface Agent {
   kind?: "lead" | "executor" | null;
   /** When an executor was released (T-34): it stays closed. Absent otherwise. */
   releasedAt?: string | null;
+  /** Who released it: `agent:<id>` or `user`. */
+  releasedBy?: string | null;
 }
 export interface Project {
   id: string;

@@ -312,7 +312,7 @@ impl Workspace {
             let mut agent = store.agent(&id)?;
             agent.project_id = store.agent_project(&id)?;
             agent.kind = store.agent_kind(&id)?;
-            agent.released_at = crate::executor_release::released_at(&*store.db.read()?, &id)?;
+            crate::executor_release::show(&mut agent, crate::executor_release::release_of(&*store.db.read()?, &id)?);
             Ok(agent)
         }).await
     }
@@ -526,6 +526,7 @@ impl Workspace {
             project_id,
             kind: None,
             released_at: None,
+            released_by: None,
             cwd,
             model,
             settings,

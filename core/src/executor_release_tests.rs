@@ -36,10 +36,11 @@ fn slot(store: &Store, id: &str) -> String {
         .query_row("SELECT state FROM executor_slots WHERE agent_id=?1", [id], |r| r.get(0)).unwrap()
 }
 
-/// Its role row's `archived_at` and `state`.
-fn role(store: &Store, id: &str) -> (Option<String>, Option<String>) {
+/// Its role row's `archived_at`, `state` and `released_by`.
+fn role(store: &Store, id: &str) -> (Option<String>, Option<String>, Option<String>) {
     store.db.read().unwrap()
-        .query_row("SELECT archived_at,state FROM agent_roles WHERE agent_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        .query_row("SELECT archived_at,state,released_by FROM agent_roles WHERE agent_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
 }
 
 /// The data of each `agent/closed` row of its history.
@@ -93,15 +94,19 @@ async fn the_dispatcher_or_the_user_releases_an_executor_and_no_one_else() {
     let agent = store.agent("e1").unwrap();
     assert!(agent.closed_at.is_some(), "a release closes the executor");
     assert_eq!(answer["releasedAt"], json!(agent.closed_at), "the answer names when, its close's time");
-    assert_eq!(role(store, "e1"), (agent.closed_at.clone(), Some("released".into())), "its role row is archived");
+    assert_eq!(answer["releasedBy"], "agent:lead", "and who released it");
+    assert_eq!(role(store, "e1"), (agent.closed_at.clone(), Some("released".into()), Some("agent:lead".into())),
+        "its role row is archived, with who released it");
     assert_eq!(slot(store, "e1"), "released", "its slot is free");
     assert_eq!(closes(store, "e1"), [json!({"reason":"released","by":"agent:lead"})], "its close's row says it was a release, and who made it");
     assert_eq!(release(&ws, Some("lead"), "e1").await.unwrap(), answer, "a repeat answers with the same releasedAt");
+    assert_eq!(release(&ws, None, "e1").await.unwrap(), answer, "a repeat by the user keeps the first release and who made it");
     assert_eq!(closes(store, "e1").len(), 1, "and closes nothing again");
 
     let by_user = release(&ws, None, "e2").await.unwrap();
     assert!(by_user["releasedAt"].is_string(), "the user releases any executor");
     assert_eq!(closes(store, "e2"), [json!({"reason":"released","by":"user"})]);
+    assert_eq!((by_user["releasedBy"].clone(), role(store, "e2").2), (json!("user"), Some("user".into())), "the user, named on the executor");
     assert!(!closed(store, "lead") && !closed(store, "other"), "callers stay open");
 }
 
@@ -126,8 +131,10 @@ async fn a_closed_executor_is_released_without_a_second_close_and_a_released_one
     let answer = release(&ws, Some("lead"), "e3").await.unwrap();
     assert!(answer["releasedAt"].is_string(), "a closed executor is released");
     assert_eq!(closes(store, "e3"), [json!({})], "without a second close");
-    assert_eq!(role(store, "e3").1.as_deref(), Some("released"));
-    assert_eq!(release(&ws, None, "e3").await.unwrap(), answer, "a repeat answers with the same releasedAt");
+    let (_, state, by) = role(store, "e3");
+    assert_eq!((state.as_deref(), by.as_deref()), (Some("released"), Some("agent:lead")), "released by its dispatcher, named on the executor");
+    assert_eq!(answer["releasedBy"], "agent:lead");
+    assert_eq!(release(&ws, None, "e3").await.unwrap(), answer, "a repeat by the user keeps the first release and who made it");
 
     for reopened in [ws.reopen_agent("e3").await.map(drop), ws.reopen_agent_summary("e3").await.map(drop)] {
         assert_eq!(reopened.err().map(|e| e.to_string()).as_deref(), Some(REOPEN_REFUSED), "a released executor is not reopened");
@@ -188,9 +195,34 @@ async fn the_users_release_route_releases_and_the_agent_lists_when() {
     let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
     let listed = ws.store.agents().unwrap().into_iter().find(|a| a.id == "e6").unwrap();
     assert_eq!(json!(listed.released_at), body["releasedAt"], "the Agent list names the release");
-    assert_eq!(serde_json::to_value(&listed).unwrap()["releasedAt"], body["releasedAt"]);
-    let lead = ws.store.agents().unwrap().into_iter().find(|a| a.id == "lead").unwrap();
-    assert!(serde_json::to_value(&lead).unwrap().get("releasedAt").is_none(), "absent for every other Agent");
+    assert_eq!(listed.released_by.as_deref(), Some("user"), "and who made it");
+    let listed = serde_json::to_value(&listed).unwrap();
+    assert_eq!((listed["releasedAt"].clone(), listed["releasedBy"].clone()), (body["releasedAt"].clone(), json!("user")));
+    let lead = serde_json::to_value(ws.store.agents().unwrap().into_iter().find(|a| a.id == "lead").unwrap()).unwrap();
+    assert!(lead.get("releasedAt").is_none() && lead.get("releasedBy").is_none(), "absent for every other Agent");
     let response = router().with_state(ws.clone()).oneshot(post("/api/agents/lead/release".into())).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST, "a standing Agent's release is refused");
+}
+
+/// T-34 S4: the column for who released an executor is added to an
+/// `agent_roles` an older Core made, once; opening again changes nothing.
+#[test]
+fn an_older_agent_roles_table_gets_the_released_by_column_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let columns = |store: &Store| -> Vec<String> {
+        let db = store.db.read().unwrap();
+        let mut query = db.prepare("SELECT name FROM pragma_table_info('agent_roles') ORDER BY cid").unwrap();
+        query.query_map([], |r| r.get(0)).unwrap().map(|c| c.unwrap()).collect()
+    };
+    assert_eq!(columns(&store).last().map(String::as_str), Some("released_by"), "a new Workspace has the column");
+    store.db.write().unwrap().execute_batch("ALTER TABLE agent_roles DROP COLUMN released_by;").unwrap();
+    assert!(!columns(&store).contains(&"released_by".to_owned()), "as an older Core made it");
+    drop(store);
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let after = columns(&store);
+    assert_eq!(after.iter().filter(|c| *c == "released_by").count(), 1, "added on open");
+    drop(store);
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    assert_eq!(columns(&store), after, "and once: opening again changes nothing");
 }

@@ -94,7 +94,7 @@ async function openActions(page) {
 
 test("Release is offered for an executor, asks first, and posts once", async () => {
   const page = mount((url) => url === "/api/agents/e1/release"
-    ? [200, { agentId: "e1", closedAt: RELEASED, releasedAt: RELEASED }] : [404, { error: "unexpected" }]);
+    ? [200, { agentId: "e1", closedAt: RELEASED, releasedAt: RELEASED, releasedBy: "user" }] : [404, { error: "unexpected" }]);
   page.window.renderAgent(agent({ kind: "executor" }));
   await until(() => named(page, "Close agent"), "the close button");
   await openActions(page);
@@ -118,6 +118,7 @@ test("Release is offered for an executor, asks first, and posts once", async () 
   const { action, updated } = page.window.changes[0];
   assert.equal(action, "release");
   assert.equal(updated.releasedAt, RELEASED, "the Agent now says when it was released");
+  assert.equal(updated.releasedBy, "user", "and by whom");
   assert.equal(updated.closedAt, RELEASED);
   assert.equal(updated.name, "T-7 · Reviewer", "and is otherwise as it was");
   assert.deepEqual(page.errors, []);

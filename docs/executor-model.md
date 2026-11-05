@@ -180,7 +180,8 @@ Once an executor's work is accepted, it is released: Core closes it for good.
   next executor waiting. Its history's close says it was a release, and who
   made it. The close, the release and the slot are one change: all of it
   happens, or none of it. An executor that was already closed is only marked
-  released; its history keeps its earlier close.
+  released. Who released is on the executor (`releasedBy`); an executor
+  closed before its release keeps its earlier close in its history.
 - **It stays closed.** A released executor is not reopened: Reopen is
   refused with `executor_released` and isn't offered. For new work, dispatch
   the task again. You can still delete it.

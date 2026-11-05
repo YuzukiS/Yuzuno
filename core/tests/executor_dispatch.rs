@@ -374,6 +374,7 @@ async fn a_lead_releases_its_executor_over_mcp_and_the_freed_slot_starts_the_nex
 
     let released = lead.call_tool(release("l")).await.unwrap().structured_content.unwrap();
     assert!(released["releasedAt"].is_string(), "{released}");
+    assert_eq!(released["releasedBy"], "agent:lead", "the release names the lead that made it");
     until("the second gets its mail", || !prompts(Path::new(&folders[1])).is_empty()).await;
     assert_eq!(slot(&tasks[1].0)["state"], "running", "the freed slot starts the next one waiting");
     assert_eq!(slot(&tasks[0].0), Value::Null, "the released executor holds no slot");
@@ -391,7 +392,8 @@ async fn a_lead_releases_its_executor_over_mcp_and_the_freed_slot_starts_the_nex
     let listed = client.get(format!("{base}/workspace")).header("X-Yuzuno-Client", "desktop").send().await.unwrap()
         .json::<Value>().await.unwrap();
     let listed = listed["agents"].as_array().unwrap().iter().find(|a| a["id"] == json!(executors[0])).unwrap().clone();
-    assert_eq!(listed["releasedAt"], released["releasedAt"], "the Agent list names the release");
+    assert_eq!((listed["releasedAt"].clone(), listed["releasedBy"].clone()), (released["releasedAt"].clone(), json!("agent:lead")),
+        "the Agent list names the release, and who made it");
 
     let _ = lead.cancel().await;
     let _ = member.cancel().await;
