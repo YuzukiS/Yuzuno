@@ -87,7 +87,7 @@ pub(super) fn suggest(runs: Vec<Value>) -> Value {
 }
 
 /// `value` rounded up to a multiple of `step`, ignoring float noise below a
-/// thousandth (1.2 cores × 1500 is 1800.0000000000002).
+/// thousandth (2.2 cores × 1.5 × 1000 is 3300.0000000000005).
 fn up_to(value: f64, step: f64) -> f64 {
     ((value * 1000.0).round() / 1000.0 / step).ceil() * step
 }

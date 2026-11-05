@@ -130,7 +130,7 @@ fn the_rounding_has_its_floor_and_ignores_float_noise() {
     let run = |peak: f64, cores: Value| json!({"jobId":"j","memoryPeakMiB":peak,"averageCpuCores":cores});
     let pair = |v: Value| (v["memoryMiB"].clone(), v["cpuMillis"].clone());
     assert_eq!(pair(suggest(vec![run(100.0, json!(0.01))])), (json!(1024), json!(100)), "at least 1 GiB and 100 mCPU");
-    assert_eq!(pair(suggest(vec![run(1024.0, json!(1.2))])), (json!(1536), json!(1800)), "1.2 × 1500 is not 1,900 mCPU");
+    assert_eq!(pair(suggest(vec![run(1024.0, json!(2.2))])), (json!(1536), json!(3300)), "2.2 × 1.5 × 1000 is 3300.0000000000005, not 3,400 mCPU");
     assert_eq!(pair(suggest(vec![run(1365.4, json!(2.0))])), (json!(2560), json!(3000)), "2,048.1 MiB rounds up to 2,560");
     // A run too short for an average CPU: memory only.
     let memory_only = suggest(vec![run(3000.0, Value::Null)]);
