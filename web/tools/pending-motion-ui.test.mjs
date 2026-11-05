@@ -3,7 +3,9 @@
 // shows, and a resolved card leaves through a copy where it was (aria-hidden,
 // inert, without the card's ids, names and tab stops) that fades out and goes.
 // A card that opens sent, another Agent opened and reduced motion leave
-// nothing behind and play nothing. `animate` is recorded by its id.
+// nothing behind and play nothing. A card answered here is resolved once
+// Core answers its request, before a refresh marks it sent. `animate` is
+// recorded by its id.
 import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,6 +35,8 @@ const codex = (id, sent = false) => ({ id, agentId: 'a', method: 'item/tool/requ
     ...(sent ? { _responseSent: true } : {}) } });
 const claude = (id, sent = false) => ({ id, agentId: 'a', method: 'claude/canUseTool', createdAt: '',
   params: { toolName: 'Bash', input: { command: 'ls fixture' }, ...(sent ? { _responseSent: true } : {}) } });
+const opencode = (id) => ({ id, agentId: 'a', method: 'opencode/permission', createdAt: '',
+  params: { id: 'per_1', sessionID: 'ses_1', permission: 'bash', patterns: ['ls fixture'], metadata: {}, _responseSent: false } });
 
 function mount({ reduced = false } = {}) {
   const vc = new VirtualConsole(), errors = [];
@@ -149,3 +153,24 @@ test('a card taken out while its request still waits leaves no copy, nor one put
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+// One test each, so each card's own red shows.
+for (const [name, request] of [['a Claude permission', claude('perm')], ['an OpenCode request', opencode('oc')]]) {
+  test(`${name} answered here (Core answered 200) and gone from the next refresh before Core marks it sent still leaves through the copy (T-19 CV:Q-03, R2 e5c4a849)`, async () => {
+    const p = mount();
+    try {
+      await p.render([request]);
+      [...card(p, request.id).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Allow once').click();
+      // Sent and answered: no longer sending, and still locked.
+      await until(() => p.answers.length === 1 && !card(p, request.id).querySelector('.spin')
+        && card(p, request.id).querySelector('.primary-button')?.disabled === true, `${name} answered`);
+      assert.equal(!!sentHint(card(p, request.id)), false, 'Core has not marked it sent yet');
+      // Core resolved it at once: the next refresh no longer lists it.
+      await p.render([]);
+      assert.equal(!!card(p, request.id), false);
+      assert.equal(copies(p).length, 1, `${name} answered here still leaves through the copy`);
+      assert.deepEqual(p.take(), ['pending-card-exit'], 'the copy fades out; no hint was shown to fade in');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  });
+}

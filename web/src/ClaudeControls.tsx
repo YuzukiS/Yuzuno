@@ -470,7 +470,8 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
   const reasonTooLong = new TextEncoder().encode(reasonText).length > 2000;
   const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
   const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
-  const motion = usePendingMotion(!!request.params._responseSent, request.agentId);
+  // The hint follows Core's mark; the card is resolved as soon as Core answered its own request (R2 e5c4a849).
+  const motion = usePendingMotion(!!request.params._responseSent, request.agentId, !!request.params._responseSent || answered);
   const answer = (q: Question) => [...(answers[q.question] || []), ...(free[q.question]?.trim() ? [free[q.question].trim()] : [])].join(", ");
   async function respond(decision: "allow" | "deny", scope?: "session") {
     if (locked || answering.current) return;

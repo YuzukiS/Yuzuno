@@ -22,14 +22,16 @@ const tokenMs = (name: string, otherwise: number) => {
  * card, removed when its fade ends, so the request's card itself is gone at once, focus and all. Under reduced motion,
  * or without the Web Animations API, the hint shows and the card goes at once.
  *
- * Only a card whose answer Core has recorded (`sent`) is resolved as it goes; any other leaves at once, with no copy
- * (R1 4a8e5cfe): one taken out while its request still waits. Neither leaves one where the card is put in again (a
- * parent keyed anew: its id is in the page again), nor where the conversation it was in (its `data-agent-id`) now
+ * Only a card whose answer Core has recorded (`resolved`) is resolved as it goes; any other leaves at once, with no
+ * copy (R1 4a8e5cfe): one taken out while its request still waits. Neither leaves one where the card is put in again
+ * (a parent keyed anew: its id is in the page again), nor where the conversation it was in (its `data-agent-id`) now
  * shows another Agent, or is gone.
  *
- * `card` goes on the card's root, `hint` on the hint; `sent` is whether the hint shows; `agentId` is the request's.
+ * `card` goes on the card's root, `hint` on the hint; `sent` is whether the hint shows; `agentId` is the request's;
+ * `resolved`, `sent` unless given, is whether Core has recorded the answer: also when it said so in answering the
+ * card's own request (200), which a refresh can drop before it brings the hint (R2 e5c4a849).
  */
-export function usePendingMotion(sent: boolean, agentId: string) {
+export function usePendingMotion(sent: boolean, agentId: string, resolvedNow = sent) {
   const card = useRef<HTMLElement>(null);
   const hint = useRef<HTMLParagraphElement>(null);
   const wasSent = useRef(sent);
@@ -46,8 +48,8 @@ export function usePendingMotion(sent: boolean, agentId: string) {
   const agent = useRef(agentId);
   agent.current = agentId;
   // As it last rendered: whether Core had recorded the answer, read as the card goes.
-  const resolved = useRef(sent);
-  resolved.current = sent;
+  const resolved = useRef(resolvedNow);
+  resolved.current = resolvedNow;
   useLayoutEffect(() => {
     const element = card.current;
     return () => {
