@@ -7,7 +7,8 @@
 //! an executor, written in the transaction that inserts its record) →
 //! `dispatched` (the task is its, in the store's own task_dispatch
 //! transaction); or `failed`, with why, the Agent it made closed but kept.
-//! The runtime's side is executor_dispatch.rs.
+//! The runtime's side is executor_dispatch.rs. A dispatched executor waits
+//! for its slot (executor_slots.rs, T-35) from that same transaction.
 use super::{
     actor_context, allowed, check_version, dispatch_materials, load_task, normalize_task_input, optional_text,
     required_text, take_sha_check, task_number, TaskActor,
@@ -134,14 +135,16 @@ fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
 
 /// The store's task_dispatch of a template dispatch (its input names
 /// `executor`): its row, `created` for this Agent, becomes `dispatched` in the
-/// same transaction, so a dispatched task never has a failed executor.
-/// Returns the template the executor was made from, for its materials.
+/// same transaction, so a dispatched task never has a failed executor, and
+/// its executor waits for a slot. Returns the template the executor was made
+/// from, for its materials.
 pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agent: &str, dispatch: &str) -> Result<Value> {
     let at = now();
-    let template: Option<String> = db
+    let row: Option<(String, String, Option<String>, String, String)> = db
         .query_row(
-            "SELECT template_json FROM executor_dispatches WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
-            params![actor_key(actor), request, agent], |r| r.get(0))
+            "SELECT template_json, task_id, project_id, machine_id, template_id FROM executor_dispatches
+             WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
+            params![actor_key(actor), request, agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
         .optional()?;
     let moved = db.execute(
         "UPDATE executor_dispatches SET state='dispatched',dispatch_id=?4,updated_at=?5
@@ -150,7 +153,9 @@ pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agen
     )?;
     ensure!(moved == 1, "invalid_input: executor names a dispatch from an executor template, whose Agent Core makes; give toAgentId alone to dispatch to an existing Agent");
     db.execute("UPDATE agent_roles SET dispatch_id=?2,updated_at=?3 WHERE agent_id=?1 AND kind='executor'", params![agent, dispatch, at])?;
-    Ok(serde_json::from_str(&template.context("the dispatch's template is missing")?)?)
+    let (template, task, project, machine, template_id) = row.context("the dispatch's template is missing")?;
+    crate::executor_slots::enqueue(db, agent, &task, project.as_deref(), &machine, &template_id)?;
+    Ok(serde_json::from_str(&template)?)
 }
 
 impl Store {

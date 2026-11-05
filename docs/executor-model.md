@@ -69,7 +69,7 @@ its settings.
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
-| **At most at once** | Kept for phase 2's limit on running executors; not applied yet. |
+| **At most at once** | Kept for a limit per template, later in phase 2; not applied yet. The limits that apply now are under [Executors at once](#executors-at-once). |
 
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
   that Project's template of the named id, else the Workspace's. A task in no
@@ -106,15 +106,17 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    until you register it again or dispatch it yourself.
 3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
    result goes back to whoever dispatched.
-4. **Starts it.** The dispatch's mail is delivered once it is connected.
+4. **Queues it.** It starts when a slot is free; see
+   [Executors at once](#executors-at-once). The dispatch's mail is delivered
+   once it is connected.
 
 - **Who may.** You, or a lead of the task's Project. A task in no Project,
   only you.
 - **The answer** is a dispatch's, with `agentId`: the executor.
 - **A retry** with the same `requestId` gets the same executor and answer, and
   never makes a second executor. The same `requestId` with another payload is
-  refused. If Core stopped after dispatching but before starting the
-  executor, a retry starts it.
+  refused. If Core stopped after dispatching, the executor waits in the
+  queue and starts in turn.
 - **When it fails.** If a dispatch fails after its executor exists, Core
   closes the executor and keeps it, so you can see what happened. A retry gets
   the same failure; dispatch again with a new `requestId`. If Core stops
@@ -126,8 +128,41 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   the update is done: one that had not been made goes ahead then, and nothing
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
-- **No limit yet.** In phase 1 every executor starts at once.
 - **This host only.** A dispatch's `machineId` may be empty or `local`.
+
+## Executors at once
+
+At most this many executors run at the same time in the Workspace: 3 unless
+you change it, a whole number from 1 to 64, in Settings under **Executor
+templates**. A Project can have a limit of its own, on its page; left empty,
+only the Workspace's applies. Only you change them.
+
+- **The queue.** An executor dispatched while every slot is taken waits.
+  Core starts the next one as soon as a slot is free, in the Jobs queue's
+  order: any waiting more than 30 minutes first, then Projects in turn, each
+  Project's in the order they were dispatched. Executors in no Project take
+  their turn together. One whose Project is at its own limit is passed by the
+  next that has room.
+- **What the task shows.** Its card, and `task_get` as `executorSlot`, say
+  whether its executor is queued, with its place (`position`, 1 first),
+  starting (with `reason` when its start did not finish), or running.
+- **Holding a slot.** An executor holds its slot from when it starts until
+  it is closed, by anyone and in any way. A disconnect keeps it, so
+  reconnecting never passes the limit. Closing one frees its slot for the
+  next.
+- **Connect on a queued executor** is refused, with its place in the queue,
+  and changes nothing about it. To run more at once, raise the limit: the next
+  ones start right away.
+- **A start that fails.** If the runtime refuses to start a new executor,
+  Core closes it and keeps it, and its slot goes to the next. If Core can't
+  tell whether it started, or a reopened executor fails to start, the
+  executor stays open and keeps its slot. Its task's card says its start did
+  not finish, and why, until you reconnect or close it.
+- **After a restart.** An executor that was starting waits again, at its
+  place; one that may have started keeps its slot, and so do running ones.
+  Executors open from before this version each hold a slot, as running.
+- **Executors only.** Standing Agents don't count, and Jobs keep their own
+  machine slots.
 
 ## What an executor starts with
 

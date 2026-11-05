@@ -55,6 +55,7 @@ pub fn router_on_port(ws: Arc<Workspace>, assets: PathBuf, port: u16) -> Router 
 pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
     ws.start_collaboration(port);
     ws.start_jobs();
+    ws.start_executor_slots();
     ws.start_ci_monitor();
     ws.start_delivery();
     ws.start_backup_schedule();
@@ -130,6 +131,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::claude_quota::router())
         .merge(crate::agent_defaults::router())
         .merge(crate::executor_templates::router())
+        .merge(crate::executor_slots::router())
         .merge(crate::handover::router())
         .merge(crate::appearance_preset::router())
         .merge(crate::task_proposals::router())

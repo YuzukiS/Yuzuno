@@ -289,11 +289,10 @@ async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() 
     let d = lab.until("the bare idle", |d| turn(d, &second)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &second)["status"], "outcomeUnknown");
 
-    // A session error names no message: the Turn goes on until its own answer says.
+    // A failed step names its answer: the Turn ends as it says. (1.19.3's
+    // session error while a run went on, which decided nothing, has no 2.x
+    // counterpart: 2.x reports one only with the execution's end. T-32 slice 3b.)
     let third = lab.send("c3", "fail").await.unwrap().turn_id.unwrap();
-    lab.control("error", json!({"sessionID":session})).await;
-    let d = lab.until("the session error", |d| d.agent.error.is_some()).await;
-    assert_eq!(turn(&d, &third)["status"], "inProgress");
     lab.control("reply", json!({"sessionID":session,"error":{"name":"APIError","data":{"message":"overloaded"}}})).await;
     let d = lab.until("the failure", |d| turn(d, &third)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &third)["status"], "failed");
@@ -461,26 +460,19 @@ async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     let session = lab.session();
     let aborted_answer = |d: &AgentDetail, id: &str| turn(d, id)["_opencodeAnswers"].as_object()
         .is_some_and(|a| a.values().any(|x| x["error"]["name"] == "MessageAbortedError"));
-    // OpenCode 1.19.3: the session's abort and idle come before the aborted answer.
-    lab.control("mode", json!({"abortOrder":"native"})).await;
-    let first = lab.send("c1", "long").await.unwrap().turn_id.unwrap();
-    lab.ws.interrupt(ID).await.unwrap();
-    let d = lab.until("the reported abort", |d| turn(d, &first)["status"] != "inProgress").await;
-    assert_eq!(turn(&d, &first)["status"], "interrupted");
-    assert_eq!(turn(&d, &first)["error"]["native"]["name"], "MessageAbortedError");
-    assert_eq!(d.agent.error, None, "an interrupt is not an error of the Agent");
-    // The aborted answer arrives after; it changes nothing.
-    let d = lab.until("the late answer", |d| aborted_answer(d, &first)).await;
-    assert_eq!(turn(&d, &first)["status"], "interrupted");
-
-    // Idle with no reported abort, the aborted answer only after: still unknown.
-    lab.control("mode", json!({"abortOrder":"late"})).await;
-    let second = lab.send("c2", "long").await.unwrap().turn_id.unwrap();
-    lab.ws.interrupt(ID).await.unwrap();
-    let d = lab.until("the bare idle", |d| turn(d, &second)["status"] != "inProgress").await;
-    assert_eq!(turn(&d, &second)["status"], "outcomeUnknown");
-    let d = lab.until("the late answer", |d| aborted_answer(d, &second)).await;
-    assert_eq!(turn(&d, &second)["status"], "outcomeUnknown", "not decided again after the Turn ended");
+    // 2.x reports an abort with the execution's end, `session.execution.interrupted`
+    // (T-32 slice 3b); 1.19.3's orders of the aborted answer and the idle have
+    // no 2.x counterpart. Its aborted answer comes first, then that end.
+    let _ = aborted_answer;
+    for order in ["answer-first", "native"] {
+        lab.control("mode", json!({"abortOrder":order})).await;
+        let first = lab.send(&format!("c1-{order}"), "long").await.unwrap().turn_id.unwrap();
+        lab.ws.interrupt(ID).await.unwrap();
+        let d = lab.until("the reported abort", |d| turn(d, &first)["status"] != "inProgress").await;
+        assert_eq!(turn(&d, &first)["status"], "interrupted", "{order}");
+        assert_eq!(turn(&d, &first)["error"]["native"]["name"], "MessageAbortedError", "{order}");
+        assert_eq!(d.agent.error, None, "an interrupt is not an error of the Agent");
+    }
 
     // A run that completed before the interrupt reached it: completed, and nothing to abort.
     lab.control("mode", json!({"abortOrder":"native"})).await;
@@ -490,13 +482,13 @@ async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     assert_eq!(turn(&d, &third)["status"], "completed");
     assert!(lab.ws.interrupt(ID).await.is_err(), "nothing runs");
 
-    // A session error that is not an abort, then idle without an answer: unknown, not interrupted.
+    // An execution that failed, with no answer: failed, with its error, not interrupted.
     let fourth = lab.send("c4", "fail").await.unwrap().turn_id.unwrap();
     lab.control("error", json!({"sessionID":session})).await;
-    lab.until("the session error", |d| d.agent.error.is_some()).await;
     lab.control("idle", json!({"sessionID":session})).await;
-    let d = lab.until("the bare idle", |d| turn(d, &fourth)["status"] != "inProgress").await;
-    assert_eq!(turn(&d, &fourth)["status"], "outcomeUnknown");
+    let d = lab.until("the failed end", |d| turn(d, &fourth)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &fourth)["status"], "failed");
+    assert!(d.agent.error.is_some(), "a failed execution is an error of the Agent");
     assert_eq!(lab.posts(&format!("/session/{session}/abort")).len(), 2);
     lab.ws.close_agent(ID).await.unwrap();
 }
@@ -507,27 +499,19 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     let session = lab.session();
     let answered = |d: &AgentDetail, id: &str| turn(d, id)["_opencodeAnswers"].as_object()
         .is_some_and(|a| a.values().any(|x| x["error"].is_object()));
-    // OpenCode 1.19.3 halts a run with these only when it ends: the session's
-    // error and idle first, the answer carrying it after.
-    for (n, name) in ["APIError", "ProviderAuthError", "MessageOutputLengthError"].into_iter().enumerate() {
+    // 2.x ends a run that failed with `session.execution.failed`, carrying
+    // its error: the Turn fails with it, whatever its type (T-32 slice 3b).
+    // 1.19.3's errors that decided nothing while a run went on have no 2.x
+    // counterpart, nor has an answer after the run's end.
+    let _ = answered;
+    for (n, name) in ["APIError", "ProviderAuthError", "ContextOverflowError", "UnknownError"].into_iter().enumerate() {
         let id = lab.send(&format!("f{n}"), "work").await.unwrap().turn_id.unwrap();
         lab.control("halt", json!({"sessionID":session,"name":name,"message":"provider said no"})).await;
         let d = lab.until("the halted end", |d| turn(d, &id)["status"] != "inProgress").await;
         assert_eq!(turn(&d, &id)["status"], "failed", "{name}");
         assert_eq!(turn(&d, &id)["error"]["message"], "provider said no", "{name}");
-        assert_eq!(turn(&d, &id)["error"]["native"]["name"], name);
-        let d = lab.until("the late answer", |d| answered(d, &id)).await;
-        assert_eq!(turn(&d, &id)["status"], "failed", "{name}: the answer after changes nothing");
-    }
-    // These are also reported while a run goes on (auto-compaction, a file
-    // that could not be read): they decide nothing.
-    for (n, name) in ["ContextOverflowError", "UnknownError"].into_iter().enumerate() {
-        let id = lab.send(&format!("u{n}"), "work").await.unwrap().turn_id.unwrap();
-        lab.control("halt", json!({"sessionID":session,"name":name})).await;
-        let d = lab.until("the bare end", |d| turn(d, &id)["status"] != "inProgress").await;
-        assert_eq!(turn(&d, &id)["status"], "outcomeUnknown", "{name}");
-        let d = lab.until("the late answer", |d| answered(d, &id)).await;
-        assert_eq!(turn(&d, &id)["status"], "outcomeUnknown", "{name}: not decided again after the Turn ended");
+        assert_eq!(turn(&d, &id)["error"]["native"]["name"], "ExecutionFailed", "{name}");
+        assert_eq!(turn(&d, &id)["error"]["native"]["data"]["type"], name, "2.x's own type, kept");
     }
     // A completed Turn: an error OpenCode reports afterwards belongs to no Turn.
     let done = lab.send("c1", "quick").await.unwrap().turn_id.unwrap();
@@ -1056,10 +1040,11 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     // bytes are anywhere in Core's database.
     let journaled = || {
         let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
-        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/message.part.updated'").unwrap();
+        // 2.x sends the stored message's files back in its inbox event, as base64 `data` (T-32 slice 3b).
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/session.inbox.enqueued'").unwrap();
         query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap)
-            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["data"]["part"].clone())
-            .filter(|part| part["type"] == "file").collect::<Vec<_>>()
+            .flat_map(|data| serde_json::from_str::<Value>(&data).unwrap()["data"]["item"]["payload"]["files"].as_array().cloned().unwrap_or_default())
+            .collect::<Vec<_>>()
     };
     for _ in 0..400 {
         if journaled().len() == 2 { break; }
@@ -1069,8 +1054,8 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     assert_eq!(kept.len(), 2, "both file parts came back and were journaled");
     for (kept, sent) in kept.iter().zip(&parts[1..]) {
         let url = sent["url"].as_str().unwrap();
-        assert_eq!((&kept["filename"], &kept["url"]), (&sent["filename"], &json!(format!("data:image/png;base64,… ({} characters not kept)", url.len()))));
         let data = url.split_once(',').unwrap().1.as_bytes();
+        assert_eq!((&kept["name"], &kept["data"]), (&sent["filename"], &json!(format!("image/png,… ({} characters not kept)", data.len()))));
         for entry in std::fs::read_dir(lab.dir.path().join("data")).unwrap().map(Result::unwrap) {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with("workspace.sqlite") {
@@ -1604,10 +1589,10 @@ async fn context_usage_is_the_newest_answer_against_its_own_models_window() {
     let (twelfth, measured) = answered(&lab, "c12", flash(json!({"total":800}))).await;
     let fresh = Some((800, 2000, twelfth, false));
     assert_eq!(measured, fresh);
-    // An older compaction's summary replayed doesn't make it last known.
-    let replayed = json!({"id":"msg_summary_old","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
-        "time":{"created":1,"completed":1},"tokens":{"total":1}});
-    lab.control("event", event(replayed)).await;
+    // An older compaction replayed doesn't make it last known: 2.x's own
+    // event, timed when OpenCode made it (T-32 slice 3b).
+    lab.control("event", json!({"type":"session.compaction.ended","created":1,"properties":{"sessionID":session,"reason":"auto",
+        "text":"","tokens":{"input":1,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}})).await;
     unchanged(&lab, "an older summary", &fresh).await;
 
     // An answer's events read no catalog; no provider secret is anywhere in Core's data.
@@ -1799,19 +1784,17 @@ async fn context_usage_an_older_answer_arriving_after_a_newer_one_never_measures
     lab.control("mode", json!({"providers":providers})).await;
     let reads = providers_reads(&lab);
 
-    // The newer answer first, unmeasurable; then the older one, naming that model.
+    // The newer answer first, unmeasurable; then the older one, naming that
+    // model: 2.x's steps of the running Turn, each ended when OpenCode timed
+    // it (T-32 slice 3b). Its events come in order, so this is a replay.
     let now = chrono::Utc::now().timestamp_millis();
-    let answer = |id: &str, completed: i64, info: Value| {
-        let mut info = info;
-        info["id"] = json!(id);
-        info["sessionID"] = json!(session);
-        info["role"] = json!("assistant");
-        info["parentID"] = json!(running);
-        info["time"] = json!({"created":completed,"completed":completed});
-        json!({"type":"message.updated","properties":{"sessionID":session,"info":info}})
-    };
-    lab.control("event", answer("msg_newer", now + 2000, json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":-1}}))).await;
-    lab.control("event", answer("msg_older", now + 1000, json!({"providerID":"deepseek","modelID":"deepseek-later","tokens":{"total":500}}))).await;
+    for (id, at, model, tokens) in [("msg_newer", now + 2000, "deepseek-flash", Value::Null),
+        ("msg_older", now + 1000, "deepseek-later", json!({"input":500,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}))] {
+        lab.control("event", json!({"type":"session.step.started","created":at,"properties":{"sessionID":session,"assistantMessageID":id,
+            "model":{"id":model,"providerID":"deepseek"}}})).await;
+        lab.control("event", json!({"type":"session.step.ended","created":at,"properties":{"sessionID":session,"assistantMessageID":id,
+            "finish":"stop","tokens":tokens}})).await;
+    }
     unchanged(&lab, "an older answer after a newer one", &Some((100, 1000, running, true))).await;
     assert_eq!(providers_reads(&lab), reads, "the older answer read no catalog");
     lab.ws.close_agent(ID).await.unwrap();
@@ -1984,7 +1967,8 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
     }
     assert!(resyncs(&lab) > before, "read again");
     // Events of the new stream are handled once the resync, its catalog read included, has returned.
-    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    // 2.x's execution end, as Core journals it (T-32 slice 3b).
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| k.starts_with("opencode/session.execution.")).count();
     let handled = statuses(&lab);
     lab.control("idle", json!({"sessionID":session})).await;
     for _ in 0..200 {
@@ -2012,7 +1996,8 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
     }
     assert!(resyncs(&lab) > again, "read once more");
     let counts = held(&lab);
-    assert_eq!(counts[before], counts[counts.len() - 1], "the first resync's snapshot held the answer and the compaction");
+    // The idle after it is a message of 2.x's own (T-32 slice 3b): the only one more.
+    assert_eq!(counts[before] + 1, counts[counts.len() - 1], "the first resync's snapshot held the answer and the compaction");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -2042,7 +2027,8 @@ async fn context_usage_a_late_answer_of_an_earlier_turn_never_measures() {
     let mut late = flash(json!(900));
     late["time"] = json!({"created":at,"completed":at});
     // Each answer's record change, the one that measures it or not, is journaled.
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
     for _ in 0..200 {
@@ -2101,9 +2087,15 @@ async fn context_usage_a_late_answer_after_a_new_input_never_measures() {
     let at = chrono::DateTime::parse_from_rfc3339(&d.context_usage.as_ref().unwrap().updated_at).unwrap().timestamp_millis() + 1;
     let mut late = flash(json!(900));
     late["time"] = json!({"created":at,"completed":at});
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
-    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
+    // 2.x: the end of a step this connection never saw start (one of the
+    // earlier Turn's, before the new input), its tokens as OpenCode counted
+    // them (T-32 slice 3b). Its events come in order, so this is a replay.
+    let _ = late;
+    lab.control("event", json!({"type":"session.step.ended","created":at,"properties":{"sessionID":session,"assistantMessageID":"msg_late",
+        "finish":"stop","tokens":{"input":900,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}})).await;
     for _ in 0..200 {
         if updates(&lab) > handled { break; }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -2150,7 +2142,8 @@ async fn context_usage_a_late_answer_from_before_a_compaction_never_measures() {
     let (first, last_known, before) = measured_then_compacted(&lab).await;
 
     // The late answer, stored as OpenCode would; its record change is journaled.
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
         "providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":900},"time":{"created":before,"completed":before}}})).await;
@@ -2196,8 +2189,10 @@ async fn context_usage_a_late_answer_from_before_a_compaction_reads_no_catalog()
     let (first, last_known, before) = measured_then_compacted(&lab).await;
 
     let reads = providers_reads(&lab);
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
-    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
+    // 2.x's execution end, as Core journals it (T-32 slice 3b).
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| k.starts_with("opencode/session.execution.")).count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
         "providerID":"deepseek","modelID":"deepseek-unlisted","tokens":{"total":500},"time":{"created":before,"completed":before}}})).await;
@@ -2218,5 +2213,230 @@ async fn context_usage_a_late_answer_from_before_a_compaction_reads_no_catalog()
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(providers_reads(&lab), reads, "no catalog read for an answer from before the compaction");
     assert_eq!(usage_of(&lab.detail()), last_known);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// 2.x's text as it streams: its deltas, gathered for a quarter of a second
+/// of OpenCode's own time, grow the answer's item, which its end then
+/// replaces whole (T-32 slice 3b). The item is `<answer>:<ordinal>`.
+#[tokio::test]
+async fn an_answers_text_streams_into_its_item_and_its_end_replaces_it() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    let t = chrono::Utc::now().timestamp_millis();
+    let event = |kind: &str, at: i64, data: Value| {
+        let mut properties = json!({"sessionID": session, "assistantMessageID": "msg_s1"});
+        properties.as_object_mut().unwrap().extend(data.as_object().unwrap().clone());
+        json!({"type": kind, "created": at, "properties": properties})
+    };
+    let text = |d: &AgentDetail| turn(d, &id)["items"].as_array().into_iter().flatten()
+        .find(|i| i["id"] == "msg_s1:0").map(|i| i["text"].clone());
+    for (kind, at, data) in [
+        ("session.step.started", t, json!({"model": {"id": "m", "providerID": "p"}})),
+        ("session.text.started", t, json!({"ordinal": 0})),
+        ("session.text.delta", t + 10, json!({"ordinal": 0, "delta": "Hel"})),
+        ("session.text.delta", t + 300, json!({"ordinal": 0, "delta": "lo"})),
+    ] {
+        lab.control("event", event(kind, at, data)).await;
+    }
+    lab.until("the text streamed", |d| text(d) == Some(json!("Hello"))).await;
+    lab.control("event", event("session.text.delta", t + 310, json!({"ordinal": 0, "delta": " wor"}))).await;
+    lab.control("event", event("session.text.ended", t + 320, json!({"ordinal": 0, "text": "Hello world"}))).await;
+    lab.until("the whole text", |d| text(d) == Some(json!("Hello world"))).await;
+    lab.control("event", event("session.step.ended", t + 330, json!({"finish": "stop", "tokens": null}))).await;
+    lab.control("idle", json!({"sessionID": session})).await;
+    let d = lab.until("its end", |d| turn(d, &id)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &id)["status"], "completed");
+    let streamed = journal(&lab).iter().filter(|k| *k == "opencode/session.text.delta").count();
+    assert_eq!(streamed, 1, "one journal row for the deltas written together, none for one still gathering");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A whole read in mid-step: 2.x stores no text until its entry ends, so the
+/// read finds the entry empty, and the text streamed so far is kept (T-32
+/// slice 3b; a limit, Lead 4983 note 4).
+#[tokio::test]
+async fn a_whole_read_in_mid_step_keeps_the_text_streamed_so_far() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    let t = chrono::Utc::now().timestamp_millis();
+    let event = |kind: &str, at: i64, data: Value| {
+        let mut properties = json!({"sessionID": session, "assistantMessageID": "msg_s1"});
+        properties.as_object_mut().unwrap().extend(data.as_object().unwrap().clone());
+        json!({"type": kind, "created": at, "properties": properties})
+    };
+    let text = |d: &AgentDetail| turn(d, &id)["items"].as_array().into_iter().flatten()
+        .find(|i| i["id"] == "msg_s1:0").map(|i| i["text"].clone());
+    for (kind, at, data) in [
+        ("session.step.started", t, json!({"model": {"id": "m", "providerID": "p"}})),
+        ("session.text.started", t, json!({"ordinal": 0})),
+        ("session.text.delta", t + 10, json!({"ordinal": 0, "delta": "Hel"})),
+        ("session.text.delta", t + 300, json!({"ordinal": 0, "delta": "lo"})),
+    ] {
+        lab.control("event", event(kind, at, data)).await;
+    }
+    lab.until("the text streamed", |d| text(d) == Some(json!("Hello"))).await;
+    // The stream breaks; OpenCode holds the answer as 2.x does in mid-step, its text entry empty.
+    let before = resyncs(&lab);
+    lab.control("refuseEvents", json!({"seconds":1.0})).await;
+    lab.control("drop", json!({})).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    lab.control("reply", json!({"sessionID":session,"text":"","completed":false,"idle":false,"info":{"id":"msg_s1"}})).await;
+    for _ in 0..400 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read whole");
+    assert_eq!(text(&lab.detail()), Some(json!("Hello")), "the text streamed so far is kept");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Until a whole read's stream is open again: the stream breaks, it is
+/// refused for a second, and `meanwhile` happens with no stream to see it.
+async fn read_whole_meanwhile(lab: &Lab, meanwhile: Value) {
+    let before = resyncs(lab);
+    lab.control("refuseEvents", json!({"seconds":1.0})).await;
+    lab.control("drop", json!({})).await;
+    // The broken stream has ended: the stand-in's looks for the break every 20 ms.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    lab.control("reply", meanwhile).await;
+    for _ in 0..400 {
+        if resyncs(lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(lab) > before, "read whole");
+}
+
+/// A whole read while an answer's step is under way, then the step's end on
+/// the stream, which names neither its model nor its start: the answer ends
+/// with those the read found, so its context usage is measured, not left
+/// stale with the answer taken as considered (T-32 slice 3b, R1 98de4ffb).
+#[tokio::test]
+async fn a_step_under_way_at_a_whole_read_ends_with_its_model_and_is_measured() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    read_whole_meanwhile(&lab, json!({"sessionID":session,"text":"","completed":false,"idle":false,
+        "info":{"id":"msg_s1","providerID":"deepseek","modelID":"deepseek-flash"}})).await;
+    let t = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"session.step.ended","created":t,"properties":{"sessionID":session,"assistantMessageID":"msg_s1",
+        "finish":"stop","tokens":{"total":300}}})).await;
+    let d = lab.until("the usage measured", |d| usage_of(d).is_some_and(|u| !u.3)).await;
+    assert_eq!(usage_of(&d), Some((300, 1000, id.clone(), false)));
+    assert_eq!(d.opencode_usage_seen.as_ref().map(|s| s.answer.as_str()), Some("msg_s1"), "the answer considered is the one measured");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A whole read while a sub-agent's tool runs, then the tool's end on the
+/// stream, which names neither the tool nor its input: the tool keeps those
+/// the read found, so the sub-agent it names is still learnt from it, here
+/// the only way it is (T-32 slice 3b, R1 98de4ffb).
+#[tokio::test]
+async fn a_tool_under_way_at_a_whole_read_ends_with_its_name_and_input() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    // Not among the Agent's children OpenCode lists, and never announced: only its tool names it.
+    let child = lab.control("child", json!({"parentID":"ses_elsewhere","title":"unlisted","announce":false})).await;
+    let child = child["id"].as_str().unwrap().to_owned();
+    let input = json!({"description":"Find the files","subagent_type":"explore","prompt":"find"});
+    read_whole_meanwhile(&lab, json!({"sessionID":session,"completed":false,"idle":false,"info":{"id":"msg_s2"},
+        "parts":[{"type":"tool","tool":"task","callID":"call_1","state":{"status":"running","input":input,"metadata":{"sessionId":child}}}]})).await;
+    let tool = |d: &AgentDetail| turn(d, &id)["items"].as_array().into_iter().flatten().find(|i| i["id"] == "call_1").cloned();
+    assert_eq!(tool(&lab.detail()).map(|t| t["name"].clone()), Some(json!("subagent")), "the read restored it");
+    let t = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"session.tool.success","created":t,"properties":{"sessionID":session,"assistantMessageID":"msg_s2",
+        "id":"call_1","content":[{"type":"text","text":"Found."}],"metadata":{"sessionID":child},"executed":true}})).await;
+    let d = lab.until("the tool's end", |d| tool(d).is_some_and(|t| t["status"] == "completed")).await;
+    let ended = tool(&d).unwrap();
+    assert_eq!((&ended["name"], &ended["input"]), (&json!("subagent"), &input), "the tool keeps its name and input");
+    // The sub-agent it names is the Agent's: its request is shown with it.
+    let asked = lab.control("ask", json!({"sessionID":child})).await;
+    let d = lab.until("the sub-agent's request", |d| d.pending.iter().any(|p| p.params["id"] == asked["id"])).await;
+    let p = d.pending.iter().find(|p| p.params["id"] == asked["id"]).unwrap();
+    assert_eq!(p.params["_opencodeChild"], json!({"title":"Find the files","agent":"explore"}), "learnt from its tool");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Two user messages in one turn, the answers interleaved: each answer is
+/// the newest one's before it, as 2.x delivers a message steered in at its
+/// next step (T-32 slice 3b, Lead 4983 note 2), and a whole read of the
+/// turn says the same. A Core-chosen ID is the one 2.x delivers each under
+/// (note 3). The added message is confirmed once 2.x admits it, before it is
+/// delivered.
+#[tokio::test]
+async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    lab.control("reply", json!({"sessionID":session,"text":"Looking.","parentID":first,"idle":false})).await;
+    // Only 2.x's event of its admission can confirm it: OpenCode's record of the message cannot be read.
+    lab.control("mode", json!({"failMessageReads":true})).await;
+    let receipt = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!(receipt.status, "accepted", "confirmed once 2.x admits it: {receipt:?}");
+    lab.control("mode", json!({"failMessageReads":false})).await;
+    let added = lab.detail().turns.iter().find(|t| t["id"] == first.as_str()).unwrap()["_opencodeLastInput"].as_str().unwrap().to_owned();
+    let delivered = || {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let ids: Vec<String> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/session.inbox.delivered' ORDER BY seq").unwrap()
+            .query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["data"]["inboxID"].as_str().unwrap().to_owned()).collect();
+        ids
+    };
+    assert_eq!(delivered(), [first.as_str()], "admitted, not yet delivered");
+    // A step already under way when it was sent answers the first message; the next ones, the added one.
+    lab.control("reply", json!({"sessionID":session,"text":"Still the build.","parentID":first,"idle":false})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Running tests.","parentID":added,"idle":false})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"All pass.","parentID":added})).await;
+    let d = lab.until("its end", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "completed");
+    let answers = turn(&d, &first)["_opencodeAnswers"].as_object().unwrap().clone();
+    let parents: Vec<&str> = answers.values().map(|a| a["parent"].as_str().unwrap()).collect();
+    assert_eq!(parents, [first.as_str(), first.as_str(), added.as_str(), added.as_str()], "{answers:#?}");
+    // Each message was delivered under the ID Core chose for it.
+    assert_eq!(delivered(), [first.clone(), added.clone()], "delivered under the IDs Core chose");
+    // A whole read of the session says the same of each answer.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(turn(&lab.detail(), &first)["_opencodeAnswers"].as_object().unwrap(), &answers, "the same answers, read whole");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message added while the stream is broken: 2.x admits it into its
+/// inbox, to be delivered at the run's next step, and its event is lost
+/// with the stream. The whole read once the stream reopens finds it in the
+/// inbox, and that confirms it (T-32 slice 3b).
+#[tokio::test]
+async fn a_message_admitted_while_the_stream_is_broken_is_confirmed_from_the_inbox() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    // Nothing else can confirm it: OpenCode's record of the message cannot be read, and its messages don't hold it yet.
+    lab.control("mode", json!({"failMessageReads":true})).await;
+    let before = resyncs(&lab);
+    lab.control("refuseEvents", json!({"seconds":1.0})).await;
+    lab.control("drop", json!({})).await;
+    // The broken stream has ended: the stand-in's looks for the break every 20 ms.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let receipt = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!(receipt.status, "accepted", "confirmed from the inbox: {receipt:?}");
+    assert!(resyncs(&lab) > before, "confirmed by the read after the stream reopened");
+    lab.control("mode", json!({"failMessageReads":false})).await;
+    let d = lab.detail();
+    let added = turn(&d, &first)["_opencodeLastInput"].as_str().unwrap().to_owned();
+    assert_eq!(turn(&d, &first)["_opencodeInputs"][&added]["confirmed"], true);
+    // Delivered at the next step, which answers it, and that ends the turn.
+    lab.control("reply", json!({"sessionID":session,"text":"Tests pass.","parentID":added})).await;
+    let d = lab.until("its end", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "completed");
     lab.ws.close_agent(ID).await.unwrap();
 }

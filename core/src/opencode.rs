@@ -4,8 +4,9 @@
 //! no permission rule of its own.
 //!
 //! OpenCode 2.x (T-32): it is started, checked and stopped as 2.x is, and
-//! any 2.x its `/api/info` reports is spoken to (`MAJOR`; the release this
-//! was checked against is `VERIFIED`); another major is stopped. The calls
+//! any 2.x from `MIN` its `/api/info` reports is spoken to (`MAJOR`; the
+//! release this was checked against is `VERIFIED`); an older 2.x or another
+//! major is stopped. The calls
 //! past start and stop are still those of 1.19.3 until their slices of T-32
 //! move them to 2.x. Native requests, events and
 //! results come back as OpenCode sent them. What OpenCode did not say is not
@@ -46,11 +47,17 @@ use tokio::{
 };
 
 /// The OpenCode major this module speaks (T-32: the latest 2.x, not one
-/// release): any version `/api/info` reports in it is taken.
+/// release): any version `/api/info` reports in it from `MIN` is taken.
 pub const MAJOR: &str = "2";
 /// The newest release the stand-in and tests were checked against (T-32). A
 /// later 2.x that breaks a call is a bug to fix here, not a refusal.
 pub const VERIFIED: &str = "2.2.5";
+/// The oldest 2.x Core reads (T-32, R2 59b5e3c6): its `/api/info` (2.0.6),
+/// the `idle` message among a session's messages (2.0.4) and a step's own
+/// start (`started`, 2.0.7) are there, as are every other route and event
+/// Core reads (2.0.0). An older one, a pre-release of it included, and a 2.x
+/// whose version cannot be read, are refused, never read in part (`release`).
+pub const MIN: &str = "2.0.7";
 /// 2.x's Basic user, which it does not let be changed (server/src/process.ts).
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
@@ -237,6 +244,9 @@ pub struct Snapshot {
     pub messages: Value,
     /// `{type: busy | idle}` (`session_status`).
     pub status: Value,
+    /// What 2.x admitted into the session and has not delivered into its
+    /// turn yet, oldest first, as `GET /api/session/:id/inbox` lists it.
+    pub inbox: Value,
     /// Requests pending in this session and in the sub-agent sessions
     /// given (`snapshot`), each with its `sessionID`; others' are left out.
     pub permissions: Vec<Value>,
@@ -528,6 +538,8 @@ impl Server {
         let version = info["version"].as_str().unwrap_or_default();
         ensure!(supported(version),
             "OpenCode {version} is not supported: Yuzuno speaks the server protocol of OpenCode {MAJOR}.x (checked against {VERIFIED})");
+        ensure!(release(version).is_some(), "OpenCode {version}: {}", unreadable_note());
+        ensure!(!older_than_min(version), "OpenCode {version} is {}", older_note());
         server.version = version.to_owned();
         Ok(server)
     }
@@ -700,9 +712,7 @@ impl Server {
         Ok(events)
     }
 
-    /// The session's messages and status, read now, with the requests
-    /// pending in it and in the sub-agent sessions `children`.
-    /// `session`'s status now, in the shape Core reads until slice 3b:
+    /// `session`'s status now, in the shape Core's record takes:
     /// `{type: busy}` while 2.x lists it among the sessions this process is
     /// running (`GET /api/session/active`), else `{type: idle}`. 2.x lists no
     /// retry there; it is on the answer that retries.
@@ -710,13 +720,19 @@ impl Server {
         status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session)
     }
 
+    /// The session's messages, status and inbox, read now, with the requests
+    /// pending in it and in the sub-agent sessions `children`.
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
         let messages = self.messages(session).await?;
         let status = self.session_status(session).await?;
+        let path = format!("/api/session/{}/inbox", segment(session)?);
+        let inbox = self.data(Method::GET, &path, &[], None).await?;
+        ensure!(inbox.is_array(), "OpenCode's {path} is not a list");
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
             messages,
             status,
+            inbox,
             permissions: self.pending_of("permission", &sessions).await?,
             questions: self.pending_of("form", &sessions).await?,
         })
@@ -1188,6 +1204,10 @@ async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
     match installed(launch).await {
         Some(version) if !supported(&version) => out.push_str(&format!(
             " (the installed OpenCode says \u{201c}{version}\u{201d}; Yuzuno speaks the server protocol of OpenCode {MAJOR}.x)")),
+        Some(version) if release(&version).is_none() => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}: {})", unreadable_note())),
+        Some(version) if older_than_min(&version) => out.push_str(&format!(
+            " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", older_note())),
         Some(version) if newer_than_verified(&version) => out.push_str(&format!(
             " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", newer_note())),
         _ => {}
@@ -1217,15 +1237,44 @@ pub fn major(version: &str) -> Option<String> {
     supported(version).then(|| MAJOR.to_owned())
 }
 
+/// A release as it ranks (T-32, R4 eef2b7e2): its MAJOR.MINOR.PATCH
+/// (`2.2.5`, or `opencode v2.0.16` as `--version` prints it), cut at the
+/// first `-` or `+`, then whether it is the release itself, as semver ranks
+/// them: a pre-release (`2.0.7-rc1`) below its release, a build
+/// (`2.0.7+build`) as the release. None when those three numbers cannot be
+/// read.
+fn release(version: &str) -> Option<(u64, u64, u64, bool)> {
+    let v = version.trim();
+    let v = v.strip_prefix("opencode ").unwrap_or(v);
+    let v = v.strip_prefix('v').unwrap_or(v);
+    let v = v.split_once('+').map_or(v, |(v, _)| v);
+    let (numbers, released) = v.split_once('-').map_or((v, true), |(numbers, _)| (numbers, false));
+    let mut parts = numbers.split('.').map(|part| part.parse::<u64>().ok());
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Some(major)), Some(Some(minor)), Some(Some(patch)), None) => Some((major, minor, patch, released)),
+        _ => None,
+    }
+}
+
 /// Whether `version` is a release after VERIFIED (T-32): taken, and said to
 /// be newer than the one checked against.
 pub fn newer_than_verified(version: &str) -> bool {
-    let parts = |v: &str| -> Option<Vec<u64>> {
-        let v = v.trim();
-        let v = v.strip_prefix("opencode ").unwrap_or(v);
-        v.strip_prefix('v').unwrap_or(v).split('.').map(|p| p.parse().ok()).collect()
-    };
-    matches!((parts(version), parts(VERIFIED)), (Some(v), Some(w)) if v > w)
+    matches!((release(version), release(VERIFIED)), (Some(v), Some(w)) if v > w)
+}
+
+/// Whether `version` is a release before MIN (T-32): refused.
+pub fn older_than_min(version: &str) -> bool {
+    matches!((release(version), release(MIN)), (Some(v), Some(m)) if v < m)
+}
+
+/// What a start says of a 2.x older than MIN.
+fn older_note() -> String {
+    format!("older than {MIN}, the oldest Core reads; update it")
+}
+
+/// What a start says of a 2.x whose version cannot be read (`release`).
+fn unreadable_note() -> String {
+    format!("cannot read its version; {MIN} is the oldest Core reads")
 }
 
 /// What a start or the Agent says of a version newer than VERIFIED.

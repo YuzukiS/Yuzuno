@@ -23,3 +23,9 @@
 .executor-templates-settings .executor-template-instructions { flex-wrap: wrap; }
 .executor-templates-settings .executor-template > .quiet-button { margin: 4px 16px 12px; }
 .executor-templates-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+/* Executors at once (T-35), above the templates and saved apart from them. */
+.executor-templates-settings .executor-slots { margin: 0 0 12px; }
+.executor-templates-settings .executor-slots-in-use { margin: 0; padding: 0 16px 10px; }
+.executor-templates-settings .executor-slots-actions { padding: 0 16px 12px; }
+.executor-templates-settings .executor-slots > .inline-error,
+.executor-templates-settings .executor-slots > .quiet-button { margin: 0 16px 12px; }

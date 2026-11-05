@@ -54,6 +54,8 @@ async fn lab_with(dir: &Path, cwd: &Path, switches: &[(&str, &str)]) -> Arc<Work
     ws.store.insert(&agent(&cwd.to_string_lossy())).unwrap();
     let own = dir.join("data/opencode/oc");
     std::fs::create_dir_all(&own).unwrap();
+    // Rewind still reads 1.19.3's messages until its slice (T-32, Lead 4983): the stand-in sends those.
+    std::fs::write(dir.join("data/opencode/v1Messages"), "1").unwrap();
     for (name, value) in switches {
         std::fs::write(own.join(name), value).unwrap();
     }

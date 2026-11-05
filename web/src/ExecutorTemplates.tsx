@@ -6,6 +6,7 @@ import {
   readExecutorTemplates, saveExecutorTemplates,
   type ExecutorHarness, type ExecutorTemplate, type ExecutorTemplatesView,
 } from "./executor-templates";
+import { ExecutorSlots } from "./ExecutorSlots";
 import { langTag, strings, useLanguage } from "./i18n";
 import "./executor-templates.css";
 
@@ -199,6 +200,7 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
           <p>{projectId ? t.introProject : t.intro}</p>
         </div>
       </header>
+      <ExecutorSlots active={active} projectId={projectId} disabled={disabled} />
       {active && !view && !error && <p className="settings-row-help" role="status">{t.reading}</p>}
       {view && <>
         {inherited.length > 0 && (

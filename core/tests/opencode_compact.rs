@@ -58,6 +58,8 @@ async fn lab(model: bool) -> Lab {
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
     std::fs::create_dir_all(dir.path().join("data/opencode").join(ID)).unwrap();
+    // Compaction still reads 1.19.3's messages until its slice (T-32, Lead 4983): the stand-in sends those.
+    std::fs::write(dir.path().join("data/opencode/v1Messages"), "1").unwrap();
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
     ws.store.insert(&agent(ID, &work.to_string_lossy())).unwrap();
     let d = ws.reconnect(ID).await.unwrap();
