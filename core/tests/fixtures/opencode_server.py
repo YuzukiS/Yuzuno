@@ -1330,8 +1330,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.prompt(session, old, admitted=True)
 
     def prompt(self, session, body, admitted=False):
-        # 2.x answers with the message admitted (`admitted`); 1.19.3's prompt_async, 204.
-        accepted = lambda: self.reply(200, {'data': {'id': message_id, 'sessionID': session, 'type': 'user', 'delivery': 'steer',
+        # 2.x answers with the message admitted (`admitted`); 1.19.3's prompt_async, 204. Mode `renamed`: stored, and
+        # answered as another message's admission.
+        accepted = lambda: self.reply(200, {'data': {'id': new_id('msg') if mode == 'renamed' else message_id, 'sessionID': session,
+                                                     'type': 'user', 'delivery': 'steer',
                                                      'payload': {'text': text}, 'time': {'created': int(time.time() * 1000)}}}) \
             if admitted else self.reply(204)
         message_id = body.get('messageID') or new_id('msg')
@@ -1347,7 +1349,7 @@ class Handler(BaseHTTPRequestHandler):
             # `prompt` applies a revert waiting in the session before its message (`session/prompt.ts`).
             cleanup(session)
         model = body.get('model') or modes['defaultModel']
-        if mode == 'store':
+        if mode in ('store', 'renamed'):
             if session in statuses:
                 # Sent while a run goes on: 2.x delivers it at that run's next step (v2_deliver).
                 v2_of(session)['steer'].add(message_id)

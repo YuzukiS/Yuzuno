@@ -669,7 +669,7 @@ impl Server {
             Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
             Ok(response) if response.status().is_success() => match response.json::<Value>().await {
                 Ok(answer) if answer["data"]["id"] == id.as_str() => Submission::Accepted,
-                Ok(answer) => Submission::Unknown(format!("OpenCode admitted {} instead", answer["data"]["id"])),
+                Ok(answer) => Submission::Unknown(format!("OpenCode admitted {} instead", answer["data"]["id"].as_str().unwrap_or("no message it named"))),
                 Err(error) => Submission::Unknown(format!("OpenCode's answer was not read: {error}")),
             },
             // 2.x's ConflictError: a message under this ID is one it holds already.

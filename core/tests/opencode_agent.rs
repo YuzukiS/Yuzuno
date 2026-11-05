@@ -454,7 +454,7 @@ async fn abort_asks_and_only_the_end_it_reports_ends_the_turn() {
     lab.ws.interrupt(ID).await.unwrap();
     let d = lab.until("the reported end", |d| turn(d, &second)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &second)["status"], "interrupted");
-    assert_eq!(lab.posts(&format!("/api/session/{session}/interrupt")).len(), 2);
+    assert_eq!(lab.posts(&format!("/api/session/{session}/interrupt")).len(), 2, "interrupted through 2.x's own route");
     assert!(lab.ws.interrupt(ID).await.is_err(), "nothing runs");
     lab.ws.close_agent(ID).await.unwrap();
 }
@@ -860,7 +860,7 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
 
     // It is made the session's before the next message (2.x's prompt carries none), named as OpenCode names it.
     let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.switches(), [json!({"model":{"id":"anthropic/claude-x","providerID":"openrouter"}})]);
+    assert_eq!(lab.switches(), [json!({"model":{"id":"anthropic/claude-x","providerID":"openrouter"}})], "made the session's before its first message");
     assert_eq!(lab.prompts()[0]["body"], json!({"id":first,"text":"hello"}));
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
@@ -932,14 +932,15 @@ async fn a_variant_the_chosen_model_lists_goes_with_the_next_messages() {
     assert_eq!(lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap().settings.reasoning_effort.as_deref(), Some("max"));
 
     let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.switches(), [json!({"model":{"id":"deepseek-flash","providerID":"deepseek","variant":"max"}})]);
+    assert_eq!(lab.switches(), [json!({"model":{"id":"deepseek-flash","providerID":"deepseek","variant":"max"}})], "with its variant");
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
 
     // OpenCode's own variant again: none is sent.
     choose("deepseek/deepseek-flash", None).await.unwrap();
     let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.switches()[1], json!({"model":{"id":"deepseek-flash","providerID":"deepseek"}}), "the same model, without the variant");
+    assert_eq!(lab.switches(), [json!({"model":{"id":"deepseek-flash","providerID":"deepseek","variant":"max"}}),
+        json!({"model":{"id":"deepseek-flash","providerID":"deepseek"}})], "the same model, without the variant");
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
 

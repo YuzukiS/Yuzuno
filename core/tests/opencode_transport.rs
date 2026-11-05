@@ -355,6 +355,34 @@ async fn an_admitted_prompt_is_accepted_and_rest_errors_keep_their_status() {
     server.shutdown().await.unwrap();
 }
 
+/// A message sent while a run goes on waits in 2.x's inbox until a step takes
+/// it, and is found there by its ID; an answer admitting another message is
+/// no proof; an ID the session holds already, sent by a server started
+/// anew, is the one sent (T-32 slice 4a).
+#[tokio::test]
+async fn a_prompt_is_found_waiting_in_the_inbox_and_only_its_own_admission_accepts_it() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let first = MessageId::new();
+    assert_eq!(server.submit(&session, &first, "hello").await.unwrap(), Submission::Accepted);
+    let waiting = MessageId::new();
+    assert_eq!(server.submit(&session, &waiting, "also").await.unwrap(), Submission::Accepted);
+    let found = server.message(&session, &waiting).await.unwrap();
+    assert_eq!(found.as_ref().map(|m| &m["id"]), Some(&json!(waiting.as_str())), "found in its inbox while it waits: {found:?}");
+
+    lab.control("mode", json!({"prompt": "renamed"})).await;
+    match server.submit(&session, &MessageId::new(), "hello").await.unwrap() {
+        Submission::Unknown(reason) => assert!(reason.contains("admitted msg_"), "{reason}"),
+        other => panic!("another message admitted is no proof: {other:?}"),
+    }
+    server.shutdown().await.unwrap();
+
+    let again = Server::start(&lab.launch).await.unwrap();
+    assert_eq!(again.submit(&session, &first, "hello").await.unwrap(), Submission::Accepted, "an ID the session holds already is the one sent");
+    again.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_lost_answer_stays_unknown_is_never_sent_again_and_is_found_by_its_id() {
     let lab = lab();
