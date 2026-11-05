@@ -3,7 +3,7 @@
 // runs, the composer offers "Add a thought" and "Send while working"; a message sent goes to that turn, is shown
 // there marked not read yet, and the mark goes once Claude names it in that same turn. Desktop, 1440×900.
 // Chromium is not Safari.
-//   node acceptance/t45/browser.mjs --core BIN --web DIST --run /var/tmp/<short> --out DIR [--port 4545]
+//   node acceptance/t45-native-followup/browser.mjs --core BIN --web DIST --run /var/tmp/<short> --out DIR [--port 4545]
 // --run holds the lab's data, task folder, home and the bridge's log; the report and screenshots go to --out.
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
