@@ -32,7 +32,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use reqwest::{Method, Response, Url};
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     fmt,
     path::{Path, PathBuf},
@@ -153,9 +153,10 @@ impl std::error::Error for HttpStatus {}
 /// What a prompt submission is known to have done.
 #[derive(Debug, PartialEq)]
 pub enum Submission {
-    /// 204: OpenCode started on the prompt. Not proof that the message was
-    /// stored: OpenCode answers first and stores it afterwards, which can
-    /// still fail (`handlers/session.ts`, `promptAsync`).
+    /// OpenCode took it: 2.x's prompt answers with the message as it
+    /// durably admitted it, under the ID it was sent with, or says the ID is
+    /// one it holds already (T-32 slice 4a). A command's answer (1.19.3's
+    /// route) says only that the run started.
     Accepted,
     /// A 4xx: OpenCode refused the request before taking it (an unknown
     /// session, an invalid body, wrong credentials).
@@ -253,9 +254,9 @@ pub struct Snapshot {
     pub questions: Vec<Value>,
 }
 
-/// A model one of OpenCode's configured providers offers, as
-/// `GET /config/providers` lists it, and only what names it: a provider's
-/// `key`, `options` and `env`, and a model's `options` and `headers`, can hold
+/// A model one of OpenCode's configured providers offers, as 2.x's
+/// `GET /api/model` lists it (T-32 slice 4a), and only what names it: a
+/// provider's or a model's `settings`, `headers` and `body` can hold
 /// credentials and are never read (T-10).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelChoice {
@@ -263,13 +264,12 @@ pub struct ModelChoice {
     pub provider_name: String,
     pub model: String,
     pub name: String,
-    /// `alpha`, `beta`, `deprecated` or `active` (`provider/provider.ts`).
+    /// `alpha`, `beta`, `deprecated` or `active` (schema/src/model.ts).
     pub status: String,
-    /// The names of its variants (`model.variants`, such as `low` or `max`),
+    /// The IDs of its variants (`variants[].id`, such as `low` or `max`),
     /// mildest first; never what each one sets.
     pub variants: Vec<String>,
-    /// Whether it reads images (`capabilities.input.image`, from models.dev's
-    /// `modalities.input`, `provider/provider.ts`).
+    /// Whether it reads images (`capabilities.input` holds `image`).
     pub image: bool,
     /// Its context window in tokens (`limit.context`); 0 when OpenCode lists
     /// none, or none that is a whole number.
@@ -284,9 +284,8 @@ impl ModelChoice {
     }
 }
 
-/// An image for a prompt (T-10), inline: OpenCode's `FilePartInput`
-/// (`schema/src/v1/session.ts`) with a `data:` URL, which OpenCode keeps as
-/// it is for any media type but `text/plain` (`session/prompt.ts`).
+/// An image for a prompt (T-10), inline: a `data:` URI, which 2.x decodes
+/// and may scale (T-32 slice 4a, core/src/session/prompt.ts).
 pub struct FilePart {
     /// `image/png`, `image/jpeg` or `image/webp`.
     pub mime: &'static str,
@@ -296,10 +295,12 @@ pub struct FilePart {
 }
 
 impl FilePart {
+    /// As 2.x's prompt takes a file (schema/src/prompt-input.ts): a `data:`
+    /// URI, which it decodes in place (core/src/session/prompt.ts), named.
     fn input(&self) -> Value {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode(&self.data);
-        json!({"type": "file", "mime": self.mime, "filename": self.filename, "url": format!("data:{};base64,{data}", self.mime)})
+        json!({"uri": format!("data:{};base64,{data}", self.mime), "name": self.filename})
     }
 }
 
@@ -648,50 +649,65 @@ impl Server {
     /// Sends one text prompt under `id`, once: an ID this server was given
     /// before is refused here, whatever became of it.
     pub async fn submit(&self, session: &str, id: &MessageId, text: &str) -> Result<Submission> {
-        self.submit_with(session, id, text, &[], None, None).await
+        self.submit_with(session, id, text, &[]).await
     }
 
-    /// As `submit`, with its images as file parts after the text (and no
-    /// empty text part before them), the model to answer it and that model's
-    /// variant; without them OpenCode decides (its agent's model and variant,
-    /// the session's last, then its configured default).
-    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, files: &[FilePart], model: Option<&ModelChoice>, variant: Option<&str>) -> Result<Submission> {
-        let path = format!("/session/{}/prompt_async", segment(session)?);
+    /// As `submit`, with its images after the text, through 2.x's prompt
+    /// (`POST /api/session/:id/prompt`, T-32 slice 4a). It carries no model:
+    /// the session's is set apart (`switch_model`). Its answer is the message
+    /// as 2.x admitted it under `id`, which a Conflict says it holds already.
+    pub async fn submit_with(&self, session: &str, id: &MessageId, text: &str, files: &[FilePart]) -> Result<Submission> {
+        let path = format!("/api/session/{}/prompt", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
-        let text = (!text.is_empty() || files.is_empty()).then(|| json!({"type": "text", "text": text}));
-        let parts: Vec<Value> = text.into_iter().chain(files.iter().map(FilePart::input)).collect();
-        let mut body = json!({"messageID": id.as_str(), "parts": parts});
-        if let Some(model) = model {
-            body["model"] = json!({"providerID": model.provider, "modelID": model.model});
-        }
-        if let Some(variant) = variant {
-            body["variant"] = variant.into();
+        let mut body = json!({"id": id.as_str(), "text": text});
+        if !files.is_empty() {
+            body["files"] = files.iter().map(FilePart::input).collect();
         }
         let sent = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&body).send().await;
         Ok(match sent {
             Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
-            Ok(response) if response.status().as_u16() == 204 => Submission::Accepted,
+            Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+                Ok(answer) if answer["data"]["id"] == id.as_str() => Submission::Accepted,
+                Ok(answer) => Submission::Unknown(format!("OpenCode admitted {} instead", answer["data"]["id"])),
+                Err(error) => Submission::Unknown(format!("OpenCode's answer was not read: {error}")),
+            },
+            // 2.x's ConflictError: a message under this ID is one it holds already.
+            Ok(response) if response.status().as_u16() == 409 => Submission::Accepted,
             Ok(response) if response.status().is_client_error() => Submission::Refused(status(response).await),
             Ok(response) => Submission::Unknown(status(response).await.to_string()),
         })
     }
 
-    /// The stored message with this ID, or `None` while OpenCode has none.
-    /// After a 204 the message is stored a moment later, so `None` is not
-    /// proof that it was not delivered. A session OpenCode does not know is
-    /// an error, not a `None`.
-    pub async fn message(&self, session: &str, id: &MessageId) -> Result<Option<Value>> {
-        let path = format!("/session/{}/message/{}", segment(session)?, segment(id.as_str())?);
-        match self.json(Method::GET, &path, None).await {
-            Ok(message) => Ok(Some(message)),
-            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {
-                // The same 404 answers for an unknown session.
-                self.session(session).await?;
-                Ok(None)
-            }
-            Err(error) => Err(error),
+    /// Makes `model`, with `variant`, the session's for its next steps
+    /// (`POST /api/session/:id/model`, T-32 slice 4a): 2.x's prompt carries
+    /// none. 2.x keeps a `model-switched` message of it.
+    pub async fn switch_model(&self, session: &str, model: &ModelChoice, variant: Option<&str>) -> Result<()> {
+        let mut body = json!({"model": {"id": model.model, "providerID": model.provider}});
+        if let Some(variant) = variant {
+            body["model"]["variant"] = variant.into();
         }
+        let path = format!("/api/session/{}/model", segment(session)?);
+        let response = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&body).send().await
+            .with_context(|| format!("OpenCode did not answer {path}"))?;
+        success(response).await?;
+        Ok(())
+    }
+
+    /// Where 2.x holds the message sent under `id`, or `None` while it holds
+    /// none (T-32 slice 4a): among the session's messages once delivered
+    /// (`GET /api/session/:id/message/:messageID`), else admitted and waiting
+    /// in its inbox. A session OpenCode does not know is an error, not a
+    /// `None`.
+    pub async fn message(&self, session: &str, id: &MessageId) -> Result<Option<Value>> {
+        let path = format!("/api/session/{}/message/{}", segment(session)?, segment(id.as_str())?);
+        match self.data(Method::GET, &path, &[], None).await {
+            Ok(message) => return Ok(Some(message)),
+            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {}
+            Err(error) => return Err(error),
+        }
+        let inbox = self.data(Method::GET, &format!("/api/session/{}/inbox", segment(session)?), &[], None).await?;
+        Ok(inbox.as_array().into_iter().flatten().find(|item| item["id"] == id.as_str()).cloned())
     }
 
     /// Opens the event stream and reads up to its `server.connected`.
@@ -738,29 +754,36 @@ impl Server {
         })
     }
 
-    /// The models OpenCode's configured providers offer now, by provider and
-    /// then model name. Nothing else of `/config/providers` is kept.
+    /// The chat models 2.x offers now (`GET /api/model`), named with their
+    /// providers' names (`GET /api/provider`), by provider and then model
+    /// name (T-32 slice 4a). Only what names and describes one is read: a
+    /// provider's or a model's `settings`, `headers` and `body` can hold
+    /// credentials and are never kept.
     pub async fn models(&self) -> Result<Vec<ModelChoice>> {
-        let listed = self.json(Method::GET, "/config/providers", None).await?;
+        let providers = self.data(Method::GET, "/api/provider", &[], None).await?;
+        let names: HashMap<&str, &str> = providers.as_array().context("OpenCode's providers is not a list")?.iter()
+            .filter_map(|provider| Some((provider["id"].as_str()?, provider["name"].as_str()?))).collect();
+        let listed = self.data(Method::GET, "/api/model", &[], None).await?;
         let mut models = Vec::new();
-        for provider in listed["providers"].as_array().context("OpenCode's providers is not a list")? {
-            let Some(id) = provider["id"].as_str() else { continue };
-            let provider_name = provider["name"].as_str().unwrap_or(id);
-            for (key, model) in provider["models"].as_object().into_iter().flatten() {
-                let model_id = model["id"].as_str().unwrap_or(key);
-                let mut variants: Vec<String> = model["variants"].as_object().into_iter().flatten().map(|(name, _)| name.clone()).collect();
-                variants.sort_by(|a, b| variant_order(a).cmp(&variant_order(b)));
-                models.push(ModelChoice {
-                    provider: id.into(),
-                    provider_name: provider_name.into(),
-                    model: model_id.into(),
-                    name: model["name"].as_str().unwrap_or(model_id).into(),
-                    status: model["status"].as_str().unwrap_or("active").into(),
-                    variants,
-                    image: model["capabilities"]["input"]["image"] == true,
-                    context: model["limit"]["context"].as_u64().unwrap_or(0),
-                });
+        for model in listed.as_array().context("OpenCode's models is not a list")? {
+            let (Some(id), Some(provider)) = (model["id"].as_str(), model["providerID"].as_str()) else { continue };
+            // One a provider's settings turned off is not offered (schema/src/model.ts `enabled`).
+            if model["enabled"] == false {
+                continue;
             }
+            let mut variants: Vec<String> = model["variants"].as_array().into_iter().flatten()
+                .filter_map(|variant| variant["id"].as_str().map(str::to_owned)).collect();
+            variants.sort_by(|a, b| variant_order(a).cmp(&variant_order(b)));
+            models.push(ModelChoice {
+                provider: provider.into(),
+                provider_name: names.get(provider).copied().unwrap_or(provider).into(),
+                model: id.into(),
+                name: model["name"].as_str().unwrap_or(id).into(),
+                status: model["status"].as_str().unwrap_or("active").into(),
+                variants,
+                image: model["capabilities"]["input"].as_array().is_some_and(|input| input.iter().any(|kind| kind == "image")),
+                context: model["limit"]["context"].as_u64().unwrap_or(0),
+            });
         }
         models.sort_by(|a, b| (&a.provider_name, &a.name, &a.model).cmp(&(&b.provider_name, &b.name, &b.model)));
         Ok(models)
@@ -768,7 +791,29 @@ impl Server {
 
     /// The commands OpenCode's configuration defines now, by name. Nothing
     /// else of `/config` is kept, not even a command's template.
+    ///
+    /// 2.x lists its own (`GET /api/command`, T-32 slice 4a), naming and
+    /// describing each only; 1.19.3's `/config` is read where that route is
+    /// not there, as the stand-in keeps it until the commands slice. Running
+    /// one is still 1.19.3's route (`command`), which 2.x refuses.
     pub async fn commands(&self) -> Result<Vec<CommandChoice>> {
+        match self.data(Method::GET, "/api/command", &[], None).await {
+            Ok(listed) => {
+                let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
+                    .filter_map(|command| Some(CommandChoice {
+                        name: command["name"].as_str()?.to_owned(),
+                        description: command["description"].as_str().unwrap_or_default().into(),
+                        // 2.x's list says nothing of a command's template, agent or model.
+                        takes_arguments: true,
+                        subtask: false,
+                        model: None,
+                    })).collect();
+                commands.sort_by(|a, b| a.name.cmp(&b.name));
+                return Ok(commands);
+            }
+            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {}
+            Err(error) => return Err(error),
+        }
         let config = self.json(Method::GET, "/config", None).await?;
         let named = |model: &Value| model.as_str().filter(|m| !m.is_empty()).map(str::to_owned);
         let mut commands: Vec<CommandChoice> = config["command"].as_object().into_iter().flatten().map(|(name, info)| CommandChoice {
@@ -1005,10 +1050,12 @@ impl Server {
         Ok(())
     }
 
-    /// Asks OpenCode to stop the session's run. Its answer is not the end of
-    /// the run: that is the session's status and messages, by event or snapshot.
+    /// Asks OpenCode to interrupt the session's run (`POST
+    /// /api/session/:id/interrupt`, T-32 slice 4a). Its answer is not the
+    /// end of the run: that is its `execution.interrupted`, by event or
+    /// snapshot.
     pub async fn abort(&self, session: &str) -> Result<()> {
-        self.json(Method::POST, &format!("/session/{}/abort", segment(session)?), None).await?;
+        self.json(Method::POST, &format!("/api/session/{}/interrupt", segment(session)?), None).await?;
         Ok(())
     }
 

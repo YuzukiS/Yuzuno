@@ -32,10 +32,11 @@
 //! for any harness before its receipt is recorded.
 //!
 //! A model (T-10) is OpenCode's own default unless one is chosen for the
-//! Agent from what its OpenCode's configured providers list
-//! (`/config/providers`), and so is that model's variant (`model.variants`,
-//! such as `high`); a chosen one goes with each new message (`prompt_async`'s
-//! `model` and `variant`), and one OpenCode no longer lists refuses the
+//! Agent from what its OpenCode's configured providers list (`/api/model`),
+//! and so is that model's variant (`variants`, such as `high`). 2.x's prompt
+//! carries no model (T-32 slice 4a): a chosen one is made the session's
+//! (`POST /api/session/:id/model`) before a message whenever the session's
+//! is another or not known yet, and one OpenCode no longer lists refuses the
 //! message before anything is sent. Only names are kept, never what else a
 //! provider's record holds (its key, options or headers) or what a variant
 //! sets.
@@ -362,6 +363,21 @@ async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
     let listed = server.models().await.context("没有读到 OpenCode 的模型；这条消息没有发送，草稿保留")?;
     let found = listed.into_iter().find(|m| m.id() == model);
     found.map(Some).with_context(|| format!("所选模型 {model} 已不在 OpenCode 当前的配置中；这条消息没有发送，草稿保留。请在设置里另选模型"))
+}
+
+/// Makes the Agent's chosen model and variant the session's before a message
+/// (T-32 slice 4a, D3): 2.x's prompt carries none. Only when the session's,
+/// as OpenCode says now (`GET /api/session/:id`), is another or none yet;
+/// never without a chosen one, so OpenCode's own default stays. Each switch
+/// is a `model-switched` message of 2.x's.
+async fn choose_for(c: &Connection, model: Option<&ModelChoice>, variant: Option<&str>) -> Result<()> {
+    let Some(model) = model else { return Ok(()) };
+    let current = c.server.session(&c.session).await.context("没有读到 OpenCode 会话当前的模型；这条消息没有发送，草稿保留")?;
+    let current = &current["model"];
+    if current["id"] == model.model.as_str() && current["providerID"] == model.provider.as_str() && current["variant"].as_str() == variant {
+        return Ok(());
+    }
+    c.server.switch_model(&c.session, model, variant).await.context("没有把所选模型设为 OpenCode 会话的模型；这条消息没有发送，草稿保留")
 }
 
 /// The variant chosen for an Agent, as its chosen model lists it now; None
@@ -1236,8 +1252,9 @@ impl Workspace {
         self.changed(id);
         let held = self.send_view(id).await?.turns.iter().any(|t| t["id"] == expected && t["_opencodeInputs"].get(&input).is_some());
         ensure!(held, "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
+        choose_for(&c, model.as_ref(), variant.as_deref()).await?;
         *sent = true;
-        let mut submitted = c.server.submit_with(&c.session, &message, text, &files, model.as_ref(), variant.as_deref()).await;
+        let mut submitted = c.server.submit_with(&c.session, &message, text, &files).await;
         // A 400 refuses it only when OpenCode's record, read after it, has no
         // message under its ID, as for a command (#435): an event that already
         // confirmed it makes it delivered, and a record that could not be read
@@ -1392,9 +1409,15 @@ impl Workspace {
                 let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
                 self.opencode_command_started(id, &c, &message, &command.name, arguments, model.as_deref(), variant).await
             }
-            None => c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await,
+            None => match choose_for(&c, model.as_ref(), variant.as_deref()).await {
+                Ok(()) => c.server.submit_with(&c.session, &message, &text, &files).await,
+                Err(error) => Err(error),
+            },
         };
         let refused = match &submitted {
+            // 2.x has no 1.19.3 route to run a command: it answers 405 (T-32 slice 4a), until the commands slice.
+            Ok(Submission::Refused(status)) if status.code == 405 && command.is_some() =>
+                Some(format!("{}；命令没有执行", crate::opencode_v2::NOT_YET)),
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.
             Err(error) => Some(format!("消息没有发送：{error}")),
@@ -1767,6 +1790,9 @@ impl Workspace {
             let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
             ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
+            if let Some(not_yet) = p.params["_opencodeNotYet"].as_str() {
+                bail!("{not_yet}");
+            }
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
                 if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
@@ -2703,6 +2729,11 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
         params["_opencodeChild"] = child.clone();
     }
     params["_responseSent"] = false.into();
+    // 2.x's own request: shown with why it can't be answered here yet, so its
+    // run is seen to wait on it (T-32 slice 4a, until slice 5).
+    if crate::opencode_v2::is_v2_request(request) {
+        params["_opencodeNotYet"] = format!("{}；这个请求还不能在 Yuzuno 里回答，只能中断这一轮", crate::opencode_v2::NOT_YET).into();
+    }
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();
     }

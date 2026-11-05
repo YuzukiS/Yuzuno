@@ -40,6 +40,16 @@ pub fn is_v2(messages: &Value) -> bool {
     messages.as_array().is_some_and(|all| all.iter().any(|m| m.get("info").is_none() && m["type"].is_string()))
 }
 
+/// Whether a pending request is 2.x's own permission request or form (T-32
+/// slice 4a): Core reads and answers 1.19.3's until slice 5, so it can't
+/// answer one of these yet. 2.x's permission request names an `action`, not
+/// a `permission` (schema/src/permission.ts); its form has `fields`, not
+/// `questions` (schema/src/form.ts).
+pub(crate) fn is_v2_request(request: &Value) -> bool {
+    (request["action"].is_string() && request.get("permission").is_none())
+        || (request["fields"].is_array() && request.get("questions").is_none())
+}
+
 /// The ID of a text or reasoning entry of an answer: never one Core keys by
 /// position (record_rows.rs takes a leading `~` so).
 pub(crate) fn entry_id(assistant: &str, ordinal: u64) -> String {
@@ -315,6 +325,9 @@ impl Open {
         let status = |kind: &str| made("session.status", json!({"sessionID": session, "status": {"type": kind}}));
         let failed = |error: Value| made("session.error", json!({"sessionID": session, "error": error}));
         match kind {
+            // 2.x's form, asked and ended as Core's question is (`is_v2_request` marks it unanswerable yet).
+            "form.created" => vec![made("question.asked", d["form"].clone())],
+            "form.replied" | "form.cancelled" => vec![made("question.replied", json!({"sessionID": session, "requestID": d["id"]}))],
             "session.created" if d.get("info").is_none() => vec![made("session.created", json!({"sessionID": session,
                 "info": {"id": session, "parentID": d["parentID"], "title": d["title"], "agent": d["agent"]}}))],
             "session.inbox.enqueued" => {
