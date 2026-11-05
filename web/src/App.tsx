@@ -139,7 +139,7 @@ import { GroupedAgents } from "./ProjectGroups";
 import { groupAgents } from "./project-groups";
 import { useAppearance } from "./appearance";
 import { StatusBar } from "./StatusBar";
-import { useAutoRead } from "./useAutoRead";
+import { AUTO_READ_DWELL_MS, useAutoRead } from "./useAutoRead";
 import { PanelResizeHandle, usePanelWidths } from "./ResizablePanels";
 import { CollaborationBoard } from "./CollaborationBoard";
 import { MachinesPage } from "./MachinesPage";
@@ -1449,16 +1449,24 @@ export function App() {
   // Who needs the user (T-42). What this device has seen of each Agent's last
   // Turn end, kept here only; a preview's sample Workspace keeps none.
   const turnSeen = useTurnSeen(previewMode ? "" : workspaceId);
-  // A Turn end is seen once its conversation is shown while the window is.
+  // A Turn end is seen once its conversation has been shown, in a visible
+  // window, as long as reading marks it read (AUTO_READ_DWELL_MS): the one
+  // a window opens on and leaves at once is not.
   const shownEnd = !homeOpen && agent?.lastTurnEnd ? agent.lastTurnEnd.seq : 0;
   useEffect(() => {
     if (previewMode || !selected || !shownEnd) return;
-    const mark = () => {
-      if (document.visibilityState === "visible") markTurnSeen(workspaceId, selected, shownEnd);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => {
+      clearTimeout(timer);
+      if (document.visibilityState === "visible")
+        timer = setTimeout(() => markTurnSeen(workspaceId, selected, shownEnd), AUTO_READ_DWELL_MS);
     };
-    mark();
-    document.addEventListener("visibilitychange", mark);
-    return () => document.removeEventListener("visibilitychange", mark);
+    watch();
+    document.addEventListener("visibilitychange", watch);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", watch);
+    };
   }, [previewMode, workspaceId, selected, shownEnd]);
   // The tab's title and the app's badge count what Home's tab counts. The
   // badge only where this browser or installed app has one; nothing else

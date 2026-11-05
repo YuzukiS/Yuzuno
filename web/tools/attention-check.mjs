@@ -105,8 +105,11 @@ async function check(run) {
     window.addEventListener("keydown", (event) => {
       if (event.key.toLowerCase() === "j" && event.ctrlKey) setTimeout(() => window.__taken.push(event.defaultPrevented));
     });
-    if (!localStorage.getItem("yuzuno.appearance"))
+    if (!localStorage.getItem("yuzuno.appearance")) {
       localStorage.setItem("yuzuno.appearance", JSON.stringify({ agentOrder: "attention", projectGroups: "none" }));
+      // The window opens on Kiri, whose Turn hasn't ended: nothing is seen first.
+      localStorage.setItem("yuzuno.selected.ws-attention", JSON.stringify("d"));
+    }
   });
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
@@ -215,6 +218,8 @@ async function check(run) {
     await page.waitForFunction(() => localStorage.getItem("yuzuno.turnSeen.ws-attention") === '{"a":30}', null, { timeout: 10_000 });
     await next();
     assert.equal(await title(), "Hana");
+    // Shown as long as reading marks it read (1.2 s), it is seen too.
+    await page.waitForFunction(() => localStorage.getItem("yuzuno.turnSeen.ws-attention") === '{"a":30,"b":20}', null, { timeout: 10_000 });
     await next();
     assert.equal(await title(), "Sora", "and round again");
     await page.screenshot({ path: join(output, `${run.name}-conversation.png`) });

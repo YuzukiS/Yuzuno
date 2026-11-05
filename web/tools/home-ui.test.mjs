@@ -2730,12 +2730,14 @@ const attentionHome = () => {
   home.needsYou.push({ kind: "question", projectId: "p-res", agentId: "c", agentName: "Sora", turnId: "t3", itemId: "q1", title: "Which seed?", since: at(5) });
   return home;
 };
+// The window opens on Sora, whose last Turn hasn't ended: nothing is seen before the test looks.
+const startOnSora = { "yuzuno.selected.ws-home": JSON.stringify("c") };
 const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map((row) => row.dataset.agentId);
 const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
 const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
 
 test("Needs you lists an open question and opens its conversation; Turn ends not seen here follow, failed then finished, and stay this device's", async () => {
-  const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome() });
+  const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome(), storage: startOnSora });
   try {
     await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "the question is listed");
     const unseen = (outcome) => [...p.doc.querySelectorAll(`[data-unseen="${outcome}"] [data-unseen-agent]`)].map((b) => b.dataset.unseenAgent);
@@ -2765,13 +2767,13 @@ test("Needs you lists an open question and opens its conversation; Turn ends not
 });
 
 test("the rail in attention order once Appearance chooses it: the same Agents, who needs you first, within each project group", async () => {
-  const one = await mount({ workspaceAgents: attentionAgents(), storage: { "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
+  const one = await mount({ workspaceAgents: attentionAgents(), storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
   try {
     assert.deepEqual(railIds(one), ["c", "a", "b"], "waiting on you, failed unseen, finished unseen");
   } finally {
     one.close();
   }
-  const listed = await mount({ workspaceAgents: attentionAgents(), storage: { "yuzuno.appearance": JSON.stringify({ projectGroups: "none" }) } });
+  const listed = await mount({ workspaceAgents: attentionAgents(), storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ projectGroups: "none" }) } });
   try {
     assert.deepEqual(railIds(listed), ["a", "b", "c"], "by default the list keeps its order");
   } finally {
@@ -2779,7 +2781,7 @@ test("the rail in attention order once Appearance chooses it: the same Agents, w
   }
   // Grouped by project: each group ordered, the groups as the project menu has them.
   const grouped = [{ ...agents[0], ...ended(30) }, { ...agents[1], pendingCount: 1 }, agents[2]];
-  const groups = await mount({ workspaceAgents: grouped, storage: { "yuzuno.appearance": JSON.stringify({ agentOrder: "attention" }) } });
+  const groups = await mount({ workspaceAgents: grouped, storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention" }) } });
   try {
     assert.deepEqual(railIds(groups), ["b", "a", "c"]);
   } finally {
@@ -2792,6 +2794,7 @@ test("the tab title and the app badge count what Home's tab counts; next needs y
   const p = await mount({
     workspaceAgents: attentionAgents(),
     home: attentionHome(),
+    storage: startOnSora,
     before: (w) => {
       w.document.title = "Yuzuno · test";
       w.navigator.setAppBadge = async (count) => badges.push(count);
