@@ -19,7 +19,7 @@ It checks one desktop window, 1440×900, in Chromium:
    **Send while working**.
 3. A message sent then goes to that turn (`expectedTurnId` is the native
    turn). The bridge receives one `append` to it and no prompt. The message
-   shows in that turn as yours, marked not read yet.
+   shows in that turn as yours, marked "Sent · waiting for Claude Code to confirm".
 4. Claude names the message in that same turn. The mark goes away, and its
    answer follows in that turn. Core keeps one turn, with the message once,
    and its receipt is accepted there.

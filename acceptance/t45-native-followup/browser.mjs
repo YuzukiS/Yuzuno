@@ -1,7 +1,7 @@
 // T-45 in Chromium against an isolated lab Core with a scripted Claude bridge (fake_claude.py): no model, no
 // CLI, no login, never port 4317. Claude runs a turn of its own, as after a background task's notice. While it
 // runs, the composer offers "Add a thought" and "Send while working"; a message sent goes to that turn, is shown
-// there marked not read yet, and the mark goes once Claude names it in that same turn. Desktop, 1440×900.
+// there marked as waiting for Claude to confirm, and the mark goes once Claude names it in that same turn. Desktop, 1440×900.
 // Chromium is not Safari.
 //   node acceptance/t45-native-followup/browser.mjs --core BIN --web DIST --run /var/tmp/<short> --out DIR [--port 4545]
 // --run holds the lab's data, task folder, home and the bridge's log; the report and screenshots go to --out.
@@ -106,7 +106,8 @@ try {
   const mine = turn.locator(item);
   await mine.locator(".message-delivery").waitFor();
   const mark = await mine.locator(".message-delivery").innerText();
-  check("it shows in that turn, as yours, marked not read yet", /not read yet/.test(mark) && /You/.test(await mine.innerText()), { mark });
+  check("it shows in that turn, as yours, marked as waiting for Claude to confirm",
+    mark === "Sent · waiting for Claude Code to confirm" && /\bYou\b/.test(await mine.innerText()), { mark, item: await mine.innerText() });
   const sent = await calls();
   check("the bridge got one append to that turn and no prompt",
     sent.filter((c) => c.op === "append").length === 1 && sent.find((c) => c.op === "append").expectedTurnId === NATIVE
