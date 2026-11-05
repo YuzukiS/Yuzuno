@@ -4,7 +4,6 @@ import { touchKeyboard } from "./touch-input";
 import { returnSends, type SendKey } from "./device-preferences";
 import {
   forwardRef,
-  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -456,7 +455,10 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
         view.current = null;
       };
     }, [props.agentId]);
-    useEffect(() => {
+    // A draft changed elsewhere (sent, added to, restored) is in the editor
+    // before the composer measures its shape and rows for it (T-44): measured
+    // after it, a sent draft's rows kept the expand button on an empty box.
+    useLayoutEffect(() => {
       const editor = view.current;
       if (!editor) return;
       if (props.draft !== published.current) {
