@@ -410,3 +410,43 @@ test("a saved letter this version doesn't offer, or two shortcuts on one letter,
     }
   }
 });
+
+test("a set saved before Next needs you keeps its letters: Next needs you takes the next free one when its J is taken (review 7727a352)", async () => {
+  for (const [saved, keys] of [
+    ['{"find":"J","newAgent":"N","search":"F"}', ["J", "N", "F", "K"]],
+    ['{"find":"J","newAgent":"K","search":"F"}', ["J", "K", "F", "M"]],
+    ['{"find":"U","newAgent":"N","search":"F"}', ["U", "N", "F", "J"]],
+  ]) {
+    const w = page();
+    try {
+      w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", saved);
+      w.showHelp();
+      assert.deepEqual(NAMES.map((name) => pick(w, name).value), keys, saved);
+      assert.equal(listed(w, "Next needs you"), `Ctrl+${keys[3]}`, saved);
+      assert.equal(w.document.querySelector(".save-status").textContent, "Using the choice saved on this device", saved);
+      assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), saved, "reading it writes nothing");
+    } finally {
+      w.close();
+    }
+  }
+  // The next save keeps the letter it was given.
+  const w = page();
+  try {
+    w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", '{"find":"J","newAgent":"N","search":"F"}');
+    w.showHelp();
+    await setKey(w, "Search this conversation", "G");
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"G","nextNeedsYou":"K"}');
+  } finally {
+    w.close();
+  }
+  // Two saved shortcuts on one letter are still not used.
+  const twice = page();
+  try {
+    twice.real.setItem.call(twice.localStorage, "yuzuno.shortcuts", '{"find":"J","newAgent":"N","search":"F","nextNeedsYou":"J"}');
+    twice.showHelp();
+    assert.deepEqual(NAMES.map((name) => pick(twice, name).value), ["K", "N", "F", "J"]);
+    assert.match(twice.document.querySelector(".save-status").textContent, /couldn’t be read, so the defaults apply/);
+  } finally {
+    twice.close();
+  }
+});

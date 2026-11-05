@@ -29,8 +29,14 @@ export const reservedLetters = ["A", "C", "V", "X", "Y", "Z", "W", "T", "Q", "R"
 export const shortcutLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").filter((letter) => !reservedLetters.includes(letter));
 const STORAGE_KEY = "yuzuno.shortcuts";
 
+/** Shortcuts a later version added (Next needs you, T-42): a set saved
+ * before them has none, and may hold their usual letter for another. */
+const addedLater: readonly Rebindable[] = ["nextNeedsYou"];
+
 /** What this device saved, and whether it can be used: an object whose
- * letters this version offers, no two shortcuts on one. */
+ * letters this version offers, no two shortcuts on one. A shortcut added
+ * since the set was saved, whose usual letter the set gave another, takes
+ * the next free letter after it (review 7727a352): the letters saved stay. */
 function readSaved(): { keys: ShortcutKeys; usable: boolean } {
   const saved = readDeviceValue(STORAGE_KEY) as Partial<Record<Rebindable, unknown>> | null;
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) return { keys: { ...defaultShortcutKeys }, usable: false };
@@ -41,6 +47,12 @@ function readSaved(): { keys: ShortcutKeys; usable: boolean } {
     if (key === undefined) continue;
     if (typeof key === "string" && shortcutLetters.includes(key)) keys[action] = key;
     else usable = false;
+  }
+  for (const action of addedLater) {
+    if (saved[action] !== undefined || !keyTakenBy(keys, action, keys[action])) continue;
+    const from = shortcutLetters.indexOf(keys[action]);
+    const free = [...shortcutLetters.slice(from + 1), ...shortcutLetters.slice(0, from)].find((letter) => !keyTakenBy(keys, action, letter));
+    if (free) keys[action] = free;
   }
   if (new Set(Object.values(keys)).size !== rebindable.length) return { keys: { ...defaultShortcutKeys }, usable: false };
   return { keys, usable };
