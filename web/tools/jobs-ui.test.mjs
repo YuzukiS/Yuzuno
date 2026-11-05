@@ -255,7 +255,8 @@ test('the submit form shows what earlier runs of the same name or command sugges
   try {
     await open(p); button(p, 'New job').click(); await wait();
     await fill(p, 'Name', 'first of its kind'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
-    await until(() => asked.some(q => q.name === 'first of its kind'));
+    for (let n = 0; n < 40 && !asked.some(q => q.name === 'first of its kind'); n++) await wait();
+    assert.ok(asked.some(q => q.name === 'first of its kind'), 'the form asks what earlier runs suggest');
     await wait();
     assert.equal(p.doc.querySelector('.job-suggestion'), null, 'no history, no suggestion');
     await fill(p, 'Name', 'K4 calibration');

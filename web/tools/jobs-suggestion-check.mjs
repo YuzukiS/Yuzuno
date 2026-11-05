@@ -102,7 +102,8 @@ try {
   await page.getByLabel("RAM limit (MiB)").fill("20480");
   await page.getByLabel("CPU quota").fill("4");
   const note = page.locator(".job-suggestion");
-  await note.waitFor({ timeout: 5000 });
+  await note.waitFor({ timeout: 5000 }).catch(() => {});
+  assert.equal(await note.count(), 1, "the form says what earlier runs suggest");
   assert.match(await note.locator("p").textContent(), /^The last measured run of this name or command in this task peaked at 2\.6 GiB RAM and 1\.20 CPU cores\. Suggested: 4\.0 GiB RAM and 1\.8 CPU/);
   assert.deepEqual(asked.at(-1), { taskId: "T-38", name: "K4 calibration", argv: JSON.stringify(["/bin/sh", "-c", "python3 calib.py --clips 12"]) });
   assert.deepEqual([await page.getByLabel("RAM limit (MiB)").inputValue(), await page.getByLabel("CPU quota").inputValue()], ["20480", "4"]);
