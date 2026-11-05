@@ -124,7 +124,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     assert_eq!(fine[0].machine_id.as_deref(), Some("local"));
 
     let read = read_list(Some(json!({"version":3,"later":true,"templates":[
-        {"id":"a","label":"A","harness":"codex","laterField":"kept out"},
+        {"id":"a","label":"Label a","harness":"codex","laterField":"kept out"},
         {"label":"no id: a later shape"},
     ]}).to_string())).unwrap();
     assert_eq!(read.version, 3);
