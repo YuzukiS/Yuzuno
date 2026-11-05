@@ -7223,3 +7223,42 @@ test("the decision on its way shows the spinner the answer form has, on its own 
     page.close();
   }
 });
+
+test("Actions → Close agent swaps in its confirmation in place, and Keep agent takes focus as the card that had it goes (T-19 ST:AG2)", async () => {
+  const page = await mount({});
+  try {
+    page.document.querySelector('[aria-label="Actions for Mori"]').click();
+    await until(() => [...page.document.querySelectorAll('[role="menuitem"]')].some((m) => m.textContent.trim() === "Manage…"), "the Agent's menu");
+    [...page.document.querySelectorAll('[role="menuitem"]')].find((m) => m.textContent.trim() === "Manage…").click();
+    await until(() => page.document.querySelector('[role="dialog"] .agent-action-card'), "Conversation actions");
+    const card = [...page.document.querySelectorAll('[role="dialog"] .agent-action-card')].find((c) => c.textContent.trim().startsWith("Close agent"));
+    card.focus();
+    card.click();
+    await until(() => button(page, "Keep agent"), "the close confirmation");
+    assert.equal(page.document.activeElement === button(page, "Keep agent"), true, "Keep agent has focus");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("while the model catalog loads, its note waits in the Model chips' row, not on a line of its own above them (T-19 ST:AS2)", async () => {
+  let answer;
+  const catalog = { models: [{ id: "test-model", model: "test-model", displayName: "Test model", isDefault: true }] };
+  const page = await mount({ modelsResponse: () => new Promise((resolve) => { answer = resolve; }) });
+  try {
+    page.document.querySelector('[aria-label="Agent settings"]').click();
+    await until(() => chipGroup(page, "Model") && answer, "the Model choices, the catalog asked for");
+    const status = chipGroup(page, "Model").querySelector('.choice-chip-row > .choice-chip-status[role="status"]');
+    assert.equal(!!status, true, "the note is in the Model chips' row");
+    assert.match(status.textContent, /Loading this agent’s model catalog…/);
+    const form = page.document.querySelector('[role="dialog"] .agent-settings-form');
+    assert.equal([...form.children].some((child) => child.matches('p[role="status"]')), false, "no line of its own above the chips");
+    answer({ ok: true, status: 200, json: async () => catalog, text: async () => JSON.stringify(catalog) });
+    await until(() => !chipGroup(page, "Model").querySelector(".choice-chip-status"), "the catalog arrives");
+    assert.equal(!!chipGroup(page, "Model").querySelector('input[value="test-model"]'), true);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

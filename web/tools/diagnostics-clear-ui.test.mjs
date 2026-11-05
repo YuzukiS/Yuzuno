@@ -81,6 +81,38 @@ function mount({ stored = JSON.stringify(record), refuse = false } = {}) {
   return { w, doc, errors, calls, writes, storage, section, button, shown, all, raise, close: () => w.close() };
 }
 
+/** Clear recorded errors, then its confirmation's Clear them (T-19 ST:SX-105). */
+async function confirmClear(x) {
+  x.button("Clear recorded errors").click();
+  await until(() => x.button("Clear them"), "the confirmation");
+  x.button("Clear them").click();
+}
+
+test("Clear recorded errors asks first, as it can't be undone: Keep them clears nothing and gives focus back, Clear them clears and its result takes focus (T-19 ST:SX-105)", async (t) => {
+  const p = mount(); t.after(p.close);
+  await until(() => /2 recorded errors/.test(p.section()?.textContent || ""), "the record is read");
+  const before = p.all()[KEY];
+  const wrote = p.writes.length;
+  p.button("Clear recorded errors").click();
+  await until(() => p.button("Clear them"), "the confirmation");
+  const confirm = p.section().querySelector('[role="group"][aria-label="Clear the recorded errors"]');
+  assert.equal(!!confirm, true, "the confirmation is below the button");
+  assert.match(confirm.textContent, /Clear the 2 errors recorded in this browser\? This can't be undone\./);
+  assert.equal(p.doc.activeElement === confirm, true, "the confirmation has focus");
+  assert.equal(p.all()[KEY], before, "nothing is cleared before it is confirmed");
+  assert.equal(p.writes.length, wrote, "nothing is written either");
+  p.button("Keep them").click();
+  await until(() => !p.button("Keep them"), "the confirmation goes");
+  assert.equal(p.all()[KEY], before, "Keep them clears nothing");
+  assert.equal(p.doc.activeElement === p.button("Clear recorded errors"), true, "focus is back on Clear recorded errors");
+  await confirmClear(p);
+  await until(() => /Cleared 2 recorded errors/.test(p.section().textContent), "the clear is said");
+  const said = [...p.section().querySelectorAll('[role="status"]')].find((n) => n.textContent.startsWith("Cleared 2"));
+  assert.equal(p.doc.activeElement === said, true, "the result next to the button has focus");
+  assert.equal(JSON.parse(p.all()[KEY]).errors.length, 0);
+  assert.deepEqual(p.errors, []);
+});
+
 test("Clear removes only the recorded errors: the last reads and every other key stay, nothing is sent, and errors after it are recorded again", async (t) => {
   const p = mount(); t.after(p.close);
   await until(() => p.section(), "the diagnostics");
@@ -90,7 +122,7 @@ test("Clear removes only the recorded errors: the last reads and every other key
   assert.match(p.shown(), /^Recent errors on this device: 2 /m);
   const before = p.all();
   const sent = p.calls.length, wrote = p.writes.length;
-  p.button("Clear recorded errors").click();
+  await confirmClear(p);
   await until(() => /Cleared 2 recorded errors from this browser for this site\./.test(p.section().textContent), "the clear is said");
   const after = p.all();
   assert.equal(after[KEY], JSON.stringify({ ...JSON.parse(before[KEY]), errors: [] }), "only the errors are gone from the record");
@@ -121,7 +153,7 @@ test("a refused change, an unreadable record or no storage clears nothing and sa
   const p = mount(); t.after(p.close);
   await until(() => p.button("Clear recorded errors"), "the clear action");
   p.storage.refuseWrites = true;
-  p.button("Clear recorded errors").click();
+  await confirmClear(p);
   await until(() => p.section().querySelector('[role="alert"]'), "the refusal is said");
   assert.equal(p.section().querySelector('[role="alert"]').textContent,
     "Nothing was cleared: this browser refused to save the change (QuotaExceededError). The recorded errors are kept as they were.");
@@ -141,7 +173,7 @@ test("a refused change, an unreadable record or no storage clears nothing and sa
   const r = mount(); t.after(r.close);
   await until(() => r.button("Clear recorded errors"), "the clear action");
   r.storage.write(KEY, JSON.stringify({ errors: "not a list", core: record.core }));
-  r.button("Clear recorded errors").click();
+  await confirmClear(r);
   await until(() => r.section().querySelector('[role="alert"]'), "the unreadable record is said");
   assert.match(r.section().querySelector('[role="alert"]').textContent, /^Nothing was cleared: the record saved here is not an error record\./);
   assert.equal(r.all()[KEY], JSON.stringify({ errors: "not a list", core: record.core }), "it is left as it is");

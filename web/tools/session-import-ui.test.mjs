@@ -303,7 +303,9 @@ test("existing Agent opens without creating another Agent, including a closed on
   try {
     await open(page, { onCreated: (a) => (created = a) });
     await read(page);
-    assert.ok(page.document.querySelector('[aria-label="Permissions"]') === null, '[aria-label="Permissions"] is absent');
+    // In this pane: New agent's own form, with its Permissions, stays in the
+    // dialog, hidden (T-19 ST:SX-02).
+    assert.ok(page.document.querySelector('.session-import [aria-label="Permissions"]') === null, '[aria-label="Permissions"] is absent');
     button(page, "Open agent").click();
     await tick();
     assert.equal(created.id, "agent-a");
@@ -726,6 +728,54 @@ test("Existing Codex session follows a language change from another window; the 
     assert.equal(page.calls.length, before, "changing the language reads and imports nothing");
     assert.equal(importCalls(page).length, 0);
     assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("editing a previewed ID keeps the preview, its name and permission, marked stale and not added, until the ID is the one read again (T-19 ST:SX-28)", async () => {
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page);
+    await read(page);
+    const form = () => page.document.querySelector(".session-preview")?.closest("form");
+    const nameField = () => [...(form()?.querySelectorAll("label") ?? [])].find((l) => l.textContent.startsWith("Agent name"))?.querySelector("input");
+    await value(page, nameField(), "Kept name");
+    await value(page, page.document.querySelector("#import-session-id"), other);
+    assert.equal(!!form(), true, "the preview stays");
+    assert.equal(form().hasAttribute("data-stale"), true, "marked stale");
+    assert.equal(form().inert, true, "out of reach");
+    assert.equal(nameField().value, "Kept name", "the name typed for it stays");
+    button(page, "Add to workspace").click();
+    await tick();
+    assert.equal(importCalls(page).length, 0, "a stale preview is never added");
+    await value(page, page.document.querySelector("#import-session-id"), id);
+    assert.equal(form().hasAttribute("data-stale"), false, "the ID read again: current again");
+    assert.equal(form().inert, false);
+    assert.equal(nameField().value, "Kept name");
+  } finally {
+    page.close();
+  }
+});
+
+test("a pane switched away from keeps what was typed and previewed there, and the New form is never remounted (T-19 ST:SX-02)", async () => {
+  const page = mount((url) => (url.endsWith("/preview") ? preview : undefined));
+  try {
+    await open(page);
+    const newForm = page.document.querySelector("form.remote-create");
+    assert.equal(!!newForm, true, "the New form stays in the dialog");
+    assert.equal(!!newForm.closest("[hidden]"), true, "hidden while another pane shows");
+    await read(page);
+    button(page, "New agent").click();
+    await tick();
+    assert.equal(page.document.querySelector("form.remote-create") === newForm, true, "the same New form, not remounted");
+    assert.equal(!!newForm.closest("[hidden]"), false);
+    assert.equal(!!page.document.querySelector(".session-import").closest("[hidden]"), true, "the Codex pane waits, hidden");
+    button(page, "Existing Codex session").click();
+    await tick();
+    assert.equal(page.document.querySelector("#import-session-id").value, id, "the ID typed there is kept");
+    assert.equal(!!page.document.querySelector(".session-preview"), true, "and its preview");
+    assert.equal(page.calls.filter((call) => call.url.endsWith("/preview")).length, 1, "read once");
   } finally {
     page.close();
   }
