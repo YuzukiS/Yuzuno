@@ -81,6 +81,12 @@ impl Lab {
         agent(&self.ws.store, "holder", "codex");
     }
 
+    /// Only the passes the test runs: a dispatch spawns none, so none races
+    /// the test's own for a start or a rebuild.
+    fn quiet(&self) {
+        self.ws.executor_slots.quiet.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// `agent` as a pass that took it leaves it: starting, with no reason.
     fn taken(&self, agent: &str, attempt: i64) {
         self.ws.store.db.write().unwrap().execute(
@@ -337,6 +343,7 @@ async fn a_failed_start_is_recorded_before_its_executor_is_closed() {
 #[tokio::test]
 async fn a_stop_while_a_failed_start_settles_is_finished_at_the_next_start() {
     let lab = Lab::new(missing).await;
+    lab.quiet();
     lab.occupy_the_slot();
     // Stopped before the close.
     let task = lab.task("Review across a stop before the close").await;
@@ -385,6 +392,7 @@ async fn a_stop_while_a_failed_start_settles_is_finished_at_the_next_start() {
 #[tokio::test]
 async fn a_rebuild_is_known_in_its_place_once_its_own_dispatch_commits() {
     let lab = Lab::new(missing).await;
+    lab.quiet();
     lab.occupy_the_slot();
     let task = lab.task("Review the rebuilt one").await;
     let first = lab.dispatch(&task, "first").await;
@@ -409,6 +417,7 @@ async fn a_rebuild_is_known_in_its_place_once_its_own_dispatch_commits() {
 #[tokio::test]
 async fn a_rebuild_an_update_drain_refuses_waits_and_a_later_pass_makes_it() {
     let lab = Lab::new(missing).await;
+    lab.quiet();
     lab.occupy_the_slot();
     let task = lab.task("Review during an update").await;
     let first = lab.dispatch(&task, "drained").await;
@@ -439,6 +448,7 @@ async fn a_rebuild_an_update_drain_refuses_waits_and_a_later_pass_makes_it() {
 #[tokio::test]
 async fn two_passes_settle_an_ended_start_once() {
     let lab = Lab::new(missing).await;
+    lab.quiet();
     lab.occupy_the_slot();
     let task = lab.task("Review the one two passes see").await;
     let first = lab.dispatch(&task, "twice").await;

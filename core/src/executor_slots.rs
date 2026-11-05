@@ -614,6 +614,9 @@ pub(crate) struct State {
     /// waits there, up to a second, once it has read the Agent.
     #[cfg(test)]
     pub(crate) settle_meet: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test that runs every pass itself: no dispatch spawns one.
+    #[cfg(test)]
+    pub(crate) quiet: std::sync::atomic::AtomicBool,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become
@@ -625,6 +628,10 @@ impl Workspace {
     /// type: a rebuild dispatches from inside a pass (executor_start.rs), so
     /// the dispatch that spawns a pass must not hold that pass's own type.
     pub(crate) fn spawn_executor_slots_pass(self: &Arc<Self>) {
+        #[cfg(test)]
+        if self.executor_slots.quiet.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let ws = self.clone();
         let pass: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
             Box::pin(async move { ws.executor_slots_pass().await; });
