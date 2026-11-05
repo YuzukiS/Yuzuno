@@ -241,7 +241,7 @@ fn confirm_models(templates: &mut [Template], saved: &[Template], catalogs: &Cat
 
 impl Store {
     pub(crate) fn executor_templates(&self) -> Result<Templates> {
-        list_at(&self.db.read()?, KEY)
+        list_at(&*self.db.read()?, KEY)
     }
 
     /// A Project's own templates; none saved is an empty list.
