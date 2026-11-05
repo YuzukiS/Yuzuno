@@ -119,6 +119,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
     let (_, replaced) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":2,"templates":[template("z", "codex")]}))).await;
     assert_eq!(stored()["templates"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect::<Vec<_>>(), [json!("z"), json!("g"), json!("m")],
         "a save naming its id replaces it; one this Core can use that it leaves out is removed");
+    assert_eq!(stored()["templates"][0], template("z", "codex"), "a template replacing one this Core can't use is stored as sent");
     assert_eq!(replaced["workspace"]["laterTemplates"], 2, "{replaced}");
 }
 

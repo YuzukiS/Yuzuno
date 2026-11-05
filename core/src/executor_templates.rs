@@ -205,15 +205,18 @@ fn read_list(raw: Option<String>) -> Result<Templates> {
 /// What a save stores: the templates it names, with what a later Core
 /// stored that this Core doesn't read kept as it was, so a save here never
 /// drops it: each named template's fields this Core doesn't know, the
-/// templates it can't read (unless the save names their id), and the
-/// list's own fields.
+/// templates it can't use (unless the save names their id, which replaces
+/// one whole), and the list's own fields.
 fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Result<Value> {
     let mut stored = current.stored.as_ref().and_then(Value::as_object).cloned().unwrap_or_default();
     let before: Vec<Value> = stored.get("templates").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut items = Vec::with_capacity(templates.len());
     for template in templates {
         let mut item = serde_json::to_value(template)?;
-        if let Some(old) = before.iter().find(|old| old["id"] == template.id.as_str()).and_then(Value::as_object) {
+        // Only from a template this Core can use: one it can't is replaced
+        // as sent, never mixed with its fields (R3 46d5d3d0).
+        let old = before.iter().find(|old| old["id"] == template.id.as_str()).filter(|old| readable(old).is_some());
+        if let Some(old) = old.and_then(Value::as_object) {
             for (field, value) in old.iter().filter(|(field, _)| !FIELDS.contains(&field.as_str())) {
                 item[field] = value.clone();
             }
