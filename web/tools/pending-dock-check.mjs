@@ -134,7 +134,8 @@ function pageHelpers() {
   });
   /** From now: the "Response sent" hint as it shows, and the card's copy as it is put where the card was. */
   window.__watchCard = () => {
-    const rec = { hint: null, copy: null, cardGoneAt: null, copyGoneAt: null, start: performance.now() };
+    // `framed`: a copy was there at an animation frame, just before a paint, so it showed.
+    const rec = { hint: null, copy: null, cardGoneAt: null, copyGoneAt: null, framed: false, start: performance.now() };
     const look = () => {
       const now = performance.now() - rec.start;
       const hint = [...document.querySelectorAll(".pending-card:not(.pending-card-leaving) .field-hint")]
@@ -151,7 +152,11 @@ function pageHelpers() {
     };
     const observer = new MutationObserver(look);
     observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
-    let frame = requestAnimationFrame(function each() { look(); frame = requestAnimationFrame(each); });
+    let frame = requestAnimationFrame(function each() {
+      if (document.querySelector(".pending-card-leaving")) rec.framed = true;
+      look();
+      frame = requestAnimationFrame(each);
+    });
     window.__card = { rec, stop: () => { observer.disconnect(); cancelAnimationFrame(frame); look(); return rec; } };
   };
   /** From now: each dock job's status changes and what plays on its node then, by name. */
@@ -249,10 +254,10 @@ for (const run of runs) {
         !!card?.hint && fadedSmall(card.hint.plays, reduced) && report.answers.length > 0, card);
       ok(`${tag}: resolved, the card is gone at once and ${motion("its copy leaves where it was over exit-small, aria-hidden, inert, with no ids, names or tab stops and no focus, then goes", "nothing is left in its place")}`,
         typeof card?.cardGoneAt === "number" && card.leftover === 0 && (reduced
-          ? card.copy === null
+          ? card.copy === null && card.framed === false
           : !!card.copy && card.copy.hidden === "true" && card.copy.inert === true && card.copy.ids === 0 && card.copy.focusInside === false
             && Array.isArray(card.copy.plays) && card.copy.plays.length === 1 && card.copy.plays[0].props === "opacity"
-            && card.copy.plays[0].duration === 130 && typeof card.copyGoneAt === "number" && card.copyGoneAt - card.copy.at < 450), card);
+            && card.copy.plays[0].duration === 130 && card.framed === true && typeof card.copyGoneAt === "number" && card.copyGoneAt - card.copy.at < 450), card);
       report.answers.length = 0;
     }
 
@@ -276,8 +281,11 @@ for (const run of runs) {
         opened = { error: String(error).slice(0, 200), opened };
       }
       measured.q03opened = opened;
+      // A copy put in as Mori's cards go is taken out in the same task, before any paint, with nothing playing.
       ok(`${tag}: a card that opens already sent shows its hint with nothing playing, and another Agent opened leaves no copy of Mori's cards`,
-        !!opened?.hint && Array.isArray(opened.hint.plays) && opened.hint.plays.length === 0 && opened.copy === null && opened.leftover === 0, opened);
+        !!opened?.hint && Array.isArray(opened.hint.plays) && opened.hint.plays.length === 0 && opened.framed === false
+          && (opened.copy === null || (opened.copy.plays?.length === 0 && opened.copyGoneAt !== null && opened.copyGoneAt - opened.copy.at < 5))
+          && opened.leftover === 0, opened);
       if (run.phone) await page.locator(".phone-back").click().catch(() => {});
       state.pending = [];
       await openMori();
