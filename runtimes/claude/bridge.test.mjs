@@ -1215,7 +1215,7 @@ test('a follow-up to a turn of Claude\'s own is refused once it ended, while it 
 // newest running turn. A follow-up sent to it is delivered once, whichever
 // it turns out to be.
 test('a follow-up to a turn shown unmatched while a prompt waits is delivered once, however the turn resolves', async () => {
-  for (const resolved of ['read there', 'the prompt\'s', 'Claude\'s own']) {
+  for (const resolved of ['read there', 'the prompt\'s', 'Claude\'s own', 'Claude\'s own, then left queued']) {
     const f = await fixture();
     const prompt = await sendPrompt(f, 'turn1');
     await feed(f, init('n'), toolCall('call-n', 'tool-n'));
@@ -1252,6 +1252,13 @@ test('a follow-up to a turn shown unmatched while a prompt waits is delivered on
         result('result-t', { user_message_uuid: queued.uuid, user_message_uuids: [prompt, queued.uuid] }));
       assert.deepEqual(routed(f).slice(-3), [['t', 'turn1'], ['reply', 'turn1'], ['result-t', 'turn1']], resolved);
       assert.deepEqual(deliveries(f), [['client-u', 'accepted', 'turn1', undefined]], resolved);
+    }
+    if (resolved === 'Claude\'s own, then left queued') {
+      // Nor does the prompt's turn read it: it runs next, after that turn.
+      await feed(f, result('result-n', notified), init('t'), text('reply', 'Hi', prompt), result('result-t', stamp(prompt)));
+      assert.deepEqual(deliveries(f), [['client-u', 'next', 'follow-u', 'turn1']], resolved);
+      await feed(f, init('j'), text('second', 'On your note.', queued.uuid), result('second-result', stamp(queued.uuid)));
+      assert.deepEqual(deliveries(f).slice(1), [['client-u', 'accepted', 'follow-u', undefined]], resolved);
     }
     assert.deepEqual([f.bridge.turnId, f.bridge.appends.size], [null, 0], resolved);
     f.bridge.close(); await f.bridge.reader;
