@@ -22,7 +22,10 @@ fn job(s: &Store, name: &str, memory: u64) -> Value {
     job_of(s, "a", name, memory)
 }
 fn job_of(s: &Store, agent: &str, name: &str, memory: u64) -> Value {
-    let request: Submit = serde_json::from_value(json!({"requestId":name,"taskId":"T-1","name":name,"cwd":"/workspace",
+    job_in(s, "T-1", agent, name, memory)
+}
+fn job_in(s: &Store, task: &str, agent: &str, name: &str, memory: u64) -> Value {
+    let request: Submit = serde_json::from_value(json!({"requestId":name,"taskId":task,"name":name,"cwd":"/workspace",
         "argv":["/usr/bin/true"],"resources":{"cpuMillis":1000,"memoryMiB":memory,"swapMiB":0}})).unwrap();
     let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":16000,"memoryMiB":40960,"swapMiB":0}});
     s.create_job(Some(agent), request, json!({"cwd":"/workspace"}), machine, json!({"bootId":"boot"})).unwrap()
@@ -101,40 +104,66 @@ fn a_head_waiting_for_disk_space_bounds_nothing_behind_it() {
 #[test]
 fn heads_taking_turns_never_let_the_passers_take_the_current_heads_share_and_both_start() {
     // Review 1bbccc2a: which job is the head changes with the projects'
-    // turns; the jobs that passed the other head count too.
+    // turns, so the jobs that passed the other head count too.
     let (_dir, s) = setup();
     s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 10240, swap_mi_b: 0 }).unwrap();
-    let running = job_of(&s, "a", "running", 4000);
+    // Two Projects, one task each: two queues that take turns.
+    s.collaboration_call(None, "task_create", json!({"requestId":"task-2","title":"Other research","status":"doing"})).unwrap();
+    for (task, name) in [("T-1", "Project P"), ("T-2", "Project Q")] {
+        let project = s.create_project(name, Default::default()).unwrap();
+        let db = s.db.write().unwrap();
+        let (id, _) = crate::collaboration_store::task_key(&db, task).unwrap();
+        crate::projects::set_task_project(&db, &id, Some(project.id.as_str())).unwrap();
+    }
+    let running = job_in(&s, "T-1", "a", "running", 2000);
     assert_eq!(start(&s).unwrap()["id"], running["id"]);
-    // Both short of the 6,176 MiB free: 7,064 (a) and 6,564 (b).
-    let head_a = job_of(&s, "a", "head a", 7000);
-    let head_b = job_of(&s, "b", "head b", 6500);
-    for i in 0..4 {
-        job_of(&s, "a", &format!("small a{i}"), 1000);
-        job_of(&s, "b", &format!("small b{i}"), 1000);
-    }
-    let mut started = vec![];
-    // A pass at a time while nothing ends: every pass holds the current
-    // head's share open, whichever head it is.
-    while let Some(passed) = start(&s) {
+    // Both short of the 8,176 MiB free, each needing 8,500 MiB: 1,740 MiB
+    // may run beside either of them.
+    let head_p = job_in(&s, "T-1", "a", "head p", 8436);
+    let head_q = job_in(&s, "T-2", "b", "head q", 8436);
+    // A small job for each Project, round after round.
+    let more = |s: &Store, round: usize| {
+        for (task, agent) in [("T-1", "a"), ("T-2", "b")] {
+            job_in(s, task, agent, &format!("small {round} of {task}"), 1000);
+        }
+    };
+    more(&s, 0);
+    let mut rounds = 1;
+    // Q's turn: its head is short, so 1,064 MiB pass it. P's turn: P's head
+    // is short too, and the job that passed Q holds 1,064 of the 1,740 MiB
+    // beside it, so nothing of 1,064 MiB passes P.
+    let first = start(&s).expect("a small job passes the first head");
+    assert_eq!(first["admission"]["passed"]["jobId"], head_q["id"]);
+    let check = |s: &Store, passed: &Value| {
         let mark = &passed["admission"]["passed"];
-        let bound = 10240 - mark["headNeed"]["memoryMiB"].as_u64().expect("only passers start here");
-        assert!(passers(&s) <= bound, "running passers {} MiB stay within the budget less {}'s need ({bound} MiB)", passers(&s), mark["name"]);
-        started.push(passed["name"].clone());
+        let bound = 10240 - mark["headNeed"]["memoryMiB"].as_u64().expect("only passers start before the heads");
+        assert!(passers(s) <= bound, "running passers {} MiB stay within the budget less {}'s need ({bound} MiB)", passers(s), mark["name"]);
+    };
+    check(&s, &first);
+    if let Some(passed) = start(&s) {
+        check(&s, &passed);
     }
-    assert!(started.len() >= 2, "{started:?}");
-    // Then jobs end, one at a time: both heads start.
+    assert!(read(&s, &head_p)["reason"].as_str().unwrap().ends_with("Up to 29800 mCPU / 676 MiB RAM / 0 MiB swap may start ahead of it meanwhile"),
+        "P's head counts what passed Q: {}", read(&s, &head_p)["reason"]);
+    // Then jobs end one at a time while small jobs keep coming: at every
+    // admission the passers stay within the budget less the current head's
+    // need, and both heads start.
     done(&s, &running);
     let mut heads = vec![];
-    for _ in 0..40 {
+    for _ in 0..60 {
         match start(&s) {
-            Some(job) if job["id"] == head_a["id"] || job["id"] == head_b["id"] => heads.push(job["name"].clone()),
+            Some(job) if job["id"] == head_p["id"] || job["id"] == head_q["id"] => heads.push(job["name"].clone()),
+            Some(job) if job["admission"]["passed"].is_object() => check(&s, &job),
             Some(_) => {}
             None => {
                 let oldest: Option<String> = s.db.read().unwrap().query_row(
                     "SELECT id FROM local_jobs WHERE reserved=1 ORDER BY seq LIMIT 1", [], |r| r.get(0)).ok();
                 let Some(id) = oldest else { break };
                 done(&s, &s.job(&id).unwrap());
+                if rounds < 6 {
+                    more(&s, rounds);
+                    rounds += 1;
+                }
             }
         }
         if heads.len() == 2 {
