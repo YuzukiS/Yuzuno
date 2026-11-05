@@ -216,6 +216,24 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     assert_eq!((third.connection_state.as_str(), third.status.as_str(), third.error.as_deref()), ("disconnected", "offline", None),
         "a refused Connect changes nothing");
     assert!(prompts(Path::new(&folders[2])).is_empty(), "nothing started it");
+
+    // Mail for a waiting executor, its dispatch's and a peer's, waits as
+    // pending: delivery neither starts it nor counts a problem (Lead 2, 5325).
+    // The barrier: urgent mail sent to the second right after reaches it (no
+    // wake-up interval for urgent), so a delivery pass, which takes every
+    // pending batch, ran with the third's mail pending.
+    let second_before = prompts(Path::new(&folders[1])).len();
+    ws.collaboration_call(Some(&executors[0]), "peer_send",
+        json!({"requestId":"to-third","toAgentId":executors[2],"body":"Also read the linked notes.","taskId":tasks[2]})).await.unwrap();
+    ws.collaboration_call(Some(&executors[0]), "peer_send",
+        json!({"requestId":"to-second","toAgentId":executors[1],"body":"A barrier for the third's mail.","taskId":tasks[1],"priority":"urgent"})).await.unwrap();
+    until("the second gets the mail sent with the third's", || prompts(Path::new(&folders[1])).len() > second_before).await;
+    let third = ws.store.agent(&executors[2]).unwrap();
+    assert_eq!((third.connection_state.as_str(), third.status.as_str(), third.error.as_deref()), ("disconnected", "offline", None),
+        "mail for a waiting executor does not start it");
+    assert!(prompts(Path::new(&folders[2])).is_empty(), "nor wakes it");
+    let problems = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"})).unwrap()["current"]["mailProblems"].clone();
+    assert_eq!(problems(&tasks[2]), json!([]), "a waiting executor's mail is no delivery problem: not failed, not retried");
     // Once started, the first two are running (recorded as their start returns).
     for (task, executor) in tasks[..2].iter().zip(&executors) {
         let running = json!({"agentId":executor,"state":"running","machine":"local"});
@@ -231,6 +249,14 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     ws.close_agent(&executors[0]).await.unwrap();
     until("the third gets its mail", || !prompts(Path::new(&folders[2])).is_empty()).await;
     assert_eq!(ws.store.agent(&executors[2]).unwrap().connection_state, "connected");
+    let first = prompts(Path::new(&folders[2]))[0].to_string();
+    assert!(first.contains("mailbox delivery from Yuzuno Core"), "its first turn is its mail: {first}");
+    let read = ws.store.collaboration_call(Some(&executors[2]), "peer_read", json!({})).unwrap();
+    let read = read["messages"].as_array().unwrap();
+    assert!(read.iter().any(|m| m["taskId"] == json!(tasks[2]) && m["materialsRef"]["dispatchId"].is_string()),
+        "the dispatch's mail reached it: {read:?}");
+    assert!(read.iter().any(|m| m["body"] == json!("Also read the linked notes.")), "and the peer's: {read:?}");
+    assert_eq!(problems(&tasks[2]), json!([]), "delivered once started, with no problem recorded");
     assert_eq!(slot(&tasks[0]), Value::Null, "a closed executor holds no slot");
 
     // A fourth waits until the limit is raised.
