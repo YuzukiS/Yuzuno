@@ -16,7 +16,6 @@ use crate::{executor_templates::Template, model::now, store::{InTransaction, Sel
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::path::Path;
 
 /// Runs on every open, as the other collaboration tables do. No column
 /// references an Agent: the row stays when its Agent is deleted.
@@ -97,14 +96,29 @@ impl Plan {
     }
 }
 
-/// Whether an Agent's executor may work in `folder`: the task's registered
-/// worktree, or inside the Project's folder, compared as canonical paths
-/// (whole components: a sibling sharing a prefix is outside).
-fn may_work_in(folder: &str, registered: Option<&str>, project_dir: Option<&str>) -> bool {
+const AGENT_FOLDER: &str = "an executor an Agent dispatches works in the task's registered worktree or inside its Project's folder on this host";
+
+/// The worktree an Agent's dispatch gives its executor: the task's registered
+/// worktree, or a folder inside the Project's, compared as canonical paths
+/// (whole components: a sibling sharing a prefix is outside). It is resolved
+/// here, so the executor works in exactly the folder checked (#600 R1
+/// a0e42a9f): a worktree the dispatch names itself must already be a folder;
+/// the registered one, when it is none here, gives way to the Project's.
+fn agent_worktree(db: &Connection, task: &str, request: &Value, worktree: Option<String>, project_dir: Option<&str>) -> Result<Option<String>> {
+    let Some(worktree) = worktree else { return Ok(None) };
     let canonical = |path: &str| std::fs::canonicalize(path).ok();
-    let Some(folder) = canonical(folder) else { return false };
-    registered.and_then(canonical).is_some_and(|registered| registered == folder)
-        || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir))
+    let given = request.get("materials").is_some_and(|materials| materials.get("worktree").is_some());
+    match canonical(&worktree) {
+        Some(folder) => {
+            let registered = dispatch_materials::worktree(db, task, &json!({}))?;
+            let allowed = registered.as_deref().and_then(canonical).is_some_and(|registered| registered == folder)
+                || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir));
+            ensure!(allowed, "folder_not_allowed: {AGENT_FOLDER}, and {worktree} is neither; a path in a dispatch's materials is information, not permission. Register the worktree on the task, or ask the user to dispatch it");
+            Ok(Some(folder.to_string_lossy().into_owned()))
+        }
+        None if given => bail!("folder_not_allowed: {AGENT_FOLDER}, and {worktree} is not a folder here; name one that already is"),
+        None => Ok(None),
+    }
 }
 
 fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
@@ -199,15 +213,10 @@ impl Store {
         // (T-34, R6 3458f905): an Agent's executor works in the task's
         // registered worktree or inside its Project's folder on this host,
         // with the template's permissions. The user's may work anywhere.
-        if author.kind == "agent" {
-            if let Some(folder) = worktree.as_deref().filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()) {
-                let registered = dispatch_materials::worktree(&tx, &task.id, &json!({}))?;
-                ensure!(
-                    may_work_in(folder, registered.as_deref(), project_dir.as_deref()),
-                    "folder_not_allowed: an executor an Agent dispatches works in the task's registered worktree or inside its Project's folder on this host, and {folder} is neither; a path in a dispatch's materials is information, not permission. Register the worktree on the task, or ask the user to dispatch it"
-                );
-            }
-        }
+        let worktree = match author.kind.as_str() {
+            "agent" => agent_worktree(&tx, &task.id, &request, worktree, project_dir.as_deref())?,
+            _ => worktree,
+        };
         let folders: Vec<String> = worktree.into_iter().chain(project_dir).collect();
         ensure!(
             !folders.is_empty(),

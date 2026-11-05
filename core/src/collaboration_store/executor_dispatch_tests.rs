@@ -287,13 +287,25 @@ fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() 
         input["materials"] = json!({"worktree":folder});
         input
     };
-    for (request, folder) in [("elsewhere", &elsewhere), ("sibling", &sibling)] {
+    // A folder made only after the check, or a link inside the Project to
+    // elsewhere, would let the executor work outside (#600 R1 a0e42a9f).
+    let later = format!("{home}/later");
+    let link = format!("{home}/link");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+    let mut outside = vec![("elsewhere", &elsewhere), ("sibling", &sibling), ("not yet", &later)];
+    if cfg!(unix) {
+        outside.push(("symlink", &link));
+    }
+    for (request, folder) in outside {
         let refused = begun(&store, Some("lead"), with(request, folder)).err().unwrap_or_else(|| "accepted".into());
         assert!(refused.starts_with("folder_not_allowed:"),
             "an Agent cannot point its executor outside the task's worktree and its Project's folder ({request}): {refused}");
     }
     let inner = begun(&store, Some("lead"), with("inside", &inside)).unwrap();
     assert_eq!(inner.folders[0], inside, "inside the Project's folder");
+    let dotted = begun(&store, Some("lead"), with("dotted", &format!("{inside}/../sub"))).unwrap();
+    assert_eq!(dotted.folders[0], inside, "the executor works in the folder that was checked");
     let own = begun(&store, Some("lead"), dispatch(&t, "registered")).unwrap();
     assert_eq!(own.folders[0], registered, "the task's registered worktree");
     let user = begun(&store, None, with("user", &elsewhere)).unwrap();
