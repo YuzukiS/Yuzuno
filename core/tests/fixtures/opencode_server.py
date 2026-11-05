@@ -174,7 +174,7 @@ v2_state = {}
 
 def v2_of(session):
     return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
-                                         'error': None, 'idles': [], 'pending': []})
+                                         'error': None, 'idles': [], 'pending': [], 'steer': set()})
 
 
 def v2_deliver(session, upto=None):
@@ -255,7 +255,8 @@ def v2_events(kind, p):
                       'source': {'type': 'inline'}} for q in stored.get('parts', []) if q.get('type') == 'file']
             if files:
                 payload['files'] = files
-            steered = session in statuses
+            # Steered in: sent while a run went on (`prompt`); a message the store holds already was delivered.
+            steered = mid in state['steer']
             enqueued = ('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': payload,
                                                                                                'delivery': 'steer' if steered else 'queue'}})
             if steered:
@@ -450,7 +451,9 @@ def page(items, query, kept):
 def save():
     with lock:
         (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
-                                                     'durable': durable, 'aggregates': aggregates}))
+                                                     'durable': durable, 'aggregates': aggregates,
+                                                     # 2.x stores its idle messages with the session's others.
+                                                     'idles': {s: v['idles'] for s, v in v2_state.items()}}))
 
 
 def load():
@@ -462,6 +465,8 @@ def load():
         counter[0] = state['counter']
         durable.extend(state.get('durable', []))
         aggregates.update(state.get('aggregates', {}))
+        for s, idles in state.get('idles', {}).items():
+            v2_of(s)['idles'] = idles
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -1162,6 +1167,9 @@ class Handler(BaseHTTPRequestHandler):
             cleanup(session)
         model = body.get('model') or modes['defaultModel']
         if mode == 'store':
+            if session in statuses:
+                # Sent while a run goes on: 2.x delivers it at that run's next step (v2_deliver).
+                v2_of(session)['steer'].add(message_id)
             store(session, message_id, text, files, model=model)
             self.reply(204)
             # The run starts: OpenCode is busy until it ends.

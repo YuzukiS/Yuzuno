@@ -26,7 +26,8 @@ fn an_answer_answers_the_newest_user_message_before_it_in_its_turn() {
         {"id": "msg_i2", "type": "idle", "outcome": "failed", "error": {"type": "provider_auth", "message": "no key"}, "time": {"created": 12}},
         {"id": "msg_a5", "type": "assistant", "time": {"created": 13}, "content": []},
     ]);
-    let Read { messages: read, ended, open } = read_messages(&messages);
+    let Read { messages: read, ended, open, steps } = read_messages(&messages);
+    assert!(steps.is_empty(), "no answer under way once its turn ended");
     assert_eq!(open, None, "the last turn ended");
     let parents: Vec<(&str, Value)> = read.iter().filter(|m| m["info"]["role"] == "assistant")
         .map(|m| (m["info"]["id"].as_str().unwrap(), m["info"]["parentID"].clone())).collect();
@@ -186,7 +187,11 @@ fn a_sub_agents_end_is_not_the_agents() {
     c.read(&ev("session.execution.succeeded", 3, json!({"sessionID": "ses_child"})));
     let step = c.read(&ev("session.step.started", 4, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a1"})));
     assert_eq!(step[0]["data"]["info"]["parentID"], "msg_u1");
-    c.resumed("ses_a", Some("msg_u9".into()));
+    c.resumed("ses_a", Some("msg_u9".into()), vec![("msg_a8".into(), Some("msg_u8".into()))]);
     let resumed = c.read(&ev("session.step.started", 5, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a2"})));
     assert_eq!(resumed[0]["data"]["info"]["parentID"], "msg_u9", "a whole read says which turn is open");
+    let ended = c.read(&ev("session.step.ended", 6, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a8"})));
+    assert_eq!(ended[0]["data"]["info"]["parentID"], "msg_u8", "a step under way at the read ends as its own");
+    let unknown = c.read(&ev("session.step.ended", 7, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a7"})));
+    assert_eq!(unknown[0]["data"]["info"]["parentID"], Value::Null, "an end of a step never seen to start answers nothing");
 }

@@ -615,3 +615,37 @@ async fn a_fork_answered_after_its_watch_settles_that_attempt_and_the_same_reque
     ws.close_agent(&target).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
+
+/// On a session whose messages are 2.x's, compaction, rewind and fork still
+/// read 1.19.3's: each refuses, before doing anything, until its own slice
+/// moves it (T-32 slice 3b, Lead 4983 decision A). The stand-in sends 2.x's
+/// messages here, as it does by default.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn compaction_rewind_and_fork_refuse_a_session_of_2x_messages() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let (root, cwd) = (dir.path().canonicalize().unwrap(), dir.path().canonicalize().unwrap().join("work"));
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = Workspace::new(root.join("data"), root.to_string_lossy().into(), "unused".into()).unwrap();
+    let detail: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":"oc", "name":"OpenCode", "cwd":cwd.to_string_lossy(), "model":"", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&detail).unwrap();
+    std::fs::create_dir_all(root.join("data/opencode/oc")).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let data = root.join("data");
+    let turn = turn_on(&ws, &data, "oc", "hello", json!({})).await;
+    let not_yet = crate::opencode_v2::NOT_YET;
+    let compact = ws.opencode_compact("oc").await.unwrap_err().to_string();
+    assert!(compact.contains(not_yet) && compact.contains("没有执行 /compact"), "compaction refuses: {compact}");
+    let rewind = ws.opencode_revert_preview("oc", &turn).await.unwrap_err().to_string();
+    assert!(rewind.contains(not_yet) && rewind.contains("没有预览回退"), "rewind refuses: {rewind}");
+    let fork = ws.opencode_fork("oc", request("fork-2x", &turn, "F")).await.unwrap_err().to_string();
+    assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
+    assert!(asked(&data, "oc", "POST", "/summarize").is_empty() && asked(&data, "oc", "POST", "/revert").is_empty()
+        && asked(&data, "oc", "POST", "/fork").is_empty(), "nothing was asked of OpenCode");
+    ws.close_agent("oc").await.unwrap();
+}

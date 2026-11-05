@@ -1589,10 +1589,10 @@ async fn context_usage_is_the_newest_answer_against_its_own_models_window() {
     let (twelfth, measured) = answered(&lab, "c12", flash(json!({"total":800}))).await;
     let fresh = Some((800, 2000, twelfth, false));
     assert_eq!(measured, fresh);
-    // An older compaction's summary replayed doesn't make it last known.
-    let replayed = json!({"id":"msg_summary_old","sessionID":session,"role":"assistant","parentID":"msg_compaction","summary":true,
-        "time":{"created":1,"completed":1},"tokens":{"total":1}});
-    lab.control("event", event(replayed)).await;
+    // An older compaction replayed doesn't make it last known: 2.x's own
+    // event, timed when OpenCode made it (T-32 slice 3b).
+    lab.control("event", json!({"type":"session.compaction.ended","created":1,"properties":{"sessionID":session,"reason":"auto",
+        "text":"","tokens":{"input":1,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}})).await;
     unchanged(&lab, "an older summary", &fresh).await;
 
     // An answer's events read no catalog; no provider secret is anywhere in Core's data.
@@ -1996,7 +1996,8 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
     }
     assert!(resyncs(&lab) > again, "read once more");
     let counts = held(&lab);
-    assert_eq!(counts[before], counts[counts.len() - 1], "the first resync's snapshot held the answer and the compaction");
+    // The idle after it is a message of 2.x's own (T-32 slice 3b): the only one more.
+    assert_eq!(counts[before] + 1, counts[counts.len() - 1], "the first resync's snapshot held the answer and the compaction");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -2089,7 +2090,12 @@ async fn context_usage_a_late_answer_after_a_new_input_never_measures() {
     // 2.x's step end, as Core journals it (T-32 slice 3b).
     let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
-    lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
+    // 2.x: the end of a step this connection never saw start (one of the
+    // earlier Turn's, before the new input), its tokens as OpenCode counted
+    // them (T-32 slice 3b). Its events come in order, so this is a replay.
+    let _ = late;
+    lab.control("event", json!({"type":"session.step.ended","created":at,"properties":{"sessionID":session,"assistantMessageID":"msg_late",
+        "finish":"stop","tokens":{"input":900,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}})).await;
     for _ in 0..200 {
         if updates(&lab) > handled { break; }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -2207,5 +2213,73 @@ async fn context_usage_a_late_answer_from_before_a_compaction_reads_no_catalog()
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(providers_reads(&lab), reads, "no catalog read for an answer from before the compaction");
     assert_eq!(usage_of(&lab.detail()), last_known);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// 2.x's text as it streams: its deltas, gathered for a quarter of a second
+/// of OpenCode's own time, grow the answer's item, which its end then
+/// replaces whole (T-32 slice 3b). The item is `<answer>:<ordinal>`.
+#[tokio::test]
+async fn an_answers_text_streams_into_its_item_and_its_end_replaces_it() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    let t = chrono::Utc::now().timestamp_millis();
+    let event = |kind: &str, at: i64, data: Value| {
+        let mut properties = json!({"sessionID": session, "assistantMessageID": "msg_s1"});
+        properties.as_object_mut().unwrap().extend(data.as_object().unwrap().clone());
+        json!({"type": kind, "created": at, "properties": properties})
+    };
+    let text = |d: &AgentDetail| turn(d, &id)["items"].as_array().into_iter().flatten()
+        .find(|i| i["id"] == "msg_s1:0").map(|i| i["text"].clone());
+    for (kind, at, data) in [
+        ("session.step.started", t, json!({"model": {"id": "m", "providerID": "p"}})),
+        ("session.text.started", t, json!({"ordinal": 0})),
+        ("session.text.delta", t + 10, json!({"ordinal": 0, "delta": "Hel"})),
+        ("session.text.delta", t + 300, json!({"ordinal": 0, "delta": "lo"})),
+    ] {
+        lab.control("event", event(kind, at, data)).await;
+    }
+    lab.until("the text streamed", |d| text(d) == Some(json!("Hello"))).await;
+    lab.control("event", event("session.text.delta", t + 310, json!({"ordinal": 0, "delta": " wor"}))).await;
+    lab.control("event", event("session.text.ended", t + 320, json!({"ordinal": 0, "text": "Hello world"}))).await;
+    lab.until("the whole text", |d| text(d) == Some(json!("Hello world"))).await;
+    lab.control("event", event("session.step.ended", t + 330, json!({"finish": "stop", "tokens": null}))).await;
+    lab.control("idle", json!({"sessionID": session})).await;
+    let d = lab.until("its end", |d| turn(d, &id)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &id)["status"], "completed");
+    let streamed = journal(&lab).iter().filter(|k| *k == "opencode/session.text.delta").count();
+    assert_eq!(streamed, 1, "one journal row for the deltas written together, none for one still gathering");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Two user messages in one turn, the answers interleaved: each answer is
+/// the newest one's before it, as 2.x delivers a message steered in at its
+/// next step (T-32 slice 3b, Lead 4983 note 2). A Core-chosen ID is the one
+/// 2.x delivers each under (note 3).
+#[tokio::test]
+async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    lab.control("reply", json!({"sessionID":session,"text":"Looking.","parentID":first,"idle":false})).await;
+    lab.add("c2", "Also run the tests", &first).await.unwrap();
+    let added = lab.detail().turns.iter().find(|t| t["id"] == first.as_str()).unwrap()["_opencodeLastInput"].as_str().unwrap().to_owned();
+    // A step already under way when it was sent answers the first message; the next ones, the added one.
+    lab.control("reply", json!({"sessionID":session,"text":"Still the build.","parentID":first,"idle":false})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Running tests.","parentID":added,"idle":false})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"All pass.","parentID":added})).await;
+    let d = lab.until("its end", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "completed");
+    let answers = turn(&d, &first)["_opencodeAnswers"].as_object().unwrap().clone();
+    let parents: Vec<&str> = answers.values().map(|a| a["parent"].as_str().unwrap()).collect();
+    assert_eq!(parents, [first.as_str(), first.as_str(), added.as_str(), added.as_str()], "{answers:#?}");
+    // Each message was delivered under the ID Core chose for it.
+    let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+    let delivered: Vec<String> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/session.inbox.delivered' ORDER BY seq").unwrap()
+        .query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+        .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["data"]["inboxID"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(delivered, [first.clone(), added.clone()], "delivered under the IDs Core chose");
     lab.ws.close_agent(ID).await.unwrap();
 }

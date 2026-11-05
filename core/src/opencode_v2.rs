@@ -133,10 +133,13 @@ pub(crate) struct Read {
     /// The newest user message of a turn not yet ended, which the live
     /// stream goes on from (`Cursor::resumed`).
     pub open: Option<String>,
+    /// That turn's answers not yet ended, with the user message each answers:
+    /// their ends, after this read, are theirs.
+    pub steps: Vec<(String, Option<String>)>,
 }
 
 pub(crate) fn read_messages(messages: &Value) -> Read {
-    let (mut read, mut ended) = (Vec::new(), Vec::new());
+    let (mut read, mut ended, mut steps) = (Vec::new(), Vec::new(), Vec::new());
     let mut user: Option<String> = None;
     for message in messages.as_array().into_iter().flatten() {
         let Some(id) = message["id"].as_str() else { continue };
@@ -151,12 +154,16 @@ pub(crate) fn read_messages(messages: &Value) -> Read {
                     &failed, &message["tokens"], &message["model"]);
                 let parts: Vec<Value> = message["content"].as_array().into_iter().flatten().enumerate()
                     .filter_map(|(ordinal, entry)| content_part(id, ordinal, entry)).collect();
+                if message["time"]["completed"].is_null() && message["error"].is_null() {
+                    steps.push((id.to_owned(), user.clone()));
+                }
                 read.push(json!({"info": info, "parts": parts}));
             }
             // A compaction, running or completed: what was measured before it no longer holds (`measure`).
             Some("compaction") if message["status"] != "failed" => read.push(json!({"info": compacted(id, &message["time"]["created"]),
                 "parts": []})),
             Some("idle") => {
+                steps.clear();
                 if let Some(user) = user.take() {
                     let error = match message["outcome"].as_str() {
                         Some("interrupted") => Some(error(&message["error"], Some(ABORTED))),
@@ -169,7 +176,7 @@ pub(crate) fn read_messages(messages: &Value) -> Read {
             _ => {}
         }
     }
-    Read { messages: read, ended, open: user }
+    Read { messages: read, ended, open: user, steps }
 }
 
 #[derive(Default)]
@@ -216,8 +223,9 @@ impl Cursor {
 
     /// After a whole read of `session`: what its live stream goes on from is
     /// the turn that read found open, if any; nothing of before it is kept.
-    pub(crate) fn resumed(&mut self, session: &str, open: Option<String>) {
-        self.sessions.insert(session.to_owned(), Open { user: open, ..Open::default() });
+    pub(crate) fn resumed(&mut self, session: &str, open: Option<String>, steps: Vec<(String, Option<String>)>) {
+        let steps = steps.into_iter().map(|(id, parent)| (id, Step { parent, ..Step::default() })).collect();
+        self.sessions.insert(session.to_owned(), Open { user: open, steps, ..Open::default() });
     }
 }
 
@@ -274,7 +282,8 @@ impl Open {
             }
             "session.step.ended" | "session.step.failed" => {
                 let Some(id) = d["assistantMessageID"].as_str() else { return vec![] };
-                let step = self.steps.remove(id).unwrap_or_else(|| Step { parent: self.user.clone(), ..Default::default() });
+                // An end of a step this connection never saw start answers nothing it knows of.
+                let step = self.steps.remove(id).unwrap_or_default();
                 let failure = if kind == "session.step.failed" { error(&d["error"], None) } else { Value::Null };
                 vec![message(answer(id, step.parent.as_deref(), &step.created, at, &d["finish"], &failure, &d["tokens"], &step.model))]
             }
