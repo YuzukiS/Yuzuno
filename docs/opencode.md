@@ -29,19 +29,37 @@ it streams, in batches: a batch is written out when a further piece arrives a
 quarter of a second or more after the batch began, or when the entry ends, so
 text that streams and then pauses shows at the next piece or the entry's end.
 A turn ends with 2.x's own end of its run: succeeded, failed with its error,
-or interrupted.
-Permission requests and questions still keep 1.19.3's shape inside 2.x's
-envelope until their part. Calls outside connecting still use 1.19.3's routes
-until their parts: sending a message, a command, answering a request,
-interrupting, Workspace MCP and the model list. Compaction, rewind and fork
-still read 1.19.3's messages, so on a session of 2.x's they refuse before
-doing anything ("not yet on OpenCode 2.x"); Core's tests of them use a 1.19.3
-mode of its stand-in OpenCode, removed once their parts land. So messages to
-an OpenCode 2.x Agent do not work yet, which is why creating one stays behind
-the experimental switch. A session's status is read from the sessions 2.x
-lists as running (`/api/session/active`). Busy on the real binary is first
-observed in slice 4 (first execution, stub provider): until then only its
-idle reading and its answer's shape are checked against a real OpenCode.
+or interrupted. Text gathered for an entry is also written out by its answer's
+next event, by its step's end and by the run's end. A shell command typed in
+OpenCode shows in the Turn as a command, with what it printed; the text of
+OpenCode's own synthetic messages (a shell's output passed to the model, say)
+is not shown.
+
+Sending is 2.x's too: a message goes through 2.x's prompt under the ID Yuzuno
+chose, its images as `data:` URIs, and is delivered once OpenCode admits it.
+2.x's prompt carries no model, so a model chosen in the Agent's settings is
+made the session's before a message when the session's is another, or none
+yet; 2.x keeps a note of each change in the session. The models come from
+2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
+status is read from the sessions 2.x lists as running (`/api/session/active`).
+
+Still to move: permission requests and questions, commands, Workspace MCP,
+compaction, rewind and fork.
+- **Permission requests and questions:** answered in 1.19.3's shape until
+  their part. One of 2.x's own is shown at once with "not yet on OpenCode
+  2.x", and can't be answered in Yuzuno: its run waits on it until you
+  interrupt the turn.
+- **Commands:** listed from 2.x's own list (names and descriptions), but
+  running one is still 1.19.3's route, which 2.x doesn't have, so a command
+  is refused with "not yet on OpenCode 2.x".
+- **Workspace MCP:** still 1.19.3's route, so on 2.x the Agent shows its
+  Workspace MCP as not connected.
+- **Compaction, rewind and fork:** they still read 1.19.3's messages, so on a
+  session of 2.x's they refuse before doing anything ("not yet on OpenCode
+  2.x"). Core's tests of them use a 1.19.3 mode of its stand-in OpenCode,
+  removed once their parts land.
+
+So creating an OpenCode Agent stays behind the experimental switch.
 
 Two things a reader of a 2.x session sees differently. Text still streaming
 when Yuzuno reads the session whole (after its stream broke, say) is what has
@@ -52,6 +70,9 @@ end of 2.x's (it would resume it), so Yuzuno shows its outcome as unknown.
 An experimental 2.x Agent made before its data and state moved to its own
 folder leaves what OpenCode kept in the user's own folders behind, such as
 its rewind snapshots: they stay there, and the Agent no longer sees them.
+A new Agent's database never takes in your 1.x `auth.json`: 2.x imports that
+file only when it migrates a database that already holds sessions, never
+into a new one, and Yuzuno never lets 2.x open a 1.19.3 database.
 
 An OpenCode Agent made before this change was made with 1.19.3. It is kept to
 read: its conversation stays in Yuzuno, and it is never started again, because
@@ -88,15 +109,17 @@ a new one.
   the list moves on with an OpenCode update.
 - **Model, login and permissions:** OpenCode's own configuration, unless a
   model, and one of its variants, is chosen in the Agent's settings from what
-  its OpenCode's configured providers list (`/config/providers`, names only).
-  The choice goes with each new message, and one OpenCode no longer lists
-  refuses the message before anything is sent. Yuzuno reads no OpenCode
-  credentials, keeps nothing else of a provider's record, and adds no
-  permission rules.
+  its OpenCode's configured providers list (`/api/model`, names only). The
+  choice is made the session's before a new message when the session's is
+  another, and one OpenCode no longer lists refuses the message before
+  anything is sent. Yuzuno reads no OpenCode credentials, keeps nothing else
+  of a provider's or a model's record (its settings and headers can hold
+  keys), and adds no permission rules.
 - **Requests:** a permission OpenCode asks for is answered **Allow once** or
   **Reject**; nothing lasting is offered. OpenCode rejects the session's other
   waiting requests along with a rejected one. Its questions are answered in
-  its own form.
+  its own form. On OpenCode 2.x not yet: its own requests are shown with
+  "not yet on OpenCode 2.x" and no answer.
 - **Images:** a message can carry images, as for Codex and Claude, when the
   Agent has a model chosen in its settings that OpenCode lists as reading
   images. With OpenCode's own default, or a model that doesn't read images,
@@ -105,8 +128,9 @@ a new one.
   send the rest. Large images are scaled or compressed as for Claude; the
   conversation shows the originals.
 - **Commands:** typing `/` lists the commands OpenCode's configuration
-  defines (`/config`'s `command`): their names and descriptions only, never
-  a template or anything else of the configuration. A message
+  defines (2.x's own list; `/config`'s `command` for 1.19.3): their names and
+  descriptions only, never a template or anything else of the configuration.
+  On OpenCode 2.x a command is refused for now ("not yet on OpenCode 2.x"). A message
   `/<name> [arguments]` for a listed one runs as that command, once, under
   the message's ID: OpenCode expands its template, shell lines (`!`)
   included, as it would in OpenCode itself. A command that names a model of
