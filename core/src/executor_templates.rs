@@ -236,9 +236,9 @@ fn list_at(db: &Connection, key: &str) -> Result<Templates> {
 
 /// The templates a save names, each checked strictly: no field this Core
 /// doesn't know, every value valid, each id once. While OpenCode is off
-/// (`opencode` false), an OpenCode template saves only as it was saved
-/// (R2 70093e91): the rest of the list stays editable, and a dispatch from
-/// it is refused.
+/// (`opencode` false), an OpenCode template saved before stays, and stays
+/// editable, so the rest of the list does too (R2 70093e91, R4 42f066e2):
+/// no new one is added, and a dispatch from one is refused.
 fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result<Vec<Template>> {
     ensure!(templates.len() <= MAX_TEMPLATES, "At most {MAX_TEMPLATES} templates");
     let mut parsed = Vec::with_capacity(templates.len());
@@ -248,7 +248,8 @@ fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result
             bail!("Unknown template field: {field}");
         }
         let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
-        template.validate(opencode || saved.contains(&template))?;
+        let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
+        template.validate(opencode || kept)?;
         parsed.push(template);
     }
     let ids: BTreeSet<_> = parsed.iter().map(|t| t.id.as_str()).collect();

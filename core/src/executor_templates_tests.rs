@@ -158,13 +158,17 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     let off = parse_save(&[template("o", "opencode")], false, &[]).unwrap_err().to_string();
     assert_eq!(off, "OpenCode Agents aren't enabled on this Core");
     assert!(parse_save(&[template("o", "opencode")], true, &[]).is_ok());
-    // While OpenCode is off, one saved before saves as it is, so the rest of
-    // the list stays editable; a changed one does not (R2 70093e91).
-    let kept: Template = serde_json::from_value(template("o", "opencode")).unwrap();
-    assert!(parse_save(&[template("o", "opencode"), template("c", "codex")], false, &[kept.clone()]).is_ok(),
-        "an OpenCode template saves unchanged while OpenCode is off");
+    // While OpenCode is off, one saved before stays editable, as it is or
+    // changed, so the rest of the list does too; a new one is refused
+    // (R2 70093e91, R4 42f066e2: the editor rebuilds each template it sends).
+    let kept: Template = serde_json::from_value(json!({"id":"o","label":"Label o","harness":"opencode","machineId":"local"})).unwrap();
     let renamed = json!({"id":"o","label":"Renamed","harness":"opencode"});
-    assert_eq!(parse_save(&[renamed], false, &[kept]).unwrap_err().to_string(), "OpenCode Agents aren't enabled on this Core");
+    assert!(parse_save(&[renamed, template("c", "codex")], false, &[kept.clone()]).is_ok(),
+        "an OpenCode template saved before stays editable while OpenCode is off");
+    assert_eq!(parse_save(&[template("n", "opencode")], false, &[kept.clone()]).unwrap_err().to_string(), "OpenCode Agents aren't enabled on this Core");
+    let codex: Template = serde_json::from_value(template("c", "codex")).unwrap();
+    assert_eq!(parse_save(&[template("c", "opencode")], false, &[codex]).unwrap_err().to_string(), "OpenCode Agents aren't enabled on this Core",
+        "no template becomes an OpenCode one while OpenCode is off");
     let twice = parse_save(&[template("a", "codex"), template("a", "claude")], true, &[]).unwrap_err().to_string();
     assert_eq!(twice, "Each template id must be used once");
     let many: Vec<Value> = (0..=MAX_TEMPLATES).map(|n| template(&format!("t{n}"), "codex")).collect();
