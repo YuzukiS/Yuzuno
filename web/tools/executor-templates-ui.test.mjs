@@ -142,7 +142,8 @@ test("Executor templates: a new template is added, said as written and saved as 
   conflict = true;
   button(page, "Save templates").click();
   await until(() => page.document.querySelector('[role="alert"]'), "the refusal");
-  assert.deepEqual(puts(page).at(-1).body.templates[0], { id: "code-reviewer", label: "Lead reviewer", harness: "codex" },
+  assert.deepEqual(puts(page).at(-1).body.templates[0],
+    { id: "code-reviewer", label: "Lead reviewer", harness: "codex", instructions: "Read the acceptance first." },
     "an effort is sent only with its model");
   assert.match(page.document.querySelector('[role="alert"]').textContent, /version_conflict: these executor templates changed/);
   conflict = false;

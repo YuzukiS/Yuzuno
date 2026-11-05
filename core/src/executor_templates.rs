@@ -211,7 +211,7 @@ fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Res
         items.push(item);
     }
     let named = |old: &Value| old["id"].as_str().is_some_and(|id| templates.iter().any(|t| t.id == id));
-    items.extend(before.iter().filter(|old| serde_json::from_value::<Template>((*old).clone()).is_err() && !named(*old)).cloned());
+    items.extend(before.iter().filter(|old| serde_json::from_value::<Template>((*old).clone()).is_err() && !named(old)).cloned());
     stored.insert("version".into(), version.into());
     stored.insert("templates".into(), items.into());
     Ok(Value::Object(stored))
