@@ -28,6 +28,10 @@ const TTL: Duration = Duration::from_secs(600);
 /// attempt stays unknown, holding the Agent back, until the answer comes.
 /// (Shorter in tests, so that one can watch it pass.)
 const WATCH: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 120 });
+/// The backups an Agent keeps of its settled reverts, the newest ones (R5 of
+/// #534): when a new one is made, older settled ones go. One whose outcome is
+/// not yet known keeps its backup whatever its age.
+const KEPT_BACKUPS: usize = 3;
 
 /// A preview as it was read, for a confirm to match.
 pub(super) struct Preview {
@@ -205,10 +209,13 @@ impl Workspace {
         let list = messages.as_array().context(unread)?;
         // The same folder however it is written (a link to it, a trailing
         // slash): OpenCode answers with its own resolved one (R3 of #534).
-        let folder = std::fs::canonicalize(&d.agent.cwd).context("这个 Agent 的目录无法读取；没有预览回退")?
+        // Each read of the disk here is on the blocking pool (R5 of #534).
+        let cwd = d.agent.cwd.clone();
+        let folder = tokio::task::spawn_blocking(move || std::fs::canonicalize(cwd)).await?.context("这个 Agent 的目录无法读取；没有预览回退")?
             .to_str().context("这个 Agent 的目录不是 UTF-8；没有预览回退")?.to_owned();
         let path = c.server.path().await.context(unread)?;
-        let directory = path["directory"].as_str().and_then(|d| std::fs::canonicalize(d).ok());
+        let named = path["directory"].as_str().map(PathBuf::from);
+        let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
         ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
         let worktree = path["worktree"].as_str().context("OpenCode 没有说它的 worktree；没有预览回退")?.to_owned();
         let project = c.server.project().await.context(unread)?;
@@ -224,7 +231,8 @@ impl Workspace {
             started.launcher.bound(c.server.pid().context("OpenCode's process has no ID")?)?;
             started.roots.agrees(&path)?;
             let store = files::store(&started.roots.data, &project, &worktree)?;
-            let root = Root::of(Path::new(&folder))?;
+            let at = PathBuf::from(&folder);
+            let root = tokio::task::spawn_blocking(move || Root::of(&at)).await??;
             let (entries, _) = files::plan(&store, Path::new(&worktree), &[], &targets, Path::new(&folder), root, BOUNDS).await?;
             (entries, Some(root))
         };
@@ -308,10 +316,13 @@ impl Workspace {
         // Each file as it is now, kept before anything is asked.
         let folder = PathBuf::from(&read.folder);
         if let Some(root) = read.root {
+            let agent = id.to_owned();
+            let settled = self.stored(move |s| s.settled_rewinds(&agent)).await?;
             let (dir, entries, at, key) = (self.data_dir.join("opencode").join(id).join("revert"), read.entries.clone(), folder.clone(), key.to_owned());
             let kept = tokio::task::spawn_blocking(move || {
                 std::fs::create_dir_all(&dir)?;
                 std::fs::File::open(dir.parent().context("The backups' folder has no parent")?)?.sync_all()?;
+                prune(&dir, &settled);
                 files::backup(&dir.join(&key), &entries, &at, root, BOUNDS)
             }).await.map_err(anyhow::Error::from).and_then(|kept| kept);
             if let Err(error) = kept {
@@ -577,6 +588,23 @@ impl Workspace {
         self.stored(move |s| s.save_rewind(&saved)).await?;
         self.changed(id);
         Ok(attempt.outcome())
+    }
+}
+
+/// Removes from `dir` the backups of `settled` attempts (newest first) past
+/// the newest KEPT_BACKUPS of them that have one. Anything else there is
+/// left: an attempt not yet settled, or a name no attempt of this Agent has.
+/// What cannot be removed is said and left; it never stops a revert.
+fn prune(dir: &Path, settled: &[String]) {
+    let backups = settled.iter().filter(|id| {
+        let mut parts = Path::new(id.as_str()).components();
+        matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None))
+            && std::fs::symlink_metadata(dir.join(id)).is_ok_and(|m| m.is_dir())
+    });
+    for id in backups.skip(KEPT_BACKUPS) {
+        if let Err(error) = std::fs::remove_dir_all(dir.join(id)) {
+            eprintln!("Workspace OpenCode revert backup {} not removed: {error}", dir.join(id).display());
+        }
     }
 }
 

@@ -136,6 +136,14 @@ impl Store {
         )?;
         Ok(())
     }
+    /// This Agent's attempts whose outcome is known (neither `sending` nor
+    /// `unknown`), newest first.
+    pub(crate) fn settled_rewinds(&self, agent: &str) -> Result<Vec<String>> {
+        let db = self.db.read()?;
+        let mut query = db.prepare("SELECT id FROM conversation_rewinds WHERE agent_id=?1 AND state NOT IN ('sending','unknown') ORDER BY created_at DESC, rowid DESC")?;
+        let ids = query.query_map([agent], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
 }
 
 fn idle(detail: &AgentDetail) -> Result<()> {
