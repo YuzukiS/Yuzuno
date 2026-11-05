@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attentionRank, needsYouTargets, nextTarget, orderByAttention, unseenEnd, waitingSince } from "../src/attention.ts";
+import { attentionRank, needsYouTargets, nextTarget, orderByAttention, proposersWaiting, unseenEnd, waitingSince } from "../src/attention.ts";
 
 // Who needs the user, and in what order (T-42).
 const agent = (id, extra = {}) => ({
@@ -117,4 +117,27 @@ test("next needs you goes through Home's Needs you in Core's order, each Agent o
   const last = { target: { kind: "agent", agentId: "broke" }, index: 4 };
   assert.deepEqual(nextTarget(seen, { kind: "agent", agentId: "broke" }, last), { target: { kind: "agent", agentId: "done" }, index: 4 });
   assert.equal(needsYouTargets(items, agents, { done: 3, broke: 2 }).length, 4);
+});
+
+// T-34 S3b: a lead's handover proposal waits on the user as a request does,
+// though it is in no Agent's pendingCount.
+test("a lead whose handover proposal waits ranks as needing you, and next needs you goes to the proposal on Home", () => {
+  const items = [
+    { kind: "approval", projectId: "p1", agentId: "asker", requestId: "r1", since: "2026-11-05T02:00:00Z" },
+    { kind: "handover", projectId: "p1", agentId: "lead", proposalId: "h1", title: "Say how to test", since: "2026-11-05T01:00:00Z" },
+  ];
+  const waiting = proposersWaiting(items);
+  assert.deepEqual([...waiting], ["lead"]);
+  const lead = agent("lead");
+  assert.equal(attentionRank(lead, {}), "idle", "without the proposal it is at rest");
+  assert.equal(attentionRank(lead, {}, waiting), "needsYou", "with it, it waits on the user");
+  const agents = [agent("rested"), agent("asker", { pendingCount: 1 }), lead];
+  assert.deepEqual(ids(orderByAttention(agents, { seen: {}, since: waitingSince(items), waiting })), ["lead", "asker", "rested"],
+    "the oldest wait first, the proposal's too");
+  const targets = needsYouTargets(items, agents, {});
+  assert.deepEqual(targets, [
+    { kind: "agent", agentId: "asker" },
+    { kind: "handover", projectId: "p1", proposalId: "h1" },
+  ], "next needs you goes to the proposal's card on Home, not to the lead's conversation");
+  assert.deepEqual(nextTarget(targets, { kind: "handover", projectId: "p1", proposalId: "h1" }), { target: targets[0], index: 0 });
 });

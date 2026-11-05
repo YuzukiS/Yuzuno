@@ -328,6 +328,15 @@ test("a new Ask in Needs you notifies once; approvals there come from the Agent 
   assert.deepEqual(events.askNotices([ask], [ask, approval], true), []);
 });
 
+test("a new handover proposal in Needs you notifies once, with the tag Core's push gives it (T-34 S3b)", () => {
+  const proposal = { kind: "handover", projectId: "p1", agentId: "lead", agentName: "Mori", proposalId: "h1", title: "Say how to test", since: "" };
+  assert.deepEqual(events.askNotices([], [proposal], true), [
+    { kind: "needsYou", tag: "yuzuno:needsYou:handover:h1", title: "Mori proposes a handover change", body: "Say how to test", home: true },
+  ], "a new proposal notifies");
+  assert.equal(events.askNotices([], [proposal], false)[0].body, "A change to a Project's handover is waiting for your decision on Home.");
+  assert.deepEqual(events.askNotices([proposal], [proposal], true), [], "once");
+});
+
 test("none of it talks to Core: muting this device changes nothing the Workspace delivers", async () => {
   const fetchBefore = globalThis.fetch;
   let requests = 0;
