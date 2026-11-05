@@ -63,6 +63,7 @@ pub struct AskState {
 pub struct ProposalState {
     pub project: String,
     pub id: String,
+    pub proposer_id: String,
     pub proposer_name: String,
 }
 
@@ -162,7 +163,9 @@ pub fn notices(before: &Read, after: &Read) -> Vec<Notice> {
     for proposal in after.proposals.iter().filter(|p| !proposed.contains(p.id.as_str())) {
         found.push(Notice {
             kind: Kind::NeedsYou,
-            tag: tag(Kind::NeedsYou, &format!("handover:{}", proposal.id)),
+            // By Project and lead: a lead's new proposal supersedes its own, and
+            // its notice replaces the earlier one (#612 R2).
+            tag: tag(Kind::NeedsYou, &format!("handover:{}:{}", proposal.project, proposal.proposer_id)),
             title: format!("{} proposes a handover change", proposal.proposer_name),
             body: "A change to a Project's handover is waiting for your decision on Home.".into(),
             agent: None,
@@ -308,16 +311,21 @@ mod tests {
     /// with its own words, that opens Home; one already shown is not again.
     #[test]
     fn a_new_handover_proposal_needs_you_and_opens_home() {
-        let proposal = |id: &str| ProposalState { project: "p1".into(), id: id.into(), proposer_name: "Lead".into() };
+        let proposal = |id: &str| ProposalState { project: "p1".into(), id: id.into(), proposer_id: "lead".into(), proposer_name: "Lead".into() };
         let before = Read { agents: vec![], asks: vec![], proposals: vec![proposal("old")] };
         let after = Read { agents: vec![], asks: vec![], proposals: vec![proposal("old"), proposal("new")] };
         let found = notices(&before, &after);
         assert_eq!(kinds(&found), vec![(Kind::NeedsYou, "Lead proposes a handover change")], "a new proposal is one notice");
-        assert_eq!(found[0].tag, "yuzuno:needsYou:handover:new");
+        assert_eq!(found[0].tag, "yuzuno:needsYou:handover:p1:lead");
         assert_eq!(payload(&found[0], "w1"), json!({"v":1,"kind":"needsYou","workspaceId":"w1","open":"home",
             "title":"Lead proposes a handover change","body":"A change to a Project's handover is waiting for your decision on Home.",
-            "tag":"yuzuno:needsYou:handover:new"}));
+            "tag":"yuzuno:needsYou:handover:p1:lead"}));
         assert!(notices(&after, &after).is_empty(), "a proposal already shown is not told again");
+        // The lead's next proposal supersedes its own: one notice, under the same tag (#612 R2).
+        let first = notices(&Read::default(), &Read { proposals: vec![proposal("old")], ..Read::default() });
+        let second = notices(&Read { proposals: vec![proposal("old")], ..Read::default() }, &Read { proposals: vec![proposal("newer")], ..Read::default() });
+        assert_eq!((first.len(), second.len()), (1, 1));
+        assert_eq!(second[0].tag, first[0].tag, "a superseding proposal shares its tag, so its notice replaces the earlier one");
     }
 
     #[test]

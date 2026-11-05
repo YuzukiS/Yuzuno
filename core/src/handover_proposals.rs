@@ -101,19 +101,23 @@ pub(crate) fn pending_summary(db: &Connection, project: &str) -> Result<Option<V
     Ok(pending(db, project)?.map(|p| summary(&p)))
 }
 
-/// Every pending proposal, as push notifications name it (T-200): never its text.
+/// Every pending proposal Home shows, as push notifications name it (T-200):
+/// never its text, and none of an archived Project, as Home's order leaves
+/// those out (#612 R2); unarchived, it is back.
 pub(crate) struct Waiting {
     pub project: String,
     pub id: String,
+    pub proposer_id: String,
     pub proposer_name: String,
 }
 
 pub(crate) fn waiting(store: &Store) -> Result<Vec<Waiting>> {
     let db = store.db.read()?;
     let mut query = db.prepare(
-        "SELECT project_id, id, proposer_name FROM project_handover_proposals
-         WHERE state='pending' AND project_id IN (SELECT id FROM projects) ORDER BY created_at")?;
-    let rows = query.query_map([], |r| Ok(Waiting { project: r.get(0)?, id: r.get(1)?, proposer_name: r.get(2)? }))?;
+        "SELECT project_id, id, proposer_id, proposer_name FROM project_handover_proposals
+         WHERE state='pending' AND project_id IN (SELECT id FROM projects WHERE json_extract(data,'$.archivedAt') IS NULL)
+         ORDER BY created_at")?;
+    let rows = query.query_map([], |r| Ok(Waiting { project: r.get(0)?, id: r.get(1)?, proposer_id: r.get(2)?, proposer_name: r.get(3)? }))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
