@@ -21,10 +21,17 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
             "worktree",
             "references",
             "returnRequirements",
+            "shaCheck",
         ],
     )?;
+    // Core's own shaCheck (T-31) is bounded by its shape, not by this limit,
+    // so a check Core attaches never makes a registration undispatchable.
+    let mut given = value.clone();
+    if let Some(object) = given.as_object_mut() {
+        object.remove("shaCheck");
+    }
     ensure!(
-        value.to_string().len() <= REGISTERED_LIMIT,
+        given.to_string().len() <= REGISTERED_LIMIT,
         "invalid_input: materials exceed 32768 bytes; register concise references instead"
     );
     for (key, max) in [
@@ -41,6 +48,7 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
             ensure!(Form::Any.accepts(&sha), "invalid_input: {}", commit_sha::problem_resolved(key, &sha, Form::Any));
         }
     }
+    sha_check_shape(&value["shaCheck"])?;
     if let Some(id) = value.get("repositoryId").filter(|v| !v.is_null()) {
         let id = id
             .as_i64()
@@ -111,6 +119,41 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
     Ok(value)
 }
 
+/// What Core's GitHub check said of each SHA (T-31), as the runtime writes it
+/// (commit_sha::resolve_materials): {baseSha?, headSha?} of {state verified or
+/// unverified, repositoryId, at, reason?}.
+fn sha_check_shape(check: &Value) -> Result<()> {
+    if check.is_null() {
+        return Ok(());
+    }
+    let entries = check.as_object().context("invalid_input: shaCheck must be an object")?;
+    for (key, entry) in entries {
+        ensure!(["baseSha", "headSha"].contains(&key.as_str()), "invalid_input: shaCheck names only baseSha and headSha");
+        allowed(entry, &["state", "repositoryId", "at", "reason"])?;
+        ensure!(["verified", "unverified"].contains(&entry["state"].as_str().unwrap_or_default()),
+            "invalid_input: shaCheck state is verified or unverified");
+        ensure!(entry["repositoryId"].as_i64().is_some(), "invalid_input: shaCheck names its repositoryId");
+        required_text(entry, "at", 64)?;
+        optional_text(entry, "reason", commit_sha::REASON_BYTES)?;
+    }
+    Ok(())
+}
+
+/// `materials` with `check` (from the runtime, T-31) over what they already
+/// said, kept only for the SHAs they still name. Without either, unchanged.
+pub(super) fn with_check(mut materials: Value, check: &Value) -> Value {
+    let Some(object) = materials.as_object_mut() else { return materials };
+    let mut entries = object.remove("shaCheck").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    if let Some(check) = check.as_object() {
+        entries.extend(check.clone());
+    }
+    entries.retain(|key, _| object.get(key).is_some_and(Value::is_string));
+    if !entries.is_empty() {
+        object.insert("shaCheck".into(), Value::Object(entries));
+    }
+    materials
+}
+
 /// Explicit SHAs are checked where they are registered (T-29), as a dispatch
 /// checks them (snapshot): they need their repositoryId, and that repository
 /// linked to this task or its Project. Called once the task and its Project are
@@ -142,12 +185,24 @@ pub(super) fn check_shas(db: &Connection, task: &str, materials: &Value) -> Resu
 }
 
 impl Store {
-    /// The repositoryId of a task's registered materials, or None: where a
-    /// dispatch that names none resolves an abbreviated SHA (T-164).
-    pub(crate) fn registered_materials_repository(&self, task: &str) -> Result<Option<i64>> {
+    /// The input `actor` gave the `operation` call that `request` already
+    /// answered, as the store saved it, or None (T-31): a retry of it replays
+    /// that answer, so the runtime need ask GitHub nothing for it.
+    pub(crate) fn answered_input(&self, actor: Option<&str>, operation: &str, request: &str) -> Result<Option<Value>> {
         let db = self.db.read()?;
-        let (id, _) = task_key(&db, task)?;
-        Ok(registered(&db, &id)?["value"]["repositoryId"].as_i64())
+        let actor = actor.map_or_else(|| "user".to_owned(), |id| format!("agent:{id}"));
+        let raw: Option<String> = db.query_row("SELECT input_json FROM collaboration_requests WHERE actor=?1 AND operation=?2 AND request_id=?3",
+            params![actor, operation, request], |r| r.get(0)).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into)).transpose()
+    }
+
+    /// A task's registered materials, or null: what a dispatch takes where it
+    /// overrides nothing, so where it resolves and checks SHAs (T-164, T-31).
+    /// An unknown task has none here; the dispatch itself says it is unknown.
+    pub(crate) fn registered_materials(&self, task: &str) -> Result<Value> {
+        let db = self.db.read()?;
+        let Ok((id, _)) = task_key(&db, task) else { return Ok(Value::Null) };
+        Ok(registered(&db, &id)?["value"].clone())
     }
 }
 
@@ -179,7 +234,7 @@ pub(super) fn read(db: &Connection, task: &str, dispatch: &str) -> Result<Value>
     serde_json::from_str(&raw.context("dispatch_materials_not_found: no materials for this task and dispatch; legacy dispatches may have none")?).map_err(Into::into)
 }
 
-pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value) -> Result<Value> {
+pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_check: &Value) -> Result<Value> {
     let dispatch = task
         .dispatch
         .as_ref()
@@ -200,7 +255,15 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value) -> Res
             effective.extend(overrides.as_object().unwrap().clone());
         }
     }
-    let effective = validate(db, &Value::Object(effective))?;
+    // A registered entry still holds for the SHA it was made of in the
+    // repository this dispatch takes; an SHA an override names was checked
+    // anew, and what this dispatch asked again replaces what it says.
+    let repository = effective.get("repositoryId").cloned().unwrap_or(Value::Null);
+    if let Some(entries) = effective.get_mut("shaCheck").and_then(Value::as_object_mut) {
+        let overridden = |key: &str| overrides.as_ref().and_then(Value::as_object).is_some_and(|o| o.contains_key(key));
+        entries.retain(|key, entry| entry["repositoryId"] == repository && !overridden(key));
+    }
+    let effective = validate(db, &with_check(Value::Object(effective), sha_check))?;
     if let Some(source) = registration.as_object_mut() {
         source.remove("value");
     }
@@ -268,8 +331,10 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value) -> Res
         "supplement":supplement,"returnTo":dispatch.notification_recipient,"requestedBy":dispatch.requested_by,"executor":dispatch.executor,
         "source":dispatch.source,"latestTask":{"taskId":task_number(task.seq)},
         "returnRequirementsDefault":"Report outcome and validation/evidence on this same task using task_submit_result with the original dispatchId. Default review is a submission, not independent approval, merge or release. No extra peer_send is needed for Agent dispatch."});
+    // As for the registration, Core's own shaCheck is not counted (T-31).
+    let own = snapshot["effective"].get("shaCheck").map_or(0, |check| check.to_string().len());
     ensure!(
-        snapshot.to_string().len() <= SNAPSHOT_LIMIT,
+        snapshot.to_string().len() - own <= SNAPSHOT_LIMIT,
         "materials_too_large: snapshot exceeds 128 KiB; use concise registered references; nothing was dispatched"
     );
     Ok(snapshot)
@@ -289,10 +354,13 @@ pub(super) fn project_activity(value: &mut Value) {
 pub(super) fn schema() -> Value {
     let text = |max| json!({"type":["string","null"],"maxLength":max});
     json!({"type":["object","null"],"additionalProperties":false,
-        "description":"Explicit saved work materials (max 32768 UTF-8 bytes). task_create/update replaces the registration; null clears it. On task_dispatch, supplied fields override registration only for this dispatch; null clears all. Missing fields are not inferred. Paths/links are information, never additional permission. Large text is available via the fixed dispatchId snapshot.",
+        "description":"Explicit saved work materials (max 32768 UTF-8 bytes). task_create/update replaces the registration; null clears it. On task_dispatch, supplied fields override registration only for this dispatch; null clears all. Missing fields are not inferred. Paths/links are information, never additional permission. Large text is available via the fixed dispatchId snapshot. Core adds shaCheck, what GitHub said of each SHA, and the receipt repeats it.",
         "properties":{"acceptance":text(16384),"repositoryId":{"type":["integer","null"],"minimum":1},
-            "baseSha":commit_sha::schema_resolved(Form::Any, true, "The commit the work starts from.", "of the materials' repositoryId (on task_dispatch without one, the registered materials')"),
-            "headSha":commit_sha::schema_resolved(Form::Any, true, "The commit to deliver or review.", "of the materials' repositoryId (on task_dispatch without one, the registered materials')"),"baseline":text(1024),"worktree":text(4096),"returnRequirements":text(8192),
+            "baseSha":commit_sha::schema_materials("The commit the work starts from."),
+            "headSha":commit_sha::schema_materials("The commit to deliver or review."),"baseline":text(1024),"worktree":text(4096),"returnRequirements":text(8192),
+            "shaCheck":{"type":["object","null"],"description":"Written by Core: what GitHub said of each baseSha and headSha, \
+                verified, or unverified with its reason, each with its time and repositoryId. A shaCheck sent here, such as one \
+                read back with the materials, is ignored, not refused: Core asks GitHub again, and the receipt shows its answer."},
             "references":{"type":["array","null"],"maxItems":20,"items":{"type":"object","additionalProperties":false,
                 "properties":{"kind":{"type":"string","enum":["acceptance","decision","evidence"]},"label":{"type":"string","maxLength":300},
                     "url":{"type":"string","maxLength":4096,"description":"An explicit http(s) reference, not automatically fetched. Give url, or taskId with activitySeq, not both."},
@@ -366,14 +434,20 @@ pub(super) fn body(snapshot: &Value) -> String {
         .unwrap_or_else(|| {
             "Not specified / 未指定; do not choose by cwd or guess among repositories".into()
         });
+    // With what Core's GitHub check said of it (T-31).
+    let sha = |key: &str| {
+        let Some(value) = snapshot["effective"][key].as_str() else { return "Not specified / 未指定".to_owned() };
+        let entry = &snapshot["effective"]["shaCheck"][key];
+        match entry["state"].as_str() {
+            Some("verified") => format!("{value} (found on GitHub at {})", entry["at"].as_str().unwrap_or_default()),
+            Some(_) => format!("{value} (not checked on GitHub: {})", entry["reason"].as_str().unwrap_or("unknown")),
+            None => format!("{value} (not checked on GitHub)"),
+        }
+    };
     out.push_str(&format!(
         "\nSelected repository: {selected}\nExplicit base SHA: {}\nExplicit head SHA: {}\n",
-        snapshot["effective"]["baseSha"]
-            .as_str()
-            .unwrap_or("Not specified / 未指定"),
-        snapshot["effective"]["headSha"]
-            .as_str()
-            .unwrap_or("Not specified / 未指定")
+        sha("baseSha"),
+        sha("headSha")
     ));
     for (key, label) in [
         ("repositories", "Project repositories"),
