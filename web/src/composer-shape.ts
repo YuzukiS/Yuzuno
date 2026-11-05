@@ -53,14 +53,15 @@ export function lineRoom(box: HTMLElement): number {
     - 2 * px(style, "--composer-line-text-x");
 }
 
-/** The width `text` takes in the editor's font, or null where nothing can measure it (jsdom). */
+let measuring: CanvasRenderingContext2D | null | undefined;
+/** The width `text` takes in the editor's font, or null where nothing can measure it. */
 function textWidth(box: HTMLElement, text: string): number | null {
   const content = box.querySelector(".cm-content");
-  const context = content && document.createElement("canvas").getContext?.("2d");
-  if (!content || !context) return null;
+  measuring ??= document.createElement("canvas").getContext?.("2d") ?? null;
+  if (!content || typeof measuring?.measureText !== "function") return null;
   const style = getComputedStyle(content);
-  context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-  return context.measureText(text).width;
+  measuring.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  return measuring.measureText(text).width;
 }
 
 /**
@@ -89,7 +90,8 @@ export function useComposerShape(
   evaluate.current = () => {
     if (!box) return;
     const room = lineRoom(box);
-    const long = placeholder ? textWidth(box, placeholder) : null;
+    // Only a laid-out box is measured (not jsdom's, which has no room).
+    const long = placeholder && room > 0 ? textWidth(box, placeholder) : null;
     const tooWide = long !== null && room > 0 && !(long < room - LINE_RETURN_MARGIN);
     if (tooWide !== short) setShort(tooWide);
     const line = measure();
