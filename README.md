@@ -99,7 +99,7 @@ The launcher uses this checkout as the default working directory. Set `--cwd /ab
 - **Remote clients** reach Core through an SSH tunnel. Core binds to loopback and has no user login layer; use the [tunnel setup](docs/independent-core.md#connect-from-another-computer) instead of exposing its port.
 - **GitHub integration** uses a signed-in `gh` on the Core host for repository/PR operations and CI watches. Watches observe workflows; they do not trigger or cancel them.
 
-Core and client can live on different computers. Running an Agent over SSH is a separate choice from where you run the client. Projects organize work without requiring Agents to share a working tree. A Project can have leads, which you choose in its settings; see [Agent kinds and Project leads](docs/executor-model.md).
+Core and client can live on different computers. Running an Agent over SSH is a separate choice from where you run the client. Projects organize work without requiring Agents to share a working tree. A Project can have leads, which you choose in its settings, and executor templates for Agents that Core will create per task; see [Agent kinds, Project leads and executor templates](docs/executor-model.md).
 
 ### Data and updates
 

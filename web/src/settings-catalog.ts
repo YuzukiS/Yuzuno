@@ -13,7 +13,7 @@ export const settingsCategories = [
   { id: "updates", label: "Updates & about", short: "Updates", description: "Versions and updates for the Workspace service and desktop client, with help, release notes and licenses." },
 ] as const;
 export type SettingsCategory = typeof settingsCategories[number]["id"];
-export type SettingsEditor = "appearance" | "updates" | "auto-continue" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "language" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "about" | "storage" | "drafts" | "transfer";
+export type SettingsEditor = "appearance" | "updates" | "auto-continue" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "language" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "executor-templates" | "about" | "storage" | "drafts" | "transfer";
 export type SettingsDestination =
   | { kind: "agent"; section: "model" | "context" | "auto-continue"; agentId: string }
   | { kind: "project"; projectId: string }
@@ -53,6 +53,7 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "auto-continue", category: "agents", title: "Continue after Claude’s usage limit resets", keywords: "自动继续 自动恢复 配额 限额 quota resume auto continue", scope: "Selected local Claude Agent", source: "The Agent can choose continue or wait, or follow the Workspace default, which has its own entry.", effect: "When a usage limit stops the Agent, the policy controls whether Yuzuno sends a continuation after reset.", target: { kind: "agent", section: "auto-continue" } },
   { id: "auto-continue-default", category: "agents", title: "Continue after a usage limit: Workspace default", keywords: "自动继续 自动恢复 配额 限额 默认 quota resume auto continue usage limit default claude", scope: "This Workspace · local Claude Agents without their own choice", source: "Saved by Core; when nothing is saved, the built-in: wait for you.", effect: "Applies at once to the Agents that follow it, existing ones included. An Agent’s own choice stays as it is.", target: { kind: "editor", editor: "auto-continue" } },
   { id: "agent-defaults", category: "agents", title: "New Agent defaults", keywords: "默认 新建 新 Agent harness 权限 模型 推理 来源 继承 default new agent permissions model reasoning effort codex claude follow config", scope: "This Workspace, or a project on its page · Agents created from now on", source: "Saved by Core for the Workspace; a project can override them on its page. Unset means Yuzuno’s built-in behaviour. Follow Codex config uses each machine’s own configuration.", effect: "Used when an Agent is created. Existing Agents keep their settings, and a machine still decides at start whether it allows a permission.", target: { kind: "editor", editor: "agent-defaults" } },
+  { id: "executor-templates", category: "agents", title: "Executor templates", keywords: "执行者 模板 派发 负责人 executor template dispatch lead instructions harness model", scope: "This Workspace, or a project on its page · dispatches from a template from now on", source: "Saved by Core for the Workspace, or for a project on its page; a project’s template of an id comes before the Workspace’s.", effect: "A dispatch from a template creates an Agent for that task from it, on this Core host. Executors already created keep their own settings.", target: { kind: "editor", editor: "executor-templates" } },
   { id: "review", category: "agents", title: "Code review", keywords: "审查 审阅 review harness 默认 模型", scope: "This Workspace, or a project on its page", source: "Reviewer harness and model saved by Core for the Workspace, or for a project on its page; the built-in reviewer when none is saved.", effect: "A new review of a task uses its project’s reviewer, else the Workspace’s. Running reviews keep their original settings.", target: { kind: "editor", editor: "review" } },
   { id: "credentials", category: "agents", title: "Accounts, credentials & MCP", keywords: "账户 登录 密钥 token 凭证 MCP CLI native", scope: "Execution machine · native harness", source: "Login and credentials belong to the native tools on their execution machine.", effect: "Agent runtime and MCP status are visible in the conversation inspector; both also in Runtime & versions.", target: { kind: "unavailable", reason: "This settings center does not store API keys or edit native login and MCP configuration." } },
   { id: "machines", category: "connections", title: "Execution machines & SSH", keywords: "设备 机器 连接 SSH 主机 默认目录 default folder cwd", scope: "Selected execution machine", source: "Machine registration is saved by Core; SSH keys and host configuration belong to OpenSSH.", effect: "Choose a machine in Machines to edit its connection and new-Agent default folder. Existing Agents do not move.", target: { kind: "machines" } },
@@ -77,7 +78,7 @@ const entryShort: Record<string, string> = {
   appearance: "Appearance", "portal-open": "Opening", "send-key": "Sending", shortcuts: "Shortcuts", transfer: "Move preferences",
   "appearance-preset": "Shared preset", clock: "Clock", language: "Language", notifications: "Notifications",
   "agent-model": "Model & permissions", "agent-context": "Context", "auto-continue": "Auto-continue",
-  "auto-continue-default": "Auto-continue default", "agent-defaults": "New Agent defaults", review: "Code review",
+  "auto-continue-default": "Auto-continue default", "agent-defaults": "New Agent defaults", "executor-templates": "Executor templates", review: "Code review",
   credentials: "Accounts & MCP", machines: "Machines & SSH", phone: "Phone access", projects: "Projects", home: "Home",
   budget: "Core host budget", "remote-budget": "Remote budgets", storage: "Storage", diagnostics: "Diagnostics",
   history: "History & memory", backup: "Backup", drafts: "Drafts", updates: "Versions & updates", runtime: "Runtime",
@@ -86,7 +87,7 @@ const entryShort: Record<string, string> = {
 
 /** The editors this version shows in the interface language (T-189); the
  * others, and the rest of Yuzuno, stay in English. */
-export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "backup", "history", "drafts", "updates", "auto-continue"];
+export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "executor-templates", "backup", "history", "drafts", "updates", "auto-continue"];
 
 /** Search finds an entry by its words in either language, whichever is
  * shown (T-189): its English and Chinese title, scope and category. */
