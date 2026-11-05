@@ -14,6 +14,7 @@ import { Prose } from "./components";
 import { ConversationRows, useConversationDisclosure, useConversationReveal } from "./ConversationWindow";
 import { payloadLimits, useFullItem } from "./item-payload";
 import type { ClaudeRuntime, NativeItem, NativeTurn, PendingRequest } from "./types";
+import { usePendingMotion } from "./pending-motion";
 import "./claude.css";
 
 type PermissionUpdate = { type?: string; behavior?: string; mode?: string; rules?: { toolName?: string; ruleContent?: string }[]; directories?: string[] };
@@ -469,6 +470,8 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
   const reasonTooLong = new TextEncoder().encode(reasonText).length > 2000;
   const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
   const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
+  // The hint follows Core's mark; the card is resolved as soon as Core answered its own request (R2 e5c4a849).
+  const motion = usePendingMotion(!!request.params._responseSent, request.agentId, !!request.params._responseSent || answered);
   const answer = (q: Question) => [...(answers[q.question] || []), ...(free[q.question]?.trim() ? [free[q.question].trim()] : [])].join(", ");
   async function respond(decision: "allow" | "deny", scope?: "session") {
     if (locked || answering.current) return;
@@ -492,7 +495,7 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
   }
   const sessionLabel = plan !== null ? acceptEdits ? t.approveEditsSession : t.approveSession
     : acceptEdits ? t.editsSession : t.allowSession;
-  return <section className={`pending-card claude-permission${plan !== null ? " claude-plan" : ""}${highlightSource ? " source-highlight" : ""}`}
+  return <section ref={motion.card} className={`pending-card claude-permission${plan !== null ? " claude-plan" : ""}${highlightSource ? " source-highlight" : ""}`}
     id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
     <div className="pending-heading">
       {questions.length ? <MessageSquare size={17} /> : plan !== null ? <ClipboardList size={17} /> : <ShieldCheck size={17} />}
@@ -500,7 +503,7 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
       <span className="pending-tag">{t.needsYou}</span>
     </div>
     {request.stale && <p className="inline-error">{t.staleClaude}</p>}
-    {request.params._responseSent && <p className="field-hint">{t.sentClaude}</p>}
+    {request.params._responseSent && <p className="field-hint" ref={motion.hint}>{t.sentClaude}</p>}
     {questions.length ? <form onSubmit={e => { e.preventDefault(); void respond("allow"); }}>
       <fieldset disabled={locked} className="claude-question-fields">
         {questions.map(q => <fieldset key={q.question}>
