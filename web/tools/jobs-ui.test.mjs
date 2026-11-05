@@ -267,7 +267,7 @@ test('the submit form shows what earlier runs of the same name or command sugges
     for (let n = 0; n < 40 && !asked.some(q => q.name === 'first of its kind'); n++) await wait();
     assert.ok(asked.some(q => q.name === 'first of its kind'), 'the form asks what earlier runs suggest');
     await wait();
-    assert.equal(p.doc.querySelector('.job-suggestion'), null, 'no history, no suggestion');
+    assert.ok(!p.doc.querySelector('.job-suggestion'), 'no history, no suggestion');
     await fill(p, 'Name', 'K4 calibration');
     await until(() => p.doc.querySelector('.job-suggestion'));
     assert.deepEqual(asked.at(-1), { taskId: 'T-38', name: 'K4 calibration', argv: JSON.stringify(['/bin/sh', '-c', 'python3 calib.py']) });
@@ -314,8 +314,8 @@ test('the suggestion for the last draft goes as soon as the name changes, and th
     assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 4\.0 GiB RAM and 1\.8 CPU/);
     // Another name: the last draft's note and its button go at once, before the next answer.
     await fill(p, 'Name', 'K5 calibration');
-    assert.equal(p.doc.querySelector('.job-suggestion'), null, 'the note for the last draft goes at once');
-    assert.equal(button(p, 'Use suggestion'), undefined, 'nothing from the last draft can be used');
+    assert.ok(!p.doc.querySelector('.job-suggestion'), 'the note for the last draft goes at once');
+    assert.ok(!button(p, 'Use suggestion'), 'nothing from the last draft can be used');
     await until(() => p.doc.querySelector('.job-suggestion'));
     assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 8\.0 GiB RAM and 3\.0 CPU/);
     assert.deepEqual(p.errors, []);
