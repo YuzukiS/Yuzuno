@@ -6,16 +6,15 @@
 .pasted-text-composer .cm-editor.cm-focused {
   outline: none;
 }
-/* The editor grows with its text, up to about a third of the window, then
-   scrolls inside. */
+/* The editor grows with its text, up to twelve lines or two fifths of the
+   window, then scrolls inside (T-44); a phone's cap is in styles.css. */
 .pasted-text-composer .cm-scroller {
   font-family: inherit;
   line-height: 1.75;
-  max-height: min(35dvh, 320px);
+  max-height: min(calc(12 * 1.75em + 21px), 40dvh);
   overflow: auto;
 }
 .pasted-text-composer .cm-content {
-  min-height: 64px;
   padding: 15px 16px 6px;
   white-space: pre-wrap;
 }

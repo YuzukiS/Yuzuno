@@ -1,39 +1,42 @@
-import { useRef, useState } from "react";
-import { ChartColumn, Columns3, Shapes } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChartColumn, Columns3 } from "lucide-react";
 import { CopyButton, Modal, Yuzu } from "../components";
 import { interactiveRequest } from "./examples";
 import "./intelligent-ui.css";
 
+/** The request's dialog, opened from the composer's "+" menu (T-44). */
 export function ResultRequest({
+  open,
+  onOpenChange,
   onDraft,
+  returnFocus,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onDraft: (text: string) => void;
+  /** Where focus goes back when it closes without a request added ("+"). */
+  returnFocus?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<"comparison" | "report">("comparison");
   const appended = useRef(false);
+  useEffect(() => {
+    if (open) appended.current = false;
+  }, [open]);
   const template = interactiveRequest(kind);
   return (
     <>
-      <button
-        type="button"
-        className="result-request-button composer-tool"
-        title="Ask for an interactive result: a table or chart you can explore"
-        aria-label="Ask for an interactive result"
-        onClick={() => {
-          appended.current = false;
-          setOpen(true);
-        }}
-      >
-        <Shapes size={15} />
-      </button>
       <Modal
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={onOpenChange}
         title="A result you can explore"
         description="Add a request to your draft. Your agent can include a table or chart with its reply."
         onCloseAutoFocus={(event) => {
+          // With a request added, the draft has the focus.
           if (appended.current) event.preventDefault();
+          else if (returnFocus) {
+            event.preventDefault();
+            returnFocus();
+          }
         }}
       >
         <div className="result-request-intro">
@@ -86,7 +89,7 @@ export function ResultRequest({
             className="primary-button"
             onClick={() => {
               appended.current = true;
-              setOpen(false);
+              onOpenChange(false);
               onDraft(template);
             }}
           >

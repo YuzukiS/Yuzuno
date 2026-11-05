@@ -1,0 +1,91 @@
+/* The composer's "+" and its menu (T-44, ComposerAddMenu.tsx). */
+.composer-add {
+  position: relative;
+  display: flex;
+}
+/* It rises over the conversation from "+", whose corner it keeps. */
+.composer-add-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--ink) 16%, transparent);
+  transform-origin: left bottom;
+  cursor: default;
+  animation: composer-add-in var(--motion-small) var(--ease-standard);
+}
+.composer-add-menu.is-leaving {
+  pointer-events: none;
+  animation: composer-add-out var(--motion-exit-small) var(--ease-exit) both;
+}
+@keyframes composer-add-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+@keyframes composer-add-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-add-menu,
+  .composer-add-menu.is-leaving {
+    animation: none;
+  }
+}
+.composer-add-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.composer-add-item > svg {
+  flex: none;
+  color: var(--text-quiet);
+}
+.composer-add-item:is(:hover, :focus) {
+  outline: none;
+  background: var(--cream);
+}
+.composer-add-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus, #9caa76);
+}
+.composer-add-item[aria-disabled="true"] {
+  cursor: default;
+  color: var(--text-secondary, #8f9881);
+}
+.composer-add-text {
+  display: grid;
+  gap: 1px;
+}
+.composer-add-text > small {
+  color: var(--text-secondary, #8f9881);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.4;
+}
+.app.phone .composer-add-item {
+  min-height: 44px;
+}

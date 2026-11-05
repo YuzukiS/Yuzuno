@@ -231,16 +231,19 @@ try {
     .first()
     .click();
   await input().waitFor();
+  // The composer's "+" offers images (T-44); the entry says in its tooltip
+  // that Claude gets large images scaled.
+  await page.locator("form.composer .composer-plus").click();
+  const addImages = page.getByRole("menuitem", { name: "Add images" });
   assert.ok(
-    await page.getByRole("button", { name: "Add images" }).isEnabled(),
+    (await addImages.isEnabled()) && (await addImages.getAttribute("aria-disabled")) === null,
     "a Claude Agent takes images too, including SSH destinations",
   );
-  // The composer's image button says in its tooltip that Claude gets large
-  // images scaled.
   assert.match(
-    (await page.getByRole("button", { name: "Add images" }).getAttribute("title")) || "",
+    (await addImages.getAttribute("title")) || "",
     /scaled or compressed when sent to Claude · originals are kept/,
   );
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: /Codex fixture/ })
     .first()
