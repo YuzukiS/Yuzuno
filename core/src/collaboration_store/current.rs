@@ -102,6 +102,8 @@ pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
         "result": result,
         "latestActivity": latest,
         "delivery": delivery(db, &task.id)?,
+        // Its mail whose wake-up failed, is tried again or is uncertain (T-50).
+        "mailProblems": super::mail_delivery::task_problems(db, &task.id, super::MAIL_PROBLEMS)?,
         "more": MORE,
     }}))
 }

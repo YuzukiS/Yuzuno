@@ -117,6 +117,9 @@ export const boardText = strings({
   saveChanges: "Save changes",
   cancel: "Cancel",
   waitingOn: "Waiting on",
+  /** Its mail whose wake-up did not go through (T-50); Core's words follow. */
+  mailProblems: "Mail not delivered",
+  jobMail: (status: string, id: string) => `Job ${id.slice(0, 8)} (${status}): `,
   whereThingsStand: "Where things stand",
   theWork: "The work",
   earlierResult: "Earlier result",
@@ -295,6 +298,8 @@ export const boardText = strings({
   saveChanges: "保存更改",
   cancel: "取消",
   waitingOn: "正在等待",
+  mailProblems: "邮件未送达",
+  jobMail: (status, id) => `Job ${id.slice(0, 8)}（${status}）：`,
   whereThingsStand: "目前进展",
   theWork: "工作内容",
   earlierResult: "之前的结果",

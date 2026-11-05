@@ -87,6 +87,27 @@ test('completed job retains its actual process/thread limit and failure evidence
   } finally {p.close();}
 });
 
+// T-50 (elasticLM): a finished job whose completion mail could not wake its
+// Agent says so in its details, in Core's words; a mail that went through says nothing.
+test('a completion mail whose delivery failed says why in the job details', async () => {
+  const problem = "delivery failed: Effort changes must wait until the current turn finishes; it is tried again at the recipient's next wake-up. The mail stays in the mailbox.";
+  const finished = { ...job, status: 'succeeded', reserved: false, usage: null, reason: 'success', result: { reason: 'success' },
+    mail: { succeeded: { messageId: 'm1', delivery: 'error', problem } } };
+  const p = mount(url => url === '/api/jobs/job-one' ? finished : page([finished]));
+  try {
+    await until(() => p.doc.querySelector('.conversation-job')); p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-mail-problem'));
+    assert.equal(p.doc.querySelector('.job-mail-problem').textContent, `Mail to its Agent: ${problem}`);
+  } finally { p.close(); }
+  const delivered = { ...finished, mail: { succeeded: { messageId: 'm1', delivery: 'delivered', problem: null } } };
+  const q = mount(url => url === '/api/jobs/job-one' ? delivered : page([delivered]));
+  try {
+    await until(() => q.doc.querySelector('.conversation-job')); q.doc.querySelector('.conversation-job').click();
+    await until(() => q.doc.querySelector('.job-log'));
+    assert.equal(q.doc.querySelector('.job-mail-problem'), null);
+  } finally { q.close(); }
+});
+
 test('lost submission reply retains command and idempotency key across remount; retry does not create another attempt', async () => {
   let accepted = null, count = 0;
   const handler = (url, body) => {

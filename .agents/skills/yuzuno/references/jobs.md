@@ -37,6 +37,7 @@ Use the parameters your session advertises: a session that loaded its tool schem
 ## After submitting
 
 - The call returns a Job identifier and usually `queued`. End the turn or do independent work; a system mail reports success, failure or cancellation. Use `job_get` and `job_logs` to read evidence after that mail, or to diagnose — not to poll.
+- The mail is saved before Core wakes you. If that wake-up did not go through, `job_get`'s `mail` and the task's `mailProblems` say `delivery failed: <reason>`; the mail stays in your mailbox, and a wake-up your harness refused is tried again at your next idle moment, three times at most.
 - A lost reply is retried with the same `requestId`. There is no automatic rerun: after a failure, read the evidence, fix the cause, then submit again explicitly with a new `requestId`.
 - `job_cancel` stops your own Job; cancelling before launch starts nothing. Cancelling a Job does not cancel its task.
 - An `unknown` outcome is not success. A Job's result is evidence for the task, never its completion.

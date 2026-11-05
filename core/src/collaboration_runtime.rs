@@ -413,7 +413,9 @@ impl Workspace {
             }
             Err(error) => {
                 // Unknown and rejected native deliveries remain inspectable.
-                // The mail itself was already saved; never roll it back or loop.
+                // The mail itself was already saved; never roll it back. A
+                // definite refusal (error) is pending again after a wait, a
+                // few times at most (mail_delivery.rs); an unknown one never.
                 let state = if error.downcast_ref::<crate::rpc::RpcError>().is_some()
                     || error.downcast_ref::<crate::claude::Rejected>().is_some()
                 {
@@ -421,7 +423,8 @@ impl Workspace {
                 } else {
                     "uncertain"
                 };
-                let detail_json = json!({"agentId":id,"mode":mode,"clientMessageId":client_id,"turnId":expected_turn,"priority":priority,"error":error.to_string()});
+                let detail_json = json!({"agentId":id,"mode":mode,"clientMessageId":client_id,"turnId":expected_turn,"priority":priority,
+                    "error":error.to_string(),"failedAt":crate::model::now()});
                 self.stored(move |store| store.set_peer_delivery_for_priority(
                     &agent,
                     through,
@@ -771,6 +774,11 @@ for line in sys.stdin:
  result={}
  if m in ['thread/start','thread/resume','thread/read']:
   result={'thread':{'id':'native-thread','status':{'type':'idle'},'turns':[]}}
+ if m=='turn/start' and (root/'start-mode').exists() and (root/'start-mode').read_text()=='reject':
+  # A start the harness refuses, as Claude refused elasticLM's (T-50).
+  with (root/'refused-starts.jsonl').open('a') as f:f.write(json.dumps(p)+'\n')
+  print(json.dumps({'id':r['id'],'error':{'code':-32600,'message':'Effort changes must wait until the current turn finishes'}}),flush=True)
+  continue
  if m=='turn/start':
   with (root/'starts.jsonl').open('a') as f:f.write(json.dumps(p)+'\n')
   result={'turn':{'id':'native-turn','status':'inProgress','items':[]}}

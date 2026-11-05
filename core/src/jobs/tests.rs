@@ -1341,3 +1341,122 @@ async fn guard_paths_are_checked_at_submit_and_freeze_only_the_content_under_the
     assert_ne!(changed["git"]["guardPaths"], frozen["git"]["guardPaths"]);
     assert_ne!(code(&guarded, &changed), guarded_code);
 }
+
+/// T-50 (elasticLM): a finished Job's mail, and the harness refuses the
+/// native start that would wake its Agent, as Claude refused elasticLM's
+/// ("Effort changes must wait until the current turn finishes").
+#[cfg(unix)]
+async fn a_refused_completion_mail(ws: &Arc<crate::workspace::Workspace>, dir: &std::path::Path, name: &str) -> Value {
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"task","title":"Training","status":"doing"})).unwrap();
+    let job = ws.store.create_job(Some("a"), input(name), json!({"cwd":"/workspace"}), machine(), json!({"bootId":"boot"})).unwrap();
+    ws.store.reserve_next_job(None, None, None).unwrap().unwrap();
+    let id = job["id"].as_str().unwrap();
+    ws.store.update_job_evidence(id, evidence(&job, "succeeded")).unwrap();
+    ws.store.update("a", "test/idle", &json!({}), |d| d.agent.status = "idle".into()).unwrap();
+    std::fs::write(dir.join("start-mode"), "reject").unwrap();
+    let refused = refused_starts(dir);
+    let batch = ws.store.pending_peer_deliveries().unwrap().into_iter().find(|b| b["agentId"] == "a").expect("the completion mail rings");
+    ws.deliver_peer_batch(&batch).await.unwrap();
+    assert_eq!(refused_starts(dir), refused + 1, "its start was refused");
+    ws.store.job(id).unwrap()
+}
+
+#[cfg(unix)]
+fn refused_starts(dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(dir.join("refused-starts.jsonl")).map_or(0, |text| text.lines().count())
+}
+
+/// The completion mail as its Agent's mailbox holds it, read as the user
+/// (which marks nothing read).
+#[cfg(unix)]
+fn mailbox_copy(ws: &crate::workspace::Workspace, job: &Value) -> Value {
+    let inbox = ws.store.collaboration_call(None, "peer_read", json!({"agentId":"a"})).unwrap();
+    inbox["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["jobId"] == job["id"]).cloned().expect("still in the mailbox")
+}
+
+/// Time passes for one mail: its refusal and every wake-up are `seconds`
+/// earlier, so the refusal's wait and the wake-up budget's interval are behind it.
+#[cfg(unix)]
+fn later(ws: &crate::workspace::Workspace, mail: &Value, seconds: i64) {
+    let db = ws.store.db.write().unwrap();
+    let at = (chrono::Utc::now() - chrono::Duration::seconds(seconds)).to_rfc3339();
+    db.execute("UPDATE collaboration_messages SET delivery_detail=json_set(delivery_detail,'$.failedAt',?1) WHERE id=?2",
+        rusqlite::params![at, mail["id"].as_str()]).unwrap();
+    db.execute("UPDATE collaboration_wakeups SET at=at-?1", [seconds]).unwrap();
+}
+
+const REFUSED_WORDS: &str = "delivery failed: Effort changes must wait until the current turn finishes";
+
+/// T-50 (elasticLM) item 9: a completion mail whose wake-up the harness
+/// refused is shown on its Job and on its task as "delivery failed:
+/// <reason>", and stays in the mailbox unread.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_completion_mail_whose_wake_up_was_refused_says_why_on_its_job_and_task_and_stays_in_the_mailbox() {
+    let (dir, ws) = crate::collaboration_runtime::tests::fixture().await;
+    let job = a_refused_completion_mail(&ws, dir.path(), "mail").await;
+    let mail = mailbox_copy(&ws, &job);
+    assert_eq!((&mail["delivery"]["state"], &mail["firstReadAt"]), (&json!("error"), &Value::Null), "{mail:#}");
+    let words = format!("{REFUSED_WORDS}; it is tried again at the recipient's next wake-up. The mail stays in the mailbox.");
+    let shown = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(shown["mail"]["succeeded"]["problem"], json!(words), "the Job shows its mail's failed delivery: {:#}", shown["mail"]);
+    assert_eq!((&shown["mail"]["succeeded"]["messageId"], &shown["mail"]["succeeded"]["delivery"]), (&mail["id"], &json!("error")));
+    for view in ["current", "full"] {
+        let task = ws.collaboration_call(Some("a"), "task_get", json!({"taskId":"T-1","view":view})).await.unwrap();
+        let problems = if view == "current" { &task["current"]["mailProblems"] } else { &task["mailProblems"] };
+        assert_eq!((&problems[0]["problem"], &problems[0]["jobId"], &problems[0]["status"]), (&json!(words), &job["id"], &json!("succeeded")),
+            "the task shows its mail's failed delivery ({view}): {problems:#}");
+    }
+    ws.close_agent("a").await.unwrap();
+}
+
+/// T-50 (elasticLM) item 9: a refused wake-up rings again once its wait has
+/// passed and its Agent is idle, its next native opportunity, and then goes
+/// through; a harness that keeps refusing gets three retries, no more.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refused_wake_up_rings_again_at_the_next_opportunity_and_at_most_three_times() {
+    let (dir, ws) = crate::collaboration_runtime::tests::fixture().await;
+    let idle = || ws.store.update("a", "test/idle", &json!({}), |d| d.agent.status = "idle".into()).unwrap();
+    let rings = || ws.store.pending_peer_deliveries().unwrap().into_iter().find(|b| b["agentId"] == "a");
+    let job = a_refused_completion_mail(&ws, dir.path(), "mail").await;
+    let mail = mailbox_copy(&ws, &job);
+    idle();
+    assert!(rings().is_none(), "not before its wait");
+    later(&ws, &mail, 31);
+    let batch = rings().expect("a refused wake-up rings again after its wait");
+    let retrying = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(retrying["mail"]["succeeded"]["problem"],
+        json!(format!("{REFUSED_WORDS}; trying again at the recipient's next wake-up (retry 1 of 3). The mail stays in the mailbox.")));
+    // This time the harness takes it.
+    std::fs::remove_file(dir.path().join("start-mode")).unwrap();
+    ws.deliver_peer_batch(&batch).await.unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join("starts.jsonl")).unwrap().lines().count(), 1, "one start, taken");
+    let delivered = mailbox_copy(&ws, &job);
+    assert_eq!((&delivered["delivery"]["state"], &delivered["delivery"]["detail"]["retry"]["count"]), (&json!("delivered"), &json!(1)));
+    let shown = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!((&shown["mail"]["succeeded"]["delivery"], &shown["mail"]["succeeded"]["problem"]), (&json!("delivered"), &Value::Null));
+    let task = ws.collaboration_call(Some("a"), "task_get", json!({"taskId":"T-1","view":"current"})).await.unwrap();
+    assert_eq!(task["current"]["mailProblems"], json!([]));
+    ws.store.update("a", "turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}}),
+        |d| d.apply("turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}}))).unwrap();
+
+    // A harness that keeps refusing: three retries, each after a longer wait, then no more.
+    let job = a_refused_completion_mail(&ws, dir.path(), "again").await;
+    let mail = mailbox_copy(&ws, &job);
+    for wait in [31, 61, 121] {
+        idle();
+        later(&ws, &mail, wait);
+        let refused = refused_starts(dir.path());
+        ws.deliver_peer_batch(&rings().expect("rings again after its wait")).await.unwrap();
+        assert_eq!(refused_starts(dir.path()), refused + 1, "each retry is one more refused start");
+    }
+    idle();
+    later(&ws, &mail, 3600);
+    assert!(rings().is_none(), "three retries, no more");
+    let shown = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(shown["mail"]["succeeded"]["problem"],
+        json!(format!("{REFUSED_WORDS}; tried again 3 times, not again. The mail stays in the mailbox.")));
+    assert!(mailbox_copy(&ws, &job)["firstReadAt"].is_null());
+    ws.close_agent("a").await.unwrap();
+}
