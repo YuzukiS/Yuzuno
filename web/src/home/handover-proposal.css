@@ -1,7 +1,18 @@
 /* A lead's handover proposal on Home (T-34 S3b): its reason, the changed
    lines, a note and the decision, as an approval card. */
+/* Framed as a Brief section is: it sits among the panel's cards. */
 .home-handover-proposal {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-surface);
   scroll-margin: 24px;
+}
+.home-handover-proposal .home-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
 }
 .home-handover-proposal:focus-visible {
   outline: 2px solid var(--home-focus);
