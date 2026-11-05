@@ -60,6 +60,8 @@ export function ImportCodexSession({
   const t = newAgentText(language);
   const [threadId, setThreadId] = useState("");
   const [preview, setPreview] = useState<CodexSessionPreview | null>(null);
+  // The ID as typed when the shown preview was read.
+  const [previewFor, setPreviewFor] = useState("");
   const [name, setName] = useState("");
   const [settings, setSettings] = useState<AgentSettings>(defaults);
   const [loading, setLoading] = useState(false);
@@ -77,11 +79,14 @@ export function ImportCodexSession({
     };
   }, []);
 
+  // Editing the ID keeps the preview, its name and permission, dimmed and
+  // still, until a read replaces them (T-19 ST:SX-28): it is the session the
+  // ID named before, so it cannot be added while the ID says another.
+  const stale = !!preview && threadId.trim() !== previewFor;
   function changeId(value: string) {
     request.current?.abort();
     request.current = null;
     setThreadId(value);
-    setPreview(null);
     setLoading(false);
     setError("");
   }
@@ -99,7 +104,6 @@ export function ImportCodexSession({
     request.current = controller;
     setLoading(true);
     setError("");
-    setPreview(null);
     try {
       const result = await api<CodexSessionPreview>("/codex/sessions/preview", {
         method: "POST",
@@ -108,6 +112,7 @@ export function ImportCodexSession({
       });
       if (controller.signal.aborted) return;
       setPreview(result);
+      setPreviewFor(id);
       setName((result.name || "Codex session").slice(0, 60));
       setSettings({ ...defaults, reasoningEffort: result.reasoningEffort });
     } catch (error) {
@@ -128,6 +133,7 @@ export function ImportCodexSession({
       disabled ||
       importing.current ||
       !preview ||
+      stale ||
       (!preview.existingAgentId && !canImport)
     )
       return;
@@ -207,74 +213,79 @@ export function ImportCodexSession({
 
       {preview && (
         <form onSubmit={(event) => void importSession(event)}>
-          <section className="session-preview" aria-label={t.sessionPreview}>
-            <div className="session-preview-heading">
-              <span>
-                <CheckCircle2 size={14} /> {preview.existingAgentId ? t.alreadyIn : t.found}
-              </span>
-              <span>{t.turns(preview.turnCount)}</span>
-            </div>
-            <p className="session-preview-excerpt">
-              {preview.preview || t.noExcerpt}
-            </p>
-            <div className="session-preview-folder">
-              <Folder size={14} />
-              <span>{preview.cwd}</span>
-            </div>
-            <p className="session-preview-model">
-              {preview.model || t.codexDefaultModel}
-              {preview.reasoningEffort ? t.reasoning(preview.reasoningEffort) : ""}
-            </p>
-          </section>
-          {preview.warnings.length > 0 && (
-            <div className="session-import-warnings" role="status">
-              {preview.warnings.map((warning, index) => (
-                <p key={index}>{warning}</p>
-              ))}
-            </div>
-          )}
-          {!preview.existingAgentId && (
-            <fieldset
-              className="remote-form-fields"
-              disabled={disabled || busy}
-            >
-              <label>
-                {t.agentName}
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  required
-                  maxLength={60}
-                />
-              </label>
-              <CodexPermissions
-                settings={settings}
-                catalog={preview.permissions}
+          {/* A preview whose ID has since been edited, or that is being read again, is out of
+              reach; its actions row is not, so Cancel still works (T-19 ST:SX-28, R2 70ad905d). */}
+          <div className="session-preview-body" data-stale={stale || loading ? "" : undefined} inert={stale || loading}>
+            <section className="session-preview" aria-label={t.sessionPreview}>
+              <div className="session-preview-heading">
+                <span>
+                  <CheckCircle2 size={14} /> {preview.existingAgentId ? t.alreadyIn : t.found}
+                </span>
+                <span>{t.turns(preview.turnCount)}</span>
+              </div>
+              <p className="session-preview-excerpt">
+                {preview.preview || t.noExcerpt}
+              </p>
+              <div className="session-preview-folder">
+                <Folder size={14} />
+                <span>{preview.cwd}</span>
+              </div>
+              <p className="session-preview-model">
+                {preview.model || t.codexDefaultModel}
+                {preview.reasoningEffort ? t.reasoning(preview.reasoningEffort) : ""}
+              </p>
+            </section>
+            {preview.warnings.length > 0 && (
+              <div className="session-import-warnings" role="status">
+                {preview.warnings.map((warning, index) => (
+                  <p key={index}>{warning}</p>
+                ))}
+              </div>
+            )}
+            {!preview.existingAgentId && (
+              <fieldset
+                className="remote-form-fields"
                 disabled={disabled || busy}
-                onChange={setSettings}
-                language={language}
-              />
-              {!preview.permissions && (
-                <p className="remote-field-note">{t.readForPermissions}</p>
-              )}
-            </fieldset>
-          )}
-          <p className="session-handoff-note">
-            {t.codexHandoff}
-            {!preview.existingAgentId && t.codexAddsNothing}
-          </p>
-          {/* The error's two lines are kept while empty: a failure fills them instead of
-              pushing the buttons down under the pointer. Below them it could fall out of this
-              dialog's scrolled view (T-19 SX-35). */}
-          {errorShown ? (
-            <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
-              <span>{errorShown}</span>
+              >
+                <label>
+                  {t.agentName}
+                  <input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    required
+                    maxLength={60}
+                  />
+                </label>
+                <CodexPermissions
+                  settings={settings}
+                  catalog={preview.permissions}
+                  disabled={disabled || busy}
+                  onChange={setSettings}
+                  language={language}
+                />
+                {!preview.permissions && (
+                  <p className="remote-field-note">{t.readForPermissions}</p>
+                )}
+              </fieldset>
+            )}
+            <p className="session-handoff-note">
+              {t.codexHandoff}
+              {!preview.existingAgentId && t.codexAddsNothing}
             </p>
-          ) : (
-            <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
-              <span>&nbsp;</span>
-            </p>
-          )}
+            {/* The error's two lines are kept while empty: a failure fills them instead of
+                pushing the buttons down under the pointer. Below them it could fall out of this
+                dialog's scrolled view (T-19 SX-35). */}
+            {/* A stale preview is out of reach: its error shows below the form, once. */}
+            {errorShown && !stale ? (
+              <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
+                <span>{errorShown}</span>
+              </p>
+            ) : (
+              <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
+                <span>&nbsp;</span>
+              </p>
+            )}
+          </div>
           <div className="modal-actions">
             <button
               className="secondary-button"
@@ -287,7 +298,7 @@ export function ImportCodexSession({
             <button
               className="primary-button"
               disabled={
-                disabled || busy || (!preview.existingAgentId && !canImport)
+                disabled || busy || stale || loading || (!preview.existingAgentId && !canImport)
               }
             >
               {busy ? (
@@ -300,7 +311,7 @@ export function ImportCodexSession({
           </div>
         </form>
       )}
-      {!preview && errorShown && (
+      {(!preview || stale) && errorShown && (
         <p role="alert" className="remote-field-error">
           {errorShown}
         </p>

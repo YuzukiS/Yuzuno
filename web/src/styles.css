@@ -2022,6 +2022,7 @@ p {
     .portal-confirm,
     .storage-confirm,
     .backup-retention-confirm,
+    .settings-confirm,
     .claude-task-stop,
     .service-lifecycle-actions
   )
