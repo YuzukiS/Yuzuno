@@ -1,10 +1,11 @@
 // T-34 S3a: a Project's handover document in its settings, in Chromium, with
 // every API answered here (no Core, no CLI, no daily configuration). Through
-// the real Manage projects dialog: an empty document written and saved as
-// version 1 against version 0, its past version shown; a save after another
-// window saved refused as a conflict, the typed text kept, then reloaded; the
-// section in Chinese after a language change in another window, unsaved text
-// kept; on a phone, the section and its fields fit their width.
+// the real Manage projects dialog: a reason over its limit in bytes not sent;
+// an empty document written and saved as version 1 against version 0, its
+// past version shown; a save after another window saved refused as a
+// conflict, the typed text kept, then reloaded; the section in Chinese after
+// a language change in another window, unsaved text kept; on a phone, the
+// section and its fields fit their width.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-handover-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -154,6 +155,12 @@ try {
   assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "nothing to save yet");
   const first = "# Lab\n\nBuild with `make`; test with `make check`.\nThe fixtures live in tests/fixtures.";
   await section.locator('textarea[aria-label="Handover document"]').fill(first);
+  // A reason is counted in bytes, as Core counts it (#605 R2): 400 characters, 1,200 bytes.
+  await section.locator('input[aria-label="Why this change"]').fill("说".repeat(400));
+  await section.getByText("1200 of 1000 bytes.").waitFor({ timeout: 10_000 });
+  await section.getByText("At most 1000 bytes.").waitFor({ timeout: 10_000 });
+  assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "a reason over its limit in bytes is not sent");
+  check("a 400-character Chinese reason, 1,200 bytes, is shown in bytes and not sent");
   await section.locator('input[aria-label="Why this change"]').fill("First notes");
   await section.getByText("Unsaved changes").waitFor({ timeout: 10_000 });
   await section.getByText(`${Buffer.byteLength(first)} of 32768 bytes.`).waitFor({ timeout: 10_000 });

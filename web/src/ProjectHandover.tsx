@@ -50,6 +50,8 @@ const text = strings({
 });
 
 const bytes = (value: string) => new TextEncoder().encode(value).length;
+/** As Core's `handover::MAX_REASON`: the trimmed reason, in UTF-8 bytes. */
+const REASON_BYTES = 1_000;
 
 /** A Project's handover document in its settings (T-34): the user's editor, saved against the version read, with its versions. */
 export function ProjectHandover({ projectId, disabled = false }: { projectId: string; disabled?: boolean }) {
@@ -80,6 +82,8 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
   const changed = !!view && draft !== view.markdown;
   const size = bytes(draft);
   const tooLarge = !!view && size > view.limit;
+  const reasonSize = bytes(reason.trim());
+  const reasonTooLong = reasonSize > REASON_BYTES;
   const locked = disabled || busy;
   async function save() {
     if (!view) return;
@@ -123,12 +127,16 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
         </label>
         {tooLarge && <p className="inline-error" role="alert">{t.tooLarge(view.limit)}</p>}
         <label className="settings-row">
-          <span className="settings-row-title">{t.reason}</span>
-          <input className="settings-input" aria-label={t.reason} value={reason} maxLength={1000} placeholder={t.reasonPlaceholder}
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.reason}</span>
+            <span className="settings-row-help">{t.bytes(reasonSize, REASON_BYTES)}</span>
+          </span>
+          <input className="settings-input" aria-label={t.reason} value={reason} placeholder={t.reasonPlaceholder}
             disabled={locked} onChange={e => setReason(e.target.value)} />
         </label>
+        {reasonTooLong && <p className="inline-error" role="alert">{t.tooLarge(REASON_BYTES)}</p>}
         <div className="project-handover-actions">
-          <button type="button" className="secondary-button" disabled={locked || !changed || tooLarge} onClick={() => void save()}>
+          <button type="button" className="secondary-button" disabled={locked || !changed || tooLarge || reasonTooLong} onClick={() => void save()}>
             {busy && <LoaderCircle size={13} className="spin" />} {t.save}
           </button>
           {changed ? <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}

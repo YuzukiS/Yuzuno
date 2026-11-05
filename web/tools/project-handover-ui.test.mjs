@@ -152,3 +152,29 @@ test("an archived project's handover is shown but can't change", async () => {
   assert.equal(button(page, "Save handover").disabled, true);
   assert.deepEqual(page.errors, []);
 });
+
+// #605 R2 fc8c3d78: Core counts the trimmed reason in UTF-8 bytes, so the field does too.
+test("a reason is counted in bytes, as Core counts it: one over the limit is not sent, one at 999 bytes is", async () => {
+  const versions = [];
+  const page = mount((url, method, body) => {
+    if (method === "PUT") versions.push({ version: versions.length + 1, markdown: body.markdown, writtenBy: { id: "user", name: "You" },
+      reason: body.reason ?? null, at: "2026-11-05T08:00:00Z" });
+    return [200, answer(versions)];
+  });
+  page.window.renderHandover("p1");
+  const section = () => page.document.querySelector("#project-settings-handover");
+  await until(() => /No version yet\./.test(section()?.textContent ?? ""), "the empty document");
+  await type(page, "Handover document", "# Lab");
+  // 400 characters, 1,200 bytes: under a 1,000-character limit, over Core's 1,000 bytes.
+  await type(page, "Why this change", "说".repeat(400));
+  assert.match(section().textContent, /1200 of 1000 bytes\./, "the reason's size is shown in bytes");
+  assert.match(section().textContent, /At most 1000 bytes\./);
+  assert.equal(button(page, "Save handover").disabled, true, "a reason over its limit in bytes is not sent");
+  await type(page, "Why this change", "a".repeat(999));
+  assert.match(section().textContent, /999 of 1000 bytes\./);
+  button(page, "Save handover").click();
+  await until(() => /Saved\./.test(section().textContent), "the saved version");
+  assert.equal(puts(page).length, 1);
+  assert.equal(puts(page)[0].body.reason, "a".repeat(999), "a reason within the limit is sent whole");
+  assert.deepEqual(page.errors, []);
+});
