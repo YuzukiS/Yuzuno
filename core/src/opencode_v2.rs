@@ -132,6 +132,35 @@ fn compacted(id: &str, at: &Value) -> Value {
     json!({"id": id, "role": "assistant", "summary": true, "parentID": null, "time": {"created": at, "completed": at}})
 }
 
+/// A message ID 2.x makes of an event's (`SessionMessage.ID.fromEvent`).
+fn from_event(id: &str) -> String {
+    id.strip_prefix("evt_").map_or_else(|| id.to_owned(), |rest| format!("msg_{rest}"))
+}
+
+/// A shell command's message as Core's record takes one (T-32 slice 4a,
+/// D2): the newest user message before it in its turn, which no answer is.
+fn shell_info(id: &str, parent: Option<&str>, created: &Value) -> Value {
+    json!({"id": id, "role": "shell", "parentID": parent, "time": {"created": created}})
+}
+
+/// A shell command as Core's part: its command, how it ended and what it
+/// printed (schema/src/shell.ts: running, exited, timeout or killed).
+fn shell_part(id: &str, shell: &Value, output: &Value) -> Value {
+    let status = match (shell["status"].as_str(), shell["exit"].as_f64()) {
+        (Some("running"), _) => "inProgress",
+        (Some("exited"), exit) if exit.is_none_or(|exit| exit == 0.0) => "completed",
+        _ => "failed",
+    };
+    json!({"id": id, "messageID": id, "type": "shell", "command": shell["command"], "status": status, "output": output, "exit": shell["exit"]})
+}
+
+/// Text gathered for an entry, written as one `message.part.delta` under
+/// `event`'s ID: each write is one journal row.
+fn written(event: &Value, session: &Value, id: &str, gathered: Gathered) -> Value {
+    json!({"id": event["id"], "type": "message.part.delta", "data": {"sessionID": session, "messageID": gathered.message, "partID": id,
+        "type": gathered.kind, "delta": gathered.text}})
+}
+
 /// A turn's end, read from its `idle` message: the user message it was the
 /// turn of, and the error it ended with, if it did not succeed.
 #[derive(Debug, PartialEq)]
@@ -208,6 +237,8 @@ pub fn read_messages(messages: &Value) -> Read {
                 }
                 read.push(json!({"info": info, "parts": parts}));
             }
+            Some("shell") => read.push(json!({"info": shell_info(id, user.as_deref(), &message["time"]["created"]),
+                "parts": [shell_part(id, message, &message["output"]["output"])]})),
             // A compaction, running or completed: what was measured before it no longer holds (`measure`).
             Some("compaction") if message["status"] != "failed" => read.push(json!({"info": compacted(id, &message["time"]["created"]),
                 "parts": []})),
@@ -279,7 +310,13 @@ impl Cursor {
     pub fn read(&mut self, event: &Value) -> Vec<Value> {
         let d = &event["data"];
         let session = d["sessionID"].as_str().or(d["form"]["sessionID"].as_str()).unwrap_or_default();
-        self.sessions.entry(session.to_owned()).or_default().read(event)
+        let open = self.sessions.entry(session.to_owned()).or_default();
+        let read = open.read(event);
+        // What a session keeps lives only while something of it is under way (T-32 slice 4a, R3 notes).
+        if open.is_empty() {
+            self.sessions.remove(session);
+        }
+        read
     }
 
     /// After a whole read of `session` (`read`, and the `inbox` it listed):
@@ -308,13 +345,39 @@ struct Open {
     steps: HashMap<String, Step>,
     tools: HashMap<String, Tool>,
     gathered: HashMap<String, Gathered>,
+    /// Each shell command running, by its shell's ID: its message's.
+    shells: HashMap<String, String>,
+    /// The compaction running: its message's ID.
+    compaction: Option<String>,
 }
 
 impl Open {
+    fn is_empty(&self) -> bool {
+        self.user.is_none() && self.inputs.is_empty() && self.steps.is_empty() && self.tools.is_empty() && self.gathered.is_empty()
+            && self.shells.is_empty() && self.compaction.is_none()
+    }
+
+    /// The events of Core's shape one 2.x event stands for, in order. Another
+    /// event of an answer first writes out the text gathered for its other
+    /// entries (T-32 slice 4a; R2 and R5 notes): a later entry's, a tool's,
+    /// its step's end.
+    fn read(&mut self, event: &Value) -> Vec<Value> {
+        let d = &event["data"];
+        let Some(answer) = d["assistantMessageID"].as_str() else { return self.read_one(event) };
+        let this = d["ordinal"].as_u64().map(|ordinal| entry_id(answer, ordinal));
+        let others: Vec<String> = self.gathered.iter().filter(|(id, gathered)| gathered.message == answer && Some(id.as_str()) != this.as_deref())
+            .map(|(id, _)| id.clone()).collect();
+        let session = d["sessionID"].clone();
+        let mut out: Vec<Value> = others.into_iter().filter_map(|id| self.gathered.remove(&id).map(|gathered| written(event, &session, &id, gathered)))
+            .collect();
+        out.extend(self.read_one(event));
+        out
+    }
+
     /// The events of Core's shape one 2.x event stands for, in order. A
     /// 1.19.3-shaped one is returned as it is; one Core takes nothing from,
     /// none.
-    fn read(&mut self, event: &Value) -> Vec<Value> {
+    fn read_one(&mut self, event: &Value) -> Vec<Value> {
         let kind = event["type"].as_str().unwrap_or_default();
         let d = &event["data"];
         let session = &d["sessionID"];
@@ -381,8 +444,8 @@ impl Open {
                 if now - gathered.since < DELTA_GATHER_MS {
                     return vec![];
                 }
-                let Gathered { message, kind, text, .. } = self.gathered.remove(&id).expect("gathered");
-                vec![made("message.part.delta", json!({"sessionID": session, "messageID": message, "partID": id, "type": kind, "delta": text}))]
+                let gathered = self.gathered.remove(&id).expect("gathered");
+                vec![written(event, session, &id, gathered)]
             }
             "session.tool.input.started" | "session.tool.called" | "session.tool.progress" | "session.tool.success" | "session.tool.failed" => {
                 let (Some(message), Some(id)) = (d["assistantMessageID"].as_str(), d["id"].as_str()) else { return vec![] };
@@ -406,30 +469,54 @@ impl Open {
                 }
                 read
             }
-            // A compaction's events name no message; each event's own ID names it here.
-            "session.compaction.started" | "session.compaction.ended" => vec![message(compacted(event["id"].as_str().unwrap_or("compaction"), at))],
+            // One compaction, started and ended, is the one message 2.x stores for it (T-32 slice 4a, R3
+            // notes): its input's ID, else its start event's (core/src/session/message-updater.ts).
+            "session.compaction.started" => {
+                let id = d["inputID"].as_str().map(str::to_owned).unwrap_or_else(|| from_event(event["id"].as_str().unwrap_or_default()));
+                self.compaction = Some(id.clone());
+                vec![message(compacted(&id, at))]
+            }
+            "session.compaction.ended" => {
+                let id = self.compaction.take().unwrap_or_else(|| from_event(event["id"].as_str().unwrap_or_default()));
+                vec![message(compacted(&id, at))]
+            }
+            // A shell command (T-32 slice 4a, D2): a command item of the newest message before it in its
+            // turn, under the message 2.x stores for it (its start event's ID).
+            "session.shell.started" => {
+                let Some(shell) = d["shell"]["id"].as_str() else { return vec![] };
+                let id = from_event(event["id"].as_str().unwrap_or_default());
+                self.shells.insert(shell.to_owned(), id.clone());
+                vec![message(shell_info(&id, self.user.as_deref(), at)), updated(shell_part(&id, &d["shell"], &Value::Null))]
+            }
+            "session.shell.ended" => {
+                let Some(id) = d["shell"]["id"].as_str().and_then(|shell| self.shells.remove(shell)) else { return vec![] };
+                vec![updated(shell_part(&id, &d["shell"], &d["output"]["output"]))]
+            }
             "session.execution.started" => vec![status("busy")],
             "session.retry.scheduled" => vec![status("retry")],
-            "session.execution.succeeded" => self.ended(vec![status("idle")]),
-            "session.execution.failed" => self.ended(vec![failed(error(&d["error"], Some(EXECUTION_FAILED))), status("idle")]),
+            "session.execution.succeeded" => self.ended(event, vec![status("idle")]),
+            "session.execution.failed" => self.ended(event, vec![failed(error(&d["error"], Some(EXECUTION_FAILED))), status("idle")]),
             // A shutdown leaves the turn open: the execution resumes it (session-message.ts), and a Core that restarts reads it unknown.
             "session.execution.interrupted" if d["reason"] == "shutdown" => vec![],
             "session.execution.interrupted" => {
                 let reason = Value::from(format!("interrupted ({})", d["reason"].as_str().unwrap_or("unknown")));
-                self.ended(vec![failed(error(&json!({"type": "interrupted", "message": reason}), Some(ABORTED))), status("idle")])
+                self.ended(event, vec![failed(error(&json!({"type": "interrupted", "message": reason}), Some(ABORTED))), status("idle")])
             }
             _ if kind.starts_with("session.") && !is_v1_kind(kind) => vec![],
             _ => vec![event.clone()],
         }
     }
 
-    /// A terminal execution event: its turn is over, and the next steps belong to the next one.
-    fn ended(&mut self, read: Vec<Value>) -> Vec<Value> {
+    /// A terminal execution event: its turn is over, and the next steps belong
+    /// to the next one. What was gathered and not written yet is written first.
+    fn ended(&mut self, event: &Value, read: Vec<Value>) -> Vec<Value> {
+        let session = event["data"]["sessionID"].clone();
+        let mut out: Vec<Value> = self.gathered.drain().map(|(id, gathered)| written(event, &session, &id, gathered)).collect();
+        out.extend(read);
         self.user = None;
         self.steps.clear();
         self.tools.clear();
-        self.gathered.clear();
-        read
+        out
     }
 }
 

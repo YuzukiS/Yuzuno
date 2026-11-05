@@ -2271,6 +2271,17 @@ fn message(d: &mut AgentDetail, info: &Value) {
             }
             turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"],"parent":parent});
         }
+        // A shell command of 2.x's (T-32 slice 4a, D2): its Turn's, as the message before it says; no answer.
+        Some("shell") => {
+            let Some(parent) = info["parentID"].as_str() else { return };
+            let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
+                return;
+            };
+            if !turn["_opencodeShells"].is_object() {
+                turn["_opencodeShells"] = json!({});
+            }
+            turn["_opencodeShells"][id] = parent.into();
+        }
         _ => {}
     }
 }
@@ -2340,8 +2351,11 @@ fn part(d: &mut AgentDetail, part: &Value) {
     if compaction_part(d, message, id, part) {
         return;
     }
-    let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some()) else { return };
+    let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some() || t["_opencodeShells"].get(message).is_some())
+        else { return };
     let item = match part["type"].as_str() {
+        Some("shell") => json!({"id":id,"type":"commandExecution","command":part["command"],"status":part["status"],
+            "aggregatedOutput":part["output"],"exitCode":part["exit"],"nativeMessageId":message}),
         Some("text") if part["synthetic"] != true => json!({"id":id,"type":"agentMessage","text":part["text"],"nativeMessageId":message}),
         Some("reasoning") => json!({"id":id,"type":"reasoning","summary":[part["text"]],"nativeMessageId":message}),
         Some("tool") => {
