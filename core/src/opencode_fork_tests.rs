@@ -187,6 +187,8 @@ async fn lab(dir: &Path, cwd: &Path) -> Arc<Workspace> {
     },"turns":[],"pending":[],"artifacts":[]})).unwrap();
     ws.store.insert(&detail).unwrap();
     std::fs::create_dir_all(dir.join("data/opencode/oc")).unwrap();
+    // Fork still reads 1.19.3's messages until its slice (T-32, Lead 4983): the stand-in sends those, to the new Agent's too.
+    std::fs::write(dir.join("data/opencode/v1Messages"), "1").unwrap();
     ws.reconnect("oc").await.unwrap();
     ws
 }
