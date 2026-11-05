@@ -2255,8 +2255,10 @@ async fn an_answers_text_streams_into_its_item_and_its_end_replaces_it() {
 
 /// Two user messages in one turn, the answers interleaved: each answer is
 /// the newest one's before it, as 2.x delivers a message steered in at its
-/// next step (T-32 slice 3b, Lead 4983 note 2). A Core-chosen ID is the one
-/// 2.x delivers each under (note 3).
+/// next step (T-32 slice 3b, Lead 4983 note 2), and a whole read of the
+/// turn says the same. A Core-chosen ID is the one 2.x delivers each under
+/// (note 3). The added message is confirmed once 2.x admits it, before it is
+/// delivered.
 #[tokio::test]
 async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
     let lab = lab(&[], false).await;
@@ -2264,8 +2266,20 @@ async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
     let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
     lab.until("the run", |d| d.agent.status == "working").await;
     lab.control("reply", json!({"sessionID":session,"text":"Looking.","parentID":first,"idle":false})).await;
-    lab.add("c2", "Also run the tests", &first).await.unwrap();
+    // Only 2.x's event of its admission can confirm it: OpenCode's record of the message cannot be read.
+    lab.control("mode", json!({"failMessageReads":true})).await;
+    let receipt = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    lab.control("mode", json!({"failMessageReads":false})).await;
     let added = lab.detail().turns.iter().find(|t| t["id"] == first.as_str()).unwrap()["_opencodeLastInput"].as_str().unwrap().to_owned();
+    let delivered = || {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let ids: Vec<String> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/session.inbox.delivered' ORDER BY seq").unwrap()
+            .query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["data"]["inboxID"].as_str().unwrap().to_owned()).collect();
+        ids
+    };
+    assert_eq!(delivered(), [first.clone()], "admitted, not yet delivered");
     // A step already under way when it was sent answers the first message; the next ones, the added one.
     lab.control("reply", json!({"sessionID":session,"text":"Still the build.","parentID":first,"idle":false})).await;
     lab.control("reply", json!({"sessionID":session,"text":"Running tests.","parentID":added,"idle":false})).await;
@@ -2276,10 +2290,44 @@ async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
     let parents: Vec<&str> = answers.values().map(|a| a["parent"].as_str().unwrap()).collect();
     assert_eq!(parents, [first.as_str(), first.as_str(), added.as_str(), added.as_str()], "{answers:#?}");
     // Each message was delivered under the ID Core chose for it.
-    let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
-    let delivered: Vec<String> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/session.inbox.delivered' ORDER BY seq").unwrap()
-        .query_map([ID], |r| r.get::<_, String>(0)).unwrap()
-        .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["data"]["inboxID"].as_str().unwrap().to_owned()).collect();
-    assert_eq!(delivered, [first.clone(), added.clone()], "delivered under the IDs Core chose");
+    assert_eq!(delivered(), [first.clone(), added.clone()], "delivered under the IDs Core chose");
+    // A whole read of the session says the same of each answer.
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..200 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read again");
+    assert_eq!(turn(&lab.detail(), &first)["_opencodeAnswers"].as_object().unwrap(), &answers, "the same answers, read whole");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message added while the stream is broken: 2.x admits it into its
+/// inbox, to be delivered at the run's next step, and its event is lost
+/// with the stream. The whole read once the stream reopens finds it in the
+/// inbox, and that confirms it (T-32 slice 3b).
+#[tokio::test]
+async fn a_message_admitted_while_the_stream_is_broken_is_confirmed_from_the_inbox() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let first = lab.send("c1", "Fix the build").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    // Nothing else can confirm it: OpenCode's record of the message cannot be read, and its messages don't hold it yet.
+    lab.control("mode", json!({"failMessageReads":true})).await;
+    let before = resyncs(&lab);
+    lab.control("refuseEvents", json!({"seconds":1.0})).await;
+    lab.control("drop", json!({})).await;
+    let receipt = lab.add("c2", "Also run the tests", &first).await.unwrap();
+    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert!(resyncs(&lab) > before, "confirmed by the read after the stream reopened");
+    lab.control("mode", json!({"failMessageReads":false})).await;
+    let d = lab.detail();
+    let added = turn(&d, &first)["_opencodeLastInput"].as_str().unwrap().to_owned();
+    assert_eq!(turn(&d, &first)["_opencodeInputs"][&added]["confirmed"], true);
+    // Delivered at the next step, which answers it, and that ends the turn.
+    lab.control("reply", json!({"sessionID":session,"text":"Tests pass.","parentID":added})).await;
+    let d = lab.until("its end", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "completed");
     lab.ws.close_agent(ID).await.unwrap();
 }

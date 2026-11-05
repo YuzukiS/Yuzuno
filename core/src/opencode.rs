@@ -237,6 +237,9 @@ pub struct Snapshot {
     pub messages: Value,
     /// `{type: busy | idle}` (`session_status`).
     pub status: Value,
+    /// What 2.x admitted into the session and has not delivered into its
+    /// turn yet, oldest first, as `GET /api/session/:id/inbox` lists it.
+    pub inbox: Value,
     /// Requests pending in this session and in the sub-agent sessions
     /// given (`snapshot`), each with its `sessionID`; others' are left out.
     pub permissions: Vec<Value>,
@@ -700,9 +703,7 @@ impl Server {
         Ok(events)
     }
 
-    /// The session's messages and status, read now, with the requests
-    /// pending in it and in the sub-agent sessions `children`.
-    /// `session`'s status now, in the shape Core reads until slice 3b:
+    /// `session`'s status now, in the shape Core's record takes:
     /// `{type: busy}` while 2.x lists it among the sessions this process is
     /// running (`GET /api/session/active`), else `{type: idle}`. 2.x lists no
     /// retry there; it is on the answer that retries.
@@ -710,13 +711,19 @@ impl Server {
         status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session)
     }
 
+    /// The session's messages, status and inbox, read now, with the requests
+    /// pending in it and in the sub-agent sessions `children`.
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
         let messages = self.messages(session).await?;
         let status = self.session_status(session).await?;
+        let path = format!("/api/session/{}/inbox", segment(session)?);
+        let inbox = self.data(Method::GET, &path, &[], None).await?;
+        ensure!(inbox.is_array(), "OpenCode's {path} is not a list");
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
             messages,
             status,
+            inbox,
             permissions: self.pending_of("permission", &sessions).await?,
             questions: self.pending_of("form", &sessions).await?,
         })

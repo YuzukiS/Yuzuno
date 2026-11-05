@@ -55,7 +55,7 @@ pub mod opencode;
 mod opencode_agent;
 pub mod opencode_commands;
 mod opencode_fork_check;
-mod opencode_v2;
+pub mod opencode_v2;
 pub mod opencode_revert_files;
 pub mod rail;
 pub mod reading_handoff;

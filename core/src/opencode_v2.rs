@@ -36,7 +36,7 @@ const ABORTED: &str = "MessageAbortedError";
 
 /// Whether a session's messages, as `/api/session/:id/message` pages them,
 /// are 2.x's (`{id, type, …}`) rather than 1.19.3's (`{info, parts}`).
-pub(crate) fn is_v2(messages: &Value) -> bool {
+pub fn is_v2(messages: &Value) -> bool {
     messages.as_array().is_some_and(|all| all.iter().any(|m| m.get("info").is_none() && m["type"].is_string()))
 }
 
@@ -102,6 +102,11 @@ fn content_part(assistant: &str, ordinal: usize, entry: &Value) -> Option<Value>
     }
 }
 
+/// A user's or a synthetic message as Core's record takes one.
+fn user(id: &str, created: &Value) -> Value {
+    json!({"id": id, "role": "user", "time": {"created": created}})
+}
+
 /// An answer as Core's record takes one: the user message it answers, when
 /// it started and ended, how, with what model and tokens.
 fn answer(id: &str, parent: Option<&str>, created: &Value, completed: &Value, finish: &Value, error: &Value, tokens: &Value,
@@ -119,13 +124,13 @@ fn compacted(id: &str, at: &Value) -> Value {
 /// A turn's end, read from its `idle` message: the user message it was the
 /// turn of, and the error it ended with, if it did not succeed.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Ended {
+pub struct Ended {
     pub user: String,
     pub error: Option<Value>,
 }
 
 /// A session's stored messages, oldest first, as Core reads them.
-pub(crate) struct Read {
+pub struct Read {
     /// Each as `{info, parts}`, an answer naming the user message it answers.
     pub messages: Vec<Value>,
     /// Each turn's end that says how it ended.
@@ -138,7 +143,7 @@ pub(crate) struct Read {
     pub steps: Vec<(String, Option<String>)>,
 }
 
-pub(crate) fn read_messages(messages: &Value) -> Read {
+pub fn read_messages(messages: &Value) -> Read {
     let (mut read, mut ended, mut steps) = (Vec::new(), Vec::new(), Vec::new());
     let mut user: Option<String> = None;
     for message in messages.as_array().into_iter().flatten() {
@@ -146,7 +151,7 @@ pub(crate) fn read_messages(messages: &Value) -> Read {
         match message["type"].as_str() {
             Some("user" | "synthetic") => {
                 user = Some(id.to_owned());
-                read.push(json!({"info": {"id": id, "role": "user", "time": message["time"]}, "parts": []}));
+                read.push(json!({"info": self::user(id, &message["time"]["created"]), "parts": []}));
             }
             Some("assistant") => {
                 let failed = if message["error"].is_object() { error(&message["error"], None) } else { Value::Null };
@@ -179,6 +184,17 @@ pub(crate) fn read_messages(messages: &Value) -> Read {
     Read { messages: read, ended, open: user, steps }
 }
 
+/// What 2.x admitted into a session and has not delivered into its turn
+/// yet, as its inbox lists it (`GET /api/session/:id/inbox`, oldest first):
+/// each user's message as Core's record takes one. Admitted is durably
+/// stored, which is what 1.19.3's stored user message said: it confirms the
+/// message was delivered to OpenCode. It answers nothing yet: its answers
+/// come once 2.x takes it into the turn (`session.inbox.delivered`).
+pub fn admitted(inbox: &Value) -> Vec<Value> {
+    inbox.as_array().into_iter().flatten().filter(|item| item["type"] == "user")
+        .filter_map(|item| Some(user(item["id"].as_str()?, &item["time"]["created"]))).collect()
+}
+
 #[derive(Default)]
 struct Step {
     parent: Option<String>,
@@ -209,13 +225,13 @@ struct Gathered {
 /// session apart (the Agent's and its sub-agents'): a sub-agent's turn
 /// ending is not the Agent's.
 #[derive(Default)]
-pub(crate) struct Cursor {
+pub struct Cursor {
     sessions: HashMap<String, Open>,
 }
 
 impl Cursor {
     /// The events of Core's shape one 2.x event stands for, in order (`Open::read`).
-    pub(crate) fn read(&mut self, event: &Value) -> Vec<Value> {
+    pub fn read(&mut self, event: &Value) -> Vec<Value> {
         let d = &event["data"];
         let session = d["sessionID"].as_str().or(d["form"]["sessionID"].as_str()).unwrap_or_default();
         self.sessions.entry(session.to_owned()).or_default().read(event)
@@ -259,10 +275,10 @@ impl Open {
             "session.created" if d.get("info").is_none() => vec![made("session.created", json!({"sessionID": session,
                 "info": {"id": session, "parentID": d["parentID"], "title": d["title"], "agent": d["agent"]}}))],
             "session.inbox.enqueued" => {
-                if let (Some(id), Some(item)) = (d["inboxID"].as_str(), d["item"]["type"].as_str()) {
-                    self.inputs.insert(id.to_owned(), item.to_owned());
-                }
-                vec![]
+                let (Some(id), Some(item)) = (d["inboxID"].as_str(), d["item"]["type"].as_str()) else { return vec![] };
+                self.inputs.insert(id.to_owned(), item.to_owned());
+                // Admitted: a user's message is stored (`admitted`), and answers nothing until delivered.
+                if item == "user" { vec![message(user(id, at))] } else { vec![] }
             }
             "session.inbox.delivered" => {
                 let Some(id) = d["inboxID"].as_str() else { return vec![] };
@@ -271,7 +287,7 @@ impl Open {
                     return vec![];
                 }
                 self.user = Some(id.to_owned());
-                vec![message(json!({"id": id, "role": "user", "time": {"created": at}}))]
+                vec![message(user(id, at))]
             }
             "session.step.started" => {
                 let Some(id) = d["assistantMessageID"].as_str() else { return vec![] };

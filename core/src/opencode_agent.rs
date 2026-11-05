@@ -2168,6 +2168,10 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         }
         measure(d, c, &entry["info"]);
     }
+    // What 2.x admitted and has not taken into the turn yet: stored, so delivered.
+    for info in crate::opencode_v2::admitted(&snapshot.inbox) {
+        message(d, &info);
+    }
     // How a turn that ended while no stream was open ended, as its idle message says (2.x).
     for end in &ended {
         let Some(error) = &end.error else { continue };

@@ -152,6 +152,9 @@ def publish(kind, properties):
             durable.append({'id': evt, 'aggregate_id': aggregate, 'seq': seq, 'type': kind + '.1',
                             'data': json.loads(json.dumps(properties))})
         save()
+    elif sent is None and kind == 'session.status':
+        # What an execution's end changed in 2.x's own store: its idle message, and the inbox it delivered.
+        save()
 
 
 def send(kind, data, created=None):
@@ -236,6 +239,27 @@ def v2_entry(q):
     return None
 
 
+def v2_payload(session, mid):
+    """A stored user message as 2.x's inbox payload (schema/src/session-inbox.ts UserPayload)."""
+    stored = messages.get(session, {}).get(mid) or {}
+    text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
+    payload = {'text': text}
+    # A file as 2.x sends one (schema/src/prompt.ts): its bytes as base64 `data`, not a `data:` URL.
+    files = [{'data': (q.get('url') or '').split(',', 1)[-1], 'mime': q.get('mime'), 'name': q.get('filename'),
+              'source': {'type': 'inline'}} for q in stored.get('parts', []) if q.get('type') == 'file']
+    if files:
+        payload['files'] = files
+    return payload
+
+
+def v2_inbox(session):
+    """What 2.x's `/api/session/:id/inbox` lists: the messages steered in and not yet delivered, oldest first."""
+    state = v2_of(session)
+    return [{'id': mid, 'sessionID': session, 'type': 'user', 'delivery': 'steer', 'payload': v2_payload(session, mid),
+             'time': {'created': ((messages.get(session, {}).get(mid) or {}).get('info') or {}).get('time', {}).get('created', 0)}}
+            for mid in state['pending']]
+
+
 def v2_events(kind, p):
     """The 2.x events one of the store's 1.19.3-shaped events stands for (schema/src/session-event.ts)."""
     session = p.get('sessionID')
@@ -247,14 +271,7 @@ def v2_events(kind, p):
             if mid in state['delivered']:
                 return []
             state['delivered'].add(mid)
-            stored = messages.get(session, {}).get(mid) or {}
-            text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
-            payload = {'text': text}
-            # A file as 2.x sends one (schema/src/prompt.ts): its bytes as base64 `data`, not a `data:` URL.
-            files = [{'data': (q.get('url') or '').split(',', 1)[-1], 'mime': q.get('mime'), 'name': q.get('filename'),
-                      'source': {'type': 'inline'}} for q in stored.get('parts', []) if q.get('type') == 'file']
-            if files:
-                payload['files'] = files
+            payload = v2_payload(session, mid)
             # Steered in: sent while a run went on (`prompt`); a message the store holds already was delivered.
             steered = mid in state['steer']
             enqueued = ('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': payload,
@@ -364,15 +381,39 @@ def v2_events(kind, p):
 
 def v2_view(session):
     """The session's stored messages as 2.x's `/api/session/:id/message` lists them (schema/src/session-message.ts): in
-    the order 2.x stored them, with each execution's idle message after the message it ended at."""
+    the order 2.x stored them, with each execution's idle message after the message it ended at. A message steered in
+    is stored when 2.x delivers it (`v2_deliver`): before the first step answering it or a later one, or at the
+    execution's end; not yet delivered, it is in the inbox only (`v2_inbox`)."""
     state = v2_of(session)
     idles = {}
     for n, idle in enumerate(state['idles']):
         idles.setdefault(idle['after'], []).append((n, idle))
-    out = []
+    out, waiting = [], []
+
+    def delivered(upto=None):
+        # Those waiting, up to `upto` (all of them when None), as 2.x stored them on delivery.
+        count = waiting.index(upto) + 1 if upto in waiting else (len(waiting) if upto is None else 0)
+        for mid in waiting[:count]:
+            info = messages[session][mid]['info']
+            out.append({'id': mid, 'type': 'user', 'text': v2_payload(session, mid)['text'],
+                        'time': {'created': (info.get('time') or {}).get('created', 0)}})
+        del waiting[:count]
+
     for mid, stored in list(messages.get(session, {}).items()):
         info = stored['info']
         created = (info.get('time') or {}).get('created', 0)
+        if info.get('role') == 'user' and mid in state['steer']:
+            if mid in state['pending']:
+                continue
+            waiting.append(mid)
+            if mid in idles:
+                # Delivered at the execution's end that came right after it.
+                delivered()
+                for n, idle in idles.pop(mid):
+                    out.append(v2_idle(n, idle, created))
+            continue
+        if info.get('role') == 'assistant' and not info.get('summary'):
+            delivered(info.get('parentID'))
         if info.get('role') == 'user':
             if any(q.get('type') == 'compaction' for q in stored.get('parts', [])):
                 pass
@@ -401,12 +442,20 @@ def v2_view(session):
             if info.get('error'):
                 answer['error'] = v2_error(info['error'])
             out.append(answer)
-        for n, idle in idles.pop(mid, []):
-            entry = {'id': f'msg_idle{n:06d}', 'type': 'idle', 'outcome': idle['outcome'], 'time': {'created': created}}
-            if idle.get('error'):
-                entry['error'] = idle['error']
-            out.append(entry)
+        ending = idles.pop(mid, [])
+        if ending:
+            delivered()
+        for n, idle in ending:
+            out.append(v2_idle(n, idle, created))
+    delivered()
     return out
+
+
+def v2_idle(n, idle, created):
+    entry = {'id': f'msg_idle{n:06d}', 'type': 'idle', 'outcome': idle['outcome'], 'time': {'created': created}}
+    if idle.get('error'):
+        entry['error'] = idle['error']
+    return entry
 
 
 def log(entry):
@@ -452,8 +501,11 @@ def save():
     with lock:
         (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
                                                      'durable': durable, 'aggregates': aggregates,
-                                                     # 2.x stores its idle messages with the session's others.
-                                                     'idles': {s: v['idles'] for s, v in v2_state.items()}}))
+                                                     # 2.x stores its idle messages with the session's others,
+                                                     # and its inbox.
+                                                     'idles': {s: v['idles'] for s, v in v2_state.items()},
+                                                     'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
+                                                               for s, v in v2_state.items()}}))
 
 
 def load():
@@ -467,6 +519,8 @@ def load():
         aggregates.update(state.get('aggregates', {}))
         for s, idles in state.get('idles', {}).items():
             v2_of(s)['idles'] = idles
+        for s, inbox in state.get('inbox', {}).items():
+            v2_of(s).update(pending=inbox['pending'], steer=set(inbox['steer']))
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -1085,6 +1139,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'data': [p for p in permissions if p['sessionID'] == session]})
         if (method, *rest) == ('GET', 'form'):
             return self.reply(200, {'data': [q for q in questions if q['sessionID'] == session]})
+        if (method, *rest) == ('GET', 'inbox'):
+            return self.reply(200, {'data': [] if v1() else v2_inbox(session)})
         return self.reply(404)
 
     def session(self, method, session, rest, body):

@@ -81,7 +81,8 @@ fn live_events_read_as_the_snapshot_reads_the_same_turn() {
     let mut c = Cursor::default();
     let s = json!("ses_1");
     let d = |extra: Value| { let mut v = json!({"sessionID": s}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
-    assert!(c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_u1", "item": {"type": "user"}})))).is_empty());
+    let admitted = c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_u1", "item": {"type": "user"}}))));
+    assert_eq!(admitted[0]["data"]["info"], json!({"id": "msg_u1", "role": "user", "time": {"created": 1}}));
     let delivered = c.read(&ev("session.inbox.delivered", 2, d(json!({"inboxID": "msg_u1"}))));
     assert_eq!(delivered[0]["data"]["info"], json!({"id": "msg_u1", "role": "user", "time": {"created": 2}}));
     assert_eq!(kinds(&c.read(&ev("session.execution.started", 3, d(json!({}))))), ["session.status"]);
@@ -127,6 +128,39 @@ fn live_events_read_as_the_snapshot_reads_the_same_turn() {
     assert_eq!(idle[0]["data"]["status"]["type"], "idle");
     let after = c.read(&ev("session.step.started", 450, d(json!({"assistantMessageID": "msg_a3"}))));
     assert_eq!(after[0]["data"]["info"]["parentID"], Value::Null, "the turn is over");
+}
+
+/// A message 2.x admits is stored: its user message confirms it, from the
+/// event or from the inbox a whole read lists. It answers nothing until 2.x
+/// delivers it into the turn: a step that starts before that is the earlier
+/// message's. A synthetic message, or a compaction asked for, is not a user's
+/// message sent.
+#[test]
+fn an_admitted_message_is_stored_and_answers_nothing_until_it_is_delivered() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_u1", "item": {"type": "user"}}))));
+    c.read(&ev("session.inbox.delivered", 2, d(json!({"inboxID": "msg_u1"}))));
+    let steered = c.read(&ev("session.inbox.enqueued", 3, d(json!({"inboxID": "msg_u2", "item": {"type": "user", "delivery": "steer"}}))));
+    assert_eq!(kinds(&steered), ["message.updated"]);
+    assert_eq!(steered[0]["data"]["info"], json!({"id": "msg_u2", "role": "user", "time": {"created": 3}}));
+    let before = c.read(&ev("session.step.started", 4, d(json!({"assistantMessageID": "msg_a1"}))));
+    assert_eq!(before[0]["data"]["info"]["parentID"], "msg_u1", "admitted, not yet delivered");
+    c.read(&ev("session.inbox.delivered", 5, d(json!({"inboxID": "msg_u2"}))));
+    let after = c.read(&ev("session.step.started", 6, d(json!({"assistantMessageID": "msg_a2"}))));
+    assert_eq!(after[0]["data"]["info"]["parentID"], "msg_u2");
+    for item in ["synthetic", "compaction", "move"] {
+        let id = format!("msg_{item}");
+        assert!(c.read(&ev("session.inbox.enqueued", 7, d(json!({"inboxID": id, "item": {"type": item}})))).is_empty(), "{item}");
+    }
+    // A whole read: the inbox lists what is admitted and not delivered.
+    let inbox = json!([
+        {"id": "msg_u3", "sessionID": "ses_1", "type": "user", "delivery": "steer", "payload": {"text": "more"}, "time": {"created": 8}},
+        {"id": "msg_s1", "sessionID": "ses_1", "type": "synthetic", "delivery": "queue", "payload": {"text": "go on"}, "time": {"created": 9}},
+        {"id": "msg_c1", "sessionID": "ses_1", "type": "compaction", "delivery": "queue", "payload": {}, "time": {"created": 10}},
+    ]);
+    assert_eq!(admitted(&inbox), vec![json!({"id": "msg_u3", "role": "user", "time": {"created": 8}})]);
+    assert!(admitted(&json!([])).is_empty());
 }
 
 /// How an execution ends is how Core's record names it: failed, an

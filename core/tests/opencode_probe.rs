@@ -4,12 +4,15 @@
 //! own data, state and cache folders). Through Core's own path, on loopback,
 //! with no prompt and no provider. Slice 2 (Lead 4669): start, password and
 //! stop. Slice 3a (Lead 4870): every route and envelope Core connects with,
-//! run where no request can leave the host.
+//! run where no request can leave the host. Slice 3b (Lead 4983): a
+//! session's messages, inbox and events read through Core's mapping, there
+//! too.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use yuzuno_workspace::opencode::{session_of, supported, Events, Launch, Server, EVENT_IDLE_LIMIT, TEARDOWN};
+use yuzuno_workspace::opencode::{session_of, supported, Events, Launch, MessageId, Server, EVENT_IDLE_LIMIT, TEARDOWN};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
 
 fn ended(pid: u64) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -165,4 +168,92 @@ async fn a_real_opencode_2x_serves_every_route_and_envelope_core_connects_with()
     println!("probe: its own folder holds {:?}", tree(&root));
     println!("probe: the shared cache holds {:?}", tree(&cache));
     assert!(tree(&root).iter().any(|p| p.starts_with("xdg/data/opencode")), "its data went to the Agent's own folder");
+}
+
+/// A session with a shell command and a synthetic message under an ID Core
+/// chose, held back (`resume: false`): no execution, so no model and no
+/// provider. What 2.x stores, lists in its inbox and streams of them is read
+/// through Core's mapping (opencode_v2): the raw shapes it takes, the ID it
+/// is admitted under (Lead 4983, note 3), and which reading the messages
+/// get (2.x's, which the refusals of compaction, rewind and fork key on).
+/// A model's answer, its steps and busy are slice 4's (stub provider).
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, and no network"]
+async fn a_real_opencode_2x_session_reads_through_cores_mapping() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    let (http, password) = (reqwest::Client::builder().no_proxy().build().unwrap(), password_of(server.pid().unwrap()));
+    let post = |route: &str, body: Value| http.post(format!("{}/api/session/{session}/{route}", server.base()))
+        .basic_auth("opencode", Some(&password)).json(&body).send();
+    let mut seen = Vec::new();
+    let mut ours = Vec::new();
+
+    let shell = post("shell", json!({"command": "echo probe-3b"})).await.unwrap();
+    assert!(shell.status().is_success(), "{}", shell.status());
+    ours.push(events_until(&mut events, &session, Duration::from_secs(30), &mut seen,
+        |e| e["type"].as_str().is_some_and(|t| t.contains("shell") && t.ends_with(".ended"))).await);
+
+    // A synthetic message under Core's own ID, held back.
+    let chosen = MessageId::new();
+    let synthetic = post("synthetic", json!({"id": chosen.as_str(), "text": "probe-3b synthetic", "resume": false})).await.unwrap();
+    let status = synthetic.status();
+    let answered: Value = synthetic.json().await.unwrap();
+    println!("probe: synthetic answered {status}: {answered}");
+    assert!(status.is_success(), "{status}: {answered}");
+    assert_eq!(answered["data"]["id"], chosen.as_str(), "admitted under the ID Core chose");
+    let enqueued = events_until(&mut events, &session, Duration::from_secs(10), &mut seen,
+        |e| e["type"] == "session.inbox.enqueued").await;
+    println!("probe: {enqueued}");
+    assert_eq!(enqueued["data"]["inboxID"], chosen.as_str(), "its event names the ID Core chose");
+    assert_eq!(enqueued["data"]["item"]["type"], "synthetic");
+    ours.push(enqueued);
+    // Whatever else it says of the session within 3 s (a delivery, say).
+    let until = Instant::now() + Duration::from_secs(3);
+    while let Ok(Ok(Some(event))) = tokio::time::timeout(until.saturating_duration_since(Instant::now()), events.next()).await {
+        seen.push(event["type"].as_str().unwrap_or("?").to_owned());
+        if session_of(&event) == Some(session.as_str()) {
+            ours.push(event);
+        }
+    }
+    println!("probe: events seen {seen:?}");
+
+    // Live: what each of the session's events reads as.
+    let mut cursor = Cursor::default();
+    for event in &ours {
+        let read: Vec<&str> = cursor.read(event).iter().map(|e| e["type"].as_str().unwrap_or("?")).collect();
+        println!("probe: {} reads as {read:?}", event["type"]);
+    }
+
+    // Whole: its messages and inbox, as a snapshot takes them.
+    let snapshot = server.snapshot(&session, &[]).await.unwrap();
+    println!("probe: messages {}", snapshot.messages);
+    println!("probe: inbox {}", snapshot.inbox);
+    let messages = snapshot.messages.as_array().unwrap();
+    assert!(messages.iter().all(|m| m["id"].as_str().is_some_and(|id| id.starts_with("msg_")) && m["type"].is_string()
+        && m["time"]["created"].is_number()), "each with its ID, type and time: {}", snapshot.messages);
+    assert!(is_v2(&snapshot.messages), "read as 2.x's");
+    let kinds: Vec<&str> = messages.iter().filter_map(|m| m["type"].as_str()).collect();
+    assert!(kinds.contains(&"shell"), "{kinds:?}");
+    let listed = snapshot.inbox.as_array().unwrap().iter().any(|item| item["id"] == chosen.as_str());
+    let stored = messages.iter().any(|m| m["id"] == chosen.as_str());
+    println!("probe: the held-back synthetic is in the inbox: {listed}; in the messages: {stored}");
+    assert!(listed != stored, "either admitted and waiting, or delivered: listed {listed}, stored {stored}");
+    let read = read_messages(&snapshot.messages);
+    println!("probe: read as {} messages {:?}; open turn {:?}; turn ends {}; steps under way {}", read.messages.len(),
+        read.messages.iter().map(|m| (m["info"]["id"].as_str().unwrap_or("?").to_owned(), m["info"]["role"].clone())).collect::<Vec<_>>(),
+        read.open, read.ended.len(), read.steps.len());
+    assert!(read.ended.is_empty() && read.steps.is_empty(), "no execution: no turn's end and no step");
+    assert!(admitted(&snapshot.inbox).is_empty(), "a synthetic message is not a user's message sent");
+
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
 }
