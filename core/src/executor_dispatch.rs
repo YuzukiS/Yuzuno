@@ -47,8 +47,7 @@ impl Workspace {
                 drop(permit);
                 // Its slot, when one is free; a retry of a dispatch whose
                 // start a stopped Core missed waits for one again too.
-                let ws = self.clone();
-                tokio::spawn(async move { ws.executor_slots_pass().await; });
+                self.spawn_executor_slots_pass();
                 Ok(answer)
             }
             Err(error) => Err(self.executor_failed(&dispatch, error, &permit).await),

@@ -578,6 +578,16 @@ pub(crate) struct State {
 const TICK: Duration = Duration::from_secs(5);
 
 impl Workspace {
+    /// A pass in a task of its own. Its future is boxed under a declared
+    /// type: a rebuild dispatches from inside a pass (executor_start.rs), so
+    /// the dispatch that spawns a pass must not hold that pass's own type.
+    pub(crate) fn spawn_executor_slots_pass(self: &Arc<Self>) {
+        let ws = self.clone();
+        let pass: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            Box::pin(async move { ws.executor_slots_pass().await; });
+        tokio::spawn(pass);
+    }
+
     /// Something may have freed a slot or queued an executor.
     pub(crate) fn wake_executor_slots(&self) {
         self.executor_slots.wakeup.notify_one();

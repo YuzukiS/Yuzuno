@@ -179,8 +179,10 @@ try {
   await group.getByText("A whole number of seconds from 30 to 3600.").waitFor({ timeout: 10_000 });
   assert.equal(await save.isDisabled(), true, "29 is not offered");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
-  await group.getByText("30 到 3600 之间的整数秒。").waitFor({ timeout: 10_000 });
-  await group.screenshot({ path: join(output, "2c-start-limit-zh.png") });
+  // In Chinese the group has its Chinese name: found by its class here.
+  const slotsGroup = box.locator(".executor-slots");
+  await slotsGroup.getByText("30 到 3600 之间的整数秒。").waitFor({ timeout: 10_000 });
+  await slotsGroup.screenshot({ path: join(output, "2c-start-limit-zh.png") });
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
   await group.getByText("A whole number of seconds from 30 to 3600.").waitFor({ timeout: 10_000 });
   await limitInput.fill("120");
