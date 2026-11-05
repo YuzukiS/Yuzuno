@@ -279,3 +279,98 @@ fn a_whole_read_gives_the_live_stream_what_its_later_events_do_not_repeat() {
     let next = c.read(&ev("session.step.started", 12, d(json!({"assistantMessageID": "msg_a2"}))));
     assert_eq!(next[0]["data"]["info"]["parentID"], "msg_u1");
 }
+
+/// Text gathered for an answer's entry is written out by the next event of
+/// that answer, by its step's end, and by its execution's end, not only by
+/// a later delta of the same entry or its own end (T-32 slice 4a; R2 and R5
+/// notes). A session whose execution ended keeps nothing (R3 notes).
+#[test]
+fn gathered_text_is_written_out_by_its_answers_next_event_and_an_idle_session_keeps_nothing() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_u1", "item": {"type": "user"}}))));
+    c.read(&ev("session.inbox.delivered", 2, d(json!({"inboxID": "msg_u1"}))));
+    c.read(&ev("session.step.started", 3, d(json!({"assistantMessageID": "msg_a1"}))));
+    assert!(c.read(&ev("session.reasoning.delta", 10, d(json!({"assistantMessageID": "msg_a1", "ordinal": 0, "delta": "think"})))).is_empty());
+    // The answer's next entry: what its reasoning gathered goes first.
+    let next = c.read(&ev("session.text.started", 20, d(json!({"assistantMessageID": "msg_a1", "ordinal": 1}))));
+    assert_eq!(kinds(&next), ["message.part.delta", "message.part.updated"]);
+    assert_eq!((&next[0]["data"]["partID"], &next[0]["data"]["delta"]), (&json!("msg_a1:0"), &json!("think")),
+        "an entry's gathered text written out by its answer's next event");
+    assert!(c.read(&ev("session.text.delta", 30, d(json!({"assistantMessageID": "msg_a1", "ordinal": 1, "delta": "Hel"})))).is_empty());
+    // Another delta of the same entry within the quarter-second gathers on.
+    assert!(c.read(&ev("session.text.delta", 40, d(json!({"assistantMessageID": "msg_a1", "ordinal": 1, "delta": "lo"})))).is_empty());
+    // Its step's end.
+    let ended = c.read(&ev("session.step.ended", 50, d(json!({"assistantMessageID": "msg_a1", "finish": "stop"}))));
+    assert_eq!(kinds(&ended), ["message.part.delta", "message.updated"]);
+    assert_eq!(ended[0]["data"]["delta"], "Hello", "its step's end writes it out");
+    // The execution's end writes out what is left, then ends the turn.
+    c.read(&ev("session.step.started", 60, d(json!({"assistantMessageID": "msg_a2"}))));
+    c.read(&ev("session.text.delta", 70, d(json!({"assistantMessageID": "msg_a2", "ordinal": 0, "delta": "Bye"}))));
+    let idle = c.read(&ev("session.execution.succeeded", 80, d(json!({}))));
+    assert_eq!(kinds(&idle), ["message.part.delta", "session.status"]);
+    assert_eq!(idle[0]["data"]["delta"], "Bye", "the execution's end writes it out");
+    assert!(c.sessions.is_empty(), "a session with nothing under way keeps nothing");
+}
+
+/// One compaction, started and ended, is one message, the one 2.x stores for
+/// it: its input's ID, else its start event's (T-32 slice 4a, R3 notes).
+#[test]
+fn a_compaction_started_and_ended_is_one_entry() {
+    let mut c = Cursor::default();
+    let at = |kind: &str, id: &str, data: Value| json!({"id": id, "type": kind, "created": 1, "data": data});
+    let started = c.read(&at("session.compaction.started", "evt_A1", json!({"sessionID": "ses_1", "reason": "auto"})));
+    let ended = c.read(&at("session.compaction.ended", "evt_A2", json!({"sessionID": "ses_1", "reason": "auto"})));
+    assert_eq!((&started[0]["data"]["info"]["id"], &ended[0]["data"]["info"]["id"]), (&json!("msg_A1"), &json!("msg_A1")),
+        "one compaction, one entry, under the ID 2.x stores it by");
+    let manual = c.read(&at("session.compaction.started", "evt_B1", json!({"sessionID": "ses_1", "reason": "manual", "inputID": "msg_in"})));
+    assert_eq!(manual[0]["data"]["info"]["id"], "msg_in");
+    assert!(c.sessions.get("ses_1").is_some_and(|open| open.compaction.as_deref() == Some("msg_in")));
+}
+
+/// A shell command (T-32 slice 4a, D2): read whole and live as the same
+/// command item of the newest message before it, never an answer.
+#[test]
+fn a_shell_command_is_read_whole_and_live_as_the_same_command_item() {
+    let messages = json!([
+        {"id": "msg_u1", "type": "user", "time": {"created": 1}},
+        {"id": "msg_S1", "type": "shell", "shellID": "sh_1", "command": "ls", "status": "exited", "exit": 0,
+            "output": {"output": "a.txt\n", "cursor": 6, "size": 6, "truncated": false}, "time": {"created": 2, "completed": 3}},
+        {"id": "msg_S2", "type": "shell", "shellID": "sh_2", "command": "false", "status": "exited", "exit": 1, "time": {"created": 4}},
+    ]);
+    let read = read_messages(&messages);
+    assert_eq!(read.messages[1]["info"], json!({"id": "msg_S1", "role": "shell", "parentID": "msg_u1", "time": {"created": 2}}));
+    let whole = read.messages[1]["parts"][0].clone();
+    assert_eq!(whole, json!({"id": "msg_S1", "messageID": "msg_S1", "type": "shell", "command": "ls", "status": "completed",
+        "output": "a.txt\n", "exit": 0}));
+    assert_eq!(read.messages[2]["parts"][0]["status"], "failed", "a non-zero exit failed");
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read, &json!([]));
+    let shell = json!({"id": "sh_1", "status": "running", "command": "ls", "cwd": "/w", "shell": "/bin/sh", "file": "/f"});
+    let started = c.read(&json!({"id": "evt_S1", "type": "session.shell.started", "created": 2, "data": {"sessionID": "ses_1", "shell": shell}}));
+    assert_eq!(started[0]["data"]["info"], read.messages[1]["info"], "the same message, of the same turn");
+    assert_eq!(started[1]["data"]["part"]["status"], "inProgress");
+    let mut done = shell.clone();
+    done["status"] = json!("exited");
+    done["exit"] = json!(0);
+    let ended = c.read(&json!({"id": "evt_S9", "type": "session.shell.ended", "created": 3, "data": {"sessionID": "ses_1", "shell": done,
+        "output": {"output": "a.txt\n", "cursor": 6, "size": 6, "truncated": false}}}));
+    assert_eq!(ended[0]["data"]["part"], whole, "live as whole");
+}
+
+/// 2.x's own permission request and form are told apart from 1.19.3's,
+/// which Core answers until slice 5 (T-32 slice 4a), and a 2.x form is read
+/// as Core's question.
+#[test]
+fn a_2x_request_is_told_from_a_1_19_3_one_and_a_2x_form_is_read_as_a_question() {
+    assert!(is_v2_request(&json!({"id": "per_1", "sessionID": "s", "action": "bash", "resources": ["ls"]})));
+    assert!(is_v2_request(&json!({"id": "frm_1", "sessionID": "s", "title": "Pick", "fields": [{"key": "a", "type": "string"}]})));
+    assert!(!is_v2_request(&json!({"id": "per_1", "sessionID": "s", "permission": "bash", "patterns": ["ls"]})));
+    assert!(!is_v2_request(&json!({"id": "que_1", "sessionID": "s", "questions": [{"question": "?"}]})));
+    let mut c = Cursor::default();
+    let form = json!({"id": "frm_1", "sessionID": "ses_1", "title": "Pick", "fields": [{"key": "a", "type": "string"}]});
+    let asked = c.read(&ev("form.created", 1, json!({"form": form})));
+    assert_eq!((kinds(&asked), &asked[0]["data"]), (vec!["question.asked"], &form));
+    let replied = c.read(&ev("form.cancelled", 2, json!({"id": "frm_1", "sessionID": "ses_1"})));
+    assert_eq!((kinds(&replied), &replied[0]["data"]), (vec!["question.replied"], &json!({"sessionID": "ses_1", "requestID": "frm_1"})));
+}

@@ -1148,6 +1148,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, mcp)
         if key == ('GET', 'config', 'providers'):
             return self.reply(200, modes['providers'])
+        if key == ('GET', 'api', 'command') and modes.get('apiCommands'):
+            # 2.x's own list (protocol/src/groups/command.ts, mode `apiCommands`): each command's name and description.
+            listed = [{'name': name, **({'description': c['description']} if c.get('description') else {})}
+                      for name, c in (modes['config'].get('command') or {}).items()]
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': listed})
         if key == ('GET', 'api', 'model'):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_models()})
         if key == ('GET', 'api', 'provider'):

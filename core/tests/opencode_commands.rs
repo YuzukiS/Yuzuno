@@ -78,7 +78,7 @@ impl Lab {
     /// The requests that sent something: prompts and commands.
     fn sent(&self) -> Vec<Value> {
         self.calls().into_iter().filter(|c| c["method"] == "POST"
-            && ["/prompt_async", "/command"].iter().any(|end| c["path"].as_str().unwrap().ends_with(end))).collect()
+            && ["/prompt", "/command"].iter().any(|end| c["path"].as_str().unwrap().ends_with(end))).collect()
     }
 
     fn detail(&self) -> AgentDetail {
@@ -305,7 +305,7 @@ async fn a_listed_command_runs_under_its_kept_id_with_the_model_opencode_gives_i
     for (client, text) in [("c4", "/nope x"), ("c5", "/"), ("c6", "see /explain")] {
         let id = lab.send(client, text, &[]).await.unwrap().turn_id.unwrap();
         let sent = lab.sent().pop().unwrap();
-        assert!(sent["path"].as_str().unwrap().ends_with("/prompt_async"), "{text}: {sent}");
+        assert!(sent["path"].as_str().unwrap().ends_with("/prompt"), "{text}: {sent}");
         assert_eq!(sent["body"]["parts"], json!([{"type":"text","text":text}]));
         assert_eq!(lab.journaled("opencode/turnRequested").pop().unwrap()["command"], Value::Null);
         lab.complete(&id).await;
@@ -375,6 +375,30 @@ async fn a_command_is_refused_only_before_its_message_exists_and_never_sent_agai
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// An OpenCode 2.x (T-32 slice 4a): commands are listed from its own list
+/// (`GET /api/command`), and running one, still 1.19.3's route until the
+/// commands slice, meets 2.x's 405: refused as not yet on 2.x, nothing done.
+#[tokio::test]
+async fn on_2x_commands_are_listed_from_its_own_list_and_running_one_is_refused_as_not_yet() {
+    let lab = lab(false).await;
+    let session = lab.session();
+    lab.control("mode", json!({"apiCommands":true,"fail":{format!("/session/{session}/command"):405}})).await;
+    let refused = lab.send("c1", "/explain x", &[]).await.unwrap();
+    assert_eq!(refused.status, "rejected");
+    let error = refused.error.as_deref().unwrap();
+    assert!(error.contains("not yet on OpenCode 2.x") && error.contains("命令没有执行"), "refused as not yet on 2.x: {error}");
+    let d = lab.detail();
+    assert_eq!(turn(&d, refused.turn_id.as_deref().unwrap())["status"], "failed");
+    assert_eq!(d.agent.status, "idle");
+    let listed = |path: &str| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == path).count();
+    assert_eq!((listed("/api/command") > 0, listed("/config")), (true, 0), "listed from 2.x's own list, not 1.19.3's /config");
+    // Any other text is a message, sent through 2.x's prompt.
+    let sent = lab.send("c2", "/nope here", &[]).await.unwrap();
+    assert_eq!(sent.status, "accepted", "{sent:?}");
+    assert!(lab.sent().last().unwrap()["path"].as_str().unwrap().ends_with("/prompt"));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 fn png() -> Vec<u8> {
     let mut out = std::io::Cursor::new(Vec::new());
     image::RgbImage::from_pixel(4, 4, image::Rgb([10, 0, 0])).write_to(&mut out, image::ImageFormat::Png).unwrap();
@@ -412,7 +436,7 @@ async fn a_command_with_images_is_refused_before_anything_is_recorded() {
     let id = lab.send("c2", "review this", &images).await.unwrap().turn_id.unwrap();
     let sent = lab.sent();
     assert_eq!(sent.len(), 1);
-    assert!(sent[0]["path"].as_str().unwrap().ends_with("/prompt_async"));
+    assert!(sent[0]["path"].as_str().unwrap().ends_with("/prompt"));
     lab.control("reply", json!({"sessionID":session,"text":"Seen."})).await;
     lab.until("completion", |d| turn(d, &id)["status"] == "completed").await;
     lab.ws.close_agent(ID).await.unwrap();

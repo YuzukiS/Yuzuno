@@ -86,8 +86,13 @@ impl Lab {
             .filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().starts_with(prefix)).collect()
     }
 
+    /// The models made the session's (`POST /api/session/:id/model`, T-32 slice 4a), in order: each body.
+    fn switches(&self) -> Vec<Value> {
+        self.posts(&format!("/api/session/{}/model", self.session())).into_iter().map(|c| c["body"].clone()).collect()
+    }
+
     fn prompts(&self) -> Vec<Value> {
-        self.calls().into_iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt_async")).collect()
+        self.calls().into_iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt")).collect()
     }
 
     fn detail(&self) -> AgentDetail {
@@ -266,8 +271,8 @@ async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() 
     assert!(first.starts_with("msg_"), "{first}");
     let prompts = lab.prompts();
     assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0]["body"], json!({"messageID":first,"parts":[{"type":"text","text":"hello"}]}),
-        "no model, agent, tools or permission rule is sent");
+    assert_eq!(prompts[0]["body"], json!({"id":first,"text":"hello"}), "no model, agent, tools or permission rule is sent");
+    assert!(lab.switches().is_empty(), "OpenCode's own model: the session's is left as it is");
     let kinds = journal(&lab);
     let requested = kinds.iter().position(|k| k == "opencode/turnRequested").unwrap();
     let confirmed = kinds.iter().position(|k| k == "opencode/messageConfirmed").unwrap();
@@ -345,7 +350,7 @@ async fn a_stored_message_is_its_turns_user_message_under_its_client_id() {
     // Refused (HTTP 400): rejected, and no client ID, even once OpenCode
     // shows a message of that ID stored.
     let mut fail = serde_json::Map::new();
-    fail.insert(format!("/session/{session}/prompt_async"), json!(400));
+    fail.insert(format!("/api/session/{session}/prompt"), json!(400));
     lab.control("mode", json!({"fail":fail})).await;
     let refused = lab.send("c3", "no").await.unwrap();
     assert_eq!(refused.status, "rejected");
@@ -449,7 +454,7 @@ async fn abort_asks_and_only_the_end_it_reports_ends_the_turn() {
     lab.ws.interrupt(ID).await.unwrap();
     let d = lab.until("the reported end", |d| turn(d, &second)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &second)["status"], "interrupted");
-    assert_eq!(lab.posts(&format!("/session/{session}/abort")).len(), 2);
+    assert_eq!(lab.posts(&format!("/api/session/{session}/interrupt")).len(), 2);
     assert!(lab.ws.interrupt(ID).await.is_err(), "nothing runs");
     lab.ws.close_agent(ID).await.unwrap();
 }
@@ -489,7 +494,7 @@ async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     let d = lab.until("the failed end", |d| turn(d, &fourth)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &fourth)["status"], "failed");
     assert!(d.agent.error.is_some(), "a failed execution is an error of the Agent");
-    assert_eq!(lab.posts(&format!("/session/{session}/abort")).len(), 2);
+    assert_eq!(lab.posts(&format!("/api/session/{session}/interrupt")).len(), 2);
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -533,16 +538,16 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
 async fn closing_waits_for_the_teardown_even_while_a_request_still_holds_the_server() {
     let lab = lab(&[("tool", "1"), ("teardown", "2"), ("closeStreamsFirst", "1")], false).await;
     let (tool, pid) = (lab.seen()["tool"].as_u64().unwrap(), lab.seen()["pid"].as_u64().unwrap());
-    lab.control("mode", json!({"slow": {"/config/providers": 30}})).await;
+    lab.control("mode", json!({"slow": {"/api/model": 30}})).await;
     let ws = lab.ws.clone();
     let read = tokio::spawn(async move { ws.opencode_agent_catalog(ID).await.map(drop) });
     for _ in 0..200 {
-        if lab.calls().iter().any(|c| c["path"] == "/config/providers") {
+        if lab.calls().iter().any(|c| c["path"] == "/api/model") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(lab.calls().iter().any(|c| c["path"] == "/config/providers"), "the read is out, holding the server");
+    assert!(lab.calls().iter().any(|c| c["path"] == "/api/model"), "the read is out, holding the server");
     lab.ws.close_agent(ID).await.unwrap();
     let ended = ends(tool).await;
     if !ended {
@@ -619,7 +624,7 @@ async fn after_a_restart_a_message_connects_the_session_again_and_goes_only_when
             .lines().map(|line| serde_json::from_str(line).unwrap()).collect()
     }
     fn prompts(root: &std::path::Path) -> usize {
-        calls(root).iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt_async")).count()
+        calls(root).iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt")).count()
     }
     /// The credential each Workspace MCP registration handed OpenCode, in order.
     fn credentials(root: &std::path::Path) -> Vec<Value> {
@@ -829,7 +834,7 @@ fn holds_a_secret(dir: &std::path::Path) -> Option<(PathBuf, &'static str)> {
     None
 }
 
-/// A model OpenCode's configured providers list (`/config/providers`) is
+/// A model OpenCode's configured providers list (`/api/model`) is
 /// chosen for the Agent's next messages (T-10) and goes with each of them;
 /// OpenCode's default sends none, as before; one OpenCode no longer lists is
 /// refused before anything is sent. Only a model's names are kept, never a
@@ -853,16 +858,23 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
     let chosen = lab.ws.opencode_set_model(ID, " openrouter/anthropic/claude-x ".into()).await.unwrap();
     assert_eq!(chosen.model, "openrouter/anthropic/claude-x");
 
-    // It goes with the next message, named as OpenCode names it.
+    // It is made the session's before the next message (2.x's prompt carries none), named as OpenCode names it.
     let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.prompts()[0]["body"]["model"], json!({"providerID":"openrouter","modelID":"anthropic/claude-x"}));
+    assert_eq!(lab.switches(), [json!({"model":{"id":"anthropic/claude-x","providerID":"openrouter"}})]);
+    assert_eq!(lab.prompts()[0]["body"], json!({"id":first,"text":"hello"}));
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+    // Already the session's: not made so again (D3).
+    let same = lab.send("c1b", "more").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.switches().len(), 1, "the session's model already");
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &same)["status"] == "completed").await;
 
     // OpenCode's default again: no model is sent, as before any was chosen.
     lab.ws.opencode_set_model(ID, String::new()).await.unwrap();
     let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.prompts()[1]["body"], json!({"messageID":second,"parts":[{"type":"text","text":"again"}]}));
+    assert_eq!(lab.prompts()[2]["body"], json!({"id":second,"text":"again"}));
+    assert_eq!(lab.switches().len(), 1, "OpenCode's own default: the session's is left as it is");
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
 
@@ -873,7 +885,7 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
     lab.control("mode", json!({"providers":providers})).await;
     let gone = lab.send("c3", "third").await.unwrap_err().to_string();
     assert!(gone.contains("不在 OpenCode 当前的配置中") && gone.contains("没有发送"), "{gone}");
-    assert_eq!(lab.prompts().len(), 2, "nothing was sent");
+    assert_eq!((lab.prompts().len(), lab.switches().len()), (3, 1), "nothing was sent or switched");
     let d = lab.detail();
     assert!(d.message_receipts.iter().all(|r| r.input.client_message_id != "c3"), "no receipt was recorded");
     assert_eq!(d.agent.model, "deepseek/deepseek-flash", "the choice stays the user's");
@@ -920,15 +932,14 @@ async fn a_variant_the_chosen_model_lists_goes_with_the_next_messages() {
     assert_eq!(lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap().settings.reasoning_effort.as_deref(), Some("max"));
 
     let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
-    let body = &lab.prompts()[0]["body"];
-    assert_eq!((&body["model"], &body["variant"]), (&json!({"providerID":"deepseek","modelID":"deepseek-flash"}), &json!("max")));
+    assert_eq!(lab.switches(), [json!({"model":{"id":"deepseek-flash","providerID":"deepseek","variant":"max"}})]);
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
 
     // OpenCode's own variant again: none is sent.
     choose("deepseek/deepseek-flash", None).await.unwrap();
     let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.prompts()[1]["body"].get("variant"), None);
+    assert_eq!(lab.switches()[1], json!({"model":{"id":"deepseek-flash","providerID":"deepseek"}}), "the same model, without the variant");
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
     lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
 
@@ -941,7 +952,7 @@ async fn a_variant_the_chosen_model_lists_goes_with_the_next_messages() {
     lab.control("mode", json!({"providers":providers})).await;
     let gone = lab.send("c3", "third").await.unwrap_err().to_string();
     assert!(gone.contains("所选变体 max") && gone.contains("没有发送"), "{gone}");
-    assert_eq!(lab.prompts().len(), 2, "nothing was sent");
+    assert_eq!((lab.prompts().len(), lab.switches().len()), (2, 2), "nothing was sent or switched");
     assert!(lab.detail().message_receipts.iter().all(|r| r.input.client_message_id != "c3"), "no receipt was recorded");
     // What a variant sets (here, a fake key among its options) is nowhere in Core's data.
     assert_eq!(holds_a_secret(&lab.dir.path().join("data")), None);
@@ -1015,19 +1026,23 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     let receipt = send("c1", "look", &both).await.unwrap();
     assert_eq!(receipt.status, "accepted");
     let first = receipt.turn_id.clone().unwrap();
-    let parts = lab.prompts()[0]["body"]["parts"].as_array().unwrap().clone();
-    assert_eq!((parts.len(), &parts[0]), (3, &json!({"type":"text","text":"look"})));
-    for (part, id) in parts[1..].iter().zip(&both) {
-        assert_eq!((&part["type"], &part["mime"], &part["filename"]), (&json!("file"), &json!("image/png"), &json!(id)));
+    // 2.x's prompt (T-32 slice 4a): the text, then each image as a `data:` URI under its ID.
+    let body = lab.prompts()[0]["body"].clone();
+    assert_eq!(body["text"], "look");
+    let parts = body["files"].as_array().unwrap().clone();
+    assert_eq!(parts.len(), 2);
+    for (part, id) in parts.iter().zip(&both) {
+        assert!(part["uri"].as_str().unwrap().starts_with("data:image/png;base64,"), "{part}");
+        assert_eq!(part["name"], json!(id));
     }
     let inline = |part: &Value| {
         use base64::Engine;
-        let data = part["url"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();
+        let data = part["uri"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();
         base64::engine::general_purpose::STANDARD.decode(data).unwrap()
     };
     let saved = lab.dir.path().join("data/input-images").join(ID).canonicalize().unwrap();
-    assert_eq!(inline(&parts[1]), std::fs::read(saved.join(&small)).unwrap(), "a small image as it was saved");
-    let fitted = image::load_from_memory(&inline(&parts[2])).unwrap();
+    assert_eq!(inline(&parts[0]), std::fs::read(saved.join(&small)).unwrap(), "a small image as it was saved");
+    let fitted = image::load_from_memory(&inline(&parts[1])).unwrap();
     assert_eq!((fitted.width(), fitted.height()), (2000, 500), "a wide one fitted as for Claude");
     let shown = |id: &str| json!({"type":"localImage","path":saved.join(id)});
     let d = lab.detail();
@@ -1075,10 +1090,10 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     lab.control("reply", json!({"sessionID":session,"text":"Seen."})).await;
     lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
 
-    // Images alone: no empty text part before them.
+    // Images alone: an empty text, as 2.x's prompt takes it.
     let second = send("c2", "", &both[1..]).await.unwrap().turn_id.unwrap();
-    let parts = lab.prompts()[1]["body"]["parts"].as_array().unwrap().clone();
-    assert_eq!((parts.len(), &parts[0]["filename"]), (1, &json!(wide)));
+    let body = lab.prompts()[1]["body"].clone();
+    assert_eq!((&body["text"], body["files"].as_array().unwrap().len(), &body["files"][0]["name"]), (&json!(""), 1, &json!(wide)));
     assert_eq!(items(turn(&lab.detail(), &second), "userMessage")[0]["content"], json!([shown(&wide)]));
     lab.control("reply", json!({"sessionID":session,"text":"Seen."})).await;
     lab.until("completion", |d| turn(d, &second)["status"] == "completed").await;
@@ -1278,8 +1293,9 @@ async fn a_message_added_while_opencode_works_joins_the_running_turn_once() {
     assert_eq!(joined["content"], json!([{"type":"text","text":"Also run the tests"}]));
     let prompts = lab.prompts();
     assert_eq!(prompts.len(), 2);
-    assert_eq!(prompts[1]["body"], json!({"messageID":message,"parts":[{"type":"text","text":"Also run the tests"}],
-        "model":{"providerID":"deepseek","modelID":"deepseek-flash"},"variant":"max"}));
+    assert_eq!(prompts[1]["body"], json!({"id":message,"text":"Also run the tests"}));
+    assert_eq!(lab.switches(), [json!({"model":{"id":"deepseek-flash","providerID":"deepseek","variant":"max"}})],
+        "made the session's once, before the first message: the added one finds it so");
     let kinds = journal(&lab);
     let requested = kinds.iter().position(|k| k == "opencode/inputRequested").unwrap();
     let confirmed = kinds.iter().position(|k| k == "opencode/inputConfirmed").unwrap();
@@ -1352,7 +1368,7 @@ async fn an_added_message_opencode_refuses_or_never_confirms_is_not_sent_again()
 
     // Refused (HTTP 400): rejected; the Turn goes on without it.
     let mut fail = serde_json::Map::new();
-    fail.insert(format!("/session/{session}/prompt_async"), json!(400));
+    fail.insert(format!("/api/session/{session}/prompt"), json!(400));
     lab.control("mode", json!({"fail":fail})).await;
     let refused = lab.add("c2", "Refused", &first).await.unwrap();
     assert_eq!(refused.status, "rejected", "{refused:?}");
@@ -1390,7 +1406,7 @@ async fn an_added_message_opencode_refuses_or_never_confirms_is_not_sent_again()
     let kept = lab.add("c5", "Kept", &second).await.unwrap();
     assert_eq!((kept.status.as_str(), kept.turn_id.as_deref()), ("accepted", Some(second.as_str())), "{kept:?}");
     let mut fail = serde_json::Map::new();
-    fail.insert(format!("/session/{session}/prompt_async"), json!(400));
+    fail.insert(format!("/api/session/{session}/prompt"), json!(400));
     lab.control("mode", json!({"fail":fail,"failMessageReads":true})).await;
     let unread = lab.add("c6", "Unread", &second).await.unwrap();
     assert_eq!(unread.status, "uncertain", "{unread:?}");
@@ -1487,7 +1503,7 @@ fn usage_of(d: &AgentDetail) -> Option<(u64, u64, String, bool)> {
 
 /// How often Core read OpenCode's configured providers.
 fn providers_reads(lab: &Lab) -> usize {
-    lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/config/providers").count()
+    lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/api/model").count()
 }
 
 /// A new message, and OpenCode's answer to it with `info` (its tokens, model
@@ -1669,7 +1685,7 @@ async fn context_usage_is_fresh_again_only_from_a_newer_answer_to_the_latest_inp
 
     // A new input while the read is under way: the answer that asked for it isn't measured.
     listing("deepseek-late", 3000).await;
-    lab.control("mode", json!({"slow":{"/config/providers":1.0}})).await;
+    lab.control("mode", json!({"slow":{"/api/model":1.0}})).await;
     let late = json!({"providerID":"deepseek","modelID":"deepseek-late","tokens":{"total":60}});
     answered(&lab, "c7", late).await;
     let next = lab.send("c8", "next").await.unwrap().turn_id.unwrap();
@@ -1752,7 +1768,7 @@ async fn context_usage_an_answer_waiting_for_the_catalog_yields_to_a_newer_one()
     slow["id"] = json!("deepseek-slow");
     slow["limit"]["context"] = json!(5000);
     deepseek["models"]["deepseek-slow"] = slow;
-    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
+    lab.control("mode", json!({"providers":providers,"slow":{"/api/model":1.0}})).await;
     lab.control("reply", json!({"sessionID":session,"text":"Slow.","idle":false,
         "info":{"providerID":"deepseek","modelID":"deepseek-slow","tokens":{"total":500}}})).await;
     lab.control("reply", json!({"sessionID":session,"text":"Done.","info":flash(json!({"total":-1}))})).await;
@@ -1824,7 +1840,7 @@ async fn context_usage_an_answer_read_again_after_a_resync_never_measures() {
     waiting["id"] = json!("deepseek-wait");
     waiting["limit"]["context"] = json!(4000);
     deepseek["models"]["deepseek-wait"] = waiting;
-    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":1.0}})).await;
+    lab.control("mode", json!({"providers":providers,"slow":{"/api/model":1.0}})).await;
     answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-wait","tokens":{"total":500}})).await;
     // A new Turn while the read is under way: the waiting answer is dropped.
     let third = lab.send("c3", "next").await.unwrap().turn_id.unwrap();
@@ -1895,7 +1911,7 @@ async fn context_usage_a_replayed_summary_leaves_a_newer_waiting_answer_waiting(
     waiting["id"] = json!("deepseek-wait");
     waiting["limit"]["context"] = json!(4000);
     deepseek["models"]["deepseek-wait"] = waiting;
-    lab.control("mode", json!({"providers":providers,"slow":{"/config/providers":3.0}})).await;
+    lab.control("mode", json!({"providers":providers,"slow":{"/api/model":3.0}})).await;
     let (second, _) = answered(&lab, "c2", json!({"providerID":"deepseek","modelID":"deepseek-wait","tokens":{"total":500}})).await;
 
     // The stream breaks; the resync replays the summary while the read is under way.
@@ -2290,6 +2306,60 @@ async fn a_whole_read_in_mid_step_keeps_the_text_streamed_so_far() {
     }
     assert!(resyncs(&lab) > before, "read whole");
     assert_eq!(text(&lab.detail()), Some(json!("Hello")), "the text streamed so far is kept");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// OpenCode 2.x's own permission request and form (T-32 slice 4a): shown at
+/// once with why Yuzuno can't answer them yet, so their run is seen to wait
+/// on them, and an answer is refused before anything is sent.
+#[tokio::test]
+async fn a_2x_request_is_shown_waiting_for_an_answer_yuzuno_cannot_give_yet() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    lab.control("event", json!({"type":"permission.asked","properties":{"id":"per_v2","sessionID":session,"action":"bash","resources":["ls"]}})).await;
+    lab.control("event", json!({"type":"form.created","properties":{"form":{"id":"frm_v2","sessionID":session,"title":"Pick one",
+        "fields":[{"key":"a","type":"string"}]}}})).await;
+    let d = lab.until("both requests", |d| d.pending.len() == 2).await;
+    assert_eq!(d.agent.status, "waiting");
+    for p in &d.pending {
+        let note = p.params["_opencodeNotYet"].as_str().unwrap_or_default();
+        assert!(note.contains("not yet on OpenCode 2.x") && note.contains("只能中断这一轮"), "shown waiting for an answer Yuzuno can't give yet: {p:?}");
+        assert_eq!(p.params["turnId"], running.as_str());
+        let refused = lab.ws.respond(&p.id, json!({"decision":"reject"})).await.unwrap_err().to_string();
+        assert!(refused.contains("not yet on OpenCode 2.x"), "{refused}");
+    }
+    assert!(lab.posts("/permission/").is_empty() && lab.posts("/question/").is_empty(), "no answer was sent");
+    // 2.x's form ends as Core's question does: no longer waiting.
+    lab.control("event", json!({"type":"form.cancelled","properties":{"id":"frm_v2","sessionID":session}})).await;
+    lab.until("the form's end", |d| d.pending.iter().all(|p| p.params["id"] != "frm_v2")).await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A shell command run in OpenCode while a Turn runs (T-32 slice 4a, D2):
+/// that Turn's command item, read whole the same; it answers nothing.
+#[tokio::test]
+async fn a_shell_command_shows_in_its_turn_as_a_command_item_live_and_read_whole() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    let shell = lab.control("shell", json!({"sessionID":session,"command":"ls","output":"a.txt\n"})).await;
+    let shell = shell.as_str().unwrap().to_owned();
+    let item = |d: &AgentDetail| turn(d, &running)["items"].as_array().into_iter().flatten().find(|i| i["id"] == shell.as_str()).cloned();
+    let d = lab.until("the command item", |d| item(d).is_some_and(|i| i["status"] == "completed")).await;
+    let live = item(&d).unwrap();
+    assert_eq!((&live["type"], &live["command"], &live["aggregatedOutput"], &live["exitCode"]),
+        (&json!("commandExecution"), &json!("ls"), &json!("a.txt\n"), &json!(0)), "shown as a command item: {live}");
+    let before = resyncs(&lab);
+    lab.control("drop", json!({})).await;
+    for _ in 0..400 {
+        if resyncs(&lab) > before { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(resyncs(&lab) > before, "read whole");
+    let d = lab.detail();
+    assert_eq!(item(&d), Some(live), "read whole as live");
+    assert_eq!(turn(&d, &running)["status"], "inProgress", "a shell command answers nothing");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
