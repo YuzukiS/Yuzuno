@@ -474,7 +474,7 @@ impl Workspace {
         let at = now();
         Ok(AgentDetail {
             agent: crate::model::Agent {
-                id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, project_id: None,
+                id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, project_id: None, kind: None,
                 cwd: frozen.cwd.clone(), model: source.model.clone(), settings: source.settings.clone(), color: source.color.clone(),
                 harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()), thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,

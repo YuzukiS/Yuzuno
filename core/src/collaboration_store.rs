@@ -134,6 +134,10 @@ impl Store {
         // All stored relationships and receipts retain the original UUID. The
         // public reference is the durable SQLite sequence, never a second task.
         let input = normalize_task_input(&tx, operation, input)?;
+        // What GitHub said of the materials' SHAs comes from the runtime
+        // (commit_sha::resolve_materials, T-31), not the caller, and is no part
+        // of the request a requestId replays: it says when it was asked.
+        let (input, sha_check) = take_sha_check(operation, input);
         let (author, mut source) = actor_context(self, &tx, actor)?;
         if let (None, Some(gui_source)) = (actor, gui_source) {
             source = gui_source;
@@ -196,13 +200,13 @@ impl Store {
             "task_get" => task_get(&tx, &input)?,
             "task_result_get" => result_outcome::get(&tx, &input)?,
             "task_research_get" => research::get(&tx, &input)?,
-            "task_create" => task_create(self, &tx, &author, &source, &input)?,
-            "task_update" => task_update(self, &tx, &author, &source, &input)?,
+            "task_create" => task_create(self, &tx, &author, &source, &input, &sha_check)?,
+            "task_update" => task_update(self, &tx, &author, &source, &input, &sha_check)?,
             "task_claim" => task_claim(&tx, &author, &source, &input)?,
             "task_comment" => task_comment(&tx, &author, &source, &input)?,
             "task_submit_result" => task_submit_result(self, &tx, &author, &source, &input)?,
             "task_result_ack" => result_ack::acknowledge(&tx, &author, &input)?,
-            "task_dispatch" => task_dispatch(self, &tx, &author, &source, &input)?,
+            "task_dispatch" => task_dispatch(self, &tx, &author, &source, &input, &sha_check)?,
             "delivery_get" | "delivery_enable" | "delivery_continue" | "delivery_stop" => crate::delivery::store::call(self,&tx,&author,&source,operation,&input)?,
             _ => bail!("unknown_operation: {operation}"),
         };
@@ -356,6 +360,16 @@ pub(crate) fn task_live(db: &Connection, reference: &str) -> Result<Option<Value
     let Ok((id, _)) = task_key(db, reference) else { return Ok(None) };
     let raw: Option<String> = db.query_row("SELECT data FROM collaboration_tasks WHERE id=?1", [&id], |r| r.get(0)).optional()?;
     raw.map(|raw| Ok(serde_json::from_str::<compact::Row>(&raw)?.live())).transpose()
+}
+
+/// The runtime's shaCheck, taken out of a task_create, task_update or
+/// task_dispatch input (T-31); null for any other call, which keeps its input.
+fn take_sha_check(operation: &str, mut input: Value) -> (Value, Value) {
+    if !matches!(operation, "task_create" | "task_update" | "task_dispatch") {
+        return (input, Value::Null);
+    }
+    let check = input.as_object_mut().and_then(|o| o.remove("shaCheck")).unwrap_or(Value::Null);
+    (input, check)
 }
 
 fn normalize_task_input(db: &Connection, operation: &str, mut input: Value) -> Result<Value> {
@@ -708,10 +722,17 @@ pub(crate) fn activity(
 }
 
 fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
-    allowed(input, &["includeClosed"])?;
+    allowed(input, &["includeClosed", "kind"])?;
     let include_closed = boolean(input, "includeClosed", false)?;
+    // Lead, executor or standing (T-33); absent lists every kind.
+    let only = optional_text(input, "kind", 32)?;
+    ensure!(
+        only.as_deref().is_none_or(|kind| [crate::agent_roles::LEAD, crate::agent_roles::EXECUTOR, crate::agent_roles::STANDING].contains(&kind)),
+        "invalid_input: kind must be lead, executor or standing"
+    );
     let memberships = crate::projects::agent_projects(db)?;
     let labels = crate::projects::project_labels(db)?;
+    let kinds = crate::agent_roles::kinds(db)?;
     let mut q = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
     let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut peers = Vec::new();
@@ -719,6 +740,10 @@ fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
         let Some(brief) = store.brief_in(db, &id)? else { continue };
         let a = brief.agent;
         if !include_closed && a.closed_at.is_some() {
+            continue;
+        }
+        let kind = kinds.get(&a.id).copied().unwrap_or(crate::agent_roles::STANDING);
+        if only.as_deref().is_some_and(|only| only != kind) {
             continue;
         }
         let project = memberships.get(&a.id).map(|id| {
@@ -729,13 +754,13 @@ fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
             json!({"id":a.id,"name":a.name,"harness":a.harness,"status":a.status,
             "closedAt":a.closed_at,"cwd":a.cwd,"connectionState":a.connection_state,
             "machine":a.remote.map(|r| r.machine.name).unwrap_or_else(|| "Local".into()),
-            "project":project}),
+            "project":project,"kind":kind}),
         );
     }
     Ok(json!({"peers":peers}))
 }
 
-fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value) -> Result<Value> {
+fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value, sha_check: &Value) -> Result<Value> {
     allowed(
         input,
         &[
@@ -749,7 +774,8 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         ],
     )?;
     let title = required_text(input, "title", 300)?;
-    let materials = input.get("materials").map(|v| dispatch_materials::validate(db, v)).transpose()?;
+    let materials = input.get("materials").map(|v| dispatch_materials::validate(db, v)).transpose()?
+        .map(|m| dispatch_materials::with_check(m, sha_check));
     // Absent: the creating Agent's project at this moment (the user has none).
     // An archived project takes nothing new, so the default is then no project.
     let mut notice = None;
@@ -822,10 +848,20 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     if let Some(notice) = notice {
         output["projectNotice"] = notice;
     }
+    let registered = output["activity"]["changes"]["materials"].clone();
+    receipt_sha_check(&mut output, &registered);
     Ok(output)
 }
 
-fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value) -> Result<Value> {
+/// A receipt says what GitHub said of the materials' SHAs (T-31), where
+/// they name any.
+fn receipt_sha_check(output: &mut Value, materials: &Value) {
+    if let Some(check) = materials.get("shaCheck").filter(|c| c.is_object()) {
+        output["shaCheck"] = check.clone();
+    }
+}
+
+fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value, sha_check: &Value) -> Result<Value> {
     allowed(input, &["requestId", "taskId", "expectedVersion", "patch"])?;
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
     check_version(&task, input)?;
@@ -851,14 +887,19 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     );
     let mut changes = patch.clone();
     if let Some(materials) = patch.get("materials") {
-        changes["materials"] = dispatch_materials::validate(db, materials)?;
+        changes["materials"] = dispatch_materials::with_check(dispatch_materials::validate(db, materials)?, sha_check);
     }
     // Shares this task's version check, version bump and activity record.
-    if let Some(project) = project_input(db, patch)? {
+    let moved = project_input(db, patch)?;
+    if let Some(project) = &moved {
         crate::projects::set_task_project(db, &task.id, project.as_deref())?;
     }
-    if let Some(materials) = changes.get("materials") {
-        dispatch_materials::check_shas(db, &task.id, materials)?;
+    match changes.get("materials") {
+        Some(materials) => dispatch_materials::check_shas(db, &task.id, materials)?,
+        // A move to another Project keeps the registered SHAs only where their
+        // repository is still linked (T-29's rule, T-31).
+        None if moved.is_some() => dispatch_materials::check_shas(db, &task.id, &dispatch_materials::registered(db, &task.id)?["value"])?,
+        None => {}
     }
     if patch.get("title").is_some() {
         task.title = required_text(patch, "title", 300)?;
@@ -905,7 +946,9 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         source,
         json!({"changes":changes,"taskVersion":task.version,"dispatchInvalidatedAt":task.dispatch.as_ref().and_then(|d| d.invalidated_at.as_deref())}),
     )?;
-    Ok(json!({"task":task,"activity":event}))
+    let mut output = json!({"task":task,"activity":event});
+    receipt_sha_check(&mut output, &changes["materials"]);
+    Ok(output)
 }
 
 fn task_claim(db: &Connection, actor: &TaskActor, source: &Value, input: &Value) -> Result<Value> {
@@ -1074,6 +1117,7 @@ fn task_dispatch(
     actor: &TaskActor,
     source: &Value,
     input: &Value,
+    sha_check: &Value,
 ) -> Result<Value> {
     allowed(
         input,
@@ -1105,7 +1149,7 @@ fn task_dispatch(
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
     task.status = "doing".into();
     save_task(db, &mut task, actor)?;
-    let materials = dispatch_materials::snapshot(db, &task, input)?;
+    let materials = dispatch_materials::snapshot(db, &task, input, sha_check)?;
     let body = dispatch_materials::body(&materials);
     let message = create_message(
         store,
@@ -1123,7 +1167,10 @@ fn task_dispatch(
         source,
         json!({"changes":{"assigneeAgentId":recipient_id,"status":"doing"},"messageId":message["id"],"dispatch":task.dispatch,"materials":materials}),
     )?;
-    Ok(json!({"task":task,"message":message,"activity":event}))
+    let mut output = json!({"task":task,"message":message,"activity":event});
+    let effective = output["activity"]["materials"]["effective"].clone();
+    receipt_sha_check(&mut output, &effective);
+    Ok(output)
 }
 
 fn task_list(db: &Connection, input: &Value) -> Result<Value> {
@@ -1470,7 +1517,7 @@ pub fn tool_definitions() -> Vec<Value> {
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
     };
     vec![
-        definition("peers_list", "List existing Workspace Agents, their project and native runtime state. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false}}), &[]),
+        definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (a lead of its Project, set by the user), executor (made by Core for one task) or standing (made by the user); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
         definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Task IDs are shared across projects.", json!({}), &[]),
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
@@ -1641,7 +1688,7 @@ mod tests {
             // UUID relationship columns, and UUID idempotency response JSON.
             let db = store.db.write().unwrap();
             let (user, source) = actor_context(&store, &db, None).unwrap();
-            let mut created = task_create(&store, &db, &user, &source, &create_input).unwrap();
+            let mut created = task_create(&store, &db, &user, &source, &create_input, &Value::Null).unwrap();
             let uuid = created["task"]["id"].as_str().unwrap().to_owned();
             let result = json!({"summary":format!("Recorded ID: {uuid}"),
                 "links":[{"label":uuid,"url":format!("https://example.com/results/{uuid}"),"id":uuid,"taskId":uuid}],

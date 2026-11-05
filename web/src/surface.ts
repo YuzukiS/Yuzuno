@@ -10,6 +10,19 @@ function tokenMs(name: string): number {
 }
 
 /**
+ * Fades `element` in once, opacity only, over the `duration` token, for what
+ * is not drawn by React (T-19 CV:CO-09, the slash menu CodeMirror draws).
+ * Under reduced motion, or without the Web Animations API, nothing plays.
+ */
+export function fadeIn(element: HTMLElement, duration: "micro" | "small" | "medium"): Animation | null {
+  if (typeof element.animate !== "function" || window.matchMedia?.(REDUCED).matches) return null;
+  const ms = tokenMs(`--motion-${duration}`);
+  if (!ms) return null;
+  const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
+  return element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing });
+}
+
+/**
  * A surface coming in fades in (T-19 M6): Home as it opens, a conversation as
  * it opens or another Agent's takes its place. Opacity only, from before the
  * first paint, so nothing in it moves: a conversation's rows, where it is read

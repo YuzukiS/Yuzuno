@@ -477,7 +477,7 @@ impl Workspace {
         let mut detail = AgentDetail {
             agent: Agent {
                 id: uuid::Uuid::new_v4().to_string(), name: input.name.trim().into(), goal: String::new(),
-                work_summary: None, project_id: None, cwd, model, settings, color: "sage".into(), harness: "codex".into(),
+                work_summary: None, project_id: None, kind: None, cwd, model, settings, color: "sage".into(), harness: "codex".into(),
                 claude_session_id: None, thread_id: Some(input.thread_id), status: "offline".into(),
                 opencode_session_id: None,
                 closed_at: None, disconnected_at: None, disconnect_unconfirmed: false, created_at: now(), updated_at: now(), unread_count: 0, pending_count: 0,
@@ -849,7 +849,7 @@ impl Workspace {
         let agent_id = uuid::Uuid::new_v4().to_string();
         let mut detail = AgentDetail {
             agent: Agent {
-                id: agent_id.clone(), name: name.into(), goal: String::new(), work_summary: None, project_id: None,
+                id: agent_id.clone(), name: name.into(), goal: String::new(), work_summary: None, project_id: None, kind: None,
                 cwd: source.agent.cwd.clone(), model: model?, settings: source.agent.settings.clone(),
                 color: source.agent.color.clone(), harness: "codex".into(), claude_session_id: None, opencode_session_id: None,
                 thread_id: Some(fork_thread.clone()), status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
