@@ -192,3 +192,73 @@ fn the_jobs_that_passed_a_cancelled_head_still_count_against_the_next_one() {
         "{}", read(&s, &next)["reason"]);
     assert!(read(&s, &larger)["reason"].as_str().unwrap().starts_with("Waiting behind next head"));
 }
+
+/// What provenance's report says of one job's attempt.
+fn report_of(job: &Value) -> String {
+    let extent = Ok(json!({"segments":1,"oldestOffset":0,"totalBytes":10,"truncated":false}));
+    let known = super::provenance::Known::host(std::path::Path::new("/data"), None);
+    super::provenance::export(None, &[job.clone()], &[extent], known)["report"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_retried_stage_that_passed_a_head_starts_its_next_attempt_unmarked_in_its_own_turn() {
+    // Review 8a776cd8: the mark belongs to the one start that passed a head.
+    let (_dir, s) = setup();
+    s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 10240, swap_mi_b: 0 }).unwrap();
+    let running = job(&s, "running", 2000);
+    assert_eq!(start(&s).unwrap()["id"], running["id"]);
+    // 8,500 MiB of the 8,176 free: the head; 1,740 MiB may run beside it.
+    let head = job(&s, "head", 8436);
+    // One stage whose exit 75 is retried.
+    let input: super::runs::RunSubmit = serde_json::from_value(json!({"requestId":"run","taskId":"T-1","name":"Retried run",
+        "stages":[{"key":"api","cwd":"/workspace","argv":["/usr/bin/true"],"resources":{"cpuMillis":1000,"memoryMiB":1000,"swapMiB":0},
+            "retry":{"attempts":2,"exitCodes":[75]}}]})).unwrap();
+    let prepared = input.stages.iter().map(|stage| {
+        let submit = input.submit(stage);
+        let snapshot = json!({"cwd":"/workspace","git":{"head":"abc"},"files":[]});
+        let identity = super::runs::spec_identity(&submit, &snapshot, stage.needs());
+        super::runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+    }).collect();
+    let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":16000,"memoryMiB":40960,"swapMiB":0}});
+    s.create_run(Some("a"), input, prepared, machine, json!({"bootId":"boot"})).unwrap();
+    let first = start(&s).unwrap();
+    assert_eq!(first["admission"]["passed"]["jobId"], head["id"], "the first attempt passes the head");
+    s.update_job_evidence(first["id"].as_str().unwrap(), json!({"jobId":first["id"],"attempt":first["attempt"],"status":"failed",
+        "reason":"exit-code","evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"75"}}})).unwrap();
+    let retry: String = s.db.read().unwrap().query_row(
+        "SELECT id FROM local_jobs WHERE json_extract(data,'$.retryOf')=?1", [first["id"].as_str().unwrap()], |r| r.get(0)).unwrap();
+    let queued = s.job(&retry).unwrap();
+    assert_eq!(queued["status"], "queued");
+    assert!(queued.get("admission").is_none(), "the retry is not marked with the head its first attempt passed: {}", queued["admission"]);
+    assert!(!report_of(&queued).contains("Started ahead of"));
+    // The running job ends: the head starts, then the retry in its own turn.
+    done(&s, &running);
+    assert_eq!(start(&s).unwrap()["id"], head["id"]);
+    let again = start(&s).expect("the retry starts in its turn");
+    assert_eq!(again["id"], retry.as_str());
+    assert!(again.get("admission").is_none(), "{}", again["admission"]);
+    assert_eq!(passers(&s), 0, "nothing running counts as having passed a head");
+    assert!(!report_of(&again).contains("Started ahead of"), "{}", report_of(&again));
+}
+
+#[test]
+fn a_job_reserved_again_in_its_own_turn_keeps_no_mark_from_an_earlier_reservation() {
+    let (_dir, s) = setup();
+    s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 10240, swap_mi_b: 0 }).unwrap();
+    let running = job(&s, "running", 2000);
+    assert_eq!(start(&s).unwrap()["id"], running["id"]);
+    let head = job(&s, "head", 8436);
+    let small = job(&s, "small", 1000);
+    assert_eq!(start(&s).unwrap()["admission"]["passed"]["jobId"], head["id"], "it passes the head first");
+    // Back in the queue, as a reservation released before launch leaves it,
+    // and the head is gone: the next reservation is in its own turn.
+    let mut back = read(&s, &small);
+    back["status"] = json!("queued");
+    back["reserved"] = json!(false);
+    super::store::save(&s.db.write().unwrap(), &back).unwrap();
+    s.request_job_cancel(None, head["id"].as_str().unwrap()).unwrap();
+    let again = start(&s).expect("it starts in its turn");
+    assert_eq!(again["id"], small["id"]);
+    assert!(again.get("admission").is_none(), "a reservation in its own turn keeps no mark from an earlier one: {}", again["admission"]);
+    assert_eq!(passers(&s), 0);
+}

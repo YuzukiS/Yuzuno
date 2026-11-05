@@ -1004,13 +1004,17 @@ impl Store {
             job["startedAt"] = json!(now());
             job["reason"] = json!("Capacity reserved; verifying and launching one attempt");
             // Started ahead of the blocked head: marked with it, so the jobs
-            // that pass it stay within what its need leaves (T-38).
+            // that pass it stay within what its need leaves (T-38). Each
+            // reservation decides the mark afresh: one in its own turn keeps
+            // none from an earlier reservation (review 8a776cd8).
             if let Some(head) = &head {
                 let room = head.room(&free);
                 job["admission"] = json!({"passed": {"jobId": head.id, "name": head.name, "waits": head.waits,
                     "headNeed": head.need, "room": room, "need": need, "at": now()}});
                 job["reason"] = json!(format!("Capacity reserved ahead of {}, which waits for {}: this job's {} fits in the {} left beside it; verifying and launching one attempt",
                     head.name, head.waits, triple(&need), triple(&room)));
+            } else if let Some(fields) = job.as_object_mut() {
+                fields.remove("admission");
             }
             save(&tx, &job)?;
             super::queue::served(&tx, &candidate.project)?;
