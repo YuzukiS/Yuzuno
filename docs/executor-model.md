@@ -150,9 +150,10 @@ only the Workspace's applies. Only you change them.
 - **Connect on a queued executor** is refused, with its place in the queue,
   and changes nothing about it. To run more at once, raise the limit: the next
   ones start right away.
-- **A start that fails.** If the runtime refuses to start, Core closes the
-  executor and keeps it, and its slot goes to the next. If Core can't tell
-  whether it started, the executor keeps its slot, shown as starting, until
+- **A start that fails.** If the runtime refuses to start a new executor,
+  Core closes it and keeps it, and its slot goes to the next. If Core can't
+  tell whether it started, or a reopened executor fails to start, the
+  executor stays open and keeps its slot, shown as starting with why, until
   you reconnect or close it.
 - **After a restart.** An executor that was starting waits again, at its
   place; one that may have started keeps its slot, and so do running ones.

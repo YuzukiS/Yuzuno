@@ -20,9 +20,10 @@
 //! (`executors.slots.machine:<id>`); an unset one adds no limit of its own.
 //! They count executors only, apart from the Jobs' machine slots.
 //!
-//! A start the runtime refused closes the executor (kept, to see what
+//! A fresh executor's start the runtime refused closes it (kept, to see what
 //! happened) and frees its slot. One whose outcome is unknown (its runtime
-//! may be running) keeps its slot as `starting`, and waits for the user.
+//! may be running), or a reopened executor's that failed, keeps its slot as
+//! `starting` with why, open, and waits for the user.
 use crate::{
     jobs::queue::{self, Queued},
     model::now,
@@ -31,7 +32,7 @@ use crate::{
     updates::admission::Permit,
     workspace::Workspace,
 };
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use axum::{extract::{Path, Query, State as AxumState}, routing::{get, put}, Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
@@ -63,6 +64,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             state TEXT NOT NULL CHECK(state IN ('waiting','starting','running','released')),
             -- Since when it is in this state, and since when it first waited (the queue's aging).
             since TEXT NOT NULL, queued_at TEXT NOT NULL,
+            -- Its starts from the queue: 1 for a fresh dispatch, more once reopened.
             attempt INTEGER NOT NULL DEFAULT 1, reason TEXT);
         CREATE INDEX IF NOT EXISTS executor_slots_task ON executor_slots(task_id);
         CREATE INDEX IF NOT EXISTS executor_slots_state ON executor_slots(state);
@@ -296,12 +298,13 @@ pub(crate) fn follow_agent(db: &Connection, agent: &crate::model::Agent, kind: &
         let machine = agent.remote.as_ref().map_or("local", |remote| remote.machine.id.as_str());
         let at = now();
         db.execute(
-            "UPDATE executor_slots SET state='waiting',seq=?2,since=?3,queued_at=?3,reason=NULL WHERE agent_id=?1 AND state='released'",
+            "UPDATE executor_slots SET state='waiting',seq=?2,since=?3,queued_at=?3,reason=NULL,attempt=attempt+1
+             WHERE agent_id=?1 AND state='released'",
             params![agent.id, seq, at],
         )?;
         db.execute(
-            "INSERT INTO executor_slots(agent_id,seq,task_id,project_id,machine_id,template_id,state,since,queued_at)
-             SELECT r.agent_id, ?2, COALESCE(r.task_id,''), r.project_id, ?3, COALESCE(r.template_id,''), 'waiting', ?4, ?4
+            "INSERT INTO executor_slots(agent_id,seq,task_id,project_id,machine_id,template_id,state,since,queued_at,attempt)
+             SELECT r.agent_id, ?2, COALESCE(r.task_id,''), r.project_id, ?3, COALESCE(r.template_id,''), 'waiting', ?4, ?4, 2
              FROM agent_roles r WHERE r.agent_id=?1 AND r.kind='executor'
                AND NOT EXISTS(SELECT 1 FROM executor_slots s WHERE s.agent_id=?1)",
             params![agent.id, seq, machine, at],
@@ -380,16 +383,26 @@ impl Store {
         Ok(())
     }
 
-    /// Its start ended without the runtime: `released` with why (the caller
-    /// closes it), or, when the runtime may be running after all, still
-    /// holding its slot as `starting` with why, for the user.
-    pub(crate) fn executor_slot_not_started(&self, agent: &str, held: bool, why: &str) -> Result<()> {
-        self.db.write()?.execute(
-            "UPDATE executor_slots SET state=CASE WHEN ?3 THEN 'starting' ELSE 'released' END,since=?4,reason=?2
+    /// Its start ended without the runtime. A fresh dispatch's first start
+    /// is `released` with why, and the caller closes the executor (true).
+    /// One whose runtime may be running after all (`uncertain`), or a later
+    /// start (a reopened executor's), keeps its slot as `starting` with why,
+    /// open, for the user's Connect or Close (false).
+    pub(crate) fn executor_slot_not_started(&self, agent: &str, uncertain: bool, why: &str) -> Result<bool> {
+        let mut writer = self.db.write()?;
+        let tx = writer.transaction()?;
+        let attempt: Option<i64> = tx
+            .query_row("SELECT attempt FROM executor_slots WHERE agent_id=?1 AND state='starting'", [agent], |r| r.get(0))
+            .optional()?;
+        let Some(attempt) = attempt else { return Ok(false) };
+        let close = !uncertain && attempt <= 1;
+        tx.execute(
+            "UPDATE executor_slots SET state=CASE WHEN ?3 THEN 'released' ELSE 'starting' END,since=?4,reason=?2
              WHERE agent_id=?1 AND state='starting'",
-            params![agent, why, held, now()],
+            params![agent, why, close, now()],
         )?;
-        Ok(())
+        tx.commit()?;
+        Ok(close)
     }
 
     /// Refuses to start an executor waiting in the queue: only the scheduler
@@ -554,25 +567,27 @@ impl Workspace {
                 Ok(true) => {
                     let agent = id.clone();
                     ws.stored(move |store| store.executor_slot_started(&agent)).await
+                        .context("it started, and its slot could not be recorded")
                 }
                 // Already started, closed, or left to the user: the next pass settles it.
                 Ok(false) => Ok(()),
                 Err(error) => {
                     ws.failed(&id, &error).await;
                     // Its runtime may be running after all: the slot stays its, for the user.
-                    let held = ws.listed(&id).await.is_ok_and(|a| a.status == "uncertain");
+                    let uncertain = ws.listed(&id).await.is_ok_and(|a| a.status == "uncertain");
                     let (agent, why) = (id.clone(), format!("{error:#}"));
-                    let recorded = ws.stored(move |store| store.executor_slot_not_started(&agent, held, &why)).await;
-                    if !held {
-                        if let Err(closing) = ws.close_agent_admitted(&id, &permit).await {
-                            eprintln!("Executor {id}: its start failed, and it could not be closed: {closing:#}");
-                        }
+                    match ws.stored(move |store| store.executor_slot_not_started(&agent, uncertain, &why)).await {
+                        // A fresh dispatch's first start: closed, kept to see what happened.
+                        Ok(true) => ws.close_agent_admitted(&id, &permit).await.map(drop)
+                            .context("its start failed, and it could not be closed"),
+                        // A reopened executor stays open, as a failed reconnect leaves an Agent.
+                        Ok(false) => Ok(()),
+                        Err(error) => Err(error.context("its start failed, and its slot could not be recorded")),
                     }
-                    recorded
                 }
             };
             if let Err(error) = outcome {
-                eprintln!("Executor {id}: its slot could not be recorded: {error:#}");
+                eprintln!("Executor {id}: {error:#}");
             }
             drop(permit);
             ws.wake_executor_slots();

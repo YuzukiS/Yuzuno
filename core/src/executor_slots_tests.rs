@@ -116,7 +116,7 @@ fn a_close_releases_the_slot_with_it_and_a_reopen_queues_the_executor_again() {
     queued(&store, "a", None, "local");
     queued(&store, "b", None, "local");
     assert_eq!(started(&store), ["a"]);
-    store.executor_slot_not_started("a", true, "its start was not confirmed").unwrap();
+    assert!(!store.executor_slot_not_started("a", true, "its start was not confirmed").unwrap());
     close(&store, "a");
     assert_eq!(state(&store, "a"), ("released".into(), Some("closed".into())), "released with the close, before any pass");
     assert_eq!(started(&store), ["b"]);
@@ -128,6 +128,11 @@ fn a_close_releases_the_slot_with_it_and_a_reopen_queues_the_executor_again() {
     queued(&store, "c", None, "local");
     close(&store, "b");
     assert_eq!(started(&store), ["a"], "the reopened one, first in the queue");
+    // Its start fails: a reopened executor stays open and keeps its slot,
+    // as a failed reconnect leaves an Agent (R1 1ec1008a P3-2).
+    assert!(!store.executor_slot_not_started("a", false, "the runtime refused it").unwrap(),
+        "a reopened executor whose start fails is not closed");
+    assert_eq!(state(&store, "a"), ("starting".into(), Some("the runtime refused it".into())), "it keeps its slot, with why");
 
     // An executor from before slots, closed then reopened, waits too.
     agent(&store, "older");
@@ -137,6 +142,9 @@ fn a_close_releases_the_slot_with_it_and_a_reopen_queues_the_executor_again() {
     close(&store, "older");
     reopen(&store, "older");
     assert_eq!(state(&store, "older"), ("waiting".into(), None));
+    let attempt: i64 = store.db.read().unwrap()
+        .query_row("SELECT attempt FROM executor_slots WHERE agent_id='older'", [], |r| r.get(0)).unwrap();
+    assert_eq!(attempt, 2, "it started before slots existed: a later start, not a fresh dispatch's");
     assert_eq!(view(&store, "task-older").unwrap()["position"], 2, "behind c");
     // A plain Agent reopened gets no row.
     agent(&store, "standing");
@@ -224,13 +232,13 @@ fn a_refused_start_frees_its_slot_and_one_that_may_be_running_keeps_it() {
         queued(&store, id, None, "local");
     }
     assert_eq!(started(&store), ["a"]);
-    store.executor_slot_not_started("a", false, "the runtime refused it").unwrap();
+    assert!(store.executor_slot_not_started("a", false, "the runtime refused it").unwrap(), "a fresh dispatch's start: closed");
     assert_eq!(state(&store, "a"), ("released".into(), Some("the runtime refused it".into())));
     assert_eq!(started(&store), ["b"]);
-    store.executor_slot_not_started("b", true, "its start was not confirmed").unwrap();
+    assert!(!store.executor_slot_not_started("b", true, "its start was not confirmed").unwrap(), "it may be running: kept open");
     assert_eq!(state(&store, "b"), ("starting".into(), Some("its start was not confirmed".into())));
     assert!(started(&store).is_empty(), "it keeps its slot");
-    store.executor_slot_not_started("c", false, "not starting").unwrap();
+    assert!(!store.executor_slot_not_started("c", false, "not starting").unwrap());
     assert_eq!(state(&store, "c").0, "waiting", "only a starting slot is ended");
     connected(&store, "b");
     assert!(started(&store).is_empty());
@@ -247,7 +255,7 @@ fn a_restart_queues_unfinished_starts_again_and_counts_executors_from_before() {
         queued(&store, id, None, "local");
     }
     assert_eq!(started(&store), ["unfinished", "unknown", "running"]);
-    store.executor_slot_not_started("unknown", true, "its start was not confirmed").unwrap();
+    assert!(!store.executor_slot_not_started("unknown", true, "its start was not confirmed").unwrap());
     store.executor_slot_started("running").unwrap();
     let role = |id: &str| {
         agent(&store, id);
