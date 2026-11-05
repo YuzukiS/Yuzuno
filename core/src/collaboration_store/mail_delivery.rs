@@ -46,7 +46,8 @@ fn due(detail: &Value, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
 impl Store {
     /// [`notifications`] for a Job's or run's `notifications`.
     pub(crate) fn mail_notifications(&self, notifications: &Value) -> Result<Value> {
-        self::notifications(&self.db.read()?, notifications)
+        let db = self.db.read()?;
+        self::notifications(&db, notifications)
     }
 
     /// Puts refused wake-ups whose wait has passed back to pending (see the
@@ -67,7 +68,11 @@ impl Store {
             }
             Ok(out)
         };
-        if due_rows(&self.db.read()?)?.is_empty() {
+        let none_due = {
+            let db = self.db.read()?;
+            due_rows(&db)?.is_empty()
+        };
+        if none_due {
             return Ok(0);
         }
         let mut db = self.db.write()?;
