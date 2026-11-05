@@ -231,4 +231,56 @@ fn only_a_lead_of_the_tasks_project_or_the_user_may_dispatch_it_from_a_template(
     store.set_agent_project("lead", Some(&q)).unwrap();
     assert_eq!(check(&actor("agent", "lead"), &in_p), not_lead, "a lead moved away no longer leads the Project");
     assert_eq!(get(&store, &p).unwrap().lead_agent_ids, Vec::<String>::new());
+    // Nor does it lead where it went (R1 55e2e216): the user chose it for p only.
+    assert_eq!(check(&actor("agent", "lead"), &in_q), not_lead, "moved in, it does not lead");
+    assert_eq!(get(&store, &q).unwrap().lead_agent_ids, ["other"]);
+    assert_eq!(kind_of(&store, "lead"), STANDING);
+    assert_eq!(get(&store, &p).unwrap().version, 2, "the list it left changed version");
+}
+
+/// R1 55e2e216: a lead leads the Project it was chosen for and no other.
+/// Moved by an older Core, which keeps no marks, it leads nowhere until it is
+/// back in that Project; a save for its new Project names that one instead.
+/// Moved by this Core, even out of every Project, its mark ends.
+#[test]
+fn a_lead_leads_only_the_project_it_was_chosen_for_wherever_it_is_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    for id in ["a", "b"] {
+        agent(&store, id);
+    }
+    let p = project(&store, "Lab", &["a", "b"]);
+    let q = project(&store, "Other", &[]);
+    save(&store, &p, 0, vec!["a".into(), "b".into()]).unwrap();
+    let older_core_moves = |id: &str, to: &str| {
+        store.db.write().unwrap().execute("UPDATE project_agents SET project_id=?1 WHERE agent_id=?2", params![to, id]).unwrap();
+    };
+    let leads_of = |id: &str, project: &str| leads(&store.db.read().unwrap(), id, project).unwrap();
+
+    older_core_moves("a", &q);
+    assert_eq!(kind_of(&store, "a"), STANDING);
+    assert!(!leads_of("a", &q), "moved in, it does not lead");
+    assert!(!leads_of("a", &p), "moved away, it does not lead");
+    assert_eq!(get(&store, &q).unwrap().lead_agent_ids, Vec::<String>::new());
+    assert_eq!(get(&store, &p).unwrap().lead_agent_ids, ["b"]);
+    let marked = store.collaboration_call(None, "peers_list", json!({"kind":"lead"})).unwrap();
+    assert_eq!(marked["peers"].as_array().unwrap().iter().map(|peer| peer["id"].clone()).collect::<Vec<_>>(), [json!("b")]);
+    assert!(store.agents().unwrap().iter().find(|listed| listed.id == "a").unwrap().kind.is_none());
+    // Back in p, the user's choice for p holds again.
+    older_core_moves("a", &p);
+    assert_eq!(kind_of(&store, "a"), LEAD);
+    // In q again, the user makes it a lead of q: its row names q now.
+    older_core_moves("a", &q);
+    save(&store, &q, 0, vec!["a".into()]).unwrap();
+    assert!(leads_of("a", &q));
+    assert_eq!(get(&store, &p).unwrap().lead_agent_ids, ["b"]);
+
+    // This Core moving b out of every Project ends the mark: back in p, b is
+    // standing until chosen again, and p's list changed version.
+    let version = get(&store, &p).unwrap().version;
+    store.set_agent_project("b", None).unwrap();
+    assert_eq!(kind_of(&store, "b"), STANDING);
+    store.set_agent_project("b", Some(&p)).unwrap();
+    assert_eq!(kind_of(&store, "b"), STANDING, "moved back, it is not a lead until chosen again");
+    assert_eq!(get(&store, &p).unwrap(), Leads { version: version + 1, lead_agent_ids: vec![] });
 }

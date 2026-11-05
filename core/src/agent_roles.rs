@@ -33,9 +33,13 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS agent_roles(
             agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
             kind TEXT NOT NULL CHECK(kind IN ('lead','executor')),
+            -- The Project a lead was chosen for (R1 55e2e216): a lead leads it
+            -- only while it is a member there, never wherever it is moved.
+            project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
             template_id TEXT, task_id TEXT, dispatch_id TEXT,
             created_by TEXT, state TEXT, archived_at TEXT,
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            CHECK(kind!='lead' OR project_id IS NOT NULL));
         CREATE INDEX IF NOT EXISTS agent_roles_kind ON agent_roles(kind);
         CREATE TABLE IF NOT EXISTS project_lead_versions(
             project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -46,10 +50,15 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The Agent's kind: `lead`, `executor`, or `standing` when it has no row.
+/// The rows that hold now: every executor row, and a lead row only while its
+/// Agent is a member of the Project it was chosen for. A lead an older Core
+/// moved elsewhere (it keeps no such rows) leads nowhere, never its new Project.
+const HOLDING: &str = "(r.kind='executor' OR r.project_id=(SELECT p.project_id FROM project_agents p WHERE p.agent_id=r.agent_id))";
+
+/// The Agent's kind: `lead`, `executor`, or `standing` when no row holds.
 pub(crate) fn kind(db: &Connection, agent: &str) -> Result<&'static str> {
     let kind: Option<String> = db
-        .query_row("SELECT kind FROM agent_roles WHERE agent_id=?1", [agent], |r| r.get(0))
+        .query_row(&format!("SELECT r.kind FROM agent_roles r WHERE r.agent_id=?1 AND {HOLDING}"), [agent], |r| r.get(0))
         .optional()?;
     Ok(match kind.as_deref() {
         Some(LEAD) => LEAD,
@@ -60,7 +69,7 @@ pub(crate) fn kind(db: &Connection, agent: &str) -> Result<&'static str> {
 
 /// Every Agent's kind that is not standing, for listing them all at once.
 pub(crate) fn kinds(db: &Connection) -> Result<HashMap<String, &'static str>> {
-    let mut query = db.prepare("SELECT agent_id,kind FROM agent_roles")?;
+    let mut query = db.prepare(&format!("SELECT r.agent_id,r.kind FROM agent_roles r WHERE {HOLDING}"))?;
     let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     let mut kinds = HashMap::new();
     for row in rows {
@@ -76,11 +85,34 @@ pub(crate) fn listed_kind(db: &Connection, agent: &str) -> Result<Option<String>
     Ok(Some(kind(db, agent)?).filter(|kind| *kind != STANDING).map(str::to_owned))
 }
 
-/// Whether `agent` leads `project`: marked as a lead and a member of it.
-/// Phase 1's template dispatch is its first caller outside tests.
+/// Whether `agent` leads `project`: chosen as a lead of that Project and a
+/// member of it now. Phase 1's template dispatch is its first caller outside tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn leads(db: &Connection, agent: &str, project: &str) -> Result<bool> {
-    Ok(kind(db, agent)? == LEAD && crate::projects::agent_project(db, agent)?.as_deref() == Some(project))
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id
+         WHERE r.agent_id=?1 AND r.kind='lead' AND r.project_id=?2 AND p.project_id=?2)",
+        params![agent, project],
+        |r| r.get(0),
+    )?)
+}
+
+/// This Core changed `agent`'s Project to `now_in` (projects.rs): a lead of
+/// another Project stops leading it, and that Project's leads version moves on
+/// so a settings page that read the old list reloads before saving.
+pub(crate) fn membership_changed(db: &Connection, agent: &str, now_in: Option<&str>) -> Result<()> {
+    let led: Option<String> = db
+        .query_row("SELECT project_id FROM agent_roles WHERE agent_id=?1 AND kind='lead'", [agent], |r| r.get(0))
+        .optional()?;
+    if let Some(led) = led.filter(|led| Some(led.as_str()) != now_in) {
+        db.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead'", [agent])?;
+        db.execute(
+            "INSERT INTO project_lead_versions(project_id,version) VALUES(?1,1)
+             ON CONFLICT(project_id) DO UPDATE SET version=version+1",
+            [&led],
+        )?;
+    }
+    Ok(())
 }
 
 /// A Project's leads as the user set them, and the version a save checks.
@@ -98,7 +130,7 @@ fn leads_in(db: &Connection, project: &str) -> Result<Leads> {
         .unwrap_or(0);
     let mut query = db.prepare(
         "SELECT r.agent_id FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id
-         WHERE r.kind='lead' AND p.project_id=?1 ORDER BY p.rowid",
+         WHERE r.kind='lead' AND r.project_id=?1 AND p.project_id=?1 ORDER BY p.rowid",
     )?;
     let lead_agent_ids = query.query_map([project], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(Leads { version, lead_agent_ids })
@@ -135,14 +167,16 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
     let at = crate::model::now();
     for agent in &current.lead_agent_ids {
         if !ids.contains(agent) {
-            tx.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead'", [agent])?;
+            tx.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead' AND project_id=?2", params![agent, project])?;
         }
     }
+    // A lead row an older Core's move left for another Project now names this one.
     for agent in &ids {
         tx.execute(
-            "INSERT INTO agent_roles(agent_id,kind,created_by,created_at,updated_at) VALUES(?1,'lead','user',?2,?2)
-             ON CONFLICT(agent_id) DO NOTHING",
-            params![agent, at],
+            "INSERT INTO agent_roles(agent_id,kind,project_id,created_by,created_at,updated_at) VALUES(?1,'lead',?2,'user',?3,?3)
+             ON CONFLICT(agent_id) DO UPDATE SET project_id=excluded.project_id, updated_at=excluded.updated_at
+             WHERE agent_roles.kind='lead' AND agent_roles.project_id IS NOT excluded.project_id",
+            params![agent, project, at],
         )?;
     }
     let version = current.version + 1;

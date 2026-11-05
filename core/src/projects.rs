@@ -132,6 +132,8 @@ pub(crate) fn project_labels(db: &Connection) -> Result<HashMap<String, (String,
 }
 
 pub(crate) fn set_agent_project_in(db: &Connection, agent_id: &str, project_id: Option<&str>) -> Result<()> {
+    // A lead leads the Project it was chosen for, and only while it is there (T-33).
+    crate::agent_roles::membership_changed(db, agent_id, project_id)?;
     match project_id {
         None => {
             db.execute("DELETE FROM project_agents WHERE agent_id=?1", [agent_id])?;

@@ -41,8 +41,14 @@ Agents in that Project can be chosen, and an executor cannot lead.
   make itself or another a lead.
 - **Saving.** A save replaces the whole list. An Agent left out stops being a
   lead. A save against a list someone else changed meanwhile is refused.
-- **Membership decides.** An Agent leads a Project only while it is a member.
-  Moved to another Project, it no longer leads the first.
+- **A lead belongs to its Project.** Core keeps which Project an Agent was
+  chosen to lead. It leads that Project only while it is a member there, and
+  never leads a Project it is moved to.
+- **Moving a lead.** When Core moves a lead to another Project, or out of every
+  Project, its mark ends. The list it left changes version, so a settings page
+  still showing the old list reloads before saving.
+- **An older Core's move.** Such a move leaves the mark in place, but it
+  applies only if the Agent returns to the Project it was chosen for.
 
 From phase 1, a lead can dispatch a task of its own Project from an executor
 template. You can always dispatch from a template. A task in no Project is
