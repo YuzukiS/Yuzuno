@@ -142,6 +142,60 @@ pub(super) fn reserved(db: &Connection) -> Result<(Resources, usize)> {
     }
     Ok((total, count))
 }
+/// The first queued job short of the configured budget (T-38). Its need is
+/// held open: a later job starts ahead of it only within `allowance`, the
+/// budget less its need and less what every job that started ahead of a
+/// head still holds (`passed`), and only within what is free now (`room`).
+struct BlockedHead {
+    id: String,
+    name: String,
+    /// What it waits for: the shared CPU quota, RAM or swap reservation.
+    waits: &'static str,
+    need: Resources,
+    allowance: Resources,
+}
+impl BlockedHead {
+    fn new(db: &Connection, id: &str, name: String, waits: &'static str, need: &Resources, limit: &Resources) -> Result<Self> {
+        let allowance = limit.available(need).available(&passed(db)?);
+        Ok(Self { id: id.to_owned(), name, waits, need: need.clone(), allowance })
+    }
+    /// What may start ahead of it now.
+    fn room(&self, free: &Resources) -> Resources {
+        Resources {
+            cpu_millis: self.allowance.cpu_millis.min(free.cpu_millis),
+            memory_mi_b: self.allowance.memory_mi_b.min(free.memory_mi_b),
+            swap_mi_b: self.allowance.swap_mi_b.min(free.swap_mi_b),
+        }
+    }
+}
+/// What the jobs that started ahead of a head, any head, still hold. Counting
+/// those of every head rather than only the current one's is conservative:
+/// it can delay a later pass, never take a head's share (review 1bbccc2a).
+fn passed(db: &Connection) -> Result<Resources> {
+    let mut q = db.prepare_cached("SELECT data FROM local_jobs WHERE reserved=1 AND json_type(data,'$.admission.passed')='object'")?;
+    let mut total = Resources::default();
+    for row in q.query_map([], |r| r.get::<_, String>(0))? {
+        let value: Value = serde_json::from_str(&row?)?;
+        total.add(&serde_json::from_value::<Resources>(value["reservation"].clone())?);
+    }
+    Ok(total)
+}
+/// The first dimension of the configured budget `need` does not fit in
+/// `free`, with its waiting reason; None when it fits.
+fn budget_shortage(need: &Resources, free: &Resources) -> Option<(&'static str, String)> {
+    if need.cpu_millis > free.cpu_millis {
+        Some(("shared CPU quota", format!("Waiting for shared CPU quota: needs {} mCPU including collector, {} mCPU available; short {} mCPU", need.cpu_millis, free.cpu_millis, need.cpu_millis - free.cpu_millis)))
+    } else if need.memory_mi_b > free.memory_mi_b {
+        Some(("shared RAM reservation", format!("Waiting for shared RAM reservation: needs {} MiB including collector, {} MiB available; short {} MiB", need.memory_mi_b, free.memory_mi_b, need.memory_mi_b - free.memory_mi_b)))
+    } else if need.swap_mi_b > free.swap_mi_b {
+        Some(("shared swap reservation", format!("Waiting for shared swap reservation: needs {} MiB, {} MiB available; short {} MiB", need.swap_mi_b, free.swap_mi_b, need.swap_mi_b - free.swap_mi_b)))
+    } else {
+        None
+    }
+}
+fn triple(r: &Resources) -> String {
+    format!("{} mCPU / {} MiB RAM / {} MiB swap", r.cpu_millis, r.memory_mi_b, r.swap_mi_b)
+}
 pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
     db.execute(
         "UPDATE local_jobs SET status=?2,reserved=?3,data=?4 WHERE id=?1",
@@ -465,6 +519,10 @@ pub(super) fn request_cancel_in(store: &Store, tx: &Connection, actor: Option<&s
         job["status"] = json!("cancelled");
         job["finishedAt"] = json!(now());
         job["cancelRequestedAt"] = json!(now());
+        // A blocked head cancelled in the queue keeps no mark (T-38).
+        if let Some(fields) = job.as_object_mut() {
+            fields.remove("admission");
+        }
         notify(tx, &mut job)?;
     } else if job["reserved"] == true {
         if job["cancelRequestedAt"].is_null() {
@@ -756,9 +814,29 @@ impl Store {
     /// Try the queued jobs in admission order and reserve the first that fits:
     /// its own free-space verdict, the shared CPU/RAM/swap budget, a slot,
     /// host memory and the GPUs it declares, all checked and reserved for the
-    /// same job in one transaction. A job blocked by the shared budget is not
-    /// passed (no backfill around it); a job waiting for a GPU holds only that
-    /// device, so CPU work behind it can start. Returns the reserved job and
+    /// same job in one transaction.
+    ///
+    /// The blocked head (T-38) is decided before anything is reserved: the
+    /// first job in this order short of the configured budget, wherever the
+    /// projects' turns put it (review e06d83e8). Every other job, before or
+    /// after it in the order, may start ahead of it only if it fits what is
+    /// free now and, in every dimension, it and every job still holding a
+    /// reservation it got by starting ahead of a head (any head: which job is
+    /// the head can change between passes, with the projects' turns, aging or
+    /// a cancel) stay within the budget less this head's need (`BlockedHead`).
+    /// The head keeps its place: it is marked `admission.head` while it waits
+    /// (never `passed`, so it is never counted as a passer), and once a job so
+    /// marked fits, it is tried before the turns, the earliest submitted
+    /// first, and starts unmarked; a head cancelled in the queue keeps no mark.
+    /// An older blocked head wins: a former head goes first only if it was
+    /// submitted before the current head, and a younger one waits for the
+    /// current head's room (review fe5c0325).
+    /// So no head's share is taken, and the head starts once the jobs running
+    /// before it free enough. A job short of host memory
+    /// (free less headroom) is not a reservation that can be held open, so
+    /// nothing passes it. A job waiting for a GPU holds only that device, a
+    /// disk wait is skipped, an exclusive job holds everything, and stages
+    /// waiting on upstream are not queued at all. Returns the reserved job and
     /// whether any waiting reason changed.
     pub(super) fn reserve_next(
         &self,
@@ -790,7 +868,62 @@ impl Store {
             None
         };
         let mut held: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // A job short of host memory: nothing passes it.
         let mut behind: Option<String> = None;
+        let free = limit.available(&used);
+        // Before anything is reserved, in the same order: the head, the first
+        // job short of the configured budget, and `first`, a job that was a
+        // head and fits now, which goes before the turns. A job the scan below
+        // rejects, skips or holds for another cause (a disk wait, an exclusive
+        // slot, host memory, a GPU) is not a head.
+        let mut head: Option<BlockedHead> = None;
+        let mut head_seq: Option<i64> = None;
+        let mut first: Option<(i64, usize, String)> = None;
+        if global.is_none() && !state.exclusive_active {
+            for &index in &order {
+                let candidate = &queued[index];
+                if candidate.exclusive && state.active > 0 {
+                    break;
+                }
+                if let Some(disk) = disk {
+                    if !matches!(disk.iter().find(|d| d.job_id == candidate.id).map(|d| &d.verdict), Some(super::disk::Verdict::Start)) {
+                        continue;
+                    }
+                }
+                let job = get(&tx, &candidate.id)?;
+                if host.as_ref().is_some_and(|h| h["id"] != job["machine"]["id"])
+                    || self.brief_in(&tx, job["agentId"].as_str().unwrap_or(""))?.is_none_or(|v| v.agent.closed_at.is_some())
+                    || super::service_recovery::reservation(self, &mut job.clone()).is_some()
+                {
+                    continue;
+                }
+                let need: Resources = serde_json::from_value(job["reservation"].clone())?;
+                match budget_shortage(&need, &free) {
+                    Some((waits, _)) => {
+                        if head.is_none() {
+                            let name = job["name"].as_str().unwrap_or("an earlier job").to_owned();
+                            head = Some(BlockedHead::new(&tx, &candidate.id, name, waits, &need, &limit)?);
+                            head_seq = Some(candidate.seq);
+                        }
+                    }
+                    None => {
+                        if job["admission"]["head"].is_object() && first.as_ref().is_none_or(|(seq, _, _)| candidate.seq < *seq) {
+                            first = Some((candidate.seq, index, candidate.id.clone()));
+                        }
+                    }
+                }
+            }
+            // An older blocked head wins: a younger former head waits for the
+            // current head's room like any other job (review fe5c0325).
+            if first.as_ref().zip(head_seq).is_some_and(|((seq, _, _), head)| *seq > head) {
+                first = None;
+            }
+        }
+        let order: Vec<usize> = match &first {
+            Some((_, index, _)) => std::iter::once(*index).chain(order.into_iter().filter(|i| i != index)).collect(),
+            None => order,
+        };
+        let first = first.map(|(_, _, id)| id);
         let mut changed = false;
         let wait = |job: &mut Value, reason: String, changed: &mut bool| -> Result<()> {
             if job["reason"].as_str() != Some(reason.as_str()) {
@@ -809,7 +942,7 @@ impl Store {
                 break;
             }
             if let Some(name) = &behind {
-                wait(&mut job, format!("Waiting behind {name}, which needs the shared CPU/RAM budget first; jobs do not pass it"), &mut changed)?;
+                wait(&mut job, format!("Waiting behind {name}, which waits for host memory first; jobs do not pass it"), &mut changed)?;
                 continue;
             }
             if let Some(host) = &host {
@@ -880,26 +1013,53 @@ impl Store {
                 continue;
             }
             let need: Resources = serde_json::from_value(job["reservation"].clone())?;
-            let free = limit.available(&used);
-            let shortage = if need.cpu_millis > free.cpu_millis {
-                Some(format!("Waiting for shared CPU quota: needs {} mCPU including collector, {} mCPU available; short {} mCPU", need.cpu_millis, free.cpu_millis, need.cpu_millis - free.cpu_millis))
-            } else if need.memory_mi_b > free.memory_mi_b {
-                Some(format!("Waiting for shared RAM reservation: needs {} MiB including collector, {} MiB available; short {} MiB", need.memory_mi_b, free.memory_mi_b, need.memory_mi_b - free.memory_mi_b))
-            } else if need.swap_mi_b > free.swap_mi_b {
-                Some(format!(
-                    "Waiting for shared swap reservation: needs {} MiB, {} MiB available; short {} MiB",
-                    need.swap_mi_b,
-                    free.swap_mi_b,
-                    need.swap_mi_b - free.swap_mi_b
-                ))
-            } else if host_memory_available.is_some_and(|n| need.memory_mi_b > n) {
-                Some(format!("Waiting for host memory while preserving Core/desktop headroom: needs {} MiB including collector, {} MiB available after headroom; short {} MiB", need.memory_mi_b, host_memory_available.unwrap(), need.memory_mi_b - host_memory_available.unwrap()))
-            } else {
-                None
+            let own_turn = first.as_deref() == Some(candidate.id.as_str());
+            if let Some(head) = head.as_ref().filter(|h| h.id != candidate.id && !own_turn) {
+                // Beside the blocked head, before or after it in the order:
+                // only within what it leaves.
+                let room = head.room(&free);
+                if !need.fits(&room) {
+                    wait(&mut job, format!("Waiting behind {}, which waits for {}: this job needs {}; {} may start ahead of it now",
+                        head.name, head.waits, triple(&need), triple(&room)), &mut changed)?;
+                    continue;
+                }
+            }
+            // What the job is short of: the configured budget (a dimension it
+            // waits for), or host memory (None).
+            let shortage = match budget_shortage(&need, &free) {
+                Some((waits, reason)) => Some((Some(waits), reason)),
+                None if host_memory_available.is_some_and(|n| need.memory_mi_b > n) => Some((None, format!("Waiting for host memory while preserving Core/desktop headroom: needs {} MiB including collector, {} MiB available after headroom; short {} MiB", need.memory_mi_b, host_memory_available.unwrap(), need.memory_mi_b - host_memory_available.unwrap()))),
+                None => None,
             };
-            if let Some(reason) = shortage {
+            if let Some((waits, reason)) = shortage {
+                let name = job["name"].as_str().unwrap_or("an earlier job").to_owned();
+                let reason = match waits {
+                    // Host memory is not held for anyone: nothing passes it.
+                    None => {
+                        behind = Some(name);
+                        reason
+                    }
+                    Some(waits) => {
+                        // The head decided above (or, should the scan meet a
+                        // job short of the budget it did not, this one).
+                        if head.is_none() {
+                            head = Some(BlockedHead::new(&tx, &candidate.id, name, waits, &need, &limit)?);
+                        }
+                        match head.as_ref().filter(|h| h.id == candidate.id) {
+                            Some(blocked) => {
+                                // It keeps its place: once it fits, it goes first.
+                                if !job["admission"]["head"].is_object() {
+                                    job["admission"] = json!({"head": {"since": now()}});
+                                    save(&tx, &job)?;
+                                    changed = true;
+                                }
+                                format!("{reason}. Up to {} may start ahead of it meanwhile", triple(&blocked.allowance))
+                            }
+                            None => reason,
+                        }
+                    }
+                };
                 wait(&mut job, reason, &mut changed)?;
-                behind = Some(job["name"].as_str().unwrap_or("an earlier job").to_owned());
                 continue;
             }
             let reservation = match serde_json::from_value::<Option<super::gpu::GpuRequest>>(job["gpu"].clone())? {
@@ -925,6 +1085,19 @@ impl Store {
             job["status"] = json!("starting");
             job["startedAt"] = json!(now());
             job["reason"] = json!("Capacity reserved; verifying and launching one attempt");
+            // Started ahead of the blocked head: marked with it, so the jobs
+            // that pass it stay within what its need leaves (T-38). Each
+            // reservation decides the mark afresh: one in its own turn keeps
+            // none from an earlier reservation (review 8a776cd8).
+            if let Some(head) = head.as_ref().filter(|_| !own_turn) {
+                let room = head.room(&free);
+                job["admission"] = json!({"passed": {"jobId": head.id, "name": head.name, "waits": head.waits,
+                    "headNeed": head.need, "room": room, "need": need, "at": now()}});
+                job["reason"] = json!(format!("Capacity reserved ahead of {}, which waits for {}: this job's {} fits in the {} left beside it; verifying and launching one attempt",
+                    head.name, head.waits, triple(&need), triple(&room)));
+            } else if let Some(fields) = job.as_object_mut() {
+                fields.remove("admission");
+            }
             save(&tx, &job)?;
             super::queue::served(&tx, &candidate.project)?;
             tx.commit()?;
