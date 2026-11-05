@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 const REDUCED = "(prefers-reduced-motion: reduce)";
 
@@ -181,4 +181,37 @@ export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
     query.addEventListener("change", change);
     return () => query.removeEventListener("change", change);
   }, []);
+}
+
+/**
+ * A banner that a brief flap should not flash (T-19 M15: SH:M04, SH:M06): `shown` once `want` has held
+ * for `delay` ms. Once shown and no longer wanted, it is `leaving` for exit-small (the banner's own CSS
+ * plays its exit meanwhile), then gone; under reduced motion it goes at once. Wanted again while
+ * leaving, it stays.
+ */
+export function useDelayedPresence(want: boolean, delay: number): { shown: boolean; leaving: boolean } {
+  const [shown, setShown] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    if (want) {
+      setLeaving(false);
+      if (shown) return;
+      const timer = setTimeout(() => setShown(true), delay);
+      return () => clearTimeout(timer);
+    }
+    if (!shown) return;
+    const ms = window.matchMedia?.(REDUCED).matches ? 0 : tokenMs("--motion-exit-small");
+    if (!ms) {
+      setShown(false);
+      setLeaving(false);
+      return;
+    }
+    setLeaving(true);
+    const timer = setTimeout(() => {
+      setShown(false);
+      setLeaving(false);
+    }, ms);
+    return () => clearTimeout(timer);
+  }, [want, shown, delay]);
+  return { shown, leaving };
 }

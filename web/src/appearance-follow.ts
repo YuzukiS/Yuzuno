@@ -118,6 +118,13 @@ const set = (workspaceId: string, condition: FollowCondition) => {
   conditions.set(workspaceId, condition);
   changed();
 };
+/** Told when this window applies a newer revision by itself, in the
+ * background: not when the user turns following on (T-19 ST:SA7). */
+const appliedListeners = new Set<(workspaceId: string, revision: number) => void>();
+export function onFollowApplied(listener: (workspaceId: string, revision: number) => void): () => void {
+  appliedListeners.add(listener);
+  return () => appliedListeners.delete(listener);
+}
 
 /** Turns following on for `workspaceId`, at the revision the user just
  * applied here. */
@@ -207,6 +214,7 @@ async function once(workspaceId: string) {
     appliedAt: new Date().toISOString(),
     note: noted.saved ? undefined : { revision: read.revision, refused: noted },
   });
+  appliedListeners.forEach((listener) => listener(workspaceId, read.revision));
 }
 
 const subscribe = (listener: () => void) => {

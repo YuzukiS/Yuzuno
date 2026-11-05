@@ -403,3 +403,19 @@ test("New agent follows a language change from another window, what was typed an
   assert.equal(page.calls.length, before, "changing the language reads and sends nothing");
   assert.deepEqual(page.errors, []);
 });
+
+test("while the defaults for new Agents are read, the harness and model choices wait with a note, so a late answer never undoes a pick (T-19 ST:SX-14)", async () => {
+  let answer;
+  const page = mount(() => new Promise((resolve) => (answer = resolve)));
+  await page.open();
+  const waits = (label) => group(page, label)?.disabled === true;
+  assert.equal(waits("Harness"), true, "the harness waits for the defaults");
+  assert.equal(waits("Model"), true, "and so does the model");
+  assert.match(page.document.body.textContent, /Reading the defaults for new Agents…/);
+  answer(view({ harness: "claude" }));
+  await until(() => picked(page, "Harness") === "claude", "the Workspace's default harness");
+  assert.equal(waits("Harness"), false, "read: the harness can be chosen");
+  assert.doesNotMatch(page.document.body.textContent, /Reading the defaults for new Agents…/);
+  await until(() => !waits("Model"), "the model can be chosen once the defaults and models are read");
+  assert.deepEqual(page.errors, []);
+});
