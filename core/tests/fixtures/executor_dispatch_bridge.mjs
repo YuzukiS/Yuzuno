@@ -1,7 +1,9 @@
 // Real ClaudeBridge with a scripted SDK (T-34): each prompt the executor gets
 // is written to prompts.jsonl in its folder, and its Turn ends at once. No
-// model, account or daily Core is used.
-import { appendFileSync } from 'node:fs';
+// model, account or daily Core is used. A number in `fail-starts` in the
+// folder fails that many starts, one by one (T-35 S2), each counted in
+// `starts`.
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ClaudeBridge, PromptQueue } from '../../../runtimes/claude/bridge.mjs';
@@ -9,7 +11,14 @@ import { ClaudeBridge, PromptQueue } from '../../../runtimes/claude/bridge.mjs';
 function query({ options, prompt }) {
   const output = new PromptQueue();
   const session = randomUUID();
-  output.initializationResult = async () => ({});
+  appendFileSync(join(options.cwd, 'starts'), 'start\n');
+  const failing = join(options.cwd, 'fail-starts');
+  const left = existsSync(failing) ? Number(readFileSync(failing, 'utf8')) : 0;
+  if (left > 0) writeFileSync(failing, String(left - 1));
+  output.initializationResult = async () => {
+    if (left > 0) throw new Error('scripted start failure');
+    return {};
+  };
   output.setMcpServers = async () => ({ added: ['yuzuno'], removed: [], errors: {} });
   output.supportedModels = async () => [];
   output.interrupt = async () => {};
