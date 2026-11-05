@@ -138,6 +138,30 @@ test('exclusive queue shows mode and wait reason; rerun preserves mode but requi
   } finally {p.close();}
 });
 
+test('a job started ahead of a blocked queue head says which and why it fitted; the head and the job behind it say how much may pass (T-38)', async () => {
+  const head={...job,id:'job-head',name:'check',status:'queued',reserved:false,cursor:3,
+    reason:'Waiting for shared RAM reservation: needs 24640 MiB including collector, 24512 MiB available; short 128 MiB. Up to 14900 mCPU / 16320 MiB RAM / 0 MiB swap may start ahead of it meanwhile'};
+  const behind={...job,id:'job-behind',name:'w10',status:'queued',reserved:false,cursor:2,
+    reason:'Waiting behind check, which waits for shared RAM reservation: this job needs 1100 mCPU / 4160 MiB RAM / 0 MiB swap; 13800 mCPU / 3968 MiB RAM / 0 MiB swap may start ahead of it now'};
+  const passed={...job,name:'k5',status:'running',reason:'Running with verified cgroup limits',
+    admission:{passed:{jobId:'job-head',name:'check',waits:'shared RAM reservation',need:{cpuMillis:1100,memoryMiB:12352,swapMiB:0},
+      room:{cpuMillis:14900,memoryMiB:16320,swapMiB:0},headNeed:{cpuMillis:1100,memoryMiB:24640,swapMiB:0},at:new Date().toISOString()}}};
+  const p=mount(url=>url==='/api/jobs/job-one'?passed:page([head,behind,passed]));
+  try {
+    await until(()=>[...p.doc.querySelectorAll('.conversation-job')].some(r=>r.textContent.includes('k5')));
+    [...p.doc.querySelectorAll('.conversation-job')].find(r=>r.textContent.includes('k5')).click();
+    await until(()=>p.doc.querySelector('.job-detail'));
+    await wait();
+    assert.ok(p.doc.querySelector('.job-admission'), 'the detail says the job started ahead of check');
+    assert.equal(p.doc.querySelector('.job-admission').textContent,
+      "Started ahead of check, which waited for the shared RAM reservation: this job's 12.1 GiB RAM fitted in the 15.9 GiB RAM left beside check's 24.1 GiB RAM");
+    const rows=[...p.doc.querySelectorAll('.job-row')].map(r=>r.textContent);
+    assert.ok(rows.some(r=>r.includes('check') && r.includes('Up to 14900 mCPU / 16320 MiB RAM / 0 MiB swap may start ahead of it meanwhile')), 'the head says how much may pass');
+    assert.ok(rows.some(r=>r.includes('w10') && r.includes('Waiting behind check')), 'the job behind it says what it waits for');
+    assert.deepEqual(p.errors,[]);
+  } finally {p.close();}
+});
+
 test('legacy unconfirmed ordinary submission retries with the same payload and request ID', async () => {
   const draft={agentId:'a',taskId:'T-47',name:'legacy',cwd:'/workspace',command:'true',cpu:'1',memory:'512',swap:'0',timeout:'30',env:'{}',inputs:'',outputs:'',guardGit:true};
   const body={agentId:'a',taskId:'T-47',name:'legacy',cwd:'/workspace',argv:['/bin/sh','-c','true'],env:{},inputs:[],outputs:[],guardGit:true,resources:{cpuMillis:1000,memoryMiB:512,swapMiB:0},timeoutSeconds:30};

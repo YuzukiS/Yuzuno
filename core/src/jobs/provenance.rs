@@ -350,6 +350,20 @@ fn logs(job: &Value, extent: &Result<Value, String>) -> Value {
     }
 }
 
+/// How admission started the attempt, when it started ahead of a queue head
+/// short of the budget (T-38): that head and the sizes, field by field.
+fn admission(job: &Value) -> Value {
+    let passed = &job["admission"]["passed"];
+    if !passed.is_object() {
+        return Value::Null;
+    }
+    let size = |r: &Value| json!({"cpuMillis": r["cpuMillis"], "memoryMiB": r["memoryMiB"], "swapMiB": r["swapMiB"]});
+    json!({"startedAheadOf": {"jobId": passed["jobId"], "name": passed["name"], "waits": passed["waits"],
+        "need": size(&passed["need"]), "room": size(&passed["room"]), "headNeed": size(&passed["headNeed"])}})
+}
+fn amount(r: &Value) -> String {
+    format!("{} mCPU / {} MiB RAM / {} MiB swap", md(&r["cpuMillis"]), md(&r["memoryMiB"]), md(&r["swapMiB"]))
+}
 fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, labels: &mut Labels) -> Value {
     known.add(&job["cwd"], "<cwd>");
     known.add(&job["snapshot"]["cwd"], "<cwd>");
@@ -365,7 +379,7 @@ fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, label
         "run": if run.is_object() { json!({"id": run["id"], "stage": run["stage"], "attempt": run["attempt"]}) } else { Value::Null },
         "retryOf": job["retryOf"], "retriedBy": job["retriedBy"], "resumeOf": job["checkpointFrom"]["jobId"],
         "requestedBy": job["requestedBy"], "turnId": job["source"]["turnId"],
-        "status": job["status"], "reason": job["reason"], "exit": exit(job),
+        "status": job["status"], "reason": job["reason"], "exit": exit(job), "admission": admission(job),
         "times": {"createdAt": job["createdAt"], "startedAt": job["startedAt"], "finishedAt": job["finishedAt"]},
         "target": target(job),
         "executor": {"kind": target(job)["kind"], "capabilities": job["capabilities"]},
@@ -557,6 +571,11 @@ fn report(m: &Value) -> String {
             _ => format!("exit status {}", md(&exit["state"])),
         };
         let _ = writeln!(out, "- Outcome: {}; {ended}", md(&a["reason"]));
+        let ahead = &a["admission"]["startedAheadOf"];
+        if ahead.is_object() {
+            let _ = writeln!(out, "- Started ahead of {} (waiting for {}): {} fitted in the {} left beside its {}", md(&ahead["name"]),
+                md(&ahead["waits"]), amount(&ahead["need"]), amount(&ahead["room"]), amount(&ahead["headNeed"]));
+        }
         let code = &a["code"];
         let _ = match code["git"]["head"].as_str() {
             Some(_) => writeln!(out, "- Code: Git {}, tracked changes {} ({}: {})", hex(&code["git"]["head"]),

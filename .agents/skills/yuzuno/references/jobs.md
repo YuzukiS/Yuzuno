@@ -31,7 +31,7 @@ Use the parameters your session advertises: a session that loaded its tool schem
 - By default a GPU job is the only managed GPU job on its device. `mode: "shared"` runs beside other shared jobs only on a device the user opened for sharing.
 - A GPU job waits, with the device and the reason named, while its device is in use, closed to new jobs, short of memory or not freshly sampled; CPU jobs behind it still start. Free memory is the whole card's, other programs included, and nothing isolates or limits what a job really uses: stay within what you declared.
 - `job_gpu_admission` closes or opens a device to new jobs; jobs already on it keep it. Use it when the user or the project asks, not to get ahead of other work. A device the user closed stays closed until the user opens it.
-- The queue takes projects in turn and tries a job that has waited over 30 minutes first. A job short of the shared CPU/RAM budget is never passed; a job waiting only for a GPU holds just that device.
+- The queue takes projects in turn and tries a job that has waited over 30 minutes first. The first job short of the shared CPU/RAM/swap budget keeps its place and its share: a later job may start ahead of it only if it fits what is free and, with the jobs that already passed that head, stays within the budget less the head's need. Both reasons say so, and a job that started ahead records the head it passed (`admission.passed`). Nothing passes a job short of host memory (free memory less headroom). A job waiting only for a GPU holds just that device, and one waiting for disk space is passed.
 
 ## After submitting
 

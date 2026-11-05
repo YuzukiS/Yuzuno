@@ -2,6 +2,8 @@
 pub(crate) mod disk;
 mod gpu;
 #[cfg(test)]
+mod backfill_tests;
+#[cfg(test)]
 mod gpu_tests;
 mod checkpoint;
 mod host;

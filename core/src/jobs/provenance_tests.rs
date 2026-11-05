@@ -296,3 +296,23 @@ async fn the_tool_reads_only_log_headers_and_takes_one_scope() {
     }
     assert!(tool_definitions().iter().any(|t| t["name"] == "job_provenance"));
 }
+
+#[test]
+fn an_attempt_that_started_ahead_of_a_blocked_head_says_which_and_why_it_fitted() {
+    // T-38: field by field; nothing else recorded there leaves.
+    let extent = || Ok(json!({"segments":1,"oldestOffset":0,"totalBytes":10,"truncated":false}));
+    let mut job = local_job();
+    job["admission"] = json!({"passed":{"jobId":"head-1","name":"check","waits":"shared RAM reservation",
+        "need":{"cpuMillis":1100,"memoryMiB":12352,"swapMiB":0},"room":{"cpuMillis":14900,"memoryMiB":16320,"swapMiB":0},
+        "headNeed":{"cpuMillis":1100,"memoryMiB":24640,"swapMiB":0},"at":"2026-11-05T04:30:00Z","note":"SECRET-NOTE"}});
+    let (m, report) = export(&[job], vec![extent()]);
+    let ahead = &m["attempts"][0]["admission"]["startedAheadOf"];
+    assert_eq!((ahead["jobId"].as_str(), ahead["name"].as_str()), (Some("head-1"), Some("check")));
+    assert_eq!(ahead["room"], json!({"cpuMillis":14900,"memoryMiB":16320,"swapMiB":0}));
+    assert!(report.contains("- Started ahead of check (waiting for shared RAM reservation): 1100 mCPU / 12352 MiB RAM / 0 MiB swap fitted in the 14900 mCPU / 16320 MiB RAM / 0 MiB swap left beside its 1100 mCPU / 24640 MiB RAM / 0 MiB swap"), "{report}");
+    assert_absent(&m, &report, &["SECRET-NOTE"]);
+    // Started in its turn: nothing said.
+    let (m, report) = export(&[local_job()], vec![extent()]);
+    assert!(m["attempts"][0]["admission"].is_null());
+    assert!(!report.contains("Started ahead of"), "{report}");
+}

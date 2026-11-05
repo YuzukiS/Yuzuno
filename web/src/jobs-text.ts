@@ -118,6 +118,10 @@ export const jobsText = strings({
   normal: "Normal",
   resources: "Resources",
   resourceLine: (cpu: number, ram: string, swap: string) => `${cpu} CPU · ${ram} RAM · ${swap} swap`,
+  admission: "Admission",
+  startedAhead: (head: string, kind: "cpu" | "ram" | "swap", need: string, room: string, headNeed: string) =>
+    `Started ahead of ${head}, which waited for the shared ${kind === "cpu" ? "CPU quota" : kind === "swap" ? "swap reservation" : "RAM reservation"}: this job's ${need} fitted in the ${room} left beside ${head}'s ${headNeed}`,
+  aheadAmount: (kind: "cpu" | "ram" | "swap", amount: string) => `${amount} ${kind === "cpu" ? "CPU" : kind === "swap" ? "swap" : "RAM"}`,
   notReserved: "; not reserved",
   onDevices: (devices: string) => ` on ${devices}`,
   currentRam: "Current RAM",
@@ -271,6 +275,10 @@ export const jobsText = strings({
   normal: "普通",
   resources: "资源",
   resourceLine: (cpu, ram, swap) => `${cpu} CPU · ${ram} 内存 · ${swap} 交换空间`,
+  admission: "准入",
+  startedAhead: (head, kind, need, room, headNeed) =>
+    `排在 ${head} 前面启动（${head} 在等共享${kind === "cpu" ? " CPU 配额" : kind === "swap" ? "交换空间预留" : "内存预留"}）：本 Job 的 ${need} 落在 ${head} 所需 ${headNeed} 之外剩下的 ${room} 之内`,
+  aheadAmount: (kind, amount) => `${amount} ${kind === "cpu" ? "CPU" : kind === "swap" ? "交换空间" : "内存"}`,
   notReserved: "；未预留",
   onDevices: (devices) => `，位于 ${devices}`,
   currentRam: "当前内存",
