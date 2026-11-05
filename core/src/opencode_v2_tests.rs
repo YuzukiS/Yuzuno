@@ -121,8 +121,9 @@ fn live_events_read_as_the_snapshot_reads_the_same_turn() {
     // A steered input: the next step answers it.
     c.read(&ev("session.inbox.enqueued", 430, d(json!({"inboxID": "msg_u2", "item": {"type": "user"}}))));
     c.read(&ev("session.inbox.delivered", 431, d(json!({"inboxID": "msg_u2"}))));
-    let next = c.read(&ev("session.step.started", 432, d(json!({"assistantMessageID": "msg_a2"}))));
+    let next = c.read(&ev("session.step.started", 432, d(json!({"assistantMessageID": "msg_a2", "started": 431}))));
     assert_eq!(next[0]["data"]["info"]["parentID"], "msg_u2");
+    assert_eq!(next[0]["data"]["info"]["time"]["created"], 431, "an answer starts when its step says it started, as 2.x stores it");
     let idle = c.read(&ev("session.execution.succeeded", 440, d(json!({}))));
     assert_eq!(kinds(&idle), ["session.status"]);
     assert_eq!(idle[0]["data"]["status"]["type"], "idle");

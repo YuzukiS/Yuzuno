@@ -292,7 +292,10 @@ impl Open {
             }
             "session.step.started" => {
                 let Some(id) = d["assistantMessageID"].as_str() else { return vec![] };
-                let step = Step { parent: self.user.clone(), created: at.clone(), model: d["model"].clone() };
+                // As 2.x stores an answer: started when the step says, ended at its end's event
+                // (core/src/session/message-updater.ts), so a whole read says the same times.
+                let created = if d["started"].is_number() { d["started"].clone() } else { at.clone() };
+                let step = Step { parent: self.user.clone(), created, model: d["model"].clone() };
                 let info = answer(id, step.parent.as_deref(), &step.created, &Value::Null, &Value::Null, &Value::Null, &Value::Null, &step.model);
                 self.steps.insert(id.to_owned(), step);
                 vec![message(info)]

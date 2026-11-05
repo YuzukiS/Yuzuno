@@ -140,8 +140,8 @@ def publish(kind, properties):
         sent = send(kind, properties)
     else:
         sent = None
-        for kind2, data in v2_events(kind, properties):
-            send(kind2, data)
+        for kind2, data, *created in v2_events(kind, properties):
+            send(kind2, data, *created)
     kept = kind in DURABLE and isinstance(properties.get('sessionID'), str)
     if kept:
         evt = sent or new_id('evt')
@@ -297,18 +297,21 @@ def v2_events(kind, p):
             # A step answering a message steered in starts once it is delivered; one answering an earlier one, before.
             out += v2_deliver(session, info.get('parentID'))
             out.append(('session.step.started', {'sessionID': session, 'assistantMessageID': mid, 'agent': info.get('agent') or 'build',
-                                                 'model': {'id': info.get('modelID') or 'fixture', 'providerID': info.get('providerID') or 'fixture'}}))
+                                                 'model': {'id': info.get('modelID') or 'fixture', 'providerID': info.get('providerID') or 'fixture'},
+                                                 'started': (info.get('time') or {}).get('created') or int(time.time() * 1000)}))
         done = (info.get('time') or {}).get('completed') is not None or info.get('error')
         if done and mid not in state['ended']:
             state['ended'].add(mid)
             if (info.get('error') or {}).get('name') == 'MessageAbortedError':
                 # An aborted answer: 2.x ends that execution as interrupted.
                 state['error'] = info['error']
+            # 2.x stores the answer's end as its end event's time (core/src/session/message-updater.ts).
+            at = (info.get('time') or {}).get('completed') or int(time.time() * 1000)
             if info.get('error'):
-                out.append(('session.step.failed', {'sessionID': session, 'assistantMessageID': mid, 'error': v2_error(info['error'])}))
+                out.append(('session.step.failed', {'sessionID': session, 'assistantMessageID': mid, 'error': v2_error(info['error'])}, at))
             else:
                 out.append(('session.step.ended', {'sessionID': session, 'assistantMessageID': mid, 'finish': info.get('finish') or 'stop',
-                                                   'cost': info.get('cost', 0), 'tokens': info.get('tokens')}))
+                                                   'cost': info.get('cost', 0), 'tokens': info.get('tokens')}, at))
         return out
     if kind == 'message.part.updated':
         q = p['part']
