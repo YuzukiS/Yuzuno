@@ -756,12 +756,16 @@ test("a Project's leads are the user's to set, from its open members that are no
   });
   try {
     const badges = () => [...page.document.querySelectorAll(".agent-list .agent-row")]
-      .filter(row => row.querySelector(".agent-kind-badge")).map(row => row.querySelector(".agent-name").textContent);
-    assert.deepEqual(badges(), ["Mori"], "only a lead's row is marked, in the rail's scope");
+      .filter(row => row.querySelector(".agent-kind-badge"))
+      .map(row => [row.querySelector(".agent-name").textContent, row.querySelector(".agent-kind-badge").textContent]);
+    // An executor is marked too, as one (T-34).
+    assert.deepEqual(badges(), [["Mori", "Lead"], ["Hana", "Executor"]], "a lead and an executor are marked, each as its kind, in the rail scope");
     const mori = page.document.querySelector('.agent-row[data-agent-id="a"] .agent-select');
     assert.match(mori.getAttribute("aria-description"), /^Lead · /);
     assert.match(mori.getAttribute("title"), / · Lead$/);
-    assert.doesNotMatch(page.document.querySelector('.agent-row[data-agent-id="b"] .agent-select').getAttribute("aria-description"), /Lead/);
+    const hana = page.document.querySelector('.agent-row[data-agent-id="b"] .agent-select');
+    assert.match(hana.getAttribute("aria-description"), /^Executor · /);
+    assert.doesNotMatch(hana.getAttribute("aria-description"), /Lead/);
 
     await fromScopeMenu(page, "Manage projects");
     const section = await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");

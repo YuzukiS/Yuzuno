@@ -122,6 +122,8 @@ type Job = {
   /** The job this one resumes from its checkpoint. */
   resumeOf?: string | null;
   checkpointFrom?: { jobId: string } | null;
+  /** Its mail by status: delivery, and why when it did not go through (T-50). */
+  mail?: Record<string, { messageId: string; delivery: string; problem?: string | null }> | null;
 };
 type CheckpointStop = {
   state: "requested" | "signalled" | "pending" | "failed" | "expired" | "checkpointed" | "notResumable";
@@ -1421,6 +1423,13 @@ function JobDetail({
       ) : (
         job.reason && <p>{job.reason}</p>
       )}
+      {Object.entries(job.mail || {})
+        .filter(([, mail]) => mail.problem)
+        .map(([status, mail]) => (
+          <p key={status} className="job-mail-problem">
+            {t.mailProblem} {mail.problem}
+          </p>
+        ))}
       <JobCard title={t.summary}>
         <dl>
           <dt>{t.sourceLabel}</dt>

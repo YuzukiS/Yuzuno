@@ -150,6 +150,8 @@ impl Workspace {
         store.rotate_collaboration_mcp_credentials()?;
         store.recover_pr_reviews()?;
         store.recover_pr_operations()?;
+        // Before any runtime starts: an executor a stopped Core left half made is closed (T-34).
+        store.recover_executor_dispatches()?;
         Ok(Arc::new(Self {
             github: Default::default(),
             pr_reviews: Default::default(),
@@ -475,18 +477,21 @@ impl Workspace {
         self: &Arc<Self>, name: String, legacy_goal: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>,
     ) -> Result<Agent> {
-        self.create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, AgentSettings::default()).await
+        self.create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, AgentSettings::default(), None).await
     }
 
     /// A new Codex Agent starting with `settings` (the defaults for new
-    /// Agents resolved by the caller, T-190).
+    /// Agents resolved by the caller, T-190); an executor with `birth`.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_on_with(
         self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
-        machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings,
+        machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings, birth: Option<Birth>,
     ) -> Result<Agent> {
         validate_settings(&settings)?;
-        let permit = self.admission.enter_work()?;
+        // An executor is made under its dispatch's work permit (T-34, R3
+        // d51396b7): asking for another here would let an update that starts
+        // meanwhile fail a dispatch its refusal says can be retried.
+        let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }
@@ -504,7 +509,7 @@ impl Workspace {
             if !path.is_dir() { bail!("工作目录必须是文件夹"); }
             path.to_string_lossy().into_owned()
         };
-        let id = uuid::Uuid::new_v4().to_string();
+        let (id, then) = Birth::of(birth);
         let colors = ["yuzu", "sage", "rose", "sky"];
         let count = self.stored(|store| store.agents()).await?.len();
         let a = Agent {
@@ -550,8 +555,12 @@ impl Workspace {
             codex_handoff: None,
             opencode_usage_seen: None,
         };
-        self.stored(move |store| store.insert_created(&detail)).await?;
+        let born = then.is_some();
+        self.stored(move |store| store.insert_created_then(&detail, then)).await?;
         self.changed(&id);
+        if born {
+            return Ok(a);
+        }
         let this = self.clone();
         tokio::spawn(async move {
             let _permit = permit;
@@ -1338,25 +1347,18 @@ impl Workspace {
             }
             shutdown?;
         }
-        self.record_update(id, "agent/closed", json!({}), Sel::Open, |d| {
-            d.agent.closed_at = Some(now());
-            d.agent.disconnected_at = None;
-            d.agent.disconnect_unconfirmed = false;
-            d.agent.status = "offline".into();
-            d.agent.connection_state = "disconnected".into();
-            d.pending.clear();
-            if let Some(usage) = &mut d.context_usage { usage.stale = true; }
-            for receipt in &mut d.message_receipts {
-                if receipt.status == "sending" { receipt.status = "uncertain".into(); }
-            }
-            // A previously disconnected local process can have an unknown
-            // final result. Closing never invents successful tool completion.
-            for turn in &mut d.turns {
-                if turn["status"] == "inProgress" { turn["status"] = "unknown".into(); }
-            }
-        }).await?;
+        self.record_update(id, "agent/closed", json!({}), Sel::Open, mark_closed).await?;
         self.changed(id);
         self.answer(id).await
+    }
+
+    /// `close_agent` for a caller already holding a work permit: an executor
+    /// whose dispatch failed (T-34), closed even while an update drains.
+    pub(crate) async fn close_agent_admitted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
+        permit.validate(&self.admission)?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        self.close_agent_locked(id).await
     }
 
     pub async fn reopen_agent(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
@@ -2617,6 +2619,46 @@ impl Workspace {
             .unwrap_or("未登录");
         self.set_runtime(json!({"connected":true,"account":label})).await;
         Ok(json!({"models":models["data"]}))
+    }
+}
+
+/// An executor a template dispatch creates (T-34): with the id its dispatch
+/// row chose, `then` (its role, its row's state) written in the transaction
+/// that inserts it, and its runtime not started by the create: the dispatch
+/// starts it once the task is its. Made only by a dispatch holding a work
+/// permit, which the create runs under instead of taking its own.
+pub struct Birth {
+    pub(crate) id: String,
+    pub(crate) then: crate::store::InTransaction,
+}
+
+impl Birth {
+    /// The new Agent's id, and what its insert also writes.
+    pub(crate) fn of(birth: Option<Birth>) -> (String, Option<crate::store::InTransaction>) {
+        match birth {
+            Some(birth) => (birth.id, Some(birth.then)),
+            None => (uuid::Uuid::new_v4().to_string(), None),
+        }
+    }
+}
+
+/// What closing does to an Agent's record; also to one whose runtime never
+/// started (an executor whose dispatch ended, T-34).
+pub(crate) fn mark_closed(d: &mut AgentDetail) {
+    d.agent.closed_at = Some(now());
+    d.agent.disconnected_at = None;
+    d.agent.disconnect_unconfirmed = false;
+    d.agent.status = "offline".into();
+    d.agent.connection_state = "disconnected".into();
+    d.pending.clear();
+    if let Some(usage) = &mut d.context_usage { usage.stale = true; }
+    for receipt in &mut d.message_receipts {
+        if receipt.status == "sending" { receipt.status = "uncertain".into(); }
+    }
+    // A previously disconnected local process can have an unknown
+    // final result. Closing never invents successful tool completion.
+    for turn in &mut d.turns {
+        if turn["status"] == "inProgress" { turn["status"] = "unknown".into(); }
     }
 }
 

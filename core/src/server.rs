@@ -654,17 +654,56 @@ mod defaults_create_tests {
             crate::model::AgentSettings { permission_preset: Some("full".into()), ..Default::default() },
             crate::model::AgentSettings { permission_mode: Some("bypassPermissions".into()), ..Default::default() },
         ] {
-            let refused = ws.claude_create_on_with("C".into(), String::new(), cwd.clone(), String::new(), None, None, settings).await;
+            let refused = ws.claude_create_on_with("C".into(), String::new(), cwd.clone(), String::new(), None, None, settings, None).await;
             assert!(refused.is_err());
         }
         assert!(ws.store.agents().unwrap().is_empty());
     }
 }
 async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiResult<Json<Value>> {
-    let project = p.project_id.clone();
+    let (project, save_default) = (p.project_id.clone(), p.save_project_default);
+    let (agent, sources) = create_agent(&ws, p, None).await?;
+    // The Agent already exists; a failed default update must not hide it.
+    let mut response = serde_json::to_value(&agent)?;
+    response["defaultSources"] = sources;
+    if let (true, Some(project)) = (save_default, project) {
+        let machine = agent.remote.as_ref().map_or("local", |r| r.machine.id.as_str()).to_owned();
+        let cwd = agent.cwd.clone();
+        match ws.stored(move |store| store.set_project_default_dir(&project, &machine, &cwd)).await {
+            Ok(_) => ws.projects_changed(),
+            Err(e) => response["projectDefaultError"] = e.to_string().into(),
+        }
+    }
+    Ok(Json(response))
+}
+
+/// The executor a template dispatch makes (T-34), created as POST
+/// /api/agents creates an Agent with what the template names, in `cwd`, a
+/// member of the task's Project; its runtime is left for the dispatch.
+pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::executor_templates::Template, name: String,
+    cwd: String, project_id: Option<String>, birth: crate::workspace::Birth) -> anyhow::Result<crate::model::Agent> {
+    let p = Create {
+        name,
+        goal: String::new(),
+        harness: Some(template.harness.clone()),
+        cwd,
+        model: template.model.clone().map_or(crate::agent_defaults::ModelAsk::Inherit, crate::agent_defaults::ModelAsk::Named),
+        reasoning_effort: template.reasoning_effort.clone().map(Some),
+        machine_id: None,
+        project_id,
+        save_project_default: false,
+        permission_preset: template.permission_preset.clone(),
+        permission_mode: template.permission_mode.clone(),
+    };
+    Ok(create_agent(ws, p, Some(birth)).await?.0)
+}
+
+/// An Agent as POST /api/agents creates it, and where each of its settings
+/// came from; an executor with `birth`.
+async fn create_agent(ws: &Arc<Workspace>, p: Create, birth: Option<crate::workspace::Birth>) -> anyhow::Result<(crate::model::Agent, Value)> {
     // Defaults apply only here, to the Agent being created (T-190): its
     // project's overrides, when it is created in one, before the Workspace's.
-    let in_project = project.clone();
+    let in_project = p.project_id.clone();
     let (defaults, project_defaults) = ws.stored(move |store| {
         let own = match in_project.as_deref() { Some(id) => Some(store.project_agent_defaults(id)?), None => None };
         Ok((store.agent_defaults()?, own))
@@ -690,7 +729,7 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
                     "The default Claude Code model set for {set_for} can't be used now: {e:#}. Choose a model for this Agent"))?;
                 // As the create dialog holds for a model chosen there.
                 if entry["supportsAutoMode"] == false && settings.permission_mode.as_deref() == Some("auto") {
-                    return Err(anyhow::anyhow!("{checked}, the default Claude Code model set for {set_for}, can't run in Auto mode. Choose a model or a permission mode for this Agent").into());
+                    anyhow::bail!("{checked}, the default Claude Code model set for {set_for}, can't run in Auto mode. Choose a model or a permission mode for this Agent");
                 }
                 model = crate::agent_defaults::catalog_name(entry, checked);
             }
@@ -721,23 +760,12 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
         None => p.model.as_before(),
     };
     let agent = match new.harness.as_str() {
-        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings).await?,
-        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings).await?,
-        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id).await?,
-        _ => return Err(anyhow::anyhow!("未知 Harness").into()),
+        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
+        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
+        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id, birth).await?,
+        _ => anyhow::bail!("未知 Harness"),
     };
-    // The Agent already exists; a failed default update must not hide it.
-    let mut response = serde_json::to_value(&agent)?;
-    response["defaultSources"] = sources;
-    if let (true, Some(project)) = (p.save_project_default, project) {
-        let machine = agent.remote.as_ref().map_or("local", |r| r.machine.id.as_str()).to_owned();
-        let cwd = agent.cwd.clone();
-        match ws.stored(move |store| store.set_project_default_dir(&project, &machine, &cwd)).await {
-            Ok(_) => ws.projects_changed(),
-            Err(e) => response["projectDefaultError"] = e.to_string().into(),
-        }
-    }
-    Ok(Json(response))
+    Ok((agent, sources))
 }
 async fn projects(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     stored_json(&ws, |store| Ok(json!({"projects":store.projects()?}))).await
