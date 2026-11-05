@@ -122,6 +122,8 @@ type Job = {
   /** The job this one resumes from its checkpoint. */
   resumeOf?: string | null;
   checkpointFrom?: { jobId: string } | null;
+  /** Its mail by status: delivery, and why when it did not go through (T-50). */
+  mail?: Record<string, { messageId: string; delivery: string; problem?: string | null }> | null;
   /** Its memory limit lowered while it ran, newest last (T-38 B). */
   limitChanges?: { by: { kind: string; name: string }; at: string; fromMiB: number; toMiB: number }[] | null;
   /** The last lowering that did not take, and why. */
@@ -1480,6 +1482,13 @@ function JobDetail({
       ) : (
         job.reason && <p>{job.reason}</p>
       )}
+      {Object.entries(job.mail || {})
+        .filter(([, mail]) => mail.problem)
+        .map(([status, mail]) => (
+          <p key={status} className="job-mail-problem">
+            {t.mailProblem} {mail.problem}
+          </p>
+        ))}
       {lowerable && lowering && (
         <form
           className="job-lower-memory"

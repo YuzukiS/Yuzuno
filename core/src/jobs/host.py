@@ -173,6 +173,59 @@ class InputGuard(RuntimeError):
         super().__init__(problem)
         self.detail = {'problem': problem, **detail}
 
+def guard_scope(spec, cwd, root):
+    """The paths guardPaths names (T-50), as the caller gave them and relative
+    to the Git root ('' for the root itself). Taken as Git tracks them: joined
+    to cwd and normalised, never through a link. One outside the work tree is
+    refused."""
+    scope = []
+    for given in spec.get('guardPaths') or []:
+        full = Path(os.path.normpath(os.path.join(str(cwd), given)))
+        try:
+            inside = full.relative_to(root).as_posix()
+        except ValueError:
+            raise InputGuard(f'guardPaths must be inside the Git work tree of cwd ({root}): {given} is not',
+                             limit='guardPath', path=given)
+        if '\n' in inside:
+            raise InputGuard(f'guardPaths cannot contain a line break: {given!r}', limit='guardPath', path=given)
+        scope.append((given, '' if inside == '.' else inside))
+    return scope
+
+def guarded(name, scope):
+    """A path relative to the Git root is under one of the guarded paths."""
+    return any(not part or name == part or name.startswith(part + '/') for _, part in scope)
+
+def guard_objects(root, head, scope):
+    """Each guarded path's Git object at the frozen commit, read in one call:
+    a tree for a directory (every tracked file below it), a blob for a file,
+    None where that commit has nothing there."""
+    lines = ''.join(f'{head}:{part}\n' for _, part in scope).encode()
+    try:
+        result = subprocess.run(['git', '-C', str(root), 'cat-file', '--batch-check'], input=lines,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8,
+                                env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+    except subprocess.TimeoutExpired:
+        raise InputGuard('Git could not read the guarded paths within eight seconds', limit='gitTime')
+    answers = result.stdout.decode('utf-8', 'surrogateescape').splitlines()
+    if result.returncode or len(answers) != len(scope):
+        raise InputGuard('Git could not read the guarded paths at HEAD')
+    objects = []
+    for (given, _), answer in zip(scope, answers):
+        found = answer.split(' ')
+        known = len(found) == 3 and found[1] in ('blob', 'tree', 'commit')
+        objects.append({'path': given, 'object': found[0] if known else None, 'type': found[1] if known else None})
+    return objects
+
+def compared(value):
+    """What the check before the start compares. With guardPaths (T-50) the
+    HEAD commit itself is left out: a commit that leaves the guarded paths
+    alone does not stop the command, and their content at HEAD is compared
+    instead."""
+    git = value.get('git')
+    if not (isinstance(git, dict) and 'guardPaths' in git):
+        return value
+    return {**value, 'git': {k: v for k, v in git.items() if k != 'head'}}
+
 def snapshot(spec):
     cwd = Path(spec['cwd']).resolve(strict=True)
     if not cwd.is_dir():
@@ -186,12 +239,18 @@ def snapshot(spec):
     git = None
     if spec.get('guardGit', True):
         result = command(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'], check=False)
+        if result.returncode and spec.get('guardPaths'):
+            raise InputGuard('guardPaths need cwd inside a Git work tree: guardGit found none there', limit='guardPath')
         if not result.returncode:
             root = Path(result.stdout.strip()).resolve()
             head = command(['git', '-C', str(root), 'rev-parse', 'HEAD']).stdout.strip()
+            # Only the guarded paths, when the submission names them (T-50).
+            scope = guard_scope(spec, cwd, root) if spec.get('guardPaths') else None
             # No datasets, ignored artifacts, or untracked tree walks.
             args = ['git', '-c', 'core.fsmonitor=false', '-C', str(root), 'status',
                     '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=all']
+            if scope is not None and all(part for _, part in scope):
+                args += ['--', *(f':(literal){part}' for _, part in scope)]
             with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                   env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'}) as process:
                 status = bytearray()
@@ -235,6 +294,11 @@ def snapshot(spec):
                 if moved:
                     record.append(next(entries, b''))
                 name = os.fsdecode(entry[3:])
+                # Outside every guarded path: not frozen. A rename or copy
+                # counts when either side is under one.
+                if scope is not None and not (guarded(name, scope)
+                                              or moved and guarded(os.fsdecode(record[1]), scope)):
+                    continue
                 # A rename or copy changes its source too: never left out.
                 if not moved and str(root / name) in excluded:
                     continue
@@ -243,8 +307,10 @@ def snapshot(spec):
             tracked = {str(root / p) for p in paths}
             files.update(tracked)
             # Without exclusions the digest is the one every earlier job recorded.
-            listed = b'\0'.join(kept) if excluded else status
+            listed = b'\0'.join(kept) if excluded or scope is not None else status
             git = {'root': str(root), 'head': head, 'statusSha256': hashlib.sha256(listed).hexdigest()}
+            if scope is not None:
+                git['guardPaths'] = guard_objects(root, head, scope)
     if len(files) > INPUT_COUNT_LIMIT:
         counted = len(tracked & files)
         why = f' ({counted} of them changed tracked Git files, guarded because guardGit is true)' if counted else ''
@@ -293,6 +359,10 @@ def snapshot(spec):
         hashes.append({'path': str(path), 'sha256': hashlib.sha256(value).hexdigest()})
     value = {'cwd': str(cwd), 'git': git, 'files': hashes,
              'scope': 'Frozen argv/env/resources; optional Git HEAD and changed tracked files plus explicit small inputs. Untracked/ignored data, submodule contents and changes after launch are not frozen.'}
+    if git and 'guardPaths' in git:
+        value['scope'] = ('Frozen argv/env/resources; with guardPaths, only the tracked content under those paths at HEAD and its '
+                          'changed tracked files, plus explicit small inputs. The rest of the checkout, the HEAD commit itself, '
+                          'untracked/ignored data, submodule contents and changes after launch are not frozen.')
     source = spec.get('checkpointFrom')
     if source:
         # A resumed attempt (T-109). A wrapper from before checkpoints computes
@@ -384,7 +454,14 @@ def guard_reason(spec, current):
     """Which frozen inputs changed before launch, by name."""
     frozen = spec['snapshot']
     changed = []
-    if (frozen.get('git') or {}).get('head') != (current.get('git') or {}).get('head'):
+    before_git, after_git = frozen.get('git') or {}, current.get('git') or {}
+    if 'guardPaths' in before_git:
+        # T-50: a commit elsewhere is allowed; a guarded path whose content at
+        # HEAD changed is named as the submission named it.
+        after = {g['path']: (g['object'], g['type']) for g in after_git.get('guardPaths') or []}
+        changed += [f"the committed content of guarded path {g['path']}" for g in before_git['guardPaths']
+                    if after.get(g['path']) != (g['object'], g['type'])]
+    elif before_git.get('head') != after_git.get('head'):
         changed.append('the Git commit')
     before = {f['path']: f['sha256'] for f in frozen.get('files', [])}
     after = {f['path']: f['sha256'] for f in current.get('files', [])}
@@ -810,9 +887,16 @@ def launch(spec, folder, stage):
         return 125
     stage['at'] = 'inputs'
     current = snapshot(spec)
-    if current != spec['snapshot']:
+    if compared(current) != compared(spec['snapshot']):
         atomic(folder / 'input-changed.json', {'reason': guard_reason(spec, current)})
         return 78
+    if spec.get('guardPaths'):
+        # What the guard checked at this start (T-50): HEAD may have moved
+        # since submission, the guarded paths did not.
+        atomic(folder / 'guard.json', {'attempt': spec['attempt'], 'checkedAt': time.time(),
+                                       'guardPaths': current['git']['guardPaths'],
+                                       'headAtSubmit': spec['snapshot']['git']['head'],
+                                       'headAtStart': current['git']['head'], 'guardedUnchanged': True})
     changed = upstream_problem(spec)
     if changed:
         atomic(folder / 'input-changed.json', {'reason': changed})
@@ -927,6 +1011,10 @@ def reports(spec, folder):
         if spec.get('checkpoint'):
             # The worker's own check; a stop that never got one stays None.
             value['checkpoint'] = read(folder / 'checkpoint.json')
+        if spec.get('guardPaths'):
+            # This attempt's start check of its guarded paths (T-50), if it got that far.
+            guard = read(folder / 'guard.json')
+            value['guard'] = guard if isinstance(guard, dict) and guard.get('attempt') == spec['attempt'] else None
         json.dumps(value, allow_nan=False)
         return value
     except Exception as error:

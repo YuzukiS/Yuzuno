@@ -214,6 +214,22 @@ fn exit(job: &Value) -> Value {
 fn code(job: &Value) -> Value {
     let snapshot = &job["snapshot"];
     let git = &snapshot["git"];
+    if let (Some(head), Some(paths)) = (git["head"].as_str(), git["guardPaths"].as_array()) {
+        // guardPaths (T-50): only those paths were frozen; HEAD could move.
+        // What the start found is this attempt's own record of its check.
+        let status = &git["statusSha256"];
+        let start = &job["result"]["guard"];
+        let checked = start["guardedUnchanged"] == true;
+        return json!({"git": {"head": head, "headAtSubmit": head, "headAtStart": start["headAtStart"], "statusSha256": status,
+                "guardPaths": paths, "guardedUnchanged": if checked { json!(true) } else { Value::Null },
+                "trackedChanges": if status == EMPTY_SHA256 { "none under the guarded paths" } else { "present under the guarded paths: their files are among the inputs" }},
+            "state": if checked { "verified" } else { "declared" },
+            "when": if checked {
+                "At submission, and checked again before the command started: the guarded paths' content at HEAD and their changed tracked files were unchanged. Only the guarded paths: HEAD itself and the rest of the checkout could change"
+            } else {
+                "At submission only: no start check of the guarded paths was recorded (the command did not start, or its record is missing). Only the guarded paths were frozen"
+            }});
+    }
     if let Some(head) = git["head"].as_str() {
         let status = &git["statusSha256"];
         return json!({"git": {"head": head, "statusSha256": status,
@@ -570,7 +586,12 @@ fn report(m: &Value) -> String {
                 md(&change["toMiB"]), md(&change["by"]), md(&change["at"]));
         }
         let code = &a["code"];
+        let guarded = code["git"]["guardPaths"].as_array();
         let _ = match code["git"]["head"].as_str() {
+            Some(_) if guarded.is_some() => writeln!(out, "- Code: guarded paths {} at Git {} (HEAD at submission), HEAD at start {}, tracked changes {} ({}: {})",
+                guarded.into_iter().flatten().map(|g| format!("{} {}", md(&g["path"]), hex(&g["object"]))).collect::<Vec<_>>().join(", "),
+                hex(&code["git"]["headAtSubmit"]), hex(&code["git"]["headAtStart"]),
+                md(&code["git"]["trackedChanges"]), md(&code["state"]), md(&code["when"])),
             Some(_) => writeln!(out, "- Code: Git {}, tracked changes {} ({}: {})", hex(&code["git"]["head"]),
                 md(&code["git"]["trackedChanges"]), md(&code["state"]), md(&code["when"])),
             None => writeln!(out, "- Code: {} ({})", md(&code["note"]), md(&code["state"])),

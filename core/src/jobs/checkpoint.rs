@@ -36,8 +36,8 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// What a resumed Job's submission takes from the stopped one.
-const SUBMITTED: [&str; 13] = [
-    "name", "cwd", "argv", "env", "resources", "exclusive", "timeoutSeconds", "guardGit", "inputs", "outputs",
+const SUBMITTED: [&str; 14] = [
+    "name", "cwd", "argv", "env", "resources", "exclusive", "timeoutSeconds", "guardGit", "guardPaths", "inputs", "outputs",
     "artifacts", "gpu", "checkpoint",
 ];
 

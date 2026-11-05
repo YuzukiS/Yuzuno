@@ -175,6 +175,152 @@ class StageGuardTests(unittest.TestCase):
         self.assertNotIn('artifact', host.guard_reason({**plain, 'snapshot': frozen}, host.snapshot(stage)))
 
 
+def job_cgroup():
+    """This process's cgroup limits as a spec's resources, when it runs inside a
+    managed Job: launch()'s own check of its limits then passes, so its start
+    check runs for real. None anywhere else."""
+    if not os.environ.get('YUZUNO_JOB_ID'):
+        return None
+    try:
+        relative = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
+        group = Path('/sys/fs/cgroup') / relative.lstrip('/')
+        memory = int((group / 'memory.max').read_text())
+        swap = int((group / 'memory.swap.max').read_text())
+        quota, period = map(int, (group / 'cpu.max').read_text().split())
+        pids = (group / 'pids.max').read_text().strip()
+    except (OSError, ValueError, IndexError):
+        return None
+    mib = 1024 * 1024
+    if pids != str(host.TASKS_MAX) or memory % mib or swap % mib or quota * 1000 % period:
+        return None
+    return {'cpuMillis': quota * 1000 // period, 'memoryMiB': memory // mib, 'swapMiB': swap // mib}
+
+
+class GuardPathsTests(unittest.TestCase):
+    """T-50 (elasticLM): with guardPaths, guardGit freezes only the tracked
+    content under those paths, so a commit elsewhere during a long run does
+    not stop its next stage, and a change under them does, naming the path."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name) / 'repo'
+        self.folder = Path(self.tmp.name) / 'attempt'
+        self.repo.mkdir()
+        self.folder.mkdir()
+        (self.repo / 'src' / 'data').mkdir(parents=True)
+        for name in ('src/model.py', 'src/data/config.json', 'notes.md', 'README.md'):
+            (self.repo / name).write_text('first')
+        self.git('init', '-q')
+        self.git('add', '.')
+        self.commit('fixture')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=Lab', '-c', 'user.email=lab@example.invalid', *args],
+                              check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.decode().strip()
+
+    def commit(self, message):
+        self.git('commit', '-qam' if message != 'fixture' else '-qm', message)
+        return self.git('rev-parse', 'HEAD')
+
+    def stage(self, **extra):
+        return {'cwd': str(self.repo), 'guardGit': True, 'guardPaths': ['src'], 'run': {'id': 'r', 'stage': 'b', 'attempt': 1},
+                **extra}
+
+    def started(self, spec):
+        """The worker's own start of this frozen spec: its exit status and why it refused, if it did."""
+        resources = job_cgroup()
+        if resources is None:
+            self.skipTest('needs a managed Job: the worker checks its cgroup limits before the start check')
+        spec = {'id': 'job', 'attempt': 'attempt', 'argv': ['/bin/true'], 'env': {'PATH': '/usr/bin:/bin'},
+                'resources': resources, 'timeoutSeconds': 60, **spec}
+        code = host.launch(spec, self.folder, {'at': 'prepare'})
+        return code, (host.read(self.folder / 'input-changed.json') or {}).get('reason'), spec
+
+    def test_the_guard_keeps_each_guarded_path_at_head_and_only_the_changes_under_them(self):
+        (self.repo / 'notes.md').write_text('an edit outside')
+        (self.repo / 'src' / 'model.py').write_text('an edit inside')
+        frozen = host.snapshot(self.stage(guardPaths=['src', 'later']))
+        git = frozen['git']
+        self.assertEqual(git['head'], self.git('rev-parse', 'HEAD'))
+        self.assertEqual(git['guardPaths'], [
+            {'path': 'src', 'object': self.git('rev-parse', 'HEAD:src'), 'type': 'tree'},
+            {'path': 'later', 'object': None, 'type': None}])
+        paths = [f['path'] for f in frozen['files']]
+        self.assertEqual(paths, [str(self.repo / 'src' / 'model.py')], 'only the changed tracked file under src is frozen')
+        self.assertTrue(frozen['scope'].startswith('Frozen argv/env/resources; with guardPaths, only the tracked content'))
+        # A file, given relative to a cwd below the root, is its blob there.
+        below = host.snapshot({'cwd': str(self.repo / 'src'), 'guardGit': True, 'guardPaths': ['data/config.json']})
+        self.assertEqual(below['git']['guardPaths'],
+                         [{'path': 'data/config.json', 'object': self.git('rev-parse', 'HEAD:src/data/config.json'), 'type': 'blob'}])
+
+    def test_without_guard_paths_nothing_changes(self):
+        (self.repo / 'notes.md').write_text('an edit')
+        plain = host.snapshot({'cwd': str(self.repo), 'guardGit': True})
+        status = subprocess.run(['git', '-C', str(self.repo), 'status', '--porcelain=v1', '-z',
+                                 '--untracked-files=no', '--ignore-submodules=all'], check=True, stdout=subprocess.PIPE).stdout
+        self.assertEqual(set(plain['git']), {'root', 'head', 'statusSha256'})
+        self.assertEqual(plain['git']['statusSha256'], hashlib.sha256(status).hexdigest())
+        self.assertIs(host.compared(plain), plain)
+
+    def test_guard_paths_outside_the_work_tree_or_without_one_are_refused(self):
+        with self.assertRaisesRegex(host.InputGuard, r'guardPaths must be inside the Git work tree of cwd \(.*\): \.\./elsewhere is not'):
+            host.snapshot(self.stage(guardPaths=['../elsewhere']))
+        plain = Path(self.tmp.name) / 'plain'
+        plain.mkdir()
+        with self.assertRaisesRegex(host.InputGuard, 'guardPaths need cwd inside a Git work tree'):
+            host.snapshot({'cwd': str(plain), 'guardGit': True, 'guardPaths': ['src']})
+
+    def test_only_a_change_under_a_guarded_path_counts(self):
+        frozen = host.snapshot(self.stage())
+        (self.repo / 'notes.md').write_text('edited and committed elsewhere')
+        self.commit('notes')
+        (self.repo / 'README.md').write_text('an uncommitted edit elsewhere')
+        current = host.snapshot(self.stage())
+        self.assertNotEqual(current['git']['head'], frozen['git']['head'])
+        self.assertEqual(host.compared(current), host.compared(frozen))
+        (self.repo / 'src' / 'model.py').write_text('changed and committed')
+        self.commit('model')
+        current = host.snapshot(self.stage())
+        self.assertNotEqual(host.compared(current), host.compared(frozen))
+        reason = host.guard_reason({**self.stage(), 'snapshot': frozen}, current)
+        self.assertTrue(reason.startswith('Guarded inputs changed while queued (the committed content of guarded path src)'), reason)
+        self.assertNotIn('the Git commit', reason)
+
+    def test_a_commit_outside_the_guarded_paths_between_stages_does_not_stop_the_next_one(self):
+        frozen = host.snapshot(self.stage())
+        submitted = frozen['git']['head']
+        # The run's own notes go on while it runs: committed, and edited again.
+        (self.repo / 'notes.md').write_text('a result written up during the run')
+        moved = self.commit('notes during the run')
+        (self.repo / 'notes.md').write_text('and still being edited')
+        code, reason, spec = self.started(self.stage(snapshot=frozen))
+        self.assertEqual(code, 0, reason)
+        guard = host.read(self.folder / 'guard.json')
+        self.assertEqual((guard['headAtSubmit'], guard['headAtStart'], guard['guardedUnchanged']), (submitted, moved, True))
+        self.assertEqual(guard['guardPaths'], frozen['git']['guardPaths'])
+        self.assertEqual(host.reports(spec, self.folder)['guard'], guard)
+
+    def test_a_change_under_a_guarded_path_stops_the_next_stage_naming_it(self):
+        frozen = host.snapshot(self.stage())
+        (self.repo / 'src' / 'model.py').write_text('changed and committed during the run')
+        self.commit('model during the run')
+        code, reason, spec = self.started(self.stage(snapshot=frozen))
+        self.assertEqual(code, 78)
+        self.assertIn('the committed content of guarded path src', reason)
+        self.assertFalse((self.folder / 'guard.json').exists())
+        self.assertIsNone(host.reports(spec, self.folder)['guard'])
+        # An edit not yet committed under it is named by its file.
+        (self.folder / 'input-changed.json').unlink()
+        (self.folder / 'started.json').unlink()
+        frozen = host.snapshot(self.stage())
+        (self.repo / 'src' / 'data' / 'config.json').write_text('edited during the run')
+        code, reason, _ = self.started(self.stage(snapshot=frozen))
+        self.assertEqual(code, 78)
+        self.assertIn(str(self.repo / 'src' / 'data' / 'config.json'), reason)
+
+
 class AttemptReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

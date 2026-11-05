@@ -43,6 +43,8 @@ const text = strings({
   needsYou: (count: number) => `${count} needs you`,
   lead: "Lead",
   leadTitle: "A lead of this Project, as set in its settings",
+  executor: "Executor",
+  executorTitle: "Made by Core for one task, from an executor template",
 }, {
   host: "Core 主机",
   open: (name) => `打开 ${name}`,
@@ -55,6 +57,8 @@ const text = strings({
   needsYou: (count) => `${count} 项需要你`,
   lead: "负责人",
   leadTitle: "此 Project 的负责人（在 Project 设置中指定）",
+  executor: "执行者",
+  executorTitle: "由 Core 按执行者模板为一个任务创建",
 });
 
 /** How long a touch is held before it opens the actions, and how far it may
@@ -147,8 +151,10 @@ export function AgentRailRow({
   const menu = useRef<AgentActionsMenuHandle>(null);
   const select = useRef<HTMLButtonElement>(null);
   const press = useLongPress((point) => menu.current?.openAt(point, select.current));
-  // A Project's lead says so (T-33); the button's label is its name only.
-  const lead = agent.kind === "lead";
+  // A Project's lead says so (T-33), and an executor (T-34); the button's
+  // label is its name only.
+  const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
+    : agent.kind === "executor" ? { name: t.executor, title: t.executorTitle } : null;
   const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
   return (
     <article
@@ -178,9 +184,9 @@ export function AgentRailRow({
         className="agent-select agent-row-top"
         onClick={onSelect}
         aria-label={t.open(agent.name)}
-        aria-description={lead ? `${t.lead} · ${description}` : description}
+        aria-description={kind ? `${kind.name} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={`${t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}${lead ? ` · ${t.lead}` : ""}`}
+        title={`${t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
       >
         {/* Unread updates ring the avatar, never a dot: dots beside the
             status say what the Agent is doing. */}
@@ -193,7 +199,7 @@ export function AgentRailRow({
         <span className="agent-identity">
           <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
-          {lead && <span className="agent-kind-badge" data-kind="lead" title={t.leadTitle}>{t.lead}</span>}
+          {kind && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
         <span
           className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
