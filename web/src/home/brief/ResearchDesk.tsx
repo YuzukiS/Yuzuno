@@ -8,6 +8,7 @@ import { useBrief } from "./BriefContext";
 import { BriefLiveRefs } from "./LiveRefs";
 import { formatTime, researchPath, type ResearchDeskProps } from "./brief-catalog";
 import { researchText, type DeskView } from "./research-text";
+import { useSurfaceIn } from "../../surface";
 import "./research.css";
 
 /**
@@ -194,6 +195,9 @@ function claimRows(desk: Desk, claim: Claim | undefined): Row[] {
  */
 function useSelection(desk: Desk, storageKey: string) {
   const [chosen, setChosen] = useState<Partial<Selection>>(() => readStored(storageKey));
+  // The reader's own view switches, counted: the selection read back from
+  // storage is none (T-19 HM:R1).
+  const [switches, setSwitches] = useState(0);
   useEffect(() => setChosen(readStored(storageKey)), [storageKey]);
   const claim = desk.claims.find((item) => item.id === chosen.claim) ?? desk.claims[0];
   const rows = claimRows(desk, claim);
@@ -214,10 +218,11 @@ function useSelection(desk: Desk, storageKey: string) {
       const first = claimRows(desk, picked);
       merged.row = (first.find((item) => item.id === picked?.primary) ?? first[0])?.id;
     }
+    if (merged.view !== selection.view) setSwitches((n) => n + 1);
     setChosen(merged);
     writeStored(storageKey, merged);
   };
-  return { selection, claim, row, choose };
+  return { selection, claim, row, choose, switches };
 }
 
 /**
@@ -515,7 +520,12 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
   const { projectId, section } = useBrief();
   const workspaceId = useContext(CardFoldWorkspace);
   const storageKey = `${workspaceId}:${projectId}:${section.key}#${elementKey ?? ""}`;
-  const { selection, claim, row, choose } = useSelection(desk, storageKey);
+  const { selection, claim, row, choose, switches } = useSelection(desk, storageKey);
+  // A view the reader switches to comes in over small, opacity only (T-19 HM:R1;
+  // Lead 2 4644): its height is there at once, as below the desk was before
+  // (T-19 3920). The view shown first, and a claim switch, play nothing.
+  const main = useRef<HTMLDivElement>(null);
+  useSurfaceIn(main, switches, "small", switches > 0);
   const reads = useMemo(
     () => desk.plots.some((plot) => plot.rows.some((r) => [r.estimate, ...(r.parts ?? []).map((p) => p.estimate)].some((e) => [e.value, e.low, e.high].some((n) => n !== undefined && typeof n !== "number")))),
     [desk.plots],
@@ -961,7 +971,7 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
             }}
           />
         </nav>
-        <div className="research-main">{views[selection.view]}</div>
+        <div ref={main} className="research-main">{views[selection.view]}</div>
         {aside}
       </div>
     </div>
