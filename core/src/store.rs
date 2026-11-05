@@ -1124,7 +1124,8 @@ fn project_window_marked(
 /// The completion check (`completed_before`, `record_recovered_completion`)
 /// looks a Turn's completion up by Agent and Turn ID.
 const COMPLETION_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_turn_completed
-    ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed'";
+    ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed';
+    CREATE INDEX IF NOT EXISTS journal_turn_ends ON journal(agent_id, seq) WHERE kind='turn/completed'";
 /// The busy timeout of every Store connection.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -1259,7 +1260,6 @@ impl Store {
         };
         let before = d.message_receipts.clone();
         mark_restarted(&mut d, newest_in_progress);
-        d.agent.pending_count = d.pending.len() as u64;
         d.agent.updated_at = now();
         let receipts = changed_receipts(&before, &d.message_receipts);
         let body = record_rows::MetaBody::of(&d)?;
@@ -1271,8 +1271,15 @@ impl Store {
             tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/restarted','{}',?2)", params![id, now()])?;
             d.agent.last_seq = tx.last_insert_rowid();
             d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
-            record_rows::write_meta(&tx, id, &body, &d.agent)?;
             record_rows::write_receipts(&tx, id, &receipts)?;
+            // As the rows now say (T-42); an Agent from before last_turn_end
+            // starts from its journal.
+            d.agent.open_questions = record_rows::open_questions(&tx, id)?.len() as u64;
+            d.agent.pending_count = d.pending.len() as u64 + d.agent.open_questions;
+            if d.agent.last_turn_end.is_none() {
+                d.agent.last_turn_end = record_rows::last_journaled_turn_end(&tx, id)?;
+            }
+            record_rows::write_meta(&tx, id, &body, &d.agent)?;
             tx.commit()?;
         }
         rewrite.done(|memory| {
@@ -1680,6 +1687,12 @@ impl Store {
             return Ok(hot.read().pending.clone());
         }
         Ok(record_rows::load_meta(&*self.db.read()?, id)?.context("Agent 不存在")?.pending)
+    }
+
+    /// The Agent's open asynchronous questions, oldest first (T-42), as its
+    /// rows say: what `open_questions` counts.
+    pub fn open_questions(&self, id: &str) -> Result<Vec<record_rows::OpenQuestion>> {
+        record_rows::open_questions(&*self.db.read()?, id)
     }
 
     /// The direct sub-agent `thread` of Agent `id` as its own Turns record it
@@ -2418,7 +2431,8 @@ impl Store {
         let unwritten = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
         dirty.merge(unwritten);
         let fresh = spill(&mut staged, &dirty);
-        staged.agent.pending_count = staged.pending.len() as u64;
+        let native = staged.pending.len() as u64;
+        staged.agent.pending_count = native + staged.agent.open_questions;
         let plan = {
             let receipts = changed_receipts(&receipts_before, &staged.message_receipts);
             record_rows::plan(&*self.db.read()?, id, &staged, &staged.turns, &[], &dirty, &receipts)?
@@ -2437,6 +2451,7 @@ impl Store {
             agent.last_seq = tx.last_insert_rowid();
             agent.unread_count = unread(&tx, id, agent.reviewed_seq)?;
             record_rows::apply(&tx, id, &plan, agent)?;
+            settle_open_questions(&tx, id, plan.body(), agent, native)?;
             for (turn, item, field) in &replaced {
                 record_rows::drop_chunks(&tx, id, turn, item, field)?;
             }
@@ -2792,8 +2807,9 @@ impl Store {
         if confirms {
             crate::model::accept_receipts(d.turns.iter(), &mut d.message_receipts);
         }
-        d.agent.pending_count = d.pending.len() as u64;
+        d.agent.pending_count = d.pending.len() as u64 + d.agent.open_questions;
         d.agent.updated_at = now();
+        let ended = crate::model::turn_ended(&turns_before, &d.turns);
         let mut dirty = Dirty::between(&turns_before, &d.turns);
         drop(turns_before);
         let unwritten = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
@@ -2807,11 +2823,17 @@ impl Store {
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
             let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
+            let at = now();
             tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, journaled, data.to_string(), now()])?;
+                params![id, journaled, data.to_string(), at])?;
             d.agent.last_seq = tx.last_insert_rowid();
             d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
+            // A Turn this change ended, finished or failed, is the last one (T-42).
+            if let Some(outcome) = ended {
+                d.agent.last_turn_end = Some(crate::model::TurnEnd { seq: d.agent.last_seq, outcome: outcome.into(), at });
+            }
             record_rows::apply(&tx, id, &plan, &d.agent)?;
+            settle_open_questions(&tx, id, plan.body(), &mut d.agent, d.pending.len() as u64)?;
             let project_id = crate::projects::agent_project(&tx, id)?;
             tx.commit()?;
             #[cfg(test)]
@@ -3369,6 +3391,20 @@ impl Store {
     }
 }
 
+/// What the rows now say of the Agent's open asynchronous questions (T-42),
+/// read once the change's items and receipts are written: when the count
+/// changed, `pending_count` follows (`native` requests and the questions)
+/// and the metadata is written again in the same transaction.
+fn settle_open_questions(tx: &Connection, id: &str, body: &record_rows::MetaBody, agent: &mut Agent, native: u64) -> Result<()> {
+    let open = record_rows::open_questions(tx, id)?.len() as u64;
+    if open != agent.open_questions {
+        agent.open_questions = open;
+        agent.pending_count = native + open;
+        record_rows::write_meta(tx, id, body, agent)?;
+    }
+    Ok(())
+}
+
 /// A finished Turn whose completion is not among `known`.
 fn unrecorded_completion(turn: &Value, known: &HashSet<String>) -> bool {
     matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
@@ -3409,6 +3445,9 @@ mod tests;
 #[cfg(test)]
 #[path = "store/window_tests.rs"]
 mod window_tests;
+#[cfg(test)]
+#[path = "store/needs_you_tests.rs"]
+mod needs_you_tests;
 #[cfg(test)]
 #[path = "store/composition_tests.rs"]
 mod composition_tests;

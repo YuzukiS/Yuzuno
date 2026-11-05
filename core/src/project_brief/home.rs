@@ -54,9 +54,12 @@ fn request_title(request: &PendingRequest) -> String {
         return "Reconnect to confirm this request".into();
     }
     let params = &request.params;
+    // Claude's AskUserQuestion and Bash name them under `input` (T-42).
     params["reason"].as_str()
         .or_else(|| params["command"].as_str())
+        .or_else(|| params["input"]["command"].as_str())
         .or_else(|| params["questions"][0]["question"].as_str())
+        .or_else(|| params["input"]["questions"][0]["question"].as_str())
         .or_else(|| params["toolName"].as_str())
         .map(|text| text.chars().take(200).collect())
         .unwrap_or_else(|| "Needs your response".into())
@@ -142,12 +145,22 @@ pub(super) fn build(store: &Store) -> Result<Value> {
     // Only the requests of Agents with requests waiting, not their records:
     // Home is rebuilt on every change while one waits (T-120).
     let mut pending: HashMap<&str, Vec<PendingRequest>> = HashMap::new();
-    for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.pending_count > 0) {
+    for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.native_requests() > 0) {
         match store.pending(&agent.id) {
             Ok(requests) => {
                 pending.insert(agent.id.as_str(), requests);
             }
             Err(error) => eprintln!("Home skipped the requests of Agent {}: {error:#}", agent.id),
+        }
+    }
+    // And the questions they sent to be answered later (T-42).
+    let mut questions: HashMap<&str, Vec<crate::record_rows::OpenQuestion>> = HashMap::new();
+    for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.open_questions > 0) {
+        match store.open_questions(&agent.id) {
+            Ok(open) => {
+                questions.insert(agent.id.as_str(), open);
+            }
+            Err(error) => eprintln!("Home skipped the questions of Agent {}: {error:#}", agent.id),
         }
     }
     let projects = store.projects()?;
@@ -163,6 +176,14 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             needs.push((priority, time(&request.created_at), json!({"kind":"approval","projectId":agent.project_id,
                 "agentId":agent.id,"agentName":agent.name,"requestId":request.id,"title":request_title(request),
                 "since":request.created_at})));
+        }
+        for question in questions.get(agent.id.as_str()).into_iter().flatten() {
+            let priority = agent.project_id.as_deref().and_then(|id| rank.get(id)).copied().unwrap_or(usize::MAX);
+            let since = question.at_ms.and_then(DateTime::<Utc>::from_timestamp_millis);
+            let title: String = question.title.as_deref().unwrap_or("Answer when you can").chars().take(200).collect();
+            needs.push((priority, since, json!({"kind":"question","projectId":agent.project_id,"agentId":agent.id,
+                "agentName":agent.name,"turnId":question.turn_id,"itemId":question.item_id,"title":title,
+                "since":since.map(|at| at.to_rfc3339())})));
         }
     }
     let mut panels = vec![];

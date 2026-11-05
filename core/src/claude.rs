@@ -700,7 +700,7 @@ impl Workspace {
             created_at: now(),
             updated_at: now(),
             unread_count: 0,
-            pending_count: 0,
+            pending_count: 0, open_questions: 0, last_turn_end: None,
             last_message: None,
             last_seq: 0,
             reviewed_seq: 0,

@@ -1309,6 +1309,61 @@ pub fn answered(db: &Connection, agent: &str, form: Option<(&str, &str)>, questi
     Ok(found)
 }
 
+/// One open asynchronous question of an Agent (T-42), as `open_questions`
+/// reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenQuestion {
+    pub turn_id: String,
+    pub item_id: String,
+    pub title: Option<String>,
+    /// When the item was first seen, in milliseconds (`_yuzunoTime.at`).
+    pub at_ms: Option<i64>,
+}
+
+/// The Agent's open asynchronous questions, oldest first (T-42): Codex
+/// `agentMessage` items sent `delivery: "async"` with questions (the
+/// `question` key `index_keys` writes), as the web reads them open
+/// (pending-questions.ts): no answer to them accepted, not cancelled or
+/// expired, and not imported with no answer sent from here. Read by SQL
+/// over the key index, so an Agent without questions costs one index seek.
+pub fn open_questions(db: &Connection, agent: &str) -> Result<Vec<OpenQuestion>> {
+    let mut query = db.prepare_cached("SELECT k.turn_id, k.item_id,
+            COALESCE(json_extract(i.data,'$.questions[0].title'), json_extract(i.data,'$.questions[0].question'),
+                json_extract(i.data,'$.questions[0].header')),
+            json_extract(i.data,'$._yuzunoTime.at')
+        FROM agent_item_keys k JOIN agent_items i ON i.agent_id=k.agent_id AND i.turn_id=k.turn_id AND i.item_id=k.item_id
+        WHERE k.agent_id=?1 AND k.kind='question'
+            AND COALESCE(json_extract(i.data,'$.status'),'') NOT IN ('cancelled','canceled','expired')
+            AND NOT EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=k.agent_id
+                AND json_extract(r.data,'$.input.question.turnId')=k.turn_id AND json_extract(r.data,'$.input.question.itemId')=k.item_id
+                AND json_extract(r.data,'$.status')='accepted')
+            AND NOT (EXISTS(SELECT 1 FROM codex_import_turns c WHERE c.agent_id=k.agent_id AND c.turn_id=k.turn_id)
+                AND NOT EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=k.agent_id
+                    AND json_extract(r.data,'$.input.question.turnId')=k.turn_id AND json_extract(r.data,'$.input.question.itemId')=k.item_id))
+        ORDER BY i.turn_id, i.ord")?;
+    let rows = query.query_map(params![agent], |r| Ok(OpenQuestion {
+        turn_id: r.get(0)?, item_id: r.get(1)?, title: r.get(2)?, at_ms: r.get(3)?,
+    }))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// The Agent's last Turn end that the journal holds as `turn/completed`,
+/// finished or failed (T-42): what an Agent from before `last_turn_end` was
+/// kept starts with. OpenCode writes no such row, so its Agents start
+/// without one.
+pub fn last_journaled_turn_end(db: &Connection, agent: &str) -> Result<Option<crate::model::TurnEnd>> {
+    db.prepare_cached("SELECT seq, json_extract(data,'$.turn.status'), at FROM journal
+            WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.status') IN ('completed','failed')
+            ORDER BY seq DESC LIMIT 1")?
+        .query_row(params![agent], |r| Ok(crate::model::TurnEnd {
+            seq: r.get(0)?,
+            outcome: if r.get::<_, String>(1)? == "failed" { "failed".into() } else { "finished".into() },
+            at: r.get(2)?,
+        }))
+        .optional()
+        .map_err(Into::into)
+}
+
 /// Every receipt of the Agent, oldest first (for deleting its images; one
 /// row at a time is parsed).
 pub fn each_receipt(db: &Connection, agent: &str, mut each: impl FnMut(MessageReceipt)) -> Result<()> {
@@ -1576,6 +1631,13 @@ fn by_id(values: &[Value]) -> Option<HashMap<&str, &Value>> {
 pub struct Plan {
     body: MetaBody,
     ops: Vec<Op>,
+}
+
+impl Plan {
+    /// The metadata body the plan writes, for writing it again.
+    pub fn body(&self) -> &MetaBody {
+        &self.body
+    }
 }
 
 /// One statement of a write, in order. Deleting a Turn or an Item deletes
