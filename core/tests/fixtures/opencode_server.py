@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""A stand-in `opencode serve` with OpenCode 1.19.3's server shape, for
-tests/opencode_transport.rs. It reads only its arguments and the environment
-Core starts it with, and keeps its state in memory. It writes what it saw to
-the folder of OPENCODE_DB (start.json, calls.jsonl), where a test may leave a
-switch before it starts: `host` (the address it reports), `version` (the
-version it reports), `exit` (exit before listening), `noise` (a long line
-that is not UTF-8 before listening), `mcp` (the MCP status it reports),
-`stubborn` (it and a child of its own ignore SIGTERM), `tool` (it starts a
-process in a session of its own, as OpenCode's tools run, which only
-/global/dispose ends), `dispose` (`refuse`: it answers that with 500;
-`hang`: it answers only after 30 s, ending nothing) or `xdg-data` (a folder
-it takes as its XDG_DATA_HOME, as if started with it).
+"""A stand-in `opencode serve`, for tests/opencode_transport.rs and the
+suites that start OpenCode. It starts, answers `/api/info` and stops as
+OpenCode 2.x does (T-32 slice 2: 2.2.5's flags, listening line, password
+variable and teardown on SIGTERM); its other calls still have OpenCode
+1.19.3's shape, until their slices of T-32. It reads only its arguments and
+the environment Core starts it with, and keeps its state in memory. It writes
+what it saw to the folder of OPENCODE_DB (start.json, calls.jsonl), where a
+test may leave a switch before it starts: `host` (the address it reports),
+`version` (the version it reports), `exit` (exit before listening), `noise`
+(a long line that is not UTF-8 before listening), `line1x` (it says it
+listens as 1.x does), `starting` (seconds it answers `/api/info` with 503,
+as 2.x does while it starts), `mcp` (the MCP status it reports), `stubborn`
+(it and a child of its own ignore SIGTERM), `tool` (it starts a process in a
+session of its own, as OpenCode's tools run, which only its teardown after
+SIGTERM ends), `teardown` (seconds its teardown takes before it ends that
+process and exits), `closeStreamsFirst` (its teardown first ends its event
+streams and cuts every request still being served, before that wait, as 2.x
+closes what it serves early) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
+if started with it).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -28,6 +35,7 @@ import pwd
 import queue
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -37,8 +45,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(os.environ['OPENCODE_DB']).parent
-PASSWORD = os.environ.get('OPENCODE_SERVER_PASSWORD', '')
-USERNAME = os.environ.get('OPENCODE_SERVER_USERNAME', 'opencode')
+# As 2.x (cli/src/env.ts): OPENCODE_PASSWORD first, then the 1.x name; the user is always `opencode`.
+PASSWORD_FROM = next((name for name in ('OPENCODE_PASSWORD', 'OPENCODE_SERVER_PASSWORD') if os.environ.get(name)), None)
+PASSWORD = os.environ.get(PASSWORD_FROM, '') if PASSWORD_FROM else ''
+USERNAME = 'opencode'
+STARTED = time.monotonic()
 AUTHORIZATION = 'Basic ' + base64.b64encode(f'{USERNAME}:{PASSWORD}'.encode()).decode()
 
 # What `GET /config/providers` answers (T-10): OpenCode's configured providers,
@@ -83,6 +94,8 @@ CONFIG = {
 }
 
 lock = threading.Lock()
+# The connections of the requests being served, for a teardown that cuts them (`closeStreamsFirst`).
+active = set()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
@@ -576,6 +589,15 @@ def finish(session, info, text, completed=True):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
+    def handle(self):
+        with lock:
+            active.add(self.connection)
+        try:
+            super().handle()
+        finally:
+            with lock:
+                active.discard(self.connection)
+
     def log_message(self, *args):
         pass
 
@@ -624,10 +646,19 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in modes['fail']:
             return self.reply(modes['fail'][url.path], {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
         key = (method, *parts)
-        if key == ('POST', 'global', 'dispose'):
-            return self.dispose()
-        if key == ('GET', 'global', 'health'):
-            return self.reply(200, {'healthy': True, 'version': switch('version') or '1.19.3'})
+        if key == ('GET', 'api', 'info'):
+            # As 2.x (server/src/process.ts): 503 with retry-after while it starts, then its identity.
+            if time.monotonic() - STARTED < float(switch('starting') or 0):
+                self.send_response(503)
+                self.send_header('retry-after', '1')
+                payload = json.dumps({'code': 'service_starting'}).encode()
+                self.send_header('content-type', 'application/json')
+                self.send_header('content-length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            return self.reply(200, {'version': switch('version') or '2.2.5', 'pid': os.getpid(),
+                                    'urls': [f'http://127.0.0.1:{self.server.server_address[1]}'], 'paths': {'tmp': '/tmp'}})
         if key == ('GET', 'event'):
             if time.time() < modes['refuseEventsUntil']:
                 return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
@@ -1193,28 +1224,6 @@ class Handler(BaseHTTPRequestHandler):
             go_on.wait(60)
         return self.reply(200, info)
 
-    def dispose(self):
-        how = switch('dispose')
-        if how == 'refuse':
-            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: dispose failed'}})
-        if how == 'hang':
-            time.sleep(30)
-            return self.reply(200, True)
-        # As OpenCode releasing its instances: what its tools run is ended
-        # (SIGTERM to its session's group, then waited for), the instance's
-        # disposal is announced, and its event streams end.
-        for tool in tools:
-            try:
-                os.killpg(tool.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            tool.wait()
-        publish('server.instance.disposed', {'directory': os.getcwd()})
-        time.sleep(0.05)
-        with lock:
-            generation[0] += 1
-        return self.reply(200, True)
-
     def answer(self, pending, request_id, reply, body):
         with lock:
             found = next((r for r in pending if r['id'] == request_id), None)
@@ -1269,12 +1278,41 @@ class Handler(BaseHTTPRequestHandler):
                 streams.remove(mine)
 
 
+def teardown(signum, frame):
+    """As 2.x after SIGTERM (cli/src/shutdown-deadline.ts): its teardown,
+    which takes `teardown` seconds here, ends what its tools run (SIGTERM to
+    each one's session, then waited for), and it exits."""
+    if switch('closeStreamsFirst'):
+        # 2.x closes what it serves early in its teardown, before its tools' processes end: its event streams,
+        # and every request still being served, whose client then lets go of it.
+        with lock:
+            generation[0] += 1
+            served = list(active)
+        for connection in served:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+    time.sleep(float(switch('teardown') or 0))
+    for tool in tools:
+        try:
+            os.killpg(tool.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        tool.wait()
+    os._exit(0)
+
+
 def main():
     argv = sys.argv[1:]
     if argv == ['--version']:
-        # As `opencode --version`: 1.x prints its version, 2.x `opencode v2.0.16` (switch `versionLine`).
-        print(switch('versionLine') or switch('version') or '1.19.3')
+        # As `opencode --version`: 2.x prints `opencode v2.2.5`, 1.x its bare version (switch `versionLine`).
+        print(switch('versionLine') or f"opencode v{switch('version') or '2.2.5'}")
         return
+    if any(arg.startswith('--mdns') for arg in argv):
+        # As 2.x, which has no mDNS option: a flag it does not know ends it.
+        sys.stderr.write('\x1b[31mERROR\x1b[0m\nUnrecognized flag: --mdns in command opencode serve\n')
+        sys.exit(1)
     new = not (ROOT / 'state.json').exists()
     load()
     modes['mcp'] = switch('mcp') or 'connected'
@@ -1289,7 +1327,7 @@ def main():
     child = subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
     seen = {'argv': argv, 'cwd': os.getcwd(), 'pid': os.getpid(), 'pgid': os.getpgid(0), 'child': child.pid,
-            'database': os.environ.get('OPENCODE_DB'), 'username': USERNAME, 'passwordLength': len(PASSWORD),
+            'database': os.environ.get('OPENCODE_DB'), 'passwordFrom': PASSWORD_FROM, 'passwordLength': len(PASSWORD),
             'passwordInArgv': bool(PASSWORD) and any(PASSWORD in arg for arg in argv)}
     if switch('stubborn'):
         # As a server, or a tool it runs, that does not stop on SIGTERM.
@@ -1297,6 +1335,8 @@ def main():
         seen['stubborn'] = subprocess.Popen(
             [sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+    else:
+        signal.signal(signal.SIGTERM, teardown)
     if switch('tool'):
         tool = subprocess.Popen(['sleep', '600'], start_new_session=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1317,7 +1357,8 @@ def main():
         # A line longer than Core reads at once, and not UTF-8.
         sys.stdout.buffer.write(b'\xfe' * 100_000 + b'\n')
     print('INFO fixture starting', flush=True)
-    print(f'opencode server listening on http://{switch("host") or "127.0.0.1"}:{seen["port"]}', flush=True)
+    said = 'opencode server listening on' if switch('line1x') else 'server listening on'
+    print(f'{said} http://{switch("host") or "127.0.0.1"}:{seen["port"]}', flush=True)
     server.serve_forever()
 
 

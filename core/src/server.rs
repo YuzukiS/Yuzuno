@@ -584,7 +584,7 @@ async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
     stored_json(&ws, move |store| Ok(
         json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
-            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERSION},
+            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
             "projectUsage":store.project_usage()?}),
     )).await

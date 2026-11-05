@@ -160,6 +160,78 @@ fn journal(lab: &Lab) -> Vec<String> {
     query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect()
 }
 
+/// An OpenCode Agent made with 1.19.3, the release Core pinned before T-32
+/// (a record with a session and no `opencodeVersion`), is kept to read: it is never started,
+/// so that 2.x never opens, and so migrates, its database; asking it for
+/// anything says why, and its conversation stays in Core's record.
+#[tokio::test]
+async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let mut old = agent(&work.to_string_lossy());
+    old.agent.opencode_version = None;
+    old.agent.opencode_major = None;
+    old.agent.opencode_session_id = Some("ses_made_with_1x".into());
+    old.turns = vec![json!({"id": "msg_1", "status": "completed", "items": [
+        {"id": "u1", "type": "userMessage", "content": [{"type": "text", "text": "Kept"}]},
+        {"id": "a1", "type": "agentMessage", "text": "Read."}]})];
+    ws.store.insert(&old).unwrap();
+    let why = "是用 OpenCode 1.19.3 创建的，只能阅读";
+    let reconnected = ws.reconnect(ID).await.map(|_| ()).expect_err("not reconnected").to_string();
+    let started = dir.path().join("data/opencode").join(ID).join("start.json");
+    assert!(!started.exists(), "OpenCode never started for it");
+    assert!(reconnected.contains(why), "{reconnected}");
+    let sent = ws.send(ID, "next".into()).await.map(|_| ()).expect_err("not sent").to_string();
+    assert!(sent.contains(why), "{sent}");
+    assert!(!started.exists(), "nor for a message");
+    let kept = ws.store.detail(ID).unwrap();
+    assert_eq!(kept.turns.len(), 1, "its conversation stays readable");
+    assert_eq!(kept.agent.opencode_session_id.as_deref(), Some("ses_made_with_1x"));
+}
+
+/// An Agent whose 1.19.3 started and made its database, but whose session
+/// never reached the record, has nothing of Core's in it. 2.x never opens
+/// that database: it is moved aside whole, never deleted, and 2.x starts on
+/// a new one (R2 f9cbccce of #575).
+#[tokio::test]
+async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let root = dir.path().join("data/opencode").join(ID);
+    std::fs::create_dir_all(&root).unwrap();
+    let old = [("opencode.db", "made by 1.19.3"), ("opencode.db-wal", "its WAL"), ("opencode.db-shm", "its index")];
+    for (name, text) in old {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    std::fs::create_dir(root.join("set-aside-1")).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&work.to_string_lossy())).unwrap();
+    let d = ws.reconnect(ID).await.unwrap();
+    assert_eq!(d.agent.connection_state, "connected");
+    for (name, text) in old {
+        assert_ne!(std::fs::read_to_string(root.join(name)).ok().as_deref(), Some(text),
+            "2.x never opens the database no recorded session is in: {name}");
+    }
+    let aside = root.join("set-aside-2");
+    for (name, text) in old {
+        assert_eq!(std::fs::read_to_string(aside.join(name)).unwrap(), text, "kept whole beside it: {name}");
+    }
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
+    assert_eq!(seen["database"], &*root.join("opencode.db").to_string_lossy(), "2.x got the same path, now free");
+    let kept = ws.store.detail(ID).unwrap();
+    assert_eq!(kept.agent.opencode_major.as_deref(), Some("2"), "made by 2.x now");
+    assert!(kept.agent.opencode_session_id.is_some());
+    let db = rusqlite::Connection::open(dir.path().join("data/workspace.sqlite")).unwrap();
+    let said: Vec<Value> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/setAside'").unwrap()
+        .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+    assert_eq!(said, vec![json!({"folder": aside})], "the record says where it went");
+}
+
 #[tokio::test]
 async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() {
     let lab = lab(&[], false).await;
@@ -444,6 +516,59 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     let d = lab.until("the late error", |d| d.agent.error.as_deref().is_some_and(|e| e.contains("late"))).await;
     assert_eq!(turn(&d, &done)["status"], "completed");
     assert!(turn(&d, &done)["_opencodeSessionError"].is_null(), "recorded on no Turn");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Closing an Agent whose server something else still holds (a request
+/// still out, here a read of its models) waits for 2.x's teardown, within
+/// TEARDOWN. 2.x closes what it serves first, so that request fails and lets
+/// go of the server, and only then ends what its tools run: no kill of the
+/// group by the last holder cuts that short (R1 070d0f95 of #575).
+#[tokio::test]
+async fn closing_waits_for_the_teardown_even_while_a_request_still_holds_the_server() {
+    let lab = lab(&[("tool", "1"), ("teardown", "2"), ("closeStreamsFirst", "1")], false).await;
+    let (tool, pid) = (lab.seen()["tool"].as_u64().unwrap(), lab.seen()["pid"].as_u64().unwrap());
+    lab.control("mode", json!({"slow": {"/config/providers": 30}})).await;
+    let ws = lab.ws.clone();
+    let read = tokio::spawn(async move { ws.opencode_agent_catalog(ID).await.map(drop) });
+    for _ in 0..200 {
+        if lab.calls().iter().any(|c| c["path"] == "/config/providers") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(lab.calls().iter().any(|c| c["path"] == "/config/providers"), "the read is out, holding the server");
+    lab.ws.close_agent(ID).await.unwrap();
+    let ended = ends(tool).await;
+    if !ended {
+        // Not left behind by a red run: its session is its own group.
+        let _ = std::process::Command::new("kill").args(["-KILL", &format!("-{tool}")]).status();
+    }
+    assert!(ended, "the tool's process ended in OpenCode's own teardown, not cut short by a kill of its group");
+    assert!(ends(pid).await, "OpenCode ended");
+    assert!(read.await.unwrap().is_err(), "the read was cut by OpenCode's teardown");
+}
+
+/// An Agent's database is made by its first 2.x server (T-32): the version
+/// that server reported is kept with its session, and stays when a later 2.x
+/// runs it. Its models say which OpenCode it runs, and note one newer than
+/// the verified release.
+#[tokio::test]
+async fn the_version_an_agents_database_was_made_with_is_kept_and_a_newer_one_is_noted() {
+    let lab = lab(&[("version", "2.9.1")], false).await;
+    assert_eq!(lab.detail().agent.opencode_version.as_deref(), Some("2.9.1"), "kept with its session");
+    assert_eq!(lab.detail().agent.opencode_major.as_deref(), Some("2"), "with the major Core parsed from it");
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "newer than the verified 2.2.5"}));
+    let Lab { dir, ws } = lab;
+    drop(ws);
+    // A later start, with the verified release: the version it was made with stays; nothing is noted.
+    std::fs::write(dir.path().join("data/opencode").join(ID).join("version"), "2.2.5").unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let lab = Lab { dir, ws };
+    assert_eq!(lab.ws.reconnect(ID).await.unwrap().agent.opencode_version.as_deref(), Some("2.9.1"), "the one it was made with");
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["opencode"], json!({"version": "2.2.5", "verified": "2.2.5"}));
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -1046,7 +1171,7 @@ async fn closing_or_stopping_core_ends_what_opencodes_tools_run_and_only_that_ag
     lab.ws.close_agent(ID).await.unwrap();
     assert!(ends(pid(&lab.seen(), "tool")).await, "the tool's process outlived the close");
     assert!(ends(pid(&lab.seen(), "pid")).await);
-    assert_eq!(lab.posts("/global/dispose").len(), 1);
+    assert!(lab.posts("/global/dispose").is_empty(), "2.x has no dispose: its teardown after SIGTERM ended the tool");
     // Long enough for a reaction to the stream's end to be recorded.
     tokio::time::sleep(Duration::from_millis(800)).await;
     let after = kinds(ID);

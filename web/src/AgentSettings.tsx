@@ -28,6 +28,7 @@ const text = strings({
   claudeDescription: "The model and reasoning effort apply from the next turn; a running turn keeps its own, and this conversation stays together. Approvals apply to Claude’s next permission check, including in a running turn.",
   codexDescription: "Model, effort and permissions apply to new turns. The current turn and pending requests keep their existing permissions. Context settings need a separate safe reload while the conversation is idle.",
   opencodeDescription: "The model and its variant go with each new message from the next one; a running turn keeps what it was sent with. Both are what OpenCode’s configured providers list. Permissions stay OpenCode’s own configuration.",
+  openCodeNewer: (version: string, verified: string) => `OpenCode ${version} is newer than the verified ${verified}.`,
   variant: "Variant",
   variantNote: "OpenCode runs the model with this variant from the next message. Default leaves it to OpenCode.",
   variantBack: (name: string, variant: string) => `${name || "This model"} does not list variant ${variant}; it is back to the default.`,
@@ -76,6 +77,7 @@ const text = strings({
   claudeDescription: "模型和推理强度从下一个 Turn 起生效；正在运行的 Turn 保持自己的设置，此会话也不会被拆开。审批设置对 Claude 的下一次权限检查生效，包括正在运行的 Turn。",
   codexDescription: "模型、推理强度和权限对新的 Turn 生效。当前 Turn 和待处理的请求保留原有权限。上下文设置需要在会话空闲时另行安全地重新载入。",
   opencodeDescription: "模型及其变体从下一条消息起随每条新消息发送；正在运行的 Turn 保持发送时的设置。两者都来自 OpenCode 已配置的提供方。权限仍由 OpenCode 自己的配置决定。",
+  openCodeNewer: (version, verified) => `OpenCode ${version} 比已验证的 ${verified} 更新。`,
   variant: "变体",
   variantNote: "从下一条消息起，OpenCode 用这个变体运行模型。选默认则由 OpenCode 决定。",
   variantBack: (name, variant) => `${name || "此模型"}没有列出变体 ${variant}，已恢复为默认。`,
@@ -179,6 +181,7 @@ export function AgentSettings({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<Said>("");
   const [effortNote, setEffortNote] = useState<Said>("");
+  const [openCodeNote, setOpenCodeNote] = useState<{ version: string; verified: string } | null>(null);
   useEffect(() => {
     if (!open) return;
     let valid = true;
@@ -193,11 +196,14 @@ export function AgentSettings({
     setCompactLimit(String(agent.settings?.autoCompactTokenLimit ?? ""));
     setContext(undefined);
     setContextNote("");
+    setOpenCodeNote(null);
     setPermissionMode(chosenMode(agent));
-    api<{ models: Model[]; permissions?: PermissionCatalog; context?: ContextSettings }>(`/agents/${encodeURIComponent(agent.id)}/models`)
-      .then(({ models, permissions, context }) => {
+    api<{ models: Model[]; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, permissions, context, opencode: native }) => {
         if (!valid) return;
         setModels(models);
+        // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one checked against).
+        setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
         setPermissions(permissions);
         setContext(context);
         const wanted = requested.current;
@@ -552,6 +558,9 @@ export function AgentSettings({
           )}
           {opencode && effortNote && (
             <small className="model-catalog-note" role="status">{say(effortNote)}</small>
+          )}
+          {opencode && openCodeNote && (
+            <small className="model-catalog-note opencode-version-note">{t.openCodeNewer(openCodeNote.version, openCodeNote.verified)}</small>
           )}
           {!claude && !opencode && (
             <>
