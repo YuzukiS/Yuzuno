@@ -461,6 +461,51 @@ impl Client {
         }
     }
 
+    /// A job log's first `limit` bytes (gh follows GitHub's redirect to the
+    /// log). Bytes past the limit are never read: the answer says it stopped
+    /// there. Logs carry terminal colour codes; they are kept as bytes.
+    pub(crate) async fn log_prefix(&self, endpoint: &str, limit: usize) -> Result<(Vec<u8>, bool)> {
+        let mut child = self.spawn_with_headers(
+            endpoint,
+            "Accept: application/vnd.github+json",
+            "GET",
+            false,
+            &["--allow-escape-sequences".to_owned()],
+        )?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .context("gh stdout unavailable")?
+            .take(limit as u64 + 1);
+        let mut stderr = child
+            .stderr
+            .take()
+            .context("gh stderr unavailable")?
+            .take(64 * 1024 + 1);
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut out = Vec::new();
+            stdout.read_to_end(&mut out).await?;
+            if out.len() > limit {
+                out.truncate(limit);
+                return Ok::<_, anyhow::Error>((out, true));
+            }
+            let mut err = Vec::new();
+            stderr.read_to_end(&mut err).await?;
+            let status = child.wait().await?;
+            if !status.success() {
+                return Err(failure(&err, status.code()));
+            }
+            Ok((out, false))
+        })
+        .await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        match result {
+            Ok(answer) => answer,
+            Err(_) => bail!("timeout: GitHub job log read timed out"),
+        }
+    }
+
     /// Explicit PR writes only; JSON is streamed to stdin, never shell or argv text.
     /// Any error after submission requires remote reconciliation by the caller.
     pub(crate) async fn write_json(

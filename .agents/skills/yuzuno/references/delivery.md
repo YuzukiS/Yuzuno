@@ -108,6 +108,11 @@ In source versions supporting `searchRecovery` evidence, a non-parameter `source
 
 In source versions supporting `recoveryReceipts` evidence, a failed `source_read` range recovers once successful reads of the same frozen revision, path and blob have delivered every requested line, including reads made before the failure. `recoveryReceipts` lists those reads and `resolvedByReceipt` names the one that completed the range. A range over 500 lines is recorded as `invalid_arguments`. Reads of another revision, path or blob, requests that delivered nothing, other failures and terminal limits still leave the review incomplete. Older connected Cores count only reads made after the failure, and a completed review keeps the conclusion it recorded.
 
+## Merge queue (when the user has turned it on)
+
+- `merge_enqueue` releases one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not. Releasing states that the review pair is complete; Core refuses a head whose last completed review round did not review it or does not pass.
+- Core then checks on fresh reads that CI tested exactly the merge of the current main and the head, and writes the outcome and evidence to the task. In this release that is a dry run: the entry ends at `ready` or `stopped`, and Core merges nothing. `merge_get` reads an entry; `merge_retry` checks a stopped one again and never reruns CI.
+
 ## Result
 
 - `task_submit_result` on the same task: exact head, CI run, review identifier and conclusion, tests and their scope, known limits, and links. Pass `dispatchId` when you were dispatched and your tools accept it.

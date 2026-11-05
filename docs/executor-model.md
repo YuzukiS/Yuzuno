@@ -262,7 +262,7 @@ is refused with `materials_too_large` and nothing is dispatched.
 | 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request. |
 | 2 | A limit on how many executors run at once, with a queue and one retry of a failed start. |
 | 3 | Releasing and archiving executors, routing their late mail to the lead, and grouping them in the sidebar. |
-| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. |
+| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. Its first release checks a released PR as a dry run ([merge queue](merge-queue.md)). |
 
 Standing Agents keep working throughout. Tasks already in progress finish on
 the Agents that hold them.

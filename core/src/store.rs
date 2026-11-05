@@ -1207,6 +1207,7 @@ impl Store {
         crate::jobs::store::migrate(&db)?;
         crate::ci_monitor::store::migrate(&db)?;
         crate::delivery::store::migrate(&db)?;
+        crate::merge_queue::store::migrate(&db)?;
         crate::machines::migrate(&db)?;
         crate::codex_sessions::migrate(&db)?;
         crate::opencode_agent::fork_migrate(&db)?;
