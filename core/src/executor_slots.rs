@@ -209,21 +209,28 @@ fn pending(db: &Connection) -> Result<bool> {
     )?)
 }
 
-/// What holds a slot now (starting or running), in all and by Project and by machine.
-fn holding(db: &Connection) -> Result<(i64, HashMap<String, i64>, HashMap<String, i64>)> {
+/// What holds a slot now (starting or running): in all, by Project and by machine.
+#[derive(Default)]
+struct Holding {
+    total: i64,
+    projects: HashMap<String, i64>,
+    machines: HashMap<String, i64>,
+}
+
+fn holding(db: &Connection) -> Result<Holding> {
     let mut q = db.prepare(
         "SELECT project_id, machine_id, COUNT(*) FROM executor_slots WHERE state IN ('starting','running') GROUP BY project_id, machine_id",
     )?;
-    let (mut total, mut projects, mut machines) = (0, HashMap::new(), HashMap::new());
+    let mut held = Holding::default();
     for row in q.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))? {
         let (project, machine, n) = row?;
-        total += n;
+        held.total += n;
         if let Some(project) = project {
-            *projects.entry(project).or_insert(0) += n;
+            *held.projects.entry(project).or_insert(0) += n;
         }
-        *machines.entry(machine).or_insert(0) += n;
+        *held.machines.entry(machine).or_insert(0) += n;
     }
-    Ok((total, projects, machines))
+    Ok(held)
 }
 
 /// An executor's slot row as the task card shows it, and its place in the
@@ -332,7 +339,7 @@ impl Store {
         let tx = writer.transaction()?;
         release_closed(&tx)?;
         settle_connected(&tx)?;
-        let (total, projects, machines) = holding(&tx)?;
+        let Holding { total, projects, machines } = holding(&tx)?;
         let mut chosen = None;
         if total < workspace_slots(&tx)? {
             for (waiting, key) in queue_order(&tx)? {
