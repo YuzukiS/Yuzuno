@@ -311,8 +311,10 @@ fn decide(store: &Store, project: &str, id: &str, input: &Decision) -> Result<(V
         answer["handover"] = read_in(tx, project, None)?;
         Ok(answer)
     };
+    // A requestId is reused only for the identical decision: action and note (#612 R3).
     if p.decision_request.as_deref() == Some(input.request_id.as_str()) {
-        ensure!(p.state == if approve { "approved" } else { "rejected" }, "idempotency_conflict: requestId already has a different payload");
+        ensure!((p.state == if approve { "approved" } else { "rejected" }) && p.note.as_deref() == note,
+            "idempotency_conflict: this proposal was already decided under this requestId, with the earlier note; reload it");
         return Ok((decided(&p, &tx)?, None));
     }
     match p.state.as_str() {

@@ -132,6 +132,12 @@ async fn a_lead_proposes_a_handover_and_nothing_is_written_until_the_user_approv
     let (_, retried) = route(&ws, "POST", &format!("{path}/{newer_id}/decision"), Some(decision)).await;
     assert_eq!(retried["proposal"]["state"], "approved", "a retry gets the same answer: {retried}");
     assert_eq!(mail_to(&ws, "lead").len(), 1, "and sends no second mail");
+    // The same requestId with another note is not the same decision (#612 R3).
+    let (_, edited) = route(&ws, "POST", &format!("{path}/{newer_id}/decision"),
+        Some(json!({"requestId":"d2","action":"approve","expectedVersion":1,"note":"Good, thanks; and merged"}))).await;
+    assert!(edited["error"].as_str().is_some_and(|e| e.starts_with("idempotency_conflict:")),
+        "a requestId reused with another note is refused: {edited}");
+    assert_eq!(mail_to(&ws, "lead").len(), 1, "and sends no mail");
     let (_, twice) = route(&ws, "POST", &format!("{path}/{newer_id}/decision"),
         Some(json!({"requestId":"d3","action":"reject","expectedVersion":2}))).await;
     assert!(twice["error"].as_str().is_some_and(|e| e.starts_with("proposal_decided: this proposal was already approved")), "{twice}");

@@ -69,8 +69,9 @@ export function HandoverProposal({ projectId, proposal, readOnly = false, onChan
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [reload, setReload] = useState(0);
-  // One requestId per decision attempt: a retry after a lost reply is the same decision.
-  const attempt = useRef<{ action: string; requestId: string } | null>(null);
+  // One requestId per decision: a retry after a lost reply is the same decision;
+  // another action or an edited note is another one (#612 R3).
+  const attempt = useRef<{ action: string; note: string; requestId: string } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     readHandoverProposal(projectId, proposal.id, controller.signal).then(next => {
@@ -83,7 +84,8 @@ export function HandoverProposal({ projectId, proposal, readOnly = false, onChan
   const tooLong = noteSize > NOTE_BYTES;
   async function decide(action: "approve" | "reject") {
     if (!detail) return;
-    if (attempt.current?.action !== action) attempt.current = { action, requestId: crypto.randomUUID() };
+    if (attempt.current?.action !== action || attempt.current.note !== note.trim())
+      attempt.current = { action, note: note.trim(), requestId: crypto.randomUUID() };
     setBusy(action);
     setError("");
     try {

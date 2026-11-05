@@ -147,6 +147,32 @@ test("a stale proposal can't be approved and is rejected; a refusal is shown, th
   assert.deepEqual(page.errors, []);
 });
 
+// #612 R3 b6b936ac: a requestId names one decision, its note included.
+test("after a failed attempt, an edited note is a new request, and the same note again is the same one", async () => {
+  let refuse = true;
+  const page = mount((url, method) => method === "POST"
+    ? (refuse ? [502, { error: "Core could not be reached" }] : [200, { proposal: { ...summary, state: "approved", version: 2 }, handover: { version: 2 } }])
+    : [200, detail()]);
+  page.window.renderCard(summary);
+  await until(() => card(page)?.querySelector(".changes-lines"), "the changed lines");
+  await type(page, "Note for Mori", "Thanks");
+  button(page, "Approve").click();
+  await until(() => posts(page).length === 1 && card(page).querySelector('[role="alert"]'), "the failed attempt");
+  await until(() => button(page, "Approve").disabled === false, "the card ready again");
+  button(page, "Approve").click();
+  await until(() => posts(page).length === 2, "the retry");
+  await until(() => button(page, "Approve").disabled === false, "the card ready again");
+  assert.equal(posts(page)[1].body.requestId, posts(page)[0].body.requestId, "the same note again is the same request");
+  await type(page, "Note for Mori", "Thanks, merged");
+  refuse = false;
+  button(page, "Approve").click();
+  await until(() => page.window.changed === 1, "Home read again");
+  const [first, , third] = posts(page);
+  assert.notEqual(third.body.requestId, first.body.requestId, "an edited note after a failed attempt is a new request");
+  assert.equal(third.body.note, "Thanks, merged");
+  assert.deepEqual(page.errors, []);
+});
+
 // #612 R1 6658e4c4: a save in the Project's settings while a proposal waits.
 test("when Home says the document moved, the card reads the proposal again and shows it stale before any click", async () => {
   let current = 1;
