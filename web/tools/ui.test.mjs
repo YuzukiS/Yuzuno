@@ -5141,6 +5141,50 @@ test("working Claude keeps its draft and interrupt, and offers a follow-up to yo
   }
 });
 
+// T-45: any running Claude turn takes a follow-up, one of its own included
+// (a mailbox notice's, a reconnect's): the newest running one.
+test("working Claude takes a follow-up into its newest running turn, one of its own included (T-45)", async () => {
+  const native = (extra = {}) => ({ id: "native-n", status: "inProgress", _yuzunoSource: "native",
+    items: [{ id: "n1", type: "agentMessage", text: "Reading the mail." }], ...extra });
+  const field = (page) => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+  const thought = "Add a thought while your agent works…";
+  for (const [name, options, placeholder, turn] of [
+    ["idle", { status: "idle" }, "A task, a question, a new idea for Mori…", null],
+    ["your turn", { status: "working" }, thought, "t1"],
+    ["its own", { status: "working", turnStatus: "completed", extraTurns: [native()] }, thought, "native-n"],
+    ["its own, newest, beside your waiting prompt", { status: "working", extraTurns: [native({ _yuzunoUnmatched: true })] }, thought, "native-n"],
+  ]) {
+    const page = await mount({ harness: "claude", ...options });
+    try {
+      assert.equal(field(page).getAttribute("aria-placeholder"), placeholder, name);
+      setValue(page.window, field(page), `About ${name}.`);
+      await pause();
+      const send = page.document.querySelector(`[aria-label="${turn ? "Send while working" : "Send message"}"]`);
+      assert.equal(send?.disabled, false, name);
+      send.click();
+      await pause();
+      const posts = page.calls.filter((r) => r.url === "/api/agents/a/messages");
+      assert.equal(posts.length, 1, name);
+      assert.equal(JSON.parse(posts[0].init.body).expectedTurnId, turn, name);
+      assert.deepEqual(page.errors, [], name);
+    } finally {
+      page.close();
+    }
+  }
+  // A disconnected agent still holds the draft, as before.
+  const page = await mount({ harness: "claude", status: "working", turnStatus: "completed", extraTurns: [native()],
+    agentFields: { disconnectedAt: "2026-11-04T00:00:00Z" } });
+  try {
+    setValue(page.window, field(page), "Held.");
+    await pause();
+    assert.equal(page.document.querySelector('[aria-label="Send while working"]')?.disabled, true);
+    assert.equal(page.calls.filter((r) => r.url === "/api/agents/a/messages").length, 0);
+    assert.equal(composerText(field(page)), "Held.");
+  } finally {
+    page.close();
+  }
+});
+
 test("task current work visibly highlights and focuses its original user message", async () => {
   const page = await mount({
     workSummary: {

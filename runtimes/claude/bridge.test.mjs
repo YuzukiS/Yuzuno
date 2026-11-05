@@ -1141,6 +1141,123 @@ test('an interrupt receipt naming follow-ups still queued runs them next, whethe
   }
 });
 
+// Follow-ups to a running turn of Claude's own (T-45): a mailbox notice's,
+// a restart's rescue. The same queue, and the same two ways it ends.
+const own = append => ({ ...append, expectedTurnId: 'native-own' });
+
+test('a follow-up to a running turn of Claude\'s own is folded into it and confirmed on that turn', async () => {
+  const f = await fixture();
+  await feed(f, init('own'), text('working', 'Reading the mail.'));
+  assert.deepEqual(routed(f), [['own', 'native-own'], ['working', 'native-own']]);
+  await f.bridge.handle(own(append('n')));
+  assert.equal(f.response('n').result?.turnId, 'native-own', 'queued for that turn');
+  const queued = (await f.state.prompt.next()).value;
+  assert.deepEqual(f.response('n').result, { queued: true, uuid: queued.uuid, turnId: 'native-own' });
+  assert.equal(queued.priority, undefined, 'queued, never now');
+  await feed(f, { ...text('after', 'Noted.'), user_message_uuid: queued.uuid, user_message_uuids: [queued.uuid] });
+  assert.deepEqual(deliveries(f), [['client-n', 'accepted', 'native-own', undefined]], 'read there, not run as a turn of its own');
+  assert.equal(f.bridge.turnId, null);
+  await feed(f, result('done', { ...notified, ...stamp(queued.uuid) }));
+  assert.deepEqual(routed(f).slice(-2), [['after', 'native-own'], ['done', 'native-own']]);
+  assert.deepEqual([deliveries(f).length, f.bridge.turnId, f.bridge.appends.size], [1, null, 0]);
+  f.bridge.close(); await f.bridge.reader;
+});
+
+test('a follow-up a turn of Claude\'s own leaves queued runs next, on the result\'s list, the interrupt receipt or its first frame', async () => {
+  for (const ending of ['listed', 'interrupted', 'named later']) {
+    const f = await fixture();
+    await feed(f, init('own'), text('working', 'Reading the mail.'));
+    await f.bridge.handle(own(append('m')));
+    assert.equal(f.response('m').result?.turnId, 'native-own', `${ending}: queued for that turn`);
+    const queued = (await f.state.prompt.next()).value;
+    if (ending === 'listed') await feed(f, result('done', { ...notified, user_message_uuids: ['notice-prompt'] }));
+    if (ending === 'interrupted') {
+      f.output.interrupt = async () => ({ still_queued: [queued.uuid] });
+      await f.bridge.handle({ id: 'stop', op: 'interrupt' });
+      await feed(f, result('stopped', { ...notified, subtype: 'error_during_execution', is_error: true }));
+    }
+    if (ending === 'named later') {
+      await feed(f, result('done', notified));
+      assert.deepEqual([deliveries(f), f.bridge.turnId], [[], null], 'no evidence it is still queued yet');
+      await feed(f, init('j'));
+    }
+    if (ending !== 'named later') {
+      assert.deepEqual(deliveries(f), [['client-m', 'next', 'follow-m', 'native-own']], ending);
+      assert.equal(f.bridge.turnId, 'follow-m', ending);
+      await feed(f, init('j'));
+    }
+    await feed(f, text('second', 'About your note.', queued.uuid), result('second-result', stamp(queued.uuid)));
+    assert.deepEqual(deliveries(f), [['client-m', 'next', 'follow-m', 'native-own'], ['client-m', 'accepted', 'follow-m', undefined]], ending);
+    assert.deepEqual(routed(f).slice(-3), [['j', 'follow-m'], ['second', 'follow-m'], ['second-result', 'follow-m']], ending);
+    assert.equal(f.bridge.turnId, null, ending);
+    f.bridge.close(); await f.bridge.reader;
+  }
+});
+
+test('a follow-up to a turn of Claude\'s own is refused once it ended, while it is not shown yet, or for another', async () => {
+  const f = await fixture();
+  await feed(f, init('own'), text('working', 'Reading the mail.'), result('done', notified));
+  await f.bridge.handle(own(append('ended')));
+  assert.match(f.response('ended').error, /already ended/);
+  // With a prompt in flight, a turn nothing names yet is held, not shown.
+  await sendPrompt(f, 'turn1');
+  await feed(f, init('held'), text('unnamed', 'Something.'));
+  assert.deepEqual(routed(f).slice(3), [], 'held');
+  await f.bridge.handle(append('held', { expectedTurnId: 'native-held' }));
+  assert.match(f.response('held').error, /already ended/);
+  await f.bridge.handle(append('other', { expectedTurnId: 'native-other' }));
+  assert.match(f.response('other').error, /already ended/);
+  assert.equal(f.bridge.appends.size, 0);
+  f.bridge.close(); await f.bridge.reader;
+});
+
+// The unmatched case: a turn of Claude's own shown while a prompt waits, the
+// newest running turn. A follow-up sent to it is delivered once, whichever
+// it turns out to be.
+test('a follow-up to a turn shown unmatched while a prompt waits is delivered once, however the turn resolves', async () => {
+  for (const resolved of ['read there', 'the prompt\'s', 'Claude\'s own']) {
+    const f = await fixture();
+    const prompt = await sendPrompt(f, 'turn1');
+    await feed(f, init('n'), toolCall('call-n', 'tool-n'));
+    // Claude waits for an answer, so the turn is shown now, matched to nothing.
+    const asked = f.state.options.canUseTool('Bash', { command: 'ls' }, { signal: new AbortController().signal, toolUseID: 'tool-n' });
+    assert.deepEqual(routed(f), [['n', 'native-n'], ['call-n', 'native-n']], resolved);
+    await f.bridge.handle(append('u', { expectedTurnId: 'native-n' }));
+    assert.equal(f.response('u').result?.turnId, 'native-n', `${resolved}: queued for that turn`);
+    const queued = (await f.state.prompt.next()).value;
+    await f.bridge.handle({ id: 'allow', op: 'respond', requestId: f.events.find(e => e.type === 'permission').requestId, decision: 'allow' });
+    await asked;
+    if (resolved === 'read there') {
+      // Naming only the follow-up sent to it: still that turn, not the prompt's.
+      await feed(f, { ...text('noted', 'Noted.'), ...stamp(queued.uuid) }, result('result-n', { ...notified, ...stamp(queued.uuid) }));
+      assert.deepEqual(routed(f).slice(-2), [['noted', 'native-n'], ['result-n', 'native-n']], resolved);
+      assert.deepEqual(deliveries(f), [['client-u', 'accepted', 'native-n', undefined]], resolved);
+      assert.equal(f.bridge.turnId, 'turn1', 'the prompt still waits');
+      await feed(f, init('t'), text('reply', 'Hi', prompt), result('result-t', stamp(prompt)));
+    }
+    if (resolved === 'the prompt\'s') {
+      // It turns out to answer the prompt; the follow-up waits on the prompt's turn.
+      await feed(f, text('reply', 'On your prompt.', prompt), result('result-t', stamp(prompt)));
+      assert.deepEqual(routed(f).slice(-2), [['reply', 'turn1'], ['result-t', 'turn1']], resolved);
+      assert.deepEqual(deliveries(f), [['client-u', 'next', 'follow-u', 'turn1']], resolved);
+      await feed(f, init('j'), text('second', 'On your note.', queued.uuid), result('second-result', stamp(queued.uuid)));
+      assert.deepEqual(deliveries(f).slice(1), [['client-u', 'accepted', 'follow-u', undefined]], resolved);
+    }
+    if (resolved === 'Claude\'s own') {
+      // It ends as Claude's own without reading it: queued after the prompt,
+      // it goes with the prompt's turn.
+      await feed(f, result('result-n', notified));
+      assert.deepEqual(deliveries(f), [], resolved);
+      await feed(f, init('t'), { ...text('reply', 'On both.'), user_message_uuid: queued.uuid, user_message_uuids: [prompt, queued.uuid] },
+        result('result-t', { user_message_uuid: queued.uuid, user_message_uuids: [prompt, queued.uuid] }));
+      assert.deepEqual(routed(f).slice(-3), [['t', 'turn1'], ['reply', 'turn1'], ['result-t', 'turn1']], resolved);
+      assert.deepEqual(deliveries(f), [['client-u', 'accepted', 'turn1', undefined]], resolved);
+    }
+    assert.deepEqual([f.bridge.turnId, f.bridge.appends.size], [null, 0], resolved);
+    f.bridge.close(); await f.bridge.reader;
+  }
+});
+
 // Images with a message (T-31): Core sends files it checked and fitted, never
 // their data; they are read, checked again and encoded only here.
 test('images reach the SDK as native image blocks read from the exact files Core checked', async () => {

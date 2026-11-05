@@ -1252,12 +1252,13 @@ export function App() {
   [conversationInputs.inputs, conversationInputs.total]);
   const readingInputNumber = conversationInputs.total - inputDockEntries.length
     + (readingInputId ? inputDockEntries.findIndex(entry => entry.id === readingInputId) + 1 : inputDockEntries.length);
-  // Claude takes a follow-up to your running turn, not to a turn of its own.
+  // Claude takes a follow-up to its newest running turn: yours, or one of its
+  // own, such as a mailbox notice's or a reconnect's (T-45).
   const claudeFollowUpTurnId = isClaude && busy
     ? logicalTurns
         .slice()
         .reverse()
-        .find((turn) => turn.status === "inProgress" && turn._yuzunoSource !== "native")?.id || null
+        .find((turn) => turn.status === "inProgress")?.id || null
     : null;
   // OpenCode takes a message into its running turn and answers it from its
   // next step (T-10), but not while it waits for your answer to a request.
