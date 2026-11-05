@@ -68,6 +68,13 @@ const text = strings({
   readFailed: "没有读到 OpenCode 的提供方。",
 });
 
+/** An answer as a login view: one that is not (no list of integrations) is a read that failed. */
+const shaped = (read: unknown): Logins => {
+  const view = read as Partial<Logins> | null;
+  return view && Array.isArray(view.integrations) && typeof view.state === "string"
+    ? view as Logins : { state: "failed", reason: "read_failed", version: null, integrations: [] };
+};
+
 /** Whether a form field is asked now: each of its conditions holds for the answers so far; an unanswered one never does. */
 const active = (field: Field, answers: Record<string, string>) =>
   field.when.every((w) => answers[w.key] !== undefined && answers[w.key] !== "" && (answers[w.key] === w.value) === (w.op === "eq"));
@@ -93,9 +100,9 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [code, setCode] = useState("");
   const live = useRef(true);
-  useEffect(() => () => { live.current = false; }, []);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const load = async () => {
-    try { const read = await api<Logins>(base); if (live.current) setLogins(read); } catch (e) { if (live.current) setError(errorText(e)); }
+    try { const read = shaped(await api<unknown>(base)); if (live.current) setLogins(read); } catch (e) { if (live.current) setError(errorText(e)); }
   };
   useEffect(() => { void load(); }, [base]);
   // An automatic sign-in finishes at the provider: asked about until it ends.
@@ -130,7 +137,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
   const logIn = () => act(async () => {
     if (!integration || !form) return;
     if (form.kind === "key") {
-      setLogins(await post<Logins>(`${base}/key`, { integration: integration.id, key, label: label || undefined, answer: answer() }));
+      setLogins(shaped(await post<unknown>(`${base}/key`, { integration: integration.id, key, label: label || undefined, answer: answer() })));
       setMethod(-1);
     } else if (form.kind === "oauth" && form.id) {
       const started = await post<Omit<Attempt, "integration">>(`${base}/oauth`, { integration: integration.id, method: form.id, answer: answer() });
@@ -149,7 +156,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
     await api(`${base}/oauth/${encodeURIComponent(was.integration)}/${encodeURIComponent(was.attemptId)}`, { method: "DELETE" });
   });
   const logOut = (credential: string) => act(async () => {
-    setLogins(await api<Logins>(`${base}/credential/${encodeURIComponent(credential)}`, { method: "DELETE" }));
+    setLogins(shaped(await api<unknown>(`${base}/credential/${encodeURIComponent(credential)}`, { method: "DELETE" })));
   });
 
   const off = disabled || busy;
