@@ -148,7 +148,9 @@ impl Store {
              VALUES(?1, ?2, ?3, 'user', 'You', NULL, ?4, ?5)",
             params![project, current + 1, markdown, reason, now()],
         )?;
-        let saved = read_in(&tx, project, None)?;
+        let mut saved = read_in(&tx, project, None)?;
+        // As a read answers it: a proposal still waits, now on an older version (#612 R4).
+        saved["proposal"] = json!(crate::handover_proposals::pending_summary(&tx, project)?);
         tx.commit()?;
         Ok(saved)
     }

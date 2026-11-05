@@ -178,3 +178,30 @@ test("a reason is counted in bytes, as Core counts it: one over the limit is not
   assert.equal(puts(page)[0].body.reason, "a".repeat(999), "a reason within the limit is sent whole");
   assert.deepEqual(page.errors, []);
 });
+
+test("a waiting proposal is still said after a save, and leaves with the answer that says it was decided (#612 R4)", async () => {
+  const versions = [{ version: 1, markdown: "# Lab", writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T08:00:00Z" }];
+  // As Core lists a proposal (handover_proposals::summary).
+  const proposal = { id: "h1", projectId: "p1", proposer: { id: "a", name: "Mori" }, baseVersion: 1, reason: "Say how to test", at: "2026-11-05T09:00:00Z", state: "pending" };
+  // What each save answers: as Core now does, as an older Core did (no proposal), and after a decision elsewhere.
+  const saves = [{ proposal }, {}, { proposal: null }];
+  const page = mount((url, method, body) => {
+    if (method === "PUT") {
+      versions.push({ version: versions.length + 1, markdown: body.markdown, writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T10:00:00Z" });
+      return [200, { ...answer(versions), ...saves.shift() }];
+    }
+    return [200, { ...answer(versions), proposal }];
+  });
+  page.window.renderHandover("p1");
+  const section = () => page.document.querySelector("#project-settings-handover");
+  const said = () => /Mori proposed a new version; it waits for your decision on Home\./.test(section()?.textContent ?? "");
+  await until(said, "the waiting proposal");
+  for (const [n, still, why] of [[2, true, "the save answers with the proposal still waiting"],
+    [3, true, "a save answer from an older Core leaves the notice"], [4, false, "a decided proposal leaves with the answer"]]) {
+    await type(page, "Handover document", `# Lab\nVersion ${n}.`);
+    button(page, "Save handover").click();
+    await until(() => new RegExp(`Version ${n}`).test(section().textContent), `version ${n}`);
+    assert.equal(said(), still, why);
+  }
+  assert.deepEqual(page.errors, []);
+});
