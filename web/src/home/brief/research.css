@@ -68,14 +68,6 @@
   cursor: pointer;
   font-size: 0.84rem;
 }
-/* The chosen view's pill moves over micro (T-19 HM:R1); under reduced motion
-   it is there at once (styles.css). */
-.research-views .research-radio {
-  transition:
-    background-color var(--motion-micro) var(--ease-standard),
-    color var(--motion-micro) var(--ease-standard),
-    box-shadow var(--motion-micro) var(--ease-standard);
-}
 .research-views .research-radio[aria-checked="true"],
 .research-toggle .research-radio[aria-checked="true"] {
   background: var(--paper);

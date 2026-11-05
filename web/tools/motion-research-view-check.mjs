@@ -2,7 +2,8 @@
 // every API answered here (no Core, no Agent): a research desk on its report page (research-fixtures.mjs's
 // dose study, with a second claim added here). A view the reader switches to (Claim, Evidence, Definitions,
 // Next) comes in over small, opacity only; its height is there at once (T-19 3920). The chosen view's pill
-// moves over micro. The view shown first, and a claim switch, play nothing; focus stays on the chosen radio.
+// moves over micro, as it has since T-19 1a (01800f8b; a guard here). The view shown first, and a claim
+// switch, play nothing; focus stays on the chosen radio.
 // Under reduced motion nothing plays and the pill has no transition.
 // Desktop 1280×860 and phone 390×844, each with normal and reduced motion. Writes: none; anything but a read
 // is refused and counted. Chromium is not Safari.
