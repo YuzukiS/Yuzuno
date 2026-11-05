@@ -96,17 +96,19 @@ try {
   await page.getByRole("button", { name: "Jobs", exact: true }).click();
   await dialog.waitFor();
   await page.getByRole("button", { name: "New job", exact: true }).click();
-  await page.getByLabel("Name", { exact: true }).fill("K4 calibration");
-  await page.getByLabel("Existing task").fill("T-38");
-  await page.getByLabel("Command").fill("python3 calib.py --clips 12");
-  await page.getByLabel("RAM limit (MiB)").fill("20480");
-  await page.getByLabel("CPU quota").fill("4");
+  // The submit form's own fields: the machine budget above it has a CPU quota too.
+  const form = page.locator(".job-form");
+  await form.getByLabel("Name", { exact: true }).fill("K4 calibration");
+  await form.getByLabel("Existing task").fill("T-38");
+  await form.getByLabel("Command").fill("python3 calib.py --clips 12");
+  await form.getByLabel("RAM limit (MiB)").fill("20480");
+  await form.getByLabel("CPU quota").fill("4");
   const note = page.locator(".job-suggestion");
   await note.waitFor({ timeout: 5000 }).catch(() => {});
   assert.equal(await note.count(), 1, "the form says what earlier runs suggest");
   assert.match(await note.locator("p").textContent(), /^The last measured run of this name or command in this task peaked at 2\.6 GiB RAM and 1\.20 CPU cores\. Suggested: 4\.0 GiB RAM and 1\.8 CPU/);
   assert.deepEqual(asked.at(-1), { taskId: "T-38", name: "K4 calibration", argv: JSON.stringify(["/bin/sh", "-c", "python3 calib.py --clips 12"]) });
-  assert.deepEqual([await page.getByLabel("RAM limit (MiB)").inputValue(), await page.getByLabel("CPU quota").inputValue()], ["20480", "4"]);
+  assert.deepEqual([await form.getByLabel("RAM limit (MiB)").inputValue(), await form.getByLabel("CPU quota").inputValue()], ["20480", "4"]);
   await note.scrollIntoViewIfNeeded();
   await shot("suggestion-light-1440.png");
   check("the note says the peak and the suggestion; the limits stay as typed");
@@ -124,7 +126,7 @@ try {
   }
   check("dark and narrow: the note fits, no sideways scroll");
   await page.getByRole("button", { name: "Use suggestion", exact: true }).click();
-  assert.deepEqual([await page.getByLabel("RAM limit (MiB)").inputValue(), await page.getByLabel("CPU quota").inputValue()], ["4096", "1.8"]);
+  assert.deepEqual([await form.getByLabel("RAM limit (MiB)").inputValue(), await form.getByLabel("CPU quota").inputValue()], ["4096", "1.8"]);
   await shot("used-light-390.png");
   check("Use suggestion fills the limits, and only then");
   assert.deepEqual(report.posts, [], "nothing submitted");

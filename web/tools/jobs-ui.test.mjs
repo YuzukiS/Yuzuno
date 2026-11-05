@@ -251,6 +251,15 @@ test('the submit form shows what earlier runs of the same name or command sugges
     return page([]);
   };
   const posted = p => p.calls.filter(c => c.url === '/api/jobs' && c.body).map(c => c.body.resources);
+  // The submit form's own fields: the machine budget above it has a CPU quota too.
+  const limit = (p, text) => [...p.doc.querySelectorAll('.job-form label')].find(l => l.textContent.startsWith(text))?.querySelector('input');
+  async function set(p, text, value) {
+    const el = limit(p, text);
+    assert.ok(el, `Missing ${text} field in the form`);
+    Object.getOwnPropertyDescriptor(p.window.HTMLInputElement.prototype, 'value').set.call(el, value);
+    el.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+    await wait();
+  }
   let p = mount(handler);
   try {
     await open(p); button(p, 'New job').click(); await wait();
@@ -265,7 +274,7 @@ test('the submit form shows what earlier runs of the same name or command sugges
     assert.equal(p.doc.querySelector('.job-suggestion p').textContent,
       'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (peak × 1.5, rounded up). Your limits stay as you set them.');
     // Shown, never applied: what is in the fields is sent.
-    await fill(p, 'RAM limit', '20480'); await fill(p, 'CPU quota', '4');
+    await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
     assert.ok(p.doc.querySelector('.job-suggestion'), 'still shown');
     button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
     assert.deepEqual(posted(p), [{ cpuMillis: 4000, memoryMiB: 20480, swapMiB: 0 }]);
@@ -276,10 +285,10 @@ test('the submit form shows what earlier runs of the same name or command sugges
   try {
     await open(p); button(p, 'New job').click(); await wait();
     await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
-    await fill(p, 'RAM limit', '20480'); await fill(p, 'CPU quota', '4');
+    await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
     await until(() => button(p, 'Use suggestion'));
     button(p, 'Use suggestion').click(); await wait();
-    assert.deepEqual([field(p, 'RAM limit').value, field(p, 'CPU quota').value], ['4096', '1.8']);
+    assert.deepEqual([limit(p, 'RAM limit').value, limit(p, 'CPU quota').value], ['4096', '1.8']);
     button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
     assert.deepEqual(posted(p), [{ cpuMillis: 1800, memoryMiB: 4096, swapMiB: 0 }]);
     assert.deepEqual(p.errors, []);
