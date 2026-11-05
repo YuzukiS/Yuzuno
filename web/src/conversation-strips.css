@@ -1,0 +1,38 @@
+/* The strips over the conversation's top (ConversationStrips.tsx, T-19
+   SH:C08, CV:CW-11): over the column between the docks, as the request pin
+   is, and above the pin. Each fades in over small; under reduced motion it
+   is there at once. */
+.conversation-strips {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  right: var(--conversation-scrollbar);
+}
+.conversation-body:has(> .work-dock:not(:empty)) > .conversation-strips {
+  left: calc(var(--work-dock-width) + 2px);
+}
+.conversation-body:has(.turn-dock) > .conversation-strips {
+  right: calc(var(--conversation-scrollbar) + var(--turn-dock-width) + 2px);
+}
+.conversation-strips > .source-navigation {
+  animation: strip-in var(--motion-small) var(--ease-standard);
+}
+@keyframes strip-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-strips > .source-navigation {
+    animation: none;
+  }
+}
+/* Below them: the request pin, and, as scroll padding, a target a jump
+   places at the top. */
+.conversation-body > .current-turn-prompt {
+  top: var(--strips-height, 0px);
+}
+.conversation-body > .conversation-scroll {
+  scroll-padding-top: calc(16px + var(--strips-height, 0px));
+}
