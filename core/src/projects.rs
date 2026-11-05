@@ -263,8 +263,9 @@ impl Store {
             project.name
         );
         tx.execute("DELETE FROM projects WHERE id=?1", [id])?;
-        // Its new-Agent and review defaults go with it (T-190).
+        // Its new-Agent and review defaults go with it (T-190), and its executor templates (T-34).
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::agent_defaults::project_key(id)])?;
+        tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::executor_templates::project_key(id)])?;
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::pr_review::settings::project_key(id)])?;
         tx.commit()?;
         Ok(())
