@@ -1784,19 +1784,17 @@ async fn context_usage_an_older_answer_arriving_after_a_newer_one_never_measures
     lab.control("mode", json!({"providers":providers})).await;
     let reads = providers_reads(&lab);
 
-    // The newer answer first, unmeasurable; then the older one, naming that model.
+    // The newer answer first, unmeasurable; then the older one, naming that
+    // model: 2.x's steps of the running Turn, each ended when OpenCode timed
+    // it (T-32 slice 3b). Its events come in order, so this is a replay.
     let now = chrono::Utc::now().timestamp_millis();
-    let answer = |id: &str, completed: i64, info: Value| {
-        let mut info = info;
-        info["id"] = json!(id);
-        info["sessionID"] = json!(session);
-        info["role"] = json!("assistant");
-        info["parentID"] = json!(running);
-        info["time"] = json!({"created":completed,"completed":completed});
-        json!({"type":"message.updated","properties":{"sessionID":session,"info":info}})
-    };
-    lab.control("event", answer("msg_newer", now + 2000, json!({"providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":-1}}))).await;
-    lab.control("event", answer("msg_older", now + 1000, json!({"providerID":"deepseek","modelID":"deepseek-later","tokens":{"total":500}}))).await;
+    for (id, at, model, tokens) in [("msg_newer", now + 2000, "deepseek-flash", Value::Null),
+        ("msg_older", now + 1000, "deepseek-later", json!({"input":500,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}))] {
+        lab.control("event", json!({"type":"session.step.started","created":at,"properties":{"sessionID":session,"assistantMessageID":id,
+            "model":{"id":model,"providerID":"deepseek"}}})).await;
+        lab.control("event", json!({"type":"session.step.ended","created":at,"properties":{"sessionID":session,"assistantMessageID":id,
+            "finish":"stop","tokens":tokens}})).await;
+    }
     unchanged(&lab, "an older answer after a newer one", &Some((100, 1000, running, true))).await;
     assert_eq!(providers_reads(&lab), reads, "the older answer read no catalog");
     lab.ws.close_agent(ID).await.unwrap();
@@ -1969,7 +1967,8 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
     }
     assert!(resyncs(&lab) > before, "read again");
     // Events of the new stream are handled once the resync, its catalog read included, has returned.
-    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    // 2.x's execution end, as Core journals it (T-32 slice 3b).
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| k.starts_with("opencode/session.execution.")).count();
     let handled = statuses(&lab);
     lab.control("idle", json!({"sessionID":session})).await;
     for _ in 0..200 {
@@ -2027,7 +2026,8 @@ async fn context_usage_a_late_answer_of_an_earlier_turn_never_measures() {
     let mut late = flash(json!(900));
     late["time"] = json!({"created":at,"completed":at});
     // Each answer's record change, the one that measures it or not, is journaled.
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
     for _ in 0..200 {
@@ -2086,7 +2086,8 @@ async fn context_usage_a_late_answer_after_a_new_input_never_measures() {
     let at = chrono::DateTime::parse_from_rfc3339(&d.context_usage.as_ref().unwrap().updated_at).unwrap().timestamp_millis() + 1;
     let mut late = flash(json!(900));
     late["time"] = json!({"created":at,"completed":at});
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":late})).await;
     for _ in 0..200 {
@@ -2135,7 +2136,8 @@ async fn context_usage_a_late_answer_from_before_a_compaction_never_measures() {
     let (first, last_known, before) = measured_then_compacted(&lab).await;
 
     // The late answer, stored as OpenCode would; its record change is journaled.
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
         "providerID":"deepseek","modelID":"deepseek-flash","tokens":{"total":900},"time":{"created":before,"completed":before}}})).await;
@@ -2181,8 +2183,10 @@ async fn context_usage_a_late_answer_from_before_a_compaction_reads_no_catalog()
     let (first, last_known, before) = measured_then_compacted(&lab).await;
 
     let reads = providers_reads(&lab);
-    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/message.updated").count();
-    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.status").count();
+    // 2.x's step end, as Core journals it (T-32 slice 3b).
+    let updates = |lab: &Lab| journal(lab).iter().filter(|k| *k == "opencode/session.step.ended").count();
+    // 2.x's execution end, as Core journals it (T-32 slice 3b).
+    let statuses = |lab: &Lab| journal(lab).iter().filter(|k| k.starts_with("opencode/session.execution.")).count();
     let handled = updates(&lab);
     lab.control("reply", json!({"sessionID":session,"text":"Late.","parentID":first,"idle":false,"info":{
         "providerID":"deepseek","modelID":"deepseek-unlisted","tokens":{"total":500},"time":{"created":before,"completed":before}}})).await;

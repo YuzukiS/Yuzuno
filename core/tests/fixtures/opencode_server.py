@@ -154,9 +154,9 @@ def publish(kind, properties):
         save()
 
 
-def send(kind, data):
-    # 2.x's envelope (schema/src/event.ts): `data`, and the time it was made.
-    event = {'id': new_id('evt'), 'type': kind, 'created': int(time.time() * 1000), 'data': data}
+def send(kind, data, created=None):
+    # 2.x's envelope (schema/src/event.ts): `data`, and the time it was made (control `event` may give it).
+    event = {'id': new_id('evt'), 'type': kind, 'created': created or int(time.time() * 1000), 'data': data}
     with lock:
         for stream in streams:
             stream.put(event)
@@ -174,7 +174,18 @@ v2_state = {}
 
 def v2_of(session):
     return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
-                                         'error': None, 'idles': []})
+                                         'error': None, 'idles': [], 'pending': []})
+
+
+def v2_deliver(session, upto=None):
+    # 2.x delivers a message steered into a busy session at its next step's start (core/src/session/projector.ts):
+    # those enqueued up to `upto`, or all of them.
+    state = v2_of(session)
+    if upto is not None and upto not in state['pending']:
+        return []
+    count = state['pending'].index(upto) + 1 if upto is not None else len(state['pending'])
+    delivered, state['pending'] = state['pending'][:count], state['pending'][count:]
+    return [('session.inbox.delivered', {'sessionID': session, 'inboxID': mid}) for mid in delivered]
 
 
 def v2_error(error):
@@ -244,9 +255,13 @@ def v2_events(kind, p):
                       'source': {'type': 'inline'}} for q in stored.get('parts', []) if q.get('type') == 'file']
             if files:
                 payload['files'] = files
-            return [('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': payload,
-                                                                                              'delivery': 'queue'}}),
-                    ('session.inbox.delivered', {'sessionID': session, 'inboxID': mid})]
+            steered = session in statuses
+            enqueued = ('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'user', 'payload': payload,
+                                                                                               'delivery': 'steer' if steered else 'queue'}})
+            if steered:
+                state['pending'].append(mid)
+                return [enqueued]
+            return [enqueued, ('session.inbox.delivered', {'sessionID': session, 'inboxID': mid})]
         if info.get('summary'):
             # A compaction's summary is 2.x's compaction (session-event.ts Compaction).
             done = (info.get('time') or {}).get('completed')
@@ -261,6 +276,8 @@ def v2_events(kind, p):
         out = []
         if mid not in state['started']:
             state['started'].add(mid)
+            # A step answering a message steered in starts once it is delivered; one answering an earlier one, before.
+            out += v2_deliver(session, info.get('parentID'))
             out.append(('session.step.started', {'sessionID': session, 'assistantMessageID': mid, 'agent': info.get('agent') or 'build',
                                                  'model': {'id': info.get('modelID') or 'fixture', 'providerID': info.get('providerID') or 'fixture'}}))
         done = (info.get('time') or {}).get('completed') is not None or info.get('error')
@@ -314,17 +331,19 @@ def v2_events(kind, p):
             return [('session.retry.scheduled', {'sessionID': session, 'assistantMessageID': '', 'attempt': 1, 'at': 0,
                                                  'error': {'type': 'retry', 'message': (p.get('status') or {}).get('message', '')}})]
         if status == 'idle':
-            # An execution's end, and the idle message 2.x writes for it (core/src/session/projector.ts).
+            # An execution's end, and the idle message 2.x writes for it (core/src/session/projector.ts); what was
+            # steered in and not yet taken up is delivered into this turn first.
+            ahead = v2_deliver(session)
             error, state['error'] = state['error'], None
             last = next(reversed(messages.get(session, {})), None)
             if error and error.get('name') == 'MessageAbortedError':
                 state['idles'].append({'after': last, 'outcome': 'interrupted', 'error': v2_error(error)})
-                return [('session.execution.interrupted', {'sessionID': session, 'reason': 'user'})]
+                return ahead + [('session.execution.interrupted', {'sessionID': session, 'reason': 'user'})]
             if error:
                 state['idles'].append({'after': last, 'outcome': 'failed', 'error': v2_error(error)})
-                return [('session.execution.failed', {'sessionID': session, 'error': v2_error(error)})]
+                return ahead + [('session.execution.failed', {'sessionID': session, 'error': v2_error(error)})]
             state['idles'].append({'after': last, 'outcome': 'succeeded'})
-            return [('session.execution.succeeded', {'sessionID': session})]
+            return ahead + [('session.execution.succeeded', {'sessionID': session})]
         return []
     if kind == 'session.error':
         # 2.x reports it with the execution's end (session-event.ts Execution); with none running, at once.
@@ -745,7 +764,11 @@ def control(name, body):
         publish('session.status', {'sessionID': body['sessionID'], 'status': {'type': 'busy'}})
         return True
     if name == 'event':
-        publish(body['type'], body['properties'])
+        if body.get('created'):
+            # A 2.x event as the test times it, sent as it is.
+            send(body['type'], body['properties'], body['created'])
+        else:
+            publish(body['type'], body['properties'])
         return True
     if name == 'store':
         return store(body['sessionID'], body['messageID'], body.get('text', ''))

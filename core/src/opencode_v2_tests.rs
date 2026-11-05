@@ -175,3 +175,18 @@ fn a_delta_streams_into_its_item_and_makes_it_if_its_start_was_missed() {
     assert_eq!(items, vec![json!({"id": "msg_a1:0", "type": "agentMessage", "text": "Hello"}),
         json!({"id": "msg_a1:1", "type": "reasoning", "summary": ["hm"], "nativeMessageId": "msg_a1"})]);
 }
+
+/// Each session is read apart: a sub-agent's execution ending is not the
+/// end of the Agent's own turn.
+#[test]
+fn a_sub_agents_end_is_not_the_agents() {
+    let mut c = Cursor::default();
+    c.read(&ev("session.inbox.enqueued", 1, json!({"sessionID": "ses_a", "inboxID": "msg_u1", "item": {"type": "user"}})));
+    c.read(&ev("session.inbox.delivered", 2, json!({"sessionID": "ses_a", "inboxID": "msg_u1"})));
+    c.read(&ev("session.execution.succeeded", 3, json!({"sessionID": "ses_child"})));
+    let step = c.read(&ev("session.step.started", 4, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a1"})));
+    assert_eq!(step[0]["data"]["info"]["parentID"], "msg_u1");
+    c.resumed("ses_a", Some("msg_u9".into()));
+    let resumed = c.read(&ev("session.step.started", 5, json!({"sessionID": "ses_a", "assistantMessageID": "msg_a2"})));
+    assert_eq!(resumed[0]["data"]["info"]["parentID"], "msg_u9", "a whole read says which turn is open");
+}

@@ -153,8 +153,8 @@ pub(crate) fn read_messages(messages: &Value) -> Read {
                     .filter_map(|(ordinal, entry)| content_part(id, ordinal, entry)).collect();
                 read.push(json!({"info": info, "parts": parts}));
             }
-            // A compaction that completed: what was measured before it no longer holds (`measure`).
-            Some("compaction") if message["status"] == "completed" => read.push(json!({"info": compacted(id, &message["time"]["created"]),
+            // A compaction, running or completed: what was measured before it no longer holds (`measure`).
+            Some("compaction") if message["status"] != "failed" => read.push(json!({"info": compacted(id, &message["time"]["created"]),
                 "parts": []})),
             Some("idle") => {
                 if let Some(user) = user.take() {
@@ -198,11 +198,34 @@ struct Gathered {
     since: i64,
 }
 
-/// What reading one connection's live events keeps between them: the
-/// newest user message of the turn now open, and of each answer, tool and
-/// streaming text under way what its later events do not repeat.
+/// What reading one connection's live events keeps between them, for each
+/// session apart (the Agent's and its sub-agents'): a sub-agent's turn
+/// ending is not the Agent's.
 #[derive(Default)]
 pub(crate) struct Cursor {
+    sessions: HashMap<String, Open>,
+}
+
+impl Cursor {
+    /// The events of Core's shape one 2.x event stands for, in order (`Open::read`).
+    pub(crate) fn read(&mut self, event: &Value) -> Vec<Value> {
+        let d = &event["data"];
+        let session = d["sessionID"].as_str().or(d["form"]["sessionID"].as_str()).unwrap_or_default();
+        self.sessions.entry(session.to_owned()).or_default().read(event)
+    }
+
+    /// After a whole read of `session`: what its live stream goes on from is
+    /// the turn that read found open, if any; nothing of before it is kept.
+    pub(crate) fn resumed(&mut self, session: &str, open: Option<String>) {
+        self.sessions.insert(session.to_owned(), Open { user: open, ..Open::default() });
+    }
+}
+
+/// One session's: the newest user message of the turn now open, and of each
+/// answer, tool and streaming text under way what its later events do not
+/// repeat.
+#[derive(Default)]
+struct Open {
     user: Option<String>,
     inputs: HashMap<String, String>,
     steps: HashMap<String, Step>,
@@ -210,17 +233,11 @@ pub(crate) struct Cursor {
     gathered: HashMap<String, Gathered>,
 }
 
-impl Cursor {
-    /// After a whole read: what the live stream goes on from is the turn
-    /// that read found open, if any; nothing of before it is kept.
-    pub(crate) fn resumed(&mut self, open: Option<String>) {
-        *self = Self { user: open, ..Self::default() };
-    }
-
+impl Open {
     /// The events of Core's shape one 2.x event stands for, in order. A
     /// 1.19.3-shaped one is returned as it is; one Core takes nothing from,
     /// none.
-    pub(crate) fn read(&mut self, event: &Value) -> Vec<Value> {
+    fn read(&mut self, event: &Value) -> Vec<Value> {
         let kind = event["type"].as_str().unwrap_or_default();
         let d = &event["data"];
         let session = &d["sessionID"];
@@ -305,8 +322,8 @@ impl Cursor {
                 }
                 read
             }
-            // Its event names no message; the event's own ID names it here, once.
-            "session.compaction.ended" => vec![message(compacted(event["id"].as_str().unwrap_or("compaction"), at))],
+            // A compaction's events name no message; each event's own ID names it here.
+            "session.compaction.started" | "session.compaction.ended" => vec![message(compacted(event["id"].as_str().unwrap_or("compaction"), at))],
             "session.execution.started" => vec![status("busy")],
             "session.retry.scheduled" => vec![status("retry")],
             "session.execution.succeeded" => self.ended(vec![status("idle")]),
