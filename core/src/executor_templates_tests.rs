@@ -124,7 +124,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
 }
 
 /// T-34 S1: a save names only fields this Core knows, each valid, each id
-/// once; phase 1's executors are on this Core host. A stored list is read
+/// once; a template may name a machine for its executors (T-35 S3a). A stored list is read
 /// leniently: a later Core's fields and templates this Core can't read are
 /// left out, not an error.
 #[test]
@@ -146,7 +146,10 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"harness":"claude","permissionPreset":"auto"})), "A Codex permission mode does not apply to a Claude Code template"),
         (with(json!({"harness":"claude","reasoningEffort":"high","model":"m"})), "A Claude Code template takes no reasoning effort"),
         (with(json!({"harness":"opencode","model":"m"})), "An OpenCode template takes no model"),
-        (with(json!({"machineId":"lab-mac"})), "Executors run on this Core host in this phase, not on lab-mac; other machines come with phase 2 (T-35)"),
+        // T-35 S3a: a machine is named; choosing one by itself comes later.
+        (with(json!({"machineId":"auto"})), "Choosing the machine by itself isn't available yet"),
+        (with(json!({"machineId":""})), "A machine is named by its id, at most 128 characters"),
+        (with(json!({"harness":"opencode","machineId":"lab-mac"})), "OpenCode executors run on this Core host only, not on lab-mac"),
         (with(json!({"instructions":"x".repeat(MAX_INSTRUCTIONS + 1)})), "A template's instructions are at most 8 KiB"),
         (with(json!({"namePattern":"{title} done"})), "A name pattern can use {task} and {label}, not {title}"),
         (with(json!({"namePattern":"{task"})), "A name pattern's `{` is not closed"),
@@ -160,6 +163,8 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         let got = refused(template.clone());
         assert!(got.starts_with(says), "{template} should be refused with {says}; got: {got}");
     }
+    let named = parse_save(&[with(json!({"machineId":"lab-mac"}))], true, &[]).unwrap();
+    assert_eq!(named[0].machine_id.as_deref(), Some("lab-mac"), "a template may name a machine (T-35 S3a)");
     for (limit, kept) in [(json!(1), Some(1)), (json!(64), Some(64)), (Value::Null, None)] {
         let saved = parse_save(&[with(json!({"maxConcurrent":limit}))], true, &[]).unwrap();
         assert_eq!(saved[0].max_concurrent, kept, "{limit}");
