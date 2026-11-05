@@ -369,7 +369,7 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
         .sum::<usize>();
     ensure!(
         snapshot.to_string().len() - own <= SNAPSHOT_LIMIT,
-        "materials_too_large: snapshot exceeds 128 KiB; use concise registered references; nothing was dispatched"
+        "materials_too_large: the task's materials and this dispatch's exceed 128 KiB; use concise registered references; nothing was dispatched"
     );
     Ok(snapshot)
 }

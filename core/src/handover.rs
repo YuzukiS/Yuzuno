@@ -36,6 +36,24 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The first character a handover may not hold, by line and column (from
+/// 1): anything below U+0020 but a line break (LF or CR, as pasted from
+/// Windows) or a tab, and U+007F. Kept out, its JSON is at most twice its size.
+fn first_control(markdown: &str) -> Option<(usize, usize, char)> {
+    let (mut line, mut column) = (1, 0);
+    for c in markdown.chars() {
+        if c == '\n' {
+            (line, column) = (line + 1, 0);
+            continue;
+        }
+        column += 1;
+        if (c < ' ' && !matches!(c, '\r' | '\t')) || c == '\u{7f}' {
+            return Some((line, column, c));
+        }
+    }
+    None
+}
+
 /// The document as a dispatch gives it: its version and text, or None while
 /// the Project has none (or only an empty one).
 pub(crate) fn current_in(db: &Connection, project: &str) -> Result<Option<(i64, String)>> {
@@ -93,8 +111,9 @@ impl Store {
     /// the same transaction. An archived Project's document doesn't change.
     pub(crate) fn save_handover(&self, project: &str, expected: i64, markdown: &str, reason: Option<&str>) -> Result<Value> {
         ensure!(markdown.len() <= MAX_BYTES, "A handover document is at most 32 KiB; this one is {} bytes", markdown.len());
-        ensure!(!markdown.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')),
-            "A handover document is text: no control characters but line breaks and tabs");
+        if let Some((line, column, c)) = first_control(markdown) {
+            anyhow::bail!("A handover document is text: no control characters but line breaks and tabs; U+{:04X} at line {line}, column {column}", c as u32);
+        }
         let reason = reason.map(str::trim).filter(|r| !r.is_empty());
         if let Some(reason) = reason {
             ensure!(reason.len() <= MAX_REASON && !reason.chars().any(|c| c.is_control() && c != '\n'),

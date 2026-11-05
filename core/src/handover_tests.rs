@@ -53,10 +53,17 @@ async fn a_handover_document_is_saved_as_versions_against_the_version_read() {
 
     let (_, large) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"x".repeat(MAX_BYTES + 1)}))).await;
     assert!(refused(&large, "A handover document is at most 32 KiB"), "a document over 32 KiB is refused: {large}");
-    let (_, control) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"Bell \u{7}"}))).await;
-    assert!(refused(&control, "A handover document is text"), "a document with a control character is refused: {control}");
+    let windows = "# Lab\r\n\r\nBuild\twith make.\r\n";
+    let (_, pasted) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":windows}))).await;
+    assert_eq!((pasted["version"].clone(), pasted["markdown"].clone()), (json!(3), json!(windows)),
+        "a handover pasted from Windows, with CRLF line ends and tabs, is kept: {pasted}");
+    for (markdown, at) in [("Bell \u{7}", "U+0007 at line 1, column 6"), ("ok\r\nfine\u{7f}", "U+007F at line 2, column 5")] {
+        let (_, control) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":3,"markdown":markdown}))).await;
+        assert!(refused(&control, "A handover document is text") && control["error"].as_str().is_some_and(|e| e.ends_with(at)),
+            "a document with a control character is refused, saying where ({at}): {control}");
+    }
     ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
-    let (_, archived) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"Later"}))).await;
+    let (_, archived) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":3,"markdown":"Later"}))).await;
     assert!(refused(&archived, "project_archived:"), "an archived Project's document doesn't change: {archived}");
     ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(false) }).unwrap();
     ws.store.delete_project(&p).unwrap_or_else(|e| panic!("a deleted Project's handover goes with it: {e}"));

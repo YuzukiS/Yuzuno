@@ -137,7 +137,9 @@ two more things. Both are in its dispatch's materials (`task_get` with the
 dispatchId). The mail says where to read them; it doesn't hold them.
 
 - **The Project's handover document** (`handover`): what the Project already
-  knows, in Markdown, up to 32 KiB. You keep it in the Project's settings,
+  knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
+  tabs, but no other control characters; a save with one is refused at its
+  line and column. You keep it in the Project's settings,
   under **Handover**. Each save is a new version, kept with who wrote it and
   why, and a save against a document that changed meanwhile is refused. The
   settings page lists the versions and shows any past one. A Project's
@@ -154,6 +156,13 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 
 A dispatch to an existing Agent gets neither; that Agent already has its own
 context.
+
+A dispatch's materials are at most 128 KiB, counting only what the dispatcher
+can shorten: the task's own materials and the dispatch's. The template, the
+handover and the summary are not counted, since each has its own limit
+(instructions 8 KiB, handover 32 KiB, summary 4 KiB). So a template dispatch's
+materials are at most 128 KiB plus those three. Over the limit, the dispatch
+is refused with `materials_too_large` and nothing is dispatched.
 
 ## Phases
 
