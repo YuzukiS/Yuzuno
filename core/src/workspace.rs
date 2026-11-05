@@ -488,7 +488,10 @@ impl Workspace {
         machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings, birth: Option<Birth>,
     ) -> Result<Agent> {
         validate_settings(&settings)?;
-        let permit = self.admission.enter_work()?;
+        // An executor is made under its dispatch's work permit (T-34, R3
+        // d51396b7): asking for another here would let an update that starts
+        // meanwhile fail a dispatch its refusal says can be retried.
+        let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }
@@ -2622,7 +2625,8 @@ impl Workspace {
 /// An executor a template dispatch creates (T-34): with the id its dispatch
 /// row chose, `then` (its role, its row's state) written in the transaction
 /// that inserts it, and its runtime not started by the create: the dispatch
-/// starts it once the task is its.
+/// starts it once the task is its. Made only by a dispatch holding a work
+/// permit, which the create runs under instead of taking its own.
 pub struct Birth {
     pub(crate) id: String,
     pub(crate) then: crate::store::InTransaction,

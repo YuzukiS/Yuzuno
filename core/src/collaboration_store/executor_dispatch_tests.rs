@@ -240,3 +240,24 @@ fn a_template_dispatch_is_refused_before_anything_is_written() {
     let cleared = with(json!({"requestId":"cleared","materials":null}));
     assert_eq!(begun(&store, None, cleared).unwrap().folders, ["/synthetic/project"]);
 }
+
+/// T-34 (R3 d51396b7): an executor is created under the work permit its
+/// dispatch holds. An update that starts draining meanwhile refuses an
+/// ordinary create, but not this one, so the dispatch is not failed by it.
+#[tokio::test]
+async fn an_executor_is_created_under_its_dispatchs_permit_while_an_update_drains() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let ws = Workspace::new(dir.path().join("data"), cwd.clone(), "unused".into()).unwrap();
+    let held = ws.admission.enter_work().unwrap();
+    ws.admission.begin_drain("t34-lab-update").unwrap();
+    let ordinary = ws.claude_create_on_with("Standing".into(), String::new(), cwd.clone(), String::new(), None, None, Default::default(), None).await;
+    assert!(ordinary.is_err_and(|e| e.to_string().starts_with("workspace_updating:")), "an ordinary create is refused while an update drains");
+    let birth = crate::workspace::Birth { id: "executor-1".into(), then: Box::new(|_| Ok(())) };
+    let born = ws.claude_create_on_with("T-1 · Reviewer".into(), String::new(), cwd.clone(), String::new(), None, None, Default::default(), Some(birth)).await;
+    assert!(born.is_ok(), "an executor is created under its dispatch's permit while an update drains: {:?}", born.err());
+    let birth = crate::workspace::Birth { id: "executor-2".into(), then: Box::new(|_| Ok(())) };
+    let codex = ws.create_on_with("T-2 · Builder".into(), String::new(), cwd, String::new(), None, None, Default::default(), Some(birth)).await;
+    assert!(codex.is_ok(), "a Codex executor too: {:?}", codex.err());
+    drop(held);
+}

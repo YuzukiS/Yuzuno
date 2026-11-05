@@ -662,7 +662,10 @@ impl Workspace {
                 && settings.permission_mode.as_deref().is_none_or(|mode| SELECTABLE_PERMISSION_MODES.contains(&mode)),
             "Claude 权限模式无效"
         );
-        let permit = self.admission.enter_work()?;
+        // An executor is made under its dispatch's work permit (T-34, R3
+        // d51396b7): asking for another here would let an update that starts
+        // meanwhile fail a dispatch its refusal says can be retried.
+        let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }
