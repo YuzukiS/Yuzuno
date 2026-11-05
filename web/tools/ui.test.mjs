@@ -6363,6 +6363,28 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
   } finally { page.close(); }
 });
 
+// T-46: a skill chosen in a draft is kept with it, under the draft's
+// Workspace and Agent, and comes back as its chip when the page opens again.
+test("a skill chosen in a Codex Agent's draft comes back as its chip after a reload, and its message invokes it (T-46)", async () => {
+  const path = "/w/.codex/skills/deploy/SKILL.md";
+  const key = `yuzuno.composer.v1:${JSON.stringify(["ci-fixture", "a"])}`;
+  const saved = JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Ship it $deploy " }],
+    skills: [{ agentId: "a", name: "deploy", path, scope: "repo" }] });
+  const page = await mount({ stored: { [key]: saved } });
+  try {
+    const chip = page.document.querySelector(".skill-chip");
+    assert.ok(chip, "the saved skill's chip is back");
+    assert.equal(chip.title, path);
+    const sent = () => page.calls.filter((r) => r.url.endsWith("/messages")).map((r) => JSON.parse(r.init.body));
+    page.document.querySelector('[aria-label="Send message"]').click();
+    for (let i = 0; i < 20 && !sent().length; i++) await pause();
+    assert.deepEqual(sent()[0].skills, [{ name: "deploy", path }]);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 // T-29: a skill chosen in a Codex Agent's composer is a chip beside the
 // draft; Send invokes it. Text alone, even "$name", invokes none.
 test("a skill chosen in a Codex Agent's composer is a chip its message invokes; removing it, or text alone, invokes none", async () => {
