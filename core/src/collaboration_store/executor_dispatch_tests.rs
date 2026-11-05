@@ -136,7 +136,7 @@ fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
     store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
     let executor = plan.dispatch.agent_id.clone();
     let waiting = json!({"agentId":executor,"state":"waiting","machine":"local","position":1});
-    let current = store.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap();
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
     assert_eq!(current["current"]["executorSlot"], waiting, "the task's current view shows its executor's slot");
     let full = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"full"})).unwrap();
     assert_eq!(full["task"]["executorSlot"], waiting);
@@ -146,11 +146,11 @@ fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
     assert_eq!(slots(&store), 1, "a replay queues it once");
 
     assert_eq!(store.executor_slot_next().unwrap().as_deref(), Some(executor.as_str()));
-    let current = store.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap();
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
     assert_eq!(current["current"]["executorSlot"], json!({"agentId":executor,"state":"starting","machine":"local"}));
     // A task without an executor has none; nor a compact row.
     let other = task(&store, "Plain", Some(&p), None);
-    let current = store.collaboration_call(None, "task_get", json!({"taskId":other})).unwrap();
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":other,"view":"current"})).unwrap();
     assert_eq!(current["current"].get("executorSlot"), None);
     let compact = store.collaboration_call(None, "task_list", json!({"compact":true})).unwrap();
     assert!(compact["tasks"].as_array().unwrap().iter().all(|row| row.get("executorSlot").is_none()));

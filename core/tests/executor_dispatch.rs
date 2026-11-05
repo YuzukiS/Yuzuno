@@ -200,7 +200,8 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
         folders.push(worktree);
     }
     until("the first two get their mail", || folders[..2].iter().all(|f| !prompts(Path::new(f)).is_empty())).await;
-    let slot = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task})).unwrap()["current"]["executorSlot"].clone();
+    // As an Agent reads it: task_get's current view.
+    let slot = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"})).unwrap()["current"]["executorSlot"].clone();
     assert_eq!(slot(&tasks[2]), json!({"agentId":executors[2],"state":"waiting","machine":"local","position":1}));
     let third = ws.store.agent(&executors[2]).unwrap();
     assert_eq!((third.connection_state.as_str(), third.status.as_str()), ("disconnected", "offline"), "the third waits, unstarted");
