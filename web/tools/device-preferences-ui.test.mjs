@@ -421,8 +421,8 @@ test("a set saved before Next needs you keeps its letters: Next needs you takes 
     try {
       w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", saved);
       w.showHelp();
-      assert.deepEqual(NAMES.map((name) => pick(w, name).value), keys, saved);
-      assert.equal(listed(w, "Next needs you"), `Ctrl+${keys[3]}`, saved);
+      assert.deepEqual(NAMES.map((name) => pick(w, name).value), keys, `${saved}: the letters`);
+      assert.equal(listed(w, "Go to the next thing that needs you"), `Ctrl+${keys[3]}`, `${saved}: the help`);
       assert.equal(w.document.querySelector(".save-status").textContent, "Using the choice saved on this device", saved);
       assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), saved, "reading it writes nothing");
     } finally {
