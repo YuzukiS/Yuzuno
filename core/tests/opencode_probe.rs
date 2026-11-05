@@ -209,12 +209,27 @@ async fn a_real_opencode_2x_session_reads_through_cores_mapping() {
     println!("probe: synthetic answered {status}: {answered}");
     assert!(status.is_success(), "{status}: {answered}");
     assert_eq!(answered["data"]["id"], chosen.as_str(), "admitted under the ID Core chose");
-    let enqueued = events_until(&mut events, &session, Duration::from_secs(10), &mut seen,
-        |e| e["type"] == "session.inbox.enqueued").await;
-    println!("probe: {enqueued}");
+    // The session's events until the one admitting it. 2.2.5 also admits a shell's output into the inbox, as a
+    // synthetic message of its own ID for the next execution (p3 e2f44f88), so that is not the one looked for.
+    let limit = Duration::from_secs(10);
+    tokio::time::timeout(limit, async {
+        loop {
+            let event = events.next().await.unwrap().expect("the stream ended");
+            seen.push(event["type"].as_str().unwrap_or("?").to_owned());
+            if session_of(&event) != Some(session.as_str()) {
+                continue;
+            }
+            let ours_admitted = event["type"] == "session.inbox.enqueued" && event["data"]["inboxID"] == chosen.as_str();
+            println!("probe: {event}");
+            ours.push(event);
+            if ours_admitted {
+                break;
+            }
+        }
+    }).await.unwrap_or_else(|_| panic!("no event admitting {} within {limit:?}; seen {seen:?}", chosen.as_str()));
+    let enqueued = ours.last().unwrap();
     assert_eq!(enqueued["data"]["inboxID"], chosen.as_str(), "its event names the ID Core chose");
     assert_eq!(enqueued["data"]["item"]["type"], "synthetic");
-    ours.push(enqueued);
     // Whatever else it says of the session within 3 s (a delivery, say).
     let until = Instant::now() + Duration::from_secs(3);
     while let Ok(Ok(Some(event))) = tokio::time::timeout(until.saturating_duration_since(Instant::now()), events.next()).await {
