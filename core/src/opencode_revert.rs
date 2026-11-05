@@ -206,6 +206,7 @@ impl Workspace {
         ensure!(session["revert"].is_null(), "OpenCode 会话里已有一次尚未处理的回退；没有预览回退");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有预览回退");
         let messages = c.server.messages(&c.session).await.context(unread)?;
+        ensure!(!crate::opencode_v2::is_v2(&messages), "{}；没有预览回退", crate::opencode_v2::NOT_YET);
         let list = messages.as_array().context(unread)?;
         // The same folder however it is written (a link to it, a trailing
         // slash): OpenCode answers with its own resolved one (R3 of #534).

@@ -180,6 +180,7 @@ impl Workspace {
         }
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有 fork");
         let listed = c.server.messages(&c.session).await.context(unread)?;
+        ensure!(!crate::opencode_v2::is_v2(&listed), "{}；没有 fork", crate::opencode_v2::NOT_YET);
         let list = listed.as_array().context(unread)?.clone();
         let path = c.server.path().await.context(unread)?;
         ensure!(path["directory"] == detail.agent.cwd.as_str(), "OpenCode 的工作目录不是这个 Agent 的目录；没有 fork");
