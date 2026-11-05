@@ -33,6 +33,11 @@ fn sub_agent(d: &AgentDetail) -> Value {
 #[tokio::test]
 async fn a_background_subagents_late_permission_leaves_no_turn_running_and_the_next_prompt_its_own() {
     std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude_subagent_bridge.mjs"));
+    // With "cancel" the fixture withdraws the request only once this file
+    // exists, so the wait for the request cannot miss it.
+    let gates = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let withdraw = gates.path().join("withdraw");
+    std::env::set_var("YUZUNO_TEST_SUBAGENT_WITHDRAW", &withdraw);
     for (decision, outcome) in [("allow", "completed"), ("deny", "failed"), ("cancel", "stopped")] {
         let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
@@ -54,6 +59,8 @@ async fn a_background_subagents_late_permission_leaves_no_turn_running_and_the_n
 
         if decision != "cancel" {
             ws.respond(&d.pending[0].id, json!({"decision":decision})).await.unwrap();
+        } else {
+            std::fs::write(&withdraw, "").unwrap();
         }
         let d = until(&ws, id, "the sub-agent's end", |d| sub_agent(d)["status"] == outcome).await;
         let d = until(&ws, id, "nothing running", |d| d.pending.is_empty() && d.agent.status == "idle").await;
