@@ -7,7 +7,8 @@
 // - T-04: a message shown as a preview, then its Turn running (T-01 does not fade it): its working
 //   indicator comes in once. A shown Turn running again: the same.
 // - Once per change, not once per Turn (R1 47f7c0f0): a shown Turn completed a second time brings its
-//   reply actions and files in once more, and running a second time its indicator.
+//   reply actions and files in once more, and running a second time its indicator. So does each change
+//   after leaving for another Agent and coming back (R2 3578219f).
 // - Q-07: a question arrives while the dock is not there: the dock comes in once, its opacity only (its
 //   height at once: the deviation from the 11-03 inventory, T-19 3881), and the conversation's end is
 //   kept. A second question while the dock is shown: no cue.
@@ -357,6 +358,28 @@ for (const run of runs) {
     const hana = await page.evaluate(() => window.__sample(500, []));
     ok(`${tag}: another Agent's conversation, first shown with a question: the dock shows with nothing playing`,
       hana.every((f) => f.dock && !f.dock.plays.length) && !(await calls()).slice(before).some((c) => c.part === "dock"), hana.at(-1)?.dock);
+
+    // Back on Mori after Hana (R2 3578219f): work-1's next live start and completion each cue once
+    // more, as they would have without leaving.
+    await open("Mori");
+    await page.locator('.turn[data-turn-id="work-1"]').waitFor();
+    await page.waitForTimeout(300);
+    const back = record("back on Mori, work-1 runs again", await bring(statusOf("work-1", "inProgress"), "__announce"));
+    const rerun3 = back.frames.filter((f) => f.turns["work-1"]?.activity);
+    if (reduced) ok(`${tag}: under reduced motion, back from another Agent, a shown Turn running again: its working indicator shows, nothing playing`,
+      rerun3.length > 5 && quiet(back.frames) && back.calls.length === 0, { at: rerun3[0]?.turns["work-1"], calls: back.calls });
+    else ok(`${tag}: back from another Agent, a shown Turn running again: its working indicator comes in once more over small (opacity only)`,
+      rerun3.length > 5 && fadeOf(rerun3[0].turns["work-1"].activity.plays) && back.calls.length === 1 && back.calls[0].part === "activity",
+      { at: rerun3[0]?.turns["work-1"], calls: back.calls });
+    const backDone = record("back on Mori, work-1 completes again", await bring(statusOf("work-1", "completed"), "__announce"));
+    const ended3 = backDone.frames.filter((f) => f.turns["work-1"]?.actions);
+    const first3 = ended3[0]?.turns["work-1"];
+    if (reduced) ok(`${tag}: under reduced motion, back from another Agent, a shown Turn completed again: its reply actions and files show, nothing playing`,
+      ended3.length > 5 && !first3.activity && quiet(backDone.frames) && backDone.calls.length === 0, { first3, calls: backDone.calls });
+    else ok(`${tag}: back from another Agent, a shown Turn Core records completed again: its reply actions and its files come in once more over small (opacity only)`,
+      ended3.length > 5 && !first3.activity && fadeOf(first3.actions?.plays) && fadeOf(first3.files?.plays)
+        && backDone.calls.length === 2 && backDone.calls.every((c) => c.turn === "work-1" && (c.part === "actions" || c.part === "files")),
+      { first3, calls: backDone.calls });
     await page.screenshot({ path: join(output, `${tag}.png`) });
   } catch (error) {
     ok(`${tag}: the sequence ran to its end`, false, String(error).slice(0, 400));

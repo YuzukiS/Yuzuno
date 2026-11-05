@@ -1360,8 +1360,12 @@ export function App() {
   // Interrupted and failed Turns keep their own words with no cue, and the working indicator
   // always goes at once. Read before the arrivals below take the announcement.
   const turnAnnounced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
-  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>; changes: Map<string, number>;
+  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>;
     started: string[]; completed: string[] } | null>(null);
+  // How many times each Turn has started or completed live, per conversation, for as long as the
+  // window is open: kept across leaving it and coming back, as the cues below keep every name they
+  // have played (R2 3578219f).
+  const turnChanges = useRef(new Map<string, number>());
   const handedRunning: string[] = [];
   // Left (the settle mark is the requests' above): the next detail is a new baseline.
   if (!turnScope && turnsSeen.current) {
@@ -1403,11 +1407,11 @@ export function App() {
     const was = turnCues.current?.scope === turnScope ? turnCues.current : null;
     const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
     const now = !!was?.latest && latest && turnAnnounced;
-    // How many times each shown Turn has started or completed live here: its cue's name, "n\nid".
-    const changes = new Map(was?.changes);
+    // Its cue's name, "n\nid": the how-manieth time this Turn has started or completed live here.
     const change = (kind: "run" | "done", id: string) => {
-      const n = (changes.get(`${kind}\n${id}`) ?? 0) + 1;
-      changes.set(`${kind}\n${id}`, n);
+      const key = `${turnScope}\n${kind}\n${id}`;
+      const n = (turnChanges.current.get(key) ?? 0) + 1;
+      turnChanges.current.set(key, n);
       return `${n}\n${id}`;
     };
     const started = [...(was?.started ?? []), ...handedRunning.map((id) => change("run", id))];
@@ -1421,7 +1425,7 @@ export function App() {
       if (runs && !RUNNING_TURN.test(before)) started.push(change("run", turn.id));
       else if (RUNNING_TURN.test(before) && turn.status === "completed") completed.push(change("done", turn.id));
     }
-    turnCues.current = { scope: turnScope, latest, status, changes, started: started.slice(-20), completed: completed.slice(-20) };
+    turnCues.current = { scope: turnScope, latest, status, started: started.slice(-20), completed: completed.slice(-20) };
   }
   // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
   // A key ends with its Turn's ID.
