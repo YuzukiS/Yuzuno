@@ -62,7 +62,17 @@ const view = (workspace, project, opencodeEnabled = false) => ({
   opencodeEnabled,
 });
 
-function mount(route) {
+// As Core answers /api/executor-slots (executor_slots.rs `executor_slots_view`).
+const slotsView = ({ version = 0, slots = 3, saved = false, project, inUse = { waiting: 0, starting: 0, running: 0 } } = {}) => ({
+  workspace: { version, slots, saved, default: 3 },
+  limits: { min: 1, max: 64 },
+  inUse,
+  ...(project ? { project: { id: "p1", ...project } } : {}),
+});
+const isSlots = (url) => /\/executor-slots(\?|$)/.test(url);
+
+/** `route` answers the templates; `slots`, if given, the executor slots (T-35). */
+function mount(route, slots = () => [200, slotsView()]) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -75,7 +85,7 @@ function mount(route) {
     const body = init.body && JSON.parse(init.body);
     const method = init.method || "GET";
     calls.push({ url, method, body });
-    const [status, value] = route(url, method, body);
+    const [status, value] = (isSlots(url) ? slots : route)(url, method, body);
     return { ok: status < 400, status, json: async () => value, text: async () => JSON.stringify(value) };
   };
   window.eval(bundle);
@@ -91,7 +101,8 @@ async function type(page, label, value) {
   await tick();
 }
 const button = (page, text) => [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
-const puts = (page) => page.calls.filter((c) => c.method === "PUT");
+const puts = (page) => page.calls.filter((c) => c.method === "PUT" && !isSlots(c.url));
+const slotPuts = (page) => page.calls.filter((c) => c.method === "PUT" && isSlots(c.url));
 
 test("Executor templates: a new template is added, said as written and saved as a whole list against the version read", async () => {
   let workspace = { version: 0, templates: [] };
@@ -168,7 +179,7 @@ test("a project's own templates: the Workspace's are named, those it replaces sa
   await until(() => field(page, "Label"), "the project's list");
   const text = () => page.document.querySelector(".executor-templates-settings").textContent;
   assert.match(text(), /Also available here, from the Workspace: Reviewer \(replaced here\) · Writer\./);
-  assert.equal(page.calls[0].url, "/api/executor-templates?projectId=p1");
+  assert.equal(page.calls.find((c) => !isSlots(c.url)).url, "/api/executor-templates?projectId=p1");
   assert.equal(field(page, "Name").value, "{label} on {task}");
   assert.equal(button(page, "Save templates").disabled, true, "nothing to save after loading");
   assert.doesNotMatch(text(), /Unsaved changes/, "nothing to save after loading");
@@ -202,4 +213,93 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
     }
     assert.deepEqual(page.errors, []);
   }
+});
+
+test("Executors at once (T-35): the Workspace's limit is saved against its version, a whole number from 1 to 64", async () => {
+  let current = { version: 0, slots: 3, saved: false, inUse: { waiting: 2, starting: 1, running: 3 } };
+  let conflict = false;
+  const page = mount(() => [200, view({ version: 0, templates: [] })], (url, method, body) => {
+    if (method === "PUT") {
+      if (conflict || body.expectedVersion !== current.version) return [400, { error: "version_conflict: these executor slots changed; reload before saving" }];
+      current = { ...current, version: current.version + 1, slots: body.slots, saved: true };
+    }
+    return [200, slotsView(current)];
+  });
+  page.window.renderTemplates();
+  const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
+  await until(() => field(page, "Executors at once"), "the limit");
+  assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots");
+  assert.equal(field(page, "Executors at once").value, "3");
+  assert.match(group().textContent, /How many executors run at once in this Workspace\. Those dispatched beyond it wait in a queue and start in turn, as executors close\. 3 unless you change it\./);
+  assert.match(group().textContent, /In this Workspace now: 3 running, 1 starting, 2 waiting\./);
+  const save = () => button(page, "Save executors at once");
+  assert.equal(save().disabled, true, "nothing to save yet");
+
+  for (const bad of ["0", "65", ""]) {
+    await type(page, "Executors at once", bad);
+    assert.equal(save().disabled, true, `${JSON.stringify(bad)} is not saved`);
+    assert.match(group().textContent, /A whole number from 1 to 64\./, `${JSON.stringify(bad)} says the range`);
+    assert.equal(field(page, "Executors at once").getAttribute("aria-invalid"), "true");
+  }
+  await type(page, "Executors at once", "5");
+  assert.match(group().textContent, /Unsaved change/);
+  save().click();
+  await until(() => /Saved\./.test(group().textContent), "the saved limit");
+  assert.deepEqual(slotPuts(page), [{ url: "/api/executor-slots", method: "PUT", body: { expectedVersion: 0, slots: 5 } }]);
+  assert.equal(field(page, "Executors at once").value, "5");
+  assert.equal(save().disabled, true, "what was saved is what is shown");
+  assert.deepEqual(puts(page), [], "the templates are saved apart");
+
+  conflict = true;
+  await type(page, "Executors at once", "6");
+  save().click();
+  await until(() => group().querySelector('[role="alert"]'), "the refusal");
+  assert.match(group().querySelector('[role="alert"]').textContent, /version_conflict: these executor slots changed/);
+  conflict = false;
+  button(page, "Reload executors at once").click();
+  await until(() => field(page, "Executors at once")?.value === "5", "the saved limit again");
+  assert.ok(!group().querySelector('[role="alert"]'), "the refusal is gone");
+  assert.deepEqual(page.errors, []);
+});
+
+test("Executors at once (T-35): a project's own limit is within the Workspace's, empty to unset; an archived project's can't change", async () => {
+  let project = { version: 0, slots: null };
+  const page = mount(() => [200, view({ version: 0, templates: [] }, { version: 0, templates: [] })], (url, method, body) => {
+    if (method === "PUT") project = { version: project.version + 1, slots: body.slots };
+    return [200, slotsView({ slots: 4, saved: true, version: 2, project })];
+  });
+  page.window.renderProjectTemplates("p1");
+  await until(() => field(page, "Executors at once"), "the project's limit");
+  assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots?projectId=p1");
+  assert.equal(field(page, "Executors at once").value, "", "unset: empty");
+  const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
+  assert.match(group().textContent, /At most this many of this project’s executors at once, within the Workspace’s 4\. Empty: only the Workspace’s limit applies\./);
+  const save = () => button(page, "Save executors at once");
+  assert.equal(save().disabled, true);
+  await type(page, "Executors at once", "2");
+  save().click();
+  await until(() => slotPuts(page).length === 1, "the save");
+  await until(() => /Saved\./.test(group().textContent), "saved");
+  await type(page, "Executors at once", "");
+  assert.equal(save().disabled, false, "empty unsets a project's own");
+  save().click();
+  await until(() => slotPuts(page).length === 2, "the second save");
+  assert.deepEqual(slotPuts(page), [
+    { url: "/api/projects/p1/executor-slots", method: "PUT", body: { expectedVersion: 0, slots: 2 } },
+    { url: "/api/projects/p1/executor-slots", method: "PUT", body: { expectedVersion: 1, slots: null } },
+  ]);
+  page.window.renderProjectTemplates("p1", true);
+  await tick();
+  assert.equal(field(page, "Executors at once").disabled, true);
+  assert.equal(save().disabled, true);
+  assert.deepEqual(page.errors, []);
+});
+
+test("Executors at once (T-35): an answer without its fields reads as Core's defaults", async () => {
+  const page = mount(() => [200, view({ version: 0, templates: [] })], () => [200, {}]);
+  page.window.renderTemplates();
+  await until(() => field(page, "Executors at once"), "the limit");
+  assert.equal(field(page, "Executors at once").value, "3");
+  assert.match(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]').textContent, /0 running, 0 starting, 0 waiting/);
+  assert.deepEqual(page.errors, []);
 });

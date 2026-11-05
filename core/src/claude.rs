@@ -769,6 +769,8 @@ impl Workspace {
                 "Claude 上次任务已发送但原生 Session ID 未确认；不会创建另一个 Session 或重发任务"
             );
         }
+        // An executor waiting for a slot starts only from the queue (T-35).
+        self.executor_slot_admits(id).await?;
         self
             .record_meta(id, "claude/connecting", json!({}), |m| {
                 m.agent.connection_state = "connecting".into()

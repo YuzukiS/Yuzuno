@@ -3,9 +3,9 @@
 //! collaboration_store/executor_dispatch.rs). The executor is created first,
 //! as POST /api/agents creates an Agent, without starting its runtime; the
 //! task is then dispatched to it in the store's own transaction, its mail
-//! queued; then its runtime starts, and the mail is delivered once it is
-//! connected. Phase 1 has no slots: every executor starts as soon as the task
-//! is its. A failure after the executor exists closes it.
+//! queued, and it waits for an executor slot; the scheduler starts its runtime
+//! when one is free (executor_slots.rs, T-35), and the mail is delivered once
+//! it is connected. A failure after the executor exists closes it.
 use crate::{
     collaboration_store::executor_dispatch::{Dispatch, Next, Plan},
     updates::admission::Permit,
@@ -44,7 +44,11 @@ impl Workspace {
         };
         match answer {
             Ok(answer) => {
-                self.start_executor(permit, &dispatch.agent_id);
+                drop(permit);
+                // Its slot, when one is free; a retry of a dispatch whose
+                // start a stopped Core missed waits for one again too.
+                let ws = self.clone();
+                tokio::spawn(async move { ws.executor_slots_pass().await; });
                 Ok(answer)
             }
             Err(error) => Err(self.executor_failed(&dispatch, error, &permit).await),
@@ -75,29 +79,5 @@ impl Workspace {
             Err(recording) => eprintln!("Executor dispatch {}: could not record that it failed: {recording:#}", dispatch.request_id),
         }
         error
-    }
-
-    /// Starts the executor's runtime, unless it already started, was closed,
-    /// or the user disconnected it; a retry of a dispatch whose start a
-    /// stopped Core missed starts it then.
-    fn start_executor(self: &Arc<Self>, permit: Permit, id: &str) {
-        let (ws, id) = (self.clone(), id.to_owned());
-        tokio::spawn(async move {
-            let _permit = permit;
-            let gate = ws.gate(&id).await;
-            let _held = gate.lock().await;
-            let Ok(agent) = ws.listed(&id).await else { return };
-            if agent.closed_at.is_some() || agent.disconnected_at.is_some() || agent.connection_state != "disconnected" {
-                return;
-            }
-            let started = match agent.harness.as_str() {
-                "claude" => ws.claude_ensure(&id).await.map(drop),
-                "opencode" => ws.opencode_ensure(&id).await.map(drop),
-                _ => ws.ensure(&id).await.map(drop),
-            };
-            if let Err(error) = started {
-                ws.failed(&id, &error).await;
-            }
-        });
     }
 }

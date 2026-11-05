@@ -664,6 +664,8 @@ impl Workspace {
         if d.agent.opencode_session_id.is_none() && !d.turns.is_empty() {
             bail!("OpenCode 上次任务已发送但原生 Session 未确认；不会创建另一个 Session 或重发任务");
         }
+        // An executor waiting for a slot starts only from the queue (T-35).
+        self.executor_slot_admits(id).await?;
         self.record_meta(id, "opencode/connecting", json!({}), |m| m.agent.connection_state = "connecting".into()).await?;
         self.changed(id);
         let connected = match started {
