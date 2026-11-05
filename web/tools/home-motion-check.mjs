@@ -80,6 +80,8 @@ const until = async (fn, label, ms = 10_000) => {
 };
 
 let http, browser;
+// A fresh install (npm ci) leaves no node_modules/.cache.
+await mkdir(path.join(root, "node_modules/.cache"), { recursive: true });
 const fixture = await mkdtemp(path.join(root, "node_modules/.cache/home-motion-check-"));
 try {
   const entry = path.join(fixture, "entry.tsx");
