@@ -228,7 +228,7 @@ async fn a_real_opencode_2x_session_reads_through_cores_mapping() {
     // Live: what each of the session's events reads as.
     let mut cursor = Cursor::default();
     for event in &ours {
-        let read: Vec<&str> = cursor.read(event).iter().map(|e| e["type"].as_str().unwrap_or("?")).collect();
+        let read: Vec<String> = cursor.read(event).iter().map(|e| e["type"].as_str().unwrap_or("?").to_owned()).collect();
         println!("probe: {} reads as {read:?}", event["type"]);
     }
 

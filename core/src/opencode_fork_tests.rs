@@ -645,7 +645,7 @@ async fn compaction_rewind_and_fork_refuse_a_session_of_2x_messages() {
     assert!(compact.contains(not_yet) && compact.contains("没有执行 /compact"), "compaction refuses: {compact}");
     let rewind = said(ws.opencode_revert_preview("oc", &turn).await.map(drop));
     assert!(rewind.contains(not_yet) && rewind.contains("没有预览回退"), "rewind refuses: {rewind}");
-    let fork = said(ws.opencode_fork("oc", request("fork-2x", &turn, "F")).await.map(drop));
+    let fork = said(ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &turn, "F")).await.map(drop));
     assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
     assert!(asked(&data, "oc", "POST", "/summarize").is_empty() && asked(&data, "oc", "POST", "/revert").is_empty()
         && asked(&data, "oc", "POST", "/fork").is_empty(), "nothing was asked of OpenCode");

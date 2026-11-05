@@ -27,7 +27,7 @@ fn an_answer_answers_the_newest_user_message_before_it_in_its_turn() {
         {"id": "msg_a5", "type": "assistant", "time": {"created": 13}, "content": []},
     ]);
     let Read { messages: read, ended, open, steps } = read_messages(&messages);
-    assert!(steps.is_empty(), "no answer under way once its turn ended");
+    assert_eq!(steps, vec![("msg_a5".to_owned(), None)], "of the answers not yet ended, only the one after the last turn's end is under way, answering nothing");
     assert_eq!(open, None, "the last turn ended");
     let parents: Vec<(&str, Value)> = read.iter().filter(|m| m["info"]["role"] == "assistant")
         .map(|m| (m["info"]["id"].as_str().unwrap(), m["info"]["parentID"].clone())).collect();

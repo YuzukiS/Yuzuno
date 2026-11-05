@@ -2319,7 +2319,7 @@ async fn interleaved_answers_each_answer_the_newest_user_message_before_them() {
             .map(|data| serde_json::from_str::<Value>(&data.unwrap()).unwrap()["data"]["inboxID"].as_str().unwrap().to_owned()).collect();
         ids
     };
-    assert_eq!(delivered(), [first.clone()], "admitted, not yet delivered");
+    assert_eq!(delivered(), [first.as_str()], "admitted, not yet delivered");
     // A step already under way when it was sent answers the first message; the next ones, the added one.
     lab.control("reply", json!({"sessionID":session,"text":"Still the build.","parentID":first,"idle":false})).await;
     lab.control("reply", json!({"sessionID":session,"text":"Running tests.","parentID":added,"idle":false})).await;

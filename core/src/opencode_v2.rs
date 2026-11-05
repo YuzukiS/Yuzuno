@@ -109,6 +109,7 @@ fn user(id: &str, created: &Value) -> Value {
 
 /// An answer as Core's record takes one: the user message it answers, when
 /// it started and ended, how, with what model and tokens.
+#[allow(clippy::too_many_arguments)]
 fn answer(id: &str, parent: Option<&str>, created: &Value, completed: &Value, finish: &Value, error: &Value, tokens: &Value,
     model: &Value) -> Value {
     json!({"id": id, "role": "assistant", "parentID": parent, "time": {"created": created, "completed": completed},
