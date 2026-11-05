@@ -21,30 +21,30 @@ import "./device-preferences.css";
 
 const text = strings({
   title: "Keyboard shortcuts",
-  intro: "The shortcuts this version has, as they work on this device. Three of them can take another letter here.",
+  intro: "The shortcuts this version has, as they work on this device. Four of them can take another letter here.",
   or: " or ",
   change: "Keys you can change",
   changeNote: (mod: string) =>
     `${mod} with one letter. The letters text editing and the browser use with ${mod} (A, C, V, X, Y, Z, W, T, Q, R, L) aren’t offered. Return, Esc, Tab, the arrows, Home, End and the message box’s keys keep theirs.`,
-  names: { find: "Find an Agent", newAgent: "New Agent", search: "Search this conversation" },
+  names: { find: "Find an Agent", newAgent: "New Agent", search: "Search this conversation", nextNeedsYou: "Next needs you" },
   keyFor: (name: string) => `Key for ${name}`,
   taken: (mod: string, key: string, other: string) =>
     `${mod}+${key} is already ${other}. Nothing was changed: choose another letter, or give ${other} another one first.`,
 }, {
   title: "键盘快捷键",
-  intro: "此版本已有的快捷键，按它们在此设备上的实际效果列出。其中三个可以在这里换一个字母。",
+  intro: "此版本已有的快捷键，按它们在此设备上的实际效果列出。其中四个可以在这里换一个字母。",
   or: " 或 ",
   change: "可以更改的按键",
   changeNote: (mod) =>
     `${mod} 加一个字母。文本编辑和浏览器与 ${mod} 一起使用的字母（A、C、V、X、Y、Z、W、T、Q、R、L）不提供。Return、Esc、Tab、方向键、Home、End 和消息框的按键保持不变。`,
-  names: { find: "查找 Agent", newAgent: "新建 Agent", search: "搜索此会话" },
+  names: { find: "查找 Agent", newAgent: "新建 Agent", search: "搜索此会话", nextNeedsYou: "下一个需要我的" },
   keyFor: (name) => `${name}的按键`,
   taken: (mod, key, other) => `${mod}+${key} 已用于“${other}”。没有做任何更改：请换一个字母，或先给“${other}”换一个。`,
 });
 
 /** The keyboard shortcuts Yuzuno has (shortcuts.ts), as they work on this
  * device: Return as its sending preference says, ⌘ or Ctrl as it has, and
- * the letters this device chose for the three it may change
+ * the letters this device chose for the four it may change
  * (shortcut-keys.ts). A letter another of them uses is refused, never
  * swapped; whether a choice was saved is said as the send key's is. */
 export function ShortcutHelpSection() {

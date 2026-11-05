@@ -17,6 +17,7 @@ export const appearanceFields = [
   "theme",
   "fontSize",
   "agentList",
+  "agentOrder",
   "projectGroups",
   "dock.jobs",
   "dock.actions",
@@ -34,6 +35,7 @@ const GROUPS: Record<string, string[] | null> = {
   theme: null,
   fontSize: null,
   agentList: null,
+  agentOrder: null,
   projectGroups: null,
   dock: ["jobs", "actions", "reviews", "subAgents"],
   turnDock: ["numbers", "bars"],
@@ -58,12 +60,13 @@ function withField(appearance: Appearance, field: AppearanceField, value: FieldV
 /** Each listed field of `appearance`, named, and nothing else: an export's
  * Appearance settings, and a shared preset's (appearance-preset.ts). */
 export function appearanceSettings(appearance: Appearance) {
-  const { palette, theme, fontSize, agentList, projectGroups, dock, turnDock } = appearance;
+  const { palette, theme, fontSize, agentList, agentOrder, projectGroups, dock, turnDock } = appearance;
   return {
     palette,
     theme,
     fontSize,
     agentList,
+    agentOrder,
     projectGroups,
     dock: { jobs: dock.jobs, actions: dock.actions, reviews: dock.reviews, subAgents: dock.subAgents },
     turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },

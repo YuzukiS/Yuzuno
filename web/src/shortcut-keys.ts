@@ -10,26 +10,33 @@ import {
 } from "./device-storage";
 
 /**
- * The shortcuts this device may give another key (T-189 P2): three of those
- * the help lists, each Ctrl/⌘ with one letter. Kept in this browser or app
+ * The shortcuts this device may give another key (T-189 P2): four of those
+ * the help lists, each Ctrl/⌘ with one letter; Next needs you (T-42) is the
+ * fourth. Kept in this browser or app
  * only (device-storage.ts), on their own key, so restoring them leaves the
  * send key and the other preferences alone. They don't travel to other
  * devices. Return, Shift+Return and Ctrl/⌘+Return (the send key and input
  * methods), Esc, Tab, the arrows, Home, End, the composer's "/" and "$",
  * Ctrl/⌘+Z and Ctrl/⌘+, keep their keys.
  */
-export const rebindable = ["find", "newAgent", "search"] as const;
+export const rebindable = ["find", "newAgent", "search", "nextNeedsYou"] as const;
 export type Rebindable = (typeof rebindable)[number];
 export type ShortcutKeys = Record<Rebindable, string>;
-export const defaultShortcutKeys: ShortcutKeys = { find: "K", newAgent: "N", search: "F" };
+export const defaultShortcutKeys: ShortcutKeys = { find: "K", newAgent: "N", search: "F", nextNeedsYou: "J" };
 /** With Ctrl/⌘, text editing's (A, C, V, X, Y, Z) and the browser's own
  * (W, T, Q, R, L): never offered. */
 export const reservedLetters = ["A", "C", "V", "X", "Y", "Z", "W", "T", "Q", "R", "L"];
 export const shortcutLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").filter((letter) => !reservedLetters.includes(letter));
 const STORAGE_KEY = "yuzuno.shortcuts";
 
+/** Shortcuts a later version added (Next needs you, T-42): a set saved
+ * before them has none, and may hold their usual letter for another. */
+const addedLater: readonly Rebindable[] = ["nextNeedsYou"];
+
 /** What this device saved, and whether it can be used: an object whose
- * letters this version offers, no two shortcuts on one. */
+ * letters this version offers, no two shortcuts on one. A shortcut added
+ * since the set was saved, whose usual letter the set gave another, takes
+ * the next free letter after it (review 7727a352): the letters saved stay. */
 function readSaved(): { keys: ShortcutKeys; usable: boolean } {
   const saved = readDeviceValue(STORAGE_KEY) as Partial<Record<Rebindable, unknown>> | null;
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) return { keys: { ...defaultShortcutKeys }, usable: false };
@@ -40,6 +47,12 @@ function readSaved(): { keys: ShortcutKeys; usable: boolean } {
     if (key === undefined) continue;
     if (typeof key === "string" && shortcutLetters.includes(key)) keys[action] = key;
     else usable = false;
+  }
+  for (const action of addedLater) {
+    if (saved[action] !== undefined || !keyTakenBy(keys, action, keys[action])) continue;
+    const from = shortcutLetters.indexOf(keys[action]);
+    const free = [...shortcutLetters.slice(from + 1), ...shortcutLetters.slice(0, from)].find((letter) => !keyTakenBy(keys, action, letter));
+    if (free) keys[action] = free;
   }
   if (new Set(Object.values(keys)).size !== rebindable.length) return { keys: { ...defaultShortcutKeys }, usable: false };
   return { keys, usable };

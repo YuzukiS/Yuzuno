@@ -151,12 +151,15 @@ export type ProjectPanel = {
 };
 
 export type NeedsYouItem = {
-  kind: "approval" | "ask";
+  kind: "approval" | "ask" | "question";
   projectId: string | null;
   agentId: string;
   agentName: string;
   requestId?: string;
   sectionKey?: string;
+  /** A question's Turn and Item (T-42). */
+  turnId?: string;
+  itemId?: string;
   title: string;
   since: string;
 };

@@ -342,7 +342,20 @@ pub struct Agent {
     pub created_at: String,
     pub updated_at: String,
     pub unread_count: u64,
+    /// What waits on the user: the native requests (`pending`) and the open
+    /// asynchronous questions (`open_questions`) together (T-42).
     pub pending_count: u64,
+    /// Codex questions sent `delivery: "async"` that are still open: no answer
+    /// to them accepted, not cancelled or expired, and not imported unanswered
+    /// (T-42). They wait on the user without holding the Agent: an Agent
+    /// with only these is idle, and mail still starts its Turns.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub open_questions: u64,
+    /// The last Turn that ended finished or failed (T-42): its journal row, how
+    /// it ended and when. An interrupted Turn, or one whose outcome is unknown,
+    /// leaves it as it was. Devices compare it with what they have seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_end: Option<TurnEnd>,
     pub last_message: Option<String>,
     /// Journal position of the last event in this record, for read receipts
     /// and unread counts. Durable; streamed output (no journal row) leaves it.
@@ -359,6 +372,52 @@ pub struct Agent {
     pub remote: Option<RemoteAgent>,
     #[serde(default = "disconnected")]
     pub connection_state: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// How and where an Agent's last Turn ended (T-42).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnEnd {
+    /// The journal row of the change that ended it.
+    pub seq: i64,
+    /// `finished` or `failed`.
+    pub outcome: String,
+    pub at: String,
+}
+
+impl Agent {
+    /// The native requests alone, without the open asynchronous questions:
+    /// what holds the Agent waiting (T-42).
+    pub fn native_requests(&self) -> u64 {
+        self.pending_count.saturating_sub(self.open_questions)
+    }
+}
+
+/// How a Turn ended, if it ended finished or failed: `finished` for a
+/// completed one (T-42). Interrupted and unknown outcomes are neither.
+pub fn turn_outcome(turn: &Value) -> Option<&'static str> {
+    match turn["status"].as_str() {
+        Some("completed") => Some("finished"),
+        Some("failed") => Some("failed"),
+        _ => None,
+    }
+}
+
+/// How this change ended a Turn, finished or failed (T-42): one that was in
+/// `before` and had not ended there, the newest when there are several. A
+/// Turn the change brought in already ended (a snapshot of older ones) is
+/// no Turn this change ended.
+pub fn turn_ended(before: &[Value], after: &[Value]) -> Option<&'static str> {
+    after.iter().rev().find_map(|turn| {
+        let outcome = turn_outcome(turn)?;
+        let id = turn["id"].as_str()?;
+        let was = before.iter().find(|t| t["id"].as_str() == Some(id))?;
+        (!matches!(was["status"].as_str(), Some("completed" | "failed" | "interrupted"))).then_some(outcome)
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -708,7 +767,7 @@ impl AgentDetail {
             "thread/status/changed" => thread_status_changed(&mut self.agent, p),
             _ => {}
         }
-        self.agent.pending_count = self.pending.len() as u64;
+        self.agent.pending_count = self.pending.len() as u64 + self.agent.open_questions;
         let turns = &self.turns;
         settle_status(&mut self.agent, &self.pending, || turns.iter().any(|t| t["status"] == "inProgress"));
         self.agent.updated_at = at.to_rfc3339();

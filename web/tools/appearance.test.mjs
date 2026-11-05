@@ -38,7 +38,7 @@ test("the Agent list is detailed until chosen; earlier saved choices keep theirs
   assert.equal(readAppearance().agentList, "detailed");
   // Saved before the choice existed.
   store.set(KEY, JSON.stringify({ theme: "dark", fontSize: 18, palette: "pine" }));
-  assert.deepEqual(readAppearance(), { theme: "dark", fontSize: 18, palette: "pine", agentList: "detailed", projectGroups: "headers",
+  assert.deepEqual(readAppearance(), { theme: "dark", fontSize: 18, palette: "pine", agentList: "detailed", agentOrder: "list", projectGroups: "headers",
     dock: { jobs: 5, actions: 2, reviews: 2, subAgents: 5 }, turnDock: { numbers: 5, bars: 5 } });
   store.set(KEY, JSON.stringify({ theme: "dark", fontSize: 18, palette: "pine", agentList: "dense" }));
   assert.equal(readAppearance().agentList, "detailed", "an unknown value falls back");
