@@ -300,6 +300,10 @@ pub struct Agent {
     /// same reason as `project_id`.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// When a released executor was released (T-34, `agent_roles.archived_at`),
+    /// projected for API responses like `kind`; absent for every other Agent.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
     pub cwd: String,
     pub model: String,
     #[serde(default)]

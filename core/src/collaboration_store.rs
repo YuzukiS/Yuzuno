@@ -1600,6 +1600,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: it works in the dispatch's worktree folder, else the Project's folder on the Core host. An Agent's dispatch may name only the worktree the user registered on the task or a folder inside the Project's: a path an Agent gives in materials is information, not permission. It starts when an executor slot is free (the user sets how many run at once). Give this or toAgentId.",
                 "properties":{"templateId":{"type":"string","maxLength":48},"machineId":{"type":["string","null"],"description":"The Core host only (empty or local) in this phase."}}},
             "body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion"]),
+        // Served by `executor_release`, not here.
+        crate::executor_release::tool_definition(),
         // Generated from the result contract; served by `results`, not here.
         crate::results::tool_definition(),
         crate::results::guide_tool_definition(),

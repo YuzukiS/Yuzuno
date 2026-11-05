@@ -290,3 +290,111 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     }
     serving.abort();
 }
+
+/// T-34 S4: a lead releases the executor it dispatched, over MCP; another
+/// Agent can't. The released executor's slot goes to the next one waiting,
+/// which starts and gets its mail. The released one stays closed: a reopen is
+/// refused, over HTTP too. Its task, its dispatch and its result stay as they
+/// were, and the Agent list names the release.
+#[tokio::test]
+async fn a_lead_releases_its_executor_over_mcp_and_the_freed_slot_starts_the_next() {
+    use rmcp::{model::CallToolRequestParams, transport::{streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport}, ServiceExt as _};
+    std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/executor_dispatch_bridge.mjs"));
+    let lab = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let work = folder(lab.path(), "project");
+    let ws = Workspace::new(lab.path().join("data"), lab.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let project = ws.store.create_project("Executor fixture", BTreeMap::from([("local".into(), work.clone())])).unwrap().id;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert_ne!(port, 4317);
+    ws.start_collaboration(port);
+    let app = server::router_on_port(ws.clone(), lab.path().join("no-ui"), port);
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}/api");
+    let saved = client.put(format!("{base}/executor-templates")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .send().await.unwrap();
+    assert_eq!(saved.status(), reqwest::StatusCode::OK);
+    let slots = client.put(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"slots":1})).send().await.unwrap();
+    assert_eq!(slots.status(), reqwest::StatusCode::OK);
+    for id in ["lead", "member"] {
+        let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":format!("{id} fixture"),"cwd":work,"model":"","harness":"claude",
+            "color":"sage","status":"offline","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+            "turns":[],"pending":[],"artifacts":[]})).unwrap();
+        ws.store.insert(&agent).unwrap();
+        ws.store.set_agent_project(id, Some(&project)).unwrap();
+    }
+    let leads = client.put(format!("{base}/projects/{project}/leads")).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({"expectedVersion":0,"leadAgentIds":["lead"]})).send().await.unwrap();
+    assert_eq!(leads.status(), reqwest::StatusCode::OK);
+
+    // The lead dispatches two; one slot, so the second waits.
+    let (mut tasks, mut executors, mut folders) = (Vec::new(), Vec::new(), Vec::new());
+    for name in ["first", "second"] {
+        let worktree = folder(lab.path(), name);
+        let id = task(&ws, &format!("Review {name}"), &project, Some(&worktree)).await;
+        let answer = ws.collaboration_call(Some("lead"), "task_dispatch", dispatch(name, &id)).await.unwrap();
+        executors.push(answer["agentId"].as_str().unwrap().to_owned());
+        tasks.push((id, answer["task"]["dispatch"]["id"].clone()));
+        folders.push(worktree);
+    }
+    until("the first gets its mail", || !prompts(Path::new(&folders[0])).is_empty()).await;
+    let slot = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"})).unwrap()["current"]["executorSlot"].clone();
+    assert_eq!(slot(&tasks[1].0)["state"], "waiting");
+    ws.collaboration_call(Some(&executors[0]), "task_submit_result", json!({"requestId":"result","taskId":tasks[0].0,"expectedVersion":2,
+        "summary":"Reviewed the fixture.","dispatchId":tasks[0].1})).await.unwrap();
+    // What a release must leave as it is.
+    let kept = |task: &str| {
+        let current = ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"})).unwrap()["current"].clone();
+        json!([current["status"], current["version"], current["assignee"], current["dispatch"], current["updatedAt"],
+            current["result"]["id"], current["result"]["summary"]])
+    };
+    let before = kept(&tasks[0].0);
+    assert_eq!(before[0], "review");
+    assert!(before[3]["id"].is_string() && before[5].is_string(), "{before}");
+
+    let connect = |agent: &str| {
+        let config = yuzuno_workspace::collaboration_mcp::agent_http_config(&ws, agent, &format!("http://127.0.0.1:{port}")).unwrap();
+        let token = config["headers"]["Authorization"].as_str().unwrap().trim_start_matches("Bearer ").to_owned();
+        StreamableHttpClientTransport::with_client(
+            reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap(),
+            StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/{agent}")).auth_header(token))
+    };
+    let release = |request: &str| CallToolRequestParams::new("executor_release")
+        .with_arguments(json!({"requestId":request,"agentId":executors[0]}).as_object().unwrap().clone());
+    let lead = tokio::time::timeout(Duration::from_secs(10), ().serve(connect("lead"))).await.unwrap().unwrap();
+    let member = tokio::time::timeout(Duration::from_secs(10), ().serve(connect("member"))).await.unwrap().unwrap();
+    assert!(lead.list_all_tools().await.unwrap().iter().any(|t| t.name == "executor_release"), "executor_release is offered to Agents");
+    let refused = member.call_tool(release("m")).await.unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert!(refused.structured_content.unwrap()["error"].as_str().unwrap().starts_with("not_dispatcher:"), "another Agent is refused over MCP");
+    assert!(ws.store.agent(&executors[0]).unwrap().closed_at.is_none(), "and nothing changed");
+
+    let released = lead.call_tool(release("l")).await.unwrap().structured_content.unwrap();
+    assert!(released["releasedAt"].is_string(), "{released}");
+    until("the second gets its mail", || !prompts(Path::new(&folders[1])).is_empty()).await;
+    assert_eq!(slot(&tasks[1].0)["state"], "running", "the freed slot starts the next one waiting");
+    assert_eq!(slot(&tasks[0].0), Value::Null, "the released executor holds no slot");
+    assert_eq!(ws.store.agent(&executors[0]).unwrap().closed_at.as_deref(), released["releasedAt"].as_str());
+    let again = lead.call_tool(release("l")).await.unwrap().structured_content.unwrap();
+    assert_eq!(again, released, "a repeat answers with the same releasedAt");
+
+    let reopened = client.post(format!("{base}/agents/{}/reopen", executors[0])).header("X-Yuzuno-Client", "desktop")
+        .json(&json!({})).send().await.unwrap();
+    assert_eq!(reopened.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(reopened.json::<Value>().await.unwrap()["error"],
+        "executor_released: a released executor stays closed; dispatch the task again for new work", "a released executor is not reopened");
+    assert!(ws.store.agent(&executors[0]).unwrap().closed_at.is_some());
+    assert_eq!(kept(&tasks[0].0), before, "its task, dispatch and result are as they were");
+    let listed = client.get(format!("{base}/workspace")).header("X-Yuzuno-Client", "desktop").send().await.unwrap()
+        .json::<Value>().await.unwrap();
+    let listed = listed["agents"].as_array().unwrap().iter().find(|a| a["id"] == json!(executors[0])).unwrap().clone();
+    assert_eq!(listed["releasedAt"], released["releasedAt"], "the Agent list names the release");
+
+    let _ = lead.cancel().await;
+    let _ = member.cancel().await;
+    ws.close_agent(&executors[1]).await.unwrap();
+    serving.abort();
+}

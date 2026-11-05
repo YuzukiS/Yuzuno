@@ -694,6 +694,7 @@ impl Workspace {
             work_summary: None,
             project_id,
             kind: None,
+            released_at: None,
             cwd,
             model,
             settings,
