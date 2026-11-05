@@ -312,7 +312,9 @@ fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() 
     // Registered by an Agent, the same path is still only information.
     store.collaboration_call(Some("lead"), "task_update", json!({"requestId":"re-register","taskId":t,"expectedVersion":1,
         "patch":{"materials":{"worktree":elsewhere}}})).unwrap();
-    let refused = begun(&store, Some("lead"), dispatch(&t, "re-registered")).err().unwrap_or_else(|| "accepted".into());
+    let mut again = dispatch(&t, "re-registered");
+    again["expectedVersion"] = json!(2);
+    let refused = begun(&store, Some("lead"), again).err().unwrap_or_else(|| "accepted".into());
     assert!(refused.starts_with("folder_not_allowed:"), "a worktree an Agent registered on the task is no permission either: {refused}");
     let user = begun(&store, None, with("user", &elsewhere)).unwrap();
     assert_eq!(user.folders[0], elsewhere, "the user's executor may work anywhere");
