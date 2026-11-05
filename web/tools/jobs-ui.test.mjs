@@ -237,6 +237,91 @@ test('legacy unconfirmed ordinary submission retries with the same payload and r
   } finally {p.close();}
 });
 
+test('the submit form shows what earlier runs of the same name or command suggest, and sends the limits as set unless asked to use it (T-38 C)', async () => {
+  // The K4 calibration of 2026-11-04: 20 GiB asked, 2.6 GiB at its peak on 1.2 cores.
+  const suggestion = { memoryMiB: 4096, cpuMillis: 1800, memoryPeakMiB: 2662, averageCpuCores: 1.2, basedOn: [{ jobId: 'k4' }] };
+  const asked = [];
+  const handler = (url, body) => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      const q = Object.fromEntries(new URL(url, 'http://isolated.test').searchParams);
+      asked.push(q);
+      return { suggestion: q.name === 'K4 calibration' ? suggestion : null };
+    }
+    if (url === '/api/jobs' && body) return { ...job, ...body, id: 'job-one', status: 'queued' };
+    return page([]);
+  };
+  const posted = p => p.calls.filter(c => c.url === '/api/jobs' && c.body).map(c => c.body.resources);
+  // The submit form's own fields: the machine budget above it has a CPU quota too.
+  const limit = (p, text) => [...p.doc.querySelectorAll('.job-form label')].find(l => l.textContent.startsWith(text))?.querySelector('input');
+  async function set(p, text, value) {
+    const el = limit(p, text);
+    assert.ok(el, `Missing ${text} field in the form`);
+    Object.getOwnPropertyDescriptor(p.window.HTMLInputElement.prototype, 'value').set.call(el, value);
+    el.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+    await wait();
+  }
+  let p = mount(handler);
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'first of its kind'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    for (let n = 0; n < 40 && !asked.some(q => q.name === 'first of its kind'); n++) await wait();
+    assert.ok(asked.some(q => q.name === 'first of its kind'), 'the form asks what earlier runs suggest');
+    await wait();
+    assert.ok(!p.doc.querySelector('.job-suggestion'), 'no history, no suggestion');
+    await fill(p, 'Name', 'K4 calibration');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.deepEqual(asked.at(-1), { taskId: 'T-38', name: 'K4 calibration', argv: JSON.stringify(['/bin/sh', '-c', 'python3 calib.py']) });
+    assert.equal(p.doc.querySelector('.job-suggestion p').textContent,
+      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (peak × 1.5, rounded up). Your limits stay as you set them.');
+    // Shown, never applied: what is in the fields is sent.
+    await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
+    assert.ok(p.doc.querySelector('.job-suggestion'), 'still shown');
+    button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
+    assert.deepEqual(posted(p), [{ cpuMillis: 4000, memoryMiB: 20480, swapMiB: 0 }]);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // Asked to use it, the fields take it, and that is sent.
+  p = mount(handler);
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
+    await until(() => button(p, 'Use suggestion'));
+    button(p, 'Use suggestion').click(); await wait();
+    assert.deepEqual([limit(p, 'RAM limit').value, limit(p, 'CPU quota').value], ['4096', '1.8']);
+    button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
+    assert.deepEqual(posted(p), [{ cpuMillis: 1800, memoryMiB: 4096, swapMiB: 0 }]);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('the suggestion for the last draft goes as soon as the name changes, and the new one comes with its answer (T-38 C)', async () => {
+  const byName = {
+    'K4 calibration': { memoryMiB: 4096, cpuMillis: 1800, memoryPeakMiB: 2662, averageCpuCores: 1.2, basedOn: [{ jobId: 'k4' }] },
+    'K5 calibration': { memoryMiB: 8192, cpuMillis: 3000, memoryPeakMiB: 5000, averageCpuCores: 2.0, basedOn: [{ jobId: 'k5' }] },
+  };
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      const q = Object.fromEntries(new URL(url, 'http://isolated.test').searchParams);
+      return { suggestion: byName[q.name] ?? null };
+    }
+    return page([]);
+  });
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 4\.0 GiB RAM and 1\.8 CPU/);
+    // Another name: the last draft's note and its button go at once, before the next answer.
+    await fill(p, 'Name', 'K5 calibration');
+    assert.ok(!p.doc.querySelector('.job-suggestion'), 'the note for the last draft goes at once');
+    assert.ok(!button(p, 'Use suggestion'), 'nothing from the last draft can be used');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 8\.0 GiB RAM and 3\.0 CPU/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('known rejection permits editing and a completed job only reruns after a new explicit submit', async () => {
   const finished = { ...job, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
   const p = mount((url, body) => body && url === '/api/jobs' ? { httpStatus: 400, error: 'Never fits budget' } : url === '/api/jobs/job-one' ? finished : page([finished]));
