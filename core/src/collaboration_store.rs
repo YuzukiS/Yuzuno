@@ -23,6 +23,7 @@ pub(crate) use research::desk_source as research_desk_source;
 pub(crate) use research::{decision_record as research_decision_record, line_now as research_line_now,
     run_method as research_run_method};
 mod compact;
+pub(crate) mod mail_delivery;
 use result_dispatch::TaskDispatch;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,6 +229,8 @@ impl Store {
     /// Separate priority batches keep a working Agent's urgent notification from
     /// reserving or reading normal mail that should wait for a turn boundary.
     pub fn pending_peer_deliveries(&self) -> Result<Vec<Value>> {
+        // A refused wake-up whose wait has passed is pending again (T-50).
+        self.retry_refused_peer_deliveries()?;
         let db = self.db.read()?;
         let mut q = db.prepare("SELECT recipient_id,MAX(seq),COUNT(*),
             (SELECT MIN(older.seq)-1 FROM collaboration_messages older
@@ -307,8 +310,11 @@ impl Store {
         } else {
             detail.as_object_mut().unwrap().remove("mailbox");
         }
+        // A retried wake-up (mail_delivery.rs) keeps its count while it is sent again.
         let changed = tx.execute("UPDATE collaboration_messages SET delivery_state=?1,
-            delivery_detail=CASE WHEN ?1 IN ('delivered','uncertain','error') THEN json_patch(delivery_detail,?2) ELSE ?2 END
+            delivery_detail=CASE WHEN ?1 IN ('delivered','uncertain','error') THEN json_patch(delivery_detail,?2)
+              WHEN ?1='sending' AND json_type(delivery_detail,'$.retry')='object'
+                THEN json_set(?2,'$.retry',json(json_extract(delivery_detail,'$.retry'))) ELSE ?2 END
             WHERE recipient_id=?3 AND seq<=?4 AND delivery_state=?5
               AND COALESCE(json_extract(data,'$.priority'),'normal')=?6
               AND COALESCE(json_extract(data,'$.metadata.kind'),'')!='update_wait'
@@ -1328,16 +1334,23 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
             activities.push(value);
         }
     }
-    let mut q = db.prepare("SELECT data,delivery_detail FROM collaboration_messages WHERE json_extract(data,'$.taskId')=?1 ORDER BY seq")?;
+    let mut q = db.prepare(&format!("SELECT data,delivery_detail,seq,id,delivery_state,{},{} FROM collaboration_messages m WHERE json_extract(data,'$.taskId')=?1 ORDER BY seq",
+        mail_delivery::READ, mail_delivery::CLOSED))?;
+    // Its mail whose wake-up failed, is tried again or is uncertain (T-50).
+    let mut problems = Vec::new();
     for row in q.query_map([&task.id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
+            r.get::<_, bool>(5)?, r.get::<_, bool>(6)?))
     })? {
-        let (message, detail) = row?;
+        let (message, detail, seq, id, state, read, closed) = row?;
         let message: Value = serde_json::from_str(&message)?;
         add_execution(&mut executions, &message["source"]);
         let detail: Value = serde_json::from_str(&detail)?;
         add_execution(&mut executions, &detail);
+        problems.extend(mail_delivery::entry(seq, &id, &message, &state, &detail, read, closed));
     }
+    problems.reverse();
+    problems.truncate(MAIL_PROBLEMS);
     let has_more = activities.len() > limit as usize;
     activities.truncate(limit as usize);
     let next = activities
@@ -1346,8 +1359,12 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
         .unwrap_or(after);
     let mut output = json!({"task":task,"activities":activities,"executions":executions,"nextAfterSeq":next,"hasMore":has_more});
     output["materialsSource"] = registration;
+    output["mailProblems"] = json!(problems);
     Ok(output)
 }
+
+/// How many of a task's mail problems its views list, newest first.
+pub(crate) const MAIL_PROBLEMS: usize = 5;
 
 fn add_execution(executions: &mut Vec<Value>, source: &Value) {
     // A session alone is not an execution of this particular task.
@@ -1531,7 +1548,7 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Without filters it lists every project's and every assignee's tasks that are not archived (archived:true lists only archived ones), in creation order, 50 per page (limit up to 200); pass nextAfterSeq as afterSeq while hasMore. Every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project. compact:true gives short rows; task_get reads one task whole.", json!({"compact":{"type":"boolean","default":false,"description":"Short rows: id, title, status, version, assignee, updatedAt, projectId, githubLinks (a count) and the first 200 characters of progress and blocker. Description, result, dispatch and GitHub snapshots are left out; filters, counts and paging are unchanged."},"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
-        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
+        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs) and mailProblems (its newest mail whose wake-up failed, is tried again or is uncertain, as \"delivery failed: <reason>\"), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),

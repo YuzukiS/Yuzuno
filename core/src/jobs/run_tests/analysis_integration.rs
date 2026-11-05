@@ -167,7 +167,7 @@ async fn execute_one(ws: &Arc<Workspace>, group: &str) -> Value {
         json!(status)
     };
     let evidence = json!({"jobId":job["id"],"attempt":job["attempt"],"status":status,"reason":reason,
-        "started":proof,"artifacts":reports["artifacts"],"cost":reports["cost"],"progress":reports["progress"],
+        "started":proof,"artifacts":reports["artifacts"],"cost":reports["cost"],"progress":reports["progress"],"guard":reports["guard"],
         "evidence":{"acceptanceWorkerExitCode":output.status.code(),"stderr":String::from_utf8_lossy(&output.stderr),
             "boundary":"Real host worker inside outer managed Job; no per-stage systemd service or collector"}});
     ws.store.update_job_evidence(id, evidence).unwrap();
@@ -337,4 +337,69 @@ async fn real_workers_preserve_gate_and_frozen_inputs_inside_managed_job() {
         "run":completed,"reused":cancelled,"first":first,"independent":side,"eval":eval,"rejected":rejected});
     std::fs::write(&report, serde_json::to_vec_pretty(&report_value).unwrap()).unwrap();
     println!("Analysis gate acceptance passed: {}", report.display());
+}
+
+/// T-50 (elasticLM), through the production run tools and the real worker:
+/// a run whose stages guard only `src` lets a commit elsewhere (the run's own
+/// notes) through between its stages, records HEAD at submission and at each
+/// start, and exports that; a commit under `src` stops the next stage, naming it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a managed Job cgroup; see acceptance/stage-analysis/README.md"]
+async fn guard_paths_let_a_commit_elsewhere_through_and_stop_a_change_under_them_inside_managed_job() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir_all(work.join("src")).unwrap();
+    std::fs::write(work.join("src/fixture.py"), "import json,pathlib,sys\npathlib.Path(sys.argv[1]).write_text(json.dumps({'config':json.loads(pathlib.Path('src/config.json').read_text())}))\n").unwrap();
+    std::fs::write(work.join("src/config.json"), "{\"seed\":1}").unwrap();
+    std::fs::write(work.join("notes.md"), "first").unwrap();
+    std::fs::write(work.join(".gitignore"), "*.out.json\n").unwrap();
+    let git = |args: &[&str]| -> String {
+        let done = std::process::Command::new("git").arg("-C").arg(&work)
+            .args(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]).args(args).output().unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        String::from_utf8(done.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "fixture"]);
+    let (resources, group) = resources_here();
+    let ws = workspace(root.path(), &work, &resources);
+    let stage = |key: &str, needs: &[&str]| json!({"key":key,"needs":needs,"cwd":work,"argv":["/usr/bin/python3","src/fixture.py",format!("{key}.out.json")],
+        "resources":resources,"guardGit":true,"guardPaths":["src"],"artifacts":[{"path":format!("{key}.out.json"),"format":"json"}],"timeoutSeconds":30});
+
+    // A commit and an edit outside src between the stages: the next one runs.
+    let submitted = git(&["rev-parse", "HEAD"]);
+    let run = submit(&ws, "guarded", json!([stage("prepare", &[]), stage("train", &["prepare"])])).await;
+    let first = execute_one(&ws, &group).await;
+    assert_eq!(first["status"], "succeeded", "{}", first["result"]);
+    std::fs::write(work.join("notes.md"), "results written up during the run").unwrap();
+    git(&["commit", "-qam", "notes during the run"]);
+    std::fs::write(work.join("notes.md"), "and still being edited").unwrap();
+    let moved = git(&["rev-parse", "HEAD"]);
+    let second = execute_one(&ws, &group).await;
+    assert_eq!(second["status"], "succeeded", "{}", second["result"]);
+    assert_eq!(second["guardPaths"], json!(["src"]));
+    let guard = &second["result"]["guard"];
+    assert_eq!((&guard["headAtSubmit"], &guard["headAtStart"], &guard["guardedUnchanged"]), (&json!(submitted), &json!(moved), &json!(true)));
+    let completed = tool(&ws, "job_run_get", json!({"runId":run["id"]})).await;
+    assert_eq!(completed["status"], "succeeded");
+    let exported = tool(&ws, "job_provenance", json!({"runId":run["id"]})).await;
+    let starts: Vec<Value> = exported["manifest"]["attempts"].as_array().unwrap().iter()
+        .map(|a| json!([a["code"]["git"]["headAtSubmit"], a["code"]["git"]["headAtStart"], a["code"]["git"]["guardedUnchanged"], a["code"]["state"]])).collect();
+    assert!(starts.contains(&json!([submitted, submitted, true, "verified"])) && starts.contains(&json!([submitted, moved, true, "verified"])), "{starts:?}");
+    assert!(exported["report"].as_str().unwrap().contains("- Code: guarded paths src `"), "{}", exported["report"]);
+
+    // A commit under src between the stages: the next one does not start.
+    let run = submit(&ws, "guarded-changed", json!([stage("prepare", &[]), stage("train", &["prepare"])])).await;
+    let first = execute_one(&ws, &group).await;
+    assert_eq!(first["status"], "succeeded", "{}", first["result"]);
+    std::fs::write(work.join("src/config.json"), "{\"seed\":2}").unwrap();
+    git(&["commit", "-qam", "config during the run"]);
+    let earlier = std::fs::read(work.join("train.out.json")).unwrap();
+    let stopped = execute_one(&ws, &group).await;
+    assert_eq!(stopped["status"], "rejected", "{}", stopped["result"]);
+    let reason = stopped["result"]["reason"].as_str().unwrap();
+    assert!(reason.starts_with("Guarded inputs changed while queued (the committed content of guarded path src)"), "{reason}");
+    assert_eq!(std::fs::read(work.join("train.out.json")).unwrap(), earlier, "the stopped stage's command never ran");
+    tool(&ws, "job_run_cancel", json!({"runId":run["id"]})).await;
 }

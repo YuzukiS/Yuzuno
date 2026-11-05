@@ -94,6 +94,8 @@ pub(super) struct Stage {
     timeout_seconds: u64,
     #[serde(default = "super::yes")]
     guard_git: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    guard_paths: Vec<String>,
     #[serde(default)]
     inputs: Vec<String>,
     #[serde(default)]
@@ -256,6 +258,7 @@ impl RunSubmit {
             exclusive: stage.exclusive,
             timeout_seconds: stage.timeout_seconds,
             guard_git: stage.guard_git,
+            guard_paths: stage.guard_paths.clone(),
             inputs: stage.inputs.clone(),
             outputs: stage.outputs.clone(),
             artifacts: stage.artifacts.clone(),
@@ -280,9 +283,18 @@ fn sha(value: &Value) -> String {
 /// the stages it needs. Resources, timeout, name and retry policy are
 /// lifecycle, not inputs.
 pub(super) fn spec_identity(submit: &Submit, snapshot: &Value, needs: &[String]) -> Value {
+    let mut command = json!({"argv":submit.argv,"cwd":snapshot["cwd"],"env":submit.env,"guardGit":submit.guard_git});
+    // With guardPaths (T-50) the code is what they guard, not the HEAD commit;
+    // without them both parts stay as every earlier attempt recorded them.
+    let code = if submit.guard_paths.is_empty() {
+        json!({"gitHead":snapshot["git"]["head"],"files":snapshot["files"]})
+    } else {
+        command["guardPaths"] = json!(submit.guard_paths);
+        json!({"guardPaths":snapshot["git"]["guardPaths"],"files":snapshot["files"]})
+    };
     let parts = json!({
-        "command": sha(&json!({"argv":submit.argv,"cwd":snapshot["cwd"],"env":submit.env,"guardGit":submit.guard_git})),
-        "code": sha(&json!({"gitHead":snapshot["git"]["head"],"files":snapshot["files"]})),
+        "command": sha(&command),
+        "code": sha(&code),
         "artifacts": sha(&json!(submit.artifacts)),
         "needs": sha(&json!(needs)),
     });

@@ -126,6 +126,14 @@ interface TaskDetail {
   nextAfterSeq?: number | null;
   hasMore: boolean;
   executions: ExecutionSource[];
+  /** Its newest mail whose wake-up failed, is tried again or is uncertain (T-50). */
+  mailProblems?: MailProblem[];
+}
+interface MailProblem {
+  messageId: string;
+  jobId?: string | null;
+  status?: string | null;
+  problem: string;
 }
 interface MessagePage {
   messages: PeerMessage[];
@@ -1961,6 +1969,20 @@ function TaskPane({
               <div>
                 <h4>{t.waitingOn}</h4>
                 <p>{task.blocker}</p>
+              </div>
+            </section>
+          )}
+          {!!detail?.mailProblems?.length && (
+            <section className="collab-blocker collab-mail-problems">
+              <CircleAlert size={18} />
+              <div>
+                <h4>{t.mailProblems}</h4>
+                {detail.mailProblems.map((mail) => (
+                  <p key={mail.messageId}>
+                    {mail.jobId && t.jobMail(mail.status || "", mail.jobId)}
+                    {mail.problem}
+                  </p>
+                ))}
               </div>
             </section>
           )}
