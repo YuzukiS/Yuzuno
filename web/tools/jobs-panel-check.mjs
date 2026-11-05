@@ -442,7 +442,8 @@ try {
     assert.equal(marks.row.color, marks.dock.color, "a failed mark is the same colour in the panel and on the dock");
     await page.locator(".job-row").filter({ hasText: "browser check" }).click();
     await page.locator(".job-log").waitFor();
-    assert.deepEqual(await page.locator(".job-card-heading strong").allTextContents(), ["Summary", "Command", "Output", "Declared output files"]);
+    // Provenance since T-168: where a result came from.
+    assert.deepEqual(await page.locator(".job-card-heading strong").allTextContents(), ["Summary", "Command", "Output", "Declared output files", "Provenance"]);
     assert.match(await page.locator(".job-detail-title .job-state").textContent(), /^Failed · 4m 10s$/);
     assert.equal(await page.locator(".job-detail-actions").getByRole("button", { name: "Run again…" }).count(), 1);
     await shot("local-light-1440.png");
