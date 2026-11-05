@@ -42,6 +42,15 @@ Use the parameters your session advertises: a session that loaded its tool schem
 - `job_get.resourceSummary` and existing completion mail compare actual peak memory and average CPU cores with the declared request. CPU time divided by worker monotonic start-to-exit wall time gives average cores; pauses count in that wall time. For a worker wall time under 2 seconds no average is given: `averageCpuCores` is `null` with `averageCpuCoresReason: "too_short"`, and CPU seconds and wall time are still shown. Two things make a short run's average misleading. `cpuMillis` is a budget per 100 ms CFS period, so a run of a few periods can burst past it before throttling catches up. And CPU is read once the cgroup is empty, so a process still running after the main one exited adds CPU from outside the wall window. Measurements include the worker wrapper and exclude its collector. Missing or invalid counters and remote execution stay unknown (`null`), not zero. Failed attempts may have valid measurements; cancellation or interruption may lack them. Use measurements to inform the next request, with margin; they do not automatically resize it.
 - `rejected` with "Not started" means no process was created (for example the disk was full before launch) and nothing is held: submit again with a new `requestId` once the cause is gone.
 
+## Lowering a running Job's memory limit
+
+A running local Job that holds far more memory than it uses can have its limit lowered, by the user in its Jobs card or by its own Agent with `job_lower_memory`, so the budget it frees starts queued work at once.
+- **Only down.** The new limit must be below the current request, and at least what the Job's cgroup uses now plus 256 MiB. It is never raised again.
+- **How it is applied.** systemd applies it to the running worker (`systemctl --user set-property --runtime … MemoryMax=`), and the cgroup's `memory.max`, read back, confirms it. Only then are the Job's `resources.memoryMiB` and reservation lowered, in one step with the record of it on the Job (`limitChanges`) and a line in its task's activity.
+- **Swap stays as reserved** (Jobs reserve 0 swap by default).
+- **Over the new limit.** A Job that then needs more memory than the lowered limit is killed for memory, and its reason names the lowered limit, who lowered it and when.
+- **Where.** Jobs on SSH machines and Windows cannot be lowered: their helpers have no such action.
+
 ## Project services
 
 A local `job_submit` may declare `service` to link its command to a Project's preview entry. Opening or closing that preview does not start or stop the Job. An external service, with no linked Job, stays outside these controls.

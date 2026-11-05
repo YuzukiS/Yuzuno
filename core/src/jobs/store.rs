@@ -987,6 +987,12 @@ impl Store {
         }
         job["status"] = json!(status);
         job["reason"] = evidence["reason"].clone();
+        // Killed for memory after its limit was lowered (T-38 B): say so.
+        if evidence["evidence"]["systemd"]["Result"] == "oom-kill" {
+            if let Some(reason) = super::limit::oom_after_limit(&job) {
+                job["reason"] = json!(reason);
+            }
+        }
         if let Some(at) = evidence["started"]["at"]
             .as_f64()
             .filter(|at| at.is_finite())

@@ -350,6 +350,14 @@ fn logs(job: &Value, extent: &Result<Value, String>) -> Value {
     }
 }
 
+/// The memory limit lowerings of a running attempt (T-38 B), field by field:
+/// when, from and to how many MiB, and who (the user, or an Agent by name).
+fn limit_changes(job: &Value) -> Value {
+    json!(job["limitChanges"].as_array().into_iter().flatten().map(|c| json!({
+        "at": c["at"], "fromMiB": c["fromMiB"], "toMiB": c["toMiB"],
+        "by": if c["by"]["kind"] == "user" { json!("the user") } else { c["by"]["name"].clone() },
+    })).collect::<Vec<_>>())
+}
 fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, labels: &mut Labels) -> Value {
     known.add(&job["cwd"], "<cwd>");
     known.add(&job["snapshot"]["cwd"], "<cwd>");
@@ -365,7 +373,7 @@ fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, label
         "run": if run.is_object() { json!({"id": run["id"], "stage": run["stage"], "attempt": run["attempt"]}) } else { Value::Null },
         "retryOf": job["retryOf"], "retriedBy": job["retriedBy"], "resumeOf": job["checkpointFrom"]["jobId"],
         "requestedBy": job["requestedBy"], "turnId": job["source"]["turnId"],
-        "status": job["status"], "reason": job["reason"], "exit": exit(job),
+        "status": job["status"], "reason": job["reason"], "exit": exit(job), "limitChanges": limit_changes(job),
         "times": {"createdAt": job["createdAt"], "startedAt": job["startedAt"], "finishedAt": job["finishedAt"]},
         "target": target(job),
         "executor": {"kind": target(job)["kind"], "capabilities": job["capabilities"]},
@@ -557,6 +565,10 @@ fn report(m: &Value) -> String {
             _ => format!("exit status {}", md(&exit["state"])),
         };
         let _ = writeln!(out, "- Outcome: {}; {ended}", md(&a["reason"]));
+        for change in a["limitChanges"].as_array().into_iter().flatten() {
+            let _ = writeln!(out, "- Memory limit lowered from {} MiB to {} MiB by {} at {}", md(&change["fromMiB"]),
+                md(&change["toMiB"]), md(&change["by"]), md(&change["at"]));
+        }
         let code = &a["code"];
         let _ = match code["git"]["head"].as_str() {
             Some(_) => writeln!(out, "- Code: Git {}, tracked changes {} ({}: {})", hex(&code["git"]["head"]),
