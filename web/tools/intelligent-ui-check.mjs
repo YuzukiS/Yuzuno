@@ -217,6 +217,11 @@ const refresh = async () => {
   );
   await page.waitForTimeout(350);
 };
+// The request is in the composer's "+" menu (T-44).
+const askForResult = async () => {
+  await page.locator("form.composer .composer-plus").click();
+  await page.getByRole("menuitem", { name: "Ask for an interactive result", exact: true }).click();
+};
 try {
   await page.goto("https://yuzuno-intelligent.test/");
   await page.locator(".interactive-result").waitFor();
@@ -225,9 +230,7 @@ try {
     exact: true,
   });
   if (await latest.isVisible()) await latest.click();
-  await page
-    .getByRole("button", { name: "Ask for an interactive result", exact: true })
-    .click();
+  await askForResult();
   await page.getByRole("dialog").waitFor();
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
@@ -288,9 +291,7 @@ try {
     .getByRole("textbox", { name: "Filter Options", exact: true })
     .focus();
   await page.keyboard.press("Escape");
-  await page
-    .getByRole("button", { name: "Ask for an interactive result", exact: true })
-    .click();
+  await askForResult();
   await page.getByRole("dialog").waitFor();
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
@@ -432,14 +433,7 @@ try {
         .evaluate((el) => el.getBoundingClientRect().right <= innerWidth),
     );
     await page.screenshot({ path: `${output}/${theme}-20px-narrow.png` });
-    assert.ok(
-      await page
-        .getByRole("button", {
-          name: "Ask for an interactive result",
-          exact: true,
-        })
-        .isVisible(),
-    );
+    assert.ok(await page.locator("form.composer .composer-plus").isVisible());
     await page.setViewportSize({ width: 1440, height: 1050 });
   }
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -449,9 +443,7 @@ try {
   );
   check("light/dark at 20px, 390px width, reduced motion; no page overflow");
 
-  await page
-    .getByRole("button", { name: "Ask for an interactive result", exact: true })
-    .click();
+  await askForResult();
   await page.getByRole("radio", { name: /Explore data/ }).check();
   await page
     .getByRole("button", { name: "Add request to draft", exact: true })
@@ -694,15 +686,7 @@ try {
   await refresh();
   await page.getByRole("button", { name: "Reopen", exact: true }).waitFor();
   assert.ok(await page.locator(".result-primary").isDisabled());
-  assert.equal(
-    await page
-      .getByRole("button", {
-        name: "Ask for an interactive result",
-        exact: true,
-      })
-      .count(),
-    0,
-  );
+  assert.equal(await page.locator("form.composer .composer-plus").count(), 0);
   delete agents[0].closedAt;
   await refresh();
   check(

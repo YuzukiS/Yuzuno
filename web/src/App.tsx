@@ -5,7 +5,7 @@ import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
-import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
+import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import {
   memo,
   useCallback,
@@ -37,6 +37,7 @@ import {
   House,
   Link2,
   ImagePlus,
+  Shapes,
   SquareDashedMousePointer,
   Leaf,
   LoaderCircle,
@@ -190,6 +191,8 @@ import { moveWindow, useCustomFrame, WindowControls } from "./WindowControls";
 import { conversationTimeMarks } from "./conversation-time";
 import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
+import { ComposerAddMenu } from "./ComposerAddMenu";
+import { useComposerShape } from "./composer-shape";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
 import { appendDraft, appendDraftOnce, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
@@ -1299,6 +1302,13 @@ export function App() {
             ? "Reconnect above, or send a message to resume this session"
             : "Send a message to resume this session"
           : null;
+  const [composerPlaceholder, shortPlaceholder] = previewMode
+    ? [shell.preview, shell.preview]
+    : cannotSendWhileWorking
+      ? [shell.waitTurn, shell.waitTurnShort]
+      : busy
+        ? [shell.addThought, shell.addThoughtShort]
+        : [shell.ask(agent?.name ?? ""), shell.askShort(agent?.name ?? "")];
   const logicalRunningTurn = busy
     ? logicalTurns
         .slice()
@@ -1329,6 +1339,20 @@ export function App() {
     agent?.harness,
     currentDetail,
   );
+  // One line while the draft, or its placeholder, fits beside "+" and Send
+  // with nothing under it; otherwise the text above the tools (T-44). The
+  // controls' widths count, so what changes them is listed too. A placeholder
+  // too long for the line shows its short form (Lead 2 4757).
+  const [composerBox, setComposerBox] = useState<HTMLFormElement | null>(null);
+  const { shape: composerShape, short: placeholderShort } = useComposerShape(
+    composerBox,
+    () => composer.current?.lineExtent() ?? null,
+    !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
+    [draft, selected, language, busy, interrupting, sending, currentDetail?.codexPlan, previewMode],
+    composerPlaceholder,
+  );
+  const [resultRequestFor, setResultRequestFor] = useState<string | null>(null);
+  const resultRequestFrom = useRef<HTMLElement | null>(null);
   // New Claude messages still sending that their own Turn shows: once, there,
   // with the delivery note (T-120). The same set while its members stay the
   // same, so a streamed change does not draw every Turn again.
@@ -3785,7 +3809,19 @@ export function App() {
                   )}
                 </div>
                 <form
+                  ref={setComposerBox}
                   className={`composer ${busy ? "is-working" : ""}`}
+                  data-shape={composerShape}
+                  onDragOver={(e) => {
+                    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    // Images dropped on the box go with the draft, as pasted
+                    // ones do; the editor takes those dropped on its text.
+                    if (e.defaultPrevented || !e.dataTransfer.types.includes("Files")) return;
+                    e.preventDefault();
+                    if (!previewMode && !draftBlocked) void imageUploads.add(clipboardImages(e.dataTransfer));
+                  }}
                   onSubmit={(e) => {
                     e.preventDefault();
                     void send();
@@ -3812,15 +3848,7 @@ export function App() {
                     ref={composer}
                     agentId={selected}
                     label={shell.message(agent.name)}
-                    placeholder={
-                      previewMode
-                        ? shell.preview
-                        : cannotSendWhileWorking
-                          ? shell.waitTurn
-                          : busy
-                            ? shell.addThought
-                            : shell.ask(agent.name)
-                    }
+                    placeholder={placeholderShort ? shortPlaceholder : composerPlaceholder}
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
                     slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : "codex"}
@@ -3845,42 +3873,53 @@ export function App() {
                   <div className="composer-bottom" lang={langTag(language)}>
                     <div className="composer-tools">
                       <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
-                      {/* Agents that cannot take images keep the button, quieted, so
-                          its tooltip can say why. */}
-                      <button
-                        type="button"
-                        className="composer-tool"
-                        aria-label={imageUploads.busy ? shell.savingImages : shell.addImages}
-                        aria-disabled={!imageSupported || undefined}
-                        disabled={previewMode || draftBlocked || imageUploads.busy}
-                        title={
-                          imageSupported
-                            ? shell.addImagesTitle(imageNote)
-                            : shell.imagesOnly
-                        }
-                        onClick={() => { if (imageSupported) imagePicker.current?.click(); }}
-                      >
-                        {imageUploads.busy ? <LoaderCircle size={15} className="spin" /> : <ImagePlus size={15} />}
-                      </button>
                       <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark} onChange={event => {
                         const file = event.target.files?.[0];
                         event.target.value = "";
                         if (file) openPointFix({ name: file.name || "Screenshot", ownerId: selected, provenance: `an image you chose (${file.name || "pasted"})`, load: async () => file });
                       }} />
-                      <button
-                        type="button"
-                        className="composer-tool"
-                        aria-label={shell.markUp}
-                        title={shell.markUpTitle}
+                      {/* Agents that cannot take images keep the entry, quieted,
+                          so it can say why. */}
+                      <ComposerAddMenu
+                        label={shell.addMenu}
+                        title={shell.addMenuTitle}
+                        menuLabel={shell.addMenuLabel}
                         disabled={previewMode}
-                        onClick={() => pointFixPicker.current?.click()}
-                      >
-                        <SquareDashedMousePointer size={15} />
-                      </button>
-                      {!previewMode && <ResultRequest key={selected} onDraft={appendToDraft} />}
-                      {!previewMode && !isClaude && !isOpenCode && (
-                        <CodexPlanChip state={currentDetail?.codexPlan}
-                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                        busy={imageUploads.busy}
+                        items={[
+                          {
+                            key: "images",
+                            label: imageUploads.busy ? shell.savingImages : shell.addImages,
+                            icon: <ImagePlus size={16} />,
+                            title: imageSupported ? shell.addImagesTitle(imageNote) : shell.imagesOnly,
+                            note: imageSupported ? undefined : shell.imagesOnly,
+                            unavailable: !imageSupported,
+                            disabled: draftBlocked || imageUploads.busy,
+                            onSelect: () => imagePicker.current?.click(),
+                          },
+                          {
+                            key: "markUp",
+                            label: shell.markUp,
+                            icon: <SquareDashedMousePointer size={16} />,
+                            title: shell.markUpTitle,
+                            onSelect: () => pointFixPicker.current?.click(),
+                          },
+                          {
+                            key: "result",
+                            label: shell.askResult,
+                            icon: <Shapes size={16} />,
+                            title: shell.askResultTitle,
+                            onSelect: (plus) => {
+                              resultRequestFrom.current = plus;
+                              setResultRequestFor(selected);
+                            },
+                          },
+                        ]}
+                      />
+                      {!previewMode && (
+                        <ResultRequest key={selected} open={resultRequestFor === selected}
+                          onOpenChange={open => setResultRequestFor(open ? selected : null)} onDraft={appendToDraft}
+                          returnFocus={() => resultRequestFrom.current?.focus()} />
                       )}
                     </div>
                     <span className="composer-hint" data-notice={composerNotice ? "" : undefined}>
@@ -3906,6 +3945,11 @@ export function App() {
                       )}
                     </span>
                     <div className="composer-send-actions">
+                      {/* Codex's Plan mode, beside Send as a mode is in ChatGPT. */}
+                      {!previewMode && !isClaude && !isOpenCode && (
+                        <CodexPlanChip state={currentDetail?.codexPlan}
+                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                      )}
                       {busy && (
                         <button
                           type="button"

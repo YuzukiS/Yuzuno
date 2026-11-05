@@ -102,9 +102,8 @@
     const buttons = [...panel.querySelectorAll(".phone-dock-button")].filter(shown);
     const controls = Object.fromEntries([
       ["input", "[data-composer-input]"], ["send", ".send-button"],
-      ["image", '.composer-tools button[aria-label="Add images"]'],
-      ["markUp", '.composer-tools button[aria-label="Mark up an image"]'],
-      ["mode", ".composer-tools .composer-mode"],
+      ["add", ".composer-tools .composer-plus"],
+      ["mode", ".composer-send-actions .composer-mode"],
     ].map(([name, selector]) => {
       const el = panel.querySelector(selector);
       const reached = onTop(el);
