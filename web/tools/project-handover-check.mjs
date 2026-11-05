@@ -77,7 +77,10 @@ async function serve(route) {
     }
     return route.fulfill({ json: answer() });
   }
+  // Reads that are POSTs, and change nothing: the dialog's GitHub links.
   if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+  if (method === "POST" && ["/api/collaboration/github_links", "/api/collaboration/github_refresh"].includes(path))
+    return route.fulfill({ json: { links: [], repositories: [], refreshing: false } });
   if (method === "POST" && path === "/api/collaboration/task_list") return route.fulfill({ json: { tasks: [], counts: {}, hasMore: false, nextAfterSeq: null } });
   if (method !== "GET" && path.startsWith("/api/")) {
     report.writes.push({ method, path });
@@ -127,6 +130,8 @@ const fits = (section) => section.evaluate((el) => ({
   wider: [...el.querySelectorAll("input, textarea, button")].filter((c) => c.getBoundingClientRect().right > el.getBoundingClientRect().right + 1).map((c) => c.getAttribute("aria-label") || c.textContent),
 }));
 
+const saves = () => report.writes.filter((w) => w.path === "/api/projects/p1/handover");
+
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US", timezoneId: "Asia/Shanghai", reducedMotion: "reduce" });
 await context.addInitScript(() => {
@@ -155,7 +160,7 @@ try {
   await section.screenshot({ path: join(output, "1-unsaved.png") });
   await section.getByRole("button", { name: "Save handover" }).click();
   await section.getByText("Saved.").waitFor({ timeout: 10_000 });
-  assert.deepEqual(report.writes[0].body, { expectedVersion: 0, markdown: first, reason: "First notes" }, "a save names the version it was read at");
+  assert.deepEqual(saves()[0]?.body, { expectedVersion: 0, markdown: first, reason: "First notes" }, "a save names the version it was read at");
   await section.getByText("Version 1", { exact: true }).waitFor({ timeout: 10_000 });
   await section.getByText("First notes", { exact: true }).waitFor({ timeout: 10_000 });
   assert.equal(await section.locator('input[aria-label="Why this change"]').inputValue(), "", "the reason goes with the version saved");
@@ -163,14 +168,14 @@ try {
   assert.equal(await section.locator(".project-handover-past").textContent({ timeout: 10_000 }), first, "a past version is readable");
   assert.deepEqual(await fits(section), { box: true, wider: [] }, "the section fits its width");
   await section.screenshot({ path: join(output, "2-saved.png") });
-  check("an empty document written and saved as version 1 against version 0, its reason kept and the version readable", { body: report.writes[0].body });
+  check("an empty document written and saved as version 1 against version 0, its reason kept and the version readable", { body: saves()[0].body });
 
   // ---- Another window saved meanwhile: refused as a conflict, the typed text kept, then reloaded.
   write("# Lab\n\nSaved in another window.", null);
   await section.locator('textarea[aria-label="Handover document"]').fill("Overwritten");
   await section.getByRole("button", { name: "Save handover" }).click();
   await section.locator('[role="alert"]', { hasText: "version_conflict: this Project" }).waitFor({ timeout: 10_000 });
-  assert.equal(report.writes[1].body.expectedVersion, 1);
+  assert.equal(saves()[1].body.expectedVersion, 1);
   assert.equal(await section.locator('textarea[aria-label="Handover document"]').inputValue(), "Overwritten", "a refused save keeps what was typed");
   await section.screenshot({ path: join(output, "3-conflict.png") });
   await section.getByRole("button", { name: "Reload the saved handover" }).click();

@@ -14,12 +14,21 @@ export type HandoverVersion = {
 /** The document as Core keeps it: its latest version, and who wrote each. */
 export type Handover = { projectId: string; version: number; markdown: string; history: HandoverVersion[]; limit: number };
 
+/** The document as this client reads it: a list, even from an answer without one. */
+export const handoverView = (projectId: string, value: Partial<Handover>): Handover => ({
+  projectId,
+  version: typeof value.version === "number" ? value.version : 0,
+  markdown: typeof value.markdown === "string" ? value.markdown : "",
+  history: Array.isArray(value.history) ? value.history : [],
+  limit: typeof value.limit === "number" ? value.limit : 32 * 1024,
+});
+
 export const readHandover = (projectId: string, signal?: AbortSignal) =>
-  api<Handover>(`/projects/${encodeURIComponent(projectId)}/handover`, { signal });
+  api<Partial<Handover>>(`/projects/${encodeURIComponent(projectId)}/handover`, { signal }).then(value => handoverView(projectId, value));
 export const readHandoverVersion = (projectId: string, version: number) =>
   api<{ projectId: string; past: HandoverVersion }>(`/projects/${encodeURIComponent(projectId)}/handover?version=${version}`);
 /** A new version, checked against the version it was read at. */
 export const saveHandover = (projectId: string, expectedVersion: number, markdown: string, reason?: string) =>
-  api<Handover>(`/projects/${encodeURIComponent(projectId)}/handover`, {
+  api<Partial<Handover>>(`/projects/${encodeURIComponent(projectId)}/handover`, {
     method: "PUT", body: JSON.stringify({ expectedVersion, markdown, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
-  });
+  }).then(value => handoverView(projectId, value));
