@@ -1,6 +1,6 @@
 use super::*;
 use crate::{model::AgentDetail, store::Store};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, path::Path};
 
 async fn until(what: &str, mut check: impl FnMut() -> bool) {
@@ -149,7 +149,8 @@ async fn a_failed_start_is_rebuilt_once_then_the_task_is_blocked_with_both_reaso
     assert!(reason.as_deref().is_some_and(|r| r.starts_with(REFUSED)), "released with its own reason, not \"closed\": {reason:?}");
     assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_some(), "the first is closed, and kept");
     let second: String = lab.ws.store.db.read().unwrap().query_row(
-        "SELECT to_agent FROM executor_rebuilds WHERE from_agent=?1 AND state='done'", [&first], |r| r.get(0)).unwrap();
+        "SELECT to_agent FROM executor_rebuilds WHERE from_agent=?1 AND state='done'", [&first], |r| r.get(0))
+        .optional().unwrap().expect("the first failure is rebuilt once");
     assert_ne!(second, first);
     let (state, _, kept_seq, rebuilt_from) = lab.slot(&second);
     assert_eq!((state.as_str(), kept_seq, rebuilt_from.as_deref()), ("released", seq, Some(first.as_str())),
@@ -219,7 +220,7 @@ async fn an_uncertain_start_keeps_its_slot_open_and_mails_the_dispatcher_once() 
     lab.taken(&first, 1);
     let permit = lab.ws.admission.enter_work().unwrap();
     lab.ws.settle_start(&first, &permit, Failure::Uncertain("its start was not confirmed".into()), false).await.unwrap();
-    assert_eq!(lab.slot(&first).0, "starting");
+    assert_eq!(lab.slot(&first).0, "starting", "an uncertain start keeps its slot");
     assert_eq!(lab.slot(&first).1.as_deref(), Some("its start was not confirmed"));
     assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_none(), "open, for the user's Connect or Close");
     let rebuilds: i64 = lab.ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM executor_rebuilds", [], |r| r.get(0)).unwrap();
@@ -242,7 +243,7 @@ async fn a_reopened_executor_whose_start_fails_is_not_rebuilt() {
     lab.taken(&first, 2);
     let permit = lab.ws.admission.enter_work().unwrap();
     lab.ws.settle_start(&first, &permit, Failure::Definite("the runtime refused it".into()), false).await.unwrap();
-    assert_eq!(lab.slot(&first).0, "starting");
+    assert_eq!(lab.slot(&first).0, "starting", "a reopened executor keeps its slot, open");
     assert_eq!(lab.slot(&first).1.as_deref(), Some("the runtime refused it"));
     assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_none());
     let rebuilds: i64 = lab.ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM executor_rebuilds", [], |r| r.get(0)).unwrap();
@@ -297,7 +298,7 @@ async fn a_rebuild_a_restart_cut_short_blocks_its_task() {
     lab.ws.store.executor_rebuild_begin(&made, &first, "the runtime refused it").unwrap();
     lab.ws.store.recover_executor_rebuilds().unwrap();
     let view = lab.task_view(&task);
-    assert_eq!(view["task"]["status"], "blocked");
+    assert_eq!(view["task"]["status"], "blocked", "a rebuild cut short blocks its task");
     assert!(view["task"]["blocker"].as_str().unwrap().contains("Core restarted while it rebuilt"), "{}", view["task"]["blocker"]);
     let state: String = lab.ws.store.db.read().unwrap().query_row(
         "SELECT state FROM executor_rebuilds WHERE from_agent=?1", [&first], |r| r.get(0)).unwrap();
