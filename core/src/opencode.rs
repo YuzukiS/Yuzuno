@@ -695,19 +695,23 @@ impl Server {
     }
 
     /// Where 2.x holds the message sent under `id`, or `None` while it holds
-    /// none (T-32 slice 4a): among the session's messages once delivered
-    /// (`GET /api/session/:id/message/:messageID`), else admitted and waiting
-    /// in its inbox. A session OpenCode does not know is an error, not a
-    /// `None`.
+    /// none (T-32 slice 4a): admitted and waiting in its inbox, else among the
+    /// session's messages once delivered (`GET
+    /// /api/session/:id/message/:messageID`). The inbox is read first:
+    /// delivery only moves a message from it to the messages, so one
+    /// delivered between the two reads is found by the second (R5 728f7e52).
+    /// A session OpenCode does not know is an error, not a `None`.
     pub async fn message(&self, session: &str, id: &MessageId) -> Result<Option<Value>> {
+        let inbox = self.data(Method::GET, &format!("/api/session/{}/inbox", segment(session)?), &[], None).await?;
+        if let Some(waiting) = inbox.as_array().into_iter().flatten().find(|item| item["id"] == id.as_str()) {
+            return Ok(Some(waiting.clone()));
+        }
         let path = format!("/api/session/{}/message/{}", segment(session)?, segment(id.as_str())?);
         match self.data(Method::GET, &path, &[], None).await {
-            Ok(message) => return Ok(Some(message)),
-            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {}
-            Err(error) => return Err(error),
+            Ok(message) => Ok(Some(message)),
+            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => Ok(None),
+            Err(error) => Err(error),
         }
-        let inbox = self.data(Method::GET, &format!("/api/session/{}/inbox", segment(session)?), &[], None).await?;
-        Ok(inbox.as_array().into_iter().flatten().find(|item| item["id"] == id.as_str()).cloned())
     }
 
     /// Opens the event stream and reads up to its `server.connected`.

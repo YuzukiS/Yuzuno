@@ -383,6 +383,28 @@ async fn a_prompt_is_found_waiting_in_the_inbox_and_only_its_own_admission_accep
     again.shutdown().await.unwrap();
 }
 
+/// A message 2.x delivers between Core's two reads of it is found (T-32
+/// slice 4a, R5 728f7e52): the inbox is read before the delivered messages,
+/// and delivery only moves a message from the first to the second.
+#[tokio::test]
+async fn a_message_delivered_between_the_two_reads_of_it_is_found() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    assert_eq!(server.submit(&session, &MessageId::new(), "hello").await.unwrap(), Submission::Accepted);
+    let waiting = MessageId::new();
+    assert_eq!(server.submit(&session, &waiting, "also").await.unwrap(), Submission::Accepted);
+    // It waits in the inbox; 2.x delivers it right after the first read is answered.
+    lab.control("mode", json!({"deliverBetweenReads": true})).await;
+    let found = server.message(&session, &waiting).await.unwrap();
+    assert!(found.is_some(), "found, though delivered between the two reads");
+    let reads: Vec<String> = lab.calls().iter().filter(|c| c["method"] == "GET").filter_map(|c| c["path"].as_str())
+        .filter(|path| path.ends_with("/inbox") || path.contains("/message/")).map(str::to_owned).collect();
+    assert!(reads.first().is_some_and(|path| path.ends_with("/inbox")), "the inbox is read before the delivered messages: {reads:?}");
+    assert!(server.message(&session, &waiting).await.unwrap().is_some(), "found once delivered");
+    server.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_lost_answer_stays_unknown_is_never_sent_again_and_is_found_by_its_id() {
     let lab = lab();

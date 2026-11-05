@@ -202,6 +202,16 @@ def v2_providers():
              'settings': {'apiKey': SECRETS[0]}} for p in modes['providers']['providers']]
 
 
+def between_reads(session):
+    """Mode `deliverBetweenReads` (T-32 slice 4a, R5 728f7e52), once: 2.x delivers what waits in the session's inbox
+    right after the first read of one message or of the inbox is answered, so the other read finds it moved."""
+    if modes.get('deliverBetweenReads'):
+        modes['deliverBetweenReads'] = False
+        with lock:
+            v2_deliver(session)
+        save()
+
+
 def v2_deliver(session, upto=None):
     # 2.x delivers a message steered into a busy session at its next step's start (core/src/session/projector.ts):
     # those enqueued up to `upto`, or all of them.
@@ -1219,6 +1229,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: message read failed'})
             listed = list(messages.get(session, {}).values()) if v1() else v2_view(session)
             found = next((m for m in listed if (m.get('info') or m).get('id') == rest[1]), None)
+            between_reads(session)
             if found is None:
                 return self.reply(404, {'_tag': 'MessageNotFoundError', 'message': f'Message not found: {rest[1]}'})
             return self.reply(200, {'data': found})
@@ -1244,7 +1255,9 @@ class Handler(BaseHTTPRequestHandler):
         if (method, *rest) == ('GET', 'form'):
             return self.reply(200, {'data': [q for q in questions if q['sessionID'] == session]})
         if (method, *rest) == ('GET', 'inbox'):
-            return self.reply(200, {'data': [] if v1() else v2_inbox(session)})
+            listed = [] if v1() else v2_inbox(session)
+            between_reads(session)
+            return self.reply(200, {'data': listed})
         return self.reply(404)
 
     def session(self, method, session, rest, body, interrupt=False):
@@ -1353,11 +1366,14 @@ class Handler(BaseHTTPRequestHandler):
             # `prompt` applies a revert waiting in the session before its message (`session/prompt.ts`).
             cleanup(session)
         model = body.get('model') or modes['defaultModel']
-        if mode in ('store', 'renamed'):
+        if mode in ('store', 'renamed', 'store-unannounced'):
             if session in statuses:
                 # Sent while a run goes on: 2.x delivers it at that run's next step (v2_deliver).
                 v2_of(session)['steer'].add(message_id)
-            store(session, message_id, text, files, model=model)
+                if mode == 'store-unannounced':
+                    # Admitted into the inbox with no event Core sees (its stream missed it).
+                    v2_of(session)['pending'].append(message_id)
+            store(session, message_id, text, files, model=model, announce=mode != 'store-unannounced')
             accepted()
             # The run starts: OpenCode is busy until it ends.
             statuses[session] = {'type': 'busy'}
