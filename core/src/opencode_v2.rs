@@ -209,11 +209,15 @@ pub struct Read {
     /// A compaction still running: its message's ID, which its end, after
     /// this read, is under (R3 4051b7d4).
     pub compaction: Option<String>,
+    /// Each shell command still running, by its shell's ID: its message's,
+    /// the command item its end, after this read, ends (R4 1dfc453d).
+    pub shells: Vec<(String, String)>,
 }
 
 pub fn read_messages(messages: &Value) -> Read {
     let (mut read, mut ended, mut steps, mut tools) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut user, mut compaction): (Option<String>, Option<String>) = (None, None);
+    let mut shells = Vec::new();
     for message in messages.as_array().into_iter().flatten() {
         let Some(id) = message["id"].as_str() else { continue };
         match message["type"].as_str() {
@@ -240,8 +244,13 @@ pub fn read_messages(messages: &Value) -> Read {
                 }
                 read.push(json!({"info": info, "parts": parts}));
             }
-            Some("shell") => read.push(json!({"info": shell_info(id, user.as_deref(), &message["time"]["created"]),
-                "parts": [shell_part(id, message, &message["output"]["output"])]})),
+            Some("shell") => {
+                if let Some(shell) = message["shellID"].as_str().filter(|_| message["status"] == "running") {
+                    shells.push((shell.to_owned(), id.to_owned()));
+                }
+                read.push(json!({"info": shell_info(id, user.as_deref(), &message["time"]["created"]),
+                    "parts": [shell_part(id, message, &message["output"]["output"])]}));
+            }
             // A compaction, running or completed: what was measured before it no longer holds (`measure`).
             Some("compaction") => {
                 compaction = (message["status"] == "running").then(|| id.to_owned());
@@ -264,7 +273,7 @@ pub fn read_messages(messages: &Value) -> Read {
             _ => {}
         }
     }
-    Read { messages: read, ended, open: user, steps, tools, compaction }
+    Read { messages: read, ended, open: user, steps, tools, compaction, shells }
 }
 
 /// What 2.x admitted into a session and has not delivered into its turn
@@ -339,7 +348,7 @@ impl Cursor {
         let inputs = inbox.as_array().into_iter().flatten()
             .filter_map(|item| Some((item["id"].as_str()?.to_owned(), item["type"].as_str()?.to_owned()))).collect();
         self.sessions.insert(session.to_owned(), Open { user: read.open.clone(), inputs, steps, tools, compaction: read.compaction.clone(),
-            ..Open::default() });
+            shells: read.shells.iter().cloned().collect(), ..Open::default() });
     }
 
     /// A request a whole read found pending (after `resumed`): one of 2.x's

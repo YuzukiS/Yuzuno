@@ -423,3 +423,27 @@ fn a_compaction_a_whole_read_finds_running_ends_as_the_one_entry_it_read() {
     let done = json!([{"id": "msg_C1", "type": "compaction", "status": "completed", "reason": "auto", "time": {"created": 2}}]);
     assert_eq!(read_messages(&done).compaction, None, "one completed is not running");
 }
+
+/// A shell command a whole read finds running ends as the command item that
+/// read made: the stream broke while it ran, and its end after the read
+/// gives that item its status, output and exit code (T-32 slice 4a, R4
+/// 1dfc453d).
+#[test]
+fn a_shell_a_whole_read_finds_running_ends_as_the_command_item_it_read() {
+    let messages = json!([
+        {"id": "msg_u1", "type": "user", "time": {"created": 1}},
+        {"id": "msg_S1", "type": "shell", "shellID": "sh_1", "command": "ls", "status": "running", "time": {"created": 2}},
+    ]);
+    let read = read_messages(&messages);
+    assert_eq!(read.messages[1]["parts"][0]["status"], "inProgress", "the whole read's command item, under way");
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read, &json!([]));
+    let shell = json!({"id": "sh_1", "status": "exited", "exit": 0, "command": "ls", "cwd": "/w", "shell": "/bin/sh", "file": "/f"});
+    let ended = c.read(&json!({"id": "evt_S9", "type": "session.shell.ended", "created": 3, "data": {"sessionID": "ses_1", "shell": shell,
+        "output": {"output": "a.txt\n", "cursor": 6, "size": 6, "truncated": false}}}));
+    let parts: Vec<(Value, Value, Value, Value)> = ended.iter().map(|e| &e["data"]["part"])
+        .map(|p| (p["id"].clone(), p["status"].clone(), p["output"].clone(), p["exit"].clone())).collect();
+    assert_eq!(parts, [(json!("msg_S1"), json!("completed"), json!("a.txt\n"), json!(0))], "the command item that read made, ended");
+    let done = json!([{"id": "msg_S1", "type": "shell", "shellID": "sh_1", "command": "ls", "status": "exited", "exit": 0, "time": {"created": 2}}]);
+    assert!(read_messages(&done).shells.is_empty(), "one exited is not running");
+}
