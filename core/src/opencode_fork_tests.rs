@@ -291,8 +291,8 @@ async fn a_fork_through_a_turn_is_a_new_agent_in_the_same_folder_and_the_source_
     // Started once, replayed once, attached to that same process; no empty session made there first.
     assert_eq!(starts(&data, &target), 1);
     assert_eq!(asked(&data, &target, "POST", "/sync/replay").len(), 1);
-    assert_eq!(asked(&data, &target, "POST", "/session").iter().filter(|c| c["path"] == "/session").count(), 0);
-    assert_eq!(asked(&data, &target, "GET", "/event").len(), 1);
+    assert_eq!(asked(&data, &target, "POST", "/api/session").iter().filter(|c| c["path"] == "/api/session").count(), 0);
+    assert_eq!(asked(&data, &target, "GET", "/api/event").len(), 1);
     assert_eq!(ws.listed(&target).await.unwrap().connection_state, "connected");
     // The source as it was; the new Agent goes on by itself.
     assert_eq!(ws.store.turn_ids("oc").unwrap(), vec![first, second.clone(), third]);

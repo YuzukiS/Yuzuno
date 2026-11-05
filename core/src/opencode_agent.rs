@@ -251,7 +251,7 @@ impl Connection {
     /// A sub-agent session OpenCode says it started under one of the Agent's:
     /// its `session.created` or `session.updated`, or a `task` call's part.
     fn learn(&self, kind: &str, event: &Value) {
-        let p = &event["properties"];
+        let p = &event["data"];
         match kind {
             "session.created" | "session.updated" => {
                 let info = &p["info"];
@@ -562,7 +562,7 @@ impl Workspace {
             created_at: now(),
             updated_at: now(),
             unread_count: 0,
-            pending_count: 0,
+            pending_count: 0, open_questions: 0, last_turn_end: None,
             last_message: None,
             last_seq: 0,
             reviewed_seq: 0,
@@ -686,12 +686,16 @@ impl Workspace {
     /// `opencode` resolves to now. Until it is attached, the caller is its
     /// only owner: dropping it ends its process group.
     pub(crate) async fn opencode_start(&self, id: &str, cwd: &str) -> Result<Started> {
-        let folder = self.data_dir.join("opencode").join(id);
-        std::fs::create_dir_all(&folder)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
+        // Its own folder, and the cache Core's Agents share (T-32): OpenCode
+        // keeps its data and state in the one, its downloads in the other.
+        let (folder, cache) = (self.data_dir.join("opencode").join(id), self.data_dir.join("opencode").join("cache"));
+        for made in [&folder, &cache] {
+            std::fs::create_dir_all(made)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(made, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
         // What `opencode` resolves to now: a native executable is started by
         // that very file, so what was checked is what runs (T-10 Revert).
@@ -703,10 +707,13 @@ impl Workspace {
             Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
             _ => named,
         };
-        let launch = Launch { program: start, directory: cwd.into(), database: folder.join("opencode.db") };
+        let launch = Launch::new(start, cwd.into(), &folder, cache);
         let server = Arc::new(Server::start(&launch).await?);
         let pid = server.pid();
-        let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, |name| std::env::var_os(name),
+        // OpenCode's folders as it was started: Core's environment with the Agent's own on top.
+        let given: Vec<(&'static str, std::ffi::OsString)> = launch.environment().into_iter().map(|(name, value)| (name, value.to_owned())).collect();
+        let var = move |name: &str| given.iter().find(|(set, _)| *set == name).map(|(_, value)| value.clone()).or_else(|| std::env::var_os(name));
+        let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, var,
             std::env::vars_os().map(|(name, _)| name), dirs::home_dir)).await?;
         Ok(Started { server, files })
     }
@@ -969,7 +976,7 @@ impl Workspace {
                 self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
                     project(d, generation, &c.session, event);
                     if kind == "message.updated" {
-                        measure(d, &c, &event["properties"]["info"]);
+                        measure(d, &c, &event["data"]["info"]);
                     }
                     refresh_status(d);
                 }).map(drop)
@@ -1857,13 +1864,13 @@ const TAIL: usize = 8;
 /// the Agent's ownership, as the change is made). The open and newest ones
 /// come with them (`Sel::Turns`).
 fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
-    let info = &event["properties"]["info"];
+    let info = &event["data"]["info"];
     let mut turns: Vec<String> = [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect();
     // A message added to a running Turn, or an answer to one (T-10).
     for message in [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str) {
         turns.extend(store.turn_holding(id, "_opencodeInputs", message)?);
     }
-    if let Some(message) = event["properties"]["part"]["messageID"].as_str() {
+    if let Some(message) = event["data"]["part"]["messageID"].as_str() {
         turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
     }
     Ok(turns)
@@ -1914,7 +1921,7 @@ fn projected(kind: &str) -> bool {
 }
 
 fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
-    let p = &event["properties"];
+    let p = &event["data"];
     match event["type"].as_str().unwrap_or_default() {
         "message.updated" => message(d, &p["info"]),
         "message.part.updated" => part(d, &p["part"]),
@@ -1943,7 +1950,7 @@ fn requested(kind: &str) -> bool {
 
 /// A request event of `session`: the Agent's own, or its sub-agent `child`'s.
 fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&Value>, event: &Value) {
-    let p = &event["properties"];
+    let p = &event["data"];
     match event["type"].as_str().unwrap_or_default() {
         "permission.asked" => ask(d, PERMISSION, generation, session, child, p),
         "question.asked" => ask(d, QUESTION, generation, session, child, p),

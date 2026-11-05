@@ -882,6 +882,35 @@ fn downsampling_keeps_the_ends_and_the_shape() {
     assert_eq!(attachments::lttb(&points[..10], 500), (0..10).collect::<Vec<_>>());
 }
 
+/// T-42: Needs you lists an Agent's open asynchronous questions beside the
+/// requests, by Project priority and then wait, each naming the question to
+/// open; and a Claude AskUserQuestion is titled by what it asks.
+#[tokio::test]
+async fn home_lists_open_questions_and_titles_claude_questions_by_what_they_ask() {
+    let (_dir, ws, first) = lab();
+    let item = json!({"id":"q1","type":"agentMessage","delivery":"async","status":"completed","text":"Which?",
+        "questions":[{"title":"Which branch?","options":["main","next"]}]});
+    let data = json!({"threadId":"session-a","turnId":"t1","item":item});
+    ws.store.record_stream("a", crate::store::route("item/completed", &data), "item/completed", &data).unwrap();
+    ws.store.update("b", "test/pending", &json!({}), |d| {
+        d.pending.push(serde_json::from_value(json!({"id":"ask-1","agentId":"b","method":"claude/canUseTool",
+            "params":{"toolName":"AskUserQuestion","turnId":"t1","input":{"questions":[{"question":"Which file?","options":[]}]}},
+            "createdAt":"2026-01-01T00:00:00Z"})).unwrap());
+    }).unwrap();
+    let view = home::build(&ws.store).unwrap();
+    let needs = view["needsYou"].as_array().unwrap();
+    assert_eq!(needs.iter().map(|n| n["kind"].clone()).collect::<Vec<_>>(), [json!("approval"), json!("question")], "{needs:?}");
+    assert_eq!(needs[0]["title"], "Which file?");
+    let question = &needs[1];
+    assert_eq!((question["agentId"].as_str(), question["projectId"].as_str()), (Some("a"), Some(first.as_str())));
+    assert_eq!((question["turnId"].as_str(), question["itemId"].as_str(), question["title"].as_str()),
+        (Some("t1"), Some("q1"), Some("Which branch?")));
+    assert!(question["since"].as_str().is_some_and(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()), "{question}");
+    // The question counts toward Agent a's pending_count, not its requests.
+    let a = ws.store.agents().unwrap().into_iter().find(|a| a.id == "a").unwrap();
+    assert_eq!((a.pending_count, a.open_questions, a.native_requests()), (1, 1, 0));
+}
+
 #[tokio::test]
 async fn home_orders_projects_and_needs_you_by_priority_then_wait() {
     let (_dir, ws, first) = lab();

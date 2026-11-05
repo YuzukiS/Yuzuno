@@ -9,6 +9,8 @@ import {
   useAppearance,
   useAppearanceSave,
   type AgentListDensity,
+  type AgentOrder,
+  agentOrders,
   type Appearance,
   type DockLimits,
   type ProjectGroupStyle,
@@ -55,6 +57,12 @@ const text = strings({
     detailed: ["Detailed", "The latest report or update under each name"],
     compact: ["Compact", "Name and status only"],
   } as Record<AgentListDensity, [string, string]>,
+  agentOrder: "Agent order",
+  agentOrderHelp: "Scope and search still choose which Agents show; this only orders them, within each project group.",
+  agentOrders: {
+    list: ["As added", "The order the Agents were added in"],
+    attention: ["Who needs you first", "Waiting on you, then a Turn end you have not seen here, then working, ready and offline"],
+  } as Record<AgentOrder, [string, string]>,
   projectGroups: "Project groups",
   projectGroupsHelp: "How the Agent list sets projects apart when it shows All projects. Each group folds, and its + starts a new agent in it.",
   groups: {
@@ -87,6 +95,12 @@ const text = strings({
   agentList: "Agent 列表",
   agentListHelp: "无论选哪种，每个 Agent 的报告或更新都留在它的会话中，需要你处理的事情也照样显示。",
   agentLists: { detailed: ["详细", "每个名称下显示最新的报告或更新"], compact: ["紧凑", "只显示名称和状态"] },
+  agentOrder: "Agent 排序",
+  agentOrderHelp: "显示哪些 Agent 仍由范围和搜索决定；这里只决定顺序，在每个项目分组内排序。",
+  agentOrders: {
+    list: ["按添加顺序", "按 Agent 添加的先后排列"],
+    attention: ["需要你的在前", "等你处理的在前，然后是这台设备还没看过的 Turn 结束，再是运行中、就绪和离线"],
+  },
   projectGroups: "项目分组",
   projectGroupsHelp: "Agent 列表显示 All projects 时如何区分各个项目。每组都可以折叠，组上的 + 会在其中新建 Agent。",
   groups: {
@@ -241,6 +255,31 @@ export function AppearanceSection() {
                 </span>
                 <small>{note}</small>
               </label>
+              );
+            })}
+          </div>
+        </fieldset>
+        <fieldset className="appearance-field">
+          <legend>{t.agentOrder}</legend>
+          <p className="appearance-help">{t.agentOrderHelp}</p>
+          <div className="theme-options agent-order-options">
+            {agentOrders.map((value) => {
+              const [label, note] = t.agentOrders[value];
+              return (
+                <label key={value} className={`theme-choice agent-order-choice agent-order-choice-${value}`}>
+                  <input
+                    type="radio"
+                    name="appearance-agent-order"
+                    value={value}
+                    checked={appearance.agentOrder === value}
+                    onChange={() => update({ agentOrder: value })}
+                  />
+                  <span className="theme-choice-name">
+                    {label}
+                    <Check size={13} className="theme-selected" />
+                  </span>
+                  <small>{note}</small>
+                </label>
               );
             })}
           </div>
@@ -432,6 +471,7 @@ export function fieldLabel(field: AppearanceField, language: Language = "en"): s
     theme: t.theme,
     fontSize: t.textSize,
     agentList: t.agentList,
+    agentOrder: t.agentOrder,
     projectGroups: t.projectGroups,
     "dock.jobs": `${t.dock}: ${t.docks.jobs}`,
     "dock.actions": `${t.dock}: ${t.docks.actions}`,
@@ -461,6 +501,8 @@ export function fieldText(field: AppearanceField, value: string | number, langua
       return `${value} px`;
     case "agentList":
       return t.agentLists[value as AgentListDensity]?.[0] ?? String(value);
+    case "agentOrder":
+      return t.agentOrders[value as AgentOrder]?.[0] ?? String(value);
     case "projectGroups":
       return t.groups[value as ProjectGroupStyle]?.[0] ?? String(value);
     case "turnDock.bars":

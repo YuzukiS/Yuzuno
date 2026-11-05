@@ -272,7 +272,7 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
     w.showHelp();
     const text = w.document.querySelector(".shortcut-help").textContent;
     for (const title of ["Anywhere", "Writing a message", "Reading a conversation", "Home", "Lists and dialogs"]) assert.ok(text.includes(title), title);
-    assert.ok(text.includes("Three of them can take another letter here."), "three take another letter (T-189 P2)");
+    assert.ok(text.includes("Four of them can take another letter here."), "four take another letter (T-189 P2, T-42)");
     // As this device's preference says: Ctrl or Cmd+Return sends.
     const writing = [...w.document.querySelectorAll(".shortcut-group")].find((group) => group.querySelector("h4")?.textContent === "Writing a message");
     const keys = (dt) => [...dt.querySelectorAll("kbd")].map((kbd) => kbd.textContent).join("+");
@@ -337,7 +337,7 @@ test("every key the help lists is handled in the file it names", async () => {
   assert.ok(counted > 30, `${counted} keys checked`);
 });
 
-// T-189 P2: three shortcuts take another letter on this device.
+// T-189 P2: four shortcuts take another letter on this device (Next needs you since T-42).
 const pick = (w, name) => w.document.querySelector(`select[aria-label="Key for ${name}"]`);
 async function setKey(w, name, letter) {
   const select = pick(w, name);
@@ -347,33 +347,33 @@ async function setKey(w, name, letter) {
 }
 // The help's keys for an action, as shown: "Ctrl+J".
 const listed = (w, action) => [...w.document.querySelectorAll(".shortcut-group dt")].find((dt) => dt.nextElementSibling.textContent.startsWith(action))?.textContent;
-const NAMES = ["Find an Agent", "New Agent", "Search this conversation"];
+const NAMES = ["Find an Agent", "New Agent", "Search this conversation", "Next needs you"];
 
-test("three shortcuts take another letter: another's letter is refused and named, reserved letters aren't offered, and Restore defaults removes only them", async () => {
+test("four shortcuts take another letter: another's letter is refused and named, reserved letters aren't offered, and Restore defaults removes only them", async () => {
   const w = page({ saved: '{"sendKey":"modEnter"}' });
   try {
     w.showHelp();
-    assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"]);
+    assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F", "J"]);
     const offered = [...pick(w, "Find an Agent").options].map((option) => option.value);
     for (const letter of ["A", "C", "V", "X", "Y", "Z", "W", "T", "Q", "R", "L"]) assert.ok(!offered.includes(letter), `${letter} is text editing's or the browser's`);
     assert.equal(offered.length, 15);
-    await setKey(w, "Find an Agent", "J");
-    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
-    assert.equal(listed(w, "Find an Agent"), "Ctrl+J", "the help lists the letter in effect");
+    await setKey(w, "Find an Agent", "U");
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"U","newAgent":"N","search":"F","nextNeedsYou":"J"}');
+    assert.equal(listed(w, "Find an Agent"), "Ctrl+U", "the help lists the letter in effect");
     assert.equal(status(w), "Saved on this device");
     // Another's letter: refused, named; nothing changed, nothing swapped.
-    await setKey(w, "New Agent", "J");
+    await setKey(w, "New Agent", "U");
     assert.equal(w.document.querySelector(".shortcut-refused").textContent,
-      "Ctrl+J is already Find an Agent. Nothing was changed: choose another letter, or give Find an Agent another one first.");
+      "Ctrl+U is already Find an Agent. Nothing was changed: choose another letter, or give Find an Agent another one first.");
     assert.equal(pick(w, "New Agent").value, "N");
     assert.equal(listed(w, "New Agent"), "Ctrl+N");
-    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"U","newAgent":"N","search":"F","nextNeedsYou":"J"}');
     // Restore defaults: these only; the send key is left as saved.
     button(w, "Restore defaults").click();
     await tick();
     assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), null);
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), '{"sendKey":"modEnter"}');
-    assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"]);
+    assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F", "J"]);
     assert.equal(w.document.querySelector(".shortcut-refused"), null);
     assert.equal(status(w), "Defaults restored on this device");
   } finally {
@@ -402,11 +402,51 @@ test("a saved letter this version doesn't offer, or two shortcuts on one letter,
     try {
       w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", saved);
       w.showHelp();
-      assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"], saved);
+      assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F", "J"], saved);
       // Said so: not "Using the choice saved" (review R1).
       assert.match(w.document.querySelector(".save-status").textContent, /couldn’t be read, so the defaults apply/, saved);
     } finally {
       w.close();
     }
+  }
+});
+
+test("a set saved before Next needs you keeps its letters: Next needs you takes the next free one when its J is taken (review 7727a352)", async () => {
+  for (const [saved, keys] of [
+    ['{"find":"J","newAgent":"N","search":"F"}', ["J", "N", "F", "K"]],
+    ['{"find":"J","newAgent":"K","search":"F"}', ["J", "K", "F", "M"]],
+    ['{"find":"U","newAgent":"N","search":"F"}', ["U", "N", "F", "J"]],
+  ]) {
+    const w = page();
+    try {
+      w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", saved);
+      w.showHelp();
+      assert.deepEqual(NAMES.map((name) => pick(w, name).value), keys, `${saved}: the letters`);
+      assert.equal(listed(w, "Go to the next thing that needs you"), `Ctrl+${keys[3]}`, `${saved}: the help`);
+      assert.equal(status(w), "Using the choice saved on this device", `${saved}: what is said`);
+      assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), saved, "reading it writes nothing");
+    } finally {
+      w.close();
+    }
+  }
+  // The next save keeps the letter it was given.
+  const w = page();
+  try {
+    w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", '{"find":"J","newAgent":"N","search":"F"}');
+    w.showHelp();
+    await setKey(w, "Search this conversation", "G");
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"G","nextNeedsYou":"K"}');
+  } finally {
+    w.close();
+  }
+  // Two saved shortcuts on one letter are still not used.
+  const twice = page();
+  try {
+    twice.real.setItem.call(twice.localStorage, "yuzuno.shortcuts", '{"find":"J","newAgent":"N","search":"F","nextNeedsYou":"J"}');
+    twice.showHelp();
+    assert.deepEqual(NAMES.map((name) => pick(twice, name).value), ["K", "N", "F", "J"]);
+    assert.match(twice.document.querySelector(".save-status").textContent, /couldn’t be read, so the defaults apply/);
+  } finally {
+    twice.close();
   }
 });

@@ -232,6 +232,27 @@ async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() 
     assert_eq!(said, vec![json!({"folder": aside})], "the record says where it went");
 }
 
+/// An Agent's OpenCode keeps its data and state in the Agent's own folder
+/// and its downloads in the cache Core's Agents share, never the user's;
+/// its config stays the user's. It checks for no update and fetches no
+/// models list of its own (T-32, Lead 4870).
+#[tokio::test]
+async fn an_agents_opencode_keeps_its_data_and_state_its_own_and_fetches_nothing_of_its_own() {
+    let lab = lab(&[], false).await;
+    let opencode = lab.dir.path().join("data/opencode");
+    let own = opencode.join(ID).join("xdg");
+    let path = |p: PathBuf| json!(p.to_string_lossy());
+    assert_eq!(lab.seen()["env"], json!({
+        "XDG_DATA_HOME": path(own.join("data")), "XDG_STATE_HOME": path(own.join("state")),
+        "XDG_CACHE_HOME": path(opencode.join("cache")), "XDG_CONFIG_HOME": std::env::var("XDG_CONFIG_HOME").ok(),
+        "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1",
+    }), "its folders and switches as Core started it");
+    use std::os::unix::fs::PermissionsExt;
+    for folder in [opencode.join(ID), opencode.join("cache")] {
+        assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700, "{} is Core's alone", folder.display());
+    }
+}
+
 #[tokio::test]
 async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() {
     let lab = lab(&[], false).await;
@@ -594,7 +615,7 @@ async fn reopening_the_workspace_keeps_the_session_and_never_resends() {
     assert_eq!(turn(&d, &running)["status"], "outcomeUnknown", "its result is unknown, not resumed");
     assert_eq!(d.message_receipts[0].status, "accepted", "it was delivered");
     assert_eq!(lab.prompts().len(), 1, "never sent again");
-    assert_eq!(lab.posts("/session").iter().filter(|c| c["path"] == "/session").count(), 1, "no second session");
+    assert_eq!(lab.posts("/api/session").iter().filter(|c| c["path"] == "/api/session").count(), 1, "no second session");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -666,7 +687,7 @@ async fn after_a_restart_a_message_connects_the_session_again_and_goes_only_when
     let clients: Vec<&str> = d.message_receipts.iter().map(|r| r.input.client_message_id.as_str()).collect();
     assert_eq!(clients, ["a1"], "nothing recorded for the message not sent");
     assert_eq!(prompts(&a_root), 1, "not sent");
-    assert_eq!(lab.posts("/session").iter().filter(|c| c["path"] == "/session").count(), 1, "no second session");
+    assert_eq!(lab.posts("/api/session").iter().filter(|c| c["path"] == "/api/session").count(), 1, "no second session");
     // Sent again, it goes.
     let receipt = lab.send("a2", "after").await.unwrap();
     assert_eq!(receipt.status, "accepted");
@@ -1037,7 +1058,7 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
         let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
         let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/message.part.updated'").unwrap();
         query.query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap)
-            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["properties"]["part"].clone())
+            .map(|data| serde_json::from_str::<Value>(&data).unwrap()["data"]["part"].clone())
             .filter(|part| part["type"] == "file").collect::<Vec<_>>()
     };
     for _ in 0..400 {
@@ -1106,7 +1127,7 @@ async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session
     assert!(failed.detail().message_receipts.is_empty(), "refused before any receipt");
     // No permission rule anywhere: not on the session, not in a prompt.
     assert!(failed.calls().iter().all(|c| c["method"] != "PATCH"));
-    assert_eq!(failed.posts("/session")[0]["body"], json!({"title":"OpenCode"}));
+    assert_eq!(failed.posts("/api/session")[0]["body"], json!({"title":"OpenCode","location":{"directory":failed.detail().agent.cwd}}));
     failed.ws.close_agent(ID).await.unwrap();
 
     // Connected: ready, and what the Agent writes names its session and Turn.
@@ -1944,7 +1965,7 @@ async fn context_usage_a_newer_compaction_drops_an_answer_waiting_for_the_catalo
 
     // The stream breaks and can't reopen at once; meanwhile an answer of that model, then a compaction newer than it.
     let second = lab.send("c2", "next").await.unwrap().turn_id.unwrap();
-    let subscribed = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/event").count();
+    let subscribed = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/api/event").count();
     let (reads, before, opened) = (providers_reads(&lab), resyncs(&lab), subscribed(&lab));
     lab.control("refuseEvents", json!({"seconds":0.4})).await;
     lab.control("drop", json!({})).await;
