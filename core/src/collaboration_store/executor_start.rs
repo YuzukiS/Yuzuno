@@ -9,7 +9,7 @@
 //! own transaction), or failed with why. A second failure, or a rebuild Core
 //! can't make, blocks the task. Core writes that itself, as a system actor,
 //! and mails the dispatcher when it is an Agent.
-use super::{activity, agent_actor, executor_dispatch::actor_key, insert_message, load_task, save_task, task_number, SharedTask, TaskActor};
+use super::{activity, executor_dispatch::actor_key, insert_message, load_task, save_task, task_number, SharedTask, TaskActor};
 use crate::{model::now, store::Store};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -69,15 +69,19 @@ fn still_its(task: &SharedTask, agent: &str) -> bool {
         && !matches!(task.status.as_str(), "done" | "cancelled")
 }
 
-/// One system mail to the dispatcher, about this task.
-fn mail(store: &Store, db: &Connection, task: &SharedTask, dispatcher: &str, agent: &str, status: &str, body: String) -> Result<()> {
-    let recipient = agent_actor(store, db, dispatcher)?;
+/// One system mail to the dispatcher, about this task. False, with nothing
+/// sent, when that Agent no longer exists: Agents can be deleted, and their
+/// executors' rows outlive them, so a missing dispatcher must not undo the
+/// write the mail is part of (R3 f6885381).
+fn mail(store: &Store, db: &Connection, task: &SharedTask, dispatcher: &str, agent: &str, status: &str, body: String) -> Result<bool> {
+    let Some(brief) = store.brief_in(db, dispatcher)? else { return Ok(false) };
+    let recipient = TaskActor { kind: "agent".into(), id: brief.agent.id, name: brief.agent.name };
     let id = uuid::Uuid::new_v4().to_string();
     insert_message(db, json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},
         "recipient":recipient,"body":body,"taskId":task.id,"replyTo":null,"threadId":id,"createdAt":now(),
         "priority":"normal","source":{"executorAgentId":agent},
         "metadata":{"kind":"executor","status":status,"agentId":agent,"name":task_number(task.seq)}}))?;
-    Ok(())
+    Ok(true)
 }
 
 impl Store {
@@ -166,7 +170,8 @@ impl Store {
     }
 
     /// One mail to an Agent dispatcher about its task's executor (an
-    /// uncertain start, D4), while that executor is still the task's.
+    /// uncertain start, D4), while that executor is still the task's and
+    /// that Agent still exists.
     pub(crate) fn executor_start_mail(&self, task: &str, agent: &str, dispatcher: &str, status: &str, body: String) -> Result<bool> {
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
@@ -174,9 +179,9 @@ impl Store {
         if !still_its(&task, agent) {
             return Ok(false);
         }
-        mail(self, &tx, &task, dispatcher, agent, status, body)?;
+        let sent = mail(self, &tx, &task, dispatcher, agent, status, body)?;
         tx.commit()?;
-        Ok(true)
+        Ok(sent)
     }
 
     /// At startup, after the dispatches a stopped Core left unfinished have
@@ -293,11 +298,15 @@ fn block(store: &Store, tx: &Connection, task: &str, agent: &str, dispatcher: Op
     save_task(tx, &mut current, &actor)?;
     let mut detail = detail;
     detail["dispatcher"] = json!(dispatcher.map_or_else(|| json!({"kind":"user"}), |id| json!({"kind":"agent","id":id})));
+    // A dispatching Agent deleted since gets no mail; the task is blocked
+    // all the same, and its activity says the mail was not sent.
+    if let Some(dispatcher) = dispatcher {
+        if !mail(store, tx, &current, dispatcher, agent, "blocked", mail_body)? {
+            detail["mail"] = json!("not_sent: the dispatching Agent no longer exists");
+        }
+    }
     activity(tx, &current.id, "updated", &actor, &json!({"executorStart":detail}),
         json!({"changes":{"status":"blocked","blocker":blocker},"taskVersion":current.version}))?;
-    if let Some(dispatcher) = dispatcher {
-        mail(store, tx, &current, dispatcher, agent, "blocked", mail_body)?;
-    }
     Ok(true)
 }
 

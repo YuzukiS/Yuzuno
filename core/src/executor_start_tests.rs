@@ -521,3 +521,66 @@ async fn a_reopened_executor_cut_off_by_the_time_limit_stays_open() {
     assert_eq!(rebuild_state(&lab, &first), None, "and is not rebuilt");
     assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
 }
+
+/// R3 f6885381: a dispatching Agent deleted since (Agents can be deleted, and
+/// their executors' rows outlive them) does not stop a block. A rebuilt
+/// executor's failure blocks its task and fails its record, with no mail, and
+/// the activity says the mail was not sent. A first failure after the delete
+/// can't be rebuilt (its dispatcher is gone), and blocks its task the same way.
+#[tokio::test]
+async fn a_deleted_dispatcher_does_not_stop_the_block() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    lab.occupy_the_slot();
+    let task = lab.task("Review after its lead was deleted").await;
+    let first = lab.dispatch(&task, "orphaned").await;
+    let later = lab.task("Review another after its lead was deleted").await;
+    let other = lab.dispatch(&later, "orphaned-later").await;
+    lab.taken(&first, 1);
+    let permit = lab.ws.admission.enter_work().unwrap();
+    lab.ws.settle_start(&first, &permit, Failure::Definite("the runtime refused it".into()), false).await.unwrap();
+    let second = rebuild_state(&lab, &first).unwrap().1.expect("rebuilt while its lead existed");
+    lab.ws.delete_agent("lead").await.unwrap();
+
+    lab.taken(&second, 1);
+    lab.ws.settle_start(&second, &permit, Failure::Definite("the runtime refused it again".into()), false).await
+        .expect("a deleted dispatcher does not stop the block");
+    let view = lab.task_view(&task);
+    assert_eq!(view["task"]["status"], "blocked");
+    assert_eq!(rebuild_state(&lab, &second).map(|r| r.0).as_deref(), Some("failed"));
+    let blocked = view["activities"].as_array().unwrap().iter().rev().find(|a| a["changes"]["status"] == "blocked").unwrap();
+    assert_eq!(blocked["source"]["executorStart"]["mail"], "not_sent: the dispatching Agent no longer exists");
+
+    lab.taken(&other, 1);
+    lab.ws.settle_start(&other, &permit, Failure::Definite("the runtime refused it".into()), false).await
+        .expect("a rebuild its deleted dispatcher can't make blocks, too");
+    let view = lab.task_view(&later);
+    assert_eq!(view["task"]["status"], "blocked");
+    assert!(view["task"]["blocker"].as_str().unwrap().contains("Core could not rebuild it"), "{}", view["task"]["blocker"]);
+    assert_eq!(rebuild_state(&lab, &other).map(|r| r.0).as_deref(), Some("failed"));
+    assert!(lab.executor_mail().is_empty(), "no mail to an Agent that no longer exists");
+}
+
+/// R3 f6885381 at the next start: a rebuild cut short whose dispatching Agent
+/// was deleted since. Recovery still opens, blocks the task and fails the
+/// record (Workspace::new runs this recovery).
+#[tokio::test]
+async fn a_deleted_dispatcher_does_not_stop_recovery() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    lab.occupy_the_slot();
+    let cut = lab.task("Review across a stop, its lead deleted").await;
+    let made = lab.dispatch(&cut, "in-rebuild-orphaned").await;
+    settling_as_left(&lab, &made);
+    lab.ws.close_agent(&made).await.unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at)
+         VALUES('agent:lead',?1,'{}',?2,'reviewer',?3,'local','{}','half-made','pending','now','now')",
+        params![rebuild_request(&made), cut, lab.project]).unwrap();
+    lab.ws.delete_agent("lead").await.unwrap();
+    lab.ws.store.recover_executor_dispatches().unwrap();
+    lab.ws.store.recover_executor_rebuilds().expect("Core opens though the dispatcher was deleted");
+    lab.ws.store.recover_executor_slots().unwrap();
+    assert_eq!(lab.task_view(&cut)["task"]["status"], "blocked");
+    assert_eq!(rebuild_state(&lab, &made).map(|r| r.0).as_deref(), Some("failed"));
+}
