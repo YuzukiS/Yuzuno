@@ -1152,12 +1152,13 @@ fn task_dispatch(
     task.assignee_agent_id = Some(recipient_id.clone());
     task.assignee = Some(agent_actor(store, db, &recipient_id)?);
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
-    if input.get("executor").is_some() {
-        executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?;
-    }
+    let template = match input.get("executor") {
+        Some(_) => Some(executor_dispatch::dispatched(db, actor, &required_text(input, "requestId", 128)?, &recipient_id, &task.dispatch.as_ref().unwrap().id)?),
+        None => None,
+    };
     task.status = "doing".into();
     save_task(db, &mut task, actor)?;
-    let materials = dispatch_materials::snapshot(db, &task, input, sha_check)?;
+    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, template)?;
     let body = dispatch_materials::body(&materials);
     let message = create_message(
         store,

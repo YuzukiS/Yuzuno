@@ -83,6 +83,9 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
     assert_eq!((answer["agentId"].as_str(), answer["task"]["assigneeAgentId"].as_str()), (Some(executor.as_str()), Some(executor.as_str())));
     assert_eq!(row(&store, "user", "first").0, "dispatched", "the task and its row are dispatched together");
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    assert_eq!(given["dispatchMaterials"]["template"], json!({"id":"reviewer","label":"Reviewer","source":"workspace","instructions":"Review the change."}),
+        "the template and its instructions reach the executor with its materials");
     for _ in 0..2 {
         let again = store.executor_dispatch_begin(None, dispatch(&t, "first"));
         let Ok(Next::Dispatch(again)) = again else {

@@ -80,6 +80,8 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     let mail = ws.store.collaboration_call(Some(&executor), "peer_read", json!({})).unwrap();
     let dispatched = mail["messages"].as_array().unwrap().iter().find(|m| m["taskId"] == json!(first)).expect("the dispatch's mail");
     assert_eq!(dispatched["materialsRef"]["dispatchId"], answer["task"]["dispatch"]["id"]);
+    assert!(dispatched["body"].as_str().unwrap().contains("Its instructions: Review the change."),
+        "the template's instructions reach the executor in its mail: {}", dispatched["body"]);
 
     // A retry with the same requestId returns the same Agent; another
     // payload under it, or both an Agent and a template, is refused.

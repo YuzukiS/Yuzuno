@@ -24,6 +24,8 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS executor_dispatches(
             actor TEXT NOT NULL, request_id TEXT NOT NULL, input_json TEXT NOT NULL,
             task_id TEXT NOT NULL, template_id TEXT NOT NULL, project_id TEXT, machine_id TEXT NOT NULL,
+            -- The template the executor is made from, as its dispatch's materials give it.
+            template_json TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('pending','created','dispatched','failed')),
             error TEXT, dispatch_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -106,8 +108,14 @@ fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
 /// The store's task_dispatch of a template dispatch (its input names
 /// `executor`): its row, `created` for this Agent, becomes `dispatched` in the
 /// same transaction, so a dispatched task never has a failed executor.
-pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agent: &str, dispatch: &str) -> Result<()> {
+/// Returns the template the executor was made from, for its materials.
+pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agent: &str, dispatch: &str) -> Result<Value> {
     let at = now();
+    let template: Option<String> = db
+        .query_row(
+            "SELECT template_json FROM executor_dispatches WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
+            params![actor_key(actor), request, agent], |r| r.get(0))
+        .optional()?;
     let moved = db.execute(
         "UPDATE executor_dispatches SET state='dispatched',dispatch_id=?4,updated_at=?5
          WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
@@ -115,7 +123,7 @@ pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agen
     )?;
     ensure!(moved == 1, "invalid_input: executor names a dispatch from an executor template, whose Agent Core makes; give toAgentId alone to dispatch to an existing Agent");
     db.execute("UPDATE agent_roles SET dispatch_id=?2,updated_at=?3 WHERE agent_id=?1 AND kind='executor'", params![agent, dispatch, at])?;
-    Ok(())
+    Ok(serde_json::from_str(&template.context("the dispatch's template is missing")?)?)
 }
 
 impl Store {
@@ -167,7 +175,7 @@ impl Store {
         if let Some(project) = &project {
             crate::projects::ensure_assignable(&tx, project)?;
         }
-        let (template, _) = crate::executor_templates::template_in(&tx, project.as_deref(), &template_id)?.with_context(|| {
+        let (template, source) = crate::executor_templates::template_in(&tx, project.as_deref(), &template_id)?.with_context(|| {
             format!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}")
         })?;
         template.validate(crate::opencode_agent::enabled())?;
@@ -181,10 +189,13 @@ impl Store {
         );
         let agent_id = uuid::Uuid::new_v4().to_string();
         let at = now();
+        // What the executor's materials say of its template (T-34, R1 b0046ce0):
+        // its instructions reach it with the task, not only its settings.
+        let given = json!({"id":template.id,"label":template.label,"source":source,"instructions":template.instructions});
         tx.execute(
-            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,agent_id,state,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,'local',?7,'pending',?8,?8)",
-            params![key, request_id, request.to_string(), task.id, template.id, project, agent_id, at],
+            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,'local',?7,?8,'pending',?9,?9)",
+            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at],
         )?;
         tx.commit()?;
         Ok(Next::Create(Box::new(Plan {

@@ -245,7 +245,9 @@ pub(super) fn read(db: &Connection, task: &str, dispatch: &str) -> Result<Value>
     serde_json::from_str(&raw.context("dispatch_materials_not_found: no materials for this task and dispatch; legacy dispatches may have none")?).map_err(Into::into)
 }
 
-pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_check: &Value) -> Result<Value> {
+/// `template`: the executor template a template dispatch made its Agent
+/// from (T-34), given whole with its instructions.
+pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_check: &Value, template: Option<Value>) -> Result<Value> {
     let dispatch = task
         .dispatch
         .as_ref()
@@ -336,12 +338,15 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
         );
     }
     let supplement = optional_text(input, "body", 16_384)?.unwrap_or_default();
-    let snapshot = json!({"schemaVersion":1,"dispatchId":dispatch.id,"capturedAt":dispatch.dispatched_at,
+    let mut snapshot = json!({"schemaVersion":1,"dispatchId":dispatch.id,"capturedAt":dispatch.dispatched_at,
         "task":{"id":task_number(task.seq),"version":task.version,"title":task.title,"description":task.description,"progress":task.progress,"blocker":task.blocker,"updatedAt":task.updated_at},
         "project":project,"repositories":repositories,"github":links,"registeredSource":registration,"overriddenFields":overridden_fields,"effective":effective,
         "supplement":supplement,"returnTo":dispatch.notification_recipient,"requestedBy":dispatch.requested_by,"executor":dispatch.executor,
         "source":dispatch.source,"latestTask":{"taskId":task_number(task.seq)},
         "returnRequirementsDefault":"Report outcome and validation/evidence on this same task using task_submit_result with the original dispatchId. Default review is a submission, not independent approval, merge or release. No extra peer_send is needed for Agent dispatch."});
+    if let Some(template) = template {
+        snapshot["template"] = template;
+    }
     // As for the registration, Core's own shaCheck is not counted (T-31).
     let own = snapshot["effective"].get("shaCheck").map_or(0, |check| check.to_string().len());
     ensure!(
@@ -439,6 +444,17 @@ pub(super) fn body(snapshot: &Value) -> String {
         "supplement",
         2_000,
     );
+    // A template dispatch's executor gets its template's instructions (T-34).
+    if snapshot["template"].is_object() {
+        let template = &snapshot["template"];
+        field(
+            "Executor template",
+            &json!(format!("{} ({})", template["label"].as_str().unwrap_or_default(), template["id"].as_str().unwrap_or_default())),
+            "template",
+            200,
+        );
+        field("Its instructions", &template["instructions"], "template.instructions", 2_000);
+    }
     let selected = snapshot["effective"]["repositoryId"]
         .as_i64()
         .map(|i| i.to_string())
