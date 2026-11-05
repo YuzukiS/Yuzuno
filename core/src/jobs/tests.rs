@@ -1462,3 +1462,44 @@ async fn a_refused_wake_up_rings_again_at_the_next_opportunity_and_at_most_three
     assert!(mailbox_copy(&ws, &job)["firstReadAt"].is_null());
     ws.close_agent("a").await.unwrap();
 }
+
+/// T-50 R1 P3: a completion mail whose refused wake-up Core will not try
+/// again never says it will, on its Job or its task: a refusal from before
+/// Core recorded refusal times (as elasticLM's seq 4260), or mail its Agent
+/// has read since.
+#[test]
+fn a_refused_wake_up_core_will_not_retry_does_not_promise_a_retry() {
+    let (_dir, s) = setup();
+    let refused = |name: &str, failed_at: Option<String>| -> (Value, i64) {
+        let job = submit(&s, name);
+        s.reserve_next_job(None, None, None).unwrap().unwrap();
+        s.update_job_evidence(job["id"].as_str().unwrap(), evidence(&job, "succeeded")).unwrap();
+        let inbox = s.collaboration_call(None, "peer_read", json!({"agentId":"a"})).unwrap();
+        let seq = inbox["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["jobId"] == job["id"]).unwrap()["seq"].as_i64().unwrap();
+        let mut detail = json!({"mode":"start","error":"Effort changes must wait until the current turn finishes"});
+        if let Some(at) = failed_at {
+            detail["failedAt"] = json!(at);
+        }
+        s.set_peer_delivery("a", seq, "sending", json!({})).unwrap();
+        s.set_peer_delivery("a", seq, "error", detail).unwrap();
+        (s.job(job["id"].as_str().unwrap()).unwrap(), seq)
+    };
+    // Refused before Core recorded when: left as it was.
+    let (older, _) = refused("older", None);
+    // Refused with its time, and read by its Agent since.
+    let (read, seq) = refused("read", Some((chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339()));
+    s.db.write().unwrap().execute("INSERT INTO collaboration_message_reads(message_seq,reader_id,read_at) VALUES(?1,'a','now')", [seq]).unwrap();
+    assert!(s.pending_peer_deliveries().unwrap().is_empty(), "neither rings again");
+    let task = s.collaboration_call(None, "task_get", json!({"taskId":"T-1","view":"current"})).unwrap();
+    let said = |job: &Value| -> (String, String) {
+        let on_task = task["current"]["mailProblems"].as_array().unwrap().iter().find(|p| p["jobId"] == job["id"]).unwrap()["problem"].as_str().unwrap().to_owned();
+        let on_job = s.mail_notifications(&job["notifications"]).unwrap()["succeeded"]["problem"].as_str().unwrap().to_owned();
+        (on_task, on_job)
+    };
+    for (job, why) in [(&older, "it was refused before Core recorded refusal times"), (&read, "the recipient has read the mail")] {
+        let (on_task, on_job) = said(job);
+        assert!(!on_task.contains("tried again at the recipient's next wake-up"), "a refusal Core will not retry does not promise a retry: {on_task}");
+        let words = format!("delivery failed: Effort changes must wait until the current turn finishes; it is not tried again: {why}. The mail stays in the mailbox.");
+        assert_eq!((on_task.as_str(), on_job.as_str()), (words.as_str(), words.as_str()));
+    }
+}
