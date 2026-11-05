@@ -215,7 +215,7 @@ test("an OpenCode Agent's settings choose only its model and that model's varian
     { id: "openrouter/anthropic/claude-x", model: "openrouter/anthropic/claude-x", displayName: "OpenRouter · Claude X", description: "beta", variants: [] },
   ];
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
-  const page = mount((url, init) => url.endsWith("/agents/oc/models") ? { models: listed, opencode: { version: "1.19.3" } }
+  const page = mount((url, init) => url.endsWith("/agents/oc/models") ? { models: listed, opencode: { version: "2.2.5", verified: "2.2.5" } }
     : url.endsWith("/agents/oc/settings") ? { ...agent, model: JSON.parse(init.body).model } : undefined);
   const save = async () => {
     page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
@@ -259,6 +259,28 @@ test("an OpenCode Agent's settings choose only its model and that model's varian
     assert.deepEqual(saved().at(-1), { model: "openrouter/anthropic/claude-x", effort: null }, "the model, and OpenCode's own variant");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+// T-32 (Lead 4669): a running OpenCode newer than the verified release is noted, never refused.
+test("an OpenCode Agent's settings say when its OpenCode is newer than the verified one, and nothing for that one", async () => {
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  for (const [native, said] of [
+    [{ version: "2.9.1", verified: "2.2.5", note: "newer than the verified 2.2.5" }, "OpenCode 2.9.1 is newer than the verified 2.2.5."],
+    [{ version: "2.2.5", verified: "2.2.5" }, null],
+  ]) {
+    const page = mount((url) => url.endsWith("/agents/oc/models") ? { models: [], opencode: native } : undefined);
+    try {
+      page.window.renderSettings({ agent, onSaved() {} }); await tick();
+      page.document.querySelector(".agent-settings-button").click();
+      await until(() => page.calls.some((call) => call.url.endsWith("/agents/oc/models")) && page.document.querySelector('[role="dialog"]'),
+        "the dialog reads the Agent's models");
+      await tick();
+      const note = page.document.querySelector(".opencode-version-note");
+      if (said) assert.equal(note?.textContent, said);
+      else assert.ok(!note, "nothing said of the verified release");
+      assert.deepEqual(page.errors, []);
+    } finally { page.close(); }
+  }
 });
 
 test("questions are answered with one list of labels per question, in order", async () => {

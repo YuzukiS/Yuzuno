@@ -1280,7 +1280,7 @@ export function App() {
     currentDetail && !previewMode ? recoveryReason(currentDetail) : null;
   // One the user disconnected is started only by their Reconnect (T-184).
   const holdForRecovery =
-    (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing" || recovery === "disconnected";
+    (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing" || recovery === "disconnected" || recovery === "archived";
   // The one line under the draft that asks something of you; otherwise the
   // line stays quiet and shows the keys only while you type.
   const composerNotice = busy
@@ -1294,7 +1294,9 @@ export function App() {
           ? "End the unconfirmed turn above, or check again; your draft is kept"
           : recovery === "disconnected"
             ? "You disconnected this agent. Reconnect above to send; your draft is kept"
-            : "Reconnect above to check the last turn; your draft is kept"
+            : recovery === "archived"
+              ? "This agent is kept to read; create a new OpenCode agent to go on"
+              : "Reconnect above to check the last turn; your draft is kept"
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"

@@ -60,9 +60,9 @@ async fn a_core_that_turned_opencode_on_creates_a_local_agent_and_keeps_its_sess
     let router = server::router_on_port(ws.clone(), dir.path().join("assets"), 4317);
 
     let (_, workspace) = call(&router, "GET", "/api/workspace", Value::Null).await;
-    assert_eq!(workspace["opencode"], json!({"enabled":true,"version":"1.19.3"}));
+    assert_eq!(workspace["opencode"], json!({"enabled":true,"version":"2.2.5"}));
     let (status, models) = call(&router, "GET", "/api/models?harness=opencode", Value::Null).await;
-    assert_eq!((status, &models), (StatusCode::OK, &json!({"models":[],"opencode":{"version":"1.19.3"}})));
+    assert_eq!((status, &models), (StatusCode::OK, &json!({"models":[],"opencode":{"version":"2.2.5"}})));
 
     // What it does not do is refused before anything is created.
     for (body, refusal) in [
