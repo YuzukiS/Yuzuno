@@ -117,6 +117,12 @@ impl Lab {
         requests
     }
 
+    /// The Workspace's executor templates are now `templates`.
+    fn templates(&self, templates: Value) {
+        self.ws.store.db.write().unwrap().execute("UPDATE workspace_meta SET value=?1 WHERE key='executors.templates'",
+            [json!({"version":1,"templates":templates}).to_string()]).unwrap();
+    }
+
     /// The lead dispatches `task` from `template` to run on `machine`.
     async fn dispatch_on(&self, task: &str, request: &str, template: &str, machine: &str) -> String {
         let input = json!({"requestId":request,"taskId":task,"expectedVersion":1,"executor":{"templateId":template,"machineId":machine}});
@@ -672,8 +678,8 @@ async fn a_rebuild_whose_task_changed_as_it_dispatched_waits_for_the_next_pass()
 /// T-35 S3a (D8, Lead 2 Q5, gap 1): on another machine, cutting a start off
 /// stops nothing there. It counts as failed only on a stop that confirms the
 /// runtime instance it recorded; it is then closed and rebuilt on that same
-/// machine. A stop that confirms no instance holds it, open with its slot,
-/// mailed once, never rebuilt.
+/// machine, even once its template names another. A stop that confirms no
+/// instance holds it, open with its slot, mailed once, never rebuilt.
 #[tokio::test]
 async fn a_cut_off_remote_start_is_failed_only_on_a_stop_that_confirms_its_instance() {
     for (machine, stop) in [("lab-confirms", "ok"), ("lab-unconfirmed", "missing")] {
@@ -681,10 +687,13 @@ async fn a_cut_off_remote_start_is_failed_only_on_a_stop_that_confirms_its_insta
         lab.quiet();
         *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
         let requests = lab.ssh_machine(machine, "/srv/lab/project", hanging(lab._dir.path()), stop);
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","machineId":machine}]));
         let task = lab.task("Review on the lab box").await;
-        let first = lab.dispatch_on(&task, "remote", "reviewer", machine).await;
-        assert_eq!(lab.machine_of(&first).as_deref(), Some(machine), "made on the dispatch's machine");
+        let first = lab.dispatch(&task, "remote").await;
+        assert_eq!(lab.machine_of(&first).as_deref(), Some(machine), "made on its template's machine");
         assert_eq!(lab.ws.store.agent(&first).unwrap().cwd, "/srv/lab/project", "in the Project's folder there");
+        // Its template now names this Core host; its rebuild stays where it was made.
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"}]));
         for started in lab.ws.executor_slots_pass().await {
             started.await.unwrap();
         }
@@ -755,9 +764,8 @@ async fn a_cut_off_remote_claude_start_is_failed_only_when_its_host_confirms_the
         let lab = Lab::new(missing).await;
         lab.quiet();
         *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
-        lab.ws.store.db.write().unwrap().execute("UPDATE workspace_meta SET value=?1 WHERE key='executors.templates'",
-            [json!({"version":1,"templates":[{"id":"reviewer","label":"Reviewer","harness":"codex"},
-                {"id":"writer","label":"Writer","harness":"claude"}]}).to_string()]).unwrap();
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"},
+            {"id":"writer","label":"Writer","harness":"claude"}]));
         lab.ssh_machine(machine, "/srv/lab/project", "unused".into(), "ok");
         let script = lab._dir.path().join(format!("{machine}.cjs"));
         std::fs::write(&script, HOST).unwrap();
