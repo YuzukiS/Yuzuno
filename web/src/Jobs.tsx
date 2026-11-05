@@ -1716,11 +1716,11 @@ type Suggestion = {
 function useSuggestion(taskId: string, name: string, command: string) {
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   useEffect(() => {
+    // A suggestion is for this draft: the last draft's goes at once, before
+    // the next one is asked (review 7a85f843).
+    setSuggestion(null);
     const task = taskId.trim();
-    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) {
-      setSuggestion(null);
-      return;
-    }
+    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const query = new URLSearchParams({ taskId: task, name: name.trim() });

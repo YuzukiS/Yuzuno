@@ -295,6 +295,33 @@ test('the submit form shows what earlier runs of the same name or command sugges
   } finally { p.close(); }
 });
 
+test('the suggestion for the last draft goes as soon as the name changes, and the new one comes with its answer (T-38 C)', async () => {
+  const byName = {
+    'K4 calibration': { memoryMiB: 4096, cpuMillis: 1800, memoryPeakMiB: 2662, averageCpuCores: 1.2, basedOn: [{ jobId: 'k4' }] },
+    'K5 calibration': { memoryMiB: 8192, cpuMillis: 3000, memoryPeakMiB: 5000, averageCpuCores: 2.0, basedOn: [{ jobId: 'k5' }] },
+  };
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      const q = Object.fromEntries(new URL(url, 'http://isolated.test').searchParams);
+      return { suggestion: byName[q.name] ?? null };
+    }
+    return page([]);
+  });
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 4\.0 GiB RAM and 1\.8 CPU/);
+    // Another name: the last draft's note and its button go at once, before the next answer.
+    await fill(p, 'Name', 'K5 calibration');
+    assert.equal(p.doc.querySelector('.job-suggestion'), null, 'the note for the last draft goes at once');
+    assert.equal(button(p, 'Use suggestion'), undefined, 'nothing from the last draft can be used');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 8\.0 GiB RAM and 3\.0 CPU/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('known rejection permits editing and a completed job only reruns after a new explicit submit', async () => {
   const finished = { ...job, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
   const p = mount((url, body) => body && url === '/api/jobs' ? { httpStatus: 400, error: 'Never fits budget' } : url === '/api/jobs/job-one' ? finished : page([finished]));
