@@ -16,6 +16,7 @@ use crate::{executor_templates::Template, model::now, store::{InTransaction, Sel
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::path::Path;
 
 /// Runs on every open, as the other collaboration tables do. No column
 /// references an Agent: the row stays when its Agent is deleted.
@@ -94,6 +95,16 @@ impl Plan {
             Ok(())
         })
     }
+}
+
+/// Whether an Agent's executor may work in `folder`: the task's registered
+/// worktree, or inside the Project's folder, compared as canonical paths
+/// (whole components: a sibling sharing a prefix is outside).
+fn may_work_in(folder: &str, registered: Option<&str>, project_dir: Option<&str>) -> bool {
+    let canonical = |path: &str| std::fs::canonicalize(path).ok();
+    let Some(folder) = canonical(folder) else { return false };
+    registered.and_then(canonical).is_some_and(|registered| registered == folder)
+        || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir))
 }
 
 fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
@@ -179,10 +190,25 @@ impl Store {
             format!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}")
         })?;
         template.validate(crate::opencode_agent::enabled())?;
-        let mut folders: Vec<String> = dispatch_materials::worktree(&tx, &task.id, &request)?.into_iter().collect();
-        if let Some(project) = &project {
-            folders.extend(crate::projects::default_dir(&tx, project, "local")?);
+        let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
+        let project_dir = match &project {
+            Some(project) => crate::projects::default_dir(&tx, project, "local")?,
+            None => None,
+        };
+        // A path in a dispatch's materials is information, never permission
+        // (T-34, R6 3458f905): an Agent's executor works in the task's
+        // registered worktree or inside its Project's folder on this host,
+        // with the template's permissions. The user's may work anywhere.
+        if author.kind == "agent" {
+            if let Some(folder) = worktree.as_deref().filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()) {
+                let registered = dispatch_materials::worktree(&tx, &task.id, &json!({}))?;
+                ensure!(
+                    may_work_in(folder, registered.as_deref(), project_dir.as_deref()),
+                    "folder_not_allowed: an executor an Agent dispatches works in the task's registered worktree or inside its Project's folder on this host, and {folder} is neither; a path in a dispatch's materials is information, not permission. Register the worktree on the task, or ask the user to dispatch it"
+                );
+            }
         }
+        let folders: Vec<String> = worktree.into_iter().chain(project_dir).collect();
         ensure!(
             !folders.is_empty(),
             "no_folder: an executor works in this dispatch's worktree, or else in its Project's folder on this host, and there is neither; Core makes no folder"

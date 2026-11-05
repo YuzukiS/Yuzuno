@@ -261,3 +261,41 @@ async fn an_executor_is_created_under_its_dispatchs_permit_while_an_update_drain
     assert!(codex.is_ok(), "a Codex executor too: {:?}", codex.err());
     drop(held);
 }
+
+/// T-34 (R6 3458f905): a path in a dispatch's materials is information,
+/// never permission. A lead's executor works in the task's registered
+/// worktree or inside its Project's folder; any other folder is refused,
+/// a sibling sharing the folder's name prefix too. The user's is not.
+#[test]
+fn an_agents_executor_works_only_in_the_tasks_worktree_or_its_projects_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(path).unwrap().to_string_lossy().into_owned()
+    };
+    let (home, inside, sibling, elsewhere, registered) = (real("project"), real("project/sub"), real("project-other"), real("elsewhere"), real("registered"));
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    agent(&store, "lead");
+    let p = store.create_project("Lab", BTreeMap::from([("local".into(), home.clone())])).unwrap().id;
+    store.set_agent_project("lead", Some(&p)).unwrap();
+    crate::agent_roles::save(&store, &p, 0, vec!["lead".into()]).unwrap();
+    templates(&store, json!([reviewer()]));
+    let t = task(&store, "Review", Some(&p), Some(registered.as_str()));
+    let with = |request: &str, folder: &str| {
+        let mut input = dispatch(&t, request);
+        input["materials"] = json!({"worktree":folder});
+        input
+    };
+    for (request, folder) in [("elsewhere", &elsewhere), ("sibling", &sibling)] {
+        let refused = begun(&store, Some("lead"), with(request, folder)).err().unwrap_or_else(|| "accepted".into());
+        assert!(refused.starts_with("folder_not_allowed:"),
+            "an Agent cannot point its executor outside the task's worktree and its Project's folder ({request}): {refused}");
+    }
+    let inner = begun(&store, Some("lead"), with("inside", &inside)).unwrap();
+    assert_eq!(inner.folders[0], inside, "inside the Project's folder");
+    let own = begun(&store, Some("lead"), dispatch(&t, "registered")).unwrap();
+    assert_eq!(own.folders[0], registered, "the task's registered worktree");
+    let user = begun(&store, None, with("user", &elsewhere)).unwrap();
+    assert_eq!(user.folders[0], elsewhere, "the user's executor may work anywhere");
+}
