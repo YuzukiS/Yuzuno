@@ -17,6 +17,10 @@ const FINDINGS: usize = 5;
 const COMMENTS: i64 = 3;
 const LINE: usize = 200;
 
+/// A review's id, head, conclusion and findings (as JSON), the fields the
+/// summary tells, read in SQL.
+type ReviewFields = (Option<String>, Option<String>, Option<String>, Option<String>);
+
 /// `text` cut to `max` bytes on a character boundary, marked when cut.
 fn cut(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -69,7 +73,7 @@ pub(super) fn build(db: &Connection, task: &SharedTask) -> Result<String> {
         // The latest completed review of this PR for this task, and what it found at P0–P2.
         // Only the fields told: a review's record also holds its evidence, often megabytes,
         // and this runs inside the dispatch's write transaction (#605 R3).
-        let review: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = db.query_row(
+        let review: Option<ReviewFields> = db.query_row(
             "SELECT json_extract(data,'$.id'), json_extract(data,'$.headSha'), json_extract(data,'$.conclusion'), json_extract(data,'$.findings')
              FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status='completed' ORDER BY rowid DESC LIMIT 1",
             params![task.id, link], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
