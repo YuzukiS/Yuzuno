@@ -1159,6 +1159,28 @@ test("a review's result mail and a review link open its task at that review's re
   }
 });
 
+// T-50 (elasticLM): a task whose Job mail could not wake its Agent says so,
+// in Core's words, next to what it is waiting on.
+test("a task shows its mail whose wake-up failed, with the Job and why", async () => {
+  const problem = "delivery failed: Effort changes must wait until the current turn finishes; it is tried again at the recipient's next wake-up. The mail stays in the mailbox.";
+  const current = task();
+  const page = mount((operation) =>
+    operation === "task_list"
+      ? { tasks: [current], hasMore: false }
+      : { task: current, activities: [], executions: [], hasMore: false,
+          mailProblems: [{ messageId: "m1", jobId: "f9736ce5-293e-431f-a145-cae5a94f1ef2", status: "succeeded", problem }] },
+  );
+  try {
+    page.render();
+    (await waitFor(() => page.document.querySelector(".collab-task-card"), "task card")).click();
+    const section = await waitFor(() => page.document.querySelector(".collab-mail-problems"), "the task's mail problems");
+    assert.equal(section.querySelector("h4").textContent, "Mail not delivered");
+    assert.equal(section.querySelector("p").textContent, `Job f9736ce5 (succeeded): ${problem}`);
+  } finally {
+    page.close();
+  }
+});
+
 // T-193: Data & storage opens a task by its ID at its own Workspace section.
 test("opened at a task's Workspace section, the board shows that task there and only lists its folders: nothing is previewed or removed", async () => {
   const done = task({ id: "T-7", title: "Build cache", status: "done" });
