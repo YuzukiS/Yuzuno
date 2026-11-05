@@ -294,22 +294,22 @@ fn gathered_text_is_written_out_by_its_answers_next_event_and_an_idle_session_ke
     assert!(c.read(&ev("session.reasoning.delta", 10, d(json!({"assistantMessageID": "msg_a1", "ordinal": 0, "delta": "think"})))).is_empty());
     // The answer's next entry: what its reasoning gathered goes first.
     let next = c.read(&ev("session.text.started", 20, d(json!({"assistantMessageID": "msg_a1", "ordinal": 1}))));
-    assert_eq!(kinds(&next), ["message.part.delta", "message.part.updated"]);
-    assert_eq!((&next[0]["data"]["partID"], &next[0]["data"]["delta"]), (&json!("msg_a1:0"), &json!("think")),
+    assert_eq!((kinds(&next), &next[0]["data"]["partID"], &next[0]["data"]["delta"]),
+        (vec!["message.part.delta", "message.part.updated"], &json!("msg_a1:0"), &json!("think")),
         "an entry's gathered text written out by its answer's next event");
     assert!(c.read(&ev("session.text.delta", 30, d(json!({"assistantMessageID": "msg_a1", "ordinal": 1, "delta": "Hel"})))).is_empty());
     // Another delta of the same entry within the quarter-second gathers on.
     assert!(c.read(&ev("session.text.delta", 40, d(json!({"assistantMessageID": "msg_a1", "ordinal": 1, "delta": "lo"})))).is_empty());
     // Its step's end.
     let ended = c.read(&ev("session.step.ended", 50, d(json!({"assistantMessageID": "msg_a1", "finish": "stop"}))));
-    assert_eq!(kinds(&ended), ["message.part.delta", "message.updated"]);
-    assert_eq!(ended[0]["data"]["delta"], "Hello", "its step's end writes it out");
+    assert_eq!((kinds(&ended), &ended[0]["data"]["delta"]), (vec!["message.part.delta", "message.updated"], &json!("Hello")),
+        "its step's end writes it out");
     // The execution's end writes out what is left, then ends the turn.
     c.read(&ev("session.step.started", 60, d(json!({"assistantMessageID": "msg_a2"}))));
     c.read(&ev("session.text.delta", 70, d(json!({"assistantMessageID": "msg_a2", "ordinal": 0, "delta": "Bye"}))));
     let idle = c.read(&ev("session.execution.succeeded", 80, d(json!({}))));
-    assert_eq!(kinds(&idle), ["message.part.delta", "session.status"]);
-    assert_eq!(idle[0]["data"]["delta"], "Bye", "the execution's end writes it out");
+    assert_eq!((kinds(&idle), &idle[0]["data"]["delta"]), (vec!["message.part.delta", "session.status"], &json!("Bye")),
+        "the execution's end writes it out");
     assert!(c.sessions.is_empty(), "a session with nothing under way keeps nothing");
 }
 
@@ -370,7 +370,7 @@ fn a_2x_request_is_told_from_a_1_19_3_one_and_a_2x_form_is_read_as_a_question() 
     let mut c = Cursor::default();
     let form = json!({"id": "frm_1", "sessionID": "ses_1", "title": "Pick", "fields": [{"key": "a", "type": "string"}]});
     let asked = c.read(&ev("form.created", 1, json!({"form": form})));
-    assert_eq!((kinds(&asked), &asked[0]["data"]), (vec!["question.asked"], &form));
+    assert_eq!((kinds(&asked), asked.first().map(|e| &e["data"])), (vec!["question.asked"], Some(&form)), "a 2.x form is read as Core's question");
     let replied = c.read(&ev("form.cancelled", 2, json!({"id": "frm_1", "sessionID": "ses_1"})));
     assert_eq!((kinds(&replied), &replied[0]["data"]), (vec!["question.replied"], &json!({"sessionID": "ses_1", "requestID": "frm_1"})));
 }

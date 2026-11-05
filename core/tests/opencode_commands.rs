@@ -306,7 +306,7 @@ async fn a_listed_command_runs_under_its_kept_id_with_the_model_opencode_gives_i
         let id = lab.send(client, text, &[]).await.unwrap().turn_id.unwrap();
         let sent = lab.sent().pop().unwrap();
         assert!(sent["path"].as_str().unwrap().ends_with("/prompt"), "{text}: {sent}");
-        assert_eq!(sent["body"]["parts"], json!([{"type":"text","text":text}]));
+        assert_eq!(sent["body"]["text"], text);
         assert_eq!(lab.journaled("opencode/turnRequested").pop().unwrap()["command"], Value::Null);
         lab.complete(&id).await;
     }

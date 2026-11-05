@@ -1068,10 +1068,10 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
     }
     let kept = journaled();
     assert_eq!(kept.len(), 2, "both file parts came back and were journaled");
-    for (kept, sent) in kept.iter().zip(&parts[1..]) {
-        let url = sent["url"].as_str().unwrap();
-        let data = url.split_once(',').unwrap().1.as_bytes();
-        assert_eq!((&kept["name"], &kept["data"]), (&sent["filename"], &json!(format!("image/png,… ({} characters not kept)", data.len()))));
+    for (kept, sent) in kept.iter().zip(&parts) {
+        let uri = sent["uri"].as_str().unwrap();
+        let data = uri.split_once(',').unwrap().1.as_bytes();
+        assert_eq!((&kept["name"], &kept["data"]), (&sent["name"], &json!(format!("image/png,… ({} characters not kept)", data.len()))));
         for entry in std::fs::read_dir(lab.dir.path().join("data")).unwrap().map(Result::unwrap) {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with("workspace.sqlite") {
@@ -2327,8 +2327,8 @@ async fn a_2x_request_is_shown_waiting_for_an_answer_yuzuno_cannot_give_yet() {
         let note = p.params["_opencodeNotYet"].as_str().unwrap_or_default();
         assert!(note.contains("not yet on OpenCode 2.x") && note.contains("只能中断这一轮"), "shown waiting for an answer Yuzuno can't give yet: {p:?}");
         assert_eq!(p.params["turnId"], running.as_str());
-        let refused = lab.ws.respond(&p.id, json!({"decision":"reject"})).await.unwrap_err().to_string();
-        assert!(refused.contains("not yet on OpenCode 2.x"), "{refused}");
+        let answered = lab.ws.respond(&p.id, json!({"decision":"reject"})).await.map_err(|e| e.to_string());
+        assert!(answered.as_ref().is_err_and(|e| e.contains("not yet on OpenCode 2.x")), "an answer refused as not yet: {answered:?}");
     }
     assert!(lab.posts("/permission/").is_empty() && lab.posts("/question/").is_empty(), "no answer was sent");
     // 2.x's form ends as Core's question does: no longer waiting.
