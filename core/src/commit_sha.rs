@@ -182,8 +182,9 @@ fn verified_in(registered: &Value, key: &str, repository: Option<i64>) -> bool {
 /// none, the registered materials', as the dispatch itself takes it. What
 /// GitHub said goes to the store as `shaCheck` beside the input, never from
 /// the caller. A dispatch asks again of a registered SHA not verified in that
-/// repository. Without a saved repository nothing is resolved or asked.
-pub async fn resolve_materials(ws: &Arc<Workspace>, operation: &str, mut input: Value) -> Result<Value> {
+/// repository. Without a saved repository nothing is resolved or asked. A
+/// retry of a call already answered asks nothing: the store replays it.
+pub async fn resolve_materials(ws: &Arc<Workspace>, actor: Option<&str>, operation: &str, mut input: Value) -> Result<Value> {
     // task_update carries them in its patch; task_create and task_dispatch at the top.
     let at = if operation == "task_update" { "/patch/materials" } else { "/materials" };
     // Only Core says what GitHub answered.
@@ -192,6 +193,28 @@ pub async fn resolve_materials(ws: &Arc<Workspace>, operation: &str, mut input: 
     }
     if let Some(given) = input.pointer_mut(at).and_then(Value::as_object_mut) {
         given.remove("shaCheck");
+    }
+    // A retry of a call Core already answered replays that answer (review
+    // b58a5ca1): nothing is asked of GitHub, so what it says now cannot turn a
+    // saved receipt into a refusal. An abbreviation the first call resolved
+    // takes the full SHA that call saved, so the store finds the same request.
+    if let Some(request) = input["requestId"].as_str().map(str::to_owned) {
+        let (actor, call) = (actor.map(str::to_owned), operation.to_owned());
+        if let Some(first) = ws.stored(move |s| s.answered_input(actor.as_deref(), &call, &request)).await? {
+            if let (Some(saved), Some(given)) = (first.pointer(at), input.pointer_mut(at).and_then(Value::as_object_mut)) {
+                for key in ["baseSha", "headSha"] {
+                    let full = saved[key].as_str().filter(|full| {
+                        given.get(key).and_then(Value::as_str).is_some_and(|short| {
+                            abbreviated(short) && full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase())
+                        })
+                    });
+                    if let Some(full) = full {
+                        given.insert(key.into(), json!(full));
+                    }
+                }
+            }
+            return Ok(input);
+        }
     }
     let given = input.pointer(at).cloned();
     let registered = if operation == "task_dispatch" && !given.as_ref().is_some_and(Value::is_null) {
@@ -390,10 +413,10 @@ print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr
         let ws = lab(dir.path());
         ws.collaboration_call(None, "task_create", json!({"requestId":"c","title":"Dispatch",
             "materials":{"repositoryId":123}})).await.unwrap();
-        let resolved = resolve_materials(&ws, "task_dispatch", json!({"taskId":"T-1","materials":{"headSha":"abc1234"}})).await.unwrap();
+        let resolved = resolve_materials(&ws, None, "task_dispatch", json!({"taskId":"T-1","materials":{"headSha":"abc1234"}})).await.unwrap();
         assert_eq!(resolved["materials"]["headSha"], FULL);
         // An explicit null repositoryId names none: nothing is guessed.
-        let error = resolve_materials(&ws, "task_dispatch", json!({"taskId":"T-1","materials":{"repositoryId":null,"headSha":"abc1234"}}))
+        let error = resolve_materials(&ws, None, "task_dispatch", json!({"taskId":"T-1","materials":{"repositoryId":null,"headSha":"abc1234"}}))
             .await.unwrap_err().to_string();
         assert!(error.contains("which is not given"), "{error}");
     }
@@ -497,7 +520,7 @@ print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr
     }
 
     /// Only Core says what GitHub answered, and a requestId retry replays the
-    /// first answer although GitHub is asked again before the replay is found.
+    /// first answer without asking GitHub again.
     #[tokio::test]
     async fn a_caller_cannot_say_what_github_answered_and_a_retry_replays() {
         let dir = tempfile::tempdir().unwrap();
@@ -511,7 +534,7 @@ print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr
         assert_eq!(saved["task"]["materials"]["shaCheck"]["baseSha"]["state"], "unverified");
         let again = ws.collaboration_call(None, "task_create", input).await.unwrap();
         assert_eq!((&again["task"]["id"], &again["shaCheck"]), (&saved["task"]["id"], &saved["shaCheck"]), "the first answer, replayed");
-        assert_eq!(requests(dir.path()).len(), 2, "asked again before the replay was found");
+        assert_eq!(requests(dir.path()).len(), 1, "the retry asked GitHub nothing");
     }
 
     /// A dispatch asks again of a registered SHA GitHub has not yet confirmed
@@ -633,5 +656,43 @@ print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr
         assert!(sent["message"]["body"].as_str().unwrap().contains(&format!("Explicit head SHA: {FULL} (found on GitHub at ")),
             "{}", sent["message"]["body"]);
         assert_eq!(requests(dir.path()).len(), asked);
+    }
+
+    /// R2 b58a5ca1: a retry of a call Core already answered replays that
+    /// answer, task_create's and task_update's alike, though GitHub now says
+    /// the commit is not there; GitHub is not asked, and nothing new is
+    /// recorded. A new request is refused as GitHub now says.
+    #[tokio::test]
+    async fn a_retry_replays_its_receipt_though_github_now_refuses_the_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = lab(dir.path());
+        let project = project(&ws).await;
+        let five = "5".repeat(40);
+        let create = json!({"requestId":"first","title":"Retry","projectId":project,"materials":{"repositoryId":123,"headSha":five}});
+        let created = ws.collaboration_call(None, "task_create", create.clone()).await.unwrap();
+        assert_eq!(created["shaCheck"]["headSha"]["state"], "unverified", "{created}");
+        let task = created["task"]["id"].as_str().unwrap().to_owned();
+        let update = json!({"requestId":"edit","taskId":task,"expectedVersion":created["task"]["version"],
+            "patch":{"materials":{"repositoryId":123,"baseSha":five,"headSha":five}}});
+        let updated = ws.collaboration_call(None, "task_update", update.clone()).await.unwrap();
+        assert_eq!(updated["shaCheck"]["baseSha"]["state"], "unverified", "{updated}");
+        let read = |ws: &Workspace| ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"full"})).unwrap();
+        let before = read(&ws);
+
+        std::fs::write(dir.path().join("gone"), "").unwrap();
+        let asked = requests(dir.path()).len();
+        let again = ws.collaboration_call(None, "task_create", create).await.unwrap();
+        assert_eq!((&again["task"]["id"], &again["task"]["version"], &again["shaCheck"]),
+            (&created["task"]["id"], &created["task"]["version"], &created["shaCheck"]), "task_create's first receipt");
+        let again = ws.collaboration_call(None, "task_update", update).await.unwrap();
+        assert_eq!((&again["task"]["version"], &again["shaCheck"]), (&updated["task"]["version"], &updated["shaCheck"]),
+            "task_update's first receipt");
+        assert_eq!(requests(dir.path()).len(), asked, "the retries asked GitHub nothing");
+        let after = read(&ws);
+        assert_eq!((&after["task"]["version"], &after["activities"]), (&before["task"]["version"], &before["activities"]), "nothing new recorded");
+
+        let error = ws.collaboration_call(None, "task_create", json!({"requestId":"second","title":"Retry","projectId":project,
+            "materials":{"repositoryId":123,"headSha":five}})).await.unwrap_err().to_string();
+        assert!(error.contains(&format!("headSha {five} is not a commit of o/r")), "{error}");
     }
 }

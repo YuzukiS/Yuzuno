@@ -185,6 +185,17 @@ pub(super) fn check_shas(db: &Connection, task: &str, materials: &Value) -> Resu
 }
 
 impl Store {
+    /// The input `actor` gave the `operation` call that `request` already
+    /// answered, as the store saved it, or None (T-31): a retry of it replays
+    /// that answer, so the runtime need ask GitHub nothing for it.
+    pub(crate) fn answered_input(&self, actor: Option<&str>, operation: &str, request: &str) -> Result<Option<Value>> {
+        let db = self.db.read()?;
+        let actor = actor.map_or_else(|| "user".to_owned(), |id| format!("agent:{id}"));
+        let raw: Option<String> = db.query_row("SELECT input_json FROM collaboration_requests WHERE actor=?1 AND operation=?2 AND request_id=?3",
+            params![actor, operation, request], |r| r.get(0)).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into)).transpose()
+    }
+
     /// A task's registered materials, or null: what a dispatch takes where it
     /// overrides nothing, so where it resolves and checks SHAs (T-164, T-31).
     /// An unknown task has none here; the dispatch itself says it is unknown.
