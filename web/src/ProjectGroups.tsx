@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { Bell, ChevronDown, Folder, Minus, Plus } from "lucide-react";
 import type { ProjectGroupStyle } from "./appearance";
 import { strings, useStrings } from "./i18n";
+import { isArchived } from "./executor-lifecycle";
 import { groupSummary, type ProjectGroup } from "./project-groups";
 import type { Agent } from "./types";
 import "./project-groups.css";
@@ -76,6 +77,7 @@ export function GroupedAgents({
   selectedId,
   searching,
   renderAgent,
+  renderList,
   onCreate,
 }: {
   groups: ProjectGroup[];
@@ -84,6 +86,9 @@ export function GroupedAgents({
   selectedId: string | null;
   searching: boolean;
   renderAgent: (agent: Agent) => ReactNode;
+  /** A group's whole list, in its parts (T-36 S3: ExecutorRail); without
+   * it, each Agent's row in the group's order. */
+  renderList?: (agents: Agent[], key: string) => ReactNode;
   /** Start a new Agent in this project; null for one without a project. */
   onCreate: (projectId: string | null) => void;
 }) {
@@ -129,7 +134,7 @@ export function GroupedAgents({
             onToggle={() => fold(group.key, !isFolded)}
             onCreate={() => onCreate(group.projectId)}
           >
-            {group.agents.map(renderAgent)}
+            {renderList ? renderList(group.agents, group.key) : group.agents.map(renderAgent)}
           </GroupSection>
         );
       })}
@@ -191,7 +196,8 @@ function GroupSection({
 }) {
   const t = useStrings(text);
   const body = useId();
-  const count = group.agents.length;
+  // Archived executors are folded away under their own heading (T-36 S3).
+  const count = group.agents.filter((agent) => !isArchived(agent)).length;
   const summary = groupSummary(group.agents);
   const marked = folded && (summary.needs > 0 || summary.working > 0 || summary.unread > 0);
   const [toggle, stacked] = useStacked(marked ? `${summary.needs}/${summary.working}/${summary.unread}` : null);

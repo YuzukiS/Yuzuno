@@ -41,6 +41,8 @@
 
 短编号的作用域在追加调研后确认为整个 Workspace，用户已同意。业界有多种成熟做法：[Linear](https://linear.app/developers/graphql) 用团队短编号并在 API 同时接受 UUID，[GitHub](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls) 用仓库内 `#123` 和跨仓库完整引用；[Azure Boards](https://learn.microsoft.com/en-us/azure/devops/boards/work-items/about-work-items?view=azure-devops) 在 organization/project collection 内统一编号，团队归属由 Area Path 表达；[Google Issue Tracker](https://developers.google.com/issue-tracker/references/glossary-of-fields) 也把数字 ID 与 Component 分开。Yuzuno 选择 Workspace 统一 `T-N`，机器、Agent、项目不各自起号，项目归属不改变编号。内部仍以 UUID 关联；未来独立 Workspace 之间引用或导入时，需要包含来源 Workspace 的完整引用/链接与冲突处理，不能把裸 `T-N` 当跨 Workspace 全局身份。当前尚未实现跨 Workspace 功能。
 
+**2026-11-06 更新（T-56）：** 用户决定项目里的任务按项目编号：`<项目前缀>-<项目内序号>`，前缀由项目名生成、可在项目窗口里更改。不属于任何项目的任务和此前已编号的任务保留 `T-N`；任务或项目用过的每个编号仍指向原任务，全局序号不变、不复用。上面 Workspace 统一 `T-N` 的选择从此只用于无项目任务和全局序号。
+
 ## 一眼能读懂的卡片
 
 卡片优先展示：稳定标题、任务状态、负责人；必要时补一行阻碍或交付摘要和成果入口。运行中的小标记可以辅助识别，但不会取代任务状态。项目只在有明确项目关联时展示；缺信息直接省略，不显示一排空字段。

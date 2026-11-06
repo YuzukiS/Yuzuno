@@ -286,3 +286,43 @@ async fn a_pass_runs_on_its_wake_up_before_its_tick() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
+
+/// T-36 S3 (#635's closing round 9ab74ebf): a release still waiting for the
+/// same thing is written and announced once, however many passes find it
+/// so; a change in what it waits for is written and announced once more.
+#[tokio::test]
+async fn an_unchanged_wait_is_written_and_announced_once() {
+    let (_dir, ws) = workspace();
+    agent(&ws.store, "lead");
+    let (_, t) = task(&ws.store, "Review", None);
+    executor(&ws.store, "e1", &t, "agent:lead");
+    job(&ws.store, "j1", "build", "e1", &t, true);
+    release(&ws, Some("lead"), "e1").await.unwrap();
+    // Each write of its row from here on is counted.
+    ws.store.db.write().unwrap().execute_batch(
+        "CREATE TABLE archiving_writes(n INTEGER);
+         CREATE TRIGGER archiving_written AFTER UPDATE ON executor_archiving BEGIN INSERT INTO archiving_writes VALUES(1); END;",
+    ).unwrap();
+    let mut events = ws.changes.subscribe(None);
+    let mut counted = || {
+        let writes: i64 = ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM archiving_writes", [], |r| r.get(0)).unwrap();
+        let (mut agent, mut board) = (0, 0);
+        while let Some(entry) = events.try_next() {
+            let event: Value = serde_json::from_str(&entry.data).unwrap();
+            agent += usize::from(event["type"] == "agent.changed" && event["agentId"] == "e1");
+            board += usize::from(event["type"] == "workspace.changed" && event["scope"] == "executors");
+        }
+        (writes, agent, board)
+    };
+    // A second Job: what it waits for changes, once.
+    job(&ws.store, "j2", "test", "e1", &t, true);
+    for _ in 0..3 {
+        ws.archive_pass().await;
+    }
+    assert_eq!(counted(), (1, 1, 1), "one write and one broadcast across three passes under the same reason");
+    end_job(&ws.store, "j2");
+    for _ in 0..3 {
+        ws.archive_pass().await;
+    }
+    assert_eq!(counted(), (2, 1, 1), "what it waits for changed: written and announced once more");
+}

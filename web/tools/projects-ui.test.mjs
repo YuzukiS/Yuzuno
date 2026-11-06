@@ -102,8 +102,12 @@ const tasks = [
 const workspaceShown = (document) =>
   document.querySelector(".workspace-scope .status-dot.idle") && document.querySelector(".agent-list");
 async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], url = "http://127.0.0.1:4317/", failMove = [],
-  timers: scaled = {}, ready = workspaceShown, leads = {} } = {}) {
+  timers: scaled = {}, ready = workspaceShown, leads = {}, keys = null, retiredKeys = {} } = {}) {
   const agents = fixtureAgents(overrides);
+  // Project keys (T-56), as Core keeps them: a Core with keys sends one for
+  // every project; without this option the workspace has none, as an older Core's.
+  const projectKeys = keys && new Map(Object.entries(keys));
+  const shownProjects = () => (projectKeys ? projects.map((project) => ({ ...project, key: projectKeys.get(project.id) })) : projects);
   const editorPolicies = new Map();
   const projectLeads = new Map(Object.entries(leads));
   // Project services (T-151): what Core keeps, and what answers on each
@@ -154,7 +158,7 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
     calls.push({ url, method: init.method || "GET", body });
     let match;
     if (url.endsWith("/api/workspace"))
-      return respond({ workspace: { id: "ws-1" }, projects, projectUsage, agents: [...agents], runtime: { connected: false, error: "Codex unavailable" }, defaultCwd: "/workspace" });
+      return respond({ workspace: { id: "ws-1" }, projects: shownProjects(), projectUsage, agents: [...agents], runtime: { connected: false, error: "Codex unavailable" }, defaultCwd: "/workspace" });
     if ((match = url.match(/\/api\/agents\/(\w)\/project$/))) {
       if (failMove.includes(match[1]))
         return { ok: false, status: 400, json: async () => ({}), text: async () => JSON.stringify({ error: "Agent is gone" }) };
@@ -242,6 +246,18 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
     if (url.endsWith("/api/machines"))
       return respond({ machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/workspace" },
         { id: "gpu", name: "GPU box", kind: "ssh", defaultCwd: "/srv" }] });
+    // A key change, refused in Core's words (task_keys::set), over HTTP as Core's 400.
+    if ((match = url.match(/\/api\/projects\/([^/]+)$/)) && init.method === "PATCH" && projectKeys && body && "key" in body) {
+      const refuse = (error) => ({ ok: false, status: 400, json: async () => ({ error }), text: async () => JSON.stringify({ error }) });
+      if (!/^[A-Z][A-Z0-9]{1,9}$/.test(body.key))
+        return refuse("invalid_input: a Project key is an uppercase letter followed by 1–9 uppercase letters or digits, for example YN");
+      // Current keys, and old ones that stay their Project's, a deleted one's included.
+      const owner = [...projectKeys].find(([, key]) => key === body.key)?.[0] ?? retiredKeys[body.key] ?? null;
+      if (owner && owner !== match[1])
+        return refuse(`project_key_taken: ${body.key} is or was another Project's key, and keys are never reused`);
+      projectKeys.set(match[1], body.key);
+      return respond(shownProjects().find((project) => project.id === match[1]));
+    }
     if (url.endsWith("/api/projects") && init.method === "POST")
       return respond({ id: "p-new", name: body.name, defaultDirs: body.defaultDirs || {}, createdAt: "", updatedAt: "" });
     if (url.endsWith("/api/agents") && init.method === "POST") {
@@ -593,6 +609,59 @@ test("unsaved default folders survive workspace refreshes", async () => {
     assert.equal(page.document.querySelector('input[aria-label="Default folder on Core host"]').value, "/home/u/app-in-progress");
   } finally {
     page.close();
+  }
+});
+
+test("T-56 a project's task key prefix is changed in its window: Core decides, says why not in its own words, and the rule only enables the button", async () => {
+  const keys = { "p-app": "APP", "p-res": "RES", "p-old": "OLD", "p-docs": "DOC" };
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, keys, retiredKeys: { GON: "p-gone" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    const field = () => [...dialog.querySelectorAll("label")].find((label) => label.textContent.startsWith("Task key prefix"))?.querySelector("input");
+    const input = await waitFor(field, "the task key prefix field");
+    assert.equal(input.value, "APP");
+    const note = () => [...dialog.querySelectorAll(".project-note")].find((p) => p.textContent.startsWith("Tasks in this project are numbered"))?.textContent ?? "";
+    assert.match(note(), /^Tasks in this project are numbered APP-1, APP-2 and so on; a task in no project keeps T-1\./);
+    const change = () => button(page, "Change prefix", dialog);
+    const patches = () => page.calls.filter((call) => call.method === "PATCH" && call.body && "key" in call.body);
+    // The rule only enables the button: nothing it refuses is sent.
+    for (const typed of ["", "A", "T", "1AB", "AB-1", "APP"]) {
+      type(page, field(), typed);
+      assert.equal(change().disabled, true, `the button stays off for ${JSON.stringify(typed)}`);
+    }
+    assert.equal(patches().length, 0, "nothing is sent while the button is off");
+    // Typed as it is written, in capitals; Core takes it and the note follows.
+    type(page, field(), "app2");
+    assert.equal(field().value, "APP2", "the field writes the prefix in capitals");
+    change().click();
+    await waitFor(() => patches().length === 1, "the new prefix is sent");
+    assert.match(patches()[0].url, /\/api\/projects\/p-app$/);
+    assert.deepEqual(patches()[0].body, { key: "APP2" }, "only the key is sent");
+    await waitFor(() => note().includes("APP2-1"), "the note shows the new prefix");
+    // Another project's key, and a deleted one's, are refused in Core's words; nothing changes.
+    for (const [typed, words] of [["RES", "project_key_taken: RES is or was another Project's key, and keys are never reused"],
+      ["GON", "project_key_taken: GON is or was another Project's key, and keys are never reused"]]) {
+      type(page, field(), typed);
+      change().click();
+      const alert = () => dialog.querySelector(".project-key ~ .inline-error[role=alert]");
+      await waitFor(() => alert()?.textContent === words, `the refusal of ${typed}, in Core's own words`);
+      assert.match(note(), /APP2-1/, `a refused ${typed} changes nothing`);
+    }
+    assert.deepEqual(patches().map((call) => call.body.key), ["APP2", "RES", "GON"]);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+  // A Core without keys sends none: no field is offered.
+  const older = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    await fromScopeMenu(older, "Manage projects");
+    const dialog = await waitFor(() => dialogOf(older), "the project dialog opens");
+    await waitFor(() => [...dialog.querySelectorAll("label")].some((label) => label.textContent.startsWith("Project name")), "the project is shown");
+    assert.equal([...dialog.querySelectorAll("label")].some((label) => label.textContent.startsWith("Task key prefix")), false, "no prefix field without a key");
+  } finally {
+    older.close();
   }
 });
 

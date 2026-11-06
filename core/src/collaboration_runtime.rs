@@ -27,6 +27,27 @@ impl Workspace {
             let (agent, call) = (agent.to_owned(), operation.to_owned());
             self.stored(move |store| crate::executor_archiving::refuse_while_archiving(&*store.db.read()?, &agent, &call)).await?;
         }
+        let output = self.routed_call(actor, operation, input).await?;
+        // Jobs, runs, CI watches, reviews, PR operations and merge entries keep
+        // the task key they were written with; a read shows the key now (T-56).
+        if ["job_", "ci_", "review_", "merge_", "github_"].iter().any(|prefix| operation.starts_with(prefix)) {
+            return self
+                .stored(move |store| {
+                    let mut output = output;
+                    crate::task_keys::refresh(&*store.db.read()?, &mut output);
+                    Ok(output)
+                })
+                .await;
+        }
+        Ok(output)
+    }
+
+    async fn routed_call(
+        self: &Arc<Self>,
+        actor: Option<&str>,
+        operation: &str,
+        input: Value,
+    ) -> Result<Value> {
         if operation.starts_with("job_") {
             return tokio::spawn(crate::jobs::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Job operation ended unexpectedly")?;
@@ -122,6 +143,19 @@ impl Workspace {
                 let _ = ws.changes.send(json!({"collaboration":true,"tasks":tasks}));
                 ws.collaboration_wakeup.notify_one();
                 ws.delivery.wake.notify_one();
+                // A task an executor works on: its lifecycle may show
+                // differently now, if the write could move it (T-36 S3,
+                // #647 R1 333f9680). The write is saved and announced
+                // already: a failed read skips this, never fails the call.
+                if let Some(assignee) = value["task"]["assignee"]["id"].as_str()
+                    .filter(|_| crate::executor_lifecycle::moves(&call, &value))
+                {
+                    match ws.store.db.read().and_then(|db| crate::agent_roles::kind(&db, assignee)) {
+                        Ok(kind) if kind == crate::agent_roles::EXECUTOR => ws.executor_changed(assignee),
+                        Ok(_) => {}
+                        Err(error) => eprintln!("Executor {assignee}'s lifecycle was not announced: {error:#}"),
+                    }
+                }
             }
             Ok(value)
         }).await

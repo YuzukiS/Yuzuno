@@ -62,10 +62,10 @@ async fn a_handover_document_is_saved_as_versions_against_the_version_read() {
         assert!(refused(&control, "A handover document is text") && control["error"].as_str().is_some_and(|e| e.ends_with(at)),
             "a document with a control character is refused, saying where ({at}): {control}");
     }
-    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     let (_, archived) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":3,"markdown":"Later"}))).await;
     assert!(refused(&archived, "project_archived:"), "an archived Project's document doesn't change: {archived}");
-    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(false) }).unwrap();
+    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(false) }).unwrap();
     ws.store.delete_project(&p).unwrap_or_else(|e| panic!("a deleted Project's handover goes with it: {e}"));
     let left: i64 = ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM project_handover_versions", [], |r| r.get(0)).unwrap();
     assert_eq!(left, 0, "a deleted Project's handover goes with it");

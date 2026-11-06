@@ -57,6 +57,9 @@ export type LiveRefState = {
   url?: string;
   /** For a review: the task it belongs to, so Jobs can open it. */
   taskId?: string;
+  /** For a task (T-56): the key it has now, which may differ from the one
+   * the Agent wrote (an old key, or `T-<n>`); every key it had still names it. */
+  key?: string;
   observedAt?: string;
   /** For a task (T-9): who has it, null when no one does. */
   assignee?: { kind: string; id: string; name: string } | null;
@@ -154,7 +157,7 @@ export type ProjectPanel = {
 };
 
 export type NeedsYouItem = {
-  kind: "approval" | "ask" | "question" | "handover";
+  kind: "approval" | "ask" | "question" | "handover" | "executor";
   projectId: string | null;
   agentId: string;
   agentName: string;
@@ -165,6 +168,11 @@ export type NeedsYouItem = {
   itemId?: string;
   /** A lead's handover proposal (T-34 S3b), named by its proposer. */
   proposalId?: string;
+  /** An executor the user dispatched (T-36 S3): its result waits for the
+   * user's release, its start failed, or its task is blocked while it runs. */
+  state?: "delivering" | "failed" | "blocked";
+  taskId?: string;
+  reason?: string | null;
   title: string;
   since: string;
 };

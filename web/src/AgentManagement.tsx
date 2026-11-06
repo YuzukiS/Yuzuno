@@ -60,6 +60,8 @@ const text = strings({
   releaseKept: "Its task, dispatch and result stay as they are, so record the acceptance on the task. For new work, dispatch the task again.",
   releasing: "Releasing…",
   releasedDescription: (name: string) => `${name} · Released: this executor stays closed.`,
+  archivingCard: "Archiving",
+  archivingNote: (reason: string) => `${reason} Releasing again tries now.`,
 }, {
   reopen: "重新打开 Agent",
   close: "关闭 Agent",
@@ -100,6 +102,8 @@ const text = strings({
   releaseKept: "它的任务、派发和结果保持不变，验收请记在任务上。如需新的工作，请重新派发任务。",
   releasing: "正在放行…",
   releasedDescription: (name) => `${name} · 已放行：此执行者保持关闭。`,
+  archivingCard: "归档中",
+  archivingNote: (reason) => `${reason} 再次放行会立即重试。`,
 });
 
 export function AgentManagement({
@@ -143,6 +147,8 @@ export function AgentManagement({
   // A released executor stays closed (T-34): nothing reopens it.
   const released = !!agent.releasedAt;
   const releasable = agent.kind === "executor" && !released;
+  // Released already, it waits for its work to end (T-36 S3): what it waits for.
+  const archiving = agent.executor?.state === "archiving" ? agent.executor.reason || "" : null;
   const confirming = mode === "close" || mode === "delete" || mode === "release";
   const language = useLanguage();
   const t = text(language);
@@ -170,8 +176,12 @@ export function AgentManagement({
         action === "delete"
           ? await api<undefined>(path, { method: "DELETE" })
           : action === "release"
-            ? await post<Pick<Agent, "closedAt" | "releasedAt" | "releasedBy">>(`${path}/release`)
-              .then(({ closedAt, releasedAt, releasedBy }) => ({ ...agent, closedAt, releasedAt, releasedBy }))
+            ? await post<Pick<Agent, "closedAt" | "releasedAt" | "releasedBy"> & { archiving?: { since: string; reason: string } | null }>(`${path}/release`)
+              // Waiting for its work to end, it is archiving (T-36 S3), with what it waits for.
+              .then(({ closedAt, releasedAt, releasedBy, archiving }) => ({ ...agent, closedAt, releasedAt, releasedBy,
+                // From the answer even when the listing had none (#647 R1 333f9680).
+                executor: archiving ? { ...(agent.executor ?? {}), agentId: agent.id, state: "archiving" as const, since: archiving.since, reason: archiving.reason }
+                  : agent.executor }))
             : await post<Agent>(`${path}/${action}`);
       onChanged(action, updated);
       setMode(null);
@@ -274,10 +284,17 @@ export function AgentManagement({
                 onClick={() => show("release")}
               >
                 <BadgeCheck size={20} />
-                <span>
-                  <strong>{t.release}</strong>
-                  <small>{t.releaseCard}</small>
-                </span>
+                {archiving ? (
+                  <span data-archiving>
+                    <strong>{t.archivingCard}</strong>
+                    <small>{t.archivingNote(archiving)}</small>
+                  </span>
+                ) : (
+                  <span>
+                    <strong>{t.release}</strong>
+                    <small>{t.releaseCard}</small>
+                  </span>
+                )}
               </button>
             )}
             {projectControl}

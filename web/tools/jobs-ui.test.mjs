@@ -469,6 +469,32 @@ test('the suggestion for the last draft goes as soon as the name changes, and th
   } finally { p.close(); }
 });
 
+test('T-56 the form asks what earlier runs suggest for a task named by a Project task key, and for no lowercase or malformed one', async () => {
+  const asked = [];
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      asked.push(Object.fromEntries(new URL(url, 'http://isolated.test').searchParams).taskId);
+      return { suggestion: null };
+    }
+    return page([]);
+  });
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Command', 'python3 calib.py');
+    // Each stays past the 300 ms the form waits before it asks.
+    for (const typed of ['yn-3', 'YN3', 'Y-3']) {
+      await fill(p, 'Existing task', typed);
+      await new Promise(r => setTimeout(r, 600));
+    }
+    await fill(p, 'Existing task', 'YN-3');
+    // Bounded: a form that never asks fails at the assertion below, in its words.
+    for (let n = 0; n < 100 && !asked.length; n++) await wait();
+    // Asked in order: one asked for any of those would be ahead of this one.
+    assert.deepEqual(asked, ['YN-3'], 'a Project task key is asked about, and nothing before it');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('known rejection permits editing and a completed job only reruns after a new explicit submit', async () => {
   const finished = { ...job, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
   const p = mount((url, body) => body && url === '/api/jobs' ? { httpStatus: 400, error: 'Never fits budget' } : url === '/api/jobs/job-one' ? finished : page([finished]));

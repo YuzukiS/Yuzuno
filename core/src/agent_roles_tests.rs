@@ -206,10 +206,9 @@ fn only_a_lead_of_the_tasks_project_or_the_user_may_dispatch_it_from_a_template(
         if let Some(project) = project {
             input["projectId"] = json!(project);
         }
-        // A task's number is its row: T-n is the n-th.
-        let number = store.collaboration_call(None, "task_create", input).unwrap()["task"]["id"].as_str().unwrap().to_owned();
-        let seq: i64 = number.trim_start_matches("T-").parse().unwrap();
-        store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks WHERE rowid=?1", [seq], |r| r.get(0)).unwrap()
+        // Its key (T-n, or its Project's key and number, T-56) names its row.
+        let key = store.collaboration_call(None, "task_create", input).unwrap()["task"]["id"].as_str().unwrap().to_owned();
+        crate::collaboration_store::task_key(&store.db.read().unwrap(), &key).unwrap().0
     };
     let (in_p, in_q, loose) = (task("p", Some(&p)), task("q", Some(&q)), task("loose", None));
     let actor = |kind: &str, id: &str| TaskActor { kind: kind.into(), id: id.into(), name: id.into() };

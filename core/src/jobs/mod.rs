@@ -83,8 +83,8 @@ pub(crate) struct State {
     started: OnceLock<()>,
     gate: Mutex<()>,
     wake: Arc<Notify>,
-    /// When the GPUs were last sampled; at most one sample per interval.
-    gpu_sampled: std::sync::Mutex<Option<std::time::Instant>>,
+    /// The GPU sampler's reading last recorded, by its observedAt (T-58).
+    gpu_sampled: std::sync::Mutex<Option<String>>,
     /// The remote executor's own loop (remote.rs): its gate, its wake-up and
     /// when each remote attempt was last checked.
     remote_gate: Mutex<()>,
@@ -1176,7 +1176,14 @@ pub async fn call(
         }
         "job_provenance" => {
             let scope = serde_json::from_value::<provenance::Request>(input)?.scope()?;
-            let (run, jobs) = ws.stored(move |s| s.provenance_records(&scope)).await?;
+            // The records as they read now: each with its task's key now (T-56).
+            let (run, jobs) = ws.stored(move |s| {
+                let (mut run, mut jobs) = s.provenance_records(&scope)?;
+                let db = s.db.read()?;
+                run.iter_mut().for_each(|run| crate::task_keys::refresh(&db, run));
+                jobs.iter_mut().for_each(|job| crate::task_keys::refresh(&db, job));
+                Ok((run, jobs))
+            }).await?;
             let mut extents = Vec::with_capacity(jobs.len());
             for job in &jobs {
                 extents.push(if job["executor"].is_null() {
@@ -1475,7 +1482,8 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         return Ok(());
     }
     if ws.stored(|s| s.gpu_jobs_live()).await? {
-        sample_gpus(ws, false).await;
+        // Before a GPU Job may start: a reading taken now (D2, T-58).
+        sample_gpus(ws, true).await;
     }
     // Free space where each candidate writes, each path on its own
     // filesystem, read together: the scan binds each verdict to its job.
@@ -1532,24 +1540,27 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
     Ok(())
 }
 
-/// Sample the GPUs through the helper, at most once per ten seconds unless
-/// forced, and keep the result (or its error) for admission and views.
+/// Keep the GPU sampler's reading (T-58: the one place Core reads its GPUs)
+/// for admission and views, with its own observedAt: the latest, or, forced,
+/// one taken now on a running NVML session (D2), and which it was (`read`).
+/// A reading already kept is not written again; one is marked kept only once
+/// written, so a read alongside never finds it marked but not yet there.
 async fn sample_gpus(ws: &Arc<Workspace>, force: bool) {
-    {
-        let mut last = ws.jobs.gpu_sampled.lock().unwrap();
-        if !force && last.is_some_and(|at| at.elapsed() < Duration::from_secs(10)) {
-            return;
-        }
-        *last = Some(std::time::Instant::now());
-    }
-    let sample = match host::helper(&ws.data_dir).await {
-        Ok(script) => host::invoke(&script, "gpus", None, None)
-            .await
-            .unwrap_or_else(|error| json!({"error":format!("{error:#}"),"devices":[]})),
-        Err(error) => json!({"error":format!("{error:#}"),"devices":[]}),
+    let (sample, read) = if force {
+        ws.gpus.now(crate::machine_load::GPU_WAIT).await
+    } else {
+        (ws.gpus.latest(crate::machine_load::GPU_WAIT).await, "latest")
     };
-    if let Err(error) = ws.stored(move |s| s.record_gpu_sample(sample)).await {
-        eprintln!("GPU sample not recorded: {error:#}");
+    let Some(sample) = sample else { return };
+    if ws.jobs.gpu_sampled.lock().unwrap().as_deref() == Some(sample.observed_at.as_str()) {
+        return;
+    }
+    let observed = sample.observed_at.clone();
+    let mut sample = sample.to_json();
+    sample["read"] = json!(read);
+    match ws.stored(move |s| s.record_gpu_sample(sample)).await {
+        Ok(()) => *ws.jobs.gpu_sampled.lock().unwrap() = Some(observed),
+        Err(error) => eprintln!("GPU sample not recorded: {error:#}"),
     }
 }
 

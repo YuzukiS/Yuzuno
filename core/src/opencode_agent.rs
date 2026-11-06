@@ -596,6 +596,7 @@ impl Workspace {
             kind: None,
             released_at: None,
             released_by: None,
+            executor: None,
             cwd: cwd.to_string_lossy().into_owned(),
             model,
             settings: Default::default(),

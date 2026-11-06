@@ -223,6 +223,12 @@ pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
     )?;
     Ok(())
 }
+/// A Job as a summary shows it: with its task's key now (T-56), which needs
+/// the taskId the summary leaves out.
+pub(super) fn current_ref(db: &Connection, mut job: Value) -> Value {
+    crate::task_keys::refresh(db, &mut job);
+    job
+}
 pub(super) fn summary(job: Value) -> Value {
     let mut result = json!({});
     for field in [
@@ -324,7 +330,7 @@ fn notify(db: &Connection, job: &mut Value) -> Result<()> {
         context = super::runs::mail_context(db, job)?;
     }
     let task = job["taskId"].as_str().context("Missing task")?.to_owned();
-    let public_task = format!("T-{}", collaboration::task_key(db, &task)?.1);
+    let public_task = collaboration::task_number(db, &collaboration::task_key(db, &task)?.0)?;
     let place = match job["executor"]["machineName"].as_str() {
         Some(machine) => format!("Job on {machine}"),
         None => "Local job".to_owned(),
@@ -457,7 +463,7 @@ pub(super) fn new_job(
     value["id"] = json!(id);
     value["attempt"] = json!(attempt);
     value["taskId"] = json!(task);
-    value["taskRef"] = json!(format!("T-{}", collaboration::task_key(tx, &task)?.1));
+    value["taskRef"] = json!(collaboration::task_number(tx, &collaboration::task_key(tx, &task)?.0)?);
     value["agentId"] = json!(agent_id);
     value["agent"] = json!(recipient);
     // The machine the submitting Agent runs on (null: this Core's host).
@@ -701,7 +707,7 @@ impl Store {
         let jobs = ids
             .iter()
             .take(50)
-            .map(|id| get(&db, id).map(|job| summary(queue.view(job))))
+            .map(|id| get(&db, id).map(|job| summary(queue.view(current_ref(&db, job)))))
             .collect::<Result<Vec<_>>>()?;
         // The bounded live queue must remain visible even when its sequence is
         // older than the newest history page (long jobs can span many completions).
@@ -711,7 +717,7 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let live_jobs = live_ids
             .iter()
-            .map(|id| get(&db, id).map(|job| summary(queue.view(job))))
+            .map(|id| get(&db, id).map(|job| summary(queue.view(current_ref(&db, job)))))
             .collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"jobs":jobs,"liveJobs":live_jobs,"hasMore":more,"nextBefore":jobs.last().map(|j|j["cursor"].clone())}),

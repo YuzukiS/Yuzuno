@@ -165,7 +165,7 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
     assert_eq!(put_budget(&lab.ws).await, Err(refusal.clone()), "PUT budget");
     // Nothing written or run for them, and nothing saved.
     assert_eq!(lab.helpers(), Vec::<String>::new());
-    assert!(lab.ws.jobs.gpu_sampled.lock().unwrap().is_none(), "no GPU sample through the helper");
+    assert!(lab.ws.jobs.gpu_sampled.lock().unwrap().is_none(), "no GPU sample recorded for them");
     assert_eq!(lab.saved(), before);
     // Only the checkpointed Job made before, with the budget its machine suggested then.
     assert_eq!((before.0, before.1), (1, 0));

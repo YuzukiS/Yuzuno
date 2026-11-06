@@ -173,10 +173,10 @@ async fn a_stale_proposal_is_refused_and_its_rejection_tells_the_lead_to_propose
         && mail[0].contains("Their note: Merge yours with mine"), "the rejection tells the lead to propose again: {mail:?}");
     assert!(needs_you(&ws).await.is_empty(), "a rejected proposal leaves Needs you");
 
-    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     let archived = error_of(ws.collaboration_call(Some("lead"), "handover_propose", propose_input("late", 2, "# Late")).await);
     assert!(archived.starts_with("project_archived:"), "an archived Project takes no proposal: {archived}");
-    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(false) }).unwrap();
+    ws.store.update_project(&p, crate::projects::ProjectChange { name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(false) }).unwrap();
     for id in ["lead", "lead2", "member", "exec"] {
         ws.store.set_agent_project(id, None).unwrap();
     }

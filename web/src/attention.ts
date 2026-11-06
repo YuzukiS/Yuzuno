@@ -112,7 +112,8 @@ const same = (a: NeedsTarget, b: NeedsTarget) =>
 /**
  * Every place "next needs you" goes, in order (T-42): Home's Needs you as
  * Core orders it (Project Priority, then wait, across Projects), an Agent
- * once however many of its requests and questions wait; then an Agent
+ * once however many of its requests and questions wait, an executor the
+ * user dispatched as its Agent (T-36 S3); then an Agent
  * waiting that the last read of Home does not have yet; then the failed and
  * then the finished Turn ends this device has not seen.
  */
@@ -128,6 +129,9 @@ export function needsYouTargets(items: readonly NeedsYouItem[] | null, agents: r
     } else if (item.kind === "handover") {
       // Decided on Home, where its card is (T-34 S3b).
       if (item.proposalId) add({ kind: "handover", projectId: item.projectId, proposalId: item.proposalId });
+    } else if (item.kind === "executor") {
+      // Its result and Release are in its conversation, a failed one's too (T-36 S3).
+      if (agents.some((agent) => agent.id === item.agentId)) add({ kind: "agent", agentId: item.agentId });
     } else if (open.some((agent) => agent.id === item.agentId && agent.pendingCount > 0)) {
       add({ kind: "agent", agentId: item.agentId });
     }

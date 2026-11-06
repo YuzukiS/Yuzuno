@@ -129,6 +129,8 @@ pub struct Workspace {
     pub(crate) brief_turns: crate::brief_turns::State,
     /// The previous Machine Load sample (see `machine_load`).
     pub(crate) machine_load: crate::machine_load::State,
+    /// The host's GPUs, read in one place for the whole process (T-58).
+    pub gpus: crate::gpu_sampler::GpuSampler,
     /// Project services opened in this Core (T-151); see `services`.
     pub(crate) services: crate::services::Runtime,
     pub(crate) previews: crate::previews::Previews,
@@ -210,6 +212,7 @@ impl Workspace {
             results: Arc::new(crate::results::Validator::from_env()),
             brief_turns: Default::default(),
             machine_load: Default::default(),
+            gpus: Default::default(),
             services: Default::default(),
             previews: Default::default(),
             remote_access: Default::default(),
@@ -534,6 +537,7 @@ impl Workspace {
             kind: None,
             released_at: None,
             released_by: None,
+            executor: None,
             cwd,
             model,
             settings,
