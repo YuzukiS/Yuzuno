@@ -679,7 +679,7 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
 }
-/* An existing Agent, or a new executor from a template (T-34). */
+/* An existing Agent, or a new executor: general or from a template (T-34, YN-2). */
 .collab-dispatch-from {
   display: flex;
   flex-wrap: wrap;
