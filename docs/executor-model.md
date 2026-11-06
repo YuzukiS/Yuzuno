@@ -303,10 +303,11 @@ is refused with `materials_too_large` and nothing is dispatched.
 An executor does its task and reports to the Agent that dispatched it. Two
 things are not its to do:
 
-- **Setting its own task done.** `task_update` is refused with
-  `executor_done_refused`. It submits its result with `task_submit_result`,
-  and its dispatcher, or you, sets the task done. Any other status is its to
-  set.
+- **Setting its own task done.** `task_update` to done, and a
+  `task_submit_result` with status done, are refused with
+  `executor_done_refused`, and nothing is written. It submits its result
+  with status review, and its dispatcher, or you, sets the task done. Any
+  other status is its to set.
 - **Writing Home's content.** An executor is never a Home content editor.
   With no list chosen, every member but an executor edits; a list can't name
   one (`invalid_editor`), and one saved before doesn't make it an editor. It

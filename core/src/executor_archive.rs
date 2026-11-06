@@ -112,7 +112,8 @@ fn open(db: &Connection, agent: &str) -> Result<bool> {
     )?)
 }
 
-/// An executor never sets its own task done: it submits its result, and its
+/// An executor never sets its own task done, with task_update or with its
+/// result (task_submit_result): it submits its result as review, and its
 /// dispatcher, or the user, decides. Other statuses are its to set.
 pub(crate) fn refuse_own_done(db: &Connection, actor: &TaskActor, task: &str) -> Result<()> {
     if actor.kind != "agent" {
@@ -125,8 +126,8 @@ pub(crate) fn refuse_own_done(db: &Connection, actor: &TaskActor, task: &str) ->
     )?;
     if own {
         bail!(
-            "executor_done_refused: an executor does not set its own task done; submit your result with task_submit_result, \
-             and the Agent that dispatched you, or the user, decides"
+            "executor_done_refused: an executor does not set its own task done; submit your result with task_submit_result \
+             and status review, and the Agent that dispatched you, or the user, decides"
         );
     }
     Ok(())
