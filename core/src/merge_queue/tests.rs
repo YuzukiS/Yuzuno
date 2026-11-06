@@ -283,7 +283,7 @@ async fn an_unfinished_run_waits_and_the_entry_becomes_ready_once_it_is_green() 
     lab.release(Some("lead"), "r1").await.unwrap();
     tick(&lab.ws).await.unwrap();
     let e = lab.entry().await;
-    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("waiting"), json!("waiting")), "{e}");
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("waiting"), json!("waiting")), "an unfinished run must wait: {e}");
     assert!(e["detail"].as_str().unwrap().contains("CI run 42 on the head is in_progress"), "{}", e["detail"]);
     assert!(e["nextCheck"].as_i64().unwrap() > chrono::Utc::now().timestamp(), "a wait sets a later check");
     assert!(lab.mail("lead").is_empty(), "waiting is not announced");
@@ -302,31 +302,57 @@ async fn an_unfinished_run_waits_and_the_entry_becomes_ready_once_it_is_green() 
 #[tokio::test]
 async fn only_the_dispatching_lead_or_the_user_may_release_a_reviewed_head() {
     let lab = lab(green());
-    let refused = |r: Result<Value>| r.unwrap_err().to_string();
-    assert!(refused(lab.release(Some("dev"), "x").await).contains("the task's executor cannot release its own PR"));
-    assert!(refused(lab.release(Some("lead2"), "x").await).contains("only the task's dispatcher"));
+    let refused = |r: Result<Value>, what: &str| match r {
+        Err(e) => e.to_string(),
+        Ok(v) => panic!("{what} was accepted: {v}"),
+    };
+    let m = refused(lab.release(Some("dev"), "x").await, "the executor's release");
+    assert!(m.contains("the task's executor cannot release its own PR"), "the executor was refused for another reason: {m}");
+    let m = refused(lab.release(Some("lead2"), "x").await, "a lead's release of a task it did not dispatch");
+    assert!(m.contains("only the task's dispatcher"), "the other lead was refused for another reason: {m}");
     lab.ws.store.merge_set_enabled(7, false).unwrap();
-    assert!(refused(lab.release(Some("lead"), "x").await).starts_with("merge_queue_disabled"));
+    let m = refused(lab.release(Some("lead"), "x").await, "a release while the queue is off");
+    assert!(m.starts_with("merge_queue_disabled"), "{m}");
     lab.ws.store.merge_set_enabled(7, true).unwrap();
     review(&lab.ws.store, &lab.task, &head(), "changes_requested");
-    assert!(refused(lab.release(Some("lead"), "x").await).contains("concluded changes_requested, which does not pass"));
+    let m = refused(lab.release(Some("lead"), "x").await, "a release over a changes_requested round");
+    assert!(m.contains("concluded changes_requested, which does not pass"), "{m}");
     review(&lab.ws.store, &lab.task, &sha('a'), "no_findings");
-    assert!(refused(lab.release(Some("lead"), "x").await).contains("not the released head"));
+    let m = refused(lab.release(Some("lead"), "x").await, "a release over a round of another head");
+    assert!(m.contains("not the released head"), "{m}");
     review(&lab.ws.store, &lab.task, &head(), "no_findings");
     let other = lab.ws.collaboration_call(Some("lead"), "merge_enqueue", json!({"requestId":"x","taskId":lab.task,
         "pullUrl":"https://github.com/owner/repo/pull/12","headSha":head()})).await;
-    assert!(refused(other).contains("not linked to the task"));
+    let m = refused(other, "an unlinked PR's release");
+    assert!(m.contains("not linked to the task"), "the unlinked PR was refused for another reason: {m}");
     assert!(calls(lab.dir.path()).is_empty(), "a refused release reads nothing from GitHub");
 
     let first = lab.release(Some("lead"), "r1").await.unwrap();
     assert_eq!(lab.release(Some("lead"), "r1").await.unwrap()["id"], first["id"], "a retry of the same request is the same entry");
     let conflict = lab.ws.collaboration_call(Some("lead"), "merge_enqueue", json!({"requestId":"r1","taskId":lab.task,
         "pullUrl":"https://github.com/owner/repo/pull/11","headSha":head(),"note":"different"})).await;
-    assert!(refused(conflict).starts_with("idempotency_conflict"));
-    assert!(refused(lab.release(Some("lead"), "r2").await).starts_with("merge_already_queued"));
+    let m = refused(conflict, "a replay with another payload");
+    assert!(m.starts_with("idempotency_conflict"), "{m}");
+    let m = refused(lab.release(Some("lead"), "r2").await, "a second release of a queued PR");
+    assert!(m.starts_with("merge_already_queued"), "the second release was refused for another reason: {m}");
     lab.ws.collaboration_call(None, "merge_cancel", json!({"requestId":"c","entryId":first["id"]})).await.unwrap();
     let by_user = lab.release(None, "u1").await.unwrap();
     assert_eq!(by_user["release"]["by"]["kind"], "user", "the user may release without a dispatch");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dispatcher_that_is_not_a_lead_may_not_release() {
+    let lab = lab(green());
+    let project: String = {
+        let db = lab.ws.store.db.read().unwrap();
+        db.query_row("SELECT project_id FROM project_tasks", [], |r| r.get(0)).unwrap()
+    };
+    crate::agent_roles::save(&lab.ws.store, &project, 1, vec!["lead2".into()]).unwrap();
+    match lab.release(Some("lead"), "x").await {
+        Err(e) => assert!(e.to_string().contains("the dispatcher is not a lead"), "{e}"),
+        Ok(v) => panic!("a release by a dispatcher that is no longer a lead was accepted: {v}"),
+    }
 }
 
 #[cfg(unix)]
@@ -343,9 +369,17 @@ async fn cancel_and_retry_belong_to_the_releaser_and_a_late_check_is_dropped() {
         let id = id.clone();
         async move { ws.collaboration_call(actor, "merge_retry", json!({"requestId":key,"entryId":id})).await }
     };
-    assert!(retry(Some("lead2"), "x").await.unwrap_err().to_string().contains("only the Agent that released this merge"));
+    match retry(Some("lead2"), "x").await {
+        Err(e) => assert!(e.to_string().contains("only the Agent that released this merge"), "{e}"),
+        Ok(v) => panic!("a retry by an Agent that did not release the merge was accepted: {v}"),
+    }
     change(lab.dir.path(), |s| s["runs"][1]["conclusion"] = json!("success"));
-    assert_eq!(retry(Some("lead"), "t1").await.unwrap()["state"], "queued");
+    let retried = retry(Some("lead"), "t1").await.unwrap();
+    assert_eq!(retried["state"], "queued");
+    let before = retried["attempt"].as_i64().unwrap() - 1;
+    let late = lab.ws.store.merge_record(&id, before, Ok((json!({}), Ok(()))), 0).unwrap();
+    assert!(!late, "a check that began before the retry changes nothing");
+    assert_eq!(lab.entry().await["state"], "queued", "a check that began before the retry changes nothing");
     tick(&lab.ws).await.unwrap();
     assert_eq!(lab.entry().await["state"], "ready", "the retry checked everything again");
 
@@ -392,7 +426,7 @@ async fn a_job_log_read_stops_at_its_limit() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let client = crate::github::client::Client { program: script.to_string_lossy().into(), deadline: std::time::Duration::from_secs(5) };
     let (bytes, truncated) = client.log_prefix("repos/o/r/actions/jobs/1/logs", 1000).await.unwrap();
-    assert_eq!((bytes.len(), truncated), (1000, true));
+    assert_eq!((bytes.len(), truncated), (1000, true), "the read stops at the limit and says so");
     let (bytes, truncated) = client.log_prefix("repos/o/r/actions/jobs/2/logs", 1000).await.unwrap();
     assert_eq!((bytes.len(), truncated), (10, false));
 }
