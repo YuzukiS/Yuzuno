@@ -27,6 +27,22 @@ const turns = Array.from({ length: 30 }, (_, i) => ({
 }));
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png",
   ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
+const LANG = process.env.T15_LANG || "en";
+assert.ok(LANG === "en" || LANG === "zh-Hans", `T15_LANG must be en or zh-Hans, not ${LANG}`);
+const HOME_LABEL = LANG === "zh-Hans" ? "返回 Home" : "Back to Home";
+// A Home item that leads into this conversation: an approval with no project
+// of its own, which Home sends on as `{kind: "request"}` — the path that
+// opens a source whose origin is Home.
+const ago = (minutes) => new Date(now - minutes * 60_000).toISOString();
+const home = {
+  generatedAt: ago(0),
+  order: [],
+  needsYou: [{ kind: "approval", agentId: "a", agentName: "Dev 8 · Mac / iOS",
+    requestId: "req-1", title: "Run the check", since: ago(12) }],
+  projects: [],
+  links: [],
+};
+
 const browser = await launchBrowser();
 const errors = [];
 
@@ -62,7 +78,14 @@ const waysBack = (page) => page.evaluate(() => {
     return { covered, aboveComposerBy: composer ? Math.round(composer.top - p.bottom) : null,
       straddles: composer ? p.bottom >= composer.top - 1 : null };
   })();
-  return { found, over, bar: !!document.querySelector(".source-navigation"),
+  const bar = document.querySelector(".source-navigation");
+  const homeAction = document.querySelector(".source-navigation-home");
+  return { found, over, bar: !!bar,
+    // What the bar offers, in order, so "primary" is a position and not a guess.
+    barActions: bar ? [...bar.querySelectorAll("button")].filter(shown)
+      .map((el) => (el.textContent || "").trim().slice(0, 24)) : [],
+    homeAction: homeAction && shown(homeAction) ? (homeAction.textContent || "").trim() : null,
+    homeOpen: !!document.querySelector('.toolbar-nav .catchup-nav[aria-current="page"]'),
     atEnd: scroll ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 4 : null,
     top: Math.round(scroll?.scrollTop ?? -1) };
 });
@@ -70,11 +93,12 @@ const waysBack = (page) => page.evaluate(() => {
 async function open(detail) {
   const context = await browser.newContext({ viewport: { width: 951, height: 669 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
   const page = await context.newPage();
-  await page.addInitScript(() => {
+  await page.addInitScript((lang) => {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
     localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-  });
+    if (lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
+  }, LANG);
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") return route.fulfill({ json: { ok: true } });
@@ -88,6 +112,7 @@ async function open(detail) {
     if (path === "/api/ci") return route.fulfill({ json: noCiRuns });
     if (path === "/api/reviews") return route.fulfill({ json: noReviews });
     if (path === "/api/catchup") return route.fulfill({ json: { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } } });
+    if (path === "/api/home") return route.fulfill({ json: home });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
     const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
     try { return route.fulfill({ body: await readFile(file), contentType: types[extname(file)] }); }
@@ -131,6 +156,78 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
   check(seen.found.length === 1, `still one way back (${seen.found.length}: ${seen.found.map((f) => f.where).join(", ") || "none"})`);
   check(seen.found[0]?.where === "reading-bar", "and it is the bar's, not the floating one or the window's");
   check(seen.atEnd === false, "nothing jumped to the end");
+  await context.close();
+}
+// A window opened from the rail offers no way back to Home: there is nowhere
+// to go back to, and the bar is for the latest.
+{
+  const { context, page } = await open({ agent, pending: [], messageReceipts: [], artifacts: [], turns,
+    conversation: { hasAfter: true, hasBefore: false } });
+  await page.evaluate(() => { const s = document.querySelector(".conversation-scroll"); s.scrollTop = Math.round(s.scrollHeight * 0.4); });
+  await page.waitForTimeout(400);
+  const seen = await waysBack(page);
+  console.log("rail window   ", JSON.stringify({ bar: seen.bar, barActions: seen.barActions, homeAction: seen.homeAction }));
+  check(seen.homeAction === null, `and no way back to Home, which is not where this came from (${seen.homeAction})`);
+  await context.close();
+}
+
+/** Opened from Home into this conversation: the path whose source's origin is
+ * Home. Home's own item sends `{kind: "request"}`, which opens a source with
+ * the default origin. */
+const fromHome = async () => {
+  const { context, page } = await open({ agent, pending: [], messageReceipts: [], artifacts: [], turns,
+    conversation: { hasAfter: true, hasBefore: false } });
+  await page.locator(".toolbar-nav .catchup-nav").first().click();
+  await page.locator(".home-needs-item").first().waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".home-needs-item").first().click();
+  await page.locator(".source-navigation").waitFor({ state: "visible", timeout: 10_000 });
+  await page.waitForTimeout(700);
+  return { context, page };
+};
+
+// The finding: the bar's one button went Home *instead of* to the latest, and
+// `sourceOrigin` starts at "home", so a reader brought here by a Home link
+// had no way to the latest at all — the floating button is suppressed while
+// the bar shows, and the window's own link went when the bar became the one
+// entry for it (#459 R3, P2).
+{
+  const { context, page } = await fromHome();
+  const seen = await waysBack(page);
+  console.log("from Home     ", JSON.stringify(seen));
+  check(seen.bar, "a reading bar shows for a source opened from Home");
+  check(seen.found.length === 1,
+    `one way back to the latest (${seen.found.length}: ${seen.found.map((f) => f.where).join(", ") || "none"})`);
+  check(seen.found[0]?.where === "reading-bar", "and it is the bar's, the floating one being suppressed under it");
+  check(seen.barActions[0]?.includes(LANG === "zh-Hans" ? "返回最新" : "Back to latest"),
+    `the way to the latest is the bar's first action (${JSON.stringify(seen.barActions)})`);
+  check(seen.homeAction === HOME_LABEL,
+    `and going back to Home stands beside it, not in its place (${seen.homeAction})`);
+  check(seen.atEnd === false, "nothing jumped to the end on the way in");
+  // Pressing it arrives at the latest and lets the source go. Whether the
+  // bar itself then goes depends on Core no longer reporting a window —
+  // `backToLatest` asks for the latest with `live.navigate({})` — and this
+  // fixture answers every read with the same window, so the bar stays here.
+  // What the conversation itself decides is asserted instead: it is at the
+  // end, the source is let go, and its Home action goes with it.
+  await page.locator(".source-navigation .quiet-button").first().click();
+  await page.waitForTimeout(900);
+  const after = await waysBack(page);
+  console.log("  pressed latest", JSON.stringify({ bar: after.bar, atEnd: after.atEnd, found: after.found.length, homeAction: after.homeAction }));
+  check(after.atEnd === true, `pressing it lands at the latest (atEnd ${after.atEnd})`);
+  check(after.homeAction === null,
+    `the source is let go, so the way back to Home goes with it (${after.homeAction})`);
+  check(after.found.length === 1 && after.found[0]?.where === "reading-bar",
+    `and the one way back is still the bar's, this fixture keeping its window open (${after.found.length}: ${after.found.map((f) => f.where).join(", ") || "none"})`);
+  await context.close();
+}
+// And the other action still goes Home.
+{
+  const { context, page } = await fromHome();
+  await page.locator(".source-navigation-home").click();
+  await page.waitForTimeout(800);
+  const after = await waysBack(page);
+  console.log("  pressed Home  ", JSON.stringify({ homeOpen: after.homeOpen, bar: after.bar }));
+  check(after.homeOpen, `the other action goes back to Home (${after.homeOpen})`);
   await context.close();
 }
 await browser.close();

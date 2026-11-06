@@ -180,7 +180,7 @@ import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
-import { Jobs, ConversationJobs, openJobs } from "./Jobs";
+import { Jobs, ConversationJobs } from "./Jobs";
 import { WorkActivityColumn, WorkActivityEntry, WorkActivityProvider } from "./WorkDock";
 import { RailTurnIndex } from "./RailTurnIndex";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
@@ -3795,17 +3795,25 @@ export function App() {
                     no bar is showing, so two never appear at once (T-15). */}
                 {readingBar && (
                   <div className="source-navigation" lang={langTag(language)}>
-                    <button
-                      className="quiet-button"
-                      onClick={() =>
-                        source && sourceOrigin === "home"
-                          ? goHome()
-                          : backToLatest()
-                      }
-                    >
+                    {/* The way back to the latest, always: a reader who is
+                        not at the end needs it whatever brought them here,
+                        and the floating button is suppressed while this bar
+                        shows. Going back to Home is a different destination,
+                        so it stands beside this one rather than in its place.
+                        It used to replace it, and `sourceOrigin` starts at
+                        "home", so a source read from anywhere but the rail
+                        offered no way to the latest at all — the window's own
+                        link having gone when this bar became the one entry
+                        (#459 R3, P2). */}
+                    <button className="quiet-button" onClick={backToLatest}>
                       <ArrowLeft size={13} />
-                      {source && sourceOrigin === "home" ? shell.backHome : shell.backLatest}
+                      {shell.backLatest}
                     </button>
+                    {source && sourceOrigin === "home" && (
+                      <button className="inline-link source-navigation-home" onClick={goHome}>
+                        {shell.backHome}
+                      </button>
+                    )}
                     <span role="status">
                       {source
                         ? sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
