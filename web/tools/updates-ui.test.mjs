@@ -92,7 +92,9 @@ const agent = {
   settings: {},
 };
 
-async function mount(overrides = {}, shell, seed) {
+// `idleMs`: the 10 s status poll (Settings closed, no update under way) runs
+// every idleMs instead (T-60); without it, 10 s as in the product.
+async function mount(overrides = {}, shell, seed, { idleMs } = {}) {
   const status = {
     managed: true,
     current: release("A"),
@@ -259,6 +261,7 @@ async function mount(overrides = {}, shell, seed) {
       pollTimers.mapped++;
       return later(fn, POLL_MS, ...rest);
     }
+    if (idleMs && ms === 10000) return later(fn, idleMs, ...rest);
     return later(fn, ms, ...rest);
   };
   w.eval(code);
@@ -320,6 +323,59 @@ async function mount(overrides = {}, shell, seed) {
   };
   return { dom, w, status, calls, errors, button, press, transferShown, holdChecks, releaseChecks, open, close, openDesktop, steps, pollTimers };
 }
+
+// The page shown, or hidden as a hidden tab is, with its visibilitychange.
+const showPage = (f, shown) => {
+  Object.defineProperty(f.w.document, "visibilityState", { configurable: true, get: () => (shown ? "visible" : "hidden") });
+  f.w.document.dispatchEvent(new f.w.Event("visibilitychange"));
+};
+// Until `n` of the page's own `ms` timers have really fired (mapped as the
+// page's are), counted on a chain of the test's: intervals passed, not a sleep.
+const timers = async (f, ms, n) => {
+  let fired = 0;
+  const next = () => { fired++; if (fired < n) f.w.setTimeout(next, ms); };
+  f.w.setTimeout(next, ms);
+  assert.ok(await until(() => fired >= n), `${n} of the page's ${ms} ms timers fired`);
+};
+
+// T-60: the status is read every 10 s (1.5 s with Settings open), never
+// while the page is hidden; shown again, it is read at once, then as before.
+test("the update status is not read while the page is hidden, and is read at once when it is shown again", async () => {
+  const f = await mount({}, undefined, undefined, { idleMs: 800 });
+  try {
+    assert.ok(await until(() => statusReads(f) >= 2), "the status is read on its interval");
+    showPage(f, false);
+    await wait(30);
+    const hidden = statusReads(f);
+    await timers(f, 10000, 2);
+    assert.equal(statusReads(f), hidden, "no status read while hidden, over two intervals");
+    const shownAt = Date.now();
+    showPage(f, true);
+    assert.ok(await until(() => statusReads(f) > hidden, 2000), "shown again, the status is read");
+    assert.ok(Date.now() - shownAt < 500, `the update status is read at once when it is shown again (after ${Date.now() - shownAt} ms)`);
+    assert.ok(await until(() => statusReads(f) > hidden + 1, 2000), "then on its interval again");
+    assert.deepEqual(f.errors, []);
+  } finally {
+    f.dom.window.close();
+  }
+});
+
+// T-60: an update under way is followed while the page is hidden, so the
+// reload after its install keeps up.
+test("an update under way keeps reading its status while the page is hidden", async () => {
+  const f = await mount({ acceptingWork: false, operation: { id: "update-one", releaseId: "B", phase: "waiting", startedAt: "", updatedAt: "" } });
+  try {
+    assert.ok(await until(() => statusReads(f) >= 2), "the status is read on its interval");
+    showPage(f, false);
+    await wait(30);
+    const hidden = statusReads(f);
+    await timers(f, PRODUCT_POLL_MS, 3);
+    assert.ok(statusReads(f) >= hidden + 2, "followed while hidden: two more status reads");
+    assert.deepEqual(f.errors, []);
+  } finally {
+    f.dom.window.close();
+  }
+});
 
 test("one click prepares a local release, saves drafts, applies once and survives closing the dialog", async () => {
   const f = await mount();
