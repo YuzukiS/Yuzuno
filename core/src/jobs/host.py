@@ -1379,21 +1379,31 @@ def supervise(spec, folder):
     launch = command(args, check=False)
     launch_evidence = {'returnCode': launch.returncode, 'stderr': launch.stderr[:1000]}
     deadline = time.monotonic() + runtime + 20
-    last = {}
+    # systemd is asked about the worker once now, for its identity and cgroup,
+    # and again only once that cgroup is empty, until its ending is classified
+    # (T-59). Meanwhile each poll reads only the cgroup's own files: whether
+    # anything still runs in it, and its pids counters.
+    last = show(spec['unit']) if not launch.returncode else {}
     pids = None
+    asked, wait = None, 0
     while time.monotonic() < deadline:
-        last = show(spec['unit'])
         pids = pids_evidence(spec, folder, last, pids)
-        status = classify(spec, folder, last)
-        if status:
-            outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
-                                                    'deadline': read(folder / 'deadline.json')},
-                             terminal_reason(spec, folder, status, last, pids))
-            command(['systemctl', '--user', 'stop', spec['unit']], check=False)
-            command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
-            return outcome
-        if launch.returncode or (last.get('ActiveState') == 'failed' and not read(folder / 'started.json')):
-            return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No verified worker start receipt; reconcile before retry')
+        if (launch.returncode or group_empty(last.get('ControlGroup'))) and (asked is None or time.monotonic() - asked >= wait):
+            if asked is not None:
+                wait = min(2, wait * 2 or .5)
+            asked = time.monotonic()
+            last = show(spec['unit']) if not launch.returncode else last
+            pids = pids_evidence(spec, folder, last, pids)
+            status = classify(spec, folder, last)
+            if status:
+                outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
+                                                        'deadline': read(folder / 'deadline.json')},
+                                 terminal_reason(spec, folder, status, last, pids))
+                command(['systemctl', '--user', 'stop', spec['unit']], check=False)
+                command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
+                return outcome
+            if launch.returncode or (last.get('ActiveState') == 'failed' and not read(folder / 'started.json')):
+                return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No verified worker start receipt; reconcile before retry')
         # The run's absolute end, checked every poll. It is recorded before the
         # signal, so the outcome reads as the end time whatever exit status
         # follows. The unit is signalled, not stopped: it stays loaded
