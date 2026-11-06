@@ -16,6 +16,7 @@ import { BriefMarkdown } from "./brief/Markdown";
 import { sectionConditions, sectionSummary } from "./card-summary";
 import { absolute } from "./format";
 import { useBriefDensity } from "./home-density";
+import { useDelayedPresence } from "../surface";
 import type { HomeTarget } from "./home-navigation";
 import {
   currentOverviewSection,
@@ -54,6 +55,12 @@ export function HomeReturnOverview({
   );
   const [limit, setLimit] = useState(12);
   const leaveFocus = useRef(false);
+  // Home's read failed: the note says so over the top of the tiles, in a slot
+  // of no height, so the overview keeps its height and nothing below it moves
+  // as the note comes and goes. It fades in over small and out over exit-small,
+  // the same note all the way out; under reduced motion it is there and gone at
+  // once (T-51 HM:U1, added by the user on 11-06).
+  const stale = useDelayedPresence(readFailed, 0);
   const waiting = reading.replies.filter((entry) => entry.state === "waiting");
   const resolved = reading.replies.length - waiting.length;
   const errors = data.projects.flatMap((panel) =>
@@ -111,10 +118,12 @@ export function HomeReturnOverview({
           {changed ? t.newReading : t.update}
         </button>
       </header>
-      {readFailed && (
-        <p className="home-return-stale" role="status">
-          {t.stale}
-        </p>
+      {stale.shown && (
+        <div className="home-return-stale-slot">
+          <p className={`home-return-stale${stale.leaving ? " is-leaving" : ""}`} role="status">
+            {t.stale}
+          </p>
+        </div>
       )}
       <div className="home-return-tiles">
         <button
