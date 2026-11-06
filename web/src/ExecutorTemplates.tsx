@@ -26,6 +26,7 @@ const text = strings({
   auto: "Choose automatically",
   unknownMachine: (id: string) => `${id} (not in the Machines list)`,
   containedNoCodex: (name: string) => `${name} (keeps Agents contained: no Codex)`,
+  machinesUnavailable: (id: string) => `${id} (Machines list unavailable)`,
   machineHelp: "Where its executors run. A dispatch may name another machine.",
   autoHelp: "Core chooses at each dispatch: a machine with a free executor slot first, then the most spare Jobs memory, then CPU. The task shows which it chose and why.",
   opencodeHost: "OpenCode executors run on this Core host.",
@@ -70,6 +71,7 @@ const text = strings({
   auto: "自动选择",
   unknownMachine: (id) => `${id}（不在机器列表中）`,
   containedNoCodex: (name) => `${name}（隔离其 Agent：不运行 Codex）`,
+  machinesUnavailable: (id) => `${id}（机器列表不可用）`,
   machineHelp: "其执行者运行的地方。派发时可以指定其他机器。",
   autoHelp: "Core 在每次派发时选择：先选有空闲执行者槽位的机器，再选 Job 剩余内存最多的，然后是 CPU。任务上会显示选了哪台以及原因。",
   opencodeHost: "OpenCode 执行者在此 Core 主机上运行。",
@@ -184,7 +186,20 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
   const [reload, setReload] = useState(0);
   // The registered machines a template may name; none read, only this Core host and auto.
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
+  // Whether that list has been read: a saved machine is called missing only
+  // from a list that was read and lacks it (#645 R1 e4931a53).
+  const [machinesRead, setMachinesRead] = useState<"reading" | "read" | "failed">("reading");
   const own = (from: ExecutorTemplatesView) => (projectId ? from.project ?? { version: 0, templates: [] } : from.workspace);
+  // A saved machine the select doesn't offer. Before the list is read it is
+  // just its id; a failed read says so. Once read, a listed machine is one this
+  // harness can't use (Codex where Agents are kept contained, #645 R1 1342ccdd);
+  // an unlisted one is missing.
+  const savedMachine = (id: string) => {
+    if (machinesRead === "reading") return id;
+    if (machinesRead === "failed") return t.machinesUnavailable(id);
+    const listed = machines.find(m => m.id === id);
+    return listed ? t.containedNoCodex(listed.name) : t.unknownMachine(id);
+  };
   const adopt = (next: ExecutorTemplatesView) => {
     setView(next);
     setDrafts(own(next).templates.map(draftOf));
@@ -197,9 +212,15 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
     readExecutorTemplates(controller.signal, projectId).then(next => {
       if (!controller.signal.aborted) adopt(next);
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
+    setMachinesRead("reading");
     api<{ machines: WorkspaceMachine[] }>("/machines", { signal: controller.signal }).then(list => {
-      if (!controller.signal.aborted && Array.isArray(list.machines)) setMachines(list.machines);
-    }).catch(() => { /* Only this Core host and auto are offered then. */ });
+      if (controller.signal.aborted) return;
+      setMachines(Array.isArray(list.machines) ? list.machines : []);
+      setMachinesRead("read");
+    }).catch(() => {
+      // Only this Core host and auto are offered then; a saved machine says why it isn't.
+      if (!controller.signal.aborted) setMachinesRead("failed");
+    });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, projectId, reload]);
@@ -326,13 +347,8 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
                   <option value="">{t.thisHost}</option>
                   {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                   {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
-                    // Kept as saved. A machine still listed is one this harness can't
-                    // use: Codex on a machine that keeps its Agents contained (#645 R1 1342ccdd).
-                    <option value={d.machine}>
-                      {machines.some(m => m.id === d.machine)
-                        ? t.containedNoCodex(machines.find(m => m.id === d.machine)!.name)
-                        : t.unknownMachine(d.machine)}
-                    </option>
+                    // Kept as saved, and named for what is known of it.
+                    <option value={d.machine}>{savedMachine(d.machine)}</option>
                   )}
                   {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
                 </select>

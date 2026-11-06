@@ -85,7 +85,8 @@ function mount(route, slots = () => [200, slotsView()]) {
     const body = init.body && JSON.parse(init.body);
     const method = init.method || "GET";
     calls.push({ url, method, body });
-    const [status, value] = (isSlots(url) ? slots : route)(url, method, body);
+    // A route may answer later (a promise), as Core can.
+    const [status, value] = await (isSlots(url) ? slots : route)(url, method, body);
     return { ok: status < 400, status, json: async () => value, text: async () => JSON.stringify(value) };
   };
   window.eval(bundle);
@@ -452,6 +453,32 @@ test("Runs on (T-35 S3): a Codex template saved with a machine that keeps its Ag
   await until(() => puts(page).length === 1, "the save");
   assert.equal(puts(page)[0].body.templates[0].machineId, "boxed", "kept until changed");
   assert.deepEqual(page.errors, []);
+});
+
+// #645 R1 e4931a53: the Machines list is read beside the templates. Until it
+// is read a saved machine is just its id; a failed read says the list is
+// unavailable; only a list that was read and lacks it calls it missing.
+test("Runs on (T-35 S3): a saved machine reads as its id until the Machines list is read, by name once it is, and as unavailable when the read fails", async () => {
+  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "lab" }] };
+  let answer;
+  const later = new Promise((resolve) => { answer = resolve; });
+  const page = mount((url) => (url.endsWith("/machines") ? later : [200, view(workspace)]));
+  page.window.renderTemplates();
+  await until(() => runsOn(page)?.value === "lab", "the saved machine, before the list");
+  await tick();
+  assert.deepEqual(shown(page), ["This Core host", "lab", "Choose automatically"], "before the list is read, the saved machine is named without saying it is missing");
+  answer([200, machineList]);
+  await until(() => offered(page).length === 4, "the machines read");
+  assert.equal(runsOn(page).selectedOptions[0].textContent, "Lab box", "once the list is read, it is named");
+  assert.deepEqual(page.errors, []);
+
+  const failing = mount((url) => (url.endsWith("/machines") ? [503, { error: "machines are not available right now" }] : [200, view(workspace)]));
+  failing.window.renderTemplates();
+  await until(() => runsOn(failing)?.value === "lab" && failing.calls.some((c) => c.url.endsWith("/machines")), "the saved machine, with the list asked for");
+  await tick();
+  await tick();
+  assert.equal(runsOn(failing).selectedOptions[0].textContent, "lab (Machines list unavailable)", "a failed read says the list is unavailable");
+  assert.deepEqual(failing.errors, []);
 });
 
 test("Runs on (T-35 S3) reads in Chinese (T-189)", async () => {
