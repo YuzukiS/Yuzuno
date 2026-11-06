@@ -3,6 +3,7 @@ pub mod agent_defaults;
 pub mod agent_roles;
 mod executor_archive;
 mod executor_archiving;
+mod executor_lifecycle;
 pub mod executor_templates;
 pub mod handover;
 pub mod handover_proposals;

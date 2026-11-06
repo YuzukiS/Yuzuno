@@ -132,6 +132,19 @@
   line-height: 1.4;
   opacity: 0.72;
 }
+/* An executor's state in its badge (T-36 S3): what needs someone stands out. */
+.agent-identity > .agent-kind-badge[data-state="failed"] {
+  color: var(--error-ink);
+  opacity: 1;
+}
+.agent-identity > .agent-kind-badge[data-state="delivering"] {
+  color: var(--attention-ink);
+  opacity: 1;
+}
+.agent-identity > .agent-kind-badge[data-state="archived"],
+.agent-identity > .agent-kind-badge[data-state="closed"] {
+  opacity: 0.55;
+}
 .agent-identity > .remote-machine-badge > svg {
   flex-shrink: 0;
   width: 11px;

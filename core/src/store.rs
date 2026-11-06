@@ -272,6 +272,7 @@ fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
     agent.project_id = None;
     agent.kind = None;
     crate::executor_release::show(&mut agent, None);
+    agent.executor = None;
     let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress");
     let active_turn = active.and_then(|t| t["id"].as_str()).map(str::to_owned);
     let active_turn_unmatched = active.is_some_and(|t| t["_yuzunoUnmatched"] == true);
@@ -1360,6 +1361,7 @@ impl Store {
         let project = detail.agent.project_id.take();
         detail.agent.kind = None;
         crate::executor_release::show(&mut detail.agent, None);
+        detail.agent.executor = None;
         let rows = record_rows::split(&detail)?;
         let _kept_out = self.keep_older_cores_out_for(detail.agent.remote.as_ref()
             .and_then(|remote| crate::older_cores::agent_hazard(&detail.agent.name, &remote.machine)))?;
@@ -2092,11 +2094,12 @@ impl Store {
     }
 
     pub fn agents(&self) -> Result<Vec<Agent>> {
-        let (ids, mut projects, kinds, mut released) = {
+        let (ids, mut projects, kinds, mut released, mut lifecycles) = {
             let db = self.db.read()?;
             let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
             let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?)
+            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?,
+                crate::executor_lifecycle::all(&db)?)
         };
         let mut agents = Vec::with_capacity(ids.len());
         for id in ids {
@@ -2106,6 +2109,7 @@ impl Store {
             agent.project_id = projects.remove(&id);
             agent.kind = kinds.get(&id).map(|kind| (*kind).to_owned());
             crate::executor_release::show(&mut agent, released.remove(&id));
+            agent.executor = lifecycles.remove(&id);
             agents.push(agent);
         }
         Ok(agents)

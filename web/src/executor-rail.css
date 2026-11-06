@@ -1,0 +1,57 @@
+/* A Project's executors in the Agent list (ExecutorRail.tsx, T-36 S3): a
+   quiet heading over its task executors, and a fold for the archived ones.
+   Smaller than a Project's heading, which they sit under. */
+.rail-executors,
+.rail-archived {
+  margin: 6px 0 2px;
+}
+.rail-subgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  margin: 0;
+  padding: 3px 4px 3px 8px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+.rail-subgroup-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+.rail-archived-toggle {
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rail-archived-toggle:hover {
+  color: var(--ink);
+}
+.rail-archived-toggle:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.rail-archived-chevron {
+  flex: none;
+  transition: transform var(--motion-micro) var(--ease-standard);
+}
+.rail-archived-toggle[aria-expanded="false"] .rail-archived-chevron {
+  transform: rotate(-90deg);
+}
+/* An archived executor's row reads as done. */
+.rail-archived-rows > .agent-row {
+  opacity: 0.78;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail-archived-chevron {
+    transition: none;
+  }
+}

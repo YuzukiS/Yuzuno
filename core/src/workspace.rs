@@ -534,6 +534,7 @@ impl Workspace {
             kind: None,
             released_at: None,
             released_by: None,
+            executor: None,
             cwd,
             model,
             settings,

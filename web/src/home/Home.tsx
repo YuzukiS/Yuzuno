@@ -338,8 +338,9 @@ export function Home({
     );
   jumpToItem.current = jump;
   function jump(item: NeedsYouItem) {
-    // A question is answered in its conversation (T-42).
-    if (item.kind === "question") {
+    // A question is answered in its conversation (T-42), and an executor's
+    // result is released from its own (T-36 S3).
+    if (item.kind === "question" || item.kind === "executor") {
       onNavigate({ kind: "agent", agentId: item.agentId });
       return;
     }

@@ -75,6 +75,8 @@ export interface Agent {
   releasedAt?: string | null;
   /** Who released it: `agent:<id>` or `user`. */
   releasedBy?: string | null;
+  /** An executor's lifecycle (T-36 S3): its state, task and dispatcher. */
+  executor?: import("./executor-lifecycle").ExecutorLifecycle | null;
 }
 export interface Project {
   id: string;

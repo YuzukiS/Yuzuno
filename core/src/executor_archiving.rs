@@ -130,8 +130,10 @@ pub(crate) fn waits(db: &Connection, agent: &str) -> Result<Vec<String>> {
 }
 
 /// What a release waits for now, said on its row; a failed close also
-/// counts as an attempt, with the time it is tried again.
-fn note(store: &Store, agent: &str, reason: &str, failed: bool) -> Result<()> {
+/// counts as an attempt, with the time it is tried again. True when the row
+/// changed: the same wait said again is not written, nor announced by the
+/// caller (T-36 S3, #635's closing round 9ab74ebf).
+fn note(store: &Store, agent: &str, reason: &str, failed: bool) -> Result<bool> {
     let db = store.db.write()?;
     if failed {
         let attempts: i64 =
@@ -142,10 +144,13 @@ fn note(store: &Store, agent: &str, reason: &str, failed: bool) -> Result<()> {
             "UPDATE executor_archiving SET reason=?2,attempts=attempts+1,next_try_at=?3 WHERE agent_id=?1",
             params![agent, reason, next],
         )?;
-    } else {
-        db.execute("UPDATE executor_archiving SET reason=?2,next_try_at=NULL WHERE agent_id=?1", params![agent, reason])?;
+        return Ok(true);
     }
-    Ok(())
+    let changed = db.execute(
+        "UPDATE executor_archiving SET reason=?2,next_try_at=NULL WHERE agent_id=?1 AND (reason IS NOT ?2 OR next_try_at IS NOT NULL)",
+        params![agent, reason],
+    )?;
+    Ok(changed > 0)
 }
 
 /// Whether `operation` starts new work, which an executor being released may not.
@@ -238,14 +243,15 @@ impl Workspace {
         let agent = id.to_owned();
         if !waiting.is_empty() {
             let reason = format!("Waiting to close: {}.", waiting.join("; "));
-            self.stored(move |store| note(store, &agent, &reason, false)).await?;
-            self.changed(id);
+            if self.stored(move |store| note(store, &agent, &reason, false)).await? {
+                self.executor_changed(id);
+            }
             return Ok(false);
         }
         if let Err(error) = self.archive_now(id, by).await {
             let reason = format!("The close could not be confirmed, so it is tried again: {error:#}");
             self.stored(move |store| note(store, &agent, &reason, true)).await?;
-            self.changed(id);
+            self.executor_changed(id);
             return Ok(false);
         }
         Ok(true)

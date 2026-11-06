@@ -122,6 +122,13 @@ impl Workspace {
                 let _ = ws.changes.send(json!({"collaboration":true,"tasks":tasks}));
                 ws.collaboration_wakeup.notify_one();
                 ws.delivery.wake.notify_one();
+                // A task an executor works on: its lifecycle may show
+                // differently now (T-36 S3: its result in, its task blocked).
+                if let Some(assignee) = value["task"]["assignee"]["id"].as_str().filter(|_| tasks) {
+                    if crate::agent_roles::kind(&*ws.store.db.read()?, assignee)? == "executor" {
+                        ws.executor_changed(assignee);
+                    }
+                }
             }
             Ok(value)
         }).await

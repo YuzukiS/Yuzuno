@@ -136,6 +136,28 @@ fn missing(store: &Store, db: &Connection, project: &str, agents: &HashMap<Strin
     Ok(missing)
 }
 
+/// The Needs you item of an executor the user dispatched, when its result
+/// waits for the user's release (`delivering`), its start failed (`failed`),
+/// or its task is blocked while it runs (`blocked`): the lifecycle the Agent
+/// listing carries (executor_lifecycle.rs).
+fn executor_need(agent: &Agent) -> Option<Value> {
+    let lifecycle = agent.executor.as_ref()?;
+    if lifecycle["dispatcher"]["kind"] != "user" {
+        return None;
+    }
+    let state = match lifecycle["state"].as_str()? {
+        "delivering" => "delivering",
+        "failed" => "failed",
+        "running" | "starting" | "queued" if lifecycle["blocked"].is_string() => "blocked",
+        _ => return None,
+    };
+    let title = lifecycle["task"]["title"].as_str().unwrap_or_default().chars().take(200).collect::<String>();
+    let since = lifecycle["since"].as_str().map(str::to_owned).unwrap_or_else(|| agent.updated_at.clone());
+    Some(json!({"kind":"executor","projectId":agent.project_id,"agentId":agent.id,"agentName":agent.name,
+        "state":state,"taskId":lifecycle["task"]["id"],"title":title,"reason":lifecycle["reason"].as_str().or(lifecycle["blocked"].as_str()),
+        "since":since}))
+}
+
 /// The HomeData of web/src/home/types.ts.
 pub(super) fn build(store: &Store) -> Result<Value> {
     let at = Utc::now();
@@ -184,6 +206,16 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             needs.push((priority, since, json!({"kind":"question","projectId":agent.project_id,"agentId":agent.id,
                 "agentName":agent.name,"turnId":question.turn_id,"itemId":question.item_id,"title":title,
                 "since":since.map(|at| at.to_rfc3339())})));
+        }
+    }
+    // An executor the user dispatched whose result waits for the user's
+    // release, or whose start failed or task is blocked (T-36 S3). A lead's
+    // executors are that lead's to follow, never listed here.
+    for agent in &agents {
+        if let Some(item) = executor_need(agent) {
+            let priority = agent.project_id.as_deref().and_then(|id| rank.get(id)).copied().unwrap_or(usize::MAX);
+            let since = item["since"].as_str().and_then(time);
+            needs.push((priority, since, item));
         }
     }
     let mut panels = vec![];

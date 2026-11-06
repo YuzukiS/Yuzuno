@@ -1332,9 +1332,14 @@ pub(crate) fn with_executor_slots(db: &Connection, tasks: &mut Value) -> Result<
     let Some(list) = tasks.as_array_mut() else { return Ok(()) };
     let ids: Vec<String> = list.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
     let views = crate::executor_slots::views(db, &ids.iter().map(String::as_str).collect::<Vec<_>>())?;
+    // And its executor's lifecycle (T-36 S3, executor_lifecycle.rs).
+    let lifecycles = crate::executor_lifecycle::for_tasks(db, &ids.iter().map(String::as_str).collect::<Vec<_>>())?;
     for task in list {
         if let Some(view) = task["id"].as_str().and_then(|id| views.get(id)) {
             task["executorSlot"] = view.clone();
+        }
+        if let Some(lifecycle) = task["id"].as_str().and_then(|id| lifecycles.get(id)) {
+            task["executor"] = lifecycle.clone();
         }
     }
     Ok(())
@@ -1412,6 +1417,9 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
     output["mailProblems"] = json!(problems);
     if let Some(slot) = crate::executor_slots::views(db, &[task.id.as_str()])?.remove(&task.id) {
         output["task"]["executorSlot"] = slot;
+    }
+    if let Some(lifecycle) = crate::executor_lifecycle::for_tasks(db, &[task.id.as_str()])?.remove(&task.id) {
+        output["task"]["executor"] = lifecycle;
     }
     Ok(output)
 }
