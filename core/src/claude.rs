@@ -936,8 +936,12 @@ impl Workspace {
     /// without Yuzuno), and SSH joined to that host.
     async fn claude_remote_bridge(&self, machine: &RemoteMachine, id: &str, events: crate::backlog::EventSender) -> Result<(Arc<Bridge>, Option<String>)> {
         #[cfg(test)]
-        if let Some((_, argv)) = REMOTE_ATTACH.lock().unwrap().iter().find(|(machine_id, _)| *machine_id == machine.id).cloned() {
-            return self.claude_stand_in_bridge(id, argv, events).await;
+        {
+            // Bound first: the list's lock is not held across the stand-in's awaits.
+            let stand_in = REMOTE_ATTACH.lock().unwrap().iter().find(|(machine_id, _)| *machine_id == machine.id).map(|(_, argv)| argv.clone());
+            if let Some(argv) = stand_in {
+                return self.claude_stand_in_bridge(id, argv, events).await;
+            }
         }
         let (digest, _tools) = claude_remote_install(machine).await?;
         let workspace = self.stored(|store| store.workspace_id()).await?;

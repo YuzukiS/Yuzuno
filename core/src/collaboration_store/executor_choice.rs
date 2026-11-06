@@ -100,7 +100,8 @@ pub(super) fn choose(db: &Connection, template: &Template, project: Option<&str>
         bail!("no_machine: no machine can run this executor ({})", reasons.join("; "));
     };
     let listed: Vec<Value> = candidates.iter().map(Candidate::record).chain(excluded).collect();
-    Ok((chosen, json!({"requested": AUTO, "chosen": chosen, "candidates": listed})))
+    let record = json!({"requested": AUTO, "chosen": chosen, "candidates": listed});
+    Ok((chosen, record))
 }
 
 /// Why `machine` can't run this dispatch's executor, if it can't.

@@ -507,8 +507,8 @@ async fn a_machines_own_limit_is_saved_through_its_route() {
         ("/api/machines/lab-box/executor-slots", json!({"expectedVersion":1,"slots":1,"startLimitSeconds":60}), "invalid_input: a start's time limit is the Workspace's"),
     ] {
         let (status, refused) = call(path, body.clone()).await;
-        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}: {refused}");
-        assert!(refused["error"].as_str().unwrap_or_default().starts_with(says), "{body} should say {says}: {refused}");
+        assert!(status == axum::http::StatusCode::BAD_REQUEST && refused["error"].as_str().unwrap_or_default().starts_with(says),
+            "{path} {body} should be refused with {says}; got {status}: {refused}");
     }
     // Raised to 2 and both start; lowered to 1 under them: none stops, and
     // none more starts there.

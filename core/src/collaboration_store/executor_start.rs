@@ -115,7 +115,8 @@ impl Store {
     /// a test's way to leave one where that Core stopped.
     #[cfg(test)]
     pub(crate) fn executor_rebuild_begin(&self, made: &Made, agent: &str, reason: &str) -> Result<()> {
-        begin(&self.db.write()?, made, agent, reason)
+        let db = self.db.write()?;
+        begin(&db, made, agent, reason)
     }
 
     /// The dispatch that made `agent`, when its close carried the record of
