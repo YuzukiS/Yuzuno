@@ -144,3 +144,30 @@ fn an_executor_cannot_set_its_own_task_done_but_its_dispatcher_and_the_user_can(
     update(None, "reopened", &public, 3, "doing").unwrap();
     update(None, "done by the user", &public, 4, "done").unwrap();
 }
+
+/// T-36 (#622 R2 5d030b12): nor through its result. An executor's
+/// task_submit_result with status done is refused and writes nothing; with
+/// review it goes through, and its dispatcher then sets the task done.
+#[test]
+fn an_executor_cannot_submit_its_own_task_as_done_only_as_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    agent(&store, "lead");
+    let (public, t) = task(&store, "Review");
+    executor(&store, "exec", &t, "agent:lead", false);
+    let submit = |request: &str, version: i64, status: &str| store.collaboration_call(Some("exec"), "task_submit_result",
+        json!({"requestId":request,"taskId":public,"expectedVersion":version,"summary":"Merged; checks passed.","status":status}));
+    let error = match submit("done", 1, "done") {
+        Ok(answer) => panic!("the executor's done result is refused, not saved: {answer}"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.starts_with("executor_done_refused: an executor does not set its own task done") && error.contains("status review"), "{error}");
+    let task = store.collaboration_call(None, "task_get", json!({"taskId":public})).unwrap();
+    assert_eq!((task["task"]["status"].as_str(), task["task"]["version"].as_i64(), task["task"]["result"].is_null()),
+        (Some("todo"), Some(1), true), "nothing was written: {}", task["task"]);
+    let reviewed = submit("review", 1, "review").unwrap();
+    assert_eq!(reviewed["task"]["status"], "review", "a review result goes through");
+    let version = reviewed["task"]["version"].as_i64().unwrap();
+    store.collaboration_call(Some("lead"), "task_update",
+        json!({"requestId":"accepted","taskId":public,"expectedVersion":version,"patch":{"status":"done"}})).unwrap();
+}
