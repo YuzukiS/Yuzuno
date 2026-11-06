@@ -1,11 +1,13 @@
 // T-36 S3: an executor's lifecycle in Chromium, with every API answered
-// here (no Core, no CLI, no daily configuration). At 1440 and 390 wide, in
-// light and dark: the sidebar lists the Project's lead, its other Agent, its
-// task executors by attention (failed, delivered awaiting release, running,
-// archiving, queued or starting) with each badge's state, and folds the
-// archived one; Home's Needs you lists the executors you dispatched; a
-// task's card and view say its executor's state; Release says what an
-// archiving executor waits for. Once more in Chinese at 1440, light.
+// here (no Core, no CLI, no daily configuration); the lifecycles themselves
+// are Core's own answer (tools/fixtures/executor-lifecycle.json). At 1440
+// and 390 wide, in light and dark: the sidebar lists the Project's lead, its
+// other Agent, its task executors by attention (failed, delivered awaiting
+// release, running, archiving, queued or starting) with each badge's state,
+// and folds the archived one, a closed one in Closed only; Home's Needs you
+// lists the executors you dispatched and no lead's; a task's card and view
+// say its executor's state; Release says what an archiving executor waits
+// for. Once more in Chinese at 1440, light.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-lifecycle-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -26,56 +28,34 @@ const check = (name, extra = {}) => {
 };
 const HOST = "yuzuno-executor-lifecycle.test";
 
+// What Core answers, verbatim (Lead 2 mail 6191): the Agent listing's
+// `executor`, the task list's `task.executor` and Home's executor items, as
+// core/src/project_brief/executor_needs_tests.rs emits them and keeps them
+// equal. The rest of each record is this check's own.
+const fixture = JSON.parse(await readFile(new URL("./fixtures/executor-lifecycle.json", import.meta.url), "utf8"));
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const you = { kind: "user", id: "user", name: "You" };
-const base = { goal: "", cwd: "/fixture/app", model: "gpt-6", color: "sage", status: "idle", harness: "codex", createdAt: "", updatedAt: ago(5),
+const base = { goal: "", cwd: "/fixture/app", model: "gpt-6", color: "sage", harness: "codex", createdAt: "", updatedAt: ago(5),
   unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p1", connectionState: "connected" };
-const lead = { ...base, id: "mori", name: "Mori", kind: "lead" };
-const standing = { ...base, id: "hana", name: "Hana", color: "plum" };
-const byLead = { kind: "agent", id: "mori", name: "Mori" };
-const executor = (n, label, state, extra = {}, lifecycle = {}) => ({
-  ...base, id: `e${n}`, name: `T-${n} · ${label}`, kind: "executor",
-  executor: { state, agentId: `e${n}`, dispatcher: { kind: "user" }, task: { id: `T-${n}`, title: titles[n] }, since: ago(n - 40), ...lifecycle },
-  ...extra,
-});
-const titles = { 50: "Review the release notes", 51: "Review the parser change", 52: "Review the import change", 53: "Build the export",
-  54: "Review the docs change", 55: "Build the installer", 56: "Review the settings change" };
-const CLOSED = ago(20);
-// In the workspace's own order; the sidebar orders them.
-const agents = [
-  executor(55, "Builder", "queued", {}, { position: 1, dispatcher: byLead }),
-  standing,
-  executor(53, "Builder", "running", { status: "working" }, { dispatcher: byLead }),
-  executor(50, "Reviewer", "archived", { closedAt: CLOSED, releasedAt: CLOSED, releasedBy: "user", status: "offline" }),
-  executor(52, "Reviewer", "delivering"),
-  lead,
-  executor(54, "Reviewer", "archiving", {}, { reason: "Waiting to close: a Job is still running: cargo test (j1).", dispatcher: byLead }),
-  executor(56, "Reviewer", "starting", { status: "offline" }),
-  executor(51, "Reviewer", "failed", { closedAt: CLOSED, status: "offline" }, { reason: "The runtime may still be running there: held for you" }),
-];
+// One at work right now; the closed ones offline.
+const statusOf = (a) => (a.closedAt ? "offline" : a.executor?.state === "running" && !a.executor.blocked ? "working" : "idle");
+const agents = fixture.agents.map((a) => ({ ...base, ...a, status: statusOf(a) }));
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
-// Core lists the executors you dispatched only: T-52's result, T-51's failed start.
-const needs = [
-  { kind: "executor", projectId: "p1", agentId: "e51", agentName: "T-51 · Reviewer", state: "failed", taskId: "T-51", title: titles[51],
-    reason: "The runtime may still be running there: held for you", since: ago(20) },
-  { kind: "executor", projectId: "p1", agentId: "e52", agentName: "T-52 · Reviewer", state: "delivering", taskId: "T-52", title: titles[52], since: ago(12) },
-];
-const counts = { working: 1, idle: 4, waiting: 0, error: 0, offline: 2, total: 7 };
+const needs = fixture.needsYou;
+const counts = { working: 1, idle: 8, waiting: 0, error: 0, offline: 2, total: 11 };
 const home = { generatedAt: ago(0), order: ["p1"], needsYou: needs,
   projects: [{ project: { id: "p1", name: "Yuzuno" }, agents: counts, errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 1, history: [], sections: [] } }] };
-const task = (n, status, extra = {}) => {
-  const own = agents.find((a) => a.id === `e${n}`);
-  return { id: `T-${n}`, title: titles[n], description: "", status, version: 2, projectId: "p1", progress: "", blocker: "", result: null, github: [],
-    createdAt: ago(300), updatedAt: ago(n - 40), createdBy: you, updatedBy: you, assigneeAgentId: own.id, executor: own.executor, ...extra };
-};
-const tasks = [
-  task(52, "review", { result: { summary: "Reviewed: two findings fixed.", links: [], reportedAt: ago(12), reportedBy: { kind: "agent", id: "e52", name: "T-52 · Reviewer" } } }),
-  task(51, "blocked", { blocker: "Its executor did not start: the runtime may still be running there." }),
-  task(53, "doing", { progress: "Exporting the second format" }),
-  task(54, "doing", { progress: "Docs reviewed; a Job still runs" }),
-  task(56, "doing", { executorSlot: { agentId: "e56", state: "starting", machine: "local" } }),
-  task(55, "doing", { executorSlot: { agentId: "e55", state: "waiting", machine: "local", position: 1 } }),
-];
+const tasks = fixture.tasks.map((t) => ({
+  id: t.id, title: t.title, description: "", status: t.status, version: 2, projectId: "p1", progress: "", github: [],
+  blocker: t.status === "blocked" ? "Waiting for the signing keys" : "",
+  result: t.status === "review" ? { summary: "Reviewed: two findings fixed.", links: [], reportedAt: ago(12), reportedBy: { kind: "agent", id: t.executor?.agentId, name: "" } } : null,
+  createdAt: ago(300), updatedAt: ago(10), createdBy: you, updatedBy: you, assigneeAgentId: t.executor?.agentId ?? null, executor: t.executor,
+  // T-35's slot, which the lifecycle replaces on the card.
+  ...(t.executor?.state === "queued" ? { executorSlot: { agentId: t.executor.agentId, state: "waiting", machine: "local", position: t.executor.position } } : {}),
+}));
+const byId = (id) => agents.find((a) => a.id === id);
+const archivingOne = agents.find((a) => a.executor?.state === "archiving");
+const deliveredTask = tasks.find((t) => t.executor?.state === "delivering" && t.executor.dispatcher.kind === "user");
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const reads = new Set(["task_list", "task_get", "github_links", "github_refresh", "github_repositories", "delivery_get", "peers_list"]);
 
@@ -155,15 +135,23 @@ const fits = (box) => box.evaluate((el) => {
 });
 
 const english = {
-  badges: { mori: "Lead", hana: null, e51: "Executor · Failed", e52: "Executor · Delivered, awaiting release", e53: "Executor · Running",
-    e54: "Executor · Archiving", e56: "Executor · Starting", e55: "Executor · Queued · 1 in line" },
-  executors: "Task executors", archived: "Archived", delivering: "Delivered, awaiting your release", failedNeed: "Its start failed",
+  states: { queued: "Queued", starting: "Starting", running: "Running", delivering: "Delivered, awaiting release", archiving: "Archiving",
+    archived: "Archived", failed: "Failed", closed: "Closed" },
+  queued: (n) => `Queued · ${n} in line`, executor: "Executor", lead: "Lead",
+  executors: "Task executors", delivering: "Delivered, awaiting your release", failed: "Its start failed", blocked: "Its task is blocked",
 };
 const chinese = {
-  badges: { mori: "负责人", hana: null, e51: "执行者 · 失败", e52: "执行者 · 交付待放行", e53: "执行者 · 运行中",
-    e54: "执行者 · 归档中", e56: "执行者 · 启动中", e55: "执行者 · 排队中 · 第 1 位" },
-  executors: "任务执行者", archived: "已归档", delivering: "交付待你放行", failedNeed: "启动失败",
+  states: { queued: "排队中", starting: "启动中", running: "运行中", delivering: "交付待放行", archiving: "归档中", archived: "已归档", failed: "失败", closed: "已关闭" },
+  queued: (n) => `排队中 · 第 ${n} 位`, executor: "执行者", lead: "负责人",
+  executors: "任务执行者", delivering: "交付待你放行", failed: "启动失败", blocked: "任务受阻",
 };
+// What an executor's badge and chip say (executor-lifecycle.ts), from its state.
+const says = (words, lifecycle) =>
+  `${words.executor} · ${lifecycle.state === "queued" && lifecycle.position ? words.queued(lifecycle.position) : words.states[lifecycle.state]}`;
+// The sidebar's order with Attention order: the lead, the other Agent, then
+// failed; delivered (two, as listed); running (the one at work first);
+// archiving; queued; starting. The closed one is in Closed only.
+const SIDEBAR = ["mori", "hana", "e51", "e52", "e58", "e53", "e57", "e54", "e55", "e56"];
 
 async function run({ width, height, theme, language }) {
   const phone = width < 600;
@@ -183,17 +171,23 @@ async function run({ width, height, theme, language }) {
   try {
     await page.goto(`https://${HOST}/`);
     const list = page.locator(".agent-list");
-    await list.locator('article[data-agent-id="e52"]').waitFor({ timeout: 15_000 });
+    await list.locator(`article[data-agent-id="${SIDEBAR.at(-1)}"]`).waitFor({ timeout: 15_000 });
     // The sidebar: lead, other Agent, executors by attention; the archived one folded.
-    assert.deepEqual(await order(page), ["mori", "hana", "e51", "e52", "e53", "e54", "e55", "e56"], `${tag}: the sidebar's order`);
-    assert.deepEqual(await badges(page), words.badges, `${tag}: each badge`);
+    assert.deepEqual(await order(page), SIDEBAR, `${tag}: the sidebar's order`);
+    const expected = Object.fromEntries(SIDEBAR.map((id) => {
+      const a = byId(id);
+      return [id, a.kind === "lead" ? words.lead : a.executor ? says(words, a.executor) : null];
+    }));
+    assert.deepEqual(await badges(page), expected, `${tag}: each badge says its state`);
     assert.equal(await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().textContent(), words.executors);
     const fold = list.locator('[data-rail-part="archived"] .rail-archived-toggle');
     assert.equal(await fold.getAttribute("aria-expanded"), "false", `${tag}: the archived fold starts folded`);
     assert.deepEqual(await fits(list), [], `${tag}: the sidebar fits its width`);
     await shot(list, `${tag}-1-sidebar`);
     await fold.click();
-    await list.locator('article[data-agent-id="e50"]').waitFor({ timeout: 10_000 });
+    const archived = agents.find((a) => a.executor?.state === "archived");
+    await list.locator(`article[data-agent-id="${archived.id}"]`).waitFor({ timeout: 10_000 });
+    assert.ok(!(await list.locator('article[data-agent-id="e59"]').count()), `${tag}: a closed executor is in Closed only`);
     assert.deepEqual(await fits(list), [], `${tag}: opened, it still fits`);
     await shot(list.locator('[data-rail-part="archived"]'), `${tag}-2-archived-open`);
     await fold.click();
@@ -202,32 +196,36 @@ async function run({ width, height, theme, language }) {
     // Home's Needs you: the executors you dispatched, the failed start first.
     await page.locator(".toolbar-nav button.catchup-nav").first().click();
     const needsYou = page.locator(".home-needs-you");
-    await needsYou.locator('[data-needs-you="executor:e52:delivering"]').waitFor({ timeout: 10_000 });
+    const keys = needs.map((i) => `executor:${i.agentId}:${i.state}`);
+    await needsYou.locator(`[data-needs-you="${keys[0]}"]`).waitFor({ timeout: 10_000 });
     const rows = await needsYou.locator(".home-needs-item").evaluateAll((items) => items.map((i) => i.dataset.needsYou));
-    assert.deepEqual(rows, ["executor:e51:failed", "executor:e52:delivering"], `${tag}: Needs you lists the two you dispatched`);
-    assert.match(await needsYou.locator('[data-needs-you="executor:e52:delivering"]').textContent(), new RegExp(words.delivering));
-    assert.match(await needsYou.locator('[data-needs-you="executor:e51:failed"]').textContent(), new RegExp(words.failedNeed));
+    assert.deepEqual(rows, keys, `${tag}: Needs you lists the executors you dispatched, in Core's order`);
+    assert.deepEqual(needs.map((i) => i.state).sort(), ["blocked", "delivering", "failed"], "Core lists a failed start, a delivery and a blocked task");
+    for (const item of needs) {
+      assert.match(await needsYou.locator(`[data-needs-you="executor:${item.agentId}:${item.state}"]`).textContent(), new RegExp(words[item.state]));
+    }
+    // In the same render: the lead's executor, its result in too, is not listed.
+    assert.ok(!rows.some((r) => r.startsWith("executor:e58:")), `${tag}: a lead's executor is never in Needs you`);
     assert.deepEqual(await fits(needsYou), [], `${tag}: Needs you fits its width`);
     await shot(needsYou, `${tag}-3-needs-you`);
     check(`${tag}: Home's Needs you lists the failed start and the delivery awaiting release`);
 
     // The task board: each card's executor state; a view's beside its owner.
     await page.locator("button.collab-nav").click({ timeout: 10_000 });
-    await page.locator('.collab-task-card[data-task-id="T-55"] .collab-executor-state').waitFor({ timeout: 10_000 });
+    await page.locator(`.collab-task-card[data-task-id="${deliveredTask.id}"] .collab-executor-state`).waitFor({ timeout: 10_000 });
     const chips = await page.locator(".collab-task-card").evaluateAll((cards) =>
       Object.fromEntries(cards.map((c) => [c.dataset.taskId, [c.querySelector(".collab-executor-state")?.textContent ?? null, !!c.querySelector(".collab-executor-slot")]])));
-    const label = (id) => words.badges[`e${id.slice(2)}`];
     for (const [id, [text, slot]] of Object.entries(chips)) {
-      assert.equal(text, label(id), `${tag}: ${id}'s card says its executor's state`);
+      assert.equal(text, says(words, tasks.find((t) => t.id === id).executor), `${tag}: ${id}'s card says its executor's state`);
       assert.equal(slot, false, `${tag}: ${id}'s lifecycle in its slot's place`);
     }
     const cards = page.locator(".collab-cards");
     assert.deepEqual(await fits(cards), [], `${tag}: the cards fit their width`);
     await shot(phone ? page : cards, `${tag}-4-board`);
-    await page.locator('.collab-task-card[data-task-id="T-52"]').click();
+    await page.locator(`.collab-task-card[data-task-id="${deliveredTask.id}"]`).click();
     const owner = page.locator(".collab-detail .collab-owner-line");
     await owner.locator(".collab-executor-state").waitFor({ timeout: 10_000 });
-    assert.equal(await owner.locator(".collab-executor-state").textContent(), words.badges.e52);
+    assert.equal(await owner.locator(".collab-executor-state").textContent(), says(words, deliveredTask.executor));
     await shot(phone ? page : page.locator(".collab-detail"), `${tag}-5-task-view`);
     check(`${tag}: each card and the task's view say its executor's state`, { chips });
     await page.keyboard.press("Escape");
@@ -236,11 +234,11 @@ async function run({ width, height, theme, language }) {
     if (language !== "zh-Hans") {
       await page.keyboard.press("Escape");
       if (phone) await page.locator(".phone-back").click({ timeout: 10_000 }).catch(() => {});
-      await page.locator('.agent-list article[data-agent-id="e54"] .agent-select').click({ timeout: 10_000 });
+      await page.locator(`.agent-list article[data-agent-id="${archivingOne.id}"] .agent-select`).click({ timeout: 10_000 });
       await page.getByRole("button", { name: "Conversation actions" }).first().click({ timeout: 10_000 });
       const archiving = page.locator(".agent-action-card", { has: page.locator("strong", { hasText: /^Archiving$/ }) });
       await archiving.waitFor({ timeout: 10_000 });
-      assert.equal(await archiving.locator("small").textContent(), "Waiting to close: a Job is still running: cargo test (j1). Releasing again tries now.");
+      assert.equal(await archiving.locator("small").textContent(), `${archivingOne.executor.reason} Releasing again tries now.`);
       await shot(page.locator('[role="dialog"]').first(), `${tag}-6-release-archiving`);
       check(`${tag}: Release says what the archiving executor waits for`);
     }
