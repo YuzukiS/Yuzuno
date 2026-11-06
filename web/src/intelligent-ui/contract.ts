@@ -87,7 +87,7 @@ export const componentProps = {
     requiresSelection: z.boolean().optional(),
   }),
   TaskStatus: z.strictObject({
-    taskId: z.string().regex(/^T-[1-9]\d{0,9}$/),
+    taskId: z.string().regex(/^(?:T|[A-Z][A-Z0-9]{1,9})-[1-9]\d{0,9}$/),
     status: z.enum(TASK_STATUSES),
     reason: z.string().min(1).max(1000),
   }),

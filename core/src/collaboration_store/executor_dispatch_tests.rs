@@ -71,7 +71,7 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     templates(&store, json!([reviewer()]));
     let t = task(&store, "Review", Some(&p), None);
     let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
-    assert_eq!((plan.name.as_str(), plan.folders.as_slice()), ("T-1 · Reviewer", ["/synthetic/project".to_owned()].as_slice()));
+    assert_eq!((plan.name.as_str(), plan.folders.as_slice()), ("LAB-1 · Reviewer", ["/synthetic/project".to_owned()].as_slice()));
     assert_eq!(row(&store, "user", "first").0, "pending");
     let busy = store.executor_dispatch_begin(None, dispatch(&t, "first"), LocalDefault::Read(None));
     assert!(matches!(&busy, Err(e) if e.to_string().starts_with("dispatch_in_progress:")),

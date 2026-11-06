@@ -140,7 +140,8 @@ pub(super) struct Plan {
     pub source: Value,
 }
 fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) -> Result<Plan> {
-    let (task, seq) = collab::task_key(db, &input.task_id)?;
+    let (task, _) = collab::task_key(db, &input.task_id)?;
+    let reference = collab::task_number(db, &task)?;
     let shared = collab::load_task(db, &task)?;
     let (author, source) = releaser(store, db, actor, &shared)?;
     let target = crate::github::client::parse(&input.pull_url, true)?;
@@ -190,7 +191,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
     }
     Ok(Plan {
         task,
-        reference: format!("T-{seq}"),
+        reference,
         repository_id,
         repository,
         number,

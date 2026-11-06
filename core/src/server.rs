@@ -807,6 +807,9 @@ struct ProjectPatch {
     default_dirs: std::collections::BTreeMap<String, Option<String>>,
     #[serde(default)]
     archived: Option<bool>,
+    /// A new task key prefix (T-56).
+    #[serde(default)]
+    key: Option<String>,
 }
 async fn update_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(p): Json<ProjectPatch>) -> ApiResult<Json<Value>> {
     let project = id.clone();
@@ -819,7 +822,7 @@ async fn update_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
         };
         dirs.insert(machine, folder);
     }
-    let change = crate::projects::ProjectChange { name: p.name, default_dirs: dirs, archived: p.archived };
+    let change = crate::projects::ProjectChange { name: p.name, key: p.key, default_dirs: dirs, archived: p.archived };
     let project = ws.stored(move |store| store.update_project(&id, change)).await?;
     ws.projects_changed();
     Ok(Json(serde_json::to_value(project)?))

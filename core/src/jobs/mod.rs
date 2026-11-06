@@ -1176,7 +1176,14 @@ pub async fn call(
         }
         "job_provenance" => {
             let scope = serde_json::from_value::<provenance::Request>(input)?.scope()?;
-            let (run, jobs) = ws.stored(move |s| s.provenance_records(&scope)).await?;
+            // The records as they read now: each with its task's key now (T-56).
+            let (run, jobs) = ws.stored(move |s| {
+                let (mut run, mut jobs) = s.provenance_records(&scope)?;
+                let db = s.db.read()?;
+                run.iter_mut().for_each(|run| crate::task_keys::refresh(&db, run));
+                jobs.iter_mut().for_each(|job| crate::task_keys::refresh(&db, job));
+                Ok((run, jobs))
+            }).await?;
             let mut extents = Vec::with_capacity(jobs.len());
             for job in &jobs {
                 extents.push(if job["executor"].is_null() {

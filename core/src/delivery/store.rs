@@ -211,7 +211,8 @@ pub(crate) fn call(
     op: &str,
     input: &Value,
 ) -> Result<Value> {
-    let (id, seq) = collaboration::task_key(db, text(input, "taskId")?)?;
+    let (id, _) = collaboration::task_key(db, text(input, "taskId")?)?;
+    let reference = collaboration::task_number(db, &id)?;
     if op == "delivery_get" {
         allowed(input, &["taskId"])?;
         return Ok(
@@ -305,7 +306,7 @@ pub(crate) fn call(
         Flow {
             id: uuid::Uuid::new_v4().to_string(),
             task_id: id.clone(),
-            task_ref: format!("T-{seq}"),
+            task_ref: reference,
             link_id: text(input, "linkId")?.into(),
             url: text(&linked, "url")?.into(),
             owner: collaboration::agent_actor(store, db, owner_id)?,
@@ -812,7 +813,8 @@ fn view(db: &Connection, f: &Flow) -> Result<Value> {
     let ci = ci(db, r)?;
     let (state, reason) = state(db, f, &rv, &ci)?;
     let mut v = serde_json::to_value(f)?;
-    v["taskId"] = json!(f.task_ref);
+    // Its key now, not the one stored when the flow started (T-56).
+    v["taskId"] = json!(collaboration::task_number(db, &f.task_id)?);
     v["state"] = json!(state);
     v["reason"] = json!(reason);
     v["candidate"] =

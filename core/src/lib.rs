@@ -51,6 +51,7 @@ pub mod message_content;
 pub mod permissions;
 pub mod project_brief;
 pub mod projects;
+pub(crate) mod task_keys;
 pub mod github;
 pub mod guide;
 pub mod pr_review;
