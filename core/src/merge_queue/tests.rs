@@ -1703,7 +1703,8 @@ async fn a_pr_that_changed_before_the_first_request_is_refused_without_one() {
     tick(&lab.ws).await.unwrap();
     let e = lab.entry().await;
     assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_refused")), "a merge made outside the queue is not Core's: {e}");
-    assert!(e["detail"].as_str().unwrap().contains("merged outside the queue"), "{}", e["detail"]);
+    // Refused either way; only the detail tells it from a PR closed without a merge.
+    assert!(e["detail"].as_str().unwrap().contains("merged outside the queue"), "a merge made outside the queue is named as one: {}", e["detail"]);
     assert!(writes(lab.dir.path()).is_empty());
 }
 
