@@ -1,4 +1,5 @@
-// The Jobs panel's disk section (T-95) against fixture HTTP only; no Core.
+// The disk section (T-95) against fixture HTTP only; no Core: what the Jobs
+// panel shows, and the reserve, set in Settings (T-55).
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -20,9 +21,10 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {DiskSpace} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
+import {DiskReserveSettings, DiskSpace} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
 const root = createRoot(document.getElementById('root'));
-window.render = props => root.render(<DiskSpace {...props}/>);`,
+window.render = props => root.render(<DiskSpace {...props}/>);
+window.renderReserve = props => root.render(<DiskReserveSettings {...props}/>);`,
   );
   const result = await build({
     root,
@@ -63,7 +65,7 @@ const disk = (extra = {}) => ({
   ...extra,
 });
 
-function mount(props) {
+function mount(props, editor = false) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -80,11 +82,12 @@ function mount(props) {
   };
   window.eval(bundle);
   let saved = 0;
-  window.render({ disk: disk(), onSaved: () => saved++, ...props });
+  (editor ? window.renderReserve : window.render)({ disk: disk(), onSaved: () => saved++, ...props });
   return {
     window, document: window.document, calls, errors, answers, saved: () => saved,
     text: () => window.document.body.textContent.replace(/\s+/g, " "),
     button: (label) => [...window.document.querySelectorAll("button")].find((b) => b.textContent.trim() === label),
+    input: () => window.document.querySelector('input[name="reserveGiB"]'),
     close: () => window.close(),
   };
 }
@@ -109,32 +112,41 @@ test("each filesystem is one bar of what is used, its folders in the tip, a low 
     assert.equal(rows[2].querySelector(".jobs-disk-total"), null);
     assert.equal(rows[2].querySelector(".jobs-meter-used"), null, "unknown use draws nothing");
     assert.match(rows[2].querySelector(":scope > small").textContent, /Could not be read \(No such file or directory \(os error 2\)\); new jobs wait until it can be checked\./);
-    // One reserve for every disk, under the first.
-    assert.equal(page.document.querySelectorAll("details.jobs-disk").length, 1);
-    assert.ok(rows[0].querySelector("details.jobs-disk"));
-    assert.match(page.text(), /Empty uses the default: 10 GiB, or a tenth of a filesystem smaller than 100 GiB\. Checked before each new job starts, not a quota\./);
+    // The reserve is set in Settings (T-55): the cells only show the disks.
+    assert.equal(!!page.document.querySelector(".jobs-disk-volume input, .jobs-disk-volume details, .jobs-disk-volume button"), false, "no disk cell has an editor");
+    assert.deepEqual(page.calls, [], "showing the disks sends nothing");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
 
-test("with no disk reported the reserve keeps its place under one cell that says so", async () => {
+test("with no disk reported one cell says so, and the reserve can still be set in Settings", async () => {
   const page = mount({ disk: disk({ volumes: [] }) });
   try {
     await until(() => page.document.querySelectorAll(".jobs-disk-volume").length === 1);
     const cell = page.document.querySelector(".jobs-disk-volume");
     assert.ok(cell.classList.contains("is-unknown"));
     assert.equal(cell.querySelector(".jobs-disk-free").textContent, "Not reported");
-    assert.equal(cell.querySelector(".jobs-meter-used"), null);
-    assert.ok(cell.querySelector("details.jobs-disk"), "the reserve can still be set");
+    assert.equal(!!cell.querySelector(".jobs-meter-used"), false, "unknown use draws nothing");
+    assert.equal(!!cell.querySelector("input, details"), false, "the cell has no editor");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+  const editor = mount({ disk: disk({ volumes: [] }) }, true);
+  try {
+    await until(() => editor.button("Save reserve"));
+    assert.equal(!!editor.document.querySelector('input[name="reserveGiB"]'), true, "the reserve can still be set without a disk reported");
+    assert.match(editor.text(), /Empty uses the default: 10 GiB, or a tenth of a filesystem smaller than 100 GiB\. Checked before each new job starts, not a quota\./, "the default rule and scope are said as Core gave them");
+    assert.deepEqual(editor.errors, []);
+  } finally { editor.close(); }
 });
 
 test("the reserve is saved as a number, returns to the default as null, and a refusal is shown", async () => {
-  const page = mount({ disk: disk({ reserveGiB: 20 }) });
+  const page = mount({ disk: disk({ reserveGiB: 20 }) }, true);
   try {
     await until(() => page.button("Save reserve"));
-    const input = page.document.querySelector(".jobs-disk input");
+    // One reserve for every disk.
+    assert.equal(page.document.querySelectorAll('input[name="reserveGiB"]').length, 1, "one reserve for every disk");
+    assert.equal(page.document.querySelector(".jobs-settings-now").textContent, "In effect: keep 20 GiB free.", "the saved reserve is said to be in effect");
+    const input = page.document.querySelector('input[name="reserveGiB"]');
     assert.equal(input.value, "20");
     assert.equal(input.min, "1");
     assert.equal(input.max, "1024");
@@ -151,8 +163,9 @@ test("the reserve is saved as a number, returns to the default as null, and a re
     assert.deepEqual(page.calls[1].body, { reserveGiB: null });
     page.answers.push([400, { error: "The disk reserve must be 1–1024 GiB" }]);
     page.button("Save reserve").click();
-    await until(() => page.document.querySelector(".jobs-disk [role=alert]"));
-    assert.equal(page.document.querySelector(".jobs-disk [role=alert]").textContent, "The disk reserve must be 1–1024 GiB");
+    await until(() => page.document.querySelector(".jobs-settings-disk [role=alert]"));
+    assert.equal(page.document.querySelector(".jobs-settings-disk [role=alert]").textContent, "The disk reserve must be 1–1024 GiB");
+    assert.equal(page.input().value, "30", "the typed value stays to try again");
     assert.equal(page.saved(), 2);
   } finally { page.close(); }
 });

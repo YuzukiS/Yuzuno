@@ -363,7 +363,7 @@ test('the submit form shows what earlier runs of the same name or command sugges
     return page([]);
   };
   const posted = p => p.calls.filter(c => c.url === '/api/jobs' && c.body).map(c => c.body.resources);
-  // The submit form's own fields: the machine budget above it has a CPU quota too.
+  // The submit form's own fields, wherever else a CPU quota is named.
   const limit = (p, text) => [...p.doc.querySelectorAll('.job-form label')].find(l => l.textContent.startsWith(text))?.querySelector('input');
   async function set(p, text, value) {
     const el = limit(p, text);
@@ -755,36 +755,9 @@ test('the machine card puts what jobs use on the bars of what they reserve, and 
   } finally { q.close(); }
 });
 
-test('machine budget takes the whole host, keeps the default apart, includes collectors and retains validation errors', async () => {
-  let saves=0;
-  const p=mount((url, body) => {
-    if(url==='/api/jobs/budget' && body) return ++saves===1 ? {httpStatus:400,error:'Budget must be 200–4096000 mCPU, 128–67108864 MiB RAM and 0–67108864 MiB swap (including collectors)'} : body;
-    return page([]);
-  });
-  try {
-    await open(p);
-    p.doc.querySelector('.job-budget-settings summary').click(); await wait();
-    const form=p.doc.querySelector('.job-budget-settings');
-    // T-160: this host's totals are for reference; no share of them is a ceiling.
-    assert.match(form.textContent,/this host has 32 CPU · 40107 MiB RAM · 16384 MiB swap; the budget may use all of it\. Conservative default: 4 CPU/);
-    assert.match(form.textContent,/has the RAM it needs free at that moment, keeping 2048 MiB for Core and the desktop\. CPU is a shared quota, not reserved cores/);
-    assert.doesNotMatch(form.textContent,/ceiling/i);
-    assert.match(form.textContent,/4.2 CPU and 8320 MiB/);
-    assert.match(form.textContent,/Running jobs keep their original limits/);
-    assert.deepEqual(['CPU quota','RAM (MiB)','Swap (MiB)'].map(name=>[field(p,name).min,field(p,name).max]),[['0.2','4096'],['128','67108864'],['0','67108864']]);
-    await fill(p,'CPU quota','32'); await fill(p,'RAM (MiB)','40107'); await fill(p,'Swap (MiB)','16384');
-    for (const name of ['CPU quota','RAM (MiB)','Swap (MiB)']) assert.equal(field(p,name).validity.valid,true,name);
-    button(p,'Save budget').click(); await until(()=>form.querySelector('[role="alert"]'));
-    assert.match(form.textContent,/Budget must be 200–4096000 mCPU/);
-    assert.equal(field(p,'CPU quota').value,'32');
-    assert.equal(form.open,true);
-    const payload=p.calls.find(c=>c.url==='/api/jobs/budget' && c.body).body;
-    assert.deepEqual(payload,{cpuMillis:32000,memoryMiB:40107,swapMiB:16384});
-    button(p,'Save budget').click(); await until(()=>!form.open);
-    assert.equal(saves,2);
-    assert.equal(p.calls.some(c=>c.url.endsWith('/cancel') || (c.url==='/api/jobs' && c.body)),false);
-  } finally {p.close();}
-});
+// The machine budget's editor, with its guarantees (the whole host, the default
+// apart, collectors, validation errors kept), is in Settings now (T-55):
+// jobs-settings-ui.test.mjs; the card itself is read only.
 
 const review = (id, cursor, patch = {}) => ({ id, taskId: 'task-one', taskRef: 'T-1', taskTitle: 'Deliver PR', linkId: '7:pull:1', repository: 'o/r', number: 7, url: 'https://github.com/o/r/pull/7', round: 1, status: 'completed', phase: 'completed', conclusion: 'no_findings', requestedHarness: 'codex', requestedModel: 'gpt-6.1-sol', actualHarness: 'codex', actualModel: 'gpt-6.1-sol', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), mergeBaseSha: 'c'.repeat(40), createdAt: '2026-10-15T01:00:00Z', finishedAt: '2026-10-15T01:10:00Z', error: null, requestedBy: { kind: 'agent', id: 'a', name: 'Mori' }, findingsCount: 0, outdated: false, cursor, ...patch });
 const reviewPage = (reviews, more = null) => ({ reviews, hasMore: more != null, nextBefore: more });

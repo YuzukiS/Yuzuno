@@ -38,6 +38,7 @@ import { ReviewSettings } from "./ReviewSettings";
 import { AutoContinueDefault } from "./QuotaResume";
 import { AgentDefaults } from "./AgentDefaults";
 import { ExecutorTemplates } from "./ExecutorTemplates";
+import { JobsBudgetEditor, RemoteJobsEditor } from "./JobsSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
@@ -1049,6 +1050,14 @@ export function WorkspaceUpdates({
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "executor-templates" && <ExecutorTemplates active={open} />}
+          {/* Jobs & resources (T-55): this host's settings, the Jobs card's before. */}
+          {tab === "jobs-budget" && <JobsBudgetEditor active={open && visible} />}
+          {tab === "jobs-remote" && (
+            <RemoteJobsEditor
+              active={open && visible}
+              onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
+            />
+          )}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}

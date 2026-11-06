@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import {
   ArrowLeft,
+  ArrowRight,
   BriefcaseBusiness,
   Github,
   GitPullRequest,
@@ -18,18 +19,16 @@ import {
 } from "lucide-react";
 import { api, API_BASE, errorText, HttpError, post } from "./api";
 import {
-  BudgetSettings,
   DiskSpace,
   GpuDevices,
+  maxActiveOf,
   UsageMeter,
   useMachineLoad,
+  validBudget,
   WindowsJobs,
-  type BudgetBounds,
-  type BudgetHost,
-  type DiskView,
-  type GpuView,
-  type WindowsJobsView,
+  type JobsBudgetView,
 } from "./JobBudget";
+import type { SettingsEditor } from "./settings-catalog";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
 import { ConversationReviews, openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import { ProvenanceCard } from "./Provenance";
@@ -160,29 +159,8 @@ type Page = {
 const uniqueJobs = (jobs: Job[]) => [
   ...new Map(jobs.map((j) => [j.id, j])).values(),
 ];
-type Budget = {
-  machine: BudgetHost & { name: string; memoryAvailableMiB: number | null; scope: string; suggestedBudget?: Resources };
-  collectorOverhead?: Resources;
-  budget: Resources;
-  /** Absent from Cores before T-160. */
-  budgetBounds?: BudgetBounds;
-  reserved: Resources;
-  queuedCount: number;
-  activeCount: number;
-  /** Absent from Cores before T-95. */
-  disk?: DiskView;
-  /** Absent from Cores before T-106. */
-  gpus?: GpuView;
-  /** Absent from Cores before T-108's Windows ceiling. */
-  windows?: WindowsJobsView;
-};
+type Budget = JobsBudgetView;
 type GpuRequest = { count?: number; devices?: string[]; memoryMiB: number; mode?: "exclusive" | "shared" };
-const validBudget = (value: Budget) =>
-  !!value?.machine &&
-  !!value?.budget &&
-  !!value?.reserved &&
-  Number.isFinite(value.activeCount) &&
-  Number.isFinite(value.queuedCount);
 type Log = {
   text: string;
   offset: number;
@@ -348,7 +326,6 @@ type JobOpen = JobScope &
   ReviewOpen & {
     source?: JobSource;
     jobId?: string;
-    settings?: "budget";
     /** Reviews only: this Agent's own reviews, as its conversation's dock lists them (T-25). */
     involving?: string;
   };
@@ -466,12 +443,15 @@ export function Jobs({
   agents,
   revision,
   disabled,
+  onOpenSettings,
 }: {
   workspaceId: string;
   agent?: Agent | null;
   agents?: Agent[];
   revision: string;
   disabled: boolean;
+  /** Opens Settings at an editor: the machine card's Edit in Settings (T-55). */
+  onOpenSettings?: (editor: SettingsEditor) => void;
 }) {
   const entry = useStrings(entryText);
   const language = useLanguage();
@@ -508,12 +488,6 @@ export function Jobs({
     nextBefore: null,
   });
   const [budget, setBudget] = useState<Budget | null>(null);
-  const [budgetRequest, setBudgetRequest] = useState(0);
-  const clearBudgetRequest = useCallback(() => setBudgetRequest(0), []);
-  useEffect(() => {
-    // Closing or leaving Local also cancels a request whose budget has not loaded yet.
-    if (!open || source !== "local") clearBudgetRequest();
-  }, [open, source, clearBudgetRequest]);
   // Why this Core gave no budget, e.g. its host cannot run local Jobs.
   const [budgetRefusal, setBudgetRefusal] = useState("");
   const [selected, setSelected] = useState("");
@@ -665,7 +639,6 @@ export function Jobs({
           : {},
       );
       setSelected(detail.jobId || "");
-      setBudgetRequest(detail.settings === "budget" ? (value) => value + 1 : 0);
       setCreating(false);
       setOpen(true);
     };
@@ -898,6 +871,13 @@ export function Jobs({
   const shownError = (text: string) =>
     text === en.updatedCore ? t.updatedCore : text === en.envObject ? t.envObject : text === en.unconfirmed ? t.unconfirmed : text;
   const rail = useRef<HTMLDivElement>(null);
+  // Closed by Edit in Settings (T-55): Settings opens at its editor and puts
+  // the focus there, so this dialog gives none back to its trigger. Any other
+  // close gives it back, as Radix does; a new opening forgets the handoff.
+  const handingOff = useRef(false);
+  useEffect(() => {
+    if (open) handingOff.current = false;
+  }, [open]);
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
@@ -943,6 +923,11 @@ export function Jobs({
           ref={box}
           className="modal jobs-dialog"
           lang={langTag(language)}
+          onCloseAutoFocus={(event) => {
+            if (!handingOff.current) return;
+            handingOff.current = false;
+            event.preventDefault();
+          }}
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -1100,8 +1085,6 @@ export function Jobs({
                   </JobsSourceHeading>
                   {budget && (
                     <JobsBudget
-                      openRequest={budgetRequest}
-                      onOpenRequestHandled={clearBudgetRequest}
                       budget={budget}
                       // GPUs on which the user paused a running job (T-107).
                       pausedGpus={
@@ -1112,6 +1095,16 @@ export function Jobs({
                         )
                       }
                       onSaved={() => void load()}
+                      onEditSettings={
+                        onOpenSettings &&
+                        (() => {
+                          // One dialog at a time: Jobs closes, Settings opens
+                          // and takes the focus (onCloseAutoFocus above).
+                          handingOff.current = true;
+                          setOpen(false);
+                          onOpenSettings("jobs-budget");
+                        })
+                      }
                     />
                   )}
                   {!budget && budgetRefusal && (
@@ -1236,22 +1229,23 @@ const jobSources: { id: JobSource; Icon: typeof BriefcaseBusiness }[] = [
 ];
 
 /**
- * The machine at a glance: one bar per resource, the lighter band what jobs
- * have reserved and the solid part what they use now, each with its one
- * setting beneath. The fine print sits in tips.
+ * The machine at a glance, read only: one bar per resource, the lighter band
+ * what jobs have reserved and the solid part what they use now, and how many
+ * hold a slot of how many may. The fine print sits in tips; its settings are
+ * in Settings (T-55), and only the pause of GPU work, an action on running
+ * jobs, stays here.
  */
 function JobsBudget({
-  openRequest,
-  onOpenRequestHandled,
   budget,
   pausedGpus,
   onSaved,
+  onEditSettings,
 }: {
-  openRequest?: number;
-  onOpenRequestHandled?: () => void;
   budget: Budget;
   pausedGpus: Set<string>;
+  /** After a GPU pause or resume, to read it again. */
   onSaved: () => void;
+  onEditSettings?: () => void;
 }) {
   const t = useStrings(jobsText);
   const load = useMachineLoad();
@@ -1262,17 +1256,33 @@ function JobsBudget({
   const unknown = t.unknown;
   const hostAvailable =
     budget.machine.memoryAvailableMiB == null ? t.unknown : memory(budget.machine.memoryAvailableMiB);
+  // A Core before T-55 says nothing of how many may run at once.
+  const slots = maxActiveOf(budget);
   return (
     <div className="jobs-budget">
       <div className="jobs-budget-head">
         <div className="jobs-budget-machine">
           <strong>{budget.machine.name}</strong>
-          <span>{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+          {slots ? (
+            <span className="jobs-budget-counts" title={t.slotsTitle(slots.value, slots.set)}>
+              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount)}
+            </span>
+          ) : (
+            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+          )}
         </div>
-        <span className="jobs-budget-key" title={t.keyTitle}>
-          <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
-          <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
-        </span>
+        <div className="jobs-budget-side">
+          <span className="jobs-budget-key" title={t.keyTitle}>
+            <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
+            <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
+          </span>
+          {onEditSettings && (
+            <button type="button" className="quiet-button jobs-budget-edit" title={t.editInSettingsTitle} onClick={onEditSettings}>
+              {t.editInSettings}
+              <ArrowRight size={13} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
       <div className="jobs-budget-meters">
         <UsageMeter
@@ -1291,16 +1301,6 @@ function JobsBudget({
             <span className="jobs-reserved-text">
               {t.reservedOf(String(cpu(budget.reserved.cpuMillis)), String(cpu(budget.budget.cpuMillis)))}
             </span>
-            <BudgetSettings
-              openRequest={openRequest}
-              onOpenRequestHandled={onOpenRequestHandled}
-              budget={budget.budget}
-              bounds={budget.budgetBounds}
-              host={budget.machine}
-              suggested={budget.machine.suggestedBudget}
-              collector={budget.collectorOverhead}
-              onSaved={onSaved}
-            />
           </span>
         </UsageMeter>
         <UsageMeter
@@ -1322,8 +1322,8 @@ function JobsBudget({
             <span className="jobs-budget-host">{t.hostFree(hostAvailable)}</span>
           </span>
         </UsageMeter>
-        {budget.disk && <DiskSpace disk={budget.disk} onSaved={onSaved} />}
-        {budget.windows?.available && <WindowsJobs windows={budget.windows} onSaved={onSaved} />}
+        {budget.disk && <DiskSpace disk={budget.disk} />}
+        {budget.windows?.available && <WindowsJobs windows={budget.windows} />}
         {budget.gpus && (
           <GpuDevices gpus={budget.gpus} paused={pausedGpus} busyNow={load?.gpus} onSaved={onSaved} />
         )}

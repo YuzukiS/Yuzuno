@@ -134,6 +134,10 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     // Each request once: not again when the catalog re-renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openAt?.nonce]);
+  // Opened together with its dialog (openAt), this comes after the dialog's
+  // own first focus, which moves nothing once focus is inside it. A dialog
+  // that hands off to Settings gives no focus back to its trigger (Jobs'
+  // Edit in Settings, T-55), so nothing comes after this.
   useEffect(() => {
     if (!focusEditor || !editor) return;
     const target = document.getElementById(`settings-editor-${editor}`);
@@ -251,7 +255,7 @@ function SettingCard({ entry, navigation, brief, onOpen }: {
     if (!navigation || navigation.disabled) return;
     if (target.kind === "agent" && selected) navigation.onNavigate({ ...target, agentId: selected.id });
     else if (target.kind === "project" && selected) navigation.onNavigate({ kind: "project", projectId: selected.id });
-    else if (target.kind === "jobs" || target.kind === "machines") navigation.onNavigate(target);
+    else if (target.kind === "machines") navigation.onNavigate(target);
   }
   return <section className={`settings-catalog-card${brief ? " is-brief" : ""}`} aria-labelledby={`setting-${entry.id}`}>
     <h4 id={`setting-${entry.id}`}>{entry.title}</h4>

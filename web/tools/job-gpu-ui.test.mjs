@@ -1,6 +1,6 @@
 // T-106: the Jobs panel's GPUs (latest sample, what managed jobs hold, new
-// jobs or not, sharing) and a GPU job's request and reservation, against
-// fixture HTTP only; no Core, no GPU.
+// jobs or not, sharing), their settings in Settings (T-55), and a GPU job's
+// request and reservation, against fixture HTTP only; no Core, no GPU.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,10 +22,11 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {GpuDevices} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
+import {GpuDevices, GpuDeviceSettings} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
 import {Jobs, ConversationJobs} from ${JSON.stringify(path.join(root, "src/Jobs.tsx"))};
 const root = createRoot(document.getElementById('root'));
 window.renderGpus = props => root.render(<GpuDevices {...props}/>);
+window.renderGpuSettings = props => root.render(<GpuDeviceSettings {...props}/>);
 window.renderJobs = props => root.render(<><Jobs {...props}/><ConversationJobs agentId={props.agent.id} revision={props.revision} disabled={props.disabled}/></>);`,
   );
   const result = await build({
@@ -92,7 +93,7 @@ async function type(p, input, value) {
   await pause();
 }
 
-function mountGpus(props) {
+function mountGpus(props, editor = false) {
   const { window, errors } = dom();
   const calls = [];
   const answers = [];
@@ -103,7 +104,7 @@ function mountGpus(props) {
   };
   window.eval(bundle);
   let saved = 0;
-  window.renderGpus({ gpus: gpus(), onSaved: () => saved++, ...props });
+  (editor ? window.renderGpuSettings : window.renderGpus)({ gpus: gpus(), onSaved: () => saved++, ...props });
   return { ...page(window, errors, calls), answers, saved: () => saved };
 }
 
@@ -125,14 +126,17 @@ test("each GPU is a bar of its memory and of what managed jobs reserve on it, an
     assert.equal(first.querySelector(".jobs-gpu-held").title, "train: 8.0 GiB exclusive");
     assert.equal(second.querySelector(".jobs-gpu-name").textContent, "GPU 1 · RTX A4000");
     assert.equal(first.querySelector(":scope > small"), null);
-    assert.equal(first.querySelector("summary").textContent, "Exclusive");
+    assert.equal(first.querySelector(".jobs-gpu-mode").textContent, "Exclusive", "an open GPU says it takes one job at a time");
     assert.equal(p.document.querySelector(".jobs-gpu-busy"), null, "without a host reading, how busy is not said");
     assert.ok(second.classList.contains("is-closed"));
     assert.equal(second.querySelector(".jobs-gpu-held"), null, "nothing reserved, nothing said");
     assert.equal(second.querySelector(".jobs-meter-reserved"), null);
     assert.equal(second.querySelector(":scope > small").textContent, "Closed to new jobs (a game is running). Jobs already on it keep it.");
-    assert.equal(second.querySelector("summary").textContent, "Closed");
+    assert.equal(second.querySelector(".jobs-gpu-mode").textContent, "Closed", "a closed GPU says so");
     assert.equal(p.document.querySelector(".jobs-gpus-problem"), null);
+    // Admission and sharing are set in Settings (T-55); pausing GPU work stays.
+    assert.equal(!!p.document.querySelector(".jobs-gpu details, .jobs-gpu form, .jobs-gpu input"), false, "the GPU cells have no editor");
+    assert.deepEqual([...p.document.querySelectorAll(".jobs-gpu button")].map((b) => b.textContent.trim()), ["Pause GPU work", "Pause GPU work"], "each GPU keeps only its pause");
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -174,28 +178,32 @@ test("without a current sample the panel says GPU jobs wait and the free memory 
   } finally { none.close(); }
 });
 
-test("closing, opening and sharing settings are posted per UUID, and a refusal is shown", async () => {
-  const p = mountGpus();
+test("closing, opening and sharing settings are posted per UUID from Settings, and a refusal is shown", async () => {
+  const p = mountGpus({}, true);
   try {
     await until(() => p.button("Close to new jobs"));
-    await type(p, p.field("Reason"), "  rendering a video ");
+    const [first, second] = p.document.querySelectorAll(".jobs-settings-gpu");
+    assert.equal(first.getAttribute("aria-label"), "GPU 0 · NVIDIA GeForce RTX 5090", "each GPU group is named by its device");
+    assert.equal(second.querySelector(".jobs-settings-now").textContent, "Closed to new jobs (a game is running). Jobs already on it keep it.", "a closed GPU says why");
+    assert.equal(!!p.document.querySelector(".jobs-gpu-pause"), false, "pausing GPU work is not a setting");
+    await type(p, first.querySelector('input[name="reason"]'), "  rendering a video ");
     p.button("Close to new jobs").click();
     await until(() => p.calls.length === 1 && p.saved() === 1);
     assert.deepEqual(p.calls[0], { url: `/api/jobs/gpus/${GPU0}/admission`, body: { open: false, reason: "rendering a video" } });
     p.button("Open to new jobs").click();
     await until(() => p.calls.length === 2 && p.saved() === 2);
     assert.deepEqual(p.calls[1], { url: `/api/jobs/gpus/${GPU1}/admission`, body: { open: true } });
-    const first = p.document.querySelector(".jobs-gpu");
-    await type(p, first.querySelector('input[type="number"]'), "2048");
-    first.querySelector('input[type="checkbox"]').click();
+    await type(p, first.querySelector('input[name="headroomMiB"]'), "2048");
+    first.querySelector('input[name="sharing"]').click();
     await pause();
     [...first.querySelectorAll("button")].find((b) => b.textContent.trim() === "Save").click();
     await until(() => p.calls.length === 3 && p.saved() === 3);
     assert.deepEqual(p.calls[2], { url: `/api/jobs/gpus/${GPU0}/settings`, body: { sharing: true, headroomMiB: 2048 } });
     p.answers.push([400, { error: "GPU not known on this machine" }]);
     p.button("Open to new jobs").click();
-    await until(() => p.document.querySelector(".jobs-gpus-error[role=alert]"));
-    assert.equal(p.document.querySelector(".jobs-gpus-error[role=alert]").textContent, "GPU not known on this machine");
+    await until(() => second.querySelector("[role=alert]"));
+    assert.equal(second.querySelector("[role=alert]").textContent, "GPU not known on this machine", "the refusal is shown under that GPU as it came");
+    assert.equal(!!first.querySelector("[role=alert]"), false, "the other GPU shows no refusal");
     assert.equal(p.saved(), 3);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
