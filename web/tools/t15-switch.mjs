@@ -144,8 +144,10 @@ check(seen[0].phone === true && after.phone === false, "folding crosses the phon
 check(!after.anchor.gone, `the anchored message is still drawn after the round trip${after.anchor.gone ? ` (${after.anchor.gone})` : ""}`);
 check(after.anchor.within !== undefined && Math.abs(after.anchor.within - anchor.within) <= 2,
   `it sits where it did, within 2px (${anchor.within} → ${after.anchor.within ?? "-"})`);
-check(after.numberRows.length === 1 && after.numberRows[0] === 44,
-  `touch keeps 44px Turn rows once open (${after.numberRows.join("/")})`);
+// V8: unfolded, the dock is a scale rather than a row of touch targets, so
+// what matters here is that it comes back at all and keeps the reading place.
+check(after.numberRows.length === 1 && after.numberRows[0] > 0,
+  `the Turn dock is drawn again once open (rows ${after.numberRows.join("/")}px)`);
 check(after.focus === before.focus, `focus stays where it was (${before.focus} → ${after.focus})`);
 console.log(`note: the Turn at the viewport's centre went ${before.middleTurn} → ${after.middleTurn}; a shorter`
   + " screen centres a different Turn whatever the anchor does, so this is reported, not judged.");

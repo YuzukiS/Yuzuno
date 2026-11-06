@@ -3568,7 +3568,11 @@ export function App() {
                   loading: conversationInputs.loading, onEarlier: conversationInputs.loadEarlier } : undefined}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
-                touch={phone || touchInput}
+                // A phone presses this dock in its drawer, so there it keeps
+                // its larger rows. Everywhere else a finger reads it and
+                // chooses from the index instead, so it is a scale and its
+                // rows are the smaller ones again (T-15, V8).
+                touch={phone}
               />
               {phone && (
                 <PhoneDockButtons

@@ -317,17 +317,29 @@
    and its other controls keep theirs, which is what a finger aims at. A mouse
    is unchanged: the bars stay clickable for it (T-15). */
 @media (hover: none) and (pointer: coarse) {
-  .turn-dock,
-  .turn-dock-list,
-  .turn-dock-list > li {
+  /* A scale, and only a scale: where the Turns are, in a margin of its own
+     beside the text. Choosing one is the reading index in the rail, which a
+     finger can actually hit, so nothing here takes a touch and the numbers
+     that were its targets would only be in the way (T-15, V8).
+     Not on a phone: there this dock IS the drawer the Turns button opens,
+     and it has to stay something a finger can press. */
+  .app:not(.phone) .conversation-body {
+    --turn-dock-width: 14px;
+    --gutter-right: 34px;
+  }
+  .app:not(.phone) .turn-dock,
+  .app:not(.phone) .turn-dock-list,
+  .app:not(.phone) .turn-dock-list > li,
+  .app:not(.phone) .turn-dock button,
+  .app:not(.phone) .turn-dock a {
     pointer-events: none;
   }
-  .turn-dock button,
-  .turn-dock a {
-    pointer-events: auto;
+  .app:not(.phone) .turn-dock-chip,
+  .app:not(.phone) .turn-dock-preview {
+    display: none;
   }
-  .turn-dock-stop:not(:has(.turn-dock-chip)) {
-    pointer-events: none;
+  .app:not(.phone) .turn-dock-bar {
+    --bar-width: 10px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

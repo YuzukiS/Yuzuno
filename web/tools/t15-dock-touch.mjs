@@ -1,7 +1,8 @@
 // The Turn dock reads, it does not take the scroll away (T-15). A finger
-// landing on the thin bars between the numbers used to press a button, so the
-// conversation stayed put under it. The bars show where the Turns are; the
-// numbers are what a finger presses. A mouse keeps the bars clickable.
+// landing on it used to press a button, so the conversation stayed put
+// under it. Under touch it is now a scale and takes nothing: a finger
+// scrolls the conversation through all of it, and choosing a Turn is the
+// reading index in the rail. A mouse keeps the dock as it was.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-dock-touch.mjs
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -69,8 +70,11 @@ const coarse = results.find((r) => r.pointer === "coarse");
 const fine = results.find((r) => r.pointer === "fine");
 for (const r of results) console.log(r.pointer.padEnd(7), JSON.stringify(r));
 check(coarse.barReachesConversation, `a finger on a bar reaches the conversation, not the dock (${coarse.barHit})`);
-check(coarse.numberInDock, `a finger on a numbered Turn still reaches it (${coarse.numberHit})`);
-check(coarse.numberSize === 44, `and that Turn is still a 44px target (${coarse.numberSize})`);
+// V8: the dock is a scale under touch and takes nothing at all. Choosing a
+// Turn is the reading index in the rail (t15-reading-index.mjs), which is a
+// target a finger can actually hit; a number here never was.
+check(!coarse.numberInDock, `a finger where a number was also reaches the conversation (${coarse.numberHit})`);
+check(coarse.numberSize <= 14, `the dock is a scale, not a row of targets (${coarse.numberSize}px wide)`);
 check(!fine.barReachesConversation && fine.barHit?.includes("turn-dock"),
   `a mouse keeps the bars clickable (${fine.barHit})`);
 console.log(failed ? `\n${failed} failed` : "\nall passed");
