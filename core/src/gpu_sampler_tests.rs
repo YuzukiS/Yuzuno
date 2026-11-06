@@ -8,7 +8,8 @@ const GPU0: &str = "GPU-00000000-1111-2222-3333-444444444444";
 /// row by row would be seen half), the second device's name holding a comma
 /// and its values unknown; each start noted in `starts` beside it. `mode` beside it: `once`
 /// prints once and exits, `silent` exits at once with nothing, `truncated` loses the first
-/// burst's first row and gives the second device's total as 16000 + the burst's number.
+/// burst's first row and gives the second device's total as 16000 + the burst's number, `hang`
+/// prints once and then neither prints nor exits.
 fn stub(dir: &Path) -> PathBuf {
     let path = dir.join("nvidia-smi");
     std::fs::write(&path, format!(r#"#!/bin/sh
@@ -32,6 +33,7 @@ while :; do
   printf '2, 1, GPU-55555555-6666-7777-8888-999999999999, Stub, Second, %s, [N/A], [N/A], [N/A]\n' $second
   n=$((n + 1))
   [ "$mode" = once ] && exit 0
+  [ "$mode" = hang ] && exec sleep 1000
   sleep "$every"
 done
 "#)).unwrap();
@@ -119,6 +121,51 @@ async fn a_burst_missing_a_row_is_dropped_not_completed_with_the_next() {
         assert_eq!(utilization.map(u64::from), second, "a reading never mixes two bursts");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A child that neither prints nor exits (stuck in the driver) is ended once
+/// it has given no reading for three intervals and a second, and the next
+/// read starts a new session (R1 b075ef6f).
+#[tokio::test]
+async fn a_child_that_stops_printing_is_ended_and_started_again() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mode"), "hang").unwrap();
+    let sampler = GpuSampler::new(Config { idle: Duration::from_secs(60), ..config(dir.path()) });
+    let first = sampler.latest(WAIT).await.expect("a reading");
+    let until = Instant::now() + Duration::from_secs(10);
+    while (sampler.sessions() < 2 || starts(dir.path()).len() < 2) && Instant::now() < until {
+        let _ = sampler.latest(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let pids = starts(dir.path());
+    assert_eq!((sampler.sessions(), pids.len()), (2, 2), "a hung child is ended and a new session started");
+    assert!(!alive(&pids[0]), "the hung child is gone");
+    let again = sampler.latest(WAIT).await.expect("a reading");
+    assert_ne!(again.observed_at, first.observed_at, "readers get a new reading");
+}
+
+/// With nothing reading it, a hung child is ended at the idle stop: the
+/// session does not wait for a line to look.
+#[tokio::test]
+async fn with_no_readers_a_hung_child_is_ended_at_the_idle_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mode"), "hang").unwrap();
+    let sampler = GpuSampler::new(Config { interval: Duration::from_millis(200), idle: Duration::from_millis(300), ..config(dir.path()) });
+    let read_at = Instant::now();
+    assert!(sampler.latest(WAIT).await.is_some());
+    let pid = starts(dir.path()).remove(0);
+    while alive(&pid) && read_at.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let gone = read_at.elapsed();
+    assert!(!alive(&pid) && gone < Duration::from_millis(1200), "a hung child is ended at the idle stop with no readers: {gone:?}");
+    for _ in 0..50 {
+        if !sampler.running() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!sampler.running(), "its session stopped");
 }
 
 /// With nothing reading it, a session stops, its child ended; the next

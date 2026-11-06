@@ -11,8 +11,8 @@
 //!
 //! The sampler starts on the first read, stops once nothing has read it for
 //! 10 minutes, and starts again on the next read. A session that fails, or
-//! whose child exits, after it gave a sample is started again after a
-//! backoff (1 s, doubling to 60 s); one that gave none, as on a host with
+//! whose child exits or stops giving readings, after it gave a sample is
+//! started again after a backoff (1 s, doubling to 60 s); one that gave none, as on a host with
 //! neither NVML nor nvidia-smi, is not tried again for 60 s, and nothing is
 //! started meanwhile. Each start and stop is logged.
 use serde_json::{json, Value};
@@ -23,6 +23,7 @@ use std::{
     process::{Child, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
+        mpsc::RecvTimeoutError,
         Arc, Condvar, Mutex,
     },
     time::{Duration, Instant},
@@ -425,38 +426,63 @@ fn start_smi(config: &Config) -> Result<(Child, PathBuf), String> {
 }
 
 /// Reads the session's child's rows as it prints them until nothing has read
-/// the sampler for `idle`, the sampler is gone, or the child exits. Each
-/// interval it prints one row per device, in index order, and each row says
-/// how many devices there are: a burst is kept whole, as one reading, once its
-/// last row is in. A row whose index does not follow the one before starts a
-/// new burst, so a burst missing a row is dropped, never completed with
-/// rows of the next.
+/// the sampler for `idle`, the sampler is gone, the child exits, or it has
+/// given no reading for three intervals and a second (a child stuck in the
+/// driver: it is ended and the session fails, to start again after the
+/// backoff). Each interval it prints one row per device, in index order, and
+/// each row says how many devices there are: a burst is kept whole, as one
+/// reading, once its last row is in. A row whose index does not follow the
+/// one before starts a new burst, so a burst missing a row is dropped, never
+/// completed with rows of the next.
 fn sample_smi(inner: &Inner, config: &Config, stdout: Option<ChildStdout>) -> Ended {
-    let Some(stdout) = stdout else {
+    // Its rows are read on a thread of their own, which ends when the pipe
+    // closes, so a child that prints nothing never holds the session: every
+    // interval the session checks for a stop, the idle stop and a stuck child.
+    let (rows, lines) = std::sync::mpsc::channel();
+    let reading = stdout.map(|stdout| std::thread::Builder::new().name("gpu-sampler-rows".into()).spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if line.ok().is_none_or(|line| rows.send(line).is_err()) {
+                break;
+            }
+        }
+    }));
+    if !matches!(reading, Some(Ok(_))) {
         end(&mut inner.shared.lock().unwrap());
         let _ = reap(inner);
         return Ended::Unavailable("its output could not be read".into());
-    };
+    }
+    let stuck = config.interval * 3 + Duration::from_secs(1);
     let mut burst: BTreeMap<u32, Device> = BTreeMap::new();
     let mut sampled = false;
+    let mut last = Instant::now();
     let mut ended = None;
-    for line in BufReader::new(stdout).lines() {
-        let Ok(line) = line else { break };
-        if let Some((count, device)) = parse_row(&line) {
-            if burst.keys().next_back().is_some_and(|last| device.index <= *last) {
-                burst.clear();
+    loop {
+        match lines.recv_timeout(config.interval) {
+            Ok(line) => {
+                if let Some((count, device)) = parse_row(&line) {
+                    if burst.keys().next_back().is_some_and(|last| device.index <= *last) {
+                        burst.clear();
+                    }
+                    burst.insert(device.index, device);
+                    if burst.len() >= count as usize {
+                        inner.sample.send_replace(Some(Sample::new("nvidia-smi", std::mem::take(&mut burst).into_values().collect(), None)));
+                        sampled = true;
+                        last = Instant::now();
+                    }
+                }
             }
-            burst.insert(device.index, device);
-            if burst.len() >= count as usize {
-                inner.sample.send_replace(Some(Sample::new("nvidia-smi", std::mem::take(&mut burst).into_values().collect(), None)));
-                sampled = true;
-            }
+            Err(RecvTimeoutError::Timeout) => {}
+            // The pipe closed: the child exited.
+            Err(RecvTimeoutError::Disconnected) => break,
         }
         let mut shared = inner.shared.lock().unwrap();
         if shared.stopping {
             ended = Some(Ended::Stopped);
         } else if shared.last_read.elapsed() >= config.idle {
             ended = Some(Ended::Idle);
+        } else if last.elapsed() >= stuck {
+            let why = format!("nvidia-smi gave no reading for {} s and was ended", stuck.as_secs());
+            ended = Some(if sampled { Ended::Failed(why) } else { Ended::Unavailable(why) });
         }
         if ended.is_some() {
             end(&mut shared);
@@ -488,10 +514,29 @@ fn end(shared: &mut Shared) {
 }
 
 /// Takes the session's child out, so nothing signals it once it is reaped,
-/// and waits for it to exit.
+/// and waits for it to exit: SIGKILL if it is still there after 3 s. One
+/// that even that does not end within 3 s more (a process stuck in the
+/// kernel) is waited for on a thread of its own, so the session never is.
 fn reap(inner: &Inner) -> std::io::Result<ExitStatus> {
-    let child = inner.shared.lock().unwrap().child.take();
-    child.map_or_else(|| Err(std::io::Error::other("no child")), |mut child| child.wait())
+    let Some(mut child) = inner.shared.lock().unwrap().child.take() else {
+        return Err(std::io::Error::other("no child"));
+    };
+    for killed in [false, true] {
+        let until = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < until {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !killed {
+            let _ = child.kill();
+        }
+    }
+    let _ = std::thread::Builder::new().name("gpu-sampler-reap".into()).spawn(move || {
+        let _ = child.wait();
+    });
+    Err(std::io::Error::other("nvidia-smi did not exit after SIGKILL"))
 }
 
 /// One `count, index, uuid, name, memory.total, memory.free, memory.used,
