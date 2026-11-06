@@ -20,7 +20,7 @@ use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader},
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Child, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
@@ -157,7 +157,10 @@ struct Shared {
     /// The running session's source.
     source: Option<&'static str>,
     /// The running nvidia-smi child, to end it from outside its session.
-    child: Option<u32>,
+    /// It is signalled only while it is held here, under this lock, and its
+    /// session takes it out before reaping it: a PID it no longer owns is
+    /// never signalled.
+    child: Option<Child>,
 }
 
 impl Default for GpuSampler {
@@ -271,15 +274,12 @@ fn current(seen: &tokio::sync::watch::Receiver<Option<Sample>>) -> Option<Sample
 
 impl Drop for GpuSampler {
     fn drop(&mut self) {
-        let child = {
+        {
             let mut shared = self.inner.shared.lock().unwrap();
             shared.stopping = true;
-            shared.child
-        };
-        self.inner.wake.notify_all();
-        if let Some(pid) = child {
-            end(pid);
+            end(&mut shared);
         }
+        self.inner.wake.notify_all();
     }
 }
 
@@ -317,16 +317,17 @@ fn run(inner: Arc<Inner>) {
     let ended = match ended {
         Some(ended) => ended,
         None => match start_smi(&config) {
-            Ok((child, program)) => {
+            Ok((mut child, program)) => {
                 inner.sessions.fetch_add(1, Ordering::SeqCst);
                 inner.children.fetch_add(1, Ordering::SeqCst);
+                let (pid, stdout) = (child.id(), child.stdout.take());
                 {
                     let mut shared = inner.shared.lock().unwrap();
                     shared.source = Some("nvidia-smi");
-                    shared.child = Some(child.id());
+                    shared.child = Some(child);
                 }
-                eprintln!("GPU sampler: session {} started, {} (pid {})", inner.sessions.load(Ordering::SeqCst), program.display(), child.id());
-                match sample_smi(&inner, &config, child) {
+                eprintln!("GPU sampler: session {} started, {} (pid {pid})", inner.sessions.load(Ordering::SeqCst), program.display());
+                match sample_smi(&inner, &config, stdout) {
                     Ended::Unavailable(error) => Ended::Unavailable(format!("{}; nvidia-smi: {error}", why.join("; "))),
                     other => other,
                 }
@@ -390,8 +391,8 @@ fn sample_nvml(inner: &Inner, config: &Config, nvml: &nvml::Nvml) -> Ended {
 }
 
 /// The one nvidia-smi child, looping every interval, from the first program
-/// that starts. It ends with Core: the kernel signals it when the thread
-/// that started it goes.
+/// that starts. On Linux it ends with Core: the kernel signals it when the
+/// thread that started it goes. Elsewhere it is ended by the sampler's stop.
 fn start_smi(config: &Config) -> Result<(Child, PathBuf), String> {
     let every = if config.interval.subsec_millis() == 0 && config.interval.as_secs() > 0 {
         ["-l".to_owned(), config.interval.as_secs().to_string()]
@@ -404,7 +405,7 @@ fn start_smi(config: &Config) -> Result<(Child, PathBuf), String> {
         command.args(["--query-gpu=count,index,uuid,name,memory.total,memory.free,memory.used,utilization.gpu", "--format=csv,noheader,nounits"])
             .args(&every)
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
         {
             use std::os::unix::process::CommandExt;
             // SAFETY: only prctl, which is async-signal-safe, runs between fork and exec.
@@ -423,15 +424,17 @@ fn start_smi(config: &Config) -> Result<(Child, PathBuf), String> {
     Err(if errors.is_empty() { "none configured".to_owned() } else { errors.join("; ") })
 }
 
-/// Reads the child's rows as it prints them until nothing has read the
-/// sampler for `idle`, the sampler is gone, or the child exits. Each interval
-/// it prints one row per device, and each row says how many devices there
-/// are: a burst is kept whole, as one reading, once its last row is in.
-fn sample_smi(inner: &Inner, config: &Config, mut child: Child) -> Ended {
-    let pid = child.id();
-    let Some(stdout) = child.stdout.take() else {
-        end(pid);
-        let _ = child.wait();
+/// Reads the session's child's rows as it prints them until nothing has read
+/// the sampler for `idle`, the sampler is gone, or the child exits. Each
+/// interval it prints one row per device, in index order, and each row says
+/// how many devices there are: a burst is kept whole, as one reading, once its
+/// last row is in. A row whose index does not follow the one before starts a
+/// new burst, so a burst missing a row is dropped, never completed with
+/// rows of the next.
+fn sample_smi(inner: &Inner, config: &Config, stdout: Option<ChildStdout>) -> Ended {
+    let Some(stdout) = stdout else {
+        end(&mut inner.shared.lock().unwrap());
+        let _ = reap(inner);
         return Ended::Unavailable("its output could not be read".into());
     };
     let mut burst: BTreeMap<u32, Device> = BTreeMap::new();
@@ -440,25 +443,27 @@ fn sample_smi(inner: &Inner, config: &Config, mut child: Child) -> Ended {
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
         if let Some((count, device)) = parse_row(&line) {
+            if burst.keys().next_back().is_some_and(|last| device.index <= *last) {
+                burst.clear();
+            }
             burst.insert(device.index, device);
             if burst.len() >= count as usize {
                 inner.sample.send_replace(Some(Sample::new("nvidia-smi", std::mem::take(&mut burst).into_values().collect(), None)));
                 sampled = true;
             }
         }
-        let shared = inner.shared.lock().unwrap();
+        let mut shared = inner.shared.lock().unwrap();
         if shared.stopping {
             ended = Some(Ended::Stopped);
         } else if shared.last_read.elapsed() >= config.idle {
             ended = Some(Ended::Idle);
         }
-        drop(shared);
         if ended.is_some() {
-            end(pid);
+            end(&mut shared);
             break;
         }
     }
-    let status = child.wait();
+    let status = reap(inner);
     if inner.shared.lock().unwrap().stopping {
         return Ended::Stopped;
     }
@@ -468,15 +473,25 @@ fn sample_smi(inner: &Inner, config: &Config, mut child: Child) -> Ended {
     })
 }
 
-/// Ends the nvidia-smi child.
-fn end(pid: u32) {
-    #[cfg(unix)]
+/// Ends the session's nvidia-smi child, if it still holds one: with SIGTERM
+/// where Core has libc, else as the standard library ends a child.
+fn end(shared: &mut Shared) {
+    let Some(child) = shared.child.as_mut() else { return };
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
-        // SAFETY: kill only signals the child this sampler started.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        // SAFETY: kill signals a child of this session not yet reaped (see
+        // `Shared::child`), so its PID is still that child's.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     }
-    #[cfg(not(unix))]
-    let _ = pid;
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let _ = child.kill();
+}
+
+/// Takes the session's child out, so nothing signals it once it is reaped,
+/// and waits for it to exit.
+fn reap(inner: &Inner) -> std::io::Result<ExitStatus> {
+    let child = inner.shared.lock().unwrap().child.take();
+    child.map_or_else(|| Err(std::io::Error::other("no child")), |mut child| child.wait())
 }
 
 /// One `count, index, uuid, name, memory.total, memory.free, memory.used,
@@ -523,8 +538,10 @@ pub fn parse_row(line: &str) -> Option<(u32, Device)> {
 /// shut down there, and never sent elsewhere.
 mod nvml {
     use super::Device;
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    use std::ffi::{CStr, CString};
     use std::{
-        ffi::{c_char, c_int, c_uint, c_void, CStr, CString},
+        ffi::{c_char, c_int, c_uint, c_void},
         path::{Path, PathBuf},
     };
 
@@ -589,7 +606,7 @@ mod nvml {
             Err(if errors.is_empty() { "none configured".to_owned() } else { errors.join("; ") })
         }
 
-        #[cfg(unix)]
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
         fn open_one(path: &Path) -> Result<Self, String> {
             let name = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|error| error.to_string())?;
             // SAFETY: dlopen is given a NUL-terminated path; a failure is a null handle, read with dlerror.
@@ -626,7 +643,7 @@ mod nvml {
             Ok(Self { path: path.to_owned(), calls })
         }
 
-        #[cfg(not(unix))]
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         fn open_one(_: &Path) -> Result<Self, String> {
             Err("not on this platform".into())
         }
@@ -684,7 +701,7 @@ mod nvml {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
-    #[cfg(unix)]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn last_error() -> String {
         // SAFETY: dlerror returns null or a NUL-terminated message valid until the next dl call on this thread.
         let message = unsafe { libc::dlerror() };

@@ -7,7 +7,8 @@ const GPU0: &str = "GPU-00000000-1111-2222-3333-444444444444";
 /// milliseconds, each saying there are two, 30 ms apart (so a reading kept
 /// row by row would be seen half), the second device's name holding a comma
 /// and its values unknown; each start noted in `starts` beside it. `mode` beside it: `once`
-/// prints once and exits, `silent` exits at once with nothing.
+/// prints once and exits, `silent` exits at once with nothing, `truncated` loses the first
+/// burst's first row and gives the second device's total as 16000 + the burst's number.
 fn stub(dir: &Path) -> PathBuf {
     let path = dir.join("nvidia-smi");
     std::fs::write(&path, format!(r#"#!/bin/sh
@@ -22,9 +23,13 @@ mode=$(cat "$here/mode" 2>/dev/null)
 [ "$mode" = silent ] && exit 3
 n=0
 while :; do
-  printf '2, 0, {GPU0}, Stub GPU, 32607, 16000, 16607, %s\n' $((n % 100))
+  if [ "$mode" != truncated ] || [ $n -gt 0 ]; then
+    printf '2, 0, {GPU0}, Stub GPU, 32607, 16000, 16607, %s\n' $((n % 100))
+  fi
   sleep 0.03
-  printf '2, 1, GPU-55555555-6666-7777-8888-999999999999, Stub, Second, 16376, [N/A], [N/A], [N/A]\n'
+  second=16376
+  [ "$mode" = truncated ] && second=$((16000 + n))
+  printf '2, 1, GPU-55555555-6666-7777-8888-999999999999, Stub, Second, %s, [N/A], [N/A], [N/A]\n' $second
   n=$((n + 1))
   [ "$mode" = once ] && exit 0
   sleep "$every"
@@ -95,6 +100,25 @@ async fn every_read_shares_one_session_and_one_child() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(!alive(&pid), "the child ends with its sampler");
+}
+
+/// A burst that lost a row is dropped, not completed with the next burst's
+/// rows: every reading is one burst (R1 3183117d's note).
+#[tokio::test]
+async fn a_burst_missing_a_row_is_dropped_not_completed_with_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mode"), "truncated").unwrap();
+    let sampler = GpuSampler::new(config(dir.path()));
+    let first = sampler.latest(WAIT).await.expect("a reading");
+    assert_eq!(first.devices.len(), 2, "{first:?}");
+    let burst = |sample: &Sample| (sample.devices[0].utilization_percent, sample.devices[1].memory_total_mib.map(|total| total - 16000));
+    assert_eq!(burst(&first), (Some(1), Some(1)), "a reading never mixes two bursts");
+    for _ in 0..10 {
+        let sample = sampler.latest(WAIT).await.expect("a reading");
+        let (utilization, second) = burst(&sample);
+        assert_eq!(utilization.map(u64::from), second, "a reading never mixes two bursts");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// With nothing reading it, a session stops, its child ended; the next
