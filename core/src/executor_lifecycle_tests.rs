@@ -40,7 +40,7 @@ pub(crate) fn role(store: &Store, id: &str, task: &str, by: &str, dispatch: &str
     let db = store.db.write().unwrap();
     db.execute(
         "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,dispatch_id,created_by,state,created_at,updated_at)
-         VALUES(?1,'executor','reviewer',?2,?3,?4,'dispatched','now','now')",
+         VALUES(?1,'executor','reviewer',?2,?3,?4,'dispatched','2026-11-06T01:00:00Z','2026-11-06T01:00:00Z')",
         params![id, task, dispatch, by],
     ).unwrap();
     db.execute(
@@ -177,7 +177,7 @@ async fn the_listing_names_its_task_by_its_key_and_its_template_by_its_label() {
     let e1 = listed(s, "e1");
     assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work"}), "its key, not T-<n>: {e1}");
     assert_eq!(e1["template"], json!({"id":"reviewer","label":"Reviewer"}), "{e1}");
-    assert_eq!(e1["dispatchedAt"], "now", "{e1}");
+    assert_eq!(e1["dispatchedAt"], "2026-11-06T01:00:00Z", "{e1}");
     // One made before its dispatch row was kept still names its template.
     executor(s, "e2", &internal, "user", "d2", "running", None);
     assert_eq!(listed(s, "e2")["template"], json!({"id":"reviewer","label":null}));

@@ -11,7 +11,9 @@ import { uiTestBundle } from "./ui-test-bundle.mjs";
 // The sidebar lists a Project's leads, its other Agents, its task executors
 // (with Attention order: waiting on you or failed, delivered awaiting
 // release, running, archiving, queued) and folds its archived ones; each
-// executor's badge says its state; a task's card and view say it too; Home's
+// executor's row says its one state (T-43 S2: one word and what it is at, in
+// place of a runtime status beside a lifecycle badge); a task's card and view
+// say its lifecycle; Home's
 // Needs you lists the executors you dispatched, and its row opens the
 // executor. Presence is asserted as booleans: a failing assertion on an
 // element would inspect the whole window.
@@ -120,6 +122,11 @@ async function mount({ storage = {} } = {}) {
     order: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].filter((r) => !r.closest('[data-rail-part="archived"]')).map((r) => r.dataset.agentId),
     all: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].map((r) => r.dataset.agentId),
     badge: (id) => row(id)?.querySelector(".agent-kind-badge")?.textContent ?? null,
+    // An executor's state line (T-43 S2): its word and what it is at.
+    state: (id) => {
+      const line = row(id)?.querySelector(".executor-row-state");
+      return line ? [line.querySelector(".executor-state-word")?.textContent ?? null, line.querySelector(".executor-state-detail")?.textContent ?? null] : null;
+    },
     part: (name) => doc.querySelector(`.agent-list [data-rail-part="${name}"]`),
     button: (text) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === text),
     close: () => w.close(),
@@ -134,17 +141,20 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
       "lead; the other Agent; executors: failed, delivered awaiting release (two, as listed), running, archiving, queued");
     const executors = p.part("executors");
     assert.ok(executors, "a task executors group");
-    assert.equal(executors.querySelector(".rail-subgroup-head").textContent, "Task executors6");
+    assert.equal(executors.querySelector(".rail-subgroup-head").textContent, "Task executors3 running · 1 queued6",
+      "while one waits for a slot, how many run and how many wait");
     assert.deepEqual([...executors.querySelectorAll("article[data-agent-id]")].map((r) => r.dataset.agentId), ["f", "d", "e", "r", "g", "q"]);
-    // Each executor's badge says its state; a lead's says Lead.
+    // Each executor's row says its one state; a lead's badge says Lead.
     assert.equal(p.badge("l"), "Lead");
-    assert.equal(p.badge("d"), "Executor · Awaiting release", "an executor's badge says its state");
-    assert.equal(p.badge("q"), "Executor · Queued · 2 in line");
-    assert.equal(p.badge("r"), "Executor · Running");
-    assert.equal(p.badge("g"), "Executor · Archiving");
-    assert.equal(p.badge("f"), "Executor · Failed");
-    assert.match(p.row("g").querySelector(".agent-kind-badge").title, /Archiving: Waiting to close: a Job is still running: build \(j1\)\./);
-    assert.match(p.row("f").querySelector(".agent-kind-badge").title, /Both starts failed\nDispatched by you/);
+    assert.equal(p.badge("d"), null, "an executor's row has no lifecycle badge beside its state");
+    assert.deepEqual(p.state("d"), ["Review", "Awaiting release"], "its result in: in review, awaiting release");
+    assert.deepEqual(p.state("q"), ["Queued", "2 in line"]);
+    assert.deepEqual(p.state("r"), ["Working", null]);
+    assert.deepEqual(p.state("g"), ["Done", "Closing · Waiting to close: a Job is still running: build (j1)."]);
+    assert.deepEqual(p.state("f"), ["Failed", "Both starts failed"]);
+    assert.equal(p.row("r").querySelector(".agent-runtime"), null, "no runtime status beside it");
+    assert.match(p.row("g").querySelector(".executor-row-state").title, /Archiving: Waiting to close: a Job is still running: build \(j1\)\./);
+    assert.match(p.row("f").querySelector(".executor-row-state").title, /T-f · Work f\nBoth starts failed\nDispatched by you/);
     // Archived ones are folded away; a closed one is in Closed only.
     const toggle = p.part("archived")?.querySelector(".rail-archived-toggle");
     assert.ok(toggle, "an archived fold");
@@ -153,7 +163,7 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
     assert.ok(hidden, "neither the archived executor nor the closed one is listed");
     toggle.click();
     await waitFor(() => p.row("a"), "opened, the archived executor is listed");
-    assert.equal(p.badge("a"), "Executor · Archived");
+    assert.deepEqual(p.state("a"), ["Done", "Released"]);
     assert.deepEqual(JSON.parse(p.w.localStorage.getItem("yuzuno.archivedExecutorsOpen.ws-exec")), ["all"], "the fold is remembered on this device");
     assert.ok(!p.row("c"), "a closed executor stays in Closed");
     assert.deepEqual(p.errors, []);
@@ -173,17 +183,17 @@ test("with List order the parts stay, each in the workspace's order; and a reloa
   }
 });
 
-test("in Chinese the groups and states read as the T-40 labels", async () => {
+test("in Chinese the groups and states read in Chinese", async () => {
   const p = await mount({ storage: { ...attention, "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
   try {
-    assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者6");
+    assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者3 运行 · 1 排队6");
     assert.equal(p.part("archived").querySelector(".rail-archived-toggle").textContent, "已归档1");
-    assert.equal(p.badge("d"), "执行者 · 交付待放行");
-    assert.equal(p.badge("q"), "执行者 · 排队中 · 第 2 位");
-    assert.equal(p.badge("r"), "执行者 · 运行中");
-    assert.equal(p.badge("g"), "执行者 · 归档中");
-    assert.equal(p.badge("f"), "执行者 · 失败");
-    assert.match(p.row("g").querySelector(".agent-kind-badge").title, /归档中：Waiting to close/);
+    assert.deepEqual(p.state("d"), ["审查", "等待放行"]);
+    assert.deepEqual(p.state("q"), ["排队", "第 2 位"]);
+    assert.deepEqual(p.state("r"), ["在做", null]);
+    assert.deepEqual(p.state("g"), ["完成", "收尾中 · Waiting to close: a Job is still running: build (j1)."]);
+    assert.deepEqual(p.state("f"), ["失败", "Both starts failed"]);
+    assert.match(p.row("g").querySelector(".executor-row-state").title, /归档中：Waiting to close/);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
