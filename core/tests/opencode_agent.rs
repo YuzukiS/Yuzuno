@@ -2738,8 +2738,45 @@ async fn a_device_sign_in_is_shown_and_one_that_sends_the_browser_back_here_is_c
 
     let code = start("example/code").await.unwrap();
     assert_eq!(code["mode"], "code");
+    let journaled = || journal(&lab).iter().filter(|k| *k == "opencode/loggedIn").count();
+    assert_eq!(journaled(), 1, "the device sign-in journaled");
     lab.ws.opencode_login_oauth_complete(ID, "example", code["attemptId"].as_str().unwrap(), "CODE-42").await.unwrap();
     assert_eq!(logins().await["credentials"].as_object().unwrap().len(), 2, "logged in with its code");
+    assert_eq!(journaled(), 2, "a code sign-in completed is journaled as logged in, as a device one is (R2 5ca76575 of #621)");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A method's form is answered as OpenCode's own clients answer it (R2
+/// 5ca76575 of #621): each hidden field's default goes with the page's
+/// answer where its conditions hold, and 2.x, which checks the answer
+/// against the form, takes it. A method with no form gets no answer.
+#[tokio::test]
+async fn a_forms_hidden_defaults_go_with_its_answer_and_opencode_takes_it() {
+    let lab = lab(&[], false).await;
+    let region = json!({"type":"string","key":"region","hidden":true,"required":true,"default":"us"});
+    lab.control("mode", json!({
+        "integrations": [{"id":"example","name":"Example","methods":[
+            {"type":"oauth","id":"example/device","label":"Device","form":[
+                {"type":"string","key":"deploymentType","title":"Deployment","required":true,"default":"github.com",
+                    "options":[{"label":"GitHub.com","value":"github.com"},{"label":"GitHub Enterprise","value":"enterprise"}]},
+                {"type":"string","key":"enterpriseUrl","title":"URL","required":true,"when":[{"key":"deploymentType","op":"eq","value":"enterprise"}]},
+                region,
+                {"type":"string","key":"tier","hidden":true,"required":true,"default":"gold","when":[{"key":"deploymentType","op":"eq","value":"enterprise"}]}]},
+            {"type":"key","label":"Key","form":[region]}]}],
+        "oauth": {"example/device": {"url":"https://example.com/login/device"}}})).await;
+    let start = |answer: Value| lab.ws.opencode_login_oauth(ID, OAuthLogin { integration: "example".into(), method: "example/device".into(), answer: Some(answer) });
+    let taken = start(json!({"deploymentType":"github.com"})).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(taken, Ok(()), "a hidden field's default sent with the answer, and OpenCode takes it");
+    let taken = start(json!({"deploymentType":"enterprise","enterpriseUrl":"https://company.ghe.com"})).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(taken, Ok(()), "each where its conditions hold");
+    let keyed = lab.ws.opencode_login_key(ID, key_login("example", "fixture-form-key", None)).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(keyed, Ok(()), "a key method's hidden default sent with no answer from the page");
+    let unformed = lab.ws.opencode_login_key(ID, key_login("openrouter", "fixture-form-key-2", None)).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(unformed, Ok(()), "no answer to a method with no form");
+    let answers: Vec<Value> = lab.posts("/api/integration/").into_iter().map(|c| c["body"].get("answer").cloned().unwrap_or(Value::Null)).collect();
+    assert_eq!(answers, vec![json!({"deploymentType":"github.com","region":"us"}),
+        json!({"deploymentType":"enterprise","enterpriseUrl":"https://company.ghe.com","region":"us","tier":"gold"}),
+        json!({"region":"us"}), Value::Null], "a hidden field's default sent with the answer");
     lab.ws.close_agent(ID).await.unwrap();
 }
 

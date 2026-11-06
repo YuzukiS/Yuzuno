@@ -183,6 +183,8 @@ Agent or from your own OpenCode to another, and never imports a 1.x
   isn't offered here: Yuzuno starts it, sees where it sends you, cancels it at
   once and says to sign in from OpenCode itself. Methods that need anything
   but text and choices, or a command, are signed in from OpenCode itself too.
+  A method's questions come filled in with their defaults, and a hidden one's
+  default is sent for it, as OpenCode itself does.
   OpenCode's environment variables (an `OPENROUTER_API_KEY`, say) are listed
   by name.
 - **Where the key goes:** to that Agent's OpenCode only, which keeps it in its

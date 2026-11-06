@@ -104,7 +104,7 @@ fn text(value: &Value) -> String {
 
 /// A form's fields, when every one is a text or choice field (a `string`
 /// one, with options or not); None when one is of another kind. Hidden ones
-/// keep their default and are not shown.
+/// are not shown: Core sends their default (`answered`).
 fn fields(form: &Value) -> Option<Vec<Field>> {
     let Some(form) = form.as_array() else { return Some(vec![]) };
     let mut out = Vec::new();
@@ -133,6 +133,34 @@ fn fields(form: &Value) -> Option<Vec<Field>> {
         });
     }
     Some(out)
+}
+
+/// The answer OpenCode's own clients send for a method's `form` (R2 5ca76575
+/// of #621; 2.2.5 cli/src/commands/handlers/auth/form.ts): what the page
+/// answered, and in the form's order each hidden field's default where its
+/// conditions hold, as 2.x's server checks them (core/src/form.ts
+/// validateAnswer). None when there is nothing to send: 2.x refuses an
+/// answer to a method with no form.
+fn answered(form: &Value, given: Option<&Value>) -> Option<Value> {
+    let mut answer = match given {
+        None => serde_json::Map::new(),
+        Some(Value::Object(given)) => given.clone(),
+        Some(other) => return Some(other.clone()),
+    };
+    for field in form.as_array().into_iter().flatten() {
+        let (Some(key), Some(default)) = (field["key"].as_str(), field["default"].as_str()) else { continue };
+        if field["hidden"] != true || answer.contains_key(key) {
+            continue;
+        }
+        let holds = field["when"].as_array().into_iter().flatten().all(|w| match answer.get(w["key"].as_str().unwrap_or_default()) {
+            Some(Value::String(value)) => (w["value"].as_str() == Some(value.as_str())) == (w["op"] == "eq"),
+            _ => false,
+        });
+        if holds {
+            answer.insert(key.to_owned(), json!(default));
+        }
+    }
+    (!answer.is_empty()).then_some(Value::Object(answer))
 }
 
 /// An integration as the login section shows it, from named fields only:
@@ -203,6 +231,18 @@ impl Workspace {
         Ok(())
     }
 
+    /// The answer to send for `method` of `integration` (its key method, or
+    /// the OAuth method of that ID), with its form as the Agent's OpenCode
+    /// lists it now: the page's answer and the form's hidden defaults.
+    async fn answer_for(server: &crate::opencode::Server, integration: &str, method: Option<&str>, given: Option<&Value>) -> Result<Option<Value>> {
+        let listed = server.integrations().await.map_err(refused)?;
+        let form = listed.iter().find(|i| i["id"] == integration).and_then(|i| i["methods"].as_array()?.iter().find(|m| match method {
+            None => m["type"] == "key",
+            Some(id) => m["type"] == "oauth" && m["id"] == id,
+        })).map(|m| m["form"].clone()).unwrap_or(Value::Null);
+        Ok(answered(&form, given))
+    }
+
     /// What the Agent's OpenCode offers to log in to, and holds.
     pub async fn opencode_logins(&self, id: &str) -> Result<View> {
         let _permit = self.admission.enter_work()?;
@@ -238,7 +278,8 @@ impl Workspace {
             let (server, generation) = self.login_connection(id, &agent)?;
             ensure!(!request.key.trim().is_empty(), "请填写 API key");
             let label = request.label.as_deref().map(str::trim).filter(|l| !l.is_empty());
-            server.connect_key(&request.integration, request.key.trim(), label, request.answer.as_ref()).await.map_err(refused)?;
+            let answer = Self::answer_for(&server, &request.integration, None, request.answer.as_ref()).await?;
+            server.connect_key(&request.integration, request.key.trim(), label, answer.as_ref()).await.map_err(refused)?;
             self.login_still(id, generation)?;
             self.record_meta(id, "opencode/loggedIn", json!({"integration":request.integration,"method":"key","label":label}), |_| {}).await?;
             self.changed(id);
@@ -252,7 +293,8 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let agent = self.listed(id).await?;
         let (server, generation) = self.login_connection(id, &agent)?;
-        let attempt = server.oauth_start(&request.integration, &request.method, request.answer.as_ref()).await.map_err(refused)?;
+        let answer = Self::answer_for(&server, &request.integration, Some(&request.method), request.answer.as_ref()).await?;
+        let attempt = server.oauth_start(&request.integration, &request.method, answer.as_ref()).await.map_err(refused)?;
         let attempt_id = attempt["attemptID"].as_str().context("OpenCode started a sign-in with no attempt")?.to_owned();
         let link = attempt["url"].as_str().unwrap_or_default();
         if loopback(link) {
@@ -278,13 +320,18 @@ impl Workspace {
         Ok(json!({"status":status["status"],"message":status["message"],"time":status["time"]}))
     }
 
-    /// Completes a code-mode sign-in with the code the user was given.
+    /// Completes a code-mode sign-in with the code the user was given;
+    /// journaled as logged in, as a complete automatic one is (R2 5ca76575
+    /// of #621).
     pub async fn opencode_login_oauth_complete(&self, id: &str, integration: &str, attempt: &str, code: &str) -> Result<()> {
         let _permit = self.admission.enter_work()?;
         let agent = self.listed(id).await?;
         let (server, _) = self.login_connection(id, &agent)?;
         ensure!(!code.trim().is_empty(), "请填写登录页面给出的代码");
-        server.oauth_complete(integration, attempt, code.trim()).await.map_err(refused)
+        server.oauth_complete(integration, attempt, code.trim()).await.map_err(refused)?;
+        self.record_meta(id, "opencode/loggedIn", json!({"integration":integration,"method":"oauth"}), |_| {}).await?;
+        self.changed(id);
+        Ok(())
     }
 
     pub async fn opencode_login_oauth_cancel(&self, id: &str, integration: &str, attempt: &str) -> Result<()> {

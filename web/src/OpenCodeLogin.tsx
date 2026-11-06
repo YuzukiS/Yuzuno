@@ -75,6 +75,10 @@ const shaped = (read: unknown): Logins => {
     ? view as Logins : { state: "failed", reason: "read_failed", version: null, integrations: [] };
 };
 
+/** A form's answers before any is given: each field's default, shown filled in and changed as any answer is (R2 5ca76575 of #621). */
+const defaults = (method?: Method): Record<string, string> =>
+  Object.fromEntries((method?.fields || []).flatMap((f): [string, string][] => f.default ? [[f.key, f.default]] : []));
+
 /** Whether a form field is asked now: each of its conditions holds for the answers so far; an unanswered one never does. */
 const active = (field: Field, answers: Record<string, string>) =>
   field.when.every((w) => answers[w.key] !== undefined && answers[w.key] !== "" && (answers[w.key] === w.value) === (w.op === "eq"));
@@ -121,9 +125,10 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
     return () => { stopped = true; window.clearInterval(timer); };
   }, [attempt]);
 
-  const clear = () => { setKey(""); setLabel(""); setAnswers({}); setCode(""); };
   const integration = logins?.integrations.find((i) => i.id === chosen);
   const form = integration?.methods[method];
+  // The key, label and code go; a form's answers go back to its defaults.
+  const clear = (next?: Method) => { setKey(""); setLabel(""); setAnswers(defaults(next)); setCode(""); };
   const answer = () => {
     const out: Record<string, string> = {};
     for (const field of form?.fields || []) if (active(field, answers) && answers[field.key]) out[field.key] = answers[field.key];
@@ -132,7 +137,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
   async function act(run: () => Promise<void>) {
     if (busy) return;
     setBusy(true); setError("");
-    try { await run(); } catch (e) { setError(errorText(e)); } finally { clear(); setBusy(false); }
+    try { await run(); } catch (e) { setError(errorText(e)); } finally { clear(form); setBusy(false); }
   }
   const logIn = () => act(async () => {
     if (!integration || !form) return;
@@ -186,7 +191,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
       {integration && !attempt && <div className="opencode-login-methods">
         {integration.methods.map((m, index) => m.kind === "key" || m.kind === "oauth"
           ? <button type="button" key={index} className={method === index ? "secondary-button active" : "secondary-button"} disabled={off}
-              onClick={() => { setMethod(method === index ? -1 : index); clear(); }}>{m.kind === "key" ? t.withKey : <span lang="">{m.label}</span>}</button>
+              onClick={() => { setMethod(method === index ? -1 : index); clear(method === index ? undefined : m); }}>{m.kind === "key" ? t.withKey : <span lang="">{m.label}</span>}</button>
           : <small key={index} className="field-hint">{m.kind === "env" ? t.envMethod(m.names) : t.elsewhere(m.label)}</small>)}
       </div>}
       {form && !attempt && <div className="opencode-login-form">

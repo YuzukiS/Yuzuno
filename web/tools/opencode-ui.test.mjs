@@ -620,10 +620,11 @@ test("an answer taken is not undone by a read begun before it", async () => {
 test("an OpenCode Agent is logged in to a provider from its settings, and the page keeps no key (T-32 slice 4b)", async () => {
   const KEY = "fixture-web-key-7Hq";
   const copilot = { kind: "oauth", id: "github-copilot/device", label: "Login with GitHub Copilot", names: [], fields: [
-    { key: "deploymentType", title: "Select GitHub deployment type", description: "", required: true, placeholder: "", default: null, when: [],
+    { key: "deploymentType", title: "Select GitHub deployment type", description: "", required: true, placeholder: "", default: "github.com", when: [],
       options: [{ value: "github.com", label: "GitHub.com", description: "" }, { value: "enterprise", label: "GitHub Enterprise", description: "" }] },
     { key: "enterpriseUrl", title: "Enter your GitHub Enterprise URL", description: "", required: true, placeholder: "company.ghe.com", default: null,
       options: [], when: [{ key: "deploymentType", op: "eq", value: "enterprise" }] },
+    { key: "scope", title: "Scope", description: "", required: false, placeholder: "", default: "read:user", options: [], when: [] },
   ] };
   const view = (connections) => ({ state: "ready", reason: null, version: "2.2.5", integrations: [
     { id: "openrouter", name: "OpenRouter", connections, methods: [{ kind: "key", id: null, label: "Manually enter API Key", fields: [], names: [] },
@@ -686,18 +687,21 @@ test("an OpenCode Agent is logged in to a provider from its settings, and the pa
     assert.ok(section().textContent.includes("OpenRouter · home"), "its new login listed");
     assert.ok(!page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "the settings were not saved by it");
 
-    // A method's form: its choice, then the text field its answer asks for; the answers sent with the sign-in.
+    // A method's form: its defaults filled in (R2 5ca76575 of #621), its choice changed, then the text field its answer
+    // asks for; the answers sent with the sign-in, a default left as it was among them.
     await select(section().querySelector(".opencode-login-provider select"), "github-copilot");
     assert.match(section().textContent, /With its CLI: sign in from OpenCode itself/);
     await press("Login with GitHub Copilot");
     const form = () => section().querySelector(".opencode-login-form");
+    const scope = () => [...form().querySelectorAll("label")].find((l) => l.textContent.startsWith("Scope"))?.querySelector("input");
+    assert.deepEqual([form().querySelector("select").value, scope()?.value], ["github.com", "read:user"], "a visible default arrives pre-filled");
     assert.ok(!form().textContent.includes("Enterprise URL"), "the URL is asked only for an enterprise");
     await select(form().querySelector("select"), "enterprise");
     await value(page, form().querySelector("input"), "company.ghe.com");
     await press("Log in");
     const started = page.calls.find((call) => call.url.endsWith("/opencode/login/oauth"));
     assert.deepEqual(started.body, { integration: "github-copilot", method: "github-copilot/device",
-      answer: { deploymentType: "enterprise", enterpriseUrl: "company.ghe.com" } });
+      answer: { deploymentType: "enterprise", enterpriseUrl: "company.ghe.com", scope: "read:user" } }, "a visible default sent unless changed");
     assert.ok(section().querySelector('a[href="https://github.com/login/device"]') !== null, "its link shown");
     assert.match(section().textContent, /Enter code WXYZ-0001/);
     await press("Cancel");

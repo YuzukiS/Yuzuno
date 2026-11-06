@@ -228,6 +228,35 @@ def v2_integrations():
     return [dict(i, connections=connections(i['id'])) for i in listed]
 
 
+def v2_method(integration, kind, method_id=None):
+    """The method of that kind (and ID) an integration lists, or None."""
+    for listed in v2_integrations():
+        if listed['id'] == integration:
+            return next((m for m in listed['methods'] if m['type'] == kind and (method_id is None or m.get('id') == method_id)), None)
+    return None
+
+
+def v2_answer_refused(method, answer, kind):
+    """Why 2.x refuses a method's form answer (core/src/form.ts validateAnswer, core/src/integration.ts), or None: a
+    field it doesn't have, a required one missing or one answered while its conditions don't hold; and an answer to a
+    key method with no form."""
+    form, answer = (method or {}).get('form'), answer or {}
+    if not form:
+        return 'Key method does not accept a form answer' if kind == 'key' and answer else None
+    for key in answer:
+        if key not in {field['key'] for field in form}:
+            return f'Unknown form field: {key}'
+    for field in form:
+        active = all(answer.get(w['key']) is not None and (answer.get(w['key']) == w['value']) == (w['op'] == 'eq')
+                     for w in field.get('when') or [])
+        if field['key'] not in answer:
+            if field.get('required') and active:
+                return f'Missing required form field: {field["key"]}'
+        elif not active:
+            return f'Form field is not active: {field["key"]}'
+    return None
+
+
 def add_credential(integration, method, label, value):
     cid = new_id('crd')
     with lock:
@@ -1377,6 +1406,11 @@ class Handler(BaseHTTPRequestHandler):
         if not rest or rest[0] not in {i['id'] for i in v2_integrations()}:
             return self.reply(404, {'_tag': 'IntegrationNotFoundError', 'message': 'fixture: no such integration'})
         integration, rest = rest[0], rest[1:]
+        if (method, *rest) in (('POST', 'connect', 'key'), ('POST', 'connect', 'oauth')):
+            kind = rest[1]
+            why = v2_answer_refused(v2_method(integration, kind, body.get('methodID') if kind == 'oauth' else None), body.get('answer'), kind)
+            if why:
+                return self.reply(400, {'_tag': 'AuthorizationError', 'kind': 'integration_authorization', 'message': f'fixture: {why}'})
         if (method, *rest) == ('POST', 'connect', 'key'):
             if modes['loginRefuse']:
                 return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'integration_authorization',

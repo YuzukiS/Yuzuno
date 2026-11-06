@@ -45,6 +45,33 @@ fn an_integration_is_read_from_named_fields_only_and_a_form_of_other_kinds_is_si
     assert!(!serde_json::to_string(&read).unwrap().contains("fixture-meta-secret"), "its metadata is never passed on");
 }
 
+/// A method's form is answered as OpenCode's own clients answer it (R2
+/// 5ca76575 of #621): the page's answer, and in the form's order each hidden
+/// field's default where its conditions hold; what the page gave for a key
+/// kept. Nothing at all for no answer and no hidden default, since 2.x
+/// refuses an answer to a method with no form.
+#[test]
+fn a_forms_answer_carries_its_hidden_defaults_where_their_conditions_hold() {
+    let form = json!([
+        {"type": "string", "key": "deploymentType", "required": true, "default": "github.com",
+            "options": [{"label": "GitHub.com", "value": "github.com"}, {"label": "GitHub Enterprise", "value": "enterprise"}]},
+        {"type": "string", "key": "enterpriseUrl", "required": true, "when": [{"key": "deploymentType", "op": "eq", "value": "enterprise"}]},
+        {"type": "string", "key": "region", "hidden": true, "required": true, "default": "us"},
+        {"type": "string", "key": "tier", "hidden": true, "default": "gold", "when": [{"key": "deploymentType", "op": "eq", "value": "enterprise"}]},
+        {"type": "string", "key": "legacy", "hidden": true, "default": "on", "when": [{"key": "deploymentType", "op": "neq", "value": "github.com"}]},
+    ]);
+    assert_eq!(answered(&form, Some(&json!({"deploymentType": "github.com"}))),
+        Some(json!({"deploymentType": "github.com", "region": "us"})), "a hidden field's default sent with the answer");
+    assert_eq!(answered(&form, Some(&json!({"deploymentType": "enterprise", "enterpriseUrl": "https://company.ghe.com"}))),
+        Some(json!({"deploymentType": "enterprise", "enterpriseUrl": "https://company.ghe.com", "region": "us", "tier": "gold", "legacy": "on"})),
+        "each where its conditions hold");
+    assert_eq!(answered(&form, None), Some(json!({"region": "us"})), "with no answer from the page");
+    assert_eq!(answered(&form, Some(&json!({"deploymentType": "github.com", "region": "eu"})))
+        .map(|a| a["region"].clone()), Some(json!("eu")), "what the page gave kept");
+    assert_eq!(answered(&Value::Null, None), None, "no form, no answer");
+    assert_eq!(answered(&Value::Null, Some(&json!({}))), None, "nor an empty one");
+}
+
 /// A sign-in whose page sends the browser back to this computer is told
 /// from a device or code one by its link (D7): the link's host or its
 /// `redirect_uri`'s is a loopback address.
