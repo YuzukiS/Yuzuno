@@ -26,10 +26,10 @@ import {createRoot} from 'react-dom/client';
 import {Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 import {conversationTimeMarks} from ${JSON.stringify(path.join(root, "src/conversation-time.ts"))};
 const root=createRoot(document.getElementById('root'));
-window.renderTurns=({turns,agent,shells,latest})=>{
-  const marks=conversationTimeMarks(turns);
+window.renderTurns=({turns,agent,shells,latest,time})=>{
+  const marks=conversationTimeMarks(turns,time);
   flushSync(()=>root.render(<>{turns.map((turn,i)=><Turn key={turn.id} turn={turn} index={i} agent={agent}
-    onFile={()=>{}} onRewindDraft={()=>{}} isLatestAgentTurn={turn.id===latest} timeMarks={marks} backgroundShells={shells}/>)}</>));
+    onFile={()=>{}} onRewindDraft={()=>{}} isLatestAgentTurn={turn.id===latest} timeMarks={marks} backgroundShells={shells} time={time}/>)}</>));
 };`,
   );
   const result = await build({
@@ -61,7 +61,8 @@ const user = (id, text, time) => ({ id, type: "userMessage", content: [{ type: "
 const reply = (id, text, time, phase) => ({ id, type: "agentMessage", text, ...(phase ? { phase } : {}), ...(time ? timed(time) : {}) });
 const shell = (id) => ({ id, type: "commandExecution", command: "npm test", status: "completed" });
 
-/** `language` and `time` as this device saved them; `now` as Date.now. */
+/** `language` as this device saved it; `time` as the app passes the Turn
+ * (useTimeDisplay); `now` as Date.now. */
 function mount({ language, time, now = NOW } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -73,12 +74,11 @@ function mount({ language, time, now = NOW } = {}) {
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} disconnect() {} };
   if (language) window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
-  if (time) window.localStorage.setItem("yuzuno.time", JSON.stringify(time));
   window.Date.now = () => now;
   window.eval(bundle);
   const document = window.document;
   const render = (turns, { shells, latest = turns.at(-1)?.id } = {}) =>
-    window.renderTurns({ turns: JSON.parse(JSON.stringify(turns)), agent, shells, latest });
+    window.renderTurns({ turns: JSON.parse(JSON.stringify(turns)), agent, shells, latest, time });
   /** Item id → visible minute label, for every message that shows one. */
   const marks = () =>
     Object.fromEntries([...document.querySelectorAll("[data-item-id]")]
