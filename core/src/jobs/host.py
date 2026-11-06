@@ -1194,6 +1194,8 @@ def resume(spec, folder):
 # its cgroup uses now. Swap stays as reserved. systemd applies the new
 # MemoryMax to the cgroup at once (--runtime: until the unit ends); the
 # cgroup's own memory.max, read back, is the evidence.
+# A target equal to memory.max now is a lowering that already took effect:
+# it is confirmed as it is (T-57).
 LIMIT_HEADROOM = 256 * 1024 * 1024
 MIB = 1024 * 1024
 
@@ -1227,7 +1229,15 @@ def limit(spec, folder, request):
     if current is None or before is None:
         return {'state': 'notLimited', 'reason': "The worker cgroup's memory could not be read; nothing was changed", 'evidence': evidence}
     target = mib * MIB
-    if target >= before:
+    if target == before:
+        # An earlier lowering to this value took effect, but its answer never
+        # reached Core (T-57): the same value again confirms it, and nothing
+        # is changed. Core only asks for a value below the Job's request.
+        evidence = {**evidence, 'memoryMaxAfter': before}
+        atomic(folder / 'limited.json', {'attempt': spec['attempt'], **evidence, 'confirmedByRetry': True})
+        return {'state': 'limited', 'confirmedByRetry': True, 'evidence': evidence,
+                'reason': f'The memory limit is already {mib} MiB: an earlier lowering took effect, and this retry confirms it; nothing was changed'}
+    if target > before:
         return {'state': 'notLimited', 'reason': f'{mib} MiB is not below the current limit of {before // MIB} MiB; a limit is only lowered', 'evidence': evidence}
     if target < current + LIMIT_HEADROOM:
         least = -(-(current + LIMIT_HEADROOM) // MIB)
