@@ -293,7 +293,12 @@ test('exclusive queue shows mode and wait reason; rerun preserves mode but requi
   const p=mount(url=>url==='/api/jobs/job-one'?current:page([current]));
   try {
     await until(()=>p.doc.querySelector('.conversation-job'));
-    assert.match(p.doc.querySelector('.conversation-job').textContent,/Exclusive/);
+    // In the name the dock item is read by. Its tip, which shows the mode to
+    // a pointer, is drawn into the page rather than inside the item, so the
+    // item's own text is the label beside its node (T-15, #459: the dock
+    // scrolls within itself and `.main-panel`'s container-type pins even
+    // `position: fixed` to it, so the tip cannot live inside and be seen).
+    assert.match(p.doc.querySelector('.conversation-job').getAttribute('aria-label'),/Exclusive/);
     p.doc.querySelector('.conversation-job').click(); await until(()=>p.doc.querySelector('.job-log'));
     assert.match(p.doc.querySelector('.job-row').textContent,/Exclusive/);
     assert.match(p.doc.querySelector('.job-row').textContent,/Waiting for running jobs/);
