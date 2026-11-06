@@ -908,6 +908,7 @@ impl Store {
                 let job = get(&tx, &candidate.id)?;
                 if host.as_ref().is_some_and(|h| h["id"] != job["machine"]["id"])
                     || self.brief_in(&tx, job["agentId"].as_str().unwrap_or(""))?.is_none_or(|v| v.agent.closed_at.is_some())
+                    || crate::executor_archiving::archiving(&tx, job["agentId"].as_str().unwrap_or(""))?.is_some()
                     || super::service_recovery::reservation(self, &mut job.clone()).is_some()
                 {
                     continue;
@@ -975,9 +976,20 @@ impl Store {
                 }
             }
             let agent = self.brief_in(&tx, job["agentId"].as_str().unwrap())?;
+            // An executor being released starts nothing: held, and refused at its close (T-36).
+            if agent.as_ref().is_some_and(|v| v.agent.closed_at.is_none())
+                && crate::executor_archiving::archiving(&tx, job["agentId"].as_str().unwrap())?.is_some()
+            {
+                wait(&mut job, "Held: its executor is being released; it is refused once the release closes it".into(), &mut changed)?;
+                continue;
+            }
             if agent.is_none_or(|v| v.agent.closed_at.is_some()) {
                 job["status"] = json!("rejected");
-                job["reason"] = json!("Agent closed before launch");
+                job["reason"] = json!(if crate::executor_release::release_of(&tx, job["agentId"].as_str().unwrap())?.is_some() {
+                    "Its executor was released before launch: it starts nothing more; dispatch the task again for new work"
+                } else {
+                    "Agent closed before launch"
+                });
                 job["finishedAt"] = json!(now());
                 notify(&tx, &mut job)?;
                 save(&tx, &job)?;

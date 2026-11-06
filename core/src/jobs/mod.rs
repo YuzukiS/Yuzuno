@@ -7,6 +7,8 @@ mod backfill_tests;
 mod gpu_tests;
 #[cfg(test)]
 mod limit_tests;
+#[cfg(test)]
+mod release_tests;
 mod checkpoint;
 mod host;
 mod ids;
@@ -1356,6 +1358,8 @@ fn changed(ws: &Workspace) {
     ws.changes
         .publish(&json!({"type":"workspace.changed","scope":"jobs"}));
     ws.collaboration_wakeup.notify_one();
+    // A release may wait for a Job that just ended (T-36).
+    ws.wake_archive_passes();
 }
 
 /// A request that would queue a stage on a host that cannot run local Jobs

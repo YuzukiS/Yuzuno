@@ -53,7 +53,7 @@ Report what is true, in separate terms: result submitted, review passed, merged,
 - `ci_subscribe` notifies you per completed run. `ci_get` returns the run as Core last observed it plus a jobs/steps page read through a short shared cache, each with its own observation time; only `ci_refresh` asks GitHub about the run now. Report CI state with those times rather than as "just checked".
 - Submit with `task_submit_result`: exact commit, CI run, review identifier and conclusion, tests, known limits. Use status `review` unless you are told to report `done`.
 - If your result notifies the dispatcher automatically (a dispatched task and a `task_submit_result` that takes `dispatchId`), do not also `peer_send` the same news.
-- A lead that dispatched a task from an executor template releases its executor with `executor_release` once the work is accepted. Releasing closes it for good and frees its slot; it does not accept the work, so record that on the task.
+- Once the work is accepted, the lead that dispatched a task from an executor template, or any lead of the task's Project, releases its executor with `executor_release`; setting the task done releases it too. Releasing closes it for good and frees its slot, once its running Jobs, delivery flow and pull request operations have ended (until then it is archiving and starts nothing new). It does not accept the work, so record that on the task.
 
 ## Showing a result
 

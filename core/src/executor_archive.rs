@@ -61,6 +61,10 @@ pub(crate) fn redirect(db: &Connection, message: &mut Value) -> Result<()> {
     if matches!(message["sender"]["kind"].as_str(), Some("agent" | "user")) {
         return Ok(());
     }
+    // An update's request to end the recipient's own Turn means nothing to another Agent.
+    if message["metadata"]["kind"] == "update_wait" {
+        return Ok(());
+    }
     let Some(recipient) = message["recipient"]["id"].as_str() else { return Ok(()) };
     let Some(executor) = archived(db, recipient)? else { return Ok(()) };
     let Some(dispatcher) = executor.dispatcher else { return Ok(()) };
@@ -94,13 +98,23 @@ pub(crate) fn refuse_mail(db: &Connection, to: &str) -> Result<()> {
 /// Who decides a released executor's task-status proposal (result_publish's
 /// TaskStatus, task_proposals.rs), or `None` unless `agent` is one: the Agent
 /// that dispatched it, named, or `Some(None)` for the user, when the user
-/// dispatched it or its dispatcher no longer exists (as for its release).
+/// dispatched it or its dispatcher is closed or no longer exists.
 pub(crate) fn proposal_decider(db: &Connection, agent: &str) -> Result<Option<Option<String>>> {
     let Some(executor) = archived(db, agent)? else { return Ok(None) };
     Ok(Some(match executor.dispatcher {
-        Some(dispatcher) => name(db, &dispatcher)?,
-        None => None,
+        // A closed dispatcher cannot answer either: the user decides (#622 R1 note).
+        Some(dispatcher) if open(db, &dispatcher)? => name(db, &dispatcher)?,
+        _ => None,
     }))
+}
+
+/// Whether `agent` exists and is not closed.
+pub(crate) fn open(db: &Connection, agent: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1 AND json_extract(data,'$.agent.closedAt') IS NULL)",
+        [agent],
+        |r| r.get(0),
+    )?)
 }
 
 /// An executor never sets its own task done, with task_update or with its
