@@ -28,7 +28,12 @@ fn agent(s: &Store, id: &str, name: &str) {
         "turns":[],"pending":[],"artifacts":[]})).unwrap())
     .unwrap();
 }
+/// A task's internal ID; tools take its "T-n" reference, tables the ID.
+fn internal(s: &Store, task: &str) -> String {
+    crate::collaboration_store::task_key(&s.db.read().unwrap(), task).unwrap().0
+}
 fn review(s: &Store, task: &str, head: &str, conclusion: &str) -> String {
+    let task = internal(s, task);
     let id = uuid::Uuid::new_v4().to_string();
     let data = json!({"id":id,"status":"completed","conclusion":conclusion,"headSha":head,"round":1,
         "findings":[],"coverage":{"coveredFileCount":3,"fileCount":3}});
@@ -179,7 +184,8 @@ impl Lab {
     fn comments(&self) -> Vec<String> {
         let db = self.ws.store.db.read().unwrap();
         let mut q = db.prepare("SELECT json_extract(data,'$.body') FROM collaboration_task_activity WHERE task_id=?1 AND json_extract(data,'$.kind')='comment' ORDER BY seq").unwrap();
-        q.query_map([&self.task], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect()
+        let task = crate::collaboration_store::task_key(&db, &self.task).unwrap().0;
+        q.query_map([&task], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect()
     }
     fn mail(&self, agent: &str) -> Vec<Value> {
         let read = self.ws.store.collaboration_call(None, "peer_read", json!({"agentId":agent})).unwrap();
