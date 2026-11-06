@@ -15,6 +15,10 @@ const ACTIVE: &str = "('queued','waiting','ready','merging')";
 const WAIT_LIMIT: i64 = 6 * 3600;
 /// Consecutive failed reads before an entry stops.
 const READ_FAILURES: i64 = 8;
+/// What a switch and a release mean: 2 since Core merges. The dry-run build
+/// (1, no `queueVersion`) wrote the same tables, but there a switch that was
+/// on only let Core check, and `ready` was final.
+const QUEUE_VERSION: i64 = 2;
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
@@ -29,6 +33,39 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         WHERE state IN ('queued','waiting','ready','merging');
         CREATE TABLE IF NOT EXISTS merge_repositories(repository_id INTEGER PRIMARY KEY,data TEXT NOT NULL);",
     )?;
+    renew_consent(db)
+}
+
+/// Consent given to the dry-run build does not carry over to real merges.
+/// Every switch from before is turned off once, saying so in its journal, and
+/// every entry from before that still holds its PR stops. Runs on every open;
+/// the second time it finds nothing.
+fn renew_consent(db: &Connection) -> Result<()> {
+    let older = format!("COALESCE(json_extract(data,'$.queueVersion'),1)<{QUEUE_VERSION}");
+    let switches: Vec<(i64, String)> = db
+        .prepare(&format!("SELECT repository_id,data FROM merge_repositories WHERE {older}"))?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, raw) in switches {
+        let mut data: Value = serde_json::from_str(&raw)?;
+        if data["enabled"] == true {
+            data["enabled"] = json!(false);
+            switched(&mut data, false, "Yuzuno Core", "Turned off at the upgrade: in the dry-run build this switch only let Core check; now it lets Core merge. Turn it on again for real merges.");
+        }
+        save_repository(db, id, &data)?;
+    }
+    let held: Vec<String> = db
+        .prepare(&format!("SELECT data FROM merge_entries WHERE state IN ('queued','waiting','ready') AND {older}"))?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for raw in held {
+        let mut e: Value = serde_json::from_str(&raw)?;
+        stop(&mut e, "dry_run_ended", "Released before Core merged for real; that release does not let Core merge. Release the PR again to merge it.".into());
+        e["updatedAt"] = json!(now());
+        let detail = e["detail"].clone();
+        history(&mut e, "stopped", &json!("dry_run_ended"), &detail);
+        save(db, &e)?;
+    }
     Ok(())
 }
 
@@ -83,6 +120,8 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     Ok(v)
 }
 fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
+    let mut data = data.clone();
+    data["queueVersion"] = json!(QUEUE_VERSION);
     db.execute(
         "INSERT INTO merge_repositories(repository_id,data) VALUES(?1,?2) ON CONFLICT(repository_id) DO UPDATE SET data=excluded.data",
         params![id, data.to_string()],
@@ -91,6 +130,14 @@ fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
 }
 fn enabled(db: &Connection, repository_id: i64) -> Result<bool> {
     Ok(repository(db, repository_id)?["enabled"] == true)
+}
+/// One line of a repository's switch journal; the newest 50 are kept.
+fn switched(data: &mut Value, on: bool, by: &str, detail: &str) {
+    let mut list = data["switches"].as_array().cloned().unwrap_or_default();
+    list.push(json!({"at":now(),"enabled":on,"by":by,"detail":detail}));
+    let excess = list.len().saturating_sub(50);
+    list.drain(..excess);
+    data["switches"] = json!(list);
 }
 
 /// The newest completed review of a PR link (on any task), and whether a
@@ -477,7 +524,7 @@ impl Store {
             "release":{"by":p.author,"requestId":input.request_id,"at":at,"source":p.source,"reviewId":latest.as_ref().map(|r| r["id"].clone())},
             "state":"queued","reason":null,"detail":"Released; Core checks it before anything else happens.","attempt":0,"checks":0,
             "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,"batch":null,"merge":null,
-            "history":[{"at":at,"state":"queued","reason":null,"detail":"released"}],"createdAt":at,"updatedAt":at});
+            "history":[{"at":at,"state":"queued","reason":null,"detail":"released"}],"queueVersion":QUEUE_VERSION,"createdAt":at,"updatedAt":at});
         tx.execute(
             "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,?3,?4,'queued',0,?5)",
             params![id, p.task, p.repository_id, p.number as i64, e.to_string()],
@@ -524,6 +571,7 @@ impl Store {
         let db = self.db.read()?;
         let e = entry(&db, id)?;
         may_change(actor, &e)?;
+        released_for_merge(&e)?;
         Ok(e)
     }
 
@@ -544,6 +592,7 @@ impl Store {
             ("cancelled", format!("Merge queue: entry {} for #{} cancelled by {}. {}", input.entry_id, e["number"], author.name, input.reason.as_deref().unwrap_or("")))
         } else {
             ensure!(state == "stopped", "merge_not_stopped: only a stopped entry can be retried; it is {state}");
+            released_for_merge(&e)?;
             ensure!(e["batch"]["cleanup"] != "pending", "merge_cleanup_pending: Core is still removing this entry's batch; retry shortly");
             let busy: bool = tx.query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM merge_entries WHERE repository_id=?1 AND number=?2 AND state IN {ACTIVE})"),
@@ -927,12 +976,27 @@ impl Store {
                 let (state, reason) = (e["state"].as_str().unwrap_or("").to_owned(), e["reason"].clone());
                 history(&mut e, &state, &reason, &json!("Core removed its batch branch and PR"));
             }
+            // The switch being off, or GitHub's rate limit, is a wait and no
+            // failure: the removal stays pending, and turning the switch on
+            // makes it due at once.
+            Err(error) if error.starts_with("merge_queue_disabled") || error.starts_with("rate_limited") => {
+                e["batch"]["cleanupError"] = json!(error);
+                e["batch"]["cleanupAt"] = json!(now());
+                e["nextCheck"] = json!(epoch() + 600);
+            }
             Err(error) => {
                 let failures = e["batch"]["cleanupFailures"].as_i64().unwrap_or(0) + 1;
                 e["batch"]["cleanupFailures"] = json!(failures);
                 e["batch"]["cleanupError"] = json!(error);
                 if failures >= READ_FAILURES {
                     e["batch"]["cleanup"] = json!("failed");
+                    let text = format!(
+                        "Core stopped trying to remove its batch after {failures} failures in a row; the last: {error}. Remove the branch {} and PR #{} by hand.",
+                        e["batch"]["branch"].as_str().unwrap_or("?"),
+                        e["batch"]["pr"]
+                    );
+                    let (state, reason) = (e["state"].as_str().unwrap_or("").to_owned(), e["reason"].clone());
+                    history(&mut e, &state, &reason, &json!(text));
                 } else {
                     e["nextCheck"] = json!(epoch() + (60i64 << (failures - 1).min(3)).min(600));
                 }
@@ -993,15 +1057,33 @@ impl Store {
         Ok(answer)
     }
 
-    /// The user's switch for one linked repository. Its pause is kept.
+    /// The user's switch for one linked repository. Its pause is kept. On,
+    /// it makes every batch removal that waited for it due now.
     pub(super) fn merge_set_enabled(&self, repository_id: i64, on: bool) -> Result<Value> {
-        let db = self.db.write()?;
-        let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
         ensure!(known, "not_found: link the repository to a Project first");
-        let mut data = repository(&db, repository_id)?;
+        let mut data = repository(&tx, repository_id)?;
+        if data["enabled"] != on {
+            switched(&mut data, on, "user", if on { "Turned on" } else { "Turned off" });
+        }
         data["enabled"] = json!(on);
         data["updatedAt"] = json!(now());
-        save_repository(&db, repository_id, &data)?;
+        save_repository(&tx, repository_id, &data)?;
+        if on {
+            let waiting: Vec<String> = tx
+                .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND json_extract(data,'$.batch.cleanup')='pending'")?
+                .query_map([repository_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for raw in waiting {
+                let mut e: Value = serde_json::from_str(&raw)?;
+                e["nextCheck"] = json!(0);
+                save(&tx, &e)?;
+            }
+        }
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
         Ok(data)
     }
     pub(super) fn merge_repository(&self, repository_id: i64) -> Result<Value> {
@@ -1014,6 +1096,15 @@ fn may_change(actor: Option<&str>, e: &Value) -> Result<()> {
     ensure!(
         actor.is_none() || (e["release"]["by"]["kind"] == "agent" && e["release"]["by"]["id"] == actor.unwrap_or("")),
         "merge_release_not_allowed: only the Agent that released this merge, or the user, can change it"
+    );
+    Ok(())
+}
+
+/// A release from before Core merged for real cannot be retried into a merge.
+fn released_for_merge(e: &Value) -> Result<()> {
+    ensure!(
+        e["queueVersion"].as_i64().unwrap_or(1) >= QUEUE_VERSION,
+        "merge_dry_run_ended: this entry was released before Core merged for real, and that release does not let Core merge; release the PR again"
     );
     Ok(())
 }

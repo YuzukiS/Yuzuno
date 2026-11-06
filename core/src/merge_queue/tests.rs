@@ -154,7 +154,7 @@ include='--include' in a
 def save(): p.write_text(json.dumps(s))
 def out(code,data,link=None):
     if include:
-        status={200:'200 OK',201:'201 Created',204:'204 No Content',404:'404 Not Found',405:'405 Method Not Allowed',409:'409 Conflict',422:'422 Unprocessable Entity',502:'502 Bad Gateway'}[code]
+        status={200:'200 OK',201:'201 Created',204:'204 No Content',404:'404 Not Found',405:'405 Method Not Allowed',409:'409 Conflict',422:'422 Unprocessable Entity',429:'429 Too Many Requests',502:'502 Bad Gateway'}[code]
         sys.stdout.write('HTTP/2.0 '+status+'\r\nEtag: "'+str(len(s['calls']))+'"\r\n'+('Link: '+link+'\r\n' if link else '')+'\r\n'+('' if data is None else json.dumps(data)))
     else:
         sys.stdout.write(data if isinstance(data,str) else json.dumps(data))
@@ -180,8 +180,11 @@ if method=='PATCH' and path.startswith('pulls/') and path.split('/')[1] in s['pu
     s['pulls'][path.split('/')[1]]['state']=body['state']; save(); out(200,s['pulls'][path.split('/')[1]])
 if method=='DELETE' and path.startswith('git/refs/heads/'):
     q=s.get('deleteAnswers') or []
-    if q and q.pop(0)=='502':
+    answer=q.pop(0) if q else None
+    if answer=='502':
         save(); out(502,{'message':'Bad gateway'})
+    if answer=='429':
+        save(); out(429,{'message':'API rate limit exceeded'})
     s['refs'].pop(path[len('git/refs/heads/'):],None); save(); out(204,None)
 if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
@@ -827,6 +830,128 @@ async fn a_failed_cleanup_still_pauses_on_a_failed_post_check_or_red_main_ci() {
     let e = lab.step().await;
     assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), json!("main_red")), "a failed cleanup does not hide red main CI: {e}");
     assert_eq!(lab.paused()["paused"]["reason"], "main_red");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_upgrade_from_the_dry_run_build_turns_its_switch_off_and_stops_its_entries() {
+    // A Workspace the dry-run build wrote: its switch on, which there only let
+    // Core check, and its entry at ready, which there was final.
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_gh(dir.path(), green());
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let (task, old) = {
+        let s = Store::open(&data.join("workspace.sqlite")).unwrap();
+        let task = setup(&s);
+        let (id, internal, at) = (uuid::Uuid::new_v4().to_string(), internal(&s, &task), crate::model::now());
+        let e = json!({"id":id,"entryId":id,"taskId":internal,"taskReference":task,"repositoryId":7,"repository":"owner/repo","number":11,
+            "url":"https://github.com/owner/repo/pull/11","linkId":"7:pull:11","headSha":head(),"baseBranch":"main",
+            "mainAtRelease":main_sha(),"mainAnchoredAt":at,"requireWorkflows":[],"note":null,
+            "release":{"by":{"kind":"agent","id":"lead","name":"Lead"},"requestId":"r0","at":at,"source":null,"reviewId":null},
+            "state":"ready","reason":null,"detail":"Every check held. This slice is a dry run.","attempt":1,"checks":1,"waits":0,
+            "readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,
+            "history":[{"at":at,"state":"queued","reason":null,"detail":"released"}],"dryRun":true,"createdAt":at,"updatedAt":at});
+        let db = s.db.write().unwrap();
+        db.execute("UPDATE merge_repositories SET data=?1 WHERE repository_id=7", [json!({"repositoryId":7,"enabled":true,"updatedAt":at}).to_string()])
+            .unwrap();
+        db.execute(
+            "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,7,11,'ready',0,?3)",
+            rusqlite::params![id, internal, e.to_string()],
+        )
+        .unwrap();
+        (task, id)
+    };
+    // This build opens it.
+    let mut ws = Workspace::new(data, dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    Arc::get_mut(&mut ws).unwrap().github.client.program = program;
+    let lab = Lab { dir, ws, task };
+    let r = lab.paused();
+    assert_eq!(r["enabled"], false, "the upgrade turned the dry-run switch off: {r}");
+    assert_eq!(r["switches"][0]["by"], "Yuzuno Core");
+    assert!(r["switches"][0]["detail"].as_str().unwrap().contains("Turn it on again for real merges"), "{r}");
+    let get = |id: String| lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id}));
+    let e = get(old.clone()).await.unwrap();
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("dry_run_ended")), "the dry-run release stops: {e}");
+    lab.step().await;
+    let err = lab
+        .ws
+        .collaboration_call(Some("lead"), "merge_retry", json!({"requestId":"again","entryId":old}))
+        .await
+        .expect_err("a dry-run entry cannot be retried into a merge");
+    assert!(format!("{err:#}").starts_with("merge_dry_run_ended"), "{err:#}");
+    assert!(calls(lab.dir.path()).is_empty(), "a tick and the refused retry read and write nothing");
+    // The user turns the switch on again, and a fresh release merges.
+    lab.ws.store.merge_set_enabled(7, true).unwrap();
+    let fresh = lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = get(fresh["id"].as_str().unwrap().to_owned()).await.unwrap();
+    assert_eq!(e["state"], "merged", "a release made to this build merges: {e}");
+    assert_eq!(writes(lab.dir.path()), ["PUT repos/owner/repo/pulls/11/merge"]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_batch_removal_waits_while_the_switch_is_off_and_goes_once_it_is_on() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+    });
+    let id = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(writes(lab.dir.path()).len(), 3, "Core built a batch");
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c1","entryId":id})).await.unwrap();
+    // More retry windows than the failure limit, all with the switch off.
+    for _ in 0..12 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!(e["batch"]["cleanup"], "pending", "with the switch off the removal waits and is not given up: {e}");
+    assert!(e["batch"]["cleanupFailures"].is_null(), "waiting for the switch is no failure: {e}");
+    assert!(e["batch"]["cleanupError"].as_str().unwrap().starts_with("merge_queue_disabled"), "{}", e["batch"]["cleanupError"]);
+    assert_eq!(writes(lab.dir.path()).len(), 3, "with the switch off Core sends nothing");
+    // On again, the removal is due at once. GitHub's rate limit refuses the
+    // first nine deletes, which is a wait too.
+    change(lab.dir.path(), |s| s["deleteAnswers"] = json!(vec!["429"; 9]));
+    lab.ws.store.merge_set_enabled(7, true).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let w = writes(lab.dir.path());
+    assert_eq!(
+        w.get(3..),
+        Some(&["PATCH repos/owner/repo/pulls/900".to_owned(), format!("DELETE repos/owner/repo/git/refs/heads/queue/merge-{id}")][..]),
+        "turning the switch on makes the removal due now: {w:?}"
+    );
+    for _ in 0..8 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!(e["batch"]["cleanup"], "pending", "a removal the rate limit refused waits too: {e}");
+    assert!(e["batch"]["cleanupFailures"].is_null(), "{e}");
+    let e = lab.step().await;
+    assert_eq!(e["batch"]["cleanup"], "done", "then Core removes its batch: {e}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_batch_removal_that_keeps_failing_stops_and_says_so() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+        s["deleteAnswers"] = json!(vec!["502"; 8]);
+    });
+    let id = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    tick(&lab.ws).await.unwrap();
+    lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c1","entryId":id})).await.unwrap();
+    for _ in 0..8 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!(e["batch"]["cleanup"], "failed", "eight failures in a row end the removal: {e}");
+    let last = e["history"].as_array().unwrap().last().unwrap()["detail"].as_str().unwrap().to_owned();
+    assert!(last.contains(&format!("Remove the branch queue/merge-{id} and PR #900 by hand")), "the entry says Core stopped trying: {last}");
 }
 
 #[cfg(unix)]

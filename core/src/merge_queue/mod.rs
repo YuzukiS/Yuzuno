@@ -280,6 +280,7 @@ struct Switch {
 async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<Switch>) -> Result<Json<Value>, ApiError> {
     let answer = ws.stored(move |s| s.merge_set_enabled(id, b.enabled)).await?;
     ws.changes.send(json!({"mergeQueue":true}));
+    ws.merge_queue.wake.notify_one();
     Ok(Json(answer))
 }
 fn strip(mut value: Value) -> Value {

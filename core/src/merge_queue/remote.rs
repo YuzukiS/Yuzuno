@@ -473,16 +473,28 @@ pub(super) async fn cleanup(ws: &Arc<Workspace>, entry: &Value) -> Result<Value>
         if pull["state"] == "open" {
             let number = b["pr"].as_u64().unwrap_or(0);
             let (code, answer) = writes::write(ws, t.repository, &t.repo, Write::CloseBatchPull { number }).await?;
+            limited(code, &answer)?;
             ensure!(code == 200, "GitHub answered {code} closing batch PR #{number}: {}", answer["message"]);
         }
         closed = true;
     }
     if !deleted {
         let (code, answer) = writes::write(ws, t.repository, &t.repo, Write::DeleteBranch { branch }).await?;
+        limited(code, &answer)?;
         ensure!(matches!(code, 204 | 404 | 422), "GitHub answered {code} deleting {branch}: {}", answer["message"]);
         deleted = true;
     }
     Ok(json!({"closed":closed,"deleted":deleted,"at":crate::model::now()}))
+}
+
+/// A write GitHub's rate limit refused is a wait for later, not a failure.
+fn limited(code: u16, answer: &Value) -> Result<()> {
+    let message = answer["message"].as_str().unwrap_or("");
+    ensure!(
+        code != 429 && !(code == 403 && message.to_lowercase().contains("rate limit")),
+        "rate_limited: GitHub answered {code}: {message}"
+    );
+    Ok(())
 }
 
 /// At release: the PR's base branch and head, and the main of that moment.

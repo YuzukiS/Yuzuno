@@ -12,6 +12,12 @@ off by default, and only the user can turn it on
 YuzukiS/Yuzuno it stays off until a Core with the queue is installed and the
 user turns it on; until then merges happen by hand.
 
+In the dry-run build of the queue, a switch that was on only let Core check.
+That consent does not carry over: the first time this build opens a Workspace,
+Core turns every switch from before off once and says so in the repository's
+`switches` journal. Every entry from before that still held its PR stops with
+`dry_run_ended`. Such an entry cannot be retried; release the PR again.
+
 While the switch is on, Core makes only these writes, with the Core host's gh
 login:
 
@@ -98,10 +104,14 @@ Once every check holds, the entry merges, one merge at a time per repository:
    head, and its tree is the tree CI tested. Otherwise the entry stops with
    `post_check_failed` and the repository's queue pauses: something landed that
    CI did not test, and a person has to look. Core makes no automatic revert.
-4. Core removes its batch, if there was one. If the removal fails (for example
-   because the switch was turned off after the merge), Core records why and
-   tries again later; a failed removal never delays the post-check or following
-   main CI.
+4. Core removes its batch, if there was one. If the removal fails, Core
+   records why and tries again later; a failed removal never delays the
+   post-check or following main CI. While the switch is off, or GitHub's rate
+   limit refuses the request, Core waits and does not count it as a failure.
+   Turning the switch on again makes the removal due at once. After eight
+   other failures in a row Core stops trying, marks the removal `failed`, and
+   says in the entry which branch and PR to remove by hand. This holds for the
+   batch of a stopped or cancelled entry too.
 5. Core follows main's push CI on the merge commit. Green ends the entry at
    `done`. Red ends it at `done` with the failure recorded, and pauses the
    repository's queue. The next entry does not wait for this run; only a red
@@ -135,14 +145,15 @@ current main, so their main CI counts from there on.
 | `merging` | The merge request is journaled or sent. |
 | `merged` | GitHub merged it; Core follows main's push CI. |
 | `done` | Main's push CI on the merge commit finished. |
-| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `gh_too_old`, `wait_timeout` or `github_unreachable`. |
+| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `gh_too_old`, `wait_timeout`, `github_unreachable` or `dry_run_ended`. |
 | `cancelled` | Cancelled by the Agent that released it, or by the user. |
 
 `merge_retry` checks a stopped entry again from the start. Only the Agent that
 released it, or the user, may call it; Core checks that before it reads
 anything from GitHub. It reads main first and anchors the entry there, so a red
 main run from before the retry no longer counts once main is green again. It
-never reruns CI: a red job has to be rerun by other means first.
+never reruns CI: a red job has to be rerun by other means first. An entry
+stopped with `dry_run_ended` cannot be retried.
 
 ## Requirements
 
