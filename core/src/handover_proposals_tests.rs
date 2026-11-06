@@ -192,11 +192,13 @@ async fn a_stale_proposal_is_refused_and_its_rejection_tells_the_lead_to_propose
 #[tokio::test]
 async fn a_handover_save_tells_home_so_a_waiting_proposals_card_sees_the_new_version() {
     let (_dir, ws, p) = fixture();
-    ws.collaboration_call(Some("lead"), "handover_propose", propose_input("first", 1, "# Lab\nProposed.")).await.unwrap();
+    let made = ws.collaboration_call(Some("lead"), "handover_propose", propose_input("first", 1, "# Lab\nProposed.")).await.unwrap();
     let mut events = ws.changes.subscribe(None);
     let (status, saved) = route(&ws, "PUT", &format!("/api/projects/{p}/handover"),
         Some(json!({"expectedVersion":1,"markdown":"# Lab\nSaved meanwhile."}))).await;
     assert_eq!((status, saved["version"].clone()), (StatusCode::OK, json!(2)), "{saved}");
+    assert_eq!((saved["proposal"]["id"].clone(), saved["proposal"]["baseVersion"].clone()), (made["proposal"]["id"].clone(), json!(1)),
+        "the save answers with the proposal still waiting, as a read does (#612 R4): {saved}");
     let mut said: Vec<Value> = Vec::new();
     while let Some(event) = events.try_next() {
         said.push(serde_json::from_str(&event.data).unwrap_or(Value::Null));

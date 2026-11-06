@@ -9,8 +9,8 @@ when the work is accepted.
 
 The model arrives in phases. Phase 0 is in place: it marks what kind each
 Agent is and lets you choose a Project's leads. Phase 1 is arriving: you
-can keep executor templates and dispatch a task from one, and Core creates
-its executor. Releasing an executor comes next.
+can keep executor templates and dispatch a task from one, Core creates its
+executor, and once its work is accepted its dispatcher or you release it.
 
 ## Kinds
 
@@ -190,6 +190,32 @@ applies. Only you change them.
 - **Executors only.** Standing Agents don't count, and Jobs keep their own
   machine slots.
 
+## Releasing an executor
+
+Once an executor's work is accepted, it is released: Core closes it for good.
+
+- **Who.** The Agent that dispatched it from a template, with
+  `executor_release`, or you, with **Release executor** in its actions
+  (**Manage…**). Anyone else is refused with `not_dispatcher`, and a
+  standing Agent or a lead with `not_executor`. If its dispatcher no longer
+  exists, only you can release it.
+- **What it does.** Its runtime stops as on Close, and its slot goes to the
+  next executor waiting. Its history's close says it was a release, and who
+  made it. The close, the release and the slot are one change: all of it
+  happens, or none of it. An executor that was already closed is only marked
+  released. Who released is on the executor (`releasedBy`); an executor
+  closed before its release keeps its earlier close in its history.
+- **It stays closed.** A released executor is not reopened: Reopen is
+  refused with `executor_released` and isn't offered. For new work, dispatch
+  the task again. You can still delete it.
+- **What stays.** Its task, its dispatch and its result are as they were.
+  Releasing is not accepting the work; the dispatcher records that on the
+  task.
+- **Again.** Releasing a released executor answers with the same
+  `releasedAt`.
+- **During an update.** A release is refused while Core prepares an update,
+  as Close is. Release it once the update is done.
+
 ## What an executor starts with
 
 An executor starts cold, with no memory of the Project. Besides its task's
@@ -293,9 +319,9 @@ A released executor takes no more mail or work:
 | Phase | What it adds |
 | --- | --- |
 | 0 | Kinds and leads, as above. |
-| 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request. |
+| 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request, and its dispatcher releases it. |
 | 2 | A limit on how many executors run at once, with a queue and one retry of a failed start. |
-| 3 | Releasing and archiving executors, routing their late mail to the lead, and grouping them in the sidebar. |
+| 3 | Routing a released executor's late mail to the lead, and grouping executors in the sidebar. |
 | 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. |
 
 Standing Agents keep working throughout. Tasks already in progress finish on
