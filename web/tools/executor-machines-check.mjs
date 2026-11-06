@@ -256,7 +256,9 @@ try {
     const shownEditor = dialog.locator(".remote-machine-editor");
     await shownEditor.locator('input[aria-label="Executors at once"]').waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(shownEditor), { box: true, wider: [] }, `${at}: the Machines editor fits`);
-    await shownEditor.screenshot({ path: join(output, `1-machine-editor-${at}.png`) });
+    // The editor is taller than a screen: the shot is the new field, with its help.
+    await shownEditor.locator("label", { has: page.locator('input[aria-label="Executors at once"]') })
+      .screenshot({ path: join(output, `1-machine-editor-${at}.png`) });
     const shownHost = dialog.locator('[data-machine-id="local"] .machine-executor-limit');
     await shownHost.waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(shownHost), { box: true, wider: [] }, `${at}: the Core host control fits`);
@@ -266,7 +268,8 @@ try {
     box = await openTemplates(page);
     await box.locator('select[aria-label="Runs on"]').waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(box), { box: true, wider: [] }, `${at}: the template editor fits`);
-    await box.locator("fieldset.executor-template").first().screenshot({ path: join(output, `3-template-runs-on-${at}.png`) });
+    await box.locator("label.settings-row", { has: page.locator('select[aria-label="Runs on"]') }).first()
+      .screenshot({ path: join(output, `3-template-runs-on-${at}.png`) });
     await page.keyboard.press("Escape");
     await openBoard(page);
     const card = page.locator('.collab-task-card[data-task-id="T-51"]');

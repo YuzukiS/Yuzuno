@@ -67,6 +67,7 @@ its settings.
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
 | **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
+| **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
@@ -162,10 +163,12 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
 At most this many executors run at the same time in the Workspace: 3 unless
 you change it, a whole number from 1 to 64, in Settings under **Executor
 templates**. A Project can have a limit of its own, on its page, and so can
-a template (its **At most at once**) and a machine (this Core host included,
-`PUT /api/machines/{id}/executor-slots`); left empty, only the Workspace's
-applies. Only you change them. Lowering a limit under the executors running
-there stops none of them: no more start there until fewer hold a slot.
+a template (its **At most at once**) and a machine: in **Machines**, a
+registered machine's in its editor and this Core host's on its card
+(`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
+empty, only the Workspace's applies. Only you change them. Lowering a limit
+under the executors running there stops none of them: no more start there
+until fewer hold a slot.
 
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
@@ -177,7 +180,9 @@ there stops none of them: no more start there until fewer hold a slot.
   template, and counts with it.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
-  starting (with `reason` when its start did not finish), or running.
+  starting (with `reason` when its start did not finish), or running. On a
+  machine `auto` chose, the card names it, with every candidate's numbers,
+  or why it was left out, in its title.
 - **Holding a slot.** An executor holds its slot from when it starts until
   it is closed, by anyone and in any way. A disconnect keeps it, so
   reconnecting never passes the limit. Closing one frees its slot for the
