@@ -339,7 +339,7 @@ A released executor takes no more mail or work:
 | 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request, and its dispatcher releases it. |
 | 2 | A limit on how many executors run at once, with a queue and one retry of a failed start. |
 | 3 | Routing a released executor's late mail to the lead, and grouping executors in the sidebar. |
-| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. |
+| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. Its first release checks a released PR as a dry run ([merge queue](merge-queue.md)). |
 
 Standing Agents keep working throughout. Tasks already in progress finish on
 the Agents that hold them.

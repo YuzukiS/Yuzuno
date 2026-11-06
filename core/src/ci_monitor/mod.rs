@@ -35,6 +35,16 @@ const RECENT_SECONDS: i64 = 10;
 /// One manual refresh checks at most this many watches, one at a time.
 const REFRESH_WATCHES: usize = 5;
 
+/// The monitor's GitHub read for other Core checks (the merge queue): the
+/// same ETag cache and the same shared cooldown, revalidated on every call.
+pub(crate) async fn shared_read(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
+    Ok(client::read(ws, endpoint, 0).await?["value"].clone())
+}
+/// When shared GitHub reads may start again, in epoch seconds.
+pub(crate) fn read_cooldown(store: &crate::store::Store) -> Result<i64> {
+    store.ci_cooldown_until()
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     started: OnceLock<()>,

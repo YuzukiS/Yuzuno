@@ -58,6 +58,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_executor_slots();
     ws.start_ci_monitor();
     ws.start_delivery();
+    ws.start_merge_queue();
     ws.start_backup_schedule();
     ws.start_web_push();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
@@ -111,6 +112,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::agent_roles::router())
         .merge(crate::pr_review::router())
         .merge(crate::pr_operations::router())
+        .merge(crate::merge_queue::router())
         .merge(crate::jobs::router())
         .merge(crate::remote_access::router())
         .merge(crate::ci_monitor::router())
