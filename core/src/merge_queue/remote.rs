@@ -105,16 +105,19 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         by_branch["commit"]["sha"].as_str().unwrap_or("")
     ));
     let main_commit = read(ws, format!("repos/{repo}/git/commits/{main}")).await?;
-    let since = entry["mainAtRelease"].as_str().unwrap_or(&main).to_owned();
-    let anchored = entry["mainAnchoredAt"].as_str().or(entry["release"]["at"].as_str()).unwrap_or("").to_owned();
-    evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
+    let mut since = entry["mainAtRelease"].as_str().unwrap_or(&main).to_owned();
+    let mut anchored = entry["mainAnchoredAt"].as_str().or(entry["release"]["at"].as_str()).unwrap_or("").to_owned();
     let main_runs = read(ws, format!("repos/{repo}/actions/runs?branch={}&event=push&per_page=20", segment(&t.base))).await?;
     let main_runs = array(&main_runs, "workflow_runs");
     let repository = t.repository;
     let paused = ws.stored(move |s| s.merge_repository(repository)).await?["paused"].clone();
     if let Some(cleared) = hold!(checks::pause(&paused, &main, &main_runs)) {
+        // The pause ended at this main: the store re-anchors the entry here, so
+        // main health counts from here too, not from before the red run.
+        (since, anchored) = (main.clone(), crate::model::now());
         evidence["pauseCleared"] = cleared;
     }
+    evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
     let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored);
     evidence["main"]["ci"] = json!(seen);
     if let Some(red) = red {

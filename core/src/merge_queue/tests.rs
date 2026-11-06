@@ -557,6 +557,43 @@ async fn a_retry_counts_main_ci_only_from_the_main_it_reads() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn an_entry_waiting_through_a_red_main_pause_proceeds_once_a_newer_main_is_green() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    // After the release main moved to sha('b'), its CI went red, and another
+    // entry paused the queue there.
+    let after = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        s["commits"][sha('b')] = json!({"sha":sha('b'),"tree":sha('6'),"parents":[main_sha()]});
+        s["main"] = json!(sha('b'));
+        let red = json!({"id":91,"name":"CI","head_sha":sha('b'),"status":"completed","conclusion":"failure","created_at":after});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    lab.ws.store.db.write().unwrap().execute(
+        "UPDATE merge_repositories SET data=json_set(data,'$.paused',json(?1)) WHERE repository_id=7",
+        [json!({"reason":"main_red","at":after,"detail":"Main CI run 91 concluded failure","main":sha('b'),"base":"main"}).to_string()],
+    ).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "the entry waits at the pause: {e}");
+    // Main moves past the red commit and CI on the new main is green.
+    let green_again = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        move_main(s, sha('c'), sha('d'));
+        let green = json!({"id":92,"name":"CI","head_sha":sha('c'),"status":"completed","conclusion":"success","created_at":green_again});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, green);
+    });
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "an entry waiting through a red-main pause proceeds once a newer main is green: {e}");
+    let r = lab.paused();
+    assert!(r["paused"].is_null(), "nothing pauses the queue again: {r}");
+    assert_eq!(r["pauses"].as_array().map(Vec::len), Some(1), "one journal line for the pause and what ended it: {r}");
+    assert_eq!(r["pauses"][0]["clearedBy"]["by"], "a newer green main");
+    assert_eq!(e["mainAtRelease"], sha('c'), "the entry counts main CI from the main that ended the pause");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn a_release_main_without_a_run_does_not_count_older_red_runs() {
     let lab = lab(green());
     change(lab.dir.path(), |s| {
