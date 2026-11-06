@@ -175,6 +175,15 @@ await page.locator(".work-activity-column-back").click();
 await page.waitForTimeout(300);
 check(await page.evaluate(() => !!document.querySelector(".agent-list") && !document.querySelector(".work-activity-column")),
   "going back returns the Agents");
+// And hands focus back to the entry it was opened from. It was left on
+// `body`: the button that had focus was removed with the column, and a
+// keyboard was then nowhere (Dev 7's final d6 check, change 2).
+const landed = await page.evaluate(() => {
+  const active = document.activeElement;
+  return { entry: active?.classList?.contains("work-activity-entry") ?? false,
+    what: active ? `${active.tagName.toLowerCase()}.${(active.className || "").toString().split(/\s+/)[0]}` : "none" };
+});
+check(landed.entry, `and focus goes back to the Work activity entry, not to the body (${landed.what})`);
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await context.close();
 await browser.close();

@@ -149,6 +149,7 @@ const sweep = (want) => {
   };
 
   const skipped = [];
+  const covered = [];
   const targets = [];
   for (const el of document.querySelectorAll(SELECTOR)) {
     const r = el.getBoundingClientRect();
@@ -165,10 +166,20 @@ const sweep = (want) => {
     if (why) { skipped.push({ what: named(el), where: place(el), why }); continue; }
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     if (!lands(el, cx, cy)) {
-      // Its middle belongs to something else: either it is covered, or it is
-      // a container whose own middle is a gap. Both are reported, not hidden.
-      skipped.push({ what: named(el), where: place(el), why: "its middle lands on something else",
-        box: `${Math.round(r.width)}x${Math.round(r.height)}` });
+      // Its middle belongs to something else: either something lies over it,
+      // or it is a container whose own middle is a gap.
+      //
+      // This was a plain exclusion once, and it swallowed a real defect: at
+      // 951x669 by touch with a Claude Agent the reading index entry was
+      // listed here, 77px of it lying over "Model & approvals", taking none
+      // of its own presses — and the check stayed green because being
+      // unreachable was the reason for leaving it out. Dev 7 found it by
+      // hand. A thing this task placed and cannot be pressed is the defect
+      // the check is for, so it is counted now.
+      const at = document.elementFromPoint(cx, cy);
+      covered.push({ what: named(el), where: place(el),
+        box: `${Math.round(r.width)}x${Math.round(r.height)}`,
+        under: at ? named(at) : "nothing" });
       continue;
     }
     const limit = 40;
@@ -207,7 +218,7 @@ const sweep = (want) => {
       if (w > 1 && h > 1) overlaps.push({ a: targets[i].what, b: targets[j].what,
         where: targets[i].where, by: `${Math.round(w)}x${Math.round(h)}` });
     }
-  return { targets, skipped, overlaps, want };
+  return { targets, skipped, covered, overlaps, want };
 };
 const audit = await page.evaluate(sweep, WANT);
 
@@ -248,6 +259,18 @@ const why = {};
 for (const s of audit.skipped) (why[s.why] ||= []).push(`${s.what} (${s.where})`);
 for (const [reason, list] of Object.entries(why))
   console.log(`  ${reason} — ${list.length}: ${list.slice(0, 6).join(", ")}${list.length > 6 ? ` …+${list.length - 6}` : ""}`);
+console.log(`\n--- pressable, but something lies over the middle ---`);
+if (!audit.covered.length) console.log("  (none)");
+for (const c of audit.covered)
+  console.log(`  ${c.what} (${c.where}) ${c.box} — the press lands on ${c.under}`);
+{
+  const ours = audit.covered.filter((c) => mine.includes(c.where));
+  check(ours.length === 0,
+    ours.length
+      ? `nothing this task placed is covered, but ${ours.map((c) => `${c.what} under ${c.under} (${c.where})`).join(", ")}`
+      : "nothing this task placed has something lying over it");
+}
+
 console.log(`\n--- under ${WANT}px but set aside, by name and reason ---`);
 const aside = small.filter((t) => DRAGGED.test(t.what));
 if (!aside.length) console.log("  (none)");

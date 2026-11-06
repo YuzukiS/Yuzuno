@@ -3295,7 +3295,15 @@ export function App() {
       <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
         {railWork && !phone ? (
-          <WorkActivityColumn onBack={() => setRailWork(false)} />
+          <WorkActivityColumn
+            onBack={() => {
+              // Before the column goes, so the browser does not drop focus on
+              // `body` when the button inside it is removed. The entry itself
+              // is in the head and stays mounted either way.
+              document.querySelector<HTMLElement>(".work-activity-entry")?.focus();
+              setRailWork(false);
+            }}
+          />
         ) : railIndex && !phone ? (
           <RailTurnIndex
             turns={logicalTurns}
@@ -3578,7 +3586,7 @@ export function App() {
                   <WorkActivityEntry
                     onOpen={() =>
                       phone
-                        ? openJobs({ agentId: agent.id })
+                        ? setPhoneDock((open) => (open === "work" ? null : "work"))
                         : (setRailIndex(false), setRailWork((open) => !open))
                     }
                   />

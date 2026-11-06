@@ -16,18 +16,26 @@
    under the conversation's tools when the name and the status leave them too
    little: a chip that cannot be pressed is worse than a taller head, and
    clipping their counts would hide the very thing they are there to say
-   (T-15). */
-.conversation-heading {
-  flex-wrap: wrap;
-}
+   (T-15).
+
+   That was written as two rules, and the second undid the first: `wrap`
+   followed by `nowrap` at the same specificity leaves `nowrap`, so the row
+   never broke and its children overflowed the title's box to the right
+   instead. Measured by Dev 7 and reproduced here at 951x669 by touch with a
+   Claude Agent, the reading index entry ended up at x 561-638 — 77px of it
+   lying over the conversation's tools, where it took 0 of 9 presses, all of
+   them landing on "Model & approvals" — and the Agent's name was squeezed to
+   0px. One rule now, and it wraps. */
 .conversation-heading {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px 10px;
 }
 .conversation-heading h1 {
-  min-width: 0;
+  /* Enough of the name to read a little of and to press for the rest
+     (h1[data-open] below); at 0 it vanished and there was nothing to press. */
+  min-width: 72px;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;

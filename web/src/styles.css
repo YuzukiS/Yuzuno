@@ -3817,6 +3817,27 @@ p {
   .app:not(.phone) .conversation-header {
     padding-block: 4px;
   }
+  /* The avatar reserves 47px of the name's side, and the rail beside it
+     already shows the same one. Without it the two entries share one wrapped
+     row instead of taking one each: measured at 951x669 by touch with a
+     Claude Agent, whose tools group is 300px of the 647, the head is 91px
+     rather than 123. (The conversation's own layout already drops it below
+     640px of container — this is the same thought for a short screen, where
+     the container is just above that.) */
+  .app:not(.phone) .conversation-title > .avatar {
+    display: none;
+  }
+  /* The tools took 300px of the head's 647 — "Model & approvals" alone is a
+     167px button — which left the name, its status and the two entries 275px
+     and forced them onto rows of their own. On a short screen the tools keep
+     their icons and give up their words: the control is still there, still
+     40px, still named for a reader by its aria-label, and the conversation's
+     own layout already does this below 640px of container. With that width
+     back the head is one row again (51px) instead of two (79px), and the wrap
+     above stays as the thing that keeps them from ever overlapping. */
+  .app:not(.phone) .conversation-actions .agent-settings-button > span {
+    display: none;
+  }
   /* The group keeps its outline — it reads as one set of tools — and loses
      only the padding inside it. */
   .app:not(.phone) .conversation-header .conversation-actions {
