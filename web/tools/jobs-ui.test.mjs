@@ -27,7 +27,9 @@ const ciPage = {runs:[ciRun],subscriptions:[ciSub],hasMore:false,nextBefore:null
 const resources = { cpuMillis: 500, memoryMiB: 128, swapMiB: 0 };
 const job = { usage:{MemoryCurrent:'18446744073709551615',MemoryPeak:'18446744073709551615'}, id: 'job-one', requestId: 'accepted', name: '中文 training', taskRef: 'T-47', agentId: 'a', agent: { name: 'Mori' }, machine: { name: 'Local WSL' }, status: 'unknown', reserved: true, reason: 'Reservation held until process groups are verified', resources, reservation: { cpuMillis: 600, memoryMiB: 192, swapMiB: 0 }, cursor: 1, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), finishedAt: null, argv: ['/usr/bin/true'], cwd: '/workspace', env: {}, outputs: ['report.json'] };
 const page = jobs => ({ jobs, hasMore: false, nextBefore: null });
-function mount(handler = () => page([]), stored = {}) {
+// `pollMs`: the panel's 3 s poll runs every pollMs instead, its firings
+// counted (`ticks`); every other timer is as the product sets it (T-60).
+function mount(handler = () => page([]), stored = {}, { pollMs } = {}) {
   const vc = new VirtualConsole(), errors = [], calls = [];
   vc.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://isolated.test', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: vc });
@@ -44,9 +46,27 @@ function mount(handler = () => page([]), stored = {}) {
     const status = value?.httpStatus || 200;
     return { ok: status < 400, status, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
+  let ticks = 0;
+  if (pollMs) {
+    const every = w.setInterval.bind(w);
+    w.setInterval = (fn, ms, ...rest) => ms === 3000 ? every(() => { ticks++; fn(); }, pollMs, ...rest) : every(fn, ms, ...rest);
+  }
   w.eval(bundle); w.renderJobs(props);
-  return { window: w, doc: w.document, calls, errors, close: () => w.close() };
+  return { window: w, doc: w.document, calls, errors, ticks: () => ticks, close: () => w.close() };
 }
+// The page shown, or hidden as a hidden tab is, with its visibilitychange.
+function showPage(p, shown) {
+  Object.defineProperty(p.doc, 'visibilityState', { configurable: true, get: () => shown ? 'visible' : 'hidden' });
+  p.doc.dispatchEvent(new p.window.Event('visibilitychange'));
+}
+// Until `n` of the page's own 3 s intervals (mapped to pollMs) have really
+// fired, counted on a timer of the test's: an interval passed, not a sleep.
+async function intervals(p, n) {
+  let fired = 0;
+  const probe = p.window.setInterval(() => fired++, 3000);
+  try { await until(() => fired >= n); } finally { p.window.clearInterval(probe); }
+}
+const reads = (p, url) => p.calls.filter(c => c.url === url).length;
 const button = (p, text) => [...p.doc.querySelectorAll('button')].find(b => b.textContent.trim() === text);
 const field = (p, text) => [...p.doc.querySelectorAll('label')].find(l => l.textContent.startsWith(text))?.querySelector('input,textarea');
 async function fill(p, text, value) { const el = field(p, text); assert.equal(!!el, true, `Missing ${text} field`); Object.getOwnPropertyDescriptor(el.tagName === 'TEXTAREA' ? p.window.HTMLTextAreaElement.prototype : p.window.HTMLInputElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new p.window.Event('input', { bubbles: true })); await wait(); }
@@ -69,6 +89,98 @@ test('unknown job stays protected, shows resources and bounded output, Escape on
     p.doc.querySelector('[role="dialog"]').dispatchEvent(new p.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     await until(() => !p.doc.querySelector('[role="dialog"]'));
     assert.equal(interrupts, 0); assert.equal(p.calls.some(c => c.url.endsWith('/cancel')), false);
+  } finally { p.close(); }
+});
+
+// T-60: the panel's 3 s poll asks Core for the list, the budget (a GPU
+// sample), and the selected job's details and output. None of it while the
+// page is hidden; shown again, it reads at once, then every 3 s.
+test('the Jobs panel reads nothing while the page is hidden, and reads at once when it is shown again', async () => {
+  const running = { ...job, status: 'running', reason: 'Running with verified cgroup limits' };
+  const p = mount(url => url === '/api/jobs/job-one' ? running : page([running]), {}, { pollMs: 1000 });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    await until(() => p.ticks() >= 1);
+    const jobsReads = () => p.calls.filter(c => c.url.startsWith('/api/jobs')).length;
+    showPage(p, false);
+    await wait();
+    const hidden = jobsReads();
+    await intervals(p, 2);
+    assert.equal(jobsReads(), hidden, 'no Jobs read while the page is hidden, over two intervals');
+    const shownAt = Date.now();
+    showPage(p, true);
+    await until(() => jobsReads() > hidden);
+    assert.ok(Date.now() - shownAt < 600, `the Jobs panel reads at once when it is shown again (after ${Date.now() - shownAt} ms)`);
+    for (const url of ['/api/jobs/budget', '/api/jobs/job-one', '/api/jobs/job-one/logs'])
+      assert.ok(reads(p, url) > 0, `${url} is read`);
+    const ticked = p.ticks(), budget = reads(p, '/api/jobs/budget');
+    await until(() => p.ticks() > ticked && reads(p, '/api/jobs/budget') > budget);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// T-60: a finished job's details and output no longer change. Read once it
+// is seen finished; again only once the list shows it changed (a new
+// attempt), or on Refresh. The list goes on being read.
+test('a finished job: its details and output are read once, until it changes or Refresh', async () => {
+  const finished = { ...job, status: 'succeeded', reserved: false, attempt: 'attempt-one', finishedAt: new Date().toISOString() };
+  const p = mount(url => url === '/api/jobs/job-one' ? finished : page([finished]), {}, { pollMs: 300 });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    const list = () => p.calls.filter(c => c.url.startsWith('/api/jobs?')).length;
+    const listed = list(), ticked = p.ticks();
+    await until(() => p.ticks() >= ticked + 3);
+    await wait();
+    assert.equal(reads(p, '/api/jobs/job-one'), 1, 'a finished job: its details are read once over three ticks');
+    assert.equal(reads(p, '/api/jobs/job-one/logs'), 1, 'a finished job: its output is read once over three ticks');
+    assert.ok(list() >= listed + 3, 'the list goes on being read');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // Running, then finished: read each tick, once more when the list shows
+  // it finished, then no more. A new attempt in the list, or Refresh, reads
+  // it again.
+  let current = { ...job, status: 'running', reason: 'Running with verified cgroup limits', attempt: 'attempt-one' };
+  const q = mount(url => url === '/api/jobs/job-one' ? current : page([current]), {}, { pollMs: 300 });
+  try {
+    await until(() => q.doc.querySelector('.conversation-job'));
+    q.doc.querySelector('.conversation-job').click();
+    await until(() => q.doc.querySelector('.job-log'));
+    await until(() => reads(q, '/api/jobs/job-one') >= 2);
+    const ticks = async n => { const at = q.ticks(); await until(() => q.ticks() >= at + n); await wait(); };
+    current = { ...current, status: 'failed', reserved: false, finishedAt: new Date().toISOString() };
+    const before = reads(q, '/api/jobs/job-one');
+    await ticks(3);
+    assert.equal(reads(q, '/api/jobs/job-one'), before + 1, 'read once more when the list shows it finished, then no more');
+    current = { ...current, status: 'failed', attempt: 'attempt-two' };
+    const settled = reads(q, '/api/jobs/job-one');
+    await ticks(2);
+    assert.equal(reads(q, '/api/jobs/job-one'), settled + 1, 'a new attempt in the list reads it again');
+    const again = reads(q, '/api/jobs/job-one'), listed = q.calls.filter(c => c.url.startsWith('/api/jobs?')).length;
+    q.doc.querySelector('button[aria-label="Refresh jobs"]').click();
+    await until(() => q.calls.filter(c => c.url.startsWith('/api/jobs?')).length > listed);
+    await wait(); await wait();
+    assert.equal(reads(q, '/api/jobs/job-one'), again + 1, 'Refresh reads it again');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+// T-60: unknown is not finished. Core holds the reservation and checks the
+// attempt again, so its details and output go on being read.
+test('an unknown job: its details and output keep being read', async () => {
+  const p = mount(url => url === '/api/jobs/job-one' ? job : page([job]), {}, { pollMs: 300 });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    const ticked = p.ticks(), details = reads(p, '/api/jobs/job-one'), output = reads(p, '/api/jobs/job-one/logs');
+    await until(() => p.ticks() >= ticked + 3);
+    await wait();
+    assert.ok(reads(p, '/api/jobs/job-one') >= details + 2, 'an unknown job: its details keep being read');
+    assert.ok(reads(p, '/api/jobs/job-one/logs') >= output + 2, 'an unknown job: its output keeps being read');
   } finally { p.close(); }
 });
 

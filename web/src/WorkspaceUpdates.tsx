@@ -24,6 +24,7 @@ import { InputPreferencesSection } from "./InputPreferences";
 import { PortalPreferencesSection } from "./portal/PortalPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { useDocumentVisible } from "./document-visible";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
 import { DeviceTransferSection } from "./DeviceTransfer";
@@ -108,8 +109,12 @@ export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
     },
     [enabled],
   );
+  // Not read while the page is hidden, unless an update is under way (its
+  // reload must follow); shown again, it reads at once (T-60).
+  const visible = useDocumentVisible();
+  const paused = !visible && !updateInProgress(status?.operation?.phase);
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || paused) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
@@ -125,7 +130,7 @@ export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [enabled, open, status?.operation?.phase, refresh]);
+  }, [enabled, open, status?.operation?.phase, refresh, paused]);
   const pageRelease = loadedRelease();
   const needsReload =
     !!pageRelease &&

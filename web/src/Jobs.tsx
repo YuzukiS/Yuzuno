@@ -47,6 +47,7 @@ import {
 } from "./CiJobs";
 import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 import { useAppearance } from "./appearance";
+import { useDocumentVisible } from "./document-visible";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { jobsText, type JobsText } from "./jobs-text";
 import {
@@ -64,6 +65,8 @@ type Job = {
   id: string;
   name: string;
   status: string;
+  /** This attempt's id: a retry is a new one. */
+  attempt?: string;
   reason: string | null;
   agentId: string;
   agent: { name: string };
@@ -188,6 +191,10 @@ type Log = {
   totalBytes: number;
   truncated: boolean;
 };
+/** Core's finished states (jobs/store.rs, runs.rs TERMINAL): a finished
+ * job's details and output no longer change (T-60). An unknown job is not
+ * one: Core holds its reservation and checks the attempt again. */
+const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "rejected"]);
 /** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
 const active = (job: Job) =>
   job.reserved || job.status === "queued" || job.status === "waiting";
@@ -546,6 +553,10 @@ export function Jobs({
   );
   const pending = useRef<{ key: string; requestId: string } | null>(saved);
   const generation = useRef(0);
+  // The selected job as last read finished (T-60): its details and output are
+  // read no more until the list shows it changed, or it is looked at afresh.
+  const settled = useRef<{ id: string; status: string; attempt?: string } | null>(null);
+  const visible = useDocumentVisible();
   const load = useCallback(
     async (before?: number) => {
       const stamp = generation.current;
@@ -602,6 +613,11 @@ export function Jobs({
         return;
       }
       if (!selected) return;
+      // Finished as last read, and the list still says so: nothing to read
+      // again (T-60). A row turning finished gives one more read, then none.
+      const row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
+      const done = settled.current;
+      if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
       // A failure already shown for this job stays until its read succeeds.
       if (stamp === generation.current)
         setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
@@ -614,6 +630,7 @@ export function Jobs({
           setDetail(job);
           setLog(output);
           setDetailRead({ id: selected, failure: null });
+          settled.current = FINISHED.has(job.status) ? { id: selected, status: job.status, attempt: job.attempt } : null;
         }
       } catch (e) {
         if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
@@ -659,16 +676,21 @@ export function Jobs({
       window.removeEventListener("yuzuno:handoff-sent", sent);
     };
   }, []);
+  // A finished job is read again once looked at afresh (T-60).
+  useEffect(() => {
+    settled.current = null;
+  }, [open, revision, selected, scope]);
   useEffect(() => {
     generation.current++;
-    if (!open || disabled || source !== "local") return;
+    // Not while the page is hidden: shown again, it reads at once (T-60).
+    if (!open || disabled || source !== "local" || !visible) return;
     void load();
     const timer = setInterval(() => void load(), 3000);
     return () => {
       generation.current++;
       clearInterval(timer);
     };
-  }, [open, disabled, load, revision, source]);
+  }, [open, disabled, load, revision, source, visible]);
   useEffect(() => {
     setPage({ jobs: [], hasMore: false, nextBefore: null });
     setListed(false);
@@ -1047,6 +1069,7 @@ export function Jobs({
                             className="icon-button"
                             onClick={() => {
                               setError("");
+                              settled.current = null;
                               void load();
                             }}
                             aria-label={t.refresh}
