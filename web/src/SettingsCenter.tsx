@@ -134,21 +134,15 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     // Each request once: not again when the catalog re-renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openAt?.nonce]);
+  // Opened together with its dialog (openAt), this comes after the dialog's
+  // own first focus, which moves nothing once focus is inside it. A dialog
+  // that hands off to Settings gives no focus back to its trigger (Jobs'
+  // Edit in Settings, T-55), so nothing comes after this.
   useEffect(() => {
     if (!focusEditor || !editor) return;
-    const id = `settings-editor-${editor}`;
-    const target = document.getElementById(id);
+    const target = document.getElementById(`settings-editor-${editor}`);
     target?.focus();
     target?.scrollIntoView?.({ block: "start" });
-    // Opened together with its dialog (openAt, T-55: the Jobs card's Edit in
-    // Settings), the dialog's own first focus and the focus a dialog that
-    // just closed gives back can both come after this; they have by the next
-    // frame, and focus goes back to the editor unless it is already in it.
-    const frame = requestAnimationFrame(() => {
-      const again = document.getElementById(id);
-      if (again && !again.contains(document.activeElement)) again.focus();
-    });
-    return () => cancelAnimationFrame(frame);
   }, [focusEditor, editor]);
   // This shell and its directory are in the language shown; an editor is
   // only when this version translates it (translatedEditors).
