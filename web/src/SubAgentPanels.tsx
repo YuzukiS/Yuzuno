@@ -13,8 +13,8 @@ import {
 } from "./subagents";
 import type { NativeItem } from "./types";
 import { useConversationReveal, useConversationWindowed } from "./ConversationWindow";
-import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity } from "./WorkDock";
-import { subAgentWork, type WorkItem } from "./work-activity.ts";
+import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity, type WorkEntry } from "./WorkDock";
+import { subAgentWork } from "./work-activity.ts";
 import { useLanguage, useStrings, type Language } from "./i18n";
 import { cardWords } from "./subagent-text";
 import { useSurfaceIn } from "./surface";
@@ -146,14 +146,17 @@ export function SubAgentDock({
   const all = useMemo(() => [...codexEntries(agentId, codex, language), ...entries], [agentId, codex, entries, language]);
   // Every sub-agent the conversation knows about, for the dock's one entry,
   // whatever the limit draws here.
-  const work = useMemo<WorkItem[]>(
+  const [card, setCard] = useState<{ key: string | null; from: HTMLElement } | null>(null);
+  const work = useMemo<WorkEntry[]>(
     () => all
-      .map((child) => ({ id: child.key, kind: "subAgent" as const, state: subAgentWork(child.status) }))
-      .filter((item) => item.state !== "uncounted") as WorkItem[],
+      .map((child) => ({ id: child.key, kind: "subAgent" as const, state: subAgentWork(child.status),
+        name: child.label, says: child.state,
+        // Its own card, opened from wherever the reader pressed.
+        onOpen: (from: HTMLElement) => setCard({ key: child.key, from }) }))
+      .filter((item) => item.state !== "uncounted") as WorkEntry[],
     [all],
   );
   useWorkActivity("subAgent", work);
-  const [card, setCard] = useState<{ key: string | null; from: HTMLElement } | null>(null);
   if (!all.length || limit <= 0) return null;
   const shown = all
     .map((child, order) => ({ child, order }))

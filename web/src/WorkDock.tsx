@@ -9,6 +9,7 @@ import {
   type ReactNode, type RefObject,
 } from "react";
 import {
+  ArrowLeft,
   BriefcaseBusiness,
   Check,
   CircleHelp,
@@ -25,6 +26,24 @@ import { byAttention, workActivity, type WorkItem, type WorkKind } from "./work-
 import "./work-dock.css";
 
 // The dock's own words (T-189); labels and names come from its callers.
+const column = strings({
+  title: "Work activity",
+  back: "Back to Agents",
+  attention: "Needs a look",
+  jobs: "Jobs",
+  runs: "CI",
+  subAgents: "Sub-agents",
+  empty: "Nothing is running for this Agent.",
+}, {
+  title: "工作活动",
+  back: "返回 Agent 列表",
+  attention: "需要注意",
+  jobs: "Jobs",
+  runs: "CI",
+  subAgents: "子 Agent",
+  empty: "这个 Agent 没有在进行的工作。",
+});
+
 const entry = strings({
   label: "Work activity",
   // Each kind says its own thing; there is never a total across them.
@@ -107,11 +126,23 @@ export function StatusMark({
  * and the dock says it once, rather than each kind summing itself and the
  * reader counting three summaries as one.
  */
-type Register = (kind: WorkKind, items: readonly WorkItem[]) => void;
+/**
+ * A piece of work as the column shows it: what it is, what it is doing, and
+ * how to open what already exists for it. Each kind supplies its own opener,
+ * so a Job reaches the Jobs panel and a sub-agent reaches its card without
+ * this knowing how either is done (T-15, V9).
+ */
+export type WorkEntry = WorkItem & {
+  name: string;
+  /** Its state in words, as its own kind says it. */
+  says?: string;
+  onOpen?: (from: HTMLElement) => void;
+};
+type Register = (kind: WorkKind, items: readonly WorkEntry[]) => void;
 const Registry = createContext<Register | null>(null);
 
 /** Hands this kind's work to the dock, and takes it back when it goes. */
-export function useWorkActivity(kind: WorkKind, items: readonly WorkItem[]) {
+export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[]) {
   const register = useContext(Registry);
   // The identity of the array changes on every render; what it says does not.
   const key = JSON.stringify(items);
@@ -128,19 +159,24 @@ export function useWorkActivity(kind: WorkKind, items: readonly WorkItem[]) {
  * it rather than in the dock's own narrow column (T-15).
  */
 const Activity = createContext<ReturnType<typeof workActivity> | null>(null);
+/** The same work, in the order it should be looked at. */
+const Entries = createContext<readonly WorkEntry[]>([]);
 
 export function WorkActivityProvider({ children }: { children: ReactNode }) {
-  const [work, setWork] = useState<Partial<Record<WorkKind, readonly WorkItem[]>>>({});
+  const [work, setWork] = useState<Partial<Record<WorkKind, readonly WorkEntry[]>>>({});
   const register = useCallback<Register>((kind, items) => {
     setWork((was) => (was[kind] === items ? was : { ...was, [kind]: items }));
   }, []);
-  const activity = useMemo(
-    () => workActivity(byAttention([...(work.job ?? []), ...(work.run ?? []), ...(work.subAgent ?? [])])),
+  const sorted = useMemo(
+    () => byAttention([...(work.job ?? []), ...(work.run ?? []), ...(work.subAgent ?? [])]) as WorkEntry[],
     [work],
   );
+  const activity = useMemo(() => workActivity(sorted), [sorted]);
   return (
     <Registry.Provider value={register}>
-      <Activity.Provider value={activity}>{children}</Activity.Provider>
+      <Activity.Provider value={activity}>
+        <Entries.Provider value={sorted}>{children}</Entries.Provider>
+      </Activity.Provider>
     </Registry.Provider>
   );
 }
@@ -190,6 +226,67 @@ function useSettleOnEnd(node: RefObject<HTMLElement | null>, status: string) {
       element.animate([{ scale: "0.96" }, { scale: "1.02", offset: 0.6 }, { scale: "1" }],
         { duration: tokenMs("--motion-micro", 120), easing, id: "dock-settle-spring" });
   }, [node, status]);
+}
+
+/**
+ * This Agent's work in the rail, in place of the Agents: what needs a look
+ * first, then the Jobs, the checks and the sub-agents, each opening the
+ * detail it already has. The entry in the head counts exactly these, so the
+ * number on it and what opens here are the same work (T-15, V9).
+ */
+export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
+  const t = useStrings(column);
+  const language = useLanguage();
+  const entries = useContext(Entries);
+  const needsLook = entries.filter((e) => e.state === "exception" || e.state === "unrecognized");
+  const rest = (kind: WorkKind) => entries.filter((e) => e.kind === kind && !needsLook.includes(e));
+  const groups = [
+    { id: "attention", label: t.attention, items: needsLook },
+    { id: "jobs", label: t.jobs, items: rest("job") },
+    { id: "runs", label: t.runs, items: rest("run") },
+    { id: "subAgents", label: t.subAgents, items: rest("subAgent") },
+  ].filter((group) => group.items.length > 0);
+  return (
+    <div className="work-activity-column" lang={langTag(language)}>
+      <div className="work-activity-column-top">
+        <button type="button" className="quiet-button work-activity-column-back" onClick={onBack}>
+          <ArrowLeft size={13} aria-hidden="true" />
+          {t.back}
+        </button>
+      </div>
+      <h2 className="work-activity-column-title">
+        <BriefcaseBusiness size={13} aria-hidden="true" />
+        {t.title}
+      </h2>
+      {groups.length === 0 ? (
+        <p className="work-activity-column-empty">{t.empty}</p>
+      ) : (
+        <div className="work-activity-column-list">
+          {groups.map((group) => (
+            <section key={group.id} aria-label={group.label}>
+              <h3 data-attention={group.id === "attention" || undefined}>{group.label}</h3>
+              <ul>
+                {group.items.map((item) => (
+                  <li key={`${item.kind}:${item.id}`}>
+                    <button
+                      type="button"
+                      className="work-activity-row"
+                      data-state={item.state}
+                      disabled={!item.onOpen}
+                      onClick={(event) => item.onOpen?.(event.currentTarget)}
+                    >
+                      <span className="work-activity-row-name">{item.name}</span>
+                      {item.says && <span className="work-activity-row-says">{item.says}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function WorkDock({

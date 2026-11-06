@@ -179,7 +179,7 @@ import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
 import { Jobs, ConversationJobs, openJobs } from "./Jobs";
-import { WorkActivityEntry, WorkActivityProvider } from "./WorkDock";
+import { WorkActivityColumn, WorkActivityEntry, WorkActivityProvider } from "./WorkDock";
 import { RailTurnIndex } from "./RailTurnIndex";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
@@ -494,6 +494,8 @@ export function App() {
   // back. One place for it, rather than a drawer of its own beside the one a
   // phone already has (T-15).
   const [railIndex, setRailIndex] = useState(false);
+  // The same left column, showing this Agent's work instead (T-15, V9).
+  const [railWork, setRailWork] = useState(false);
   // Phones (T-170): one screen at a time, the Agent list or what is open.
   // The list covers the open view instead of replacing it, so its drafts,
   // reading place and any annotation stay as they were.
@@ -2521,7 +2523,7 @@ export function App() {
   const [nameOpen, setNameOpen] = useState(false);
   const [nameCut, setNameCut] = useState(false);
   useLayoutEffect(() => setNameOpen(false), [selected]);
-  useLayoutEffect(() => setRailIndex(false), [selected]);
+  useLayoutEffect(() => { setRailIndex(false); setRailWork(false); }, [selected]);
   useLayoutEffect(() => {
     const element = nameRef.current;
     if (!element || nameOpen) return;
@@ -3159,6 +3161,7 @@ export function App() {
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
     <HomeReplyLinks.Provider value={previewMode || !workspaceId ? null : homeReplyLinks}>
+    <WorkActivityProvider>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen || phone ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
       style={panelWidths.style}
@@ -3281,7 +3284,9 @@ export function App() {
       </header>
       <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
-        {railIndex && !phone ? (
+        {railWork && !phone ? (
+          <WorkActivityColumn onBack={() => setRailWork(false)} />
+        ) : railIndex && !phone ? (
           <RailTurnIndex
             turns={logicalTurns}
             readingTurnId={readingTurn}
@@ -3454,7 +3459,6 @@ export function App() {
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
-       <WorkActivityProvider>
         {coreBanner.shown && (
           <div className={`banner-reveal${coreBanner.leaving ? " is-leaving" : ""}`}>
             <div className="banner-reveal-clip">
@@ -3561,7 +3565,13 @@ export function App() {
                   {/* One line for the Jobs, runs and sub-agents this
                       conversation has, where there is room to read it; the
                       dock keeps the detail (T-15). */}
-                  <WorkActivityEntry onOpen={() => openJobs({ agentId: agent.id })} />
+                  <WorkActivityEntry
+                    onOpen={() =>
+                      phone
+                        ? openJobs({ agentId: agent.id })
+                        : (setRailIndex(false), setRailWork((open) => !open))
+                    }
+                  />
                   {/* And beside it, the way into where the reader is: the
                       rail takes the index where there is a rail, and a phone
                       opens the drawer it already has. One entry either way,
@@ -3575,7 +3585,7 @@ export function App() {
                     onClick={() =>
                       phone
                         ? setPhoneDock((open) => (open === "turns" ? null : "turns"))
-                        : setRailIndex((open) => !open)
+                        : (setRailWork(false), setRailIndex((open) => !open))
                     }
                   >
                     <History size={14} aria-hidden="true" />
@@ -4458,7 +4468,6 @@ export function App() {
             </div>
           </div>
         )}
-      </WorkActivityProvider>
       </main>
       </ClarificationHost.Provider>
 
@@ -4859,6 +4868,7 @@ export function App() {
       <ToastStack notice={notice} error={menuError} />
       <HandoffDropStrip />
     </div>
+    </WorkActivityProvider>
     </HomeReplyLinks.Provider>
     </MessageLinks.Provider>
     </PointFixOpen.Provider>

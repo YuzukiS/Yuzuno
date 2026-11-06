@@ -44,8 +44,8 @@ import {
   type CiOpen,
   type Run,
 } from "./CiJobs";
-import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity } from "./WorkDock";
-import { jobWork, runWork, type WorkItem } from "./work-activity.ts";
+import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity, type WorkEntry } from "./WorkDock";
+import { jobWork, runWork } from "./work-activity.ts";
 import { useAppearance } from "./appearance";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { jobsText, type JobsText } from "./jobs-text";
@@ -378,13 +378,18 @@ export function ConversationJobs({
   // Every Job and run the conversation knows about, not only the few drawn
   // as marks: the entry above counts the work, the marks show the newest.
   // A Job held at a checkpoint is an exception that is waiting, not broken.
-  const work = useMemo<WorkItem[]>(() => [
+  const work = useMemo<WorkEntry[]>(() => [
     ...jobs.map((job) => ({ id: job.id, kind: "job" as const, state: jobWork(job.status),
-      resumable: checkpointed(job) || stoppingAtCheckpoint(job) })),
-    ...ci.runs.map((run) => ({ id: run.id, kind: "run" as const, state: runWork(run.status, run.conclusion) })),
-  ].filter((item) => item.state !== "uncounted") as WorkItem[], [jobs, ci.runs]);
-  useWorkActivity("job", work.filter((item: WorkItem) => item.kind === "job"));
-  useWorkActivity("run", work.filter((item: WorkItem) => item.kind === "run"));
+      resumable: checkpointed(job) || stoppingAtCheckpoint(job),
+      name: job.name, says: stateOf(job, t).name,
+      // Its own detail, where it already lives.
+      onOpen: () => openJobs({ jobId: job.id, agentId }) })),
+    ...ci.runs.map((run) => ({ id: run.id, kind: "run" as const, state: runWork(run.status, run.conclusion),
+      name: run.name, says: run.conclusion ?? run.status,
+      onOpen: () => openJobs({ agentId, source: "github_actions" }) })),
+  ].filter((item) => item.state !== "uncounted") as WorkEntry[], [jobs, ci.runs, agentId, t]);
+  useWorkActivity("job", work.filter((item: WorkEntry) => item.kind === "job"));
+  useWorkActivity("run", work.filter((item: WorkEntry) => item.kind === "run"));
   // Jobs, then CI, as marks on the conversation's left edge (WorkDock.tsx).
   // A kind set to 0 has no group here at all.
   return (

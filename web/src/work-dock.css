@@ -483,3 +483,104 @@
     padding-inline: 11px;
   }
 }
+
+/* This Agent's work in the rail, in place of the Agents (T-15, V9). */
+.work-activity-column {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+.work-activity-column-top {
+  flex: none;
+}
+.work-activity-column-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 0 6px;
+}
+.work-activity-column-title {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.work-activity-column-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 8px;
+}
+.work-activity-column-list section + section {
+  margin-top: 10px;
+}
+.work-activity-column-list h3 {
+  margin: 0 0 4px;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 650;
+}
+/* What needs a look says so in its colour as well as its place. */
+.work-activity-column-list h3[data-attention] {
+  color: var(--error-ink, var(--coral));
+}
+.work-activity-column-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.work-activity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 2px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.work-activity-row:hover,
+.work-activity-row:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.work-activity-row:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.work-activity-row[data-state="exception"] {
+  border-color: color-mix(in srgb, var(--error-ink, var(--coral)) 35%, transparent);
+}
+.work-activity-row-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-activity-row-says {
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+}
+.work-activity-column-empty {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}

@@ -148,9 +148,13 @@ check(!/\b\d+ (succeeded|done|passed)\b/.test(seen.text || ""),
   "nothing claims a total of successes across the kinds");
 check(seen.height >= 40, `a finger can reach it (${seen.height}px)`);
 
+// V9: where there is a rail, pressing opens this Agent's work in it rather
+// than the Jobs dialog, which could only ever show one of the three kinds
+// the entry counts (t15-work-column.mjs). A phone still opens the dialog.
 await page.locator(".work-activity-entry").click();
-await page.waitForTimeout(300);
-check(!!opened, `pressing it opens the list (${opened ?? "nothing"})`);
+await page.waitForTimeout(400);
+const column = await page.evaluate(() => !!document.querySelector(".work-activity-column"));
+check(column, `pressing it opens this Agent's work in the rail (${column ? "shown" : "nothing"})`);
 // The name must carry the words that are on the screen: a label of its own
 // would hide the counts from a screen reader and from voice control, which
 // listens for what a reader can see.
