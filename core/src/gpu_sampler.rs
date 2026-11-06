@@ -544,15 +544,22 @@ mod nvml {
         _memory: c_uint,
     }
 
+    type Bare = unsafe extern "C" fn() -> Return;
+    type Count = unsafe extern "C" fn(*mut c_uint) -> Return;
+    type ByIndex = unsafe extern "C" fn(c_uint, *mut Handle) -> Return;
+    type Text = unsafe extern "C" fn(Handle, *mut c_char, c_uint) -> Return;
+    type MemoryInfo = unsafe extern "C" fn(Handle, *mut Memory) -> Return;
+    type UtilizationRates = unsafe extern "C" fn(Handle, *mut Utilization) -> Return;
+
     struct Calls {
-        init: unsafe extern "C" fn() -> Return,
-        shutdown: unsafe extern "C" fn() -> Return,
-        count: unsafe extern "C" fn(*mut c_uint) -> Return,
-        handle: unsafe extern "C" fn(c_uint, *mut Handle) -> Return,
-        uuid: unsafe extern "C" fn(Handle, *mut c_char, c_uint) -> Return,
-        name: unsafe extern "C" fn(Handle, *mut c_char, c_uint) -> Return,
-        memory: unsafe extern "C" fn(Handle, *mut Memory) -> Return,
-        utilization: unsafe extern "C" fn(Handle, *mut Utilization) -> Return,
+        init: Bare,
+        shutdown: Bare,
+        count: Count,
+        handle: ByIndex,
+        uuid: Text,
+        name: Text,
+        memory: MemoryInfo,
+        utilization: UtilizationRates,
     }
 
     /// An open NVML session: shut down when dropped. The library stays
@@ -584,25 +591,25 @@ mod nvml {
                 return Err(last_error());
             }
             macro_rules! call {
-                ($symbol:literal) => {{
+                ($symbol:literal, $kind:ty) => {{
                     // SAFETY: the symbol is NUL-terminated; a missing one is a null pointer, refused below.
                     let found = unsafe { libc::dlsym(library, concat!($symbol, "\0").as_ptr().cast()) };
                     if found.is_null() {
                         return Err(format!("{} not found", $symbol));
                     }
                     // SAFETY: the symbol has the signature `nvml.h` gives it (see the module's note).
-                    unsafe { std::mem::transmute::<*mut c_void, _>(found) }
+                    unsafe { std::mem::transmute::<*mut c_void, $kind>(found) }
                 }};
             }
             let calls = Calls {
-                init: call!("nvmlInit_v2"),
-                shutdown: call!("nvmlShutdown"),
-                count: call!("nvmlDeviceGetCount_v2"),
-                handle: call!("nvmlDeviceGetHandleByIndex_v2"),
-                uuid: call!("nvmlDeviceGetUUID"),
-                name: call!("nvmlDeviceGetName"),
-                memory: call!("nvmlDeviceGetMemoryInfo"),
-                utilization: call!("nvmlDeviceGetUtilizationRates"),
+                init: call!("nvmlInit_v2", Bare),
+                shutdown: call!("nvmlShutdown", Bare),
+                count: call!("nvmlDeviceGetCount_v2", Count),
+                handle: call!("nvmlDeviceGetHandleByIndex_v2", ByIndex),
+                uuid: call!("nvmlDeviceGetUUID", Text),
+                name: call!("nvmlDeviceGetName", Text),
+                memory: call!("nvmlDeviceGetMemoryInfo", MemoryInfo),
+                utilization: call!("nvmlDeviceGetUtilizationRates", UtilizationRates),
             };
             // SAFETY: nvmlInit_v2 takes no arguments; it is called once per session, on the session's thread.
             let code = unsafe { (calls.init)() };

@@ -169,7 +169,11 @@ async fn the_load_and_jobs_report_one_sample_and_its_observed_at() {
     let ws = crate::workspace::Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
     ws.gpus.configure(Config { interval: Duration::from_secs(5), idle: Duration::from_secs(60), ..config(dir.path()) });
     let load = ws.machine_load().await.unwrap();
-    let gpus = crate::jobs::call(ws.clone(), None, "job_gpus".into(), json!({})).await.unwrap();
+    // Two Jobs reads at once, the first to keep this reading: each finds it kept.
+    let (gpus, beside) = tokio::join!(crate::jobs::call(ws.clone(), None, "job_gpus".into(), json!({})),
+        crate::jobs::call(ws.clone(), None, "job_gpus".into(), json!({})));
+    let (gpus, beside) = (gpus.unwrap(), beside.unwrap());
+    assert_eq!((&gpus["problem"], &beside["problem"]), (&Value::Null, &Value::Null), "a read alongside finds the reading kept");
     let loaded = &load["gpus"][0];
     assert_eq!((&loaded["name"], &loaded["utilPct"], &loaded["source"]), (&json!("Stub GPU"), &json!(0), &json!("nvidia-smi")));
     assert_eq!(load["gpus"].as_array().map(Vec::len), Some(1), "a device with unknown values is left out of the load");

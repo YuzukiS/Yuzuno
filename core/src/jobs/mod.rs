@@ -1474,7 +1474,8 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
 /// Keep the GPU sampler's reading (T-58: the one place Core reads its GPUs)
 /// for admission and views, with its own observedAt: the latest, or, forced,
 /// one taken now on a running NVML session (D2), and which it was (`read`).
-/// A reading already kept is not written again.
+/// A reading already kept is not written again; one is marked kept only once
+/// written, so a read alongside never finds it marked but not yet there.
 async fn sample_gpus(ws: &Arc<Workspace>, force: bool) {
     let (sample, read) = if force {
         ws.gpus.now(crate::machine_load::GPU_WAIT).await
@@ -1482,17 +1483,15 @@ async fn sample_gpus(ws: &Arc<Workspace>, force: bool) {
         (ws.gpus.latest(crate::machine_load::GPU_WAIT).await, "latest")
     };
     let Some(sample) = sample else { return };
-    {
-        let mut last = ws.jobs.gpu_sampled.lock().unwrap();
-        if last.as_deref() == Some(sample.observed_at.as_str()) {
-            return;
-        }
-        *last = Some(sample.observed_at.clone());
+    if ws.jobs.gpu_sampled.lock().unwrap().as_deref() == Some(sample.observed_at.as_str()) {
+        return;
     }
+    let observed = sample.observed_at.clone();
     let mut sample = sample.to_json();
     sample["read"] = json!(read);
-    if let Err(error) = ws.stored(move |s| s.record_gpu_sample(sample)).await {
-        eprintln!("GPU sample not recorded: {error:#}");
+    match ws.stored(move |s| s.record_gpu_sample(sample)).await {
+        Ok(()) => *ws.jobs.gpu_sampled.lock().unwrap() = Some(observed),
+        Err(error) => eprintln!("GPU sample not recorded: {error:#}"),
     }
 }
 
