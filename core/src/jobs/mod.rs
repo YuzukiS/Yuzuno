@@ -54,6 +54,9 @@ mod run_tests;
 mod service_tests;
 #[cfg(test)]
 mod tests;
+mod watch;
+#[cfg(test)]
+mod watch_tests;
 
 use crate::{server::ApiError, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
@@ -90,6 +93,9 @@ pub(crate) struct State {
     remote_gate: Mutex<()>,
     remote_wake: Arc<Notify>,
     remote_seen: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// What each local attempt's files said when the host helper was last
+    /// asked about it (T-59): the tick asks only when they call for it.
+    watch: watch::Watch,
     /// The SSH connections remote Job calls share (T-163).
     ssh_mux: ssh_mux::Mux,
 }
@@ -1433,8 +1439,9 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         changed(ws);
     }
     let active = ws.stored(|s| s.active_jobs()).await?;
+    ws.jobs.watch.retain(&active.iter().filter_map(|job| job["attempt"].as_str().map(str::to_owned)).collect());
     for job in active {
-        let evidence = host::observe(&ws.data_dir, &job).await;
+        let evidence = ws.jobs.watch.observe(&ws.data_dir, &job).await;
         match evidence {
             Ok(Some(value)) => {
                 let id = job["id"]

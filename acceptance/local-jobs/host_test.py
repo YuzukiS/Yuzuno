@@ -188,19 +188,84 @@ class SharedEndTests(unittest.TestCase):
         self.assertEqual(host.read(self.folder/'deadline.json')['kind'],'notStarted')
         self.assertIsNotNone(host.read(self.folder/'started.json'))
 
-    def supervise_until_end(self, spec, ends):
-        """Run supervise against a unit that stays active until `ends(calls)` says it has ended."""
-        calls = []
+    def supervise_until_end(self, spec, ends, shows=None):
+        """Run supervise against a unit whose cgroup stays populated until `ends(calls)` says it has
+        ended; every systemd question it asks is kept in `shows`."""
+        calls, shows = [], [] if shows is None else shows
         def command(args, timeout=8, check=True):
             calls.append((self.clock[0], list(args), host.read(self.folder/'deadline.json')))
             return MagicMock(returncode=0, stdout='', stderr='')
-        state = {'ActiveState':'active','SubState':'running','MainPID':'42','Result':'success'}
+        state = {'ActiveState':'active','SubState':'running','MainPID':'42','Result':'success','ControlGroup':'/fake-worker'}
+        def show(unit):
+            shows.append((self.clock[0], unit))
+            return state
         clock, sleep = self.fake_time()
-        with clock, sleep, patch.object(host,'command',side_effect=command), patch.object(host,'show',return_value=state), \
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',side_effect=command), patch.object(host,'show',side_effect=show), \
                 patch.object(host,'pids_evidence',return_value=None), \
+                patch.object(host,'group_empty',side_effect=lambda group: ends(calls) is not None), \
                 patch.object(host,'classify',side_effect=lambda *_: ends(calls)), patch.object(host,'terminal_reason',return_value='signal'):
             outcome = host.supervise(spec, self.folder)
         return outcome, calls
+
+    def test_supervise_reads_the_group_not_systemd_while_the_worker_runs(self):
+        # T-59: systemd is asked once for the worker's identity and again at its end, however long it runs.
+        counts = []
+        for seconds in (60, 180):
+            with self.subTest(seconds=seconds):
+                self.clean('launch.json', 'result.json')
+                self.clock[0] = 1000.0
+                shows = []
+                outcome, calls = self.supervise_until_end(self.spec, lambda calls: 'succeeded' if self.clock[0] >= 1000 + seconds else None, shows)
+                self.assertEqual(outcome['status'], 'succeeded')
+                counts.append((len(shows), [args[:3] for _, args, _ in calls]))
+        self.assertEqual(counts[0], counts[1], 'systemd is asked only at the start and the end, however long the worker runs')
+        self.assertEqual(counts[0][0], 2, f'one identity question, one at the end: {counts}')
+
+    def test_a_worker_that_dies_before_its_start_receipt_is_unknown_as_before(self):
+        clock, sleep = self.fake_time()
+        dead = {'ActiveState':'failed','SubState':'failed','MainPID':'0','Result':'exit-code','ControlGroup':''}
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=0, stdout='', stderr='')), \
+                patch.object(host,'show',return_value=dead) as show:
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
+        self.assertEqual(show.call_count, 2, 'its identity, then once its group is empty')
+
+    def test_a_failed_launch_keeps_the_units_systemd_state(self):
+        # R1 1604b96b: the unknown outcome of a failed systemd-run records the unit as systemd shows it, as before T-59.
+        clock, sleep = self.fake_time()
+        state = {'LoadState':'loaded','ActiveState':'active','SubState':'running','Description':'another job','MainPID':'7','ControlGroup':''}
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=1, stdout='', stderr='Unit worker.service already exists.')), \
+                patch.object(host,'show',return_value=state) as show:
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
+        self.assertEqual(outcome['evidence']['systemd'], state, "a failed launch's outcome carries the unit's systemd state")
+        self.assertEqual(outcome['evidence']['launch'], {'returnCode': 1, 'stderr': 'Unit worker.service already exists.'})
+        self.assertEqual(show.call_count, 1)
+
+    def test_the_collector_samples_the_group_files_while_the_worker_runs(self):
+        proof = {'jobId':'one','attempt':'attempt','bootId':host.boot_id(),'invocationId':'invocation','controlGroup':'/fake-worker',
+                 'pids':{'max':512,'events':{'max':0}}}
+        host.atomic(self.folder/'started.json', proof)
+        running = {'ActiveState':'active','SubState':'running','MainPID':'42','InvocationID':'invocation','ControlGroup':'/fake-worker'}
+        ended = {'ActiveState':'active','SubState':'exited','MainPID':'0','InvocationID':'invocation','ControlGroup':'',
+                 'Result':'exit-code','ExecMainCode':'1','ExecMainStatus':'1'}
+        samples = []
+        def sample(group):
+            samples.append(group)
+            return {'max':512,'events':{'max':len(samples)}}
+        clock, sleep = self.fake_time()
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=0, stdout='', stderr='')), \
+                patch.object(host,'show',side_effect=[running, ended]), patch.object(host,'pids_snapshot',side_effect=sample), \
+                patch.object(host,'group_empty',side_effect=lambda group: self.clock[0] >= 1030):
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual(outcome['status'], 'failed')
+        self.assertEqual(outcome['evidence']['pids']['source'], 'collector-sample')
+        self.assertGreaterEqual(len(samples), 59, 'sampled from its files on every poll while it ran')
+        self.assertEqual(set(samples), {Path('/sys/fs/cgroup/fake-worker')})
 
     def test_supervise_stops_the_unit_at_the_end_with_term_then_kill_and_records_it_first(self):
         spec = {**self.spec,'deadlineAtUnix':1000+61}
