@@ -31,9 +31,10 @@ const WINDOW: Duration = Duration::from_secs(1);
 const REUSE_AFTER: Duration = Duration::from_millis(500);
 /// A previous sample older than this is not used: the window would be stale.
 const REUSE_UNTIL: Duration = Duration::from_secs(5);
-const GPU_TIMEOUT: Duration = Duration::from_secs(2);
-/// How long a missing or failing nvidia-smi is not asked again.
-const GPU_RETRY: Duration = Duration::from_secs(60);
+/// How long a read waits for the GPU sampler's first reading after it starts.
+pub(crate) const GPU_WAIT: Duration = Duration::from_secs(2);
+/// A GPU reading older than this is not shown: three of the sampler's intervals.
+const GPU_STALE: Duration = Duration::from_secs(15);
 const KIB_PER_MIB: f64 = 1024.0;
 
 pub fn router() -> Router<Arc<Workspace>> {
@@ -44,11 +45,10 @@ async fn load(AppState(ws): AppState<Arc<Workspace>>) -> Result<Json<Value>, Api
     Ok(Json(ws.machine_load().await?))
 }
 
-/// The previous sample and its answer, and when nvidia-smi may be asked again.
+/// The previous sample and its answer.
 #[derive(Default)]
 pub(crate) struct State {
     last: tokio::sync::Mutex<Option<(Sample, Value)>>,
-    gpu_retry_at: std::sync::Mutex<Option<Instant>>,
 }
 
 /// /proc/stat's aggregate line, in clock ticks of all CPUs.
@@ -314,40 +314,18 @@ fn parse_cpu_stat(text: &str) -> Option<u64> {
     text.lines().find_map(|line| line.strip_prefix("usage_usec ")?.trim().parse().ok())
 }
 
-/// `nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total
-/// --format=csv,noheader,nounits` rows. A row with a value the driver does not
-/// report (`[N/A]`) is left out: unknown is not zero.
-fn parse_nvidia(text: &str) -> Vec<Value> {
-    text.lines().filter_map(|line| {
-        let mut fields = line.rsplitn(4, ',').map(str::trim);
-        let total: f64 = fields.next()?.parse().ok()?;
-        let used: f64 = fields.next()?.parse().ok()?;
-        let util: f64 = fields.next()?.parse().ok()?;
-        let name = fields.next()?.to_owned();
-        (!name.is_empty()).then(|| json!({"name":name,"utilPct":util,"memUsedMiB":used,"memTotalMiB":total,"attribution":"unknown"}))
-    }).collect()
-}
-
-/// The host's GPUs, or None when nvidia-smi is missing, slow or fails.
+/// The host's GPUs as the GPU sampler (T-58) last read them, with its
+/// source and observedAt; None with no GPU or no current reading. A device
+/// whose utilization or memory is unknown is left out: unknown is not zero.
 async fn gpus(ws: Arc<Workspace>) -> Option<Vec<Value>> {
-    if ws.machine_load.gpu_retry_at.lock().unwrap().is_some_and(|at| Instant::now() < at) {
+    let sample = ws.gpus.latest(GPU_WAIT).await?;
+    if sample.age() > GPU_STALE {
         return None;
     }
-    // WSL puts it outside the usual PATH.
-    for program in ["nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi"] {
-        let mut command = tokio::process::Command::new(program);
-        command.args(["--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
-            .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
-        let Ok(Ok(output)) = tokio::time::timeout(GPU_TIMEOUT, command.output()).await else { continue };
-        if output.status.success() {
-            let gpus = parse_nvidia(&String::from_utf8_lossy(&output.stdout));
-            if !gpus.is_empty() {
-                return Some(gpus);
-            }
-        }
-    }
-    *ws.machine_load.gpu_retry_at.lock().unwrap() = Some(Instant::now() + GPU_RETRY);
-    None
+    let gpus: Vec<Value> = sample.devices.iter().filter_map(|d| Some(json!({"name":d.name,"utilPct":d.utilization_percent?,
+        "memUsedMiB":d.memory_used_mib?,"memTotalMiB":d.memory_total_mib?,"attribution":"unknown",
+        "source":sample.source,"observedAt":sample.observed_at}))).collect();
+    (!gpus.is_empty()).then_some(gpus)
 }
 
 fn clock_ticks() -> f64 {
@@ -466,8 +444,6 @@ mod tests {
         assert_eq!(parse_status_rss("Name:\tnode\nVmRSS:\t  20480 kB\n"), Some(20480));
         assert_eq!(parse_status_rss("Name:\tkthreadd\n"), Some(0));
         assert_eq!(parse_cpu_stat("usage_usec 2500000\nuser_usec 2000000\nsystem_usec 500000\n"), Some(2_500_000));
-        let gpus = parse_nvidia("NVIDIA GeForce RTX 5090, 37, 4096, 32607\nOdd, [N/A], 1, 2\n");
-        assert_eq!(gpus, vec![json!({"name":"NVIDIA GeForce RTX 5090","utilPct":37.0,"memUsedMiB":4096.0,"memTotalMiB":32607.0,"attribution":"unknown"})]);
         assert!(group_path("/user.slice/user-1000.slice/user@1000.service/app.slice/yuzuno-job-x.service").is_some());
         for bad in ["relative", "/a/../b", "/", "/a//b"] {
             assert_eq!(group_path(bad), None, "{bad}");
