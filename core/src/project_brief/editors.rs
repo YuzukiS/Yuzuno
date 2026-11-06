@@ -1,5 +1,7 @@
-//! User-owned project policy. A missing/null list is compatibility mode;
-//! an explicitly empty list makes every member Ask-only. Agents cannot set it.
+//! User-owned project policy. A missing/null list is compatibility mode:
+//! every member but a task executor edits; an explicitly empty list makes
+//! every member Ask-only. Agents cannot set it. A task executor is never an
+//! editor, listed or not (T-36): it may still ask its own questions.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -9,12 +11,21 @@ use std::collections::BTreeSet;
 pub(super) struct Policy {
     pub version: i64,
     pub editor_agent_ids: Option<Vec<String>>,
+    /// The Workspace's task executors, read with the list: never editors.
+    #[serde(skip)]
+    executors: BTreeSet<String>,
 }
 
 impl Policy {
     pub fn includes(&self, agent: &str) -> bool {
-        self.editor_agent_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == agent))
+        !self.executors.contains(agent)
+            && self.editor_agent_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == agent))
     }
+}
+
+fn executors(db: &Connection) -> Result<BTreeSet<String>> {
+    Ok(crate::agent_roles::kinds(db)?.into_iter()
+        .filter(|(_, kind)| *kind == crate::agent_roles::EXECUTOR).map(|(agent, _)| agent).collect())
 }
 
 pub(super) fn policy(db: &Connection, project: &str) -> Result<Policy> {
@@ -22,9 +33,10 @@ pub(super) fn policy(db: &Connection, project: &str) -> Result<Policy> {
         "SELECT version,editor_ids FROM project_brief_editors WHERE project_id=?1",
         [project], |r| Ok((r.get(0)?, r.get(1)?)),
     ).optional()?;
+    let executors = executors(db)?;
     match saved {
-        Some((version, raw)) => Ok(Policy { version, editor_agent_ids: serde_json::from_str(&raw)? }),
-        None => Ok(Policy { version: 0, editor_agent_ids: None }),
+        Some((version, raw)) => Ok(Policy { version, editor_agent_ids: serde_json::from_str(&raw)?, executors }),
+        None => Ok(Policy { version: 0, editor_agent_ids: None, executors }),
     }
 }
 
@@ -57,9 +69,11 @@ pub(super) fn save(store: &Store, project: &str, expected: i64, ids: Option<Vec<
             ensure!(crate::projects::agent_project(&tx, agent)?.as_deref() == Some(project)
                 && store.brief_in(&tx, agent)?.is_some_and(|a| a.agent.closed_at.is_none()),
                 "invalid_editor: select an open Agent in this Project");
+            ensure!(!current.executors.contains(agent),
+                "invalid_editor: a task executor is never a Home content editor; it can still ask its own questions");
         }
     }
-    let next = Policy { version: current.version + 1, editor_agent_ids: ids };
+    let next = Policy { version: current.version + 1, editor_agent_ids: ids, executors: current.executors };
     tx.execute("INSERT INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,?2,?3)
         ON CONFLICT(project_id) DO UPDATE SET version=excluded.version,editor_ids=excluded.editor_ids",
         params![project, next.version, serde_json::to_string(&next.editor_agent_ids)?])?;

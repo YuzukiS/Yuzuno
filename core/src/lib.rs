@@ -1,6 +1,7 @@
 mod codex_context;
 pub mod agent_defaults;
 pub mod agent_roles;
+mod executor_archive;
 pub mod executor_templates;
 pub mod handover;
 pub mod handover_proposals;

@@ -296,6 +296,41 @@ handover and the summary are not counted, since each has its own limit
 materials are at most 128 KiB plus those three. Over the limit, the dispatch
 is refused with `materials_too_large` and nothing is dispatched.
 
+## What an executor doesn't do
+
+An executor does its task and reports to the Agent that dispatched it. Two
+things are not its to do:
+
+- **Setting its own task done.** `task_update` to done, and a
+  `task_submit_result` with status done, are refused with
+  `executor_done_refused`, and nothing is written. It submits its result
+  with status review, and its dispatcher, or you, sets the task done. Any
+  other status is its to set.
+- **Writing Home's content.** An executor is never a Home content editor.
+  With no list chosen, every member but an executor edits; a list can't name
+  one (`invalid_editor`), and one saved before doesn't make it an editor. It
+  can still ask you its own questions, and what it wrote before shows with
+  the team's sections.
+
+## After an executor is released
+
+A released executor takes no more mail or work:
+
+- **Core's mail goes to its dispatcher.** A Job's, CI's, a review's or a
+  pull request operation's result for it goes to the Agent that dispatched
+  it. The mail names the executor it was for (`originalRecipient`) in its
+  first line. An executor you dispatched has no Agent to pass it to: that
+  mail is kept in the executor's mailbox, never dropped, where you can still
+  read it. Either way the task's own records of the Job, the CI run or the
+  review are written as always.
+- **Other mail is refused.** Mail to it, and a dispatch naming it, is refused
+  with `executor_archived`, naming its task and its dispatcher. Write to the
+  dispatcher instead, or dispatch the task again for new work.
+- **Its proposals are its dispatcher's.** A task status change it proposed
+  with `result_publish` is decided by the Agent that dispatched it: the
+  proposal shows who, and can't be decided there. You decide it if you
+  dispatched the executor, or if its dispatcher no longer exists.
+
 ## Phases
 
 | Phase | What it adds |

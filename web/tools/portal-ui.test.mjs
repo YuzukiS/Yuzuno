@@ -522,3 +522,29 @@ test("Settings: the default is chosen and kept on this device, and a refused sav
   await until(() => blocked.document.querySelector('input[name="portal-open-with"][value="browser"]').checked, "applies here");
   assert.ok(blocked.document.querySelector('[role="alert"], [role="status"]')?.textContent, "the refusal is said");
 });
+
+test("the ▾ menu takes its short way out on Escape, inert, the focus back on its ▾; under reduced motion it goes at once (T-19 SV-05)", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.window.renderChoice(snapshot);
+  const more = page.button("Other ways to open");
+  const menu = () => page.document.querySelector(".open-choice-menu");
+  const escape = () => menu().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  page.click(more);
+  await until(menu, "the menu");
+  assert.equal(menu().classList.contains("is-leaving"), false);
+  escape();
+  await tick();
+  assert.ok(menu()?.classList.contains("is-leaving"), "on its way out");
+  assert.ok(menu().hasAttribute("inert") && menu().getAttribute("aria-hidden") === "true", "inert and hidden meanwhile");
+  assert.equal(page.document.activeElement, more, "the focus is back on its ▾");
+  await until(() => !menu(), "gone after its way out");
+  page.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  page.click(more);
+  await until(menu, "the menu again");
+  escape();
+  await tick();
+  assert.equal(menu(), null, "under reduced motion it goes at once");
+  assert.equal(page.document.activeElement, more);
+  assert.deepEqual(page.errors, []);
+});

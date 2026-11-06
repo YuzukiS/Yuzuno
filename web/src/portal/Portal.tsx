@@ -296,11 +296,14 @@ function PortalHost() {
   }, [shown?.key]);
   // Opened beside the chat, the page comes in from the right over medium (T-19 M7, WK:PT-01), in
   // the column the grid gave it above: its transform and opacity move nothing in the chat, so
-  // keepInPlace holds the reading as before. Over the chat, nothing plays; closing stays instant.
+  // keepInPlace holds the reading as before. Over the chat (a narrow window, a phone) it only
+  // fades in over medium, nothing scaled or moved (WK:PT-02). Either stops, the page shown, as
+  // the window takes it to the other shape. Closing stays instant.
   const opens = useRef({ open: false, n: 0 });
   const open = !!(shown && shape);
   if (opens.current.open !== open) opens.current = { open, n: opens.current.n + (open ? 1 : 0) };
   useSurfaceIn(panel, opens.current.n, "medium", open && shape?.mode === "side", "translateX(8px)");
+  useSurfaceIn(panel, opens.current.n, "medium", open && shape?.mode === "full");
   if (!shown || !shape) return null;
   const full = shape.mode === "full";
   const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {

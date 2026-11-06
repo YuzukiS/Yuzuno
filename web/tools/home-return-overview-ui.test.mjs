@@ -637,3 +637,48 @@ for (const scenario of [
     }
   });
 }
+
+test("Home's failed read says so over the top of the tiles in a slot of its own, and the note that leaves is the one that showed; under reduced motion it goes at once (T-51 HM:U1)", async () => {
+  const p = mount();
+  // jsdom has no CSS: an exit-small token, so the note takes its way out as it does in a browser.
+  const computed = p.w.getComputedStyle.bind(p.w);
+  p.w.getComputedStyle = (el, pseudo) => {
+    const style = computed(el, pseudo);
+    if (el !== p.doc.documentElement) return style;
+    return new Proxy(style, { get: (target, key) => (key === "getPropertyValue"
+      ? (name) => (name === "--motion-exit-small" ? "130ms" : target.getPropertyValue(name))
+      : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  };
+  try {
+    p.w.renderOverview(data());
+    await until(() => p.doc.querySelector(".home-return-overview"));
+    p.w.renderOverview(data(), "one", "low", true);
+    await until(() => p.doc.querySelector(".home-return-stale"));
+    const note = p.doc.querySelector(".home-return-stale");
+    assert.equal(note.parentElement.classList.contains("home-return-stale-slot"), true, "in a slot of its own, over the tiles");
+    assert.equal(note.parentElement.nextElementSibling?.classList.contains("home-return-tiles"), true, "just above the tiles");
+    const added = [];
+    new p.w.MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (node.nodeType === 1 && (node.matches(".home-return-stale") || node.querySelector(".home-return-stale"))) added.push(node);
+    }).observe(p.doc.body, { childList: true, subtree: true });
+    p.w.renderOverview(data(), "one", "low", false);
+    await until(() => note.classList.contains("is-leaving") || !note.isConnected);
+    assert.equal(note.isConnected, true, "the note that showed is the one that leaves");
+    assert.equal(note.classList.contains("is-leaving"), true, "on its way out");
+    await until(() => !p.doc.querySelector(".home-return-stale"));
+    assert.equal(added.length === 0, true, "no second note was put in its place");
+    // Under reduced motion it is there and gone at once.
+    p.w.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+    p.w.renderOverview(data(), "one", "low", true);
+    await until(() => p.doc.querySelector(".home-return-stale"));
+    p.w.renderOverview(data(), "one", "low", false);
+    await until(() => !p.doc.querySelector(".home-return-stale"));
+    assert.equal(added.every((node) => !node.querySelector?.(".is-leaving") && !node.classList?.contains("is-leaving")), true,
+      "under reduced motion it never took a way out");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

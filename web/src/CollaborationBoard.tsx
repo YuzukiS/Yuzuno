@@ -40,6 +40,7 @@ import "./collaboration.css";
 import { GitHubLinks, GitHubSummary, type GitHubLink } from "./GitHubLinks";
 import { TaskWorkspaces } from "./TaskWorkspaces";
 import { relative } from "./home/format";
+import { settleWhenLanded } from "./settle";
 import { useLanguage, useStrings } from "./i18n";
 import { boardText } from "./collaboration-text";
 import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-templates";
@@ -542,6 +543,15 @@ export function CollaborationBoard({
   const language = useLanguage();
   const [tab, setTab] = useState<"tasks" | "messages">("tasks");
   const [page, setPage] = useState<TaskPage | null>(null);
+  // The list other filters replace stays, dimmed and busy, until Core answers
+  // for them (T-19 CB-03). Kept in a ref as it is set, not as it renders: a
+  // read that fails at once answers before the render that marks the list.
+  const [stale, setStaleState] = useState(false);
+  const staleRef = useRef(stale);
+  const setStale = (value: boolean) => {
+    staleRef.current = value;
+    setStaleState(value);
+  };
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   // The detail slides in beside the list, and out again before it unmounts;
@@ -682,10 +692,19 @@ export function CollaborationBoard({
                 ],
               },
         );
-        if (afterSeq === undefined) setOutdated(false);
+        if (afterSeq === undefined) {
+          setOutdated(false);
+          setStale(false);
+        }
         setError("");
       } catch (error) {
-        if (taskReads.current(generation)) setError(errorText(error));
+        if (!taskReads.current(generation)) return;
+        setError(errorText(error));
+        // Other filters could not be read: the list they replace goes too.
+        if (afterSeq === undefined && staleRef.current) {
+          setPage(null);
+          setStale(false);
+        }
       } finally {
         if (taskReads.current(generation)) setLoading(false);
         if (taskReads.end(generation)) setCatchUpAfter(generation);
@@ -693,13 +712,23 @@ export function CollaborationBoard({
     },
     [conditions, taskReads],
   );
+  // Other filters keep the cards shown, dimmed and busy, until Core answers
+  // for them, rather than a spinner in their place (T-19 CB-03). An empty
+  // list is not kept: nothing says nothing matches before Core has answered.
+  // Opening the board or its tab starts from nothing.
+  const listedConditions = useRef(conditions);
   useEffect(() => {
-    // New conditions start from nothing: no page from older conditions shows.
-    setPage(null);
+    const refiltered = listedConditions.current !== conditions;
+    listedConditions.current = conditions;
+    if (refiltered && pageRef.current?.tasks.length) setStale(true);
+    else {
+      setPage(null);
+      setStale(false);
+    }
     setOutdated(false);
     if (open && tab === "tasks" && !disabled) void loadTasks();
     return () => taskReads.drop();
-  }, [open, tab, disabled, loadTasks, taskReads]);
+  }, [open, tab, disabled, conditions, loadTasks, taskReads]);
   /**
    * Workspace revisions arrive every few seconds, changed or not. With only
    * the first page loaded it is simply reloaded. Later pages are kept, and
@@ -772,8 +801,19 @@ export function CollaborationBoard({
     setRevision((n) => n + 1);
     void loadTasks();
   };
+  // The user's own save that moves its row: the row is brought into view and
+  // settles, once (T-19 CB-12). Nothing for anyone else's change, nor while
+  // the list is hidden behind the task (narrow): it lands, as after a smooth
+  // jump, only where it shows and holds still.
+  const movedBySave = useRef<string | null>(null);
+  const saveSettled = useRef<(() => void) | null>(null);
   const saved = (task: SharedTask) => {
     const matches = matchesConditions(task, status, owner, projectFilter);
+    const place = (list: SharedTask[]) => {
+      const groups = groupTasks(list);
+      const group = groups.findIndex((group) => group.tasks.some((existing) => existing.id === task.id));
+      return `${group}:${groups.flatMap((group) => group.tasks).findIndex((existing) => existing.id === task.id)}`;
+    };
     setPage((previous) => {
       if (!previous) return previous;
       const old = previous.tasks.find((existing) => existing.id === task.id);
@@ -792,6 +832,7 @@ export function CollaborationBoard({
         : matches
           ? [task, ...previous.tasks]
           : previous.tasks;
+      movedBySave.current = old && matches && place(previous.tasks) !== place(tasks) ? task.id : null;
       return { ...previous, tasks, counts };
     });
     // With only the first page loaded, Core's own answer replaces the estimate.
@@ -823,6 +864,23 @@ export function CollaborationBoard({
   const flipEnded = (event: React.AnimationEvent) => {
     if (event.target === event.currentTarget) setListFlip(false);
   };
+  // Core's answer for other filters takes over from the dimmed list: it fades
+  // in as the list does beside a task (T-19 CB-03).
+  const wasStale = useRef(stale);
+  useLayoutEffect(() => {
+    if (wasStale.current && !stale && page) setListFlip(true);
+    wasStale.current = stale;
+  }, [stale, page]);
+  useLayoutEffect(() => {
+    const id = movedBySave.current;
+    if (!id) return;
+    movedBySave.current = null;
+    const row = taskRow(id);
+    if (!row) return;
+    row.scrollIntoView?.({ block: "nearest" });
+    saveSettled.current = settleWhenLanded(row, "data-settle", true, "animation");
+  }, [page]);
+  useEffect(() => () => saveSettled.current?.(), []);
   const taskButton = (task: SharedTask, card: boolean) => {
     const agent = agents.find(
       (agent) => agent.id === task.assigneeAgentId,
@@ -962,7 +1020,7 @@ export function CollaborationBoard({
                 finishLeave.current?.();
             }}
           >
-            <div className="collab-task-list">
+            <div className={`collab-task-list${stale ? " is-stale" : ""}`}>
               <div className="collab-list-heading">
                 <div>
                   <h3>{t.listTitle}</h3>
@@ -1026,7 +1084,8 @@ export function CollaborationBoard({
                   disabled={loading}
                   onClick={refresh}
                   aria-label={t.refreshTasks}
-                  title={t.refreshTasks}
+                  aria-busy={loading || undefined}
+                  title={loading ? t.refreshingTasks : t.refreshTasks}
                 >
                   <RefreshCw size={17} className={loading ? "spin" : ""} />
                 </button>
@@ -1051,9 +1110,9 @@ export function CollaborationBoard({
                 </div>
               ) : (
                 <>
-                  {/* The page is reset to null when the conditions change, so this
-                      never shows before Core answers; a background reload of
-                      the same empty answer must not unmount it (focus, flicker). */}
+                  {/* Under other conditions an empty page is never kept, so this never
+                      shows before Core answers; a background reload of the same
+                      empty answer must not unmount it (focus, flicker). */}
                   {page && !tasks.length && !error && (
                     <div className="collab-empty">
                       <Leaf size={34} />
@@ -1077,7 +1136,7 @@ export function CollaborationBoard({
                     </div>
                   )}
                   {listAsRows ? (
-                    <div className={`collab-groups${listFlip ? " collab-list-flip" : ""}`} onAnimationEnd={flipEnded}>
+                    <div className={`collab-groups${listFlip ? " collab-list-flip" : ""}`} aria-busy={stale || undefined} onAnimationEnd={flipEnded}>
                       {groups.map((group) => (
                         <section
                           key={group.status}
@@ -1097,7 +1156,7 @@ export function CollaborationBoard({
                       ))}
                     </div>
                   ) : (
-                    <div className={`collab-cards${listFlip ? " collab-list-flip" : ""}`} onAnimationEnd={flipEnded}>
+                    <div className={`collab-cards${listFlip ? " collab-list-flip" : ""}`} aria-busy={stale || undefined} onAnimationEnd={flipEnded}>
                       {groups.flatMap((group) => group.tasks).map((task) => taskButton(task, true))}
                     </div>
                   )}
@@ -1680,6 +1739,8 @@ function TaskPane({
           onClick={() => void load()}
           disabled={loading}
           aria-label={t.refreshDetails}
+          aria-busy={loading || undefined}
+          title={loading ? t.refreshingDetails : t.refreshDetails}
         >
           <RefreshCw size={16} className={loading ? "spin" : ""} />
         </button>
@@ -2173,6 +2234,9 @@ function Messages({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [reads] = useState(() => new ReadSlot());
+  // The message a reply answers, once reached: it settles (T-19 MS-03).
+  const replySettled = useRef<(() => void) | null>(null);
+  useEffect(() => () => replySettled.current?.(), []);
   // A revision that came during a read, read once that read ends.
   const catchUp = useRef(() => {});
   const load = useCallback(
@@ -2265,6 +2329,8 @@ function Messages({
             disabled={loading}
             onClick={() => void load()}
             aria-label={t.refreshMessages}
+            aria-busy={loading || undefined}
+            title={loading ? t.refreshingMessages : t.refreshMessages}
           >
             <RefreshCw size={17} className={loading ? "spin" : ""} />
           </button>
@@ -2318,13 +2384,14 @@ function Messages({
                           const original = document.getElementById(
                             `peer-message-${message.replyTo}`,
                           );
-                          original?.scrollIntoView({
+                          if (!original) return;
+                          const smooth = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+                          original.scrollIntoView({
                             block: "center",
-                            behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-                              ? "auto"
-                              : "smooth",
+                            behavior: smooth ? "smooth" : "auto",
                           });
-                          original?.focus({ preventScroll: true });
+                          original.focus({ preventScroll: true });
+                          replySettled.current = settleWhenLanded(original, "data-settle", smooth, "animation");
                         }}
                       >
                         {t.replyEarlier}
