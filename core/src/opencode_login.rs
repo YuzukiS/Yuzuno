@@ -321,9 +321,22 @@ impl Workspace {
 /// (`orphan_wal`), and an `opencode.db` SQLite can't read (`not_a_database`)
 /// with what is left beside it, are overwritten with zeros and removed. The
 /// caller notes each. A database still in use is refused, to be tried again.
+///
+/// SQLite removes the WAL beside a file it can't read as it closes, without
+/// overwriting it, so the WAL and journal beside the database are held open
+/// before SQLite opens it, and overwritten through those handles. Not its
+/// index, which holds no rows: SQLite locks it, and closing another handle
+/// to it in this process would drop those locks.
 pub fn scrub(db: &std::path::Path) -> Result<Vec<Destroyed>> {
+    let beside = ["db-wal", "db-shm", "db-journal"].map(|extension| db.with_extension(extension));
     let mut destroyed = Vec::new();
     if db.symlink_metadata().is_ok() {
+        let mut held = Vec::new();
+        for left in [&beside[0], &beside[2]] {
+            if let Some(file) = hold(left)? {
+                held.push((left, file));
+            }
+        }
         match clear(db) {
             Ok(()) => return Ok(destroyed),
             Err(error) if failed(&error, &[ErrorCode::DatabaseBusy, ErrorCode::DatabaseLocked]) =>
@@ -332,10 +345,13 @@ pub fn scrub(db: &std::path::Path) -> Result<Vec<Destroyed>> {
                 destroyed.push(destroy(db, "not_a_database")?),
             Err(error) => return Err(error),
         }
+        for (left, file) in held {
+            destroyed.push(overwrite(left, file, "orphan_wal")?);
+        }
     }
-    for left in ["db-wal", "db-shm", "db-journal"].map(|extension| db.with_extension(extension)) {
+    for left in &beside {
         if left.symlink_metadata().is_ok() {
-            destroyed.push(destroy(&left, "orphan_wal")?);
+            destroyed.push(destroy(left, "orphan_wal")?);
         }
     }
     Ok(destroyed)
@@ -376,12 +392,13 @@ fn failed(error: &anyhow::Error, codes: &[ErrorCode]) -> bool {
         Some(rusqlite::Error::SqliteFailure(failure, _)) if codes.contains(&failure.code)))
 }
 
-/// Overwrites the regular file at `path` with zeros to its length, syncs it
-/// and removes it; a link is never followed.
-fn destroy(path: &std::path::Path, why: &'static str) -> Result<Destroyed> {
-    use std::io::Write;
-    let file = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    ensure!(path.symlink_metadata()?.is_file(), "{} 不是普通文件，没有清除", path.display());
+/// The regular file at `path` open for writing, or None when there is none;
+/// a link is never followed.
+fn hold(path: &std::path::Path) -> Result<Option<std::fs::File>> {
+    let Ok(found) = path.symlink_metadata() else {
+        return Ok(None);
+    };
+    ensure!(found.is_file(), "{} 不是普通文件，没有清除", path.display());
     let mut options = std::fs::OpenOptions::new();
     options.write(true);
     #[cfg(unix)]
@@ -389,7 +406,21 @@ fn destroy(path: &std::path::Path, why: &'static str) -> Result<Destroyed> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let mut opened = options.open(path).with_context(|| format!("{} 无法覆写", path.display()))?;
+    options.open(path).map(Some).with_context(|| format!("{} 无法覆写", path.display()))
+}
+
+/// Overwrites the regular file at `path` with zeros to its length, syncs it
+/// and removes it; a link is never followed.
+fn destroy(path: &std::path::Path, why: &'static str) -> Result<Destroyed> {
+    let opened = hold(path)?.with_context(|| format!("{} 不见了，没有清除", path.display()))?;
+    overwrite(path, opened, why)
+}
+
+/// Overwrites the file held as `opened` with zeros to its length, syncs it,
+/// and removes it from `path`, unless it is gone from there already.
+fn overwrite(path: &std::path::Path, mut opened: std::fs::File, why: &'static str) -> Result<Destroyed> {
+    use std::io::Write;
+    let file = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let bytes = opened.metadata()?.len();
     let zeros = [0u8; 64 * 1024];
     let mut left = bytes;
@@ -400,7 +431,9 @@ fn destroy(path: &std::path::Path, why: &'static str) -> Result<Destroyed> {
     }
     opened.sync_all()?;
     drop(opened);
-    std::fs::remove_file(path).with_context(|| format!("{} 覆写后无法删除", path.display()))?;
+    if path.symlink_metadata().is_ok() {
+        std::fs::remove_file(path).with_context(|| format!("{} 覆写后无法删除", path.display()))?;
+    }
     Ok(Destroyed { file, bytes, why })
 }
 

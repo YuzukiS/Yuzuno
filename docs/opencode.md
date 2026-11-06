@@ -209,7 +209,10 @@ Agent or from your own OpenCode to another, and never imports a 1.x
   the reason: stop what is using it, or try again.
 - **Needs** OpenCode 2.0.20 or newer.
 - **Limits:** a sign-in in progress is lost if the Agent's OpenCode restarts;
-  start it again.
+  start it again. Overwriting acts on the files' contents: what the disk has
+  already freed (a WAL emptied by SQLite, a journal it made and removed while
+  trying a damaged file) or keeps elsewhere (copy-on-write, snapshots, flash
+  storage) isn't overwritten.
 
 ## What OpenCode does by itself
 

@@ -2803,20 +2803,25 @@ async fn an_opencode_agent_whose_database_is_in_use_is_not_deleted() {
 }
 
 /// An OpenCode Agent whose `opencode.db` can't be read as a database is still
-/// deleted (R1 dd77b02d of #621): that file and the WAL beside it are
-/// overwritten with zeros and removed, and none of their bytes is left in
+/// deleted (R1 dd77b02d of #621): that file and the WAL beside it, which
+/// SQLite itself removes as it closes, are overwritten with zeros, as a
+/// second link to each shows, and removed; none of their bytes is left in
 /// the Agent's folder.
 #[tokio::test]
 async fn an_opencode_agent_whose_database_is_not_one_is_deleted_with_it_overwritten_and_removed() {
     let lab = lab(&[], false).await;
     let root = lab.root();
-    std::fs::write(root.join("opencode.db"), b"not a database: fixture-unread-key").unwrap();
-    std::fs::write(root.join("opencode.db-wal"), b"pages of fixture-unread-key").unwrap();
+    for (name, bytes) in [("opencode.db", &b"not a database: fixture-unread-key"[..]), ("opencode.db-wal", b"pages of fixture-unread-key")] {
+        std::fs::write(root.join(name), bytes).unwrap();
+        std::fs::hard_link(root.join(name), lab.dir.path().join(format!("seen-{name}"))).unwrap();
+    }
     let deleted = lab.ws.delete_agent(ID).await.map_err(|e| e.to_string());
     assert_eq!(deleted, Ok(()), "a database that is not one never refuses the delete");
     assert!(!lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "deleted");
     for name in ["opencode.db", "opencode.db-wal"] {
         assert!(!root.join(name).exists(), "overwritten and removed: {name}");
+        let seen = std::fs::read(lab.dir.path().join(format!("seen-{name}"))).unwrap();
+        assert!(!seen.is_empty() && seen.iter().all(|b| *b == 0), "overwritten with zeros before it is removed: {name}");
     }
     assert_eq!(file_holding(&root, "fixture-unread-key"), None, "none of their bytes left in the Agent's folder");
 }

@@ -130,8 +130,9 @@ fn a_scrub_overwrites_and_removes_what_is_not_a_database_and_refuses_one_in_use(
         vec![gone("orphan.db-wal", 27, "orphan_wal"), gone("orphan.db-shm", 9, "orphan_wal"), gone("orphan.db-journal", 27, "orphan_wal")]);
     left("text.db", b"not a database: fixture-left-key-3");
     left("text.db-wal", b"pages of fixture-left-key-4");
+    // SQLite removes this WAL as it closes the file it can't read: it is overwritten all the same.
     assert_eq!(scrub(&dir.path().join("text.db")).expect("a file that is not a database is not refused"),
-        vec![gone("text.db", 34, "not_a_database"), gone("text.db-wal", 27, "orphan_wal")]);
+        vec![gone("text.db", 34, "not_a_database"), gone("text.db-wal", 27, "orphan_wal")], "what is beside it overwritten too");
     let truncated = dir.path().join("truncated.db");
     {
         let made = rusqlite::Connection::open(&truncated).unwrap();
