@@ -364,8 +364,8 @@ async fn a_device_changed_while_another_is_sent_to_is_not_sent_to() {
             Answer::Accepted
         }));
         let working = notices::AgentState { id: "a".into(), name: "Builder".into(), status: "working".into(), turn: Some("t1".into()), ..Default::default() };
-        let before = Read { agents: vec![working.clone()], asks: vec![], proposals: vec![] };
-        let after = Read { agents: vec![notices::AgentState { status: "idle".into(), ..working }], asks: vec![], proposals: vec![] };
+        let before = Read { agents: vec![working.clone()], asks: vec![] };
+        let after = Read { agents: vec![notices::AgentState { status: "idle".into(), ..working }], asks: vec![] };
         deliver(ws.clone(), notices::notices(&before, &after)).await;
         assert_eq!(*sent.lock().unwrap(), vec![ENDPOINT.to_owned()], "the other device was {change}");
     }
