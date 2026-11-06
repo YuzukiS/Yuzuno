@@ -363,11 +363,13 @@ export const refusalsZh: Record<string, string> = {
 export function stateWord(state: string, language: Language) {
   const words = mergeWords(language);
   const known = knownState(state);
-  return known ? words.states[known] : words.unknownState(state);
+  // A word this build lacks says so with the code, never "undefined" (wce4 t65m7).
+  return (known && words.states[known]) || words.unknownState(state);
 }
 /** A stop reason's word, or the reason as Core named it. */
 export function reasonWord(reason: string, language: Language) {
   const words = mergeWords(language);
-  if ((stopReasons as readonly string[]).includes(reason)) return words.reasons[reason as StopReason];
+  if ((stopReasons as readonly string[]).includes(reason))
+    return words.reasons[reason as StopReason] ?? words.unknownReason(reason);
   return words.dryRunReasons[reason] ?? words.unknownReason(reason);
 }
