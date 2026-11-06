@@ -249,6 +249,28 @@ fn an_older_cores_writes_keep_every_key() {
     assert_eq!(moved(&store, "here", "T-1", Some(&next.id))["task"]["id"], "YN-2");
 }
 
+/// An older Core deletes an emptied Project by its row alone, key and all. On
+/// the next open the key is still that Project's: it names the task it had and
+/// is never given to another Project.
+#[test]
+fn a_project_an_older_core_deleted_keeps_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspace.sqlite");
+    let store = open(&dir);
+    let gone = store.create_project("Gone", BTreeMap::new()).unwrap();
+    assert_eq!(create(&store, "g1", Some(&gone.id)), "GON-1");
+    moved(&store, "out", "GON-1", None);
+    drop(store);
+    // An older Core's delete_project: only `DELETE FROM projects` (and its settings).
+    Connection::open(&path).unwrap().execute("DELETE FROM projects WHERE id=?1", [&gone.id]).unwrap();
+    let store = open(&dir);
+    assert_eq!(named(&store, "GON-1").as_deref(), Some("T-1"), "a Project an older Core deleted: its old key still names the task");
+    let similar = store.create_project("Gonzo", BTreeMap::new()).unwrap();
+    assert_eq!(similar.key.as_deref(), Some("GON2"), "a Project an older Core deleted: its key is never given to another");
+    let taken = key_refused(&store, &similar.id, "GON");
+    assert!(taken.contains("project_key_taken"), "a Project an older Core deleted: its key stays reserved: {taken:?}");
+}
+
 #[test]
 fn keys_filled_on_open_are_the_same_for_every_core_that_opens_the_database() {
     let dir = tempfile::tempdir().unwrap();

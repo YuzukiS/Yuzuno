@@ -9,7 +9,10 @@
 //! task_key_history. All of it is additive: a nullable `projects.key` column and
 //! new tables. Older Core builds keep reading and writing `projects.data` and
 //! `project_tasks` as before; a task they move keeps its history and shows
-//! `T-<seq>` until it is moved again here.
+//! `T-<seq>` until it is moved again here. A Project they delete takes its
+//! `projects` row and so its key with it; every key given is also in
+//! project_keys_given, which they never touch, and the next open here retires
+//! that key into project_key_history.
 use crate::model::now;
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -29,13 +32,41 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS project_key_history(
             key TEXT PRIMARY KEY, project_id TEXT NOT NULL, retired_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS project_key_history_project ON project_key_history(project_id, retired_at);
+        -- Every key ever given to a Project, kept where an older Core never writes.
+        CREATE TABLE IF NOT EXISTS project_keys_given(
+            key TEXT PRIMARY KEY, project_id TEXT NOT NULL, given_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS task_key_history(
             project_id TEXT NOT NULL, number INTEGER NOT NULL, task_id TEXT NOT NULL,
             assigned_at TEXT NOT NULL, retired_at TEXT, PRIMARY KEY(project_id, number));
         CREATE INDEX IF NOT EXISTS task_key_history_task ON task_key_history(task_id);
         CREATE UNIQUE INDEX IF NOT EXISTS task_key_history_current ON task_key_history(task_id) WHERE retired_at IS NULL;",
     )?;
+    // Before any key is filled, so none of them can take a deleted Project's.
+    retire_deleted(db)?;
     fill_missing(db)
+}
+
+/// A Project an older Core deleted (its `projects` row gone, nothing more):
+/// each key it was given and not yet retired is retired now, so it stays
+/// reserved and keeps naming the tasks it had, as after a delete here.
+fn retire_deleted(db: &Connection) -> Result<()> {
+    db.execute(
+        "INSERT INTO project_key_history(key,project_id,retired_at)
+         SELECT g.key, g.project_id, ?1 FROM project_keys_given g
+         WHERE NOT EXISTS(SELECT 1 FROM projects p WHERE p.id=g.project_id)
+           AND NOT EXISTS(SELECT 1 FROM project_key_history h WHERE h.key=g.key)",
+        [now()],
+    )?;
+    Ok(())
+}
+
+/// Records `key` as given to `project_id`, beside every write of `projects.key`.
+fn given(db: &Connection, project_id: &str, key: &str) -> Result<()> {
+    db.execute(
+        "INSERT OR IGNORE INTO project_keys_given(key,project_id,given_at) VALUES(?1,?2,?3)",
+        params![key, project_id, now()],
+    )?;
+    Ok(())
 }
 
 /// Every Project without a key gets one, in creation order, each checked
@@ -53,6 +84,7 @@ fn fill_missing(db: &Connection) -> Result<()> {
     for (id, name) in missing {
         let key = generate(&name, |key| taken(&tx, key))?;
         tx.execute("UPDATE projects SET key=?1 WHERE id=?2 AND key IS NULL", params![key, id])?;
+        given(&tx, &id, &key)?;
     }
     tx.commit()?;
     Ok(())
@@ -150,6 +182,7 @@ pub(crate) fn project_key(db: &Connection, project_id: &str) -> Result<Option<St
 pub(crate) fn assign(db: &Connection, project_id: &str, name: &str) -> Result<String> {
     let key = generate(name, |key| taken(db, key))?;
     db.execute("UPDATE projects SET key=?1 WHERE id=?2", params![key, project_id])?;
+    given(db, project_id, &key)?;
     Ok(key)
 }
 
@@ -177,6 +210,7 @@ pub(crate) fn set(db: &Connection, project_id: &str, key: &str) -> Result<()> {
     }
     db.execute("DELETE FROM project_key_history WHERE key=?1", [key])?;
     db.execute("UPDATE projects SET key=?1 WHERE id=?2", params![key, project_id])?;
+    given(db, project_id, key)?;
     Ok(())
 }
 
