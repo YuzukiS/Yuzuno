@@ -1255,6 +1255,8 @@ impl Store {
             json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
+    /// A budget save that leaves maxActive as it is (tests; the route takes both).
+    #[cfg(test)]
     pub(super) fn set_job_budget(&self, value: Resources) -> Result<Value> {
         self.set_job_budget_with(value, None)
     }
