@@ -107,6 +107,20 @@ pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str, accept
     }
 }
 
+/// The red runs an unpause accepted at `main`, from the repository's pause
+/// journal. Acceptance belongs to that main: every entry anchored there skips
+/// them, whether an unpause re-anchored it, it was retried, or it was released
+/// there afterwards; an entry anchored at another main carries none.
+pub(super) fn accepted_runs(repository: &Value, main: &str) -> Vec<Value> {
+    repository["pauses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["acceptedRun"]["headSha"] == main)
+        .map(|p| p["acceptedRun"]["id"].clone())
+        .collect()
+}
+
 /// The main CI runs `main_health` counts, newest first, and the first red one.
 /// A run an unpause accepted (`accepted`, by id) is listed but never counts.
 pub(super) fn main_runs_since(runs: &[Value], since: &str, anchored_at: &str, accepted: &[Value]) -> (Vec<Value>, Option<Value>) {

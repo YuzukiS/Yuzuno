@@ -108,9 +108,14 @@ Once every check holds, the entry merges, one merge at a time per repository:
    remaining window is one round trip, which the post-check covers.
 2. If GitHub's answer is uncertain (a timeout, a 5xx, a dropped connection),
    Core reads the PR before anything else. If it is merged at the head, that is
-   the merge. If it is still open at the head and main has not moved, Core
-   sends the request once more. Otherwise, or after that second request, the
-   entry stops with `merge_unknown`, and the mail is urgent. A refusal from
+   the merge; merged at another head, it was merged outside the queue, and
+   the entry stops with `merge_refused`. If it is still open at the head and
+   main has not moved, Core sends the request once more. Otherwise, or after
+   that second request, or when Core cannot read GitHub eight times in a row
+   after a request, the entry stops with `merge_unknown`: the PR may have
+   merged unchecked, so the repository's queue pauses too, and the mail is
+   urgent. Reads that fail before any request was sent stop the entry with
+   `github_unreachable` instead, with no pause: nothing merged. A refusal from
    GitHub stops it with `merge_refused`, except one from its rate limit (a 429,
    or a 403 that names the rate limit): that request certainly merged nothing,
    so the entry stays `merging`, waits for the cooldown and sends it again, and
@@ -146,8 +151,12 @@ none.
 
 ## Pauses
 
-A repository's queue pauses on red main CI, a failed post-check, or a
-post-check Core could not run (`post_check_unverified`). While it is
+A repository's queue pauses on red main CI, a failed post-check, a
+post-check Core could not run (`post_check_unverified`), or a merge whose
+outcome is unknown (`merge_unknown`). The rule behind the list: a stop after
+which main may carry a merge Core sent but never verified pauses the queue
+until a person has looked; a stop after which Core certainly merged nothing
+does not. While it is
 paused, entries are still checked but none merges, and the pause and its end
 are mailed, urgent, to the releaser and the leads of the repository's Projects.
 
@@ -161,10 +170,13 @@ current main, so their main CI counts from there on.
 
 An unpause while main is still the red commit of a red-main pause accepts that
 red run: the lead has looked at it and lets the queue go on, for example so a
-fix can merge onto that main. The re-anchored entries no longer count that one
-run (by its id); any other red run still stops them, and each entry still needs
-green CI of its own on that main, by slot or batch, before it merges. The
-unpause's answer, its journal line and its mail name the accepted run.
+fix can merge onto that main. The acceptance belongs to that main: every entry
+anchored there no longer counts that one run (by its id), whether the unpause
+re-anchored it, it is retried, or it is released there later. Any other red run
+still stops them, and each entry still needs green CI of its own on that main,
+by slot or batch, before it merges. Once main moves on, the acceptance no longer
+applies. The unpause's answer, its journal line and its mail name the accepted
+run.
 
 ## States
 

@@ -195,6 +195,8 @@ if method=='PUT' and path=='pulls/11/merge':
     if answer in ('405','409'): out(int(answer),{'message':'Pull Request is not mergeable'})
     if answer=='429': out(429,{'message':'API rate limit exceeded'})
     if answer=='502': out(502,{'message':'Bad gateway'})
+    if answer=='502down':
+        s['pullDown']=True; save(); out(502,{'message':'Bad gateway'})
     if answer=='502move':
         s['main']=s['movedMain']; save(); out(502,{'message':'Bad gateway'})
     m={'sha':s['mergeSha'],'tree':s['mergeTree'],'parents':[s['main'],body['sha']]}
@@ -203,6 +205,7 @@ if method=='PUT' and path=='pulls/11/merge':
     if answer=='lost': out(502,{'message':'Bad gateway'})
     out(200,{'sha':m['sha'],'merged':True,'message':'Pull Request successfully merged'})
 if method!='GET': out(404,{})
+if path=='pulls/11' and s.get('pullDown'): out(502,{'message':'Bad gateway'})
 if path=='pulls/11':
     q=s.get('pullQueue') or []
     d=q.pop(0) if q else s['pull']
@@ -836,11 +839,11 @@ async fn a_merge_whose_post_check_has_not_run_holds_the_next_one() {
     assert_eq!(get(next).await.unwrap()["state"], "merged", "once the post-check has run, the next entry merges");
 }
 
-/// Main moves on to b, whose CI goes red: the first release stops and pauses
-/// the queue there; a second release of the PR waits at the pause.
+/// Main moves on to b, whose CI goes red: the first release stops as
+/// main_red and pauses the queue there, recording run 91. Answers its id.
 #[cfg(unix)]
-async fn waiting_at_a_red_main(lab: &Lab) -> String {
-    lab.release(Some("lead"), "r1").await.unwrap();
+async fn stopped_at_a_red_main(lab: &Lab) -> String {
+    let first = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
     let after = chrono::Utc::now().to_rfc3339();
     change(lab.dir.path(), |s| {
         move_main(s, sha('b'), sha('d'));
@@ -849,6 +852,12 @@ async fn waiting_at_a_red_main(lab: &Lab) -> String {
     });
     tick(&lab.ws).await.unwrap();
     assert_eq!(lab.paused()["paused"]["run"], 91, "the pause records the red run");
+    first
+}
+/// As `stopped_at_a_red_main`, then a second release of the PR waits at the pause.
+#[cfg(unix)]
+async fn waiting_at_a_red_main(lab: &Lab) -> String {
+    stopped_at_a_red_main(lab).await;
     let second = lab.release(Some("lead"), "r2").await.unwrap()["id"].as_str().unwrap().to_owned();
     tick(&lab.ws).await.unwrap();
     assert_eq!(lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":second})).await.unwrap()["state"], "waiting");
@@ -881,6 +890,114 @@ async fn an_unpause_at_a_main_still_red_accepts_that_run_and_no_other() {
     lab.step().await;
     let e = lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":second})).await.unwrap();
     assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("main_red")), "only the accepted run is accepted: {e}");
+}
+
+#[cfg(unix)]
+async fn unpause_by_lead2(lab: &Lab) -> Value {
+    lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u","repositoryId":7})).await.unwrap()
+}
+#[cfg(unix)]
+async fn entry_by_id(lab: &Lab, id: &str) -> Value {
+    lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id})).await.unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_accepted_run_belongs_to_its_main_for_every_entry_anchored_there() {
+    // The entry that found the red run, retried after the unpause accepted it.
+    let lab = lab(green());
+    let finder = stopped_at_a_red_main(&lab).await;
+    unpause_by_lead2(&lab).await;
+    lab.ws.collaboration_call(Some("lead"), "merge_retry", json!({"requestId":"t1","entryId":finder})).await.unwrap();
+    lab.step().await;
+    let e = entry_by_id(&lab, &finder).await;
+    assert_eq!(e["state"], "merged", "a retry at the main whose red run was accepted merges: {e}");
+    assert!(lab.paused()["paused"].is_null(), "no second pause");
+
+    // A release made at that main after the unpause.
+    let lab = lab_with(|_| {});
+    stopped_at_a_red_main(&lab).await;
+    unpause_by_lead2(&lab).await;
+    let fresh = lab.release(Some("lead"), "r2").await.unwrap()["id"].as_str().unwrap().to_owned();
+    lab.step().await;
+    assert_eq!(entry_by_id(&lab, &fresh).await["state"], "merged", "a new release at that main merges too");
+
+    // A retry once main has moved on carries nothing: a red run there stops it.
+    let lab = lab_with(|_| {});
+    let finder = stopped_at_a_red_main(&lab).await;
+    unpause_by_lead2(&lab).await;
+    let later = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        move_main(s, sha('c'), sha('f'));
+        let red = json!({"id":93,"name":"CI","head_sha":sha('c'),"status":"completed","conclusion":"failure","created_at":later});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    lab.ws.collaboration_call(Some("lead"), "merge_retry", json!({"requestId":"t1","entryId":finder})).await.unwrap();
+    lab.step().await;
+    let e = entry_by_id(&lab, &finder).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("main_red")), "a retry at a newer main carries no acceptance: {e}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_whose_answer_and_reads_were_lost_stops_unknown_and_pauses() {
+    // The request's answer is lost, and every read of the PR after it fails.
+    let lab = lab_with(|s| s["mergeAnswers"] = json!(["502down"]));
+    lab.release(Some("lead"), "r1").await.unwrap();
+    for _ in 0..8 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_unknown")), "{e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "merge_unknown", "a merge that may have landed unchecked pauses the queue");
+    // The next release of the PR waits at the pause instead of merging on top.
+    change(lab.dir.path(), |s| s["pullDown"] = Value::Null);
+    let next = lab.release(Some("lead"), "r2").await.unwrap()["id"].as_str().unwrap().to_owned();
+    lab.step().await;
+    let e = lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":next})).await.unwrap();
+    assert_eq!(e["state"], "waiting", "nothing merges until a person has looked: {e}");
+    assert_eq!(writes(lab.dir.path()).iter().filter(|w| w.starts_with("PUT")).count(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reads_failing_before_any_merge_request_stop_unreachable_without_a_pause() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    resumed_before_its_first_request(&lab).await;
+    change(lab.dir.path(), |s| s["pullDown"] = json!(true));
+    for _ in 0..8 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!(
+        (e["state"].clone(), e["reason"].clone()),
+        (json!("stopped"), json!("github_unreachable")),
+        "no request was sent, so nothing merged: {e}"
+    );
+    assert!(lab.paused()["paused"].is_null(), "a stop after which nothing merged does not pause");
+    assert!(writes(lab.dir.path()).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pr_merged_at_another_head_after_a_request_is_refused_without_a_pause() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    // A request went out; then the PR turns up merged, at a head Core never sent.
+    let mut m = lab.entry().await;
+    m["state"] = json!("merging");
+    m["merge"] = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"slot","head":head(),"attempts":1,"puts":[{"n":1}],"sha":null,"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET state='merging',next_check=0,data=?1", [m.to_string()]).unwrap();
+    change(lab.dir.path(), |s| {
+        s["pull"].as_object_mut().unwrap().extend([("merged".into(), json!(true)), ("state".into(), json!("closed")), ("merge_commit_sha".into(), json!(merge_commit()))]);
+        s["pull"]["head"]["sha"] = json!(sha('d'));
+    });
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_refused")), "a merge at another head is not Core's: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("not the released head"), "{}", e["detail"]);
+    assert!(lab.paused()["paused"].is_null(), "Core merged nothing, so nothing pauses");
 }
 
 #[cfg(unix)]
@@ -1285,6 +1402,7 @@ async fn an_uncertain_merge_is_sent_once_more_and_then_stops_unknown() {
     assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_unknown")), "two uncertain answers stop the entry: {e}");
     assert_eq!(writes(lab.dir.path()).len(), 2, "never a third merge request");
     assert!(lab.mail("lead").iter().any(|m| m["priority"] == "urgent"), "merge_unknown is urgent");
+    assert_eq!(lab.paused()["paused"]["reason"], "merge_unknown", "a merge that may have landed unchecked pauses the queue");
 }
 
 #[cfg(unix)]

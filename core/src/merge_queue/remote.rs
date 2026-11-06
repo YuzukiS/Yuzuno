@@ -110,7 +110,8 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let main_runs = read(ws, format!("repos/{repo}/actions/runs?branch={}&event=push&per_page=20", segment(&t.base))).await?;
     let main_runs = array(&main_runs, "workflow_runs");
     let repository = t.repository;
-    let paused = ws.stored(move |s| s.merge_repository(repository)).await?["paused"].clone();
+    let queue = ws.stored(move |s| s.merge_repository(repository)).await?;
+    let paused = queue["paused"].clone();
     if let Some(cleared) = hold!(checks::pause(&paused, &main, &main_runs)) {
         // The pause ended at this main: the store re-anchors the entry here, so
         // main health counts from here too, not from before the red run.
@@ -118,7 +119,7 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         evidence["pauseCleared"] = cleared;
     }
     evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
-    let accepted = entry["acceptedRuns"].as_array().cloned().unwrap_or_default();
+    let accepted = checks::accepted_runs(&queue, &since);
     let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored, &accepted);
     evidence["main"]["ci"] = json!(seen);
     if let Some(red) = red {
@@ -428,7 +429,12 @@ async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str, sent: bool) 
     if pr["merged"] == true {
         return Ok(Some(match pr["merge_commit_sha"].as_str() {
             Some(sha) if pr["head"]["sha"] == t.head.as_str() => MergeOutcome::Merged(sha.to_owned()),
-            _ => MergeOutcome::Unknown(format!("The PR was merged, at head {}", pr["head"]["sha"])),
+            // Core's request carries the released head: a merge at another
+            // head is not Core's.
+            Some(_) if pr["head"]["sha"] != t.head.as_str() => MergeOutcome::Refused(format!(
+                "The PR was merged outside the queue at head {}, not the released head", short(pr["head"]["sha"].as_str().unwrap_or("?"))
+            )),
+            _ => MergeOutcome::Unknown(format!("The PR was merged, at head {}, but GitHub names no merge commit", pr["head"]["sha"])),
         }));
     }
     if pr["state"] != "open" {

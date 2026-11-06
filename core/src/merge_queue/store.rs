@@ -417,9 +417,10 @@ fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, ru
 /// End the repository's pause: journal what ended it, and re-anchor every
 /// waiting entry at `main`, so main CI counts for them from there on.
 /// `skip` is an entry the caller re-anchors itself. An unpause while main is
-/// still the red commit of a main_red pause accepts that red run: the
-/// re-anchored entries no longer count it (by its id). Answers the waiting
-/// entries and the accepted run, if any.
+/// still the red commit of a main_red pause accepts that red run; the journal
+/// keeps it, and every entry anchored at that main no longer counts it (by its
+/// id, see `checks::accepted_runs`). Answers the waiting entries and the
+/// accepted run, if any.
 fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &str, skip: Option<&str>) -> Result<(Vec<Value>, Value)> {
     let mut r = repository(db, repository_id)?;
     let paused = std::mem::take(&mut r["paused"]);
@@ -459,11 +460,6 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     for mut e in waiting.iter().cloned() {
         if Some(e["id"].as_str().unwrap_or("")) != skip {
             reanchor(&mut e, main, &text);
-            if !accepted.is_null() {
-                let mut runs = e["acceptedRuns"].as_array().cloned().unwrap_or_default();
-                runs.push(accepted["id"].clone());
-                e["acceptedRuns"] = json!(runs);
-            }
             save(db, &e)?;
         }
         collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":e["id"]}),
@@ -480,10 +476,6 @@ pub(super) fn anchor(e: &Value) -> Value {
     json!([e["mainAtRelease"], e["mainAnchoredAt"]])
 }
 fn reanchor(e: &mut Value, main: &str, why: &str) {
-    // Runs an unpause accepted belong to the main they were accepted at.
-    if e["mainAtRelease"] != main {
-        e["acceptedRuns"] = json!([]);
-    }
     e["mainAtRelease"] = json!(main);
     e["mainAnchoredAt"] = json!(now());
     e["nextCheck"] = json!(0);
@@ -635,7 +627,6 @@ impl Store {
             let main = main.context("A retry needs the current main")?;
             e["mainAtRelease"] = json!(main);
             e["mainAnchoredAt"] = json!(now());
-            e["acceptedRuns"] = json!([]);
             if e["batch"].is_object() {
                 let old = e["batch"].take();
                 e["retiredBatches"] = json!([e["retiredBatches"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
@@ -876,7 +867,7 @@ impl Store {
             }
             Ok(MergeOutcome::Unknown(detail)) => {
                 urgent = true;
-                stop(&mut e, "merge_unknown", detail);
+                unknown(self, &tx, &mut e, detail)?;
             }
             Ok(MergeOutcome::Moved(detail) | MergeOutcome::Held(detail)) => {
                 let old = e["merge"].take();
@@ -889,9 +880,12 @@ impl Store {
             Err(error) => {
                 let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
                 e["readFailures"] = json!(failures);
-                if failures >= READ_FAILURES {
+                if failures >= READ_FAILURES && e["merge"]["attempts"].as_i64().unwrap_or(0) == 0 {
+                    // No request was ever sent: nothing merged.
+                    stop(&mut e, "github_unreachable", format!("{failures} reads failed before any merge request was sent; nothing merged. The last: {error}"));
+                } else if failures >= READ_FAILURES {
                     urgent = true;
-                    stop(&mut e, "merge_unknown", format!("{failures} reads after a merge request failed; the last: {error}. Whether the PR merged is not known"));
+                    unknown(self, &tx, &mut e, format!("{failures} reads after a merge request failed; the last: {error}. Whether the PR merged is not known"))?;
                 } else {
                     e["detail"] = json!(format!("Reading GitHub after the merge request failed ({error}); checking again"));
                     e["nextCheck"] = json!(now_epoch + (60i64 << (failures - 1).min(3)).min(600));
@@ -1200,6 +1194,21 @@ fn released_for_merge(e: &Value) -> Result<()> {
         e["queueVersion"].as_i64().unwrap_or(1) >= QUEUE_VERSION,
         "merge_dry_run_ended: this entry was released before Core merged for real, and that release does not let Core merge; release the PR again"
     );
+    Ok(())
+}
+
+/// A merge Core sent may have landed but was never verified: the entry stops
+/// with merge_unknown, and the repository's queue pauses until a person has
+/// looked, so nothing merges on top of it.
+fn unknown(store: &Store, db: &Connection, e: &mut Value, detail: String) -> Result<()> {
+    let main = e["merge"]["expectedMain"].as_str().unwrap_or("").to_owned();
+    let sent = e["merge"]["attempts"].as_i64().unwrap_or(0);
+    let why = format!(
+        "#{} may have merged without a check: {sent} merge request(s) got no certain answer ({detail}). A lead or the user checks whether it landed before unpausing",
+        e["number"]
+    );
+    pause(store, db, e, "merge_unknown", &main, &Value::Null, &why)?;
+    stop(e, "merge_unknown", detail);
     Ok(())
 }
 
