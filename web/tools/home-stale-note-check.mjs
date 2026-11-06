@@ -3,7 +3,8 @@
 // When Home's read fails, the overview's "Home could not refresh" note floats over the top of its tiles, in a slot of
 // no height: the overview keeps its height and the first part of Home below it stays where it was, while the note
 // shows and as it goes. It fades in over small and out over exit-small, the same note all the way out; under reduced
-// motion it is there and gone at once. Desktop 1280×860 and phone 390×844, each with normal and reduced motion.
+// motion it is there and gone at once. It takes no pointer: under it, a click or tap on a tile's top strip still
+// reaches the tile (#630 R2). Desktop 1280×860 and phone 390×844, each with normal and reduced motion.
 // Positions are measured inside .home-layout, so Home's own error banner above it does not count.
 //   YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-stale-note-check.mjs
 import { createServer } from "node:http";
@@ -105,7 +106,18 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           return { overview: overview ? Math.round(overview.getBoundingClientRect().height) : null,
             next: next ? Math.round(next.getBoundingClientRect().top - top) : null,
             note: note ? { same: note === window.__first, position: getComputedStyle(note).position, leaving: note.classList.contains("is-leaving"),
-              plays: note.getAnimations().filter((a) => a.playState === "running").map((a) => `${a.animationName}:${a.effect.getTiming().duration}`) } : null };
+              plays: note.getAnimations().filter((a) => a.playState === "running").map((a) => `${a.animationName}:${a.effect.getTiming().duration}`),
+              hit: window.__hit(note) } : null };
+        };
+        // What a click or tap 4 px below the first tile's top, at its middle, lands on, and whether the note covers it.
+        window.__hit = (note) => {
+          const tile = document.querySelector(".home-return-tile");
+          if (!tile) return null;
+          const r = tile.getBoundingClientRect(), n = note.getBoundingClientRect();
+          const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + 4);
+          const at = document.elementFromPoint(x, y);
+          return { covered: x >= n.left && x <= n.right && y >= n.top && y <= n.bottom, tile: !!at && at.closest(".home-return-tile") === tile,
+            at: at ? `${at.tagName.toLowerCase()}.${at.className}` : null };
         };
         window.__sample = (ms) => new Promise((done) => {
           const frames = [];
@@ -134,6 +146,10 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
       ok(`${tag}: Home's failed read says so over the top of the overview's tiles: the overview keeps its height and what follows it stays where it was (HM:U1)`,
         withNote.length > 0 && withNote.every((f) => f.note.position === "absolute") && shown.every(still) && gone.every(still),
         { before, shown: withNote.slice(0, 2), moved: [...shown, ...gone].filter((f) => !still(f)).slice(0, 3) });
+      const covering = withNote.filter((f) => f.note.hit?.covered);
+      ok(`${tag}: under the note, a click or tap on a tile's top strip still reaches the tile (HM:U1, PR 630 R2)`,
+        covering.length > 0 && covering.every((f) => f.note.hit.tile), { covering: covering.length, missed: covering.filter((f) => !f.note.hit.tile).slice(0, 2),
+          first: withNote[0]?.note.hit ?? null });
       ok(`${tag}: the note ${motion("fades in over small (home-return-stale-in 180 ms)", "is there at once, nothing playing")} (HM:U1)`,
         withNote.length > 0 && (run.reduced ? withNote.every((f) => !f.note.plays.length) : withNote[0].note.plays.includes("home-return-stale-in:180")),
         withNote.slice(0, 2));

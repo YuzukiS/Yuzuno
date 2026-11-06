@@ -181,7 +181,9 @@
 /* Home's read failed: the note floats over the top of the tiles, in a slot of
    no height, so the overview keeps its height and nothing below it moves as it
    comes and goes (HomeReturnOverview.tsx, T-51 HM:U1). It fades in over small
-   and out over exit-small; under reduced motion it is there and gone at once. */
+   and out over exit-small; under reduced motion it is there and gone at once.
+   It is text only and takes no pointer: a click or tap on the tiles' top strip
+   under it still reaches the tile (#630 R2). */
 .home-return-stale-slot {
   position: relative;
   z-index: 2;
@@ -199,6 +201,7 @@
   background: color-mix(in srgb, var(--error-ink) 5%, var(--home-surface));
   color: var(--error-ink);
   font-size: calc(9px + var(--font-adjust, 3px));
+  pointer-events: none;
   animation: home-return-stale-in var(--motion-small) var(--ease-standard);
 }
 .home-return-stale.is-leaving {
