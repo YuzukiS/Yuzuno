@@ -3672,6 +3672,19 @@ p {
     display: none;
   }
 }
+/* A workbench that is not a phone, with the on-screen keyboard up: the shell
+   fits what the keyboard leaves, so the input area and Send stay on screen
+   rather than under it (T-15). The keyboard covers the bottom of a tablet or
+   an opened folding phone exactly as it covers a phone's, and the shell was
+   100dvh tall through all of it. Only the height moves here: the rest of this
+   layout has the room to stay as it is, which a phone's does not. */
+:root[data-keyboard] .app:not(.phone) {
+  /* min-height: 500px is the desktop minimum and it floored this at 500 when
+     the keyboard left 369, which put the input area back under the keyboard.
+     A phone drops it for the same reason when held sideways. */
+  min-height: 0;
+  height: min(100dvh, var(--visual-height, 100dvh));
+}
 /* With the on-screen keyboard up (keyboard-viewport.ts) the phone shell is
    as short as a phone held sideways, though the window is not: the same
    short layout, so the turn dock is not drawn over the composer and Send. */

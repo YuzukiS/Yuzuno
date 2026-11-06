@@ -503,8 +503,13 @@ export function App() {
   // Touch rows wherever a finger is the pointer, not only where the phone
   // layout applies: a folding phone opened is wide and still all touch (T-15).
   const touchInput = useTouchInput();
-  // On a phone the shell fits what the on-screen keyboard leaves.
-  useEffect(() => (phone ? followVisualViewport() : undefined), [phone]);
+  // The shell fits what the on-screen keyboard leaves wherever a finger is
+  // the pointer, not only where the phone layout applies (T-15). A tablet, or
+  // a folding phone opened, is wide enough to keep the side-by-side layout
+  // and still has the same keyboard over the bottom of it: with this gated on
+  // the phone layout, the input area on those screens was left under the
+  // keyboard, which is the very thing T-170 fixed for phones.
+  useEffect(() => (phone || touchInput ? followVisualViewport() : undefined), [phone, touchInput]);
   const [phoneList, setPhoneList] = useState(true);
   const [phoneInspector, setPhoneInspector] = useState(false);
   const phoneBack = useRef<HTMLButtonElement>(null);
