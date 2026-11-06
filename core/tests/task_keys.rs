@@ -15,6 +15,11 @@ fn refused(store: &Store, operation: &str, input: Value) -> String {
     store.collaboration_call(None, operation, input).unwrap_err().to_string()
 }
 
+/// A Project key change the store refuses, as its message ("" if it took it).
+fn key_refused(store: &Store, project: &str, key: &str) -> String {
+    store.update_project(project, key_change(key)).err().map(|e| e.to_string()).unwrap_or_default()
+}
+
 fn key_change(key: &str) -> ProjectChange {
     ProjectChange { name: None, key: Some(key.into()), default_dirs: BTreeMap::new(), archived: None }
 }
@@ -60,13 +65,13 @@ fn project_keys_come_from_names_and_are_unique_in_the_workspace_forever() {
 
     // The user changes a key; the old one stays reserved for its Project.
     assert_eq!(store.update_project(&next.id, key_change("YUZ")).unwrap().key.as_deref(), Some("YUZ"));
-    let taken = store.update_project(&nest.id, key_change("YN")).unwrap_err().to_string();
-    assert!(taken.contains("project_key_taken"), "an old key is never handed to another Project: {taken}");
-    let current = store.update_project(&nest.id, key_change("YUZ")).unwrap_err().to_string();
-    assert!(current.contains("project_key_taken"), "nor a current one: {current}");
+    let taken = key_refused(&store, &nest.id, "YN");
+    assert!(taken.contains("project_key_taken"), "an old key is never handed to another Project: {taken:?}");
+    let current = key_refused(&store, &nest.id, "YUZ");
+    assert!(current.contains("project_key_taken"), "nor a current one: {current:?}");
     for bad in ["T", "yn", "Y", "1YN", "ABCDEFGHIJK"] {
-        let refused = store.update_project(&nest.id, key_change(bad)).unwrap_err().to_string();
-        assert!(refused.contains("invalid_input"), "{bad:?}: {refused}");
+        let refused = key_refused(&store, &nest.id, bad);
+        assert!(refused.contains("invalid_input"), "a key is an uppercase letter and 1-9 more: {bad:?}: {refused:?}");
     }
     // A Project takes back its own old key.
     assert_eq!(store.update_project(&next.id, key_change("YN")).unwrap().key.as_deref(), Some("YN"));
@@ -140,8 +145,8 @@ fn an_old_project_key_names_its_tasks_after_a_change_and_after_deletion() {
     store.delete_project(&gone.id).unwrap();
     assert_eq!(named(&store, "GON-1").as_deref(), Some("T-2"), "a deleted Project's key still names the tasks it had");
     let other = store.create_project("Other", BTreeMap::new()).unwrap();
-    let taken = store.update_project(&other.id, key_change("GON")).unwrap_err().to_string();
-    assert!(taken.contains("project_key_taken"), "{taken}");
+    let taken = key_refused(&store, &other.id, "GON");
+    assert!(taken.contains("project_key_taken"), "a deleted Project's key stays reserved: {taken:?}");
     let generated = store.create_project("Gone again", BTreeMap::new()).unwrap();
     assert_eq!(generated.key.as_deref(), Some("GA"));
     let similar = store.create_project("Gonzo", BTreeMap::new()).unwrap();
@@ -272,8 +277,9 @@ async fn every_tool_takes_each_key_and_a_stored_reference_reads_as_the_key_now()
     let created = ws.collaboration_call(None, "task_create", json!({"requestId":"n1","title":"n1","projectId":next.id})).await.unwrap();
     assert_eq!(created["task"]["id"], "YN-1");
     // A Job written while the task was YN-1 keeps that taskRef in its record.
+    let path = dir.path().join("data/workspace.sqlite");
     {
-        let db = ws.store.db.write().unwrap();
+        let db = Connection::open(&path).unwrap();
         let internal: String = db.query_row("SELECT id FROM collaboration_tasks WHERE seq=1", [], |r| r.get(0)).unwrap();
         let job = json!({"id":"job-1","taskId":internal,"taskRef":"YN-1","name":"synthetic","status":"succeeded",
             "agentId":"dev","createdAt":"2026-11-06T00:00:00Z"});
@@ -293,7 +299,7 @@ async fn every_tool_takes_each_key_and_a_stored_reference_reads_as_the_key_now()
         let jobs = ws.collaboration_call(None, "job_list", json!({"taskId":form})).await.unwrap();
         assert_eq!(jobs["jobs"][0]["taskRef"], "YUZ-1", "job_list {form}: {jobs}");
     }
-    let stored: String = ws.store.db.read().unwrap()
+    let stored: String = Connection::open(&path).unwrap()
         .query_row("SELECT json_extract(data,'$.taskRef') FROM local_jobs WHERE id='job-1'", [], |r| r.get(0)).unwrap();
     assert_eq!(stored, "YN-1", "the stored record is untouched");
 }
