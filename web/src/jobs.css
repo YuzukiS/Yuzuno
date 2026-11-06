@@ -941,6 +941,43 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* The panel scrolls as one where scrolling a region inside it is hard or
+   there is no room for two of them: a finger cannot flick a pane nested in a
+   dialog, and a short window leaves each pane too little to be worth its own
+   scrollbar. The machine card then scrolls up and out of the way with
+   everything else, which is what it is asked for (T-53).
+
+   Both conditions, not only a narrow window: a tablet at 1366x1024 has the
+   height for the split and still cannot flick it. Measured on main at
+   1024x768, the list showed 306px of 1169px in its own region while the
+   panel itself did not scroll; at 820px of viewport the dialog is 780px and,
+   after the 203px machine card, each pane has about 360px left.
+
+   Only the scrolling and the one column: a window that is merely short or
+   touched is not narrow, so the headings, the form's columns and the
+   dialog's own size stay as they are (the rule below). */
+@media (max-width: 720px), (pointer: coarse), (max-height: 820px) {
+  .jobs-pane {
+    overflow: auto;
+  }
+  .jobs-source,
+  .jobs-browser,
+  .job-form {
+    flex: none;
+  }
+  .jobs-browser {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .job-list,
+  .job-detail,
+  .job-form {
+    overflow: visible;
+  }
+  /* Its own scroll inside the one that now carries everything. */
+  .ci-subscriptions {
+    max-height: none;
+  }
+}
 @media (max-width: 720px) {
   .jobs-nav .nav-count {
     display: none;
@@ -970,22 +1007,6 @@
     gap: 14px;
     margin-top: 14px;
   }
-  .jobs-pane {
-    overflow: auto;
-  }
-  .jobs-source,
-  .jobs-browser,
-  .job-form {
-    flex: none;
-  }
-  .jobs-browser {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .job-list,
-  .job-detail,
-  .job-form {
-    overflow: visible;
-  }
   .jobs-source-heading {
     flex-wrap: wrap;
   }
@@ -995,9 +1016,6 @@
   .job-form-footer {
     flex-direction: column;
     align-items: stretch;
-  }
-  .ci-subscriptions {
-    max-height: none;
   }
 }
 .review-report-action {
