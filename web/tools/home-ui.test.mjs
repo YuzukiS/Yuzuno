@@ -2255,7 +2255,8 @@ const copyReport = () => {
       { name: "spec", kind: "link", mime: "text/html", size: 0, snapshot: false, mayChange: true, takenAt: at(5), url: "https://example.test/spec" },
     ],
     // Core couldn't read the pull request this time: not the same as missing.
-    refs: { "task:T-9": { kind: "task", id: "T-9", found: true, title: "Home", state: "doing" },
+    // The task is named by the key it has now (T-56), not the T-9 written.
+    refs: { "task:T-9": { kind: "task", id: "T-9", found: true, title: "Home", state: "doing", key: "APP-9" },
       "pr:acme/app#12": { kind: "pr", id: "acme/app#12", found: false, unavailable: true } },
   });
 };
@@ -2273,7 +2274,7 @@ const copiedReport = [
   "## Loss",
   "Chart · x: Step · y: Loss (nats)\n- train: 3 points; x 0–2; y 1.2–2.5; last 1.2",
   "## References",
-  "- Task T-9: Home · doing — copy slice\n- Pull request acme/app\\#12: couldn't read",
+  "- Task APP-9: Home · doing — copy slice\n- Pull request acme/app\\#12: couldn't read",
   "- Image: shot.png — Desktop view (kept with Home card research, version 3)\n- Link: [Spec](<https://example.test/spec>)",
   "## Sources",
   // A link keeps its whole address, parentheses included, and its label's brackets.

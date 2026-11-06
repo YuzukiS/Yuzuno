@@ -605,6 +605,15 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.ok(checkBriefSection(layoutStudy));
   assert.deepEqual(researchReads(layoutStudy.body.elements.desk.props), [], "nothing is read from a file");
   assert.equal(first(desk((p) => { p.sources[1].task = { taskId: "17", activitySeq: 42 }; })).code, "invalid_field", "a task ID is T-n");
+  // T-56: a Task record is named by T-n or a Project task key, in canonical capitals only.
+  const keyed = structuredClone(layoutStudy);
+  const record = keyed.body.elements.desk.props.sources[0].task;
+  record.taskId = "YN-3";
+  assert.equal(checkBriefSection(keyed).body.elements.desk.props.sources[0].task.taskId, "YN-3", "a Project task key names the record's task");
+  for (const taskId of ["yn-3", "Y-3", "YN3"]) {
+    record.taskId = taskId;
+    assert.equal(first(keyed).code, "invalid_field", `${taskId} is not a task key`);
+  }
   const both = rejected((p) => { p.sources[1].task = { taskId: "T-17", activitySeq: 42 }; });
   assert.equal(both.code, "invalid_field");
   assert.match(both.reason, /names both a snapshot and a Task record/);

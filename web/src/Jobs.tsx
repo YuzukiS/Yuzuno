@@ -49,6 +49,7 @@ import { useAppearance } from "./appearance";
 import { useDocumentVisible } from "./document-visible";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { jobsText, type JobsText } from "./jobs-text";
+import { TASK_KEY } from "./intelligent-ui/task-key";
 import {
   JobCard,
   JobDetailHeading,
@@ -1747,7 +1748,7 @@ function useSuggestion(taskId: string, name: string, command: string) {
     // the next one is asked (review 7a85f843).
     setSuggestion(null);
     const task = taskId.trim();
-    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) return;
+    if (!TASK_KEY.test(task) || (!name.trim() && !command.trim())) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const query = new URLSearchParams({ taskId: task, name: name.trim() });

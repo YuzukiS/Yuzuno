@@ -11,6 +11,7 @@ import type { z } from "zod";
 import { API_BASE } from "../../api";
 import { timeFormatter, type TimeDisplay } from "../../time-preferences";
 import type { briefComponentProps, BriefComponent } from "../../intelligent-ui/brief-contract.ts";
+import type { LiveRefState } from "../types";
 
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
 export type ChartProps = Props<"LineChart"> | Props<"BarChart"> | Props<"ScatterChart">;
@@ -31,6 +32,10 @@ export type MetricsProps = Props<"Metrics">;
 export type LiveRefsProps = Props<"LiveRefs">;
 export type LiveRef = LiveRefsProps["items"][number];
 export type LiveRefKind = LiveRef["kind"];
+/** The id a reference shows: a task's key now (T-56), which Core reads for
+ * any key the Agent wrote, else the id as written. */
+export const shownRefId = (item: LiveRef, state: LiveRefState | undefined) =>
+  (item.kind === "task" && state?.found && state.key) || item.id;
 export type AttachmentsProps = Props<"Attachments">;
 export type SourcesProps = Props<"Sources">;
 export type BriefTableProps = Props<"Table">;

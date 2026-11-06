@@ -466,8 +466,14 @@ fn public_task(db: &Connection, task: &mut Value) -> Result<()> {
         .as_i64()
         .filter(|seq| *seq > 0)
         .context("Task has no stable sequence")?;
-    let id = task["id"].as_str().context("Task has no internal ID")?.to_owned();
-    task["id"] = json!(task_number(db, &id)?);
+    let reference = task["id"].as_str().context("Task has no ID")?.to_owned();
+    // A task value holds its internal ID; one that already holds a public key
+    // (T-<n> or any key the task had) is read by task_key, as links are.
+    let key = match crate::task_keys::current(db, &reference)? {
+        Some(key) => key,
+        None => task_number(db, &task_key(db, &reference)?.0)?,
+    };
+    task["id"] = json!(key);
     Ok(())
 }
 
@@ -1646,7 +1652,7 @@ pub fn tool_definitions() -> Vec<Value> {
     };
     vec![
         definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (a lead of its Project, set by the user), executor (made by Core for one task) or standing (made by the user); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
-        definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Each has a key, the prefix of its tasks' keys: a task created in or moved into a project is <KEY>-<n> there, and a task in no project, or numbered before keys came, is T-<n>. T-<n> names every task forever, as does every key a task or project had. The user changes a project's key with PATCH /api/projects/<id> {\"key\"}.", json!({}), &[]),
+        definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Each has a key, the prefix of its tasks' keys: a task created in or moved into a project is <KEY>-<n> there, and a task in no project, or numbered before keys came, is T-<n>. T-<n> names every task forever, as does every key a task or project had. The user changes a project's key in the Projects window (Manage projects…), as its task key prefix.", json!({}), &[]),
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. A released executor takes no more mail (executor_archived): write to its dispatcher. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Without filters it lists every project's and every assignee's tasks that are not archived (archived:true lists only archived ones), in creation order, 50 per page (limit up to 200); pass nextAfterSeq as afterSeq while hasMore. Every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project. compact:true gives short rows; task_get reads one task whole.", json!({"compact":{"type":"boolean","default":false,"description":"Short rows: id, title, status, version, assignee, updatedAt, projectId, githubLinks (a count) and the first 200 characters of progress and blocker. Description, result, dispatch and GitHub snapshots are left out; filters, counts and paging are unchanged."},"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
@@ -1895,6 +1901,30 @@ mod tests {
             still_raw, raw_receipt,
             "upgrade projects historical receipts; it does not rewrite evidence"
         );
+    }
+
+    /// T-56 PR 2: a stored answer whose task already holds a public key
+    /// (`T-<n>`, or a Project key the task had) replays as the key the task has
+    /// now, as one holding its internal ID does.
+    #[test]
+    fn a_receipt_holding_a_public_key_replays_as_the_key_now() {
+        let (_dir, store) = fixture();
+        let project = store.create_project("Receipts", std::collections::BTreeMap::new()).unwrap();
+        let input = json!({"requestId":"keyed","title":"A keyed receipt","projectId":project.id});
+        assert_eq!(store.collaboration_call(None, "task_create", input.clone()).unwrap()["task"]["id"], "REC-1");
+        store.update_project(&project.id, crate::projects::ProjectChange { name: None, key: Some("RCPT".into()),
+            default_dirs: std::collections::BTreeMap::new(), archived: None }).unwrap();
+        for held in ["REC-1", "T-1"] {
+            {
+                let db = store.db.write().unwrap();
+                let stored: String = db.query_row("SELECT response_json FROM collaboration_requests WHERE request_id='keyed'", [], |r| r.get(0)).unwrap();
+                let mut stored: Value = serde_json::from_str(&stored).unwrap();
+                stored["task"]["id"] = json!(held);
+                db.execute("UPDATE collaboration_requests SET response_json=?1 WHERE request_id='keyed'", [stored.to_string()]).unwrap();
+            }
+            let replayed = store.collaboration_call(None, "task_create", input.clone()).map(|r| r["task"]["id"].clone()).map_err(|e| e.to_string());
+            assert_eq!(replayed, Ok(json!("RCPT-1")), "a receipt holding {held} replays as the key the task has now");
+        }
     }
 
     #[test]

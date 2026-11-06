@@ -32,6 +32,7 @@ import {
   type ProjectScope,
 } from "./projects";
 import type { Agent, Project, ProjectUsage } from "./types";
+import { PROJECT_KEY } from "./intelligent-ui/task-key";
 import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
@@ -300,7 +301,7 @@ export function ProjectSwitcher({
 // own editors.
 const managerText = strings({
   title: "Projects",
-  description: "Group long-running work. Agents keep collaborating across projects, and task numbers stay shared.",
+  description: "Group long-running work. Agents keep collaborating across projects; each project numbers its own tasks.",
   list: "Projects",
   without: "Without a project",
   newProject: "New project",
@@ -318,6 +319,10 @@ const managerText = strings({
   // A project
   projectName: "Project name",
   rename: "Rename",
+  projectKey: "Task key prefix",
+  changeKey: "Change prefix",
+  keyNote: (key: string) =>
+    `Tasks in this project are numbered ${key}-1, ${key}-2 and so on; a task in no project keeps T-1. A new prefix applies to every task here at once, every key a task had still names it, and an old prefix is never given to another project. A prefix is an uppercase letter, then 1 to 9 uppercase letters or digits.`,
   archivedNote: "Archived. Its agents and tasks stay where they are and still reach you when they need you; nothing new joins it.",
   folders: "Default folders",
   foldersNote: "Fills in new agents’ folder on each machine. It does not limit which folders an agent may use, and changing it never moves existing agents.",
@@ -354,7 +359,7 @@ const managerText = strings({
   partlyAdded: (failed: string) => `Not every agent was added (${failed}).`,
 }, {
   title: "项目",
-  description: "把长期工作分组。Agent 可以跨项目协作，任务编号仍共用。",
+  description: "把长期工作分组。Agent 可以跨项目协作；每个项目的任务各自编号。",
   list: "项目",
   without: "无项目",
   newProject: "新建项目",
@@ -370,6 +375,10 @@ const managerText = strings({
   create: "创建项目",
   projectName: "项目名称",
   rename: "重命名",
+  projectKey: "任务编号前缀",
+  changeKey: "更改前缀",
+  keyNote: (key) =>
+    `这个项目的任务编号为 ${key}-1、${key}-2 等；不属于任何项目的任务仍是 T-1 这样的编号。新前缀立即用于这里的所有任务，任务用过的每个编号仍能找到它，旧前缀也不会给其他项目。前缀以一个大写字母开头，后跟 1 到 9 个大写字母或数字。`,
   archivedNote: "已归档。它的 Agent 和任务保持原样，需要你时仍会找你；不会再有新的加入。",
   folders: "默认文件夹",
   foldersNote: "用于在每台机器上预填新 Agent 的文件夹。它不限制 Agent 可以使用哪些文件夹，更改它也不会移动现有 Agent。",
@@ -674,6 +683,8 @@ function ProjectDetail({
   const t = useStrings(managerText);
   const language = useLanguage();
   const [name, setName] = useState(project.name);
+  const [key, setKey] = useState(project.key ?? "");
+  const keyAction = useAction();
   // Unsaved folder edits per machine. The workspace refreshes every few
   // seconds; only an edit that now matches what Core saved is dropped.
   const [edits, setEdits] = useState<Record<string, string>>({});
@@ -737,6 +748,48 @@ function ProjectDetail({
           {t.rename}
         </button>
       </form>
+      {project.key !== undefined && (
+        <>
+          <form
+            className="project-rename project-key"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const next = key.trim();
+              // The rule is only a hint here; Core decides and says why not.
+              if (PROJECT_KEY.test(next) && next !== project.key)
+                void keyAction.run("key", async () => {
+                  const saved = await patch<Project>(path, { key: next });
+                  onChanged();
+                  return saved;
+                });
+            }}
+          >
+            <label>
+              {t.projectKey}
+              <input
+                value={key}
+                maxLength={10}
+                spellCheck={false}
+                autoComplete="off"
+                autoCapitalize="characters"
+                onChange={(event) => setKey(event.target.value.toUpperCase())}
+              />
+            </label>
+            <button
+              className="secondary-button"
+              disabled={!!keyAction.busy || !PROJECT_KEY.test(key.trim()) || key.trim() === project.key}
+            >
+              {t.changeKey}
+            </button>
+          </form>
+          <p className="project-note">{t.keyNote(project.key)}</p>
+          {keyAction.error && (
+            <p role="alert" className="inline-error">
+              {keyAction.error}
+            </p>
+          )}
+        </>
+      )}
       <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
       <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} onOpened={onLeave} />
       <ProjectLeads key={`leads:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
