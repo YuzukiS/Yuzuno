@@ -167,7 +167,11 @@ c=s['commits']
 if method=='POST' and path=='git/refs':
     name=body['ref'][len('refs/heads/'):]
     if name in s['refs']: out(422,{'message':'Reference already exists'})
-    s['refs'][name]=body['sha']; save(); out(201,{'ref':body['ref'],'object':{'sha':body['sha']}})
+    q=s.get('refAnswers') or []
+    answer=q.pop(0) if q else None
+    s['refs'][name]=body['sha']; save()
+    if answer=='lost': out(502,{'message':'Bad gateway'})
+    out(201,{'ref':body['ref'],'object':{'sha':body['sha']}})
 if method=='POST' and path=='merges':
     if s.get('batchConflict'): out(409,{'message':'Merge conflict'})
     k={'sha':s['batchCommit'],'tree':s['batchTree'],'parents':[s['refs'][body['base']],body['head']]}
@@ -215,6 +219,7 @@ if path=='git/ref/heads/main': out(200,{'object':{'sha':s['main']}})
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
+if path.startswith('git/commits/') and s.get('commitDown'): out(502,{'message':'Bad gateway'})
 if path.startswith('git/commits/'):
     k=c[path.split('/')[-1]]; out(200,{'sha':k['sha'],'tree':{'sha':k['tree']},'parents':[{'sha':x} for x in k['parents']]})
 if path.startswith('commits/') and '/check-runs' in path: out(200,{'total_count':len(s.get('checkRuns',[])),'check_runs':s.get('checkRuns',[])})
@@ -718,6 +723,77 @@ async fn an_unpause_retried_with_its_request_id_gets_the_first_answer_back() {
     assert_eq!(lab.paused()["pauses"].as_array().map(Vec::len), Some(1), "nothing is cleared twice");
     let other = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u1","repositoryId":7,"reason":"other"})).await;
     assert!(other.unwrap_err().to_string().starts_with("idempotency_conflict"), "the same requestId with another payload is refused");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_branch_whose_creation_answer_was_lost_is_still_removed() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+        s["refAnswers"] = json!(["lost"]);
+    });
+    let id = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    // GitHub creates the batch branch, but its answer is lost.
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["batch"]["ref"], "pending", "the branch was recorded before it was asked for: {e}");
+    lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c1","entryId":id})).await.unwrap();
+    let e = lab.step().await;
+    let w = writes(lab.dir.path());
+    assert!(w.contains(&format!("DELETE repos/owner/repo/git/refs/heads/queue/merge-{id}")), "Core deletes a branch it may have made: {w:?}");
+    assert_eq!(e["batch"]["cleanup"], "done", "{e}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn read_failures_before_the_post_check_stop_and_pause_instead_of_ending_done() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    // Merged, but the merge commit was never read: no post-check yet.
+    let mut m = lab.entry().await;
+    m["state"] = json!("merged");
+    m["merge"] = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"slot","head":head(),"attempts":1,"puts":[{"n":1}],"sha":merge_commit(),"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET state='merged',next_check=0,data=?1", [m.to_string()]).unwrap();
+    change(lab.dir.path(), |s| s["commitDown"] = json!(true));
+    for _ in 0..8 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!(
+        (e["state"].clone(), e["reason"].clone()),
+        (json!("stopped"), json!("post_check_unverified")),
+        "read failures before the post-check stop the entry, never done: {e}"
+    );
+    assert_eq!(lab.paused()["paused"]["reason"], "post_check_unverified", "nothing merges on top of an unchecked merge commit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pause_longer_than_the_wait_limit_keeps_its_entries_waiting_for_the_unpause() {
+    let lab = lab(green());
+    let id = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    let after = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        s["commits"][sha('b')] = json!({"sha":sha('b'),"tree":sha('6'),"parents":[main_sha()]});
+        s["main"] = json!(sha('b'));
+        let red = json!({"id":91,"name":"CI","head_sha":sha('b'),"status":"completed","conclusion":"failure","created_at":after});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    pause_at_b(&lab, &after);
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["state"], "waiting");
+    // Seven hours on, the queue is still paused.
+    lab.ws.store.db.write().unwrap().execute(
+        "UPDATE merge_entries SET data=json_set(data,'$.waitingSince',?1)",
+        [chrono::Utc::now().timestamp() - 7 * 3600],
+    ).unwrap();
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("waiting"), json!("waiting")), "a pause longer than six hours does not time the entry out: {e}");
+    let answer = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u","repositoryId":7})).await.unwrap();
+    assert_eq!(answer["reanchored"], json!([id]), "the unpause re-anchors the waiting entry");
+    assert_eq!(lab.entry().await["mainAtRelease"], sha('b'));
 }
 
 #[cfg(unix)]

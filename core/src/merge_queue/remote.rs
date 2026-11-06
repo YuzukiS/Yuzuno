@@ -281,6 +281,10 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
     save(b.clone()).await?;
     let (repo, repository) = (t.repo.as_str(), t.repository);
     if b["ref"] != true {
+        // Recorded before the request: if its answer is lost, the branch may
+        // exist, and the cleanup removes it.
+        b["ref"] = json!("pending");
+        save(b.clone()).await?;
         let (code, answer) = writes::write(ws, repository, repo, Write::CreateBranch { branch: &branch, main }).await?;
         match code {
             201 => {}
@@ -475,7 +479,10 @@ pub(super) async fn cleanup(ws: &Arc<Workspace>, entry: &Value) -> Result<Value>
     let b = &entry["batch"];
     let branch = b["branch"].as_str().context("The batch has no branch")?;
     ensure!(branch == writes::branch(&t.id), "merge_write_refused: the batch branch is not this entry's own");
-    let (mut closed, mut deleted) = (b["closed"] == true || !b["pr"].is_u64(), b["deleted"] == true || b["ref"] != true);
+    // A branch whose creation may have happened ("pending") is deleted too;
+    // GitHub's 404 or 422 then says it never existed.
+    let made = b["ref"] == true || b["ref"] == "pending";
+    let (mut closed, mut deleted) = (b["closed"] == true || !b["pr"].is_u64(), b["deleted"] == true || !made);
     if !closed {
         let pull = read(ws, format!("repos/{}/pulls/{}", t.repo, b["pr"])).await?;
         ensure!(pull["head"]["ref"] == branch, "merge_write_refused: PR #{} is not Core's batch PR for {branch}", b["pr"]);

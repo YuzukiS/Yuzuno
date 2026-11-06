@@ -343,7 +343,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         def(
             "merge_unpause",
-            "Unpause a repository's merge queue after red main CI or a failed post-check. Core reads main now and re-anchors every waiting entry there, so their main CI counts from that main on. Only a lead of a Project the repository is linked to, or the user.",
+            "Unpause a repository's merge queue after red main CI, a failed post-check, or a post-check Core could not run. Core reads main now and re-anchors every waiting entry there, so their main CI counts from that main on. Only a lead of a Project the repository is linked to, or the user. Retry an identical request with the same requestId.",
             json!({"requestId":text,"repositoryId":{"type":"integer","minimum":1},"reason":{"type":"string","maxLength":2000}}),
             &["requestId", "repositoryId"],
         ),

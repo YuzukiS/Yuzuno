@@ -28,6 +28,9 @@ login:
   the current main, the released head merged into it (`POST merges`), and a
   draft PR from it, whose pull_request event runs CI.
 - Removing that batch afterwards: closing its PR and deleting its branch.
+  Core records the branch before it asks GitHub to create it, so a branch
+  whose creation answer was lost is still deleted; a 404 or 422 then means it
+  never existed.
 
 Core never force-pushes. It closes only the batch PRs it opened and deletes
 only the `queue/merge-{entry}` branches it created. It never starts, reruns or
@@ -113,6 +116,9 @@ Once every check holds, the entry merges, one merge at a time per repository:
    head, and its tree is the tree CI tested. Otherwise the entry stops with
    `post_check_failed` and the repository's queue pauses: something landed that
    CI did not test, and a person has to look. Core makes no automatic revert.
+   If the merge commit cannot be read eight times in a row, the entry stops
+   with `post_check_unverified` and the queue pauses the same way; an entry
+   never ends `done` without its post-check.
 4. Core removes its batch, if there was one. If the removal fails, Core
    records why and tries again later; a failed removal never delays the
    post-check or following main CI. While the switch is off, or GitHub's rate
@@ -127,14 +133,17 @@ Once every check holds, the entry merges, one merge at a time per repository:
    result stops it.
 
 While a run is still going, an entry waits and checks again later, at most
-every 10 minutes. After six hours of waiting it stops. While GitHub reads are
+every 10 minutes. After six hours of waiting it stops. Time while the
+repository's queue is paused does not count: a paused entry waits for the
+unpause however long it takes. While GitHub reads are
 cooling down, the entry waits until the cooldown ends. Each GitHub read holds
 one of Core's shared GitHub slots only while it runs; job-log downloads hold
 none.
 
 ## Pauses
 
-A repository's queue pauses on red main CI or a failed post-check. While it is
+A repository's queue pauses on red main CI, a failed post-check, or a
+post-check Core could not run (`post_check_unverified`). While it is
 paused, entries are still checked but none merges, and the pause and its end
 are mailed, urgent, to the releaser and the leads of the repository's Projects.
 
@@ -156,7 +165,7 @@ current main, so their main CI counts from there on.
 | `merging` | The merge request is journaled or sent. |
 | `merged` | GitHub merged it; Core follows main's push CI. |
 | `done` | Main's push CI on the merge commit finished. |
-| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `gh_too_old`, `wait_timeout`, `github_unreachable` or `dry_run_ended`. |
+| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `post_check_unverified`, `gh_too_old`, `wait_timeout`, `github_unreachable` or `dry_run_ended`. |
 | `cancelled` | Cancelled by the Agent that released it, or by the user. |
 
 `merge_retry` checks a stopped entry again from the start. Only the Agent that

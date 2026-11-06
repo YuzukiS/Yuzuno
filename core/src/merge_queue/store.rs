@@ -473,7 +473,7 @@ fn stop(e: &mut Value, reason: &str, detail: String) {
 }
 fn release_batch(e: &mut Value) {
     let b = &mut e["batch"];
-    if b.is_object() && (b["ref"] == true || b["pr"].is_u64()) && b["cleanup"] != "done" {
+    if b.is_object() && (b["ref"] == true || b["ref"] == "pending" || b["pr"].is_u64()) && b["cleanup"] != "done" {
         b["cleanup"] = json!("pending");
         e["nextCheck"] = json!(0);
     }
@@ -748,7 +748,14 @@ impl Store {
                                 "head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
                         }
                     }
-                    Err(Hold::Wait(detail)) => wait(&mut e, detail, 0, now_epoch),
+                    Err(Hold::Wait(detail)) => {
+                        // While the repository's queue is paused, an entry waits
+                        // for the unpause: that time is not part of the wait limit.
+                        if !repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["paused"].is_null() {
+                            e["waitingSince"] = Value::Null;
+                        }
+                        wait(&mut e, detail, 0, now_epoch)
+                    }
                     Err(Hold::Stop(reason, detail)) => {
                         if reason == "main_red" {
                             let red = evidence["mainRed"]["headSha"].as_str().unwrap_or("").to_owned();
@@ -940,7 +947,14 @@ impl Store {
                 let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
                 e["readFailures"] = json!(failures);
                 e["nextCheck"] = json!(now_epoch + (60i64 << (failures - 1).min(3)).min(600));
-                if failures >= READ_FAILURES {
+                if failures >= READ_FAILURES && e["merge"]["post"].is_null() {
+                    // The merge commit's parents and tree were never checked:
+                    // nothing merges on top of it until a person has looked.
+                    let detail = format!("{failures} reads of the merge commit failed, so its parents and tree were never checked; the last: {error}");
+                    pause(self, &tx, &e, "post_check_unverified", &sha, &detail)?;
+                    stop(&mut e, "post_check_unverified", detail);
+                    announce_as = Some("urgent");
+                } else if failures >= READ_FAILURES {
                     e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":error});
                     e["state"] = json!("done");
                     e["detail"] = json!(format!("{failures} reads after the merge failed; the last: {error}"));
