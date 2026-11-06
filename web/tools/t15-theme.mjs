@@ -51,7 +51,7 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const browser = await launchBrowser();
 const errors = [];
 
-async function read({ theme, palette, inset }) {
+async function read({ theme, palette, inset, keyboard }) {
   const context = await browser.newContext({
     viewport: { width: 951, height: 669 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
   const page = await context.newPage();
@@ -88,6 +88,16 @@ async function read({ theme, palette, inset }) {
   await page.locator(".app").waitFor({ timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(700);
+  // The state the on-screen keyboard puts the root in, set here rather than
+  // typed: this file is about which colour is painted, and the wiring that
+  // sets these two is t15-keyboard.mjs's subject (it drives a real
+  // visualViewport). Synthetic trigger, real CSS response.
+  if (keyboard)
+    await page.evaluate((left) => {
+      document.documentElement.style.setProperty("--visual-height", `${left}px`);
+      document.documentElement.setAttribute("data-keyboard", "");
+    }, keyboard);
+  if (keyboard) await page.waitForTimeout(350);
   const out = await page.evaluate(() => {
     const root = document.documentElement;
     const rs = getComputedStyle(root);
@@ -119,6 +129,23 @@ async function read({ theme, palette, inset }) {
       // Does the shell cover the window it is in?
       covers: { h: Math.round(ar.height), w: Math.round(ar.width), vh: window.innerHeight, vw: window.innerWidth },
       manifest: document.querySelector('link[rel="manifest"]')?.getAttribute("href") || null,
+      // What is painted where the shell does not reach. The root's background
+      // is the page canvas, so this is also the colour an overscroll or
+      // rubber-band area shows — which no desktop browser will produce on
+      // demand, and which is why that case is argued from the canvas rather
+      // than measured here.
+      strip: (() => {
+        const ar2 = app.getBoundingClientRect();
+        const gap = Math.round(window.innerHeight - ar2.bottom);
+        if (gap <= 2) return { gap };
+        const at = document.elementFromPoint(Math.round(window.innerWidth / 2), Math.round(ar2.bottom + gap / 2));
+        if (!at) return { gap, paintedBy: "nothing" };
+        // Up the tree to whoever actually paints: a transparent box shows
+        // what is behind it.
+        let el = at;
+        while (el && getComputedStyle(el).backgroundColor === "rgba(0, 0, 0, 0)") el = el.parentElement;
+        return { gap, paintedBy: (el?.tagName || "?").toLowerCase(), colour: el ? getComputedStyle(el).backgroundColor : null };
+      })(),
     };
   });
   await context.close();
@@ -172,34 +199,41 @@ check(uncovered.length === 0,
   uncovered.length ? `the shell covers the window, but ${uncovered.length} look(s) leave a gap` : "the shell covers the whole window, so its own background is what shows");
 note(`body carries no background of its own (${seen[0].bodyBg}); the root's does the painting.`);
 
-// --- what does not hold: the root's background is a fixed light colour ---
-// This is reported, not enforced: closing it is not this task's call (the
-// Lead decides), and a red check would stop the evidence Job over something
-// that is not a regression from this branch.
-const sameAsTheme = seen.filter((s) => {
-  const hex = s.cream.replace("#", "").toLowerCase();
-  const rgb = s.htmlBg.match(/\d+/g)?.map(Number) ?? [];
-  const asHex = rgb.slice(0, 3).map((n) => n.toString(16).padStart(2, "0")).join("");
-  return hex.length === 6 && asHex === hex;
-});
-console.log(`\n--- item 6: what does NOT hold at this head ---`);
-if (sameAsTheme.length === seen.length) {
-  console.log("  (nothing: the root's background follows the theme in every look)");
-} else {
-  console.log(`  GAP: the root's background is a fixed light colour and does not follow the theme.`);
-  console.log(`       styles.css:10 \`:root { background: #f7f7f2 }\`, while --cream and --paper are`);
-  console.log(`       redefined per theme and palette (appearance.css, palettes.css). Measured:`);
-  for (const s of seen)
-    console.log(`         ${s.name.padEnd(42)} html ${s.htmlBg.padEnd(22)} --cream ${s.cream}`);
-  console.log(`       It is invisible while the shell covers the window, which it does at every size`);
-  console.log(`       read here. It is not invisible where the shell does not reach: an overscroll or`);
-  console.log(`       rubber-band area, and the strip left while the on-screen keyboard shortens the`);
-  console.log(`       shell on purpose (:root[data-keyboard]) — a light flash under a dark theme.`);
-  console.log(`       Not a regression from this branch: the line predates it.`);
-  console.log(`       One-line candidate: background: var(--cream) at styles.css:10, which the theme`);
-  console.log(`       and palette overrides then follow. NOT applied here — the Lead's decision.`);
-  console.log(`       A real device is the only way to see the overscroll case; this Mac cannot.`);
+/** "#rrggbb" and "rgb(r, g, b)" as the same thing, or not. */
+const sameColour = (hex, rgb) => {
+  const h = (hex || "").replace("#", "").toLowerCase();
+  const n = (rgb || "").match(/\d+/g)?.map(Number) ?? [];
+  if (h.length !== 6 || n.length < 3) return false;
+  return n.slice(0, 3).map((v) => v.toString(16).padStart(2, "0")).join("") === h;
+};
+
+// 5. The root's background is the page canvas, so it has to be the theme's.
+//    It was a fixed light colour: rgb(247, 247, 242) under dark · garden
+//    (--cream #252c26) and dark · pine (#121813), which is a light flash
+//    wherever the shell does not reach.
+const offTheme = seen.filter((s) => !sameColour(s.cream, s.htmlBg));
+check(offTheme.length === 0,
+  offTheme.length
+    ? `the page canvas follows the theme, but ${offTheme.map((s) => `${s.name}: html ${s.htmlBg} vs --cream ${s.cream}`).join("; ")}`
+    : `the page canvas follows the theme in every look (${seen.map((s) => s.htmlBg).join(", ")})`);
+
+// 6. And the strip the keyboard leaves beside the shell takes that colour,
+//    which is the place on this branch where the canvas became visible.
+console.log(`\n--- what paints the strip the keyboard leaves (synthetic trigger, real CSS) ---`);
+const shortened = [];
+for (const look of looks) {
+  const m = await read({ ...look, inset: 84, keyboard: 369 });
+  shortened.push({ ...look, ...m });
+  console.log(`  ${look.name.padEnd(42)} shell ${m.covers.h}px, strip ${m.strip.gap}px painted by ${m.strip.paintedBy} ${m.strip.colour ?? ""}`);
 }
+check(shortened.every((s) => s.strip.gap > 2),
+  `the keyboard really leaves a strip beside the shell (${shortened.map((s) => s.strip.gap).join("/")}px)`);
+const stripOff = shortened.filter((s) => !sameColour(s.cream, s.strip.colour));
+check(stripOff.length === 0,
+  stripOff.length
+    ? `and it takes the theme's colour, but ${stripOff.map((s) => `${s.name}: ${s.strip.colour} vs ${s.cream}`).join("; ")}`
+    : "and it takes the theme's colour, not a fixed light one");
+note("an overscroll or rubber-band area shows this same root background, which is the page canvas; no desktop browser produces one on demand, so that case follows from the colour above rather than being measured. A real device is the only way to see it, and this Mac cannot.");
 
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await browser.close();

@@ -7,7 +7,16 @@
     "Yuzuno Han",
     sans-serif;
   color: #364b3c;
-  background: #f7f7f2;
+  /* The root's background is the page canvas: it is what an overscroll or
+     rubber-band area shows, and what is left beside the shell when the
+     on-screen keyboard shortens it (:root[data-keyboard]). A fixed light
+     colour here stayed rgb(247, 247, 242) under every dark theme and palette
+     while --cream was redefined to #252c26 or #121813, so those places were a
+     light flash under a dark theme. It follows the theme now; the theme's and
+     the palette's own --cream override this one (appearance.css,
+     palettes.css). The literal below is the fallback for the moment before a
+     theme is applied, and is the same value --cream starts at. (T-15) */
+  background: var(--cream, #f5f4ed);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
