@@ -642,6 +642,13 @@ pub(crate) struct State {
     /// its dispatch, run once.
     #[cfg(test)]
     pub(crate) before_rebuild_dispatch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// A test's store errors: the start's reads of its time limit and its
+    /// attempt fail (`fault_reads`), or a start's settling record can't be
+    /// written (`fault_settling`).
+    #[cfg(test)]
+    pub(crate) fault_reads: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    pub(crate) fault_settling: std::sync::atomic::AtomicBool,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become
@@ -736,9 +743,27 @@ impl Workspace {
     /// running, or settles a start that ended without it
     /// (executor_start.rs `settle_start`).
     async fn start_and_settle(self: &Arc<Self>, id: &str, permit: &Permit) -> Result<()> {
-        let limit = self.start_limit().await?;
+        // A store error here must not leave the slot starting with nothing
+        // settled (R6 135c4a8c): the default limit holds, and the start
+        // counts as a fresh executor's first.
+        let limit = match self.start_limit().await {
+            Ok(limit) => limit,
+            Err(error) => {
+                eprintln!("Executor {id}: its start time limit could not be read, so the default holds: {error:#}");
+                Duration::from_secs(DEFAULT_START_LIMIT.unsigned_abs())
+            }
+        };
         let agent = id.to_owned();
-        let attempt = self.stored(move |store| store.executor_slot_attempt(&agent)).await?.unwrap_or(1);
+        let read = self.stored(move |store| store.executor_slot_attempt(&agent)).await;
+        #[cfg(test)]
+        let read = if self.executor_slots.fault_reads.load(std::sync::atomic::Ordering::Relaxed) { Err(anyhow::anyhow!("a test's store error")) } else { read };
+        let attempt = match read {
+            Ok(attempt) => attempt.unwrap_or(1),
+            Err(error) => {
+                eprintln!("Executor {id}: its start's attempt could not be read, so it counts as the first: {error:#}");
+                1
+            }
+        };
         let started = tokio::time::timeout(limit, async {
             let gate = self.gate(id).await;
             let _held = gate.lock().await;
@@ -771,8 +796,17 @@ impl Workspace {
                     self.failed(id, &anyhow::anyhow!(cut.clone())).await;
                     return self.settle_start(id, permit, Failure::Definite(cut), false).await;
                 }
-                self.settling(id, &cut).await?;
-                let closed = self.close_agent_admitted(id, permit).await.map(drop);
+                // A record that can't be written doesn't stop the close, which
+                // frees its slot (R6 135c4a8c).
+                if let Err(error) = self.settling(id, &cut).await {
+                    eprintln!("Executor {id}: its settling could not be recorded before its close: {error:#}");
+                }
+                // On another machine, dropping the start ended nothing there: a
+                // stop that confirms its runtime ended comes first (Lead 2 Q5).
+                let closed = match self.remote_start_stopped(id).await {
+                    Ok(()) => self.close_agent_admitted(id, permit).await.map(drop),
+                    Err(error) => Err(error),
+                };
                 let failure = cut_off(&closed, limit);
                 if let Failure::Uncertain(why) = &failure {
                     self.failed(id, &crate::rpc::OutcomeUnknown(why.clone()).into()).await;
@@ -783,6 +817,10 @@ impl Workspace {
     }
 
     async fn start_limit(&self) -> Result<Duration> {
+        #[cfg(test)]
+        if self.executor_slots.fault_reads.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("a test's store error");
+        }
         #[cfg(test)]
         if let Some(limit) = *self.executor_slots.start_limit.lock().unwrap() {
             return Ok(limit);

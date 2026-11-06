@@ -52,6 +52,8 @@ pub(crate) struct Made {
     pub(crate) input: Value,
     pub(crate) task_id: String,
     pub(crate) dispatch_id: Option<String>,
+    /// The machine it runs on: `local`, or a registered machine's id.
+    pub(crate) machine: String,
 }
 
 impl Made {
@@ -87,11 +89,11 @@ fn mail(store: &Store, db: &Connection, task: &SharedTask, dispatcher: &str, age
 impl Store {
     /// The dispatch that made this executor, once it was dispatched.
     pub(crate) fn executor_made(&self, agent: &str) -> Result<Option<Made>> {
-        let row: Option<(String, String, String, String, Option<String>)> = self.db.read()?.query_row(
-            "SELECT actor, request_id, input_json, task_id, dispatch_id FROM executor_dispatches WHERE agent_id=?1 AND state='dispatched'",
-            [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).optional()?;
-        row.map(|(actor, request_id, input, task_id, dispatch_id)| {
-            Ok(Made { actor, request_id, input: serde_json::from_str(&input)?, task_id, dispatch_id })
+        let row: Option<(String, String, String, String, Option<String>, String)> = self.db.read()?.query_row(
+            "SELECT actor, request_id, input_json, task_id, dispatch_id, machine_id FROM executor_dispatches WHERE agent_id=?1 AND state='dispatched'",
+            [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional()?;
+        row.map(|(actor, request_id, input, task_id, dispatch_id, machine)| {
+            Ok(Made { actor, request_id, input: serde_json::from_str(&input)?, task_id, dispatch_id, machine })
         }).transpose()
     }
 
