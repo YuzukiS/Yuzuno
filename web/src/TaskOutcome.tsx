@@ -720,6 +720,8 @@ export function TaskOutcome({
               type="button"
               className="icon-button"
               aria-label={t.refresh}
+              aria-busy={loading || undefined}
+              title={loading ? t.refreshing : t.refresh}
               disabled={loading}
               onClick={() => void read(selected?.id)}
             >
