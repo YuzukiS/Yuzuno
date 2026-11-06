@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use yuzuno_workspace::{projects::ProjectChange, store::Store};
+use yuzuno_workspace::{projects::ProjectChange, store::Store, workspace::Workspace};
 
 fn call(store: &Store, actor: Option<&str>, operation: &str, input: Value) -> Value {
     store.collaboration_call(actor, operation, input).unwrap()
@@ -31,7 +31,13 @@ fn moved(store: &Store, request: &str, task: &str, project: Option<&str>) -> Val
 }
 
 fn shown(store: &Store, task: &str) -> String {
-    call(store, None, "task_get", json!({"taskId":task}))["task"]["id"].as_str().unwrap().to_owned()
+    named(store, task).unwrap_or_else(|| panic!("{task} names no task"))
+}
+
+/// The key a reference shows its task by now, None if it names no task.
+fn named(store: &Store, task: &str) -> Option<String> {
+    let got = store.collaboration_call(None, "task_get", json!({"taskId":task})).ok()?;
+    got["task"]["id"].as_str().map(str::to_owned)
 }
 
 fn open(dir: &tempfile::TempDir) -> Store {
@@ -91,14 +97,12 @@ fn a_moved_task_gets_a_new_key_and_every_old_one_still_names_it() {
     let atlas = store.create_project("Atlas", BTreeMap::new()).unwrap();
     let task = create(&store, "loose", None);
     assert_eq!(task, "T-1");
-    // Into a Project: its next number.
-    assert_eq!(moved(&store, "in", "T-1", Some(&next.id))["task"]["id"], "YN-1");
-    // Across Projects: the other Project's next number.
-    assert_eq!(moved(&store, "across", "YN-1", Some(&atlas.id))["task"]["id"], "ATL-1");
-    // Out of every Project: its global number again.
-    assert_eq!(moved(&store, "out", "ATL-1", None)["task"]["id"], "T-1");
+    assert_eq!(moved(&store, "in", "T-1", Some(&next.id))["task"]["id"], "YN-1", "a task moved into a Project takes its next number");
+    assert_eq!(moved(&store, "across", "YN-1", Some(&atlas.id))["task"]["id"], "ATL-1",
+        "a task moved to another Project takes that Project's next number");
+    assert_eq!(moved(&store, "out", "ATL-1", None)["task"]["id"], "T-1", "out of every Project it shows its global number again");
     for old in ["T-1", "YN-1", "ATL-1"] {
-        assert_eq!(shown(&store, old), "T-1", "{old} still names the task");
+        assert_eq!(named(&store, old).as_deref(), Some("T-1"), "every key the task had still names it ({old})");
     }
     let keys = call(&store, None, "task_get", json!({"taskId":"YN-1","view":"current"}))["keys"].clone();
     assert_eq!(keys, json!({"global":"T-1","history":["YN-1","ATL-1"]}));
@@ -111,10 +115,12 @@ fn a_projects_numbers_are_never_given_again() {
     let next = store.create_project("yuzuno-next", BTreeMap::new()).unwrap();
     assert_eq!(create(&store, "n1", Some(&next.id)), "YN-1");
     assert_eq!(create(&store, "n2", Some(&next.id)), "YN-2");
-    moved(&store, "out", "YN-1", None);
+    // The Project's highest number leaves with its task.
+    moved(&store, "out", "YN-2", None);
     assert_eq!(create(&store, "n3", Some(&next.id)), "YN-3", "the number a task took with it is not reused");
-    assert_eq!(moved(&store, "back", "T-1", Some(&next.id))["task"]["id"], "YN-4", "coming back is a new number");
-    assert_eq!(shown(&store, "YN-1"), "YN-4");
+    assert_eq!(moved(&store, "back", "T-2", Some(&next.id))["task"]["id"], "YN-4", "coming back is a new number");
+    assert_eq!(named(&store, "YN-2").as_deref(), Some("YN-4"), "its old number still names it");
+    assert_eq!(named(&store, "YN-1").as_deref(), Some("YN-1"));
 }
 
 #[test]
@@ -124,15 +130,15 @@ fn an_old_project_key_names_its_tasks_after_a_change_and_after_deletion() {
     let next = store.create_project("yuzuno-next", BTreeMap::new()).unwrap();
     assert_eq!(create(&store, "n1", Some(&next.id)), "YN-1");
     store.update_project(&next.id, key_change("YUZ")).unwrap();
-    assert_eq!(shown(&store, "YN-1"), "YUZ-1", "the old prefix names the task, shown by its key now");
-    assert_eq!(shown(&store, "YUZ-1"), "YUZ-1");
+    assert_eq!(named(&store, "YN-1").as_deref(), Some("YUZ-1"), "the old prefix names the task, shown by its key now");
+    assert_eq!(named(&store, "YUZ-1").as_deref(), Some("YUZ-1"));
 
     // A deleted Project's key stays reserved and keeps naming the tasks it had.
     let gone = store.create_project("Gone", BTreeMap::new()).unwrap();
     assert_eq!(create(&store, "g1", Some(&gone.id)), "GON-1");
     moved(&store, "out", "GON-1", None);
     store.delete_project(&gone.id).unwrap();
-    assert_eq!(shown(&store, "GON-1"), "T-2");
+    assert_eq!(named(&store, "GON-1").as_deref(), Some("T-2"), "a deleted Project's key still names the tasks it had");
     let other = store.create_project("Other", BTreeMap::new()).unwrap();
     let taken = store.update_project(&other.id, key_change("GON")).unwrap_err().to_string();
     assert!(taken.contains("project_key_taken"), "{taken}");
@@ -159,8 +165,8 @@ fn existing_tasks_keep_their_numbers_even_inside_a_project() {
     assert_eq!(shown(&store, "T-1"), "T-1");
     let listed = call(&store, None, "task_list", json!({"projectId":next.id}));
     assert_eq!(listed["tasks"][0]["id"], "T-1");
-    // Setting the Project it is in already changes nothing.
-    assert_eq!(moved(&store, "same", "T-1", Some(&next.id))["task"]["id"], "T-1");
+    assert_eq!(moved(&store, "same", "T-1", Some(&next.id))["task"]["id"], "T-1",
+        "setting the Project a task is in already changes nothing: an existing task keeps its number");
     // The Project's counter starts with its first new task.
     assert_eq!(create(&store, "first", Some(&next.id)), "YN-1");
 }
@@ -177,7 +183,9 @@ fn task_tools_take_every_form_and_answer_with_the_key_now() {
     assert_eq!(create(&store, "n1", Some(&next.id)), "YN-1");
     store.update_project(&next.id, key_change("YUZ")).unwrap();
     for (n, form) in ["T-1", "YN-1", "YUZ-1"].iter().enumerate() {
-        let got = call(&store, None, "task_get", json!({"taskId":form}));
+        let got = store.collaboration_call(None, "task_get", json!({"taskId":form}));
+        assert!(got.is_ok(), "task_get takes every key a task had: {form}: {got:?}");
+        let got = got.unwrap();
         assert_eq!(got["task"]["id"], "YUZ-1", "{form}");
         let comment = call(&store, None, "task_comment", json!({"requestId":format!("c{n}"),"taskId":form,"body":"note"}));
         assert_eq!((comment["task"]["id"].as_str(), comment["activity"]["taskId"].as_str()), (Some("YUZ-1"), Some("YUZ-1")), "{form}");
@@ -218,19 +226,21 @@ fn an_older_cores_writes_keep_every_key() {
     {
         let db = Connection::open(&path).unwrap();
         let data: String = db.query_row("SELECT data FROM projects WHERE id=?1", [&next.id], |r| r.get(0)).unwrap();
-        assert!(!data.contains("\"key\""), "the key is never in data: {data}");
-        let renamed = data.replace("yuzuno-next", "Yuzuno Next");
-        db.execute("UPDATE projects SET data=?1 WHERE id=?2", [&renamed, &next.id]).unwrap();
+        // Its typed record has no key: what it writes back has none either.
+        let mut renamed: Value = serde_json::from_str(&data).unwrap();
+        renamed.as_object_mut().unwrap().remove("key");
+        renamed["name"] = json!("Yuzuno Next");
+        db.execute("UPDATE projects SET data=?1 WHERE id=?2", [&renamed.to_string(), &next.id]).unwrap();
         let older = json!({"id":"older","name":"Older","defaultDirs":{},"archivedAt":null,
             "createdAt":"2026-11-06T00:00:00Z","updatedAt":"2026-11-06T00:00:00Z"});
         db.execute("INSERT INTO projects(id,data) VALUES('older',?1)", [older.to_string()]).unwrap();
         db.execute("UPDATE project_tasks SET project_id='older' WHERE project_id=?1", [&next.id]).unwrap();
     }
     let store = open(&dir);
-    assert_eq!(store.project(&next.id).unwrap().key.as_deref(), Some("YN"), "a rename by data keeps the key");
+    assert_eq!(store.project(&next.id).unwrap().key.as_deref(), Some("YN"), "an older Core's rename keeps the key");
     assert_eq!(store.project("older").unwrap().key.as_deref(), Some("OLD"), "a Project an older Core made gets one on open");
     // The task an older Core moved shows its global number; its old key still names it.
-    assert_eq!(shown(&store, "YN-1"), "T-1");
+    assert_eq!(named(&store, "YN-1").as_deref(), Some("T-1"), "a task an older Core moved shows T-<seq>, and its old key names it");
     assert_eq!(moved(&store, "here", "T-1", Some(&next.id))["task"]["id"], "YN-2");
 }
 
@@ -252,4 +262,38 @@ fn keys_filled_on_open_are_the_same_for_every_core_that_opens_the_database() {
     assert_eq!(first, ["YN", "YN2", "P1", "P2"], "creation order, each against those filled before it");
     assert_eq!(keys(&Store::open(&copy).unwrap()), first);
     assert_eq!(keys(&Store::open(&path).unwrap()), first, "a second open changes nothing");
+}
+
+#[tokio::test]
+async fn every_tool_takes_each_key_and_a_stored_reference_reads_as_the_key_now() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into_owned(), "unused-harness".into()).unwrap();
+    let next = ws.store.create_project("yuzuno-next", BTreeMap::new()).unwrap();
+    let created = ws.collaboration_call(None, "task_create", json!({"requestId":"n1","title":"n1","projectId":next.id})).await.unwrap();
+    assert_eq!(created["task"]["id"], "YN-1");
+    // A Job written while the task was YN-1 keeps that taskRef in its record.
+    {
+        let db = ws.store.db.write().unwrap();
+        let internal: String = db.query_row("SELECT id FROM collaboration_tasks WHERE seq=1", [], |r| r.get(0)).unwrap();
+        let job = json!({"id":"job-1","taskId":internal,"taskRef":"YN-1","name":"synthetic","status":"succeeded",
+            "agentId":"dev","createdAt":"2026-11-06T00:00:00Z"});
+        db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('job-1',?1,'dev','succeeded',?2)",
+            [&internal, &job.to_string()]).unwrap();
+    }
+    ws.store.update_project(&next.id, key_change("YUZ")).unwrap();
+    let job = ws.collaboration_call(None, "job_get", json!({"jobId":"job-1"})).await.unwrap();
+    assert_eq!(job["taskRef"], "YUZ-1", "the record says YN-1; a read says the key now");
+    for form in ["T-1", "YN-1", "YUZ-1"] {
+        let links = ws.collaboration_call(None, "github_links", json!({"taskId":form,"action":"list"})).await.unwrap();
+        assert_eq!(links["links"], json!([]), "github_links {form}");
+        let reviews = ws.collaboration_call(None, "review_list", json!({"taskId":form})).await.unwrap();
+        assert_eq!(reviews["reviews"], json!([]), "review_list {form}");
+        let cost = ws.collaboration_call(None, "job_cost", json!({"taskId":form})).await.unwrap();
+        assert_eq!(cost["taskId"], "YUZ-1", "job_cost {form}");
+        let jobs = ws.collaboration_call(None, "job_list", json!({"taskId":form})).await.unwrap();
+        assert_eq!(jobs["jobs"][0]["taskRef"], "YUZ-1", "job_list {form}: {jobs}");
+    }
+    let stored: String = ws.store.db.read().unwrap()
+        .query_row("SELECT json_extract(data,'$.taskRef') FROM local_jobs WHERE id='job-1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(stored, "YN-1", "the stored record is untouched");
 }

@@ -239,9 +239,9 @@ fn peers_list_shows_each_agents_project() {
     // Projects without agents are still addressable, and archived ones are marked.
     let listed = call(&store, Some("dev"), "projects_list", json!({}));
     assert_eq!(listed["projects"], json!([
-        {"id":app.id,"name":"App","archived":false},
-        {"id":empty.id,"name":"Empty","archived":false},
-        {"id":old.id,"name":"Old","archived":true},
+        {"id":app.id,"name":"App","key":"APP","archived":false},
+        {"id":empty.id,"name":"Empty","key":"EMP","archived":false},
+        {"id":old.id,"name":"Old","key":"OLD","archived":true},
     ]));
     assert!(store.collaboration_call(Some("dev"), "projects_list", json!({"x":1})).is_err());
     assert!(yuzuno_workspace::collaboration_store::tool_definitions().iter().any(|t| t["name"] == "projects_list"));

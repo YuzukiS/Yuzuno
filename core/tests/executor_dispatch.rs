@@ -67,7 +67,7 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     let agent = &agents[0];
     assert_eq!(
         (agent.id.as_str(), agent.kind.as_deref(), agent.project_id.as_deref(), agent.cwd.as_str(), agent.name.as_str(), agent.harness.as_str()),
-        (executor.as_str(), Some("executor"), Some(project.as_str()), work.as_str(), "T-1 · Reviewer", "claude"),
+        (executor.as_str(), Some("executor"), Some(project.as_str()), work.as_str(), "EF-1 · Reviewer", "claude"),
     );
     assert_eq!(answer["task"]["assigneeAgentId"], json!(executor));
 
