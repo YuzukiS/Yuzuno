@@ -71,7 +71,11 @@ use tokio::sync::{Mutex, Notify};
 
 pub(crate) const COLLECTOR_MEMORY: u64 = 64;
 pub(crate) const COLLECTOR_CPU: u64 = 100;
-pub(crate) const MAX_ACTIVE: usize = 4;
+/// How many of this host's own Jobs hold an execution/collector slot at once,
+/// unless the user saved another number (T-55, `local_job_slots`).
+pub(crate) const DEFAULT_MAX_ACTIVE: usize = 4;
+/// What the user may save for it.
+pub(crate) const MAX_ACTIVE_RANGE: std::ops::RangeInclusive<u32> = 1..=16;
 #[derive(Default)]
 pub(crate) struct State {
     started: OnceLock<()>,
@@ -133,6 +137,24 @@ pub(crate) struct DiskCheck {
 struct DiskReserve {
     /// GiB; null returns to the default.
     reserve_gi_b: Option<u64>,
+}
+
+/// A budget save (POST /api/jobs/budget): the budget, and how many of this
+/// host's own Jobs run at once (T-55). Without `maxActive` that number stays
+/// as it is; null returns it to the default.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BudgetSave {
+    cpu_millis: u64,
+    memory_mi_b: u64,
+    swap_mi_b: u64,
+    #[serde(default, deserialize_with = "present")]
+    max_active: Option<Option<u32>>,
+}
+
+/// A field that is there, null or not: missing stays None.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u32>>, D::Error> {
+    Option::<u32>::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -871,12 +893,13 @@ async fn attachment(path: std::path::PathBuf, request: axum::extract::Request) -
 }
 async fn set_budget(
     AppState(ws): AppState<Arc<Workspace>>,
-    Json(input): Json<Resources>,
+    Json(input): Json<BudgetSave>,
 ) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
-    validate_budget(&input)?;
+    let budget = Resources { cpu_millis: input.cpu_millis, memory_mi_b: input.memory_mi_b, swap_mi_b: input.swap_mi_b };
+    validate_budget(&budget)?;
     host::local_host(&ws.data_dir)?;
-    let value = ws.stored(move |s| s.set_job_budget(input)).await?;
+    let value = ws.stored(move |s| s.set_job_budget_with(budget, input.max_active)).await?;
     ws.start_jobs();
     ws.jobs.wake.notify_one();
     changed(&ws);
@@ -1638,7 +1661,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_cost", task_cost::DESCRIPTION, json!({"taskId":task_reference}), vec!["taskId"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
-        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
+        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. maxActive is how many of this host's own jobs run at once, 1–16, default 4 (set through the Jobs budget save, POST /api/jobs/budget with maxActive, null for the default; a Settings field follows with T-55 PR 2; maxActiveSet says whether one is saved); activeCount is how many hold a slot now, and a job past it waits with \"Waiting for an execution/collector slot\". CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
         make("job_lower_memory", "Lower your running local job's memory limit (MiB) so the budget it frees can start queued work at once. Only down, never below what the job uses now plus 256 MiB, and it is never raised again; swap stays as reserved. systemd applies it to the running job, its reservation is lowered with it, and the change is recorded on the job and its task. A job that then needs more than the new limit is killed for memory, and its reason names this change. If an earlier lowering's answer was lost, asking for the same value again confirms it without changing anything. Not on SSH machines or Windows.", json!({"jobId":job_ref,"memoryMiB":{"type":"integer","minimum":1}}), vec!["jobId","memoryMiB"]),
         make("job_gpu_admission", "Open or close one local GPU (by UUID, from job_budget) to new managed jobs. Closing only stops new admission there; jobs already running or paused on it keep their reservation. Queued jobs that need it wait with this reason. A device the user closed stays closed until the user opens it.", json!({"uuid":string,"open":{"type":"boolean"},"reason":string}), vec!["uuid","open"]),
     ]
