@@ -43,7 +43,7 @@ pub(super) async fn helper(data: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 /// Tests: for the data folders named here, a cgroup root of the test's own
-/// (watch.rs) and a stand-in for the host helper.
+/// (watch.rs, `usage`) and a stand-in for the host helper.
 #[cfg(test)]
 pub(super) static CGROUPS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
 #[cfg(test)]
@@ -482,16 +482,41 @@ pub(super) async fn log_extent(data: &Path, job: &Value) -> Result<Value> {
     let total = segments.last().map_or(0, |s| s.0 + s.1);
     Ok(json!({"segments":segments.len(),"oldestOffset":oldest,"totalBytes":total,"truncated":oldest>0}))
 }
+/// A live attempt's usage, from its worker's own cgroup (T-59): under
+/// systemd's names and in its units, for what the cgroup counts, with no
+/// helper run. Null without this attempt's start receipt of this boot, or
+/// once its cgroup is gone (the outcome's systemd evidence then has them).
 pub(super) async fn usage(data: &Path, job: &Value) -> Result<Value> {
     if job["reserved"] != true {
         return Ok(Value::Null);
     }
-    let script = helper(data).await?;
-    let spec = folder(data, job)?.join("spec.json");
-    if !tokio::fs::try_exists(&spec).await? {
+    let Ok(bytes) = tokio::fs::read(folder(data, job)?.join("started.json")).await else {
+        return Ok(Value::Null);
+    };
+    let proof: Value = serde_json::from_slice(&bytes)?;
+    let boot = tokio::fs::read_to_string("/proc/sys/kernel/random/boot_id").await?;
+    let Some(path) = proof["controlGroup"].as_str().filter(|_| proof["attempt"] == job["attempt"] && proof["bootId"] == boot.trim()) else {
+        return Ok(Value::Null);
+    };
+    let group = cgroup_root(data).join(path.trim_start_matches('/'));
+    if !tokio::fs::try_exists(&group).await? {
         return Ok(Value::Null);
     }
-    invoke(&script, "inspect", Some(&spec), None).await
+    let mut usage = serde_json::Map::new();
+    for (name, file) in [("MemoryCurrent", "memory.current"), ("MemoryPeak", "memory.peak"), ("MemoryMax", "memory.max"),
+        ("MemorySwapMax", "memory.swap.max"), ("TasksMax", "pids.max"), ("CPUUsageNSec", "cpu.stat")]
+    {
+        let text = tokio::fs::read_to_string(group.join(file)).await.ok();
+        let value = match (file, text.as_deref().map(str::trim)) {
+            ("cpu.stat", Some(stat)) => stat.lines().find_map(|line| line.strip_prefix("usage_usec "))
+                .and_then(|usec| usec.trim().parse::<u64>().ok()).map(|usec| (usec * 1000).to_string()),
+            (_, Some("max")) => Some("infinity".to_owned()),
+            (_, Some(value)) => value.parse::<u64>().ok().map(|value| value.to_string()),
+            (_, None) => None,
+        };
+        usage.insert(name.to_owned(), json!(value.unwrap_or_else(|| "[not set]".to_owned())));
+    }
+    Ok(Value::Object(usage))
 }
 /// A live attempt's own reports so far: usage/cost and progress.
 pub(super) async fn reports(data: &Path, job: &Value) -> Result<Value> {

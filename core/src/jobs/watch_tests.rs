@@ -308,3 +308,26 @@ async fn the_commands_record_is_taken_once() {
     assert_eq!(now(&lab, &job)["result"]["command"]["pid"], 2);
     assert_eq!(runs(&lab, &job).len(), 2, "the command's own start is taken once");
 }
+
+/// job_get's usage of a running Job is read from its worker's cgroup, under
+/// systemd's names and units (O1), with no `inspect` run.
+#[tokio::test]
+async fn a_running_jobs_usage_is_read_from_its_cgroup_without_a_helper() {
+    let lab = lab();
+    let job = reserved(&lab, "usage", &boot());
+    started(&lab, &job, true);
+    ticks(&lab, 1).await;
+    let group = lab.root.join(worker(&job).trim_start_matches('/'));
+    for (file, value) in [("memory.current", "1048576\n"), ("memory.peak", "2097152\n"), ("memory.max", "134217728\n"),
+        ("memory.swap.max", "0\n"), ("pids.max", "max\n"), ("cpu.stat", "usage_usec 1500\nuser_usec 1000\nsystem_usec 500\n")]
+    {
+        std::fs::write(group.join(file), value).unwrap();
+    }
+    let got = call(lab.ws.clone(), None, "job_get".into(), json!({"jobId": id(&job)})).await.unwrap();
+    assert_eq!(got["usage"], json!({"MemoryCurrent":"1048576","MemoryPeak":"2097152","MemoryMax":"134217728","MemorySwapMax":"0",
+        "TasksMax":"infinity","CPUUsageNSec":"1500000"}));
+    assert!(!runs(&lab, &job).contains(&"inspect".to_owned()), "no inspect run: {:?}", runs(&lab, &job));
+    set(&lab, &worker(&job), "gone");
+    let got = call(lab.ws.clone(), None, "job_get".into(), json!({"jobId": id(&job)})).await.unwrap();
+    assert!(got["usage"].is_null(), "null once its cgroup is gone");
+}

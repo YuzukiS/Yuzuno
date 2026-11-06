@@ -1483,13 +1483,6 @@ def main():
         print(json.dumps(limit(spec, folder, json.load(sys.stdin))))
     elif mode == 'checkpoint':
         print(json.dumps(checkpoint_stop(spec, folder)))
-    elif mode == 'inspect':
-        state = show(spec['unit'])
-        proof = read(folder / 'started.json')
-        if proof and proof.get('bootId') == boot_id() and proof.get('invocationId') == state.get('InvocationID'):
-            print(json.dumps(state))
-        else:
-            print('null')
     else:
         raise RuntimeError('Unknown host operation')
 
