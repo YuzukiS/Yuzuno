@@ -154,6 +154,35 @@ async fn the_listing_and_its_task_show_each_executors_lifecycle() {
     assert_eq!(listed(s, "e1")["state"], "failed", "closed while its task is blocked on it");
 }
 
+/// T-43 S2 (g8): the sidebar names an executor's task by the key it has now,
+/// as the executor's own name, Home's live references and task_get do, not
+/// `T-<n>`; and it says which template the executor was made from (its
+/// dispatch's materials' label) and when it was dispatched.
+#[tokio::test]
+async fn the_listing_names_its_task_by_its_key_and_its_template_by_its_label() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    let project = s.create_project("yuzuno-next", Default::default()).unwrap();
+    assert_eq!(project.key.as_deref(), Some("YN"));
+    let created = s.collaboration_call(None, "task_create", json!({"requestId":"keyed","title":"Keyed work","projectId":project.id})).unwrap();
+    let public = created["task"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(public, "YN-1");
+    let internal = crate::collaboration_store::task_key(&s.db.read().unwrap(), &public).unwrap().0;
+    executor(s, "e1", &internal, "user", "d1", "running", None);
+    s.db.write().unwrap().execute(
+        "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at)
+         VALUES('user','r1','{}',?1,'reviewer',?2,'local',?3,'e1','dispatched','now','now')",
+        params![internal, project.id, json!({"id":"reviewer","label":"Reviewer","source":"workspace"}).to_string()],
+    ).unwrap();
+    let e1 = listed(s, "e1");
+    assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work"}), "its key, not T-<n>: {e1}");
+    assert_eq!(e1["template"], json!({"id":"reviewer","label":"Reviewer"}), "{e1}");
+    assert_eq!(e1["dispatchedAt"], "now", "{e1}");
+    // One made before its dispatch row was kept still names its template.
+    executor(s, "e2", &internal, "user", "d2", "running", None);
+    assert_eq!(listed(s, "e2")["template"], json!({"id":"reviewer","label":null}));
+}
+
 /// T-36 S3: a task write naming an executor as its assignee announces it:
 /// its Agent, so the sidebar and Home read it again, and the task board.
 /// Only a write that can move its lifecycle does (#647 R1 333f9680): a

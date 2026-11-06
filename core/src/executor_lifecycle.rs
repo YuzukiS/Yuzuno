@@ -40,14 +40,17 @@ pub(crate) fn moves(call: &str, value: &Value) -> bool {
     }
 }
 
-/// An executor's role row: its Agent, its task (internal ID), its dispatch
-/// and who dispatched it (`agent:<id>` or `user`).
+/// An executor's role row: its Agent, its task (internal ID), its dispatch,
+/// who dispatched it (`agent:<id>` or `user`), its template and when it was
+/// made.
 struct Role {
     agent: String,
     task: Option<String>,
     dispatch: Option<String>,
     created_by: Option<String>,
     archived_at: Option<String>,
+    template: Option<String>,
+    created_at: String,
 }
 
 /// What its task says now.
@@ -63,10 +66,18 @@ struct TaskNow {
     newest_dispatch: Option<String>,
 }
 
-const ROLE: &str = "SELECT agent_id,task_id,dispatch_id,created_by,archived_at FROM agent_roles WHERE kind='executor'";
+const ROLE: &str = "SELECT agent_id,task_id,dispatch_id,created_by,archived_at,template_id,created_at FROM agent_roles WHERE kind='executor'";
 
 fn role(r: &rusqlite::Row) -> rusqlite::Result<Role> {
-    Ok(Role { agent: r.get(0)?, task: r.get(1)?, dispatch: r.get(2)?, created_by: r.get(3)?, archived_at: r.get(4)? })
+    Ok(Role {
+        agent: r.get(0)?,
+        task: r.get(1)?,
+        dispatch: r.get(2)?,
+        created_by: r.get(3)?,
+        archived_at: r.get(4)?,
+        template: r.get(5)?,
+        created_at: r.get(6)?,
+    })
 }
 
 /// Every executor's lifecycle, by its Agent's ID (the Agent listing's
@@ -229,9 +240,26 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
         }
         None => json!({"kind":"user"}),
     };
-    let mut view = json!({"state":state,"agentId":role.agent,"dispatcher":dispatcher});
+    let mut view = json!({"state":state,"agentId":role.agent,"dispatcher":dispatcher,"dispatchedAt":role.created_at});
+    // The template it was made from, as its dispatch's materials name it
+    // (T-43 S2): the sidebar shows its label.
+    if let Some(id) = &role.template {
+        let label: Option<String> = db
+            .query_row(
+                "SELECT json_extract(template_json,'$.label') FROM executor_dispatches WHERE agent_id=?1 ORDER BY rowid DESC LIMIT 1",
+                [&role.agent],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        view["template"] = json!({"id":id,"label":label});
+    }
     if let Some(task) = &task {
-        view["task"] = json!({"id":format!("T-{}", task.seq),"title":task.title});
+        // By the key it has now, as its executor's name, Home's live
+        // references and task_get name it (T-43 S2, g8); `T-<n>` only
+        // while it has none.
+        let key = role.task.as_deref().map(|id| crate::task_keys::current(db, id)).transpose()?.flatten();
+        view["task"] = json!({"id":key.unwrap_or_else(|| format!("T-{}", task.seq)),"title":task.title});
         // An executor at work whose task is blocked: the blocker, for Home
         // and the card's title (its state stays what it is).
         if task.status == "blocked" && !closed && !task.blocker.is_empty() {
