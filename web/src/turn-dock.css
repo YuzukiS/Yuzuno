@@ -26,7 +26,7 @@
 .conversation-body:has(.turn-dock) {
   --gutter-right: calc(var(--turn-dock-width) + 2px);
 }
-.conversation-body:is(:has(.turn-dock), :has(> .work-dock:not(:empty)))
+.conversation-body:is(:has(.turn-dock), :has(> .work-dock > .work-dock-scroll:not(:empty)))
   > .conversation-scroll
   > .conversation-inner {
   /* From the pane's edges; 100% is the scroller less its scrollbar. */
@@ -51,12 +51,23 @@
    of the composer, clear of the right dock -- not over a line of the reply
    being read, which is where a fixed distance from the bottom put it (T-15).
    A phone keeps it where it was: that corner belongs to the dock buttons
-   there, and they are what it has to stay clear of. */
+   there, and they are what it has to stay clear of.
+
+   It sits below the text, not half over it. Straddling the conversation's
+   bottom edge left its top 16px inside the pane, and a line whose visible
+   part fell in that band was covered at the pill's width: measured, 125x14px
+   of a reply under it. English lines often end short of there, so it showed
+   up only sometimes and only in a fixture whose scroll happened to leave
+   such a line at that height; Chinese wraps to the column's full width, so
+   for that reader it is most lines (#459 R4, found by the corrected
+   measurement in t15-one-way-back). Its top is the pane's bottom edge now,
+   so it covers no line at any scroll position, and it still rides the
+   composer's edge, which is what it is there to do. */
 .app:not(.phone) .conversation-body > .jump-latest {
   left: auto;
   right: calc(var(--gutter-right) + var(--conversation-scrollbar) + 8px);
   bottom: 0;
-  transform: translateY(50%);
+  transform: translateY(100%);
 }
 .turn-dock {
   position: absolute;
@@ -279,7 +290,7 @@
    There each side keeps only its own room (T-15). A wider pane is left as it
    is, mirrored and centred in the whole pane. */
 @container conversation (max-width: 760px) {
-  .conversation-body:is(:has(.turn-dock), :has(> .work-dock:not(:empty)))
+  .conversation-body:is(:has(.turn-dock), :has(> .work-dock > .work-dock-scroll:not(:empty)))
     > .conversation-scroll
     > .conversation-inner {
     --room: calc(100% - var(--gutter-left) - var(--gutter-right));
@@ -302,7 +313,7 @@
   }
   /* Too narrow to give up a dock's width on both sides: the column just
      keeps clear of each. */
-  .conversation-body:is(:has(.turn-dock), :has(> .work-dock:not(:empty)))
+  .conversation-body:is(:has(.turn-dock), :has(> .work-dock > .work-dock-scroll:not(:empty)))
     > .conversation-scroll
     > .conversation-inner {
     --column: calc(100% - var(--gutter-left) - var(--gutter-right));

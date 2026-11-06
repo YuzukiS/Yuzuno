@@ -2,13 +2,21 @@
   --work-dock-width: 40px;
 }
 /* Jobs and CI float over the conversation's left edge, as the turn dock
-   does on the right; the column keeps clear of both (turn-dock.css). */
-.conversation-body:has(> .work-dock:not(:empty)) {
+   does on the right; the column keeps clear of both (turn-dock.css).
+   Keyed on the scrolling box's contents, not on the nav being `:empty`:
+   the nav always holds that box, which an earlier finding here put inside
+   it so each item's tip could escape the clip (#459 new pair, P2). While
+   these rules asked the nav, they matched every conversation — one with no
+   Jobs, no runs and no sub-agents gave up 22px of its text and, on a phone,
+   showed the button that opens the empty drawer, for a dock that is not
+   drawn at all (#459 R4, P2). The other eight keys that read this live in
+   turn-dock.css, phone-docks.css and conversation-strips.css. */
+.conversation-body:has(> .work-dock > .work-dock-scroll:not(:empty)) {
   --gutter-left: calc(var(--work-dock-width) + 2px);
 }
 /* The request pin spans the column between the two docks, as it already
    stops short of the turn dock on the right. */
-.conversation-body:has(> .work-dock:not(:empty)) > .current-turn-prompt {
+.conversation-body:has(> .work-dock > .work-dock-scroll:not(:empty)) > .current-turn-prompt {
   left: calc(var(--work-dock-width) + 2px);
 }
 /* The status colours, shared with the status marks of the Jobs panel. */
@@ -64,9 +72,6 @@
   content: "";
   position: absolute;
   inset: -20px 0;
-}
-.work-dock:empty {
-  display: none;
 }
 .work-dock-group {
   position: relative;

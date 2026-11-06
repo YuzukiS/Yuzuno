@@ -29,12 +29,12 @@
    With the on-screen keyboard up (keyboard-viewport.ts) they wait, as the
    turn dock always has: the conversation is short then, and keeps no room
    for them (T-170: it pushed an approval under the pin). */
-:root:not([data-keyboard]) .app.phone .conversation-body:has(> .work-dock:not(:empty)) > .phone-dock-work,
+:root:not([data-keyboard]) .app.phone .conversation-body:has(> .work-dock > .work-dock-scroll:not(:empty)) > .phone-dock-work,
 :root:not([data-keyboard]) .app.phone .conversation-body:has(> .turn-dock) > .phone-dock-turns {
   display: inline-flex;
 }
 :root:not([data-keyboard]) .app.phone
-  .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+  .conversation-body:is(:has(> .work-dock > .work-dock-scroll:not(:empty)), :has(> .turn-dock))
   > .conversation-scroll {
   /* A strip of their own: the conversation scrolls above it, so nothing it
      shows ever passes under them, a reply's actions included (T-6: Rewind
@@ -280,12 +280,12 @@
     --gutter-right: 84px;
   }
   :root:not([data-keyboard]) .app.phone
-    .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+    .conversation-body:is(:has(> .work-dock > .work-dock-scroll:not(:empty)), :has(> .turn-dock))
     > .conversation-scroll {
     margin-bottom: 0;
   }
   :root:not([data-keyboard]) .app.phone
-    .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+    .conversation-body:is(:has(> .work-dock > .work-dock-scroll:not(:empty)), :has(> .turn-dock))
     > .conversation-scroll
     > .conversation-inner {
     padding-bottom: 25px;

@@ -70,10 +70,29 @@ const waysBack = (page) => page.evaluate(() => {
     if (!pill) return null;
     const p = pill.getBoundingClientRect();
     const composer = document.querySelector(".composer")?.getBoundingClientRect();
+    // Against the lines themselves, clipped to what the pane is showing.
+    // Two things made this a coin flip before. A paragraph's box spans the
+    // whole column however short its last line is, so blocks said "covered"
+    // for text that ends well left of the pill; and a line scrolled past the
+    // pane's edge keeps its rect down there, where the pane no longer draws
+    // it, so a line nobody can see counted as covered. Which paragraph that
+    // happened to be depended on the scroll, so any change in content height
+    // flipped the answer (#459 R4).
+    const view = document.querySelector(".conversation-scroll")?.getBoundingClientRect();
     const covered = [...document.querySelectorAll(".conversation-inner [data-item-id] p, .conversation-inner [data-item-id] li")]
       .filter((el) => {
         const r = el.getBoundingClientRect();
-        return r.height > 0 && p.left < r.right && p.right > r.left && p.top < r.bottom && p.bottom > r.top;
+        if (!(r.height > 0 && p.left < r.right && p.right > r.left && p.top < r.bottom && p.bottom > r.top)) return false;
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return [...range.getClientRects()].some((line) => {
+          if (!(line.width > 0 && line.height > 0)) return false;
+          // What the pane actually shows of this line.
+          const top = view ? Math.max(line.top, view.top) : line.top;
+          const bottom = view ? Math.min(line.bottom, view.bottom) : line.bottom;
+          if (bottom - top <= 0) return false;
+          return p.left < line.right && p.right > line.left && p.top < bottom && p.bottom > top;
+        });
       }).length;
     return { covered, aboveComposerBy: composer ? Math.round(composer.top - p.bottom) : null,
       straddles: composer ? p.bottom >= composer.top - 1 : null };
@@ -142,6 +161,45 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
   check(seen.over?.straddles === true,
     `it rides the composer's edge rather than floating above it (gap ${seen.over?.aboveComposerBy}px)`);
   check(seen.atEnd === false, "nothing scrolled the conversation to the end by itself");
+  await context.close();
+}
+// The same question asked on purpose rather than by luck: a line that
+// reaches the pill's width, put at the pane's bottom edge where the pill is.
+// Scrolling to a fraction leaves whichever line it leaves, so whether the
+// overlap showed depended on the content's height — it passed in English,
+// failed in Chinese, and changed with any edit that reflowed the text
+// (#459 R4).
+{
+  const { context, page } = await open({ agent, pending: [], messageReceipts: [], artifacts: [], turns });
+  // Up off the end first: that is what brings the floating one out at all.
+  await page.evaluate(() => { const s = document.querySelector(".conversation-scroll"); s.scrollTop = Math.round(s.scrollHeight * 0.4); });
+  await page.waitForTimeout(400);
+  const placed = await page.evaluate(() => {
+    const pane = document.querySelector(".conversation-scroll");
+    const pill = document.querySelector(".jump-latest");
+    if (!pane || !pill) return null;
+    const p = pill.getBoundingClientRect();
+    for (const el of document.querySelectorAll(".conversation-inner [data-item-id] p")) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const line = [...range.getClientRects()].find((l) => l.width > 0 && l.right > p.left + 8);
+      if (!line) continue;
+      // Its middle just inside the pane's bottom edge, which is the band the
+      // pill reaches into.
+      const view = pane.getBoundingClientRect();
+      pane.scrollTop += line.top + line.height / 2 - (view.bottom - 6);
+      return { text: (el.textContent || "").trim().slice(0, 14) };
+    }
+    return null;
+  });
+  await page.waitForTimeout(400);
+  const seen = await waysBack(page);
+  console.log("line at the pill", JSON.stringify({ placed, over: seen.over, found: seen.found.length }));
+  check(!!placed, `a reply line reaches the pill's width, to be put under it (${JSON.stringify(placed)})`);
+  check(seen.over?.covered === 0,
+    `and with one there on purpose the pill still covers no line (${seen.over?.covered} covered)`);
+  check(seen.over?.straddles === true,
+    `while still riding the composer's edge (gap ${seen.over?.aboveComposerBy}px)`);
   await context.close();
 }
 // A window of earlier messages: the bar carries it, and nothing repeats it.
