@@ -39,12 +39,17 @@ decides the outcome.
 2. The last completed review round still passes at that head. If a round is
    running, Core waits for it.
 3. Two reads of the base branch name the same commit.
-4. Main is healthy. No push run of CI on the base branch since the main seen at
-   release ended `failure`, `timed_out` or `startup_failure`. Running,
-   superseded and green runs are fine.
+4. Main is healthy. No push run of CI on the base branch since the entry's
+   anchor ended `failure`, `timed_out` or `startup_failure`. The anchor is the
+   main read at release (or at the last retry) and the time of that read. Runs
+   of the anchor main itself count. Runs of older commits that began before the
+   anchor do not. Running, superseded and green runs are fine.
 5. The newest run of every workflow on the head has finished green (success,
    skipped or neutral). CI, and any workflow named in `requireWorkflows`, ran.
-6. GitHub reports the PR as mergeable and its merge state as clean.
+6. GitHub reports the PR as mergeable and its merge state as clean. This is
+   judged on a second read of the PR, taken after the head's runs finished. If
+   GitHub reports the merge state as `unstable` or `blocked` while a check run
+   or commit status on the head is still pending, the entry waits for it.
 7. The PR's merge ref is the merge of the current main and the head. Its tree is
    what a merge would land.
 8. Every CI job that ran checked out exactly that merge commit. Core reads each
@@ -63,11 +68,22 @@ cooling down, the entry waits until the cooldown ends.
 | `queued` | Released, not yet checked. |
 | `waiting` | A check could not decide yet. `detail` says why. |
 | `ready` | Every check held. The evidence record shows what would merge. |
-| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `merge_blocked`, `needs_batch`, `checkout_mismatch`, `checkout_unproven`, `wait_timeout` or `github_unreachable`. |
+| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `merge_blocked`, `needs_batch`, `checkout_mismatch`, `checkout_unproven`, `gh_too_old`, `wait_timeout` or `github_unreachable`. |
 | `cancelled` | Cancelled by the Agent that released it, or by the user. |
 
-`merge_retry` checks a stopped entry again from the start. It never reruns CI:
-a red job has to be rerun by other means first.
+`merge_retry` checks a stopped entry again from the start. It reads main
+first and anchors the entry there, so a red main run from before the retry no
+longer counts once main is green again. It never reruns CI: a red job has to be
+rerun by other means first.
+
+## Requirements
+
+The Core host needs **gh 2.97.0 or later**. Job logs are read with
+`gh api --allow-escape-sequences`, so their bytes, and the sha256 kept of them,
+are what GitHub sent. gh added the flag in 2.97.0, where `gh api` began to
+neutralize escape sequences ([GHSA-3m3g-3wcr-px46](https://github.com/cli/cli/security/advisories/GHSA-3m3g-3wcr-px46)).
+With an older gh the check stops with `gh_too_old`, naming the flag and the
+version.
 
 ## Evidence
 

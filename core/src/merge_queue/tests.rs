@@ -91,12 +91,24 @@ fn green() -> Value {
     json!({"pull":{"number":11,"state":"open","draft":false,"merged":false,"merged_at":null,"mergeable":true,"mergeable_state":"clean",
             "head":{"sha":head()},"base":{"ref":"main","sha":main_sha()}},
         "main":main_sha(),"merge":merge_sha(),"commits":commits,
-        "mainRuns":[{"id":90,"name":"CI","head_sha":main_sha(),"status":"completed","conclusion":"success"}],
+        "mainRuns":[{"id":90,"name":"CI","head_sha":main_sha(),"status":"completed","conclusion":"success","created_at":"2026-11-05T05:00:00Z"}],
         "runs":[{"id":41,"name":"CI","run_attempt":1,"status":"completed","conclusion":"failure","head_sha":head()},
                 {"id":42,"name":"CI","run_attempt":1,"status":"completed","conclusion":"success","head_sha":head()}],
         "jobs":{"42":[{"id":501,"name":"Core (build and test)","conclusion":"success"},{"id":502,"name":"Web UI","conclusion":"success"},
                       {"id":503,"name":"Docs","conclusion":"skipped"}]},
         "logs":{"501":log(&merge_sha()),"502":log(&merge_sha())},"calls":[]})
+}
+
+/// Main moves on to `to`: GitHub's merge ref is now `merge` = `to` + head,
+/// and both CI jobs checked it out.
+fn move_main(s: &mut Value, to: String, merge: String) {
+    s["commits"][&to] = json!({"sha":to,"tree":sha('6'),"parents":[main_sha()]});
+    s["commits"][&merge] = json!({"sha":merge,"tree":tree(),"parents":[to, head()]});
+    s["logs"]["501"] = json!(log(&merge));
+    s["logs"]["502"] = json!(log(&merge));
+    s["pull"]["base"]["sha"] = json!(to);
+    s["main"] = json!(to);
+    s["merge"] = json!(merge);
 }
 
 #[cfg(unix)]
@@ -123,20 +135,30 @@ def out(code,data):
 path=ep[len('repos/owner/repo/'):]
 c=s['commits']
 if method!='GET': out(404,{})
-if path=='pulls/11': out(200,s['pull'])
+if path=='pulls/11':
+    q=s.get('pullQueue') or []
+    d=q.pop(0) if q else s['pull']
+    p.write_text(json.dumps(s)); out(200,d)
 if path=='git/ref/heads/main': out(200,{'object':{'sha':s['main']}})
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
 if path.startswith('git/commits/'):
     k=c[path.split('/')[-1]]; out(200,{'sha':k['sha'],'tree':{'sha':k['tree']},'parents':[{'sha':x} for x in k['parents']]})
+if path.startswith('commits/') and '/check-runs' in path: out(200,{'total_count':len(s.get('checkRuns',[])),'check_runs':s.get('checkRuns',[])})
+if path.startswith('commits/') and path.endswith('/status'): out(200,{'state':'pending','statuses':s.get('statuses',[])})
 if path.startswith('commits/'):
     k=next(v for n,v in c.items() if n.startswith(path.split('/')[-1]))
     out(200,{'sha':k['sha'],'parents':[{'sha':x} for x in k['parents']],'commit':{'tree':{'sha':k['tree']}}})
 if path.startswith('actions/runs?branch='): out(200,{'workflow_runs':s['mainRuns']})
 if path.startswith('actions/runs?head_sha='): out(200,{'workflow_runs':s['runs']})
 if path.startswith('actions/runs/') and '/jobs' in path: out(200,{'jobs':s['jobs'][path.split('/')[2]]})
-if path.startswith('actions/jobs/') and path.endswith('/logs'): out(200,s['logs'][path.split('/')[2]])
+if path.startswith('actions/jobs/') and path.endswith('/logs'):
+    if '--allow-escape-sequences' in a and s.get('oldGh'):
+        print('unknown flag: --allow-escape-sequences\n\nUsage:  gh api <endpoint> [flags]',file=sys.stderr); sys.exit(1)
+    if '--allow-escape-sequences' not in a:
+        print('fake gh: a job log read without --allow-escape-sequences would rewrite its escape sequences',file=sys.stderr); sys.exit(1)
+    out(200,s['logs'][path.split('/')[2]])
 out(404,{})
 "#).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -391,6 +413,109 @@ async fn cancel_and_retry_belong_to_the_releaser_and_a_late_check_is_dropped() {
     assert_eq!(lab.entry().await["state"], "cancelled");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_retry_counts_main_ci_only_from_the_main_it_reads() {
+    let lab = lab(green());
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    let id = e["id"].as_str().unwrap().to_owned();
+    let after = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        let red = json!({"id":91,"name":"CI","head_sha":sha('b'),"status":"completed","conclusion":"failure","created_at":after});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["reason"], "main_red", "a red run on main after the release stops the entry");
+    let green_again = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        move_main(s, sha('c'), sha('d'));
+        let green = json!({"id":92,"name":"CI","head_sha":sha('c'),"status":"completed","conclusion":"success","created_at":green_again});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, green);
+    });
+    let retried = lab.ws.collaboration_call(Some("lead"), "merge_retry", json!({"requestId":"t1","entryId":id})).await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "after main is green again, a retry passes: {e}");
+    assert_eq!(retried["mainAtRelease"], sha('c'), "the retry anchors the entry at the main it read");
+    assert_eq!(e["evidence"]["main"]["atRelease"], sha('c'));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_release_main_without_a_run_does_not_count_older_red_runs() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["mainRuns"] = json!([{"id":89,"name":"CI","head_sha":old_main(),"status":"completed","conclusion":"failure","created_at":"2026-11-01T00:00:00Z"}]);
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "a red run from before the release does not count: {e}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_that_finished_between_the_reads_is_judged_on_a_fresh_read_of_the_pr() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    change(lab.dir.path(), |s| {
+        let mut stale = s["pull"].clone();
+        stale["mergeable_state"] = json!("unstable");
+        s["pullQueue"] = json!([stale]);
+    });
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "a run that finished between the reads is judged on the fresh read of the PR: {e}");
+    let reads = calls(lab.dir.path()).iter().filter(|c| c["endpoint"] == "repos/owner/repo/pulls/11").count();
+    assert_eq!(reads, 3, "the PR is read at release, then before and after the head's runs");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unstable_or_blocked_waits_while_a_check_is_pending_and_stops_once_none_is() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    change(lab.dir.path(), |s| {
+        s["pull"]["mergeable_state"] = json!("unstable");
+        s["statuses"] = json!([{"context":"external/lint","state":"pending"}]);
+    });
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "a pending external status must wait: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("unstable while status external/lint"), "{}", e["detail"]);
+    change(lab.dir.path(), |s| {
+        s["pull"]["mergeable_state"] = json!("blocked");
+        s["statuses"] = json!([{"context":"external/lint","state":"success"}]);
+        s["checkRuns"] = json!([{"name":"Deploy preview","status":"in_progress"}]);
+    });
+    lab.due();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "a pending check run must wait: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("blocked while check run Deploy preview"), "{}", e["detail"]);
+    change(lab.dir.path(), |s| {
+        s["pull"]["mergeable_state"] = json!("unstable");
+        s["checkRuns"] = json!([{"name":"Deploy preview","status":"completed","conclusion":"failure"}]);
+    });
+    lab.due();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("ci_red")), "unstable with nothing pending is ci_red: {e}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_gh_without_the_raw_log_flag_stops_with_the_version_it_needs() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| s["oldGh"] = json!(true));
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("gh_too_old")), "an old gh stops with gh_too_old: {e}");
+    let detail = e["detail"].as_str().unwrap();
+    assert!(detail.contains("--allow-escape-sequences") && detail.contains("gh 2.97.0"), "the stop names the flag and the version: {detail}");
+}
+
 #[test]
 fn the_checkout_line_and_the_newest_run_of_each_workflow_are_read_exactly() {
     let line = checks::checkout_line(log(&merge_sha()).as_bytes()).unwrap();
@@ -408,12 +533,24 @@ fn the_checkout_line_and_the_newest_run_of_each_workflow_are_read_exactly() {
         Err(Hold::Wait("No run of workflow Desktop macOS on the head yet".into()))
     );
     let main = vec![
-        json!({"id":9,"name":"CI","head_sha":"new","conclusion":null,"status":"in_progress"}),
-        json!({"id":8,"name":"CI","head_sha":"since","conclusion":"cancelled","status":"completed"}),
-        json!({"id":7,"name":"CI","head_sha":"older","conclusion":"failure","status":"completed"}),
+        json!({"id":9,"name":"CI","head_sha":"new","conclusion":null,"status":"in_progress","created_at":"2026-11-06T02:00:00Z"}),
+        json!({"id":8,"name":"CI","head_sha":"since","conclusion":"cancelled","status":"completed","created_at":"2026-11-06T01:00:00Z"}),
+        json!({"id":7,"name":"CI","head_sha":"older","conclusion":"failure","status":"completed","created_at":"2026-11-06T00:30:00Z"}),
     ];
-    assert!(checks::main_health(&main, "since").is_ok(), "runs before the release main do not count");
-    assert!(matches!(checks::main_health(&main, "elsewhere"), Err(Hold::Stop("main_red", _))));
+    assert!(checks::main_health(&main, "since", "2026-11-06T01:30:00Z").is_ok(), "runs before the release main do not count");
+    assert!(
+        checks::main_health(&main, "elsewhere", "2026-11-06T01:30:00Z").is_ok(),
+        "a release main without a run of its own does not count the red runs from before the release"
+    );
+    assert!(
+        matches!(checks::main_health(&main, "elsewhere", "2026-11-06T00:15:00Z"), Err(Hold::Stop("main_red", _))),
+        "a red run newer than the anchor stops the entry"
+    );
+    let red_anchor = vec![json!({"id":6,"name":"CI","head_sha":"since","conclusion":"failure","status":"completed","created_at":"2026-11-06T00:10:00Z"})];
+    assert!(
+        matches!(checks::main_health(&red_anchor, "since", "2026-11-06T01:00:00Z"), Err(Hold::Stop("main_red", _))),
+        "the anchor main's own red run counts, though it began before the release"
+    );
 }
 
 #[cfg(unix)]

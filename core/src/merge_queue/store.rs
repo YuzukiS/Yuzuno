@@ -313,7 +313,7 @@ impl Store {
         let at = now();
         let e = json!({"id":id,"entryId":id,"taskId":p.task,"taskReference":p.reference,"repositoryId":p.repository_id,
             "repository":p.repository,"number":p.number,"url":format!("https://github.com/{}/pull/{}",p.repository,p.number),
-            "linkId":p.link,"headSha":input.head_sha,"baseBranch":pr["base"]["ref"],"mainAtRelease":main,
+            "linkId":p.link,"headSha":input.head_sha,"baseBranch":pr["base"]["ref"],"mainAtRelease":main,"mainAnchoredAt":at,
             "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,
             "release":{"by":p.author,"requestId":input.request_id,"at":at,"source":p.source,"reviewId":latest.as_ref().map(|r| r["id"].clone())},
             "state":"queued","reason":null,"detail":"Released; Core checks it before anything else happens.","attempt":0,"checks":0,
@@ -360,7 +360,8 @@ impl Store {
     }
 
     /// Cancel an entry that still holds its PR, or retry a stopped one.
-    pub(super) fn merge_change(&self, actor: Option<&str>, operation: &str, input: &Change) -> Result<Value> {
+    /// A retry re-anchors the entry to `main`, read just before it.
+    pub(super) fn merge_change(&self, actor: Option<&str>, operation: &str, input: &Change, main: Option<&str>) -> Result<Value> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let value = serde_json::to_value(input)?;
@@ -385,7 +386,11 @@ impl Store {
                 |r| r.get(0),
             )?;
             ensure!(!busy, "merge_already_queued: another entry holds #{}", e["number"]);
-            ("queued", format!("Merge queue: entry {} for #{} retried by {}; every check runs again on fresh reads.", input.entry_id, e["number"], author.name))
+            let main = main.context("A retry needs the current main")?;
+            e["mainAtRelease"] = json!(main);
+            e["mainAnchoredAt"] = json!(now());
+            ("queued", format!("Merge queue: entry {} for #{} retried by {}; every check runs again on fresh reads, and main CI counts from main {} on.",
+                input.entry_id, e["number"], author.name, &main[..12.min(main.len())]))
         };
         e["state"] = json!(next);
         e["reason"] = Value::Null;
@@ -471,6 +476,11 @@ impl Store {
                 }
             }
             Err(error) if error.starts_with("rate_limited") => wait(&mut e, error, cooldown + 5),
+            Err(error) if error.starts_with("gh_too_old") => {
+                e["state"] = json!("stopped");
+                e["reason"] = json!("gh_too_old");
+                e["detail"] = json!(error);
+            }
             Err(error) => {
                 let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
                 e["readFailures"] = json!(failures);

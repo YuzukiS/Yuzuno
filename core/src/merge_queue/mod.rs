@@ -153,7 +153,18 @@ pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, 
         "merge_cancel" | "merge_retry" => {
             let i: Change = serde_json::from_value(input)?;
             request_key(&i.request_id)?;
-            let answer = ws.stored(move |s| s.merge_change(actor.as_deref(), &operation, &i)).await?;
+            // A retry counts main CI only from the main it reads now.
+            let main = if operation == "merge_retry" {
+                let scope = Scope { entry_id: Some(i.entry_id.clone()), ..Default::default() };
+                let entry = ws.stored(move |s| s.merge_get(&scope)).await?;
+                match entry["state"].as_str() {
+                    Some("stopped") => Some(remote::retry_reads(&ws, &entry).await?),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let answer = ws.stored(move |s| s.merge_change(actor.as_deref(), &operation, &i, main.as_deref())).await?;
             ws.changes.send(json!({"mergeQueue":true,"collaboration":true}));
             ws.collaboration_wakeup.notify_one();
             ws.merge_queue.wake.notify_one();
@@ -249,7 +260,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         def(
             "merge_retry",
-            "Check a stopped merge entry again from the start on fresh reads. It never reruns CI: rerun a red job by other means first. Only the Agent that released it, or the user.",
+            "Check a stopped merge entry again from the start on fresh reads. Core reads main now, and from then on counts only main CI since that main. It never reruns CI: rerun a red job by other means first. Only the Agent that released it, or the user.",
             json!({"requestId":text,"entryId":text,"reason":{"type":"string","maxLength":2000}}),
             &["requestId", "entryId"],
         ),

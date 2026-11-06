@@ -58,15 +58,26 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     ));
     let main_commit = read(ws, format!("repos/{repo}/git/commits/{main}")).await?;
     let since = entry["mainAtRelease"].as_str().unwrap_or(&main).to_owned();
-    evidence["main"] = json!({"atRelease":since,"before":main,"beforeTree":checks::tree_of(&main_commit)});
+    let anchored = entry["mainAnchoredAt"].as_str().or(entry["release"]["at"].as_str()).unwrap_or("").to_owned();
+    evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
     let main_runs = read(ws, format!("repos/{repo}/actions/runs?branch={}&event=push&per_page=20", segment(&base))).await?;
-    let main_ci = hold!(checks::main_health(&array(&main_runs, "workflow_runs"), &since));
+    let main_ci = hold!(checks::main_health(&array(&main_runs, "workflow_runs"), &since, &anchored));
     evidence["main"]["ci"] = main_ci;
 
     let runs = read(ws, format!("repos/{repo}/actions/runs?head_sha={head}&event=pull_request&per_page=100")).await?;
     let required: Vec<String> = serde_json::from_value(entry["requireWorkflows"].clone()).unwrap_or_default();
     let newest = hold!(checks::head_runs(&array(&runs, "workflow_runs"), &required));
-    hold!(checks::mergeable(&pr));
+    // GitHub's merge verdict from before the runs finished may be stale: read the PR again.
+    let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
+    hold!(checks::pull(entry, &pr));
+    let pending = if matches!(pr["mergeable_state"].as_str(), Some("unstable" | "blocked")) {
+        let check_runs = read(ws, format!("repos/{repo}/commits/{head}/check-runs?per_page=100")).await?;
+        let status = read(ws, format!("repos/{repo}/commits/{head}/status")).await?;
+        checks::pending(&check_runs, &status)
+    } else {
+        None
+    };
+    hold!(checks::mergeable(&pr, pending.as_deref()));
 
     let merge = match read(ws, format!("repos/{repo}/git/ref/pull/{number}/merge")).await {
         Ok(r) => match r["object"]["sha"].as_str() {
@@ -119,9 +130,21 @@ pub(super) async fn release_reads(ws: &Arc<Workspace>, repo: &str, number: u64) 
     let _slot = ws.github.slots.acquire().await?;
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     let base = pr["base"]["ref"].as_str().context("The PR has no base branch")?.to_owned();
-    let main = read(ws, format!("repos/{repo}/git/ref/heads/{base}")).await?["object"]["sha"]
+    let main = base_commit(ws, repo, &base).await?;
+    Ok((pr, main))
+}
+
+/// At a retry: the main the entry is anchored to from then on.
+pub(super) async fn retry_reads(ws: &Arc<Workspace>, entry: &Value) -> Result<String> {
+    let repo = entry["repository"].as_str().context("The entry has no repository")?;
+    let base = entry["baseBranch"].as_str().context("The entry has no base branch")?;
+    let _slot = ws.github.slots.acquire().await?;
+    base_commit(ws, repo, base).await
+}
+
+async fn base_commit(ws: &Arc<Workspace>, repo: &str, base: &str) -> Result<String> {
+    Ok(read(ws, format!("repos/{repo}/git/ref/heads/{base}")).await?["object"]["sha"]
         .as_str()
         .context("The base branch has no commit")?
-        .to_owned();
-    Ok((pr, main))
+        .to_owned())
 }

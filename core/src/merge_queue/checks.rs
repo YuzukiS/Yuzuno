@@ -91,21 +91,30 @@ pub(super) fn main_agrees(by_ref: &str, by_branch: &str) -> Check<String> {
 }
 
 /// Main is healthy (user option 1, 2026-10-24): no push run of CI on the base
-/// branch since the main seen at release concluded failure, timed_out or
-/// startup_failure. Running, queued, superseded (cancelled) and green runs are
-/// fine. `runs` are newest first.
-pub(super) fn main_health(runs: &[Value], since: &str) -> Check<Value> {
+/// branch since the entry's anchor concluded failure, timed_out or
+/// startup_failure. The anchor is the main read at release, or at the last
+/// retry, and the time of that read. The anchor commit's own runs count; a run
+/// of an older commit created before the anchor does not. Running, queued,
+/// superseded (cancelled) and green runs are fine. `runs` are newest first.
+pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str) -> Check<Value> {
+    // GitHub's run times have whole seconds: a run of the anchor's own second counts.
+    let anchor = chrono::DateTime::parse_from_rfc3339(anchored_at).ok().map(|t| t.timestamp());
     let mut seen = Vec::new();
     for run in runs.iter().filter(|r| r["name"] == CI) {
+        let at_anchor = run["head_sha"] == since;
+        let created = run["created_at"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp());
+        if !at_anchor && matches!((created, anchor), (Some(c), Some(a)) if c < a) {
+            continue;
+        }
         let conclusion = run["conclusion"].as_str().unwrap_or("");
-        seen.push(json!({"run":run["id"],"headSha":run["head_sha"],"status":run["status"],"conclusion":run["conclusion"]}));
+        seen.push(json!({"run":run["id"],"headSha":run["head_sha"],"createdAt":run["created_at"],"status":run["status"],"conclusion":run["conclusion"]}));
         if matches!(conclusion, "failure" | "timed_out" | "startup_failure") {
             return stop(
                 "main_red",
                 format!("Main CI run {} on {} concluded {conclusion}", run["id"], short(&run["head_sha"])),
             );
         }
-        if run["head_sha"] == since {
+        if at_anchor {
             break;
         }
     }
@@ -146,8 +155,11 @@ pub(super) fn head_runs(runs: &[Value], required: &[String]) -> Check<Vec<Value>
     Ok(newest.into_iter().cloned().collect())
 }
 
-/// GitHub's own merge verdict for the PR, read after the runs finished.
-pub(super) fn mergeable(pr: &Value) -> Check<()> {
+/// GitHub's own merge verdict, judged on a read of the PR taken after the
+/// head's runs finished. `pending` names a check run or commit status on the
+/// head that has not finished: while one does, `unstable` and `blocked` may
+/// still clear, so they wait instead of stopping.
+pub(super) fn mergeable(pr: &Value, pending: Option<&str>) -> Check<()> {
     match pr["mergeable"].as_bool() {
         None => wait("GitHub is still computing whether the PR can merge"),
         Some(false) => stop("conflict", "GitHub reports that the PR cannot merge into its base"),
@@ -155,10 +167,25 @@ pub(super) fn mergeable(pr: &Value) -> Check<()> {
             Some("clean" | "has_hooks") => Ok(()),
             Some("unknown") | None => wait("GitHub is still computing the PR's merge state"),
             Some("dirty") => stop("conflict", "GitHub reports the PR's merge state as dirty"),
+            Some(state @ ("unstable" | "blocked")) if pending.is_some() => wait(format!(
+                "GitHub reports the PR as {state} while {} on the head has not finished",
+                pending.unwrap_or("a check")
+            )),
             Some("unstable") => stop("ci_red", "GitHub reports the PR as unstable: a check on its head is not passing"),
             Some(other) => stop("merge_blocked", format!("GitHub reports the PR's merge state as {other}")),
         },
     }
+}
+
+/// The first check run or commit status on the head that has not finished, by
+/// name, from `commits/{head}/check-runs` and `commits/{head}/status`.
+pub(super) fn pending(check_runs: &Value, status: &Value) -> Option<String> {
+    let runs = check_runs["check_runs"].as_array().into_iter().flatten();
+    let statuses = status["statuses"].as_array().into_iter().flatten();
+    runs.filter(|r| r["status"] != "completed")
+        .map(|r| format!("check run {}", r["name"].as_str().unwrap_or("?")))
+        .chain(statuses.filter(|s| s["state"] == "pending").map(|s| format!("status {}", s["context"].as_str().unwrap_or("?"))))
+        .next()
 }
 
 /// The PR's merge ref is the merge of the current main and the head; its tree
