@@ -1909,3 +1909,37 @@ async fn a_merge_answered_after_the_read_deadline_is_merged_not_unknown() {
     assert_eq!(e["state"], "merged", "a merge answered after the read deadline is merged: {e}");
     assert_eq!(writes(lab.dir.path()).len(), 1, "with one request");
 }
+
+/// A merge that waits to be sent again (a rate limit, a request that never
+/// left Core) is not sent onto a queue another entry paused meanwhile: the
+/// entry goes back to waiting with nothing sent, and once the queue is
+/// unpaused it is checked and merges.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_waiting_to_be_resent_is_not_sent_onto_a_paused_queue() {
+    for (answer, why) in [("429", "rate_limited"), ("noauth", "could not be sent")] {
+        let lab = lab_with(|s| s["mergeAnswers"] = json!([answer]));
+        lab.release(Some("lead"), "r1").await.unwrap();
+        tick(&lab.ws).await.unwrap();
+        let e = lab.entry().await;
+        assert_eq!((e["state"].clone(), e["merge"]["attempts"].clone()), (json!("merging"), json!(0)), "{answer}: the merge waits to be sent again: {e}");
+        assert!(e["detail"].as_str().unwrap().contains(why), "{answer}: {}", e["detail"]);
+        let puts = || writes(lab.dir.path()).iter().filter(|w| w.starts_with("PUT")).count();
+        let sent = puts();
+        // Another entry's merge turned main red meanwhile, and the queue paused.
+        lab.ws.store.db.write().unwrap().execute(
+            "UPDATE merge_repositories SET data=json_set(data,'$.paused',json(?1)) WHERE repository_id=7",
+            [json!({"reason":"main_red","at":"2026-11-06T00:00:00Z","detail":"Main CI run 91 concluded failure","main":main_sha(),"run":91,"base":"main"}).to_string()],
+        ).unwrap();
+        let e = lab.step().await;
+        assert_eq!(puts(), sent, "{answer}: no merge request is sent onto a paused queue");
+        assert_eq!(e["state"], "waiting", "{answer}: the entry waits for the unpause: {e}");
+        assert!(e["detail"].as_str().unwrap().contains("paused"), "{answer}: it says why: {}", e["detail"]);
+        lab.step().await;
+        assert_eq!(puts(), sent, "{answer}: nor on the next pass while the queue is paused");
+        unpause_by_lead2(&lab).await;
+        let e = lab.step().await;
+        assert_eq!(e["state"], "merged", "{answer}: once unpaused, the entry is checked and merges: {e}");
+        assert_eq!(puts(), sent + 1, "{answer}: with one more request");
+    }
+}

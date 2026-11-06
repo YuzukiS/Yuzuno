@@ -366,6 +366,8 @@ pub(super) enum MergeOutcome {
     Moved(String),
     /// Nothing was sent (the switch is off): check again later.
     Held(String),
+    /// Nothing was sent: the repository's queue was paused meanwhile.
+    Paused(String),
     /// GitHub's rate limit refused the request: nothing merged, send it again
     /// after the cooldown.
     Limited(String),
@@ -392,8 +394,10 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOut
         return Ok(found);
     }
     let (id, attempt) = (t.id.clone(), t.attempt);
-    if !ws.stored(move |s| s.merge_put_journal(&id, attempt)).await? {
-        bail!("merge_moved_on: the entry is no longer merging");
+    match ws.stored(move |s| s.merge_put_journal(&id, attempt)).await? {
+        super::store::Journal::Journaled => {}
+        super::store::Journal::NotMerging => bail!("merge_moved_on: the entry is no longer merging"),
+        super::store::Journal::Paused(detail) => return Ok(MergeOutcome::Paused(detail)),
     }
     match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
         Ok((code, body)) => {

@@ -478,6 +478,16 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     mail(db, &recipients, &text, &task, "urgent", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
     Ok((waiting, accepted))
 }
+/// What journaling a merge request came to.
+pub(super) enum Journal {
+    /// Journaled: the request may go.
+    Journaled,
+    /// The entry is no longer merging.
+    NotMerging,
+    /// The repository's queue is paused: nothing journaled, nothing sent.
+    Paused(String),
+}
+
 /// The main an entry counts main CI from, and since when. A check records its
 /// outcome only if the entry still has the anchor the check read.
 pub(super) fn anchor(e: &Value) -> Value {
@@ -819,13 +829,24 @@ impl Store {
     }
 
     /// Journal the merge request of `id` before it is sent, so a restart
-    /// never sends a second one. False when the entry is not merging.
-    pub(super) fn merge_put_journal(&self, id: &str, attempt: i64) -> Result<bool> {
+    /// never sends a second one. Nothing is journaled when the entry is no
+    /// longer merging, or when the repository's queue is paused: a merge that
+    /// waited (a rate limit, a request that never left Core) while another
+    /// entry paused the queue is not sent onto it.
+    pub(super) fn merge_put_journal(&self, id: &str, attempt: i64) -> Result<Journal> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut e = entry(&tx, id)?;
         if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merging" {
-            return Ok(false);
+            return Ok(Journal::NotMerging);
+        }
+        let paused = repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["paused"].clone();
+        if !paused.is_null() {
+            return Ok(Journal::Paused(format!(
+                "The repository's merge queue is paused ({}) since {}, so the merge request was not sent; the entry waits for the unpause.",
+                paused["reason"].as_str().unwrap_or("paused"),
+                paused["at"].as_str().unwrap_or("?")
+            )));
         }
         e["merge"]["attempts"] = json!(1);
         if let Some(puts) = e["merge"]["puts"].as_array_mut() {
@@ -834,7 +855,7 @@ impl Store {
         e["nextCheck"] = json!(epoch() + 120);
         save(&tx, &e)?;
         tx.commit()?;
-        Ok(true)
+        Ok(Journal::Journaled)
     }
 
     /// The merge request's outcome. Returns the entry when it merged: its
@@ -893,7 +914,7 @@ impl Store {
                 urgent = true;
                 unknown(self, &tx, &mut e, detail)?;
             }
-            Ok(MergeOutcome::Moved(detail) | MergeOutcome::Held(detail)) => {
+            Ok(MergeOutcome::Moved(detail) | MergeOutcome::Held(detail) | MergeOutcome::Paused(detail)) => {
                 // Nothing was sent: the merge is set aside and every check
                 // runs again.
                 let old = e["merge"].take();

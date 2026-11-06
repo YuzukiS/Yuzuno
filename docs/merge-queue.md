@@ -126,6 +126,11 @@ Once every check holds, the entry merges, one merge at a time per repository:
      row the entry stops with `github_unreachable`, no pause;
    - a refusal from GitHub's rate limit (a 429, or a 403 that names the rate
      limit) is sent again after the cooldown.
+
+   Core reads the repository's pause each time it journals the request. If
+   the queue paused meanwhile, for example on another entry's red main CI,
+   nothing is journaled or sent: the entry goes back to `waiting` and is
+   checked again once the queue is unpaused.
 3. The post-check: the merge commit's parents are the main before and the
    head, and its tree is the tree CI tested. Otherwise the entry stops with
    `post_check_failed` and the repository's queue pauses: something landed that
