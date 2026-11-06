@@ -969,3 +969,25 @@ async fn a_stop_right_after_a_failed_starts_close_is_finished_at_the_next_start(
     assert_eq!(rebuild_state(&lab, &first).map(|r| r.0).as_deref(), Some("done"), "the first pass makes the rebuild");
     assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
 }
+
+/// R1 94ba0ebd: only a dispatch that chooses its machine (`auto`) reads this
+/// Core host's default Jobs budget; one naming its machine, or none, neither
+/// reads nor logs it, even where the read fails (a Core host that isn't
+/// Linux). The auto one still gets its machine.
+#[tokio::test]
+async fn only_a_dispatch_choosing_its_machine_reads_the_default_jobs_budget() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    lab.ws.executor_slots.fail_budget_read.store(true, std::sync::atomic::Ordering::Relaxed);
+    let reads = || (lab.ws.executor_slots.budget_reads.load(std::sync::atomic::Ordering::Relaxed),
+        lab.ws.executor_slots.budget_read_failures.load(std::sync::atomic::Ordering::Relaxed));
+    let task = lab.task("Review here").await;
+    lab.dispatch(&task, "unnamed").await;
+    let other = lab.task("Review on this host").await;
+    lab.dispatch_on(&other, "named", "reviewer", "local").await;
+    assert_eq!(reads(), (0, 0), "a dispatch that names its machine, or none, reads nothing and logs nothing");
+    let anywhere = lab.task("Review anywhere").await;
+    let chosen = lab.dispatch_on(&anywhere, "chosen", "reviewer", "auto").await;
+    assert_eq!(reads(), (1, 1), "a dispatch choosing its machine reads it, and says when it can't");
+    assert_eq!(lab.machine_of(&chosen), None, "and gets this Core host, with no budget known");
+}

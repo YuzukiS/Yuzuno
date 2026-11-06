@@ -292,8 +292,7 @@ pub(super) const AGENT_MACHINE: &str = "agent";
 pub(crate) fn machine_headroom(db: &rusqlite::Connection, machine: &str, default_local: Option<&Value>)
     -> Result<Option<(Resources, Resources)>> {
     if machine == CORE_HOST {
-        let saved: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?;
-        if !saved && default_local.is_none() {
+        if !local_budget_saved(db)? && default_local.is_none() {
             return Ok(None);
         }
         return Ok(Some((store::budget(db, default_local)?, store::reserved(db)?.0)));
@@ -301,6 +300,12 @@ pub(crate) fn machine_headroom(db: &rusqlite::Connection, machine: &str, default
     let Some(budget) = remote::machine_settings(db, machine)?.and_then(|m| m.budget) else { return Ok(None) };
     let budget = Resources { cpu_millis: budget.cpu_millis.into(), memory_mi_b: budget.memory_mib.into(), swap_mi_b: 0 };
     Ok(Some((budget, remote::machine_reserved(db, machine)?)))
+}
+
+/// Whether this Core host's Jobs budget is saved, read in the caller's
+/// transaction: until then its default comes from the host itself.
+pub(crate) fn local_budget_saved(db: &rusqlite::Connection) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?)
 }
 
 /// This Core host's suggested Jobs budget while none is saved, as its first

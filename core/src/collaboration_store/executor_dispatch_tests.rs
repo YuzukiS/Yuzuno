@@ -42,7 +42,7 @@ fn dispatch(task: &str, request: &str) -> Value {
 }
 
 fn begun(store: &Store, actor: Option<&str>, input: Value) -> Result<Plan, String> {
-    match store.executor_dispatch_begin(actor, input, None) {
+    match store.executor_dispatch_begin(actor, input, LocalDefault::Read(None)) {
         Ok(Next::Create(plan)) => Ok(*plan),
         Ok(Next::Dispatch(_)) => Err("went on to a dispatch".into()),
         Err(error) => Err(error.to_string()),
@@ -73,7 +73,7 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
     assert_eq!((plan.name.as_str(), plan.folders.as_slice()), ("T-1 · Reviewer", ["/synthetic/project".to_owned()].as_slice()));
     assert_eq!(row(&store, "user", "first").0, "pending");
-    let busy = store.executor_dispatch_begin(None, dispatch(&t, "first"), None);
+    let busy = store.executor_dispatch_begin(None, dispatch(&t, "first"), LocalDefault::Read(None));
     assert!(matches!(&busy, Err(e) if e.to_string().starts_with("dispatch_in_progress:")),
         "a retry while the first creates its executor waits for it: only one Agent");
 
@@ -87,7 +87,7 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     assert_eq!(given["dispatchMaterials"]["template"], json!({"id":"reviewer","label":"Reviewer","source":"workspace","instructions":"Review the change."}),
         "the template and its instructions reach the executor with its materials");
     for _ in 0..2 {
-        let again = store.executor_dispatch_begin(None, dispatch(&t, "first"), None);
+        let again = store.executor_dispatch_begin(None, dispatch(&t, "first"), LocalDefault::Read(None));
         let Ok(Next::Dispatch(again)) = again else {
             panic!("a retry with the same requestId finds the first dispatch: only one Agent");
         };

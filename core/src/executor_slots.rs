@@ -710,6 +710,14 @@ pub(crate) struct State {
     /// `launch_requested`).
     #[cfg(test)]
     pub(crate) fault_before_launch: std::sync::atomic::AtomicBool,
+    /// A test's reads of this Core host's default Jobs budget by a dispatch,
+    /// how many failed, and a read that fails (a Core host that isn't Linux).
+    #[cfg(test)]
+    pub(crate) budget_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) budget_read_failures: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) fail_budget_read: std::sync::atomic::AtomicBool,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become

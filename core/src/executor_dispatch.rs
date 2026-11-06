@@ -7,7 +7,7 @@
 //! when one is free (executor_slots.rs, T-35), and the mail is delivered once
 //! it is connected. A failure after the executor exists closes it.
 use crate::{
-    collaboration_store::executor_dispatch::{Dispatch, Next, Plan},
+    collaboration_store::executor_dispatch::{Dispatch, LocalDefault, NeedsLocalBudget, Next, Plan},
     updates::admission::Permit,
     workspace::{Birth, Workspace},
 };
@@ -41,15 +41,19 @@ impl Workspace {
         // Taken as POST /api/agents takes it, before anything is written.
         let permit = self.admission.enter_work().map_err(|_| anyhow::Error::new(WaitsForUpdate))?;
         ensure!(input.get("toAgentId").is_none(), "invalid_input: give toAgentId or executor, not both");
-        let who = actor.map(str::to_owned);
-        // This Core host's Jobs budget while none is saved, for `auto` to rank
-        // it by (T-35 S3b): read before the dispatch's transaction. Unread, it
-        // has no budget, and ranks after every machine that has one.
-        let default_local = crate::jobs::local_budget_default(self).await.unwrap_or_else(|error| {
-            eprintln!("Executor dispatch: this host's default Jobs budget could not be read: {error:#}");
-            None
-        });
-        let next = self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input, default_local.as_ref())).await?;
+        let (who, again) = (actor.map(str::to_owned), input.clone());
+        let next = match self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input, LocalDefault::Unread)).await {
+            // It chooses its machine (`auto`), and this Core host's Jobs
+            // budget isn't saved: its default is read now, outside the
+            // dispatch's transaction, which wrote nothing (R1 94ba0ebd). Only
+            // such a dispatch reads it.
+            Err(error) if error.downcast_ref::<NeedsLocalBudget>().is_some() => {
+                let default_local = self.default_local_budget().await;
+                let who = actor.map(str::to_owned);
+                self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), again, LocalDefault::Read(default_local.as_ref()))).await?
+            }
+            next => next?,
+        };
         let dispatch = match next {
             Next::Dispatch(dispatch) => dispatch,
             Next::Create(plan) => {
@@ -73,6 +77,28 @@ impl Workspace {
             }
             Err(error) => Err(self.executor_failed(&dispatch, error, &permit).await),
         }
+    }
+
+    /// This Core host's Jobs budget while none is saved, for `auto` to rank it
+    /// by (T-35 S3b). Unread (a Core host that isn't Linux), it has no budget,
+    /// and ranks after every machine that has one.
+    async fn default_local_budget(self: &Arc<Self>) -> Option<Value> {
+        #[cfg(test)]
+        self.executor_slots.budget_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        let read = if self.executor_slots.fail_budget_read.load(std::sync::atomic::Ordering::Relaxed) {
+            Err(anyhow::anyhow!("a test's Core host that isn't Linux"))
+        } else {
+            crate::jobs::local_budget_default(self).await
+        };
+        #[cfg(not(test))]
+        let read = crate::jobs::local_budget_default(self).await;
+        read.unwrap_or_else(|error| {
+            #[cfg(test)]
+            self.executor_slots.budget_read_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("Executor dispatch: this host's default Jobs budget could not be read: {error:#}");
+            None
+        })
     }
 
     async fn create_executor(self: &Arc<Self>, plan: &Plan) -> Result<()> {

@@ -43,6 +43,30 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// What a dispatch knows of this Core host's default Jobs budget, which
+/// `auto` ranks it by while none is saved: not yet read, or read (none when
+/// it couldn't be). It is read outside the dispatch's transaction, and only
+/// for a dispatch that chooses its machine (R1 94ba0ebd).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LocalDefault<'a> {
+    Unread,
+    Read(Option<&'a Value>),
+}
+
+/// A dispatch choosing its machine needs this Core host's default Jobs
+/// budget, unread so far; nothing of it was written. The caller reads it and
+/// begins again with it (executor_dispatch.rs).
+#[derive(Debug)]
+pub(crate) struct NeedsLocalBudget;
+
+impl std::fmt::Display for NeedsLocalBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this dispatch chooses its machine, and needs this Core host's default Jobs budget first")
+    }
+}
+
+impl std::error::Error for NeedsLocalBudget {}
+
 /// The caller as the collaboration receipts key it.
 pub(crate) fn actor_key(actor: &TaskActor) -> String {
     if actor.kind == "agent" { format!("agent:{}", actor.id) } else { "user".into() }
@@ -190,10 +214,11 @@ impl Store {
     /// known request goes on where it stopped: refused with another payload,
     /// its error when it failed, on to its Agent when that exists. A new one
     /// is checked (the task's version, not archived; who may; the template)
-    /// and written `pending` with its Agent's id chosen. `default_local`: this
-    /// Core host's Jobs budget while none is saved, for `auto` to rank it by
-    /// (jobs `local_budget_default`).
-    pub(crate) fn executor_dispatch_begin(&self, actor: Option<&str>, input: Value, default_local: Option<&Value>) -> Result<Next> {
+    /// and written `pending` with its Agent's id chosen. `local`: this Core
+    /// host's default Jobs budget, for `auto` to rank it by while none is
+    /// saved; one choosing its machine without it is refused with
+    /// NeedsLocalBudget before anything is written.
+    pub(crate) fn executor_dispatch_begin(&self, actor: Option<&str>, input: Value, local: LocalDefault<'_>) -> Result<Next> {
         ensure!(input.is_object(), "invalid_input: expected an object");
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
@@ -246,6 +271,11 @@ impl Store {
         crate::executor_templates::machine_named(Some(&requested), &template.harness)?;
         let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
         let (machine, choice) = if requested == super::executor_choice::AUTO {
+            let default_local = match local {
+                LocalDefault::Read(value) => value,
+                LocalDefault::Unread if crate::jobs::local_budget_saved(&tx)? => None,
+                LocalDefault::Unread => return Err(NeedsLocalBudget.into()),
+            };
             let (chosen, choice) = super::executor_choice::choose(&tx, &template, project.as_deref(), worktree.as_deref(), default_local)?;
             (chosen, Some(choice.to_string()))
         } else {
