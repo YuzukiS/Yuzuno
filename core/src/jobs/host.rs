@@ -32,11 +32,30 @@ pub(super) fn local_host(data: &Path) -> Result<()> {
 }
 pub(super) async fn helper(data: &Path) -> Result<PathBuf> {
     local_host(data)?;
+    #[cfg(test)]
+    if let Some((_, stub)) = HELPERS.lock().unwrap().iter().find(|(dir, _)| data.starts_with(dir)) {
+        return Ok(stub.clone());
+    }
     let root = data.join("jobs");
     tokio::fs::create_dir_all(&root).await?;
     let path = root.join(format!("host-{:x}.py", Sha256::digest(SCRIPT)));
     write_once(&path, SCRIPT).await?;
     Ok(path)
+}
+/// Tests: for the data folders named here, a cgroup root of the test's own
+/// (watch.rs) and a stand-in for the host helper.
+#[cfg(test)]
+pub(super) static CGROUPS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+pub(super) static HELPERS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+/// Where this host's cgroup v2 hierarchy is.
+pub(super) fn cgroup_root(data: &Path) -> PathBuf {
+    #[cfg(test)]
+    if let Some((_, root)) = CGROUPS.lock().unwrap().iter().find(|(dir, _)| data.starts_with(dir)) {
+        return root.clone();
+    }
+    let _ = data;
+    PathBuf::from("/sys/fs/cgroup")
 }
 /// Test fault injection: writes under these folders fail as a full disk
 /// would (ENOSPC), without filling any real disk.
