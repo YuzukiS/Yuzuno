@@ -826,6 +826,24 @@ test("Home content editors follow a language change from another window, an unsa
   } finally { page.close(); }
 });
 
+test("a task executor is never offered as a Home content editor; all members means all but executors (T-36)", async () => {
+  // Hana is an executor in App, Mori a standing member.
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { b: { kind: "executor" } } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
+    assert.match(page.document.querySelector(".home-editor-mode").textContent, /^All members but task executors, including future members$/);
+    all.click(); await pause();
+    const names = [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
+    assert.deepEqual(names, ["Mori"], "only the standing member can be chosen");
+    button(page, "Save content editors").click();
+    await waitFor(() => page.calls.some((call) => call.method === "PUT" && call.url.endsWith("/home-editors")), "the list is saved");
+    assert.deepEqual(page.calls.find((call) => call.method === "PUT" && call.url.endsWith("/home-editors")).body,
+      { expectedVersion: 0, editorAgentIds: ["a"] }, "turning off all members selects every member but the executor");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
 test("a project's service opens only once this computer proves it reaches Core's port", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
