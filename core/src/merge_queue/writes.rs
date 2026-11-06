@@ -41,7 +41,11 @@ pub(super) enum Write<'a> {
 /// on at this moment. Answers GitHub's status and body; an uncertain outcome
 /// is an error for the caller to reconcile by reading GitHub.
 pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: Write<'_>) -> Result<(u16, Value)> {
-    let on = ws.stored(move |s| s.merge_repository(repository)).await?["enabled"] == true;
+    let on = ws
+        .stored(move |s| s.merge_repository(repository))
+        .await
+        .map_err(|e| anyhow::anyhow!("not_sent: the merge queue switch could not be read: {e:#}"))?["enabled"]
+        == true;
     if !on {
         bail!("merge_queue_disabled: the merge queue is off for {repo}; Core writes nothing to GitHub until the user turns it on");
     }

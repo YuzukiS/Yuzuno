@@ -115,7 +115,12 @@ Once every check holds, the entry merges, one merge at a time per repository:
    after a request, the entry stops with `merge_unknown`: the PR may have
    merged unchecked, so the repository's queue pauses too, and the mail is
    urgent. Reads that fail before any request was sent stop the entry with
-   `github_unreachable` instead, with no pause: nothing merged. A refusal from
+   `github_unreachable` instead, with no pause: nothing merged. A request that
+   never reached GitHub (gh could not start, has no login, or could not open a
+   connection) is not an uncertain one either: the entry stays `merging` and
+   tries again shortly; after five such requests in a row it stops with
+   `github_unreachable`, no pause. A timeout or a broken connection after
+   sending stays uncertain. A refusal from
    GitHub stops it with `merge_refused`, except one from its rate limit (a 429,
    or a 403 that names the rate limit): that request certainly merged nothing,
    so the entry stays `merging`, waits for the cooldown and sends it again, and

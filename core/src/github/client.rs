@@ -99,6 +99,18 @@ pub fn parse(input: &str, object: bool) -> Result<Target> {
 pub(crate) const RAW_LOG_FLAG: &str = "--allow-escape-sequences";
 pub(crate) const RAW_LOG_MIN_GH: &str = "2.97.0";
 
+/// gh printed no HTTP status line, so no answer came. A refusal gh makes
+/// before sending (no login), or a connection that never opened (DNS,
+/// connect), means the request never reached GitHub: `not_sent:`. Anything
+/// else may have reached it.
+fn unanswered(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
+    let text = String::from_utf8_lossy(stderr).to_lowercase();
+    let error = failure(stderr, code);
+    let before = error.to_string().starts_with("not_authenticated")
+        || ["no such host", "dial tcp", "connection refused", "network is unreachable"].iter().any(|p| text.contains(p));
+    if before { anyhow::anyhow!("not_sent: {error:#}") } else { error }
+}
+
 pub(super) fn failure(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
     let text = String::from_utf8_lossy(stderr).to_lowercase();
     let message = if text.contains("rate limit") || text.contains("http 429") {
@@ -543,22 +555,20 @@ impl Client {
         endpoint: &str,
         body: Option<&Value>,
     ) -> Result<(u16, Value)> {
+        // `not_sent:` marks a failure before the request could reach GitHub;
+        // every other failure may have reached it.
         ensure!(
             matches!(method, "POST" | "PATCH" | "PUT" | "DELETE"),
-            "Unsupported GitHub write method"
+            "not_sent: Unsupported GitHub write method"
         );
-        let body = body.map(serde_json::to_vec).transpose()?;
+        let body = body.map(serde_json::to_vec).transpose().map_err(|e| anyhow::anyhow!("not_sent: {e}"))?;
         ensure!(
             body.as_ref().is_none_or(|b| b.len() <= 128 * 1024),
-            "GitHub request body is too large"
+            "not_sent: GitHub request body is too large"
         );
-        let mut child = self.spawn_with_headers(
-            endpoint,
-            "Accept: application/vnd.github+json",
-            method,
-            body.is_some(),
-            &["--include".to_owned()],
-        )?;
+        let mut child = self
+            .spawn_with_headers(endpoint, "Accept: application/vnd.github+json", method, body.is_some(), &["--include".to_owned()])
+            .map_err(|e| anyhow::anyhow!("not_sent: gh could not start: {e:#}"))?;
         let mut stdin = child.stdin.take();
         let mut stdout = child.stdout.take().context("gh stdout unavailable")?.take(2 * 1024 * 1024 + 1);
         let mut stderr = child.stderr.take().context("gh stderr unavailable")?.take(64 * 1024 + 1);
@@ -583,7 +593,7 @@ impl Client {
             let status = child.wait().await?;
             let text = String::from_utf8_lossy(&out);
             let Some((head, rest)) = text.split_once("\r\n\r\n").or_else(|| text.split_once("\n\n")) else {
-                return Err(failure(&err, status.code()));
+                return Err(unanswered(&err, status.code()));
             };
             let code = head
                 .lines()

@@ -15,6 +15,8 @@ const ACTIVE: &str = "('queued','waiting','ready','merging')";
 const WAIT_LIMIT: i64 = 6 * 3600;
 /// Consecutive failed reads before an entry stops.
 const READ_FAILURES: i64 = 8;
+/// Consecutive merge requests that could not be sent before an entry stops.
+const NOT_SENT_LIMIT: i64 = 5;
 /// What a switch and a release mean: 2 since Core merges. The dry-run build
 /// (1, no `queueVersion`) wrote the same tables, but there a switch that was
 /// on only let Core check, and `ready` was final.
@@ -859,11 +861,33 @@ impl Store {
                 // uncertain ones, and the entry stays merging with its journal.
                 let sent = e["merge"]["attempts"].as_i64().unwrap_or(1);
                 e["merge"]["attempts"] = json!((sent - 1).max(0));
+                e["merge"]["notSent"] = json!(0);
                 if let Some(put) = e["merge"]["puts"].as_array_mut().and_then(|p| p.last_mut()) {
                     put["limited"] = json!(detail);
                 }
                 e["detail"] = json!(format!("GitHub's rate limit refused the merge request, so nothing merged; Core sends it again after the cooldown ({detail})."));
                 e["nextCheck"] = json!((now_epoch + 60).max(cooldown + 5));
+            }
+            Ok(MergeOutcome::NotSent(detail)) => {
+                // The request never reached GitHub: it is not one of the two
+                // uncertain ones, and the entry stays merging with its journal
+                // (an earlier uncertain request, if any, still counts).
+                let sent = (e["merge"]["attempts"].as_i64().unwrap_or(1) - 1).max(0);
+                e["merge"]["attempts"] = json!(sent);
+                if let Some(put) = e["merge"]["puts"].as_array_mut().and_then(|p| p.last_mut()) {
+                    put["notSent"] = json!(detail);
+                }
+                let n = e["merge"]["notSent"].as_i64().unwrap_or(0) + 1;
+                e["merge"]["notSent"] = json!(n);
+                if n >= NOT_SENT_LIMIT && sent > 0 {
+                    urgent = true;
+                    unknown(self, &tx, &mut e, format!("{n} merge requests in a row could not be sent after an uncertain one; the last: {detail}"))?;
+                } else if n >= NOT_SENT_LIMIT {
+                    stop(&mut e, "github_unreachable", format!("{n} merge requests could not be sent; nothing merged. The last: {detail}"));
+                } else {
+                    e["detail"] = json!(format!("The merge request could not be sent ({detail}), so nothing merged; Core tries again shortly."));
+                    e["nextCheck"] = json!(now_epoch + 60);
+                }
             }
             Ok(MergeOutcome::Unknown(detail)) => {
                 urgent = true;

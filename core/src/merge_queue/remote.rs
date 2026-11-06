@@ -369,6 +369,9 @@ pub(super) enum MergeOutcome {
     /// GitHub's rate limit refused the request: nothing merged, send it again
     /// after the cooldown.
     Limited(String),
+    /// The request never reached GitHub (gh could not start, no login, no
+    /// connection): nothing merged, try again shortly.
+    NotSent(String),
 }
 
 /// Send the merge, at most twice. Right before every request, the first
@@ -406,6 +409,7 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOut
                 });
             }
             Err(e) if e.to_string().starts_with("merge_queue_disabled") => return Ok(MergeOutcome::Held(e.to_string())),
+            Err(e) if e.to_string().starts_with("not_sent") => return Ok(MergeOutcome::NotSent(format!("{e:#}"))),
             Err(e) => {
                 sent += 1;
                 last = e.to_string();

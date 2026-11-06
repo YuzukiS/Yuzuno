@@ -194,6 +194,10 @@ if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
     if answer in ('405','409'): out(int(answer),{'message':'Pull Request is not mergeable'})
     if answer=='429': out(429,{'message':'API rate limit exceeded'})
+    if answer=='noauth':
+        print('To get started with GitHub CLI, please run:  gh auth login',file=sys.stderr); sys.exit(4)
+    if answer=='hang':
+        time.sleep(5); out(502,{'message':'Bad gateway'})
     if answer=='502': out(502,{'message':'Bad gateway'})
     if answer=='502down':
         s['pullDown']=True; save(); out(502,{'message':'Bad gateway'})
@@ -998,6 +1002,53 @@ async fn a_pr_merged_at_another_head_after_a_request_is_refused_without_a_pause(
     assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_refused")), "a merge at another head is not Core's: {e}");
     assert!(e["detail"].as_str().unwrap().contains("not the released head"), "{}", e["detail"]);
     assert!(lab.paused()["paused"].is_null(), "Core merged nothing, so nothing pauses");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_request_that_never_left_core_is_not_an_uncertain_one() {
+    // gh refuses before sending anything (no login): five times in a row.
+    let lab = lab_with(|s| s["mergeAnswers"] = json!(vec!["noauth"; 5]));
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merging", "a request that never left Core is not an uncertain one: {e}");
+    assert_eq!(e["merge"]["attempts"], 0, "the request that was not sent does not count: {e}");
+    assert!(e["merge"]["puts"][0]["notSent"].as_str().unwrap().starts_with("not_sent"), "{e}");
+    assert!(lab.paused()["paused"].is_null(), "nothing was sent, so nothing pauses");
+    for _ in 0..4 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!(
+        (e["state"].clone(), e["reason"].clone()),
+        (json!("stopped"), json!("github_unreachable")),
+        "after five requests that could not be sent the entry stops, and nothing merged: {e}"
+    );
+    assert!(lab.paused()["paused"].is_null(), "no pause: nothing merged");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_timed_out_merge_request_stays_uncertain() {
+    // Two requests that time out may each have merged: the second stops the entry and pauses.
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_gh(dir.path(), {
+        let mut s = green();
+        s["mergeAnswers"] = json!(["hang", "hang"]);
+        s
+    });
+    let mut ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let client = &mut Arc::get_mut(&mut ws).unwrap().github.client;
+    client.program = program;
+    client.deadline = std::time::Duration::from_secs(1);
+    let task = setup(&ws.store);
+    let lab = Lab { dir, ws, task };
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_unknown")), "a timeout stays uncertain: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "merge_unknown");
 }
 
 #[cfg(unix)]
