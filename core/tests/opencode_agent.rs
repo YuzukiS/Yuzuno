@@ -87,6 +87,23 @@ impl Lab {
             .filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().starts_with(prefix)).collect()
     }
 
+    /// Each Workspace MCP add OpenCode was sent (`PUT /api/experimental/mcp/yuzuno`, T-61 slice 1), in order.
+    fn mcp_adds(&self) -> Vec<Value> {
+        self.calls().into_iter().filter(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno").collect()
+    }
+
+    /// The bearer the Workspace MCP was handed to OpenCode with.
+    fn bearer(&self) -> String {
+        let adds = self.mcp_adds();
+        let header = adds[0]["body"]["config"]["headers"]["Authorization"].as_str().unwrap();
+        header.strip_prefix("Bearer ").unwrap().to_owned()
+    }
+
+    /// Each connection the stand-in made of an MCP server, and why (`added`, `changed`, `connect`).
+    async fn mcp_connects(&self) -> Vec<Value> {
+        self.control("mcp", json!({})).await["connects"].as_array().unwrap().clone()
+    }
+
     /// The models made the session's (`POST /api/session/:id/model`, T-32 slice 4a), in order: each body.
     fn switches(&self) -> Vec<Value> {
         self.posts(&format!("/api/session/{}/model", self.session())).into_iter().map(|c| c["body"].clone()).collect()
@@ -659,10 +676,17 @@ async fn after_a_restart_a_message_connects_the_session_again_and_goes_only_when
     fn prompts(root: &std::path::Path) -> usize {
         calls(root).iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt")).count()
     }
-    /// The credential each Workspace MCP registration handed OpenCode, in order.
+    /// Each credential a Workspace MCP add handed OpenCode, in order, once
+    /// (an add goes before each message too, with the same one, T-61).
     fn credentials(root: &std::path::Path) -> Vec<Value> {
-        calls(root).into_iter().filter(|c| c["method"] == "POST" && c["path"] == "/mcp")
-            .map(|c| c["body"]["config"]["headers"]["Authorization"].clone()).collect()
+        let mut handed: Vec<Value> = vec![];
+        for c in calls(root).into_iter().filter(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno") {
+            let credential = c["body"]["config"]["headers"]["Authorization"].clone();
+            if !handed.contains(&credential) {
+                handed.push(credential);
+            }
+        }
+        handed
     }
     async fn send_to(ws: &Arc<Workspace>, agent_id: &str, client: &str) -> anyhow::Result<yuzuno_workspace::model::MessageReceipt> {
         let input: MessageInput = serde_json::from_value(json!({"clientMessageId":client,"text":"after"})).unwrap();
@@ -1146,23 +1170,34 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
 
 #[tokio::test]
 async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session() {
-    // OpenCode reports the Workspace MCP server failed: nothing is sent.
-    let failed = lab(&[("mcp", "failed")], true).await;
-    let added = failed.posts("/mcp");
-    let config = &added[0]["body"]["config"];
-    assert_eq!((config["type"].as_str(), config["oauth"].as_bool()), (Some("remote"), Some(false)));
-    assert!(config["url"].as_str().unwrap().ends_with(&format!("/mcp/{ID}")));
-    assert!(config["headers"]["Authorization"].as_str().unwrap().starts_with("Bearer "));
-    let status = failed.ws.collaboration_status(ID).await.unwrap();
-    assert!(!status.ready && status.error.unwrap().contains("failed"));
-    let refused = failed.send("c1", "hello").await.unwrap_err();
-    assert!(refused.to_string().contains("协作连接"), "{refused}");
-    assert!(failed.prompts().is_empty());
-    assert!(failed.detail().message_receipts.is_empty(), "refused before any receipt");
-    // No permission rule anywhere: not on the session, not in a prompt.
-    assert!(failed.calls().iter().all(|c| c["method"] != "PATCH"));
-    assert_eq!(failed.posts("/api/session")[0]["body"], json!({"title":"OpenCode","location":{"directory":failed.detail().agent.cwd}}));
-    failed.ws.close_agent(ID).await.unwrap();
+    for status in ["failed", "needs_auth"] {
+        // OpenCode reports the Workspace MCP server not connected: nothing is sent.
+        let refused = lab(&[("mcp", status)], true).await;
+        let cwd = refused.detail().agent.cwd;
+        let added = refused.mcp_adds();
+        assert_eq!(added.len(), 1, "{status}: added once as it connected");
+        assert_eq!(added[0]["query"]["location[directory]"], json!([cwd]), "the Agent's folder, named as its sessions name it");
+        let config = &added[0]["body"]["config"];
+        assert_eq!((config["type"].as_str(), config["oauth"].as_bool(), config["codemode"].as_bool()),
+            (Some("remote"), Some(false), Some(false)));
+        assert_eq!(config["timeout"], json!({"startup": 10000, "catalog": 10000}));
+        assert!(config["url"].as_str().unwrap().ends_with(&format!("/mcp/{ID}")));
+        assert!(config["headers"]["Authorization"].as_str().unwrap().starts_with("Bearer "));
+        let shown = refused.ws.collaboration_status(ID).await.unwrap();
+        let error = shown.error.unwrap();
+        assert!(!shown.ready && error.contains(&format!("MCP 状态 {status}：fixture:")), "{error}");
+        let message = refused.send("c1", "hello").await.unwrap_err();
+        assert!(message.to_string().contains("协作连接"), "{message}");
+        assert!(refused.prompts().is_empty());
+        assert!(refused.detail().message_receipts.is_empty(), "refused before any receipt");
+        // No permission rule anywhere, no login begun, nothing to 1.19.3's route.
+        assert!(refused.calls().iter().all(|c| {
+            let path = c["path"].as_str().unwrap();
+            c["method"] != "PATCH" && path != "/mcp" && !path.starts_with("/api/integration") && !path.starts_with("/api/credential")
+        }));
+        assert_eq!(refused.posts("/api/session")[0]["body"], json!({"title":"OpenCode","location":{"directory":cwd}}));
+        refused.ws.close_agent(ID).await.unwrap();
+    }
 
     // Connected: ready, and what the Agent writes names its session and Turn.
     let ready = lab(&[], true).await;
@@ -1171,6 +1206,116 @@ async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session
     let created = ready.ws.store.collaboration_call(Some(ID), "task_create", json!({"requestId":"r1","title":"From OpenCode"})).unwrap();
     assert_eq!(created["activity"]["source"], json!({"agentId":ID,"turnId":running,"sessionId":ready.session()}));
     ready.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message to an OpenCode 2.x Agent goes through the Workspace once its
+/// OpenCode lists the Workspace MCP connected (T-61 slice 1): handed over by
+/// 2.x's own route, which 2.x has, not 1.19.3's `/mcp`, which it has not.
+#[tokio::test]
+async fn a_message_to_a_2x_agent_goes_once_its_opencode_lists_the_workspace_mcp_connected() {
+    let lab = lab(&[], true).await;
+    let receipt = lab.send("c1", "hello").await
+        .unwrap_or_else(|refused| panic!("a message to a 2.x Agent was refused: {refused}"));
+    assert_eq!(receipt.status, "accepted");
+    assert_eq!(lab.prompts().len(), 1);
+    assert!(lab.ws.collaboration_status(ID).await.unwrap().ready);
+    assert!(lab.calls().iter().all(|c| c["path"] != "/mcp"), "nothing to 1.19.3's route");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A Workspace MCP server OpenCode lists as still connecting is waited for
+/// (2.x may answer the add of a folder's first server before it has
+/// connected it), and counts only once listed connected; one that does not
+/// connect within the wait is not ready, and a message is refused.
+#[tokio::test]
+async fn a_workspace_mcp_still_connecting_is_waited_for_and_counts_only_once_connected() {
+    let lab = lab(&[("mcpPendingFor", "1")], true).await;
+    let shown = lab.ws.collaboration_status(ID).await.unwrap();
+    assert!(shown.ready, "ready once OpenCode lists it connected: {:?}", shown.error);
+    let listed = lab.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
+    assert!(listed >= 2, "listed while it connected, then connected: {listed}");
+    lab.send("c1", "hello").await.unwrap();
+    lab.ws.close_agent(ID).await.unwrap();
+
+    let stuck = lab(&[("mcp", "pending")], true).await;
+    let shown = stuck.ws.collaboration_status(ID).await.unwrap();
+    let error = shown.error.unwrap_or_default();
+    assert!(!shown.ready && error.contains("MCP 状态 pending"), "{error}");
+    let refused = stuck.send("c1", "hello").await.unwrap_err();
+    assert!(refused.to_string().contains("协作连接"), "{refused}");
+    assert!(stuck.prompts().is_empty());
+    stuck.ws.close_agent(ID).await.unwrap();
+}
+
+/// OpenCode drops a server added at runtime with the Agent's folder (2.x
+/// unloads a folder after an hour without session events, and on a reload):
+/// the next message adds it again before it goes, on the same process, with
+/// the same bearer. While it is held, the add each message makes connects
+/// nothing anew.
+#[tokio::test]
+async fn a_workspace_mcp_opencode_dropped_with_the_folder_is_added_again_before_the_next_message() {
+    let lab = lab(&[], true).await;
+    let (session, pid) = (lab.session(), lab.seen()["pid"].clone());
+    let first = lab.send("c1", "one").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+    assert_eq!(lab.mcp_connects().await.len(), 1, "the adds of a message connect nothing anew");
+    assert_eq!(lab.control("mcpDrop", json!({})).await["dropped"], json!(["yuzuno"]));
+    let dropped_at = lab.calls().len();
+    lab.send("c2", "two").await.unwrap_or_else(|refused| panic!("refused after OpenCode dropped the folder: {refused}"));
+    let after: Vec<Value> = lab.calls()[dropped_at..].to_vec();
+    let prompt = after.iter().position(|c| c["path"].as_str().unwrap().ends_with("/prompt")).expect("the second prompt");
+    assert!(after[..prompt].iter().any(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno"),
+        "added again before the message went");
+    let connects = lab.mcp_connects().await;
+    assert_eq!((connects.len(), connects[1]["why"].as_str()), (2, Some("added")), "{connects:?}");
+    assert_eq!(lab.control("mcp", json!({})).await["servers"]["yuzuno"]["status"], json!({"status":"connected"}));
+    let adds = lab.mcp_adds();
+    assert_eq!(adds.first().unwrap()["body"], adds.last().unwrap()["body"], "the same configuration and bearer");
+    assert_eq!(lab.seen()["pid"], pid, "the same process");
+    assert!(lab.ws.collaboration_status(ID).await.unwrap().ready);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A reconnect has OpenCode try a Workspace MCP server it lists as failed
+/// again, on the same process; a message adds the same configuration, which
+/// tries nothing again.
+#[tokio::test]
+async fn a_reconnect_has_opencode_try_a_failed_workspace_mcp_again_on_the_same_process() {
+    let lab = lab(&[("mcp", "failed")], true).await;
+    assert!(!lab.ws.collaboration_status(ID).await.unwrap().ready);
+    let pid = lab.seen()["pid"].clone();
+    lab.control("mode", json!({"mcp": "connected"})).await;
+    let refused = lab.send("c1", "hello").await.unwrap_err();
+    assert!(refused.to_string().contains("MCP 状态 failed"), "{refused}");
+    assert_eq!(lab.mcp_connects().await.len(), 1, "a message's add tried nothing again");
+    lab.ws.reconnect(ID).await.unwrap();
+    let shown = lab.ws.collaboration_status(ID).await.unwrap();
+    assert!(shown.ready, "tried again on the reconnect: {:?}", shown.error);
+    assert_eq!(lab.posts("/api/experimental/mcp/yuzuno/connect").len(), 1);
+    assert_eq!(lab.seen()["pid"], pid, "the same process");
+    lab.send("c2", "hello").await.unwrap();
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// What OpenCode answers about the Workspace MCP is never shown or kept with
+/// the Agent's bearer in it: a refused add says its status and kind only, and
+/// a reported error has the bearer taken out. (Core's database holds the
+/// credential itself, by design, so its bytes are not what is checked.)
+#[tokio::test]
+async fn the_workspace_mcp_bearer_is_never_shown_or_kept_from_what_opencode_answers() {
+    for (switches, shown_as) in [(vec![("mcpRefuse", "1")], "HTTP 400, InvalidRequestError"),
+                                 (vec![("mcp", "failed"), ("mcpErrorEcho", "1")], "[redacted]")] {
+        let lab = lab(&switches, true).await;
+        let bearer = lab.bearer();
+        let error = lab.ws.collaboration_status(ID).await.unwrap().error.unwrap();
+        assert!(error.contains(shown_as) && !error.contains(&bearer), "{error}");
+        let refused = lab.send("c1", "hello").await.unwrap_err().to_string();
+        assert!(refused.contains(shown_as) && !refused.contains(&bearer), "{refused}");
+        let recorded = serde_json::to_string(&lab.detail()).unwrap();
+        assert!(!recorded.contains(&bearer), "not in the Agent's record");
+        lab.ws.close_agent(ID).await.unwrap();
+    }
 }
 
 #[tokio::test]

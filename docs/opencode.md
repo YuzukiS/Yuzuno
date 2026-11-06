@@ -45,8 +45,8 @@ yet; 2.x keeps a note of each change in the session. The models come from
 2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
 status is read from the sessions 2.x lists as running (`/api/session/active`).
 
-Still to move: permission requests and questions, commands, Workspace MCP,
-compaction, rewind and fork.
+Still to move: permission requests and questions, commands, compaction,
+rewind and fork.
 - **Permission requests and questions:** answered in 1.19.3's shape until
   their part. One of 2.x's own is shown at once with "not yet on OpenCode
   2.x", and can't be answered in Yuzuno: its run waits on it until you
@@ -54,8 +54,6 @@ compaction, rewind and fork.
 - **Commands:** listed from 2.x's own list (names and descriptions), but
   running one is still 1.19.3's route, which 2.x doesn't have, so a command
   is refused with "not yet on OpenCode 2.x".
-- **Workspace MCP:** still 1.19.3's route, so on 2.x the Agent shows its
-  Workspace MCP as not connected.
 - **Compaction, rewind and fork:** they still read 1.19.3's messages, so on a
   session of 2.x's they refuse before doing anything ("not yet on OpenCode
   2.x"). Core's tests of them use a 1.19.3 mode of its stand-in OpenCode,
@@ -117,6 +115,21 @@ a new one.
   anything is sent. Yuzuno reads no OpenCode credentials, keeps nothing else
   of a provider's or a model's record (its settings and headers can hold
   keys), and adds no permission rules.
+- **Workspace MCP:** each Agent's OpenCode is given the Workspace's MCP
+  server, `yuzuno`, with that Agent's own credential. Its tools
+  (`yuzuno_task_get` and the rest) are offered to the model as tools of their
+  own, not behind OpenCode's `execute`. OpenCode keeps the server in its
+  memory, for the Agent's folder only, with OAuth off: nothing is written to a
+  configuration file, and OpenCode lists its status only. A message goes only
+  once OpenCode lists it connected; one still connecting is waited for, up to
+  12 seconds. OpenCode drops it with the folder when it unloads an idle folder
+  (after an hour without session events) or reloads it; it is handed over
+  again before the next message, which then goes. Handed over again unchanged,
+  it changes nothing. When OpenCode reports it failed, or needing
+  authentication, a message is refused with what OpenCode reported;
+  reconnecting the Agent has OpenCode try it again, on the same process.
+  Nothing OpenCode answers about it is shown or kept with the credential in
+  it.
 - **Requests:** a permission OpenCode asks for is answered **Allow once** or
   **Reject**; nothing lasting is offered. OpenCode rejects the session's other
   waiting requests along with a rejected one. Its questions are answered in
