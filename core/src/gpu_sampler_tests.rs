@@ -140,7 +140,14 @@ async fn a_child_that_stops_printing_is_ended_and_started_again() {
     let pids = starts(dir.path());
     assert_eq!((sampler.sessions(), pids.len()), (2, 2), "a hung child is ended and a new session started");
     assert!(!alive(&pids[0]), "the hung child is gone");
-    let again = sampler.latest(WAIT).await.expect("a reading");
+    // Session 2 may have started without its first reading published yet:
+    // `latest` returns the cache then, so read until the reading changes.
+    let until = Instant::now() + WAIT;
+    let mut again = sampler.latest(WAIT).await.expect("a reading");
+    while again.observed_at == first.observed_at && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        again = sampler.latest(WAIT).await.expect("a reading");
+    }
     assert_ne!(again.observed_at, first.observed_at, "readers get a new reading");
 }
 
