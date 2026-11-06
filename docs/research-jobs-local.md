@@ -40,6 +40,11 @@ That count doesn't depend on how long the attempt runs or how many Jobs run besi
 
 ## When something goes wrong
 
+- **A process left behind.** A command that exits but leaves a process running in its worker's cgroup keeps the attempt open until that cgroup is empty, as it did before T-59. Such a process might be a `nohup … &`, a daemon or a forked helper. Meanwhile the Job shows running and keeps its reservation.
+  - **A leftover that still holds the Job's output:** the command's wrapper waits for it, and the Job's time limit stops it at the end. The outcome reads `timeout`.
+  - **A leftover that detached from the output:** the time limit does not end it. The collector records `unknown` at its own deadline (the Job's time plus 20 s), and Core settles the attempt once the cgroup empties, or when it is cancelled.
+
+  What T-59 changed is only how the collector waits: it reads the cgroup's `cgroup.events` instead of asking systemd every 0.5 s.
 - **Core restarts.** Nothing about an attempt is kept in memory across a restart. The new Core reads the same files and asks what they call for. An attempt that ended while Core was stopped is settled on its first tick.
 - **The machine restarted.** An attempt of an earlier boot is recorded `interrupted`.
 - **The collector died or was stopped.** The worker goes on. Core asks once when the collector's cgroup goes, and again once the worker's cgroup empties; then it records the outcome from systemd itself. Until then the worker's own systemd time limit still applies, but no collector enforces a service run's end time.
