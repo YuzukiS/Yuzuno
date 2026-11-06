@@ -32,7 +32,7 @@ const text = strings({
     "Lists the models of this host's Codex and Claude Code, as the New Agent dialog does when it opens. If Codex can't list them, Core marks it not connected, as the dialog would.",
   mcp: "MCP services",
   mcpNote:
-    "As each Agent's harness reported them. Claude Code: its session's last report; Refresh asks that session once. Codex: the startup reports its connection received; reading asks Codex nothing. Showing an Agent asks nothing. Configuration and sign-in stay in each CLI.",
+    "As each Agent's harness reported them. Claude Code: its session's last report; Refresh asks that session once. Codex: the startup reports its connection received; reading asks Codex nothing. Showing an Agent asks nothing. Configuration and sign-in stay in each CLI; an OpenCode Agent's provider logins are in its own settings.",
   agent: "Agent",
   noMcpAgents: "No open Claude Code or Codex Agents to report MCP services.",
   openCode: (n: number) => `${n === 1 ? "1 OpenCode Agent" : `${n} OpenCode Agents`}: OpenCode doesn't report MCP status to Yuzuno in this version.`,
@@ -86,7 +86,7 @@ const text = strings({
     "像“新建 Agent”对话框打开时那样，列出此主机上 Codex 和 Claude Code 的模型。如果 Codex 无法列出，Core 会像对话框那样把它标为未连接。",
   mcp: "MCP 服务",
   mcpNote:
-    "按各 Agent 的 harness 报告的显示。Claude Code：它会话的最近一次报告；“Refresh”会询问该会话一次。Codex：它连接启动时收到的报告；读取不会询问 Codex。显示某个 Agent 不会询问任何内容。配置和登录仍在各自的 CLI 中。",
+    "按各 Agent 的 harness 报告的显示。Claude Code：它会话的最近一次报告；“Refresh”会询问该会话一次。Codex：它连接启动时收到的报告；读取不会询问 Codex。显示某个 Agent 不会询问任何内容。配置和登录仍在各自的 CLI 中；OpenCode Agent 的提供方登录在它自己的设置里。",
   agent: "Agent",
   noMcpAgents: "没有打开的 Claude Code 或 Codex Agent 可报告 MCP 服务。",
   openCode: (n) => `${n} 个 OpenCode Agent：此版本中 OpenCode 不向 Yuzuno 报告 MCP 状态。`,

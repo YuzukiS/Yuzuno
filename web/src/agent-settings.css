@@ -208,3 +208,37 @@
   padding: 6px 12px;
   font-size: calc(10px + var(--font-adjust, 3px));
 }
+/* An OpenCode Agent's logins (T-32 slice 4b): its own, then one provider's methods, form or sign-in. */
+.opencode-logins ul {
+  display: grid;
+  gap: 5px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.opencode-logins li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.opencode-login-methods,
+.opencode-login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.opencode-login-form,
+.opencode-login-attempt {
+  display: grid;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+}
+.opencode-login-attempt p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::{path::PathBuf, sync::{Arc, OnceLock}, time::Duration};
 use tower::ServiceExt;
 use yuzuno_workspace::{model::{AgentDetail, MessageInput}, server, workspace::Workspace};
+use yuzuno_workspace::opencode_login::{KeyLogin, OAuthLogin};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 const ID: &str = "oc";
@@ -199,8 +200,9 @@ async fn an_agent_made_with_1x_is_kept_to_read_and_never_started() {
 
 /// An Agent whose 1.19.3 started and made its database, but whose session
 /// never reached the record, has nothing of Core's in it. 2.x never opens
-/// that database: it is moved aside whole, never deleted, and 2.x starts on
-/// a new one (R2 f9cbccce of #575).
+/// that database: it is moved aside, never deleted, and 2.x starts on a new
+/// one (R2 f9cbccce of #575). No login goes with it: its credentials are
+/// scrubbed before it is moved, its other rows kept (T-32 slice 4b, D6).
 #[tokio::test]
 async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() {
     program();
@@ -209,22 +211,27 @@ async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() 
     std::fs::create_dir(&work).unwrap();
     let root = dir.path().join("data/opencode").join(ID);
     std::fs::create_dir_all(&root).unwrap();
-    let old = [("opencode.db", "made by 1.19.3"), ("opencode.db-wal", "its WAL"), ("opencode.db-shm", "its index")];
-    for (name, text) in old {
-        std::fs::write(root.join(name), text).unwrap();
+    {
+        let made = rusqlite::Connection::open(root.join("opencode.db")).unwrap();
+        made.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE session (id TEXT); INSERT INTO session VALUES ('ses_old');
+            CREATE TABLE credential (id TEXT, value TEXT); INSERT INTO credential VALUES ('crd_1', 'fixture-set-aside-secret');").unwrap();
     }
     std::fs::create_dir(root.join("set-aside-1")).unwrap();
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
     ws.store.insert(&agent(&work.to_string_lossy())).unwrap();
     let d = ws.reconnect(ID).await.unwrap();
     assert_eq!(d.agent.connection_state, "connected");
-    for (name, text) in old {
-        assert_ne!(std::fs::read_to_string(root.join(name)).ok().as_deref(), Some(text),
-            "2.x never opens the database no recorded session is in: {name}");
-    }
+    let holds = |path: &std::path::Path, text: &[u8]| std::fs::read(path).is_ok_and(|bytes| bytes.windows(text.len()).any(|w| w == text));
+    assert!(!holds(&root.join("opencode.db"), b"ses_old"), "2.x never opens the database no recorded session is in");
     let aside = root.join("set-aside-2");
-    for (name, text) in old {
-        assert_eq!(std::fs::read_to_string(aside.join(name)).unwrap(), text, "kept whole beside it: {name}");
+    {
+        let kept = rusqlite::Connection::open(aside.join("opencode.db")).unwrap();
+        assert_eq!(kept.query_row("SELECT id FROM session", [], |r| r.get::<_, String>(0)).unwrap(), "ses_old", "kept beside it, its sessions whole");
+        assert_eq!(kept.query_row("SELECT count(*) FROM credential", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "no login left in it");
+    }
+    for entry in std::fs::read_dir(&aside).unwrap() {
+        let path = entry.unwrap().path();
+        assert!(!holds(&path, b"fixture-set-aside-secret"), "no login's bytes beside it: {}", path.display());
     }
     let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
     assert_eq!(seen["database"], &*root.join("opencode.db").to_string_lossy(), "2.x got the same path, now free");
@@ -235,6 +242,32 @@ async fn a_database_no_recorded_session_is_in_is_moved_aside_before_2x_starts() 
     let said: Vec<Value> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/setAside'").unwrap()
         .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
     assert_eq!(said, vec![json!({"folder": aside})], "the record says where it went");
+}
+
+/// A WAL left without its database can't be read as one, and never stops a
+/// start (R1 dd77b02d of #621): overwritten with zeros and removed before
+/// 2.x starts, nothing of it moved aside, and the record notes it.
+#[tokio::test]
+async fn a_wal_left_without_its_database_is_overwritten_and_removed_and_2x_starts() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let root = dir.path().join("data/opencode").join(ID);
+    std::fs::create_dir_all(&root).unwrap();
+    let left = b"pages of fixture-orphan-secret";
+    std::fs::write(root.join("opencode.db-wal"), left).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&work.to_string_lossy())).unwrap();
+    let started = ws.reconnect(ID).await.map(|d| d.agent.connection_state).map_err(|e| e.to_string());
+    assert_eq!(started.as_deref(), Ok("connected"), "the start proceeds past a WAL left without its database");
+    assert!(!root.join("set-aside-1").exists(), "nothing of it moved aside");
+    assert_eq!(file_holding(&root, "fixture-orphan-secret"), None, "none of its bytes left in the Agent's folder");
+    let db = rusqlite::Connection::open(dir.path().join("data/workspace.sqlite")).unwrap();
+    let said: Vec<Value> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/leftoverDestroyed'").unwrap()
+        .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+    assert_eq!(said, vec![json!({"file":"opencode.db-wal","bytes":left.len(),"why":"orphan_wal"})], "the record notes what was destroyed");
+    ws.close_agent(ID).await.unwrap();
 }
 
 /// An Agent's OpenCode keeps its data and state in the Agent's own folder
@@ -2600,5 +2633,294 @@ async fn a_message_admitted_while_the_stream_is_broken_is_confirmed_from_the_inb
     lab.control("reply", json!({"sessionID":session,"text":"Tests pass.","parentID":added})).await;
     let d = lab.until("its end", |d| turn(d, &first)["status"] != "inProgress").await;
     assert_eq!(turn(&d, &first)["status"], "completed");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+fn holds_bytes(path: &std::path::Path, text: &str) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| bytes.windows(text.len()).any(|w| w == text.as_bytes()))
+}
+
+/// A file under `dir`, read whole, that holds `text`.
+fn file_holding(dir: &std::path::Path, text: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()).find_map(|path| match path.is_dir() {
+        true => file_holding(&path, text),
+        false => holds_bytes(&path, text).then_some(path),
+    })
+}
+
+fn key_login(integration: &str, key: &str, label: Option<&str>) -> KeyLogin {
+    KeyLogin { integration: integration.into(), key: key.into(), label: label.map(str::to_owned), answer: None }
+}
+
+/// An OpenCode Agent is logged in with a key through its own OpenCode (T-32
+/// slice 4b, the user's decision 4142): listed by its label, never by its
+/// value. The key reaches that OpenCode, and Core keeps it nowhere: not its
+/// database or WAL, the Agent's record, any answer, or an error, which says
+/// OpenCode's status and kind only, even when OpenCode's answer echoes it.
+/// Core never reads a credential back. Logged out, it is gone from OpenCode.
+#[tokio::test]
+async fn an_agent_logs_in_with_a_key_through_its_own_opencode_and_core_keeps_it_nowhere() {
+    const KEY: &str = "fixture-login-key-Zq81";
+    let lab = lab(&[], false).await;
+    let view = serde_json::to_value(lab.ws.opencode_logins(ID).await.unwrap()).unwrap();
+    assert_eq!((&view["state"], &view["version"]), (&json!("ready"), &json!("2.2.5")), "{view}");
+    let listed = |view: &Value| view["integrations"].as_array().unwrap().iter().find(|i| i["id"] == "openrouter").cloned().unwrap();
+    assert_eq!(listed(&view)["methods"][0]["kind"], "key", "a configured provider takes a key");
+    assert!(!view.to_string().contains("fixture-secret"), "nothing secret of OpenCode's list is passed on: {view}");
+
+    let after = serde_json::to_value(lab.ws.opencode_login_key(ID, key_login("openrouter", KEY, Some("work"))).await.unwrap()).unwrap();
+    let connections: Vec<(Value, Value)> = listed(&after)["connections"].as_array().unwrap().iter()
+        .map(|c| (c["kind"].clone(), c["label"].clone())).collect();
+    assert_eq!(connections, [(json!("credential"), json!("work"))], "logged in, shown by its label");
+    assert!(lab.control("logins", json!({})).await["credentials"].to_string().contains(KEY), "the key reached the Agent's own OpenCode");
+
+    lab.control("mode", json!({"loginRefuse": true})).await;
+    let refused = lab.ws.opencode_login_key(ID, key_login("openrouter", KEY, None)).await.unwrap_err().to_string();
+    assert!(refused.contains("HTTP 400") && refused.contains("integration_authorization"), "its status and kind: {refused}");
+    lab.control("mode", json!({"loginRefuse": false})).await;
+
+    let record = serde_json::to_string(&lab.detail()).unwrap();
+    for (what, text) in [("the login's answer", after.to_string()), ("the refusal", refused), ("the Agent's record", record)] {
+        assert!(!text.contains(KEY), "the key is in {what}");
+    }
+    for name in ["workspace.sqlite", "workspace.sqlite-wal", "workspace.sqlite-shm"] {
+        assert!(!holds_bytes(&lab.dir.path().join("data").join(name), KEY), "the key is in {name}");
+    }
+    let rows: Vec<String> = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap()
+        .prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/loggedIn'").unwrap()
+        .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows.iter().map(|r| serde_json::from_str::<Value>(r).unwrap()).collect::<Vec<_>>(),
+        [json!({"integration":"openrouter","method":"key","label":"work"})], "the journal keeps which integration and label only");
+    assert!(lab.calls().iter().all(|c| !(c["method"] == "GET" && c["path"].as_str().unwrap().starts_with("/api/credential"))),
+        "Core never reads a credential back");
+
+    let credential = listed(&after)["connections"][0]["id"].as_str().unwrap().to_owned();
+    let out = serde_json::to_value(lab.ws.opencode_logout(ID, &credential).await.unwrap()).unwrap();
+    assert!(listed(&out)["connections"].as_array().unwrap().is_empty(), "logged out");
+    assert_eq!(lab.control("logins", json!({})).await["credentials"], json!({}), "gone from the Agent's OpenCode");
+    assert!(journal(&lab).iter().any(|k| k == "opencode/loggedOut"));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A device sign-in is shown, link and instructions, and logs in once its
+/// provider completes it; a code one completes with the code it gave. One
+/// whose page sends the browser back to this computer is cancelled at
+/// OpenCode at once and its link never shown (D7): sign in from OpenCode
+/// itself.
+#[tokio::test]
+async fn a_device_sign_in_is_shown_and_one_that_sends_the_browser_back_here_is_cancelled_unshown() {
+    let lab = lab(&[], false).await;
+    let browser = "https://auth.example.com/authorize?client_id=a&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
+    lab.control("mode", json!({
+        "integrations": [{"id":"example","name":"Example","methods":[
+            {"type":"oauth","id":"example/device","label":"Device"},
+            {"type":"oauth","id":"example/browser","label":"Browser"},
+            {"type":"oauth","id":"example/code","label":"Code"}]}],
+        "oauth": {"example/device": {"url":"https://example.com/login/device","instructions":"Enter code WXYZ-0001"},
+            "example/browser": {"url": browser}, "example/code": {"url":"https://example.com/code","mode":"code"}}})).await;
+    let start = |method: &str| lab.ws.opencode_login_oauth(ID, OAuthLogin { integration: "example".into(), method: method.into(), answer: None });
+    let logins = || async { lab.control("logins", json!({})).await };
+
+    let device = start("example/device").await.unwrap();
+    assert_eq!((&device["url"], &device["instructions"], &device["mode"]),
+        (&json!("https://example.com/login/device"), &json!("Enter code WXYZ-0001"), &json!("auto")), "a device sign-in is shown");
+    let attempt = device["attemptId"].as_str().unwrap().to_owned();
+    assert_eq!(lab.ws.opencode_login_oauth_status(ID, "example", &attempt).await.unwrap()["status"], "pending");
+    lab.control("oauthComplete", json!({"attemptID": attempt})).await;
+    assert_eq!(lab.ws.opencode_login_oauth_status(ID, "example", &attempt).await.unwrap()["status"], "complete");
+    assert_eq!(logins().await["credentials"].as_object().unwrap().len(), 1, "logged in by it");
+
+    let refused = start("example/browser").await.map(|shown| shown.to_string()).unwrap_or_else(|e| format!("refused: {e}"));
+    assert!(refused.starts_with("refused: ") && refused.contains("请在 OpenCode 里登录") && !refused.contains("auth.example.com"),
+        "cancelled, its link never shown: {refused}");
+    assert_eq!(logins().await["cancelled"].as_array().unwrap().len(), 1, "its attempt cancelled at OpenCode");
+    assert!(journal(&lab).iter().any(|k| k == "opencode/loginNotOffered"));
+
+    let code = start("example/code").await.unwrap();
+    assert_eq!(code["mode"], "code");
+    let journaled = || journal(&lab).iter().filter(|k| *k == "opencode/loggedIn").count();
+    assert_eq!(journaled(), 1, "the device sign-in journaled");
+    lab.ws.opencode_login_oauth_complete(ID, "example", code["attemptId"].as_str().unwrap(), "CODE-42").await.unwrap();
+    assert_eq!(logins().await["credentials"].as_object().unwrap().len(), 2, "logged in with its code");
+    assert_eq!(journaled(), 2, "a code sign-in completed is journaled as logged in, as a device one is (R2 5ca76575 of #621)");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A sign-in is journaled as logged in once, and only through the
+/// connection it went through (R3 b2b46a5f of #621): asked about twice once
+/// complete, one record; complete while the Agent's connection ended under
+/// the read, none, though the read answered.
+#[tokio::test]
+async fn a_sign_in_is_journaled_once_and_only_through_the_connection_it_went_through() {
+    let lab = lab(&[], false).await;
+    lab.control("mode", json!({
+        "integrations": [{"id":"example","name":"Example","methods":[{"type":"oauth","id":"example/device","label":"Device"}]}],
+        "oauth": {"example/device": {"url":"https://example.com/login/device"}}})).await;
+    let start = || async { lab.ws.opencode_login_oauth(ID, OAuthLogin { integration: "example".into(), method: "example/device".into(), answer: None })
+        .await.unwrap()["attemptId"].as_str().unwrap().to_owned() };
+    let logged = || journal(&lab).iter().filter(|k| *k == "opencode/loggedIn").count();
+
+    let first = start().await;
+    lab.control("oauthComplete", json!({"attemptID": first})).await;
+    for _ in 0..2 {
+        assert_eq!(lab.ws.opencode_login_oauth_status(ID, "example", &first).await.unwrap()["status"], "complete");
+    }
+    assert_eq!(logged(), 1, "a sign-in asked about twice once complete is journaled once");
+
+    let second = start().await;
+    lab.control("oauthComplete", json!({"attemptID": second})).await;
+    lab.control("mode", json!({"holdOauthStatus": true})).await;
+    let read = lab.ws.opencode_login_oauth_status(ID, "example", &second);
+    let ended = async {
+        let mut held = json!(0);
+        for _ in 0..400 {
+            held = lab.control("held", json!({})).await;
+            if held == json!(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(held, json!(1), "the read of the sign-in held at OpenCode");
+        // The Agent's connection ends while the read waits: its stream ends and every new one is refused.
+        lab.control("refuseEvents", json!({"seconds": 30})).await;
+        lab.control("drop", json!({})).await;
+        lab.until("the connection gone", |d| d.agent.connection_state == "disconnected").await;
+        lab.control("release", json!({})).await;
+    };
+    let (read, ()) = tokio::join!(read, ended);
+    let read = read.map(|status| status.to_string()).unwrap_or_else(|e| e.to_string());
+    assert_eq!(logged(), 1, "a sign-in complete on a connection no longer the Agent's is not journaled: {read}");
+    assert!(read.contains("OpenCode 连接已变化"), "{read}");
+}
+
+/// A method's form is answered as OpenCode's own clients answer it (R2
+/// 5ca76575 of #621): each hidden field's default goes with the page's
+/// answer where its conditions hold, and 2.x, which checks the answer
+/// against the form, takes it. A method with no form gets no answer.
+#[tokio::test]
+async fn a_forms_hidden_defaults_go_with_its_answer_and_opencode_takes_it() {
+    let lab = lab(&[], false).await;
+    let region = json!({"type":"string","key":"region","hidden":true,"required":true,"default":"us"});
+    lab.control("mode", json!({
+        "integrations": [{"id":"example","name":"Example","methods":[
+            {"type":"oauth","id":"example/device","label":"Device","form":[
+                {"type":"string","key":"deploymentType","title":"Deployment","required":true,"default":"github.com",
+                    "options":[{"label":"GitHub.com","value":"github.com"},{"label":"GitHub Enterprise","value":"enterprise"}]},
+                {"type":"string","key":"enterpriseUrl","title":"URL","required":true,"when":[{"key":"deploymentType","op":"eq","value":"enterprise"}]},
+                region,
+                {"type":"string","key":"tier","hidden":true,"required":true,"default":"gold","when":[{"key":"deploymentType","op":"eq","value":"enterprise"}]}]},
+            {"type":"key","label":"Key","form":[region]}]}],
+        "oauth": {"example/device": {"url":"https://example.com/login/device"}}})).await;
+    let start = |answer: Value| lab.ws.opencode_login_oauth(ID, OAuthLogin { integration: "example".into(), method: "example/device".into(), answer: Some(answer) });
+    let taken = start(json!({"deploymentType":"github.com"})).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(taken, Ok(()), "a hidden field's default sent with the answer, and OpenCode takes it");
+    let taken = start(json!({"deploymentType":"enterprise","enterpriseUrl":"https://company.ghe.com"})).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(taken, Ok(()), "each where its conditions hold");
+    let keyed = lab.ws.opencode_login_key(ID, key_login("example", "fixture-form-key", None)).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(keyed, Ok(()), "a key method's hidden default sent with no answer from the page");
+    let unformed = lab.ws.opencode_login_key(ID, key_login("openrouter", "fixture-form-key-2", None)).await.map(|_| ()).map_err(|e| e.to_string());
+    assert_eq!(unformed, Ok(()), "no answer to a method with no form");
+    let answers: Vec<Value> = lab.posts("/api/integration/").into_iter().map(|c| c["body"].get("answer").cloned().unwrap_or(Value::Null)).collect();
+    assert_eq!(answers, vec![json!({"deploymentType":"github.com","region":"us"}),
+        json!({"deploymentType":"enterprise","enterpriseUrl":"https://company.ghe.com","region":"us","tier":"gold"}),
+        json!({"region":"us"}), Value::Null], "a hidden field's default sent with the answer");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Logging in needs the Agent's OpenCode at 2.0.20 or newer (D4): an older
+/// one is told to update, naming both versions, and nothing reaches it. It
+/// needs the Agent connected (D9): a closed or disconnected one can't.
+#[tokio::test]
+async fn a_login_needs_the_agent_connected_and_its_opencode_at_2_0_20() {
+    let lab = lab(&[("version", "2.0.16")], false).await;
+    let note = "update OpenCode to log in here: this Agent runs 2.0.16; logging in needs 2.0.20 or newer";
+    let view = serde_json::to_value(lab.ws.opencode_logins(ID).await.unwrap()).unwrap();
+    assert_eq!((&view["state"], &view["reason"]), (&json!("update"), &json!(note)), "told to update, naming both versions");
+    let refused = lab.ws.opencode_login_key(ID, key_login("openrouter", "fixture-floor-key", None)).await.map(|_| String::new())
+        .unwrap_or_else(|e| e.to_string());
+    assert_eq!(refused, note, "a login refused, naming both versions");
+    assert!(lab.calls().iter().all(|c| !c["path"].as_str().unwrap().starts_with("/api/integration")), "nothing reached it");
+    lab.control("die", json!({})).await;
+    lab.until("the lost connection", |d| d.agent.connection_state == "disconnected").await;
+    let view = serde_json::to_value(lab.ws.opencode_logins(ID).await.unwrap()).unwrap();
+    assert_eq!((&view["state"], &view["reason"]), (&json!("unavailable"), &json!("disconnected")));
+    let refused = lab.ws.opencode_login_key(ID, key_login("openrouter", "fixture-floor-key", None)).await.unwrap_err().to_string();
+    assert!(refused.contains("连接后才能登录"), "{refused}");
+    lab.ws.close_agent(ID).await.unwrap();
+    let view = serde_json::to_value(lab.ws.opencode_logins(ID).await.unwrap()).unwrap();
+    assert_eq!((&view["state"], &view["reason"]), (&json!("unavailable"), &json!("closed")));
+}
+
+/// A deleted OpenCode Agent's database stays with its files, and no login
+/// stays in it (D6): scrubbed once its server is stopped, its other rows
+/// kept.
+#[tokio::test]
+async fn an_opencode_agent_deleted_keeps_its_database_with_no_login_in_it() {
+    let lab = lab(&[], false).await;
+    let db = lab.root().join("opencode.db");
+    rusqlite::Connection::open(&db).unwrap().execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE session (id TEXT);
+        INSERT INTO session VALUES ('ses_kept'); CREATE TABLE credential (id TEXT, value TEXT);
+        INSERT INTO credential VALUES ('crd_1', '{\"type\":\"api\",\"key\":\"fixture-deleted-key\"}');").unwrap();
+    lab.ws.delete_agent(ID).await.unwrap();
+    for name in ["opencode.db", "opencode.db-wal", "opencode.db-shm"] {
+        assert!(!holds_bytes(&lab.root().join(name), "fixture-deleted-key"), "no login left after the delete: {name}");
+    }
+    let kept = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(kept.query_row("SELECT id FROM session", [], |r| r.get::<_, String>(0)).unwrap(), "ses_kept", "its database kept");
+}
+
+/// An OpenCode Agent whose database is still in use is not deleted (R1
+/// dd77b02d of #621): the delete is refused, to be tried again, and the
+/// database is left as it is.
+#[tokio::test]
+async fn an_opencode_agent_whose_database_is_in_use_is_not_deleted() {
+    let lab = lab(&[], false).await;
+    let holder = rusqlite::Connection::open(lab.root().join("opencode.db")).unwrap();
+    holder.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE credential (id TEXT, value TEXT);
+        INSERT INTO credential VALUES ('crd_1', 'fixture-held-key'); BEGIN IMMEDIATE;").unwrap();
+    let refused = lab.ws.delete_agent(ID).await.map(|_| String::new()).unwrap_or_else(|e| e.to_string());
+    assert!(refused.contains("仍被占用") && refused.contains("稍后再试") && refused.contains("Agent 没有删除"),
+        "a database still in use refuses the delete: {refused}");
+    assert!(lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "still there");
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(holder.query_row("SELECT count(*) FROM credential", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "its database left as it is");
+}
+
+/// An OpenCode Agent whose `opencode.db` can't be read as a database is still
+/// deleted (R1 dd77b02d of #621): that file and the WAL beside it, which
+/// SQLite itself removes as it closes, are overwritten with zeros, as a
+/// second link to each shows, and removed; none of their bytes is left in
+/// the Agent's folder.
+#[tokio::test]
+async fn an_opencode_agent_whose_database_is_not_one_is_deleted_with_it_overwritten_and_removed() {
+    let lab = lab(&[], false).await;
+    let root = lab.root();
+    for (name, bytes) in [("opencode.db", &b"not a database: fixture-unread-key"[..]), ("opencode.db-wal", b"pages of fixture-unread-key")] {
+        std::fs::write(root.join(name), bytes).unwrap();
+        std::fs::hard_link(root.join(name), lab.dir.path().join(format!("seen-{name}"))).unwrap();
+    }
+    let deleted = lab.ws.delete_agent(ID).await.map_err(|e| e.to_string());
+    assert_eq!(deleted, Ok(()), "a database that is not one never refuses the delete");
+    assert!(!lab.ws.store.agents().unwrap().iter().any(|a| a.id == ID), "deleted");
+    for name in ["opencode.db", "opencode.db-wal"] {
+        assert!(!root.join(name).exists(), "overwritten and removed: {name}");
+        let seen = std::fs::read(lab.dir.path().join(format!("seen-{name}"))).unwrap();
+        assert!(!seen.is_empty() && seen.iter().all(|b| *b == 0), "overwritten with zeros before it is removed: {name}");
+    }
+    assert_eq!(file_holding(&root, "fixture-unread-key"), None, "none of their bytes left in the Agent's folder");
+}
+
+/// The login is on Core's own page only: served to it, refused to another
+/// site's page (`local_browser_boundary`).
+#[tokio::test]
+async fn the_login_is_served_to_cores_own_page_only() {
+    let lab = lab(&[], false).await;
+    let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4317);
+    let request = |origin: &str| Request::builder().method("GET").uri(format!("/api/agents/{ID}/opencode/login"))
+        .header("host", "localhost:4317").header("origin", origin).body(Body::empty()).unwrap();
+    let own = router.clone().oneshot(request("http://localhost:4317")).await.unwrap();
+    assert!(own.status().is_success(), "{}", own.status());
+    let other = router.clone().oneshot(request("https://example.com")).await.unwrap();
+    assert!(!other.status().is_success(), "another site's page is refused: {}", other.status());
     lab.ws.close_agent(ID).await.unwrap();
 }

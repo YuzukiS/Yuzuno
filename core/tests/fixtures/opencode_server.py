@@ -102,7 +102,11 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
-         'replay': 'ok', 'html': [], 'activeShape': 'object'}
+         'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False,
+         'holdOauthStatus': False}
+# 2.x's logins (T-32 slice 4b): its credentials, values included, as its database keeps them; its sign-in attempts;
+# and those cancelled.
+credentials, attempts, cancelled = {}, {}, []
 # Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
 held_reads = []
 # Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
@@ -210,6 +214,55 @@ def between_reads(session):
         with lock:
             v2_deliver(session)
         save()
+
+
+def v2_integrations():
+    """What 2.x's `GET /api/integration` lists (schema/src/integration.ts Info): each configured provider with a key
+    method (core/src/config/plugin/provider.ts), then mode `integrations`' own, each with its connections. Each carries
+    metadata holding a fake secret, which Core must not pass on."""
+    def connections(integration):
+        return [{'type': 'credential', 'id': cid, 'label': c['label'], 'method': c['method']}
+                for cid, c in credentials.items() if c['integration'] == integration]
+    listed = [{'id': p['id'], 'name': p['name'], 'metadata': {'token': SECRETS[0]},
+               'methods': [{'type': 'key', 'label': 'Manually enter API Key'}]} for p in modes['providers']['providers']]
+    listed += [dict(i, metadata={'token': SECRETS[0]}) for i in modes['integrations']]
+    return [dict(i, connections=connections(i['id'])) for i in listed]
+
+
+def v2_method(integration, kind, method_id=None):
+    """The method of that kind (and ID) an integration lists, or None."""
+    for listed in v2_integrations():
+        if listed['id'] == integration:
+            return next((m for m in listed['methods'] if m['type'] == kind and (method_id is None or m.get('id') == method_id)), None)
+    return None
+
+
+def v2_answer_refused(method, answer, kind):
+    """Why 2.x refuses a method's form answer (core/src/form.ts validateAnswer, core/src/integration.ts), or None: a
+    field it doesn't have, a required one missing or one answered while its conditions don't hold; and an answer to a
+    key method with no form."""
+    form, answer = (method or {}).get('form'), answer or {}
+    if not form:
+        return 'Key method does not accept a form answer' if kind == 'key' and answer else None
+    for key in answer:
+        if key not in {field['key'] for field in form}:
+            return f'Unknown form field: {key}'
+    for field in form:
+        active = all(answer.get(w['key']) is not None and (answer.get(w['key']) == w['value']) == (w['op'] == 'eq')
+                     for w in field.get('when') or [])
+        if field['key'] not in answer:
+            if field.get('required') and active:
+                return f'Missing required form field: {field["key"]}'
+        elif not active:
+            return f'Form field is not active: {field["key"]}'
+    return None
+
+
+def add_credential(integration, method, label, value):
+    cid = new_id('crd')
+    with lock:
+        credentials[cid] = {'integration': integration, 'method': method, 'label': label, 'value': value}
+    return cid
 
 
 def v2_deliver(session, upto=None):
@@ -869,6 +922,15 @@ def control(name, body):
         if body.get('announce', True):
             publish('session.created', {'sessionID': session['id'], 'info': session})
         return session
+    if name == 'oauthComplete':
+        # The provider finished an auto sign-in: 2.x keeps its credential (T-32 slice 4b).
+        attempt = attempts[body['attemptID']]
+        attempt['status'] = body.get('status', 'complete')
+        if attempt['status'] == 'complete':
+            add_credential(attempt['integration'], 'oauth', 'default', {'type': 'oauth', 'access': 'fixture-oauth-token'})
+        return True
+    if name == 'logins':
+        return {'credentials': credentials, 'cancelled': cancelled}
     if name == 'shell':
         # A shell command run in the session, as 2.x runs one (`!`, T-32 slice 4a): its start and end events, and
         # its message under its start event's ID (core/src/session/message-updater.ts), after the newest message.
@@ -1148,6 +1210,8 @@ class Handler(BaseHTTPRequestHandler):
             parent = query.get('parentID', [None])[0] or cursor_of(query).get('kept', {}).get('parentID')
             listed = [s for s in sessions.values() if parent is None or s.get('parentID') == parent]
             return self.reply(*page(listed, query, {'parentID': parent}))
+        if parts[:2] in (['api', 'integration'], ['api', 'credential']):
+            return self.login(method, parts[1], parts[2:], body or {})
         if len(parts) >= 3 and parts[:2] == ['api', 'session']:
             return self.api_session(method, parts[2], parts[3:], parse_qs(url.query), body)
         if key == ('GET', 'permission'):
@@ -1324,6 +1388,79 @@ class Handler(BaseHTTPRequestHandler):
             go_idle(session)
             return None
         return self.missing('/'.join(rest))
+
+    def login(self, method, group, rest, body):
+        """2.x's integration and credential routes (protocol/src/groups/integration.ts, credential.ts; T-32 slice 4b).
+        A key is kept as given; mode `oauth` names each method's sign-in (`url`, `mode`), completed by control
+        `oauthComplete` (auto) or by its code (code mode); mode `loginRefuse` refuses a key with 400, its answer echoing
+        what it was sent. `GET /api/credential` answers the values, as 2.x's does: Core must never ask."""
+        if group == 'credential':
+            if method == 'GET' and not rest:
+                return self.reply(200, {'data': [dict(c, id=cid) for cid, c in credentials.items()]})
+            if method == 'DELETE' and len(rest) == 1 and rest[0] in credentials:
+                with lock:
+                    credentials.pop(rest[0])
+                return self.reply(204)
+            return self.reply(404, {'_tag': 'CredentialNotFoundError', 'message': 'fixture: no such credential'})
+        if method == 'GET' and not rest:
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_integrations()})
+        if not rest or rest[0] not in {i['id'] for i in v2_integrations()}:
+            return self.reply(404, {'_tag': 'IntegrationNotFoundError', 'message': 'fixture: no such integration'})
+        integration, rest = rest[0], rest[1:]
+        if (method, *rest) in (('POST', 'connect', 'key'), ('POST', 'connect', 'oauth')):
+            kind = rest[1]
+            why = v2_answer_refused(v2_method(integration, kind, body.get('methodID') if kind == 'oauth' else None), body.get('answer'), kind)
+            if why:
+                return self.reply(400, {'_tag': 'AuthorizationError', 'kind': 'integration_authorization', 'message': f'fixture: {why}'})
+        if (method, *rest) == ('POST', 'connect', 'key'):
+            if modes['loginRefuse']:
+                return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'integration_authorization',
+                                        'message': f'fixture: refused {json.dumps(body)}'})
+            add_credential(integration, 'key', body.get('label') or 'default', {'type': 'api', 'key': body.get('key')})
+            return self.reply(204)
+        if (method, *rest) == ('POST', 'connect', 'oauth'):
+            flow = modes['oauth'].get(body.get('methodID'))
+            if flow is None:
+                return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'integration_method', 'message': 'fixture: no such method'})
+            attempt, now = new_id('con'), int(time.time() * 1000)
+            with lock:
+                attempts[attempt] = {'integration': integration, 'method': body.get('methodID'), 'status': 'pending',
+                                     'mode': flow.get('mode', 'auto'), 'answer': body.get('answer'),
+                                     'time': {'created': now, 'expires': now + 600000}}
+            return self.reply(200, {'data': {'attemptID': attempt, 'url': flow['url'], 'mode': flow.get('mode', 'auto'),
+                                             'instructions': flow.get('instructions', 'Enter code ABCD-1234'),
+                                             'time': attempts[attempt]['time']}})
+        if len(rest) >= 3 and rest[:2] == ['connect', 'oauth'] and rest[2] in attempts:
+            attempt = attempts[rest[2]]
+            if (method, *rest[3:]) == ('GET',):
+                if modes['holdOauthStatus']:
+                    # Once: this read of a sign-in waits for `release`, as held reads do.
+                    modes['holdOauthStatus'] = False
+                    waiter = threading.Event()
+                    with lock:
+                        held_reads.append(waiter)
+                    waiter.wait(30)
+                out = {'status': attempt['status'], 'time': attempt['time']}
+                if attempt['status'] == 'failed':
+                    out['message'] = 'fixture: the provider refused it'
+                return self.reply(200, {'data': out})
+            if (method, *rest[3:]) == ('DELETE',):
+                with lock:
+                    attempts.pop(rest[2])
+                    cancelled.append(rest[2])
+                return self.reply(204)
+            if (method, *rest[3:]) == ('POST', 'complete'):
+                if attempt['mode'] != 'code':
+                    # 2.x dies on completing an auto attempt (core/src/integration.ts).
+                    return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: not a code attempt'})
+                if not body.get('code'):
+                    return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'integration_code_required', 'message': 'fixture'})
+                attempt['status'] = 'complete'
+                add_credential(integration, 'oauth', 'default', {'type': 'oauth', 'access': 'fixture-oauth-' + body['code']})
+                return self.reply(204)
+        if len(rest) >= 3 and rest[:2] == ['connect', 'oauth']:
+            return self.reply(404, {'_tag': 'IntegrationAttemptNotFoundError', 'message': 'fixture: no such attempt'})
+        return self.reply(404)
 
     def prompt_v2(self, session, body):
         """As 2.x's prompt (protocol/src/groups/session.ts session.prompt, T-32 slice 4a): its text and files, each a
