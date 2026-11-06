@@ -108,7 +108,8 @@ pub(crate) fn proposal_decider(db: &Connection, agent: &str) -> Result<Option<Op
     }))
 }
 
-fn open(db: &Connection, agent: &str) -> Result<bool> {
+/// Whether `agent` exists and is not closed.
+pub(crate) fn open(db: &Connection, agent: &str) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1 AND json_extract(data,'$.agent.closedAt') IS NULL)",
         [agent],

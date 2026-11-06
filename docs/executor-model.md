@@ -233,8 +233,11 @@ Once an executor's work is accepted, it is released: Core closes it for good.
 - **What it does.** Its runtime stops as on Close, and its slot goes to the
   next executor waiting. Its live Home sections and Asks become its
   dispatcher's, as a claim would make them, so your replies and their
-  resolve go to the dispatcher; one you dispatched keeps them. Each task
-  status proposal it left undecided is mailed to its dispatcher. Its history's close says it was a release, and who
+  resolve go to the dispatcher. One you dispatched keeps them, and so does
+  one whose dispatcher is closed: they stay orphaned, for an editor to
+  claim, and a reply to one is refused, sending nothing, until someone
+  does. Each task status proposal it left undecided is mailed to its
+  dispatcher if that dispatcher is open; otherwise you decide it. Its history's close says it was a release, and who
   made it. The close, the release and the slot are one change: all of it
   happens, or none of it. An executor that was already closed is only marked
   released. Who released is on the executor (`releasedBy`); an executor

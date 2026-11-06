@@ -42,7 +42,7 @@ pub(crate) const REOPEN_REFUSED: &str =
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name":"executor_release",
-        "description":"Release an executor once its work is accepted: Core closes it for good. The Agent that dispatched it from an executor template, a lead of its task's Project, or the user may release it; setting its task done releases it too. While a Job of its runs, its delivery flow is under way or a pull request operation of its is in flight, it is archiving: its CI watches stop, its queued Jobs are held (refused at its close), it starts nothing new, and the answer's archiving.reason says what it waits for; Core closes it once that ends. Its runtime then stops as on Close, its executor slot is freed, its Brief sections go to its dispatcher, and it is never reopened. Its task, dispatch and result stay as they are: releasing does not accept the work, so record that on the task. Refused while Core prepares an update, as Close is. The answer names releasedAt and releasedBy; releasing a released executor answers with the same.",
+        "description":"Release an executor once its work is accepted: Core closes it for good. The Agent that dispatched it from an executor template, a lead of its task's Project, or the user may release it; setting its task done releases it too. While a Job of its runs, its delivery flow is under way or a pull request operation of its is in flight, it is archiving: its CI watches stop, its queued Jobs are held (refused at its close), it starts nothing new, and the answer's archiving.reason says what it waits for; Core closes it once that ends. Its runtime then stops as on Close, its executor slot is freed, its Brief sections go to its dispatcher if that Agent is open, and it is never reopened. Its task, dispatch and result stay as they are: releasing does not accept the work, so record that on the task. Refused while Core prepares an update, as Close is. The answer names releasedAt and releasedBy; releasing a released executor answers with the same.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","agentId"],"properties":{
             "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."},
             "agentId":{"type":"string","minLength":1,"description":"The executor, as peers_list or the task's dispatch names it."}}}
@@ -103,7 +103,7 @@ pub(crate) fn follow_close(db: &Connection, agent: &Agent, kind: &str, data: &Va
              WHERE agent_id=?1 AND kind='executor' AND archived_at IS NULL",
             params![agent.id, at, data["by"].as_str()],
         )?;
-        // Its Brief sections and undecided proposals go to its dispatcher (T-36).
+        // Its Brief sections and undecided proposals go to its dispatcher, if open (T-36).
         if archived > 0 {
             crate::executor_archiving::follow_archive(db, agent)?;
         }

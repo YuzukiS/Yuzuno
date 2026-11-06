@@ -173,7 +173,9 @@ pub(crate) fn refuse_while_archiving(db: &Connection, agent: &str, operation: &s
 /// `follow_close`, or its own for an executor closed before): it is no
 /// longer archiving, its live Brief sections and Asks are the dispatcher's,
 /// as a claim makes them, and the dispatcher is told of each task-status
-/// proposal it left undecided.
+/// proposal it left undecided. A closed dispatcher is handed neither: the
+/// sections stay orphaned, an editor's to claim, and the proposals are the
+/// user's (executor_archive.rs `proposal_decider`).
 pub(crate) fn follow_archive(db: &Connection, agent: &Agent) -> Result<()> {
     db.execute("DELETE FROM executor_archiving WHERE agent_id=?1", [&agent.id])?;
     let row: Option<(Option<String>, Option<String>)> = db
@@ -183,6 +185,10 @@ pub(crate) fn follow_archive(db: &Connection, agent: &Agent) -> Result<()> {
         .optional()?;
     let Some((created_by, task)) = row else { return Ok(()) };
     let Some(dispatcher) = created_by.as_deref().and_then(|by| by.strip_prefix("agent:")) else { return Ok(()) };
+    // It can't answer them, nor reply on Home (#635 R1 2f82a185).
+    if !crate::executor_archive::open(db, dispatcher)? {
+        return Ok(());
+    }
     let name: Option<String> = db
         .query_row("SELECT json_extract(data,'$.agent.name') FROM agents WHERE id=?1", [dispatcher], |r| r.get(0))
         .optional()?
