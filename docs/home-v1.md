@@ -121,6 +121,7 @@ Home 的内容分两类：
 - **目标**：所有 Machine 都通过 SSH 采样，GPU 也采。当前连接的机器有 WSL 本机（RTX 5090，`nvidia-smi` 可用）、Mac mini 和 远端 Linux 主机（WSL 可以直接 SSH）。
   - Mac mini 的 GPU 打算用 `ioreg` 读取，有待验证。
   - 远端 Linux 主机 上，GPU 按卡显示占用率、显存，以及占用它的用户和进程。
+- **本机 GPU**（T-58）：Core 进程里只有一个 GPU 采样器读 GPU，每 5 秒一次：常驻一个 NVML 会话，NVML 不能用时常驻一个 `nvidia-smi -l 5` 进程。Machine Load 和 Jobs 读同一份样本；有读者时启动，10 分钟没人读就停，再读时重启。WSL 里每新启动一次 nvidia-smi（或开关一次 NVML）都会让 Windows 显卡驱动漏内存，直到重启电脑。
 - **区分来源**：其他来源的负载 = 机器总负载 − Yuzuno 的 Agents 和 Jobs 所用的部分。
 - **采样**：Home 打开时每 2 秒一次。开启了"持续记录"的机器，即使 Home 没打开也每 30 秒一次。"持续记录"按机器单独开关，供以后在其他来源负载高时暂缓 Yuzuno 的 Jobs。
 - **保留**：原始数据保留 7 天，之后降采样到每 5 分钟一个点，保留 90 天。
