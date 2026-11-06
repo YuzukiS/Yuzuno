@@ -184,6 +184,8 @@ if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
     if answer in ('405','409'): out(int(answer),{'message':'Pull Request is not mergeable'})
     if answer=='502': out(502,{'message':'Bad gateway'})
+    if answer=='502move':
+        s['main']=s['movedMain']; save(); out(502,{'message':'Bad gateway'})
     m={'sha':s['mergeSha'],'tree':s['mergeTree'],'parents':[s['main'],body['sha']]}
     c[m['sha']]=m; s['main']=m['sha']
     s['pull'].update({'merged':True,'state':'closed','merged_at':'now','merge_commit_sha':m['sha']}); save()
@@ -714,7 +716,11 @@ async fn red_ci_on_a_batch_stops_and_core_removes_the_batch() {
     assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("ci_red")), "red CI on the batch stops the entry: {e}");
     lab.step().await;
     let w = writes(lab.dir.path());
-    assert_eq!(w[3..5], ["PATCH repos/owner/repo/pulls/900", &format!("DELETE repos/owner/repo/git/refs/heads/queue/merge-{}", e["id"].as_str().unwrap())]);
+    assert_eq!(
+        w.get(3..),
+        Some(&["PATCH repos/owner/repo/pulls/900".to_owned(), format!("DELETE repos/owner/repo/git/refs/heads/queue/merge-{}", e["id"].as_str().unwrap())][..]),
+        "Core closes its batch PR and deletes its branch: {w:?}"
+    );
     assert!(!w.iter().any(|w| w.starts_with("PUT")), "nothing merged");
 }
 
@@ -904,6 +910,110 @@ async fn a_merge_interrupted_after_its_journal_is_read_back_before_anything_is_s
     let e = lab.entry().await;
     assert_eq!(e["state"], "merged", "the PR was read back as merged: {e}");
     assert!(writes(lab.dir.path()).is_empty(), "nothing was sent again");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn with_the_switch_off_core_builds_no_batch() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert!(writes(lab.dir.path()).is_empty(), "with the switch off Core builds no batch");
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("the merge queue is off"), "{}", e["detail"]);
+    lab.ws.store.merge_set_enabled(7, true).unwrap();
+    lab.step().await;
+    assert_eq!(writes(lab.dir.path()).len(), 3, "once it is on, the batch is built");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_write_to_a_branch_core_did_not_make_is_refused() {
+    let lab = lab(green());
+    for branch in ["main", "queue/merge-not-an-entry", "feature"] {
+        match super::writes::write(&lab.ws, 7, "owner/repo", super::writes::Write::DeleteBranch { branch }).await {
+            Err(e) => assert!(e.to_string().starts_with("merge_write_refused"), "{branch}: {e}"),
+            Ok(answer) => panic!("Core deleted {branch}, a branch it did not make: {answer:?}"),
+        }
+    }
+    assert!(writes(lab.dir.path()).is_empty(), "nothing reached GitHub");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_uncertain_merge_on_a_main_that_moved_is_checked_again_not_sent_again() {
+    let lab = lab_with(|s| {
+        s["mergeAnswers"] = json!(["502move"]);
+        s["movedMain"] = json!(sha('c'));
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "main moved before a second request could go: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("Main moved"), "{}", e["detail"]);
+    assert_eq!(writes(lab.dir.path()).len(), 1, "no second merge request onto a main CI did not test");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_paused_queue_merges_nothing() {
+    let lab = lab(green());
+    lab.ws.store.merge_set_enabled(7, true).unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "UPDATE merge_repositories SET data=json_set(data,'$.paused',json(?1)) WHERE repository_id=7",
+        [json!({"reason":"post_check_failed","at":"2026-11-06T00:00:00Z","detail":"a test pause","main":sha('b'),"base":"main"}).to_string()],
+    ).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("It waits until a lead or the user unpauses it"), "a paused queue holds the entry at its gate: {}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty(), "a paused queue merges nothing");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_batch_whose_ci_tested_another_merge_stops() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    change(lab.dir.path(), |s| {
+        batch_green(s);
+        s["logs"]["602"] = json!(log(&sha('9')));
+    });
+    let e = lab.step().await;
+    assert_eq!(e["reason"], "checkout_mismatch", "a batch whose CI tested another merge stops: {e}");
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.starts_with("PUT")), "nothing merged");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn one_merge_at_a_time_per_repository() {
+    let lab = lab(green());
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    let mut other = e.clone();
+    other["id"] = json!(uuid::Uuid::new_v4().to_string());
+    other["number"] = json!(12);
+    other["state"] = json!("merging");
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,7,12,'merging',99999999999,?3)",
+        rusqlite::params![other["id"].as_str(), other["taskId"].as_str(), other.to_string()],
+    ).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "another merge of the repository is in flight: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("it merges after #12"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty(), "one merge at a time per repository");
 }
 
 #[test]
