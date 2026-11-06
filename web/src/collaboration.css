@@ -541,6 +541,12 @@
     opacity: 0.4;
   }
 }
+/* Other filters chosen: the cards they replace stay, dimmed and busy, until
+   Core answers for them; that answer's list then fades in as above
+   (CollaborationBoard.tsx, T-19 CB-03). */
+.collab-task-list.is-stale > :is(.collab-cards, .collab-groups, .collab-list-count, .collab-load-more) {
+  opacity: 0.5;
+}
 @keyframes collab-detail-switch {
   from {
     opacity: 0;

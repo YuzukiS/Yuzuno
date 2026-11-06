@@ -107,6 +107,14 @@ export function GroupedAgents({
     reveal.current = null;
     fold(key, false);
   });
+  // A search opens every group at once, and its end folds them back at
+  // once: a fold played on every keystroke is motion no one asked for
+  // (T-19 PG-03). Folding by hand plays as before.
+  const searched = useRef(searching);
+  const instant = searching || searched.current !== searching;
+  useEffect(() => {
+    searched.current = searching;
+  });
   return (
     <>
       {groups.map((group) => {
@@ -117,6 +125,7 @@ export function GroupedAgents({
             group={group}
             style={style}
             folded={isFolded}
+            instant={instant}
             onToggle={() => fold(group.key, !isFolded)}
             onCreate={() => onCreate(group.projectId)}
           >
@@ -166,6 +175,7 @@ function GroupSection({
   group,
   style,
   folded,
+  instant,
   onToggle,
   onCreate,
   children,
@@ -173,6 +183,8 @@ function GroupSection({
   group: ProjectGroup;
   style: Exclude<ProjectGroupStyle, "none">;
   folded: boolean;
+  /** Folds or opens without its transition (a search's start or end). */
+  instant: boolean;
   onToggle: () => void;
   onCreate: () => void;
   children: ReactNode;
@@ -185,7 +197,7 @@ function GroupSection({
   const [toggle, stacked] = useStacked(marked ? `${summary.needs}/${summary.working}/${summary.unread}` : null);
   return (
     <section
-      className={`project-group project-group-${style}${group.projectId ? "" : " is-unassigned"}${folded ? " is-folded" : ""}`}
+      className={`project-group project-group-${style}${group.projectId ? "" : " is-unassigned"}${folded ? " is-folded" : ""}${instant ? " is-instant" : ""}`}
       style={group.colour ? ({ "--project": group.colour } as CSSProperties) : undefined}
       aria-label={group.name}
       data-group={group.key}
