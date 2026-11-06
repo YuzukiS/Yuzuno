@@ -211,6 +211,8 @@ test("Home's Needs you lists the executor you dispatched, never a lead's, and it
   const p = await mount();
   try {
     const rows = () => [...p.doc.querySelectorAll(".home-needs-item")];
+    // Home is the toolbar's first view; its count says one waits.
+    p.doc.querySelector(".toolbar-nav button").click();
     await waitFor(() => rows().length > 0, "Needs you");
     const mine = rows().find((r) => r.dataset.needsYou === "executor:d:delivering");
     assert.ok(mine, "the executor you dispatched is listed");
