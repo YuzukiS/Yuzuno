@@ -15,7 +15,7 @@
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
+use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
 use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
 use yuzuno_workspace::store::whole::WholeRecord;
 
@@ -789,4 +789,136 @@ async fn a_real_opencode_2x_reaches_the_workspace_mcp_through_cores_send_path() 
         println!("probe: files holding the bearer below {}: {}", place.display(), found.len());
         assert!(found.is_empty(), "the bearer is kept in {found:?}");
     }
+}
+
+/// The events of `session` until one of `kind`, or until its run ends, or
+/// `secs` go by: what was seen, and whether `kind` came.
+async fn until_kind(events: &mut Events, session: &str, kinds: &[&str], secs: u64) -> (Vec<Value>, bool) {
+    let mut seen = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(secs), async {
+        loop {
+            let event = events.next().await.unwrap().expect("the stream ended");
+            if session_of(&event) != Some(session) {
+                continue;
+            }
+            let hit = event["type"].as_str().is_some_and(|t| kinds.contains(&t));
+            seen.push(event);
+            if hit {
+                return;
+            }
+        }
+    }).await;
+    (seen, found.is_ok())
+}
+
+const ENDS: [&str; 3] = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"];
+
+fn types(seen: &[Value]) -> Vec<String> {
+    seen.iter().map(|e| e["type"].as_str().unwrap_or_default().to_owned()).collect()
+}
+
+/// T-61 slice 2, D-7 first (Lead 6921): a real OpenCode 2.x takes Core's
+/// answers to its own permission requests and forms, by 2.x's routes, and
+/// says how a run ends once one of them was refused (a reject, a declined
+/// form): its end's type and reason are printed for D-7, with what a whole
+/// read and the active list then show. A request named through another
+/// session is refused and stays pending; an answer a form can't take is
+/// refused and the form stays pending.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_takes_answers_to_its_requests_and_says_how_a_refused_ones_run_ends() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(directory.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"}, "models": {"fake": {"name": "Fake", "capabilities": {"tools": true}}}}},
+        "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}).to_string()).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let models = server.models().await.unwrap();
+    let model = models.iter().find(|m| m.id() == "stub/fake").cloned().expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    let other = server.create_session("other").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let ask = |prompt: &'static str| { let (server, session) = (&server, session.clone()); async move {
+        assert_eq!(server.submit(&session, &MessageId::new(), prompt).await.unwrap(), Submission::Accepted);
+    } };
+    let tool_results = || -> Vec<String> { std::fs::read_to_string(&log).unwrap_or_default().lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .flat_map(|r| r["messages"].as_array().cloned().unwrap_or_default())
+        .filter(|m| m["role"] == "tool").map(|m| m["content"].to_string()).collect() };
+
+    // A and G: a permission request; named through another session it is refused and stays pending; allowed once, its tool runs.
+    ask("probe-4a ask").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["permission.asked"], 30).await;
+    assert!(asked, "no permission.asked within 30 s: {:?}", types(&seen));
+    let request = seen.last().unwrap()["data"].clone();
+    println!("probe: A asked {request}");
+    let id = request["id"].as_str().unwrap().to_owned();
+    let wrong = server.reply_permission(&other, &id, Reply::Once).await.unwrap_err();
+    println!("probe: G an answer through another session: {wrong}");
+    assert!(matches!(wrong.downcast_ref::<RequestRefused>(), Some(RequestRefused::Gone { code: 404, .. })), "refused as gone: {wrong}");
+    assert_eq!(server.snapshot(&session, &[]).await.unwrap().permissions.len(), 1, "still pending in its own session");
+    server.reply_permission(&session, &id, Reply::Once).await.expect("allowed once: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: A after once {:?}", types(&run));
+    assert!(done && run.last().unwrap()["type"] == "session.execution.succeeded", "the run goes on and succeeds");
+    assert!(run.iter().any(|e| e["type"] == "permission.replied" && e["data"]["requestID"] == id.as_str()), "permission.replied names it");
+    assert!(tool_results().iter().any(|t| t.contains("probe-4a")), "the shell ran and its output reached the model");
+
+    // B: a permission request rejected: how its run ends (D-7).
+    ask("probe-4a ask").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["permission.asked"], 30).await;
+    assert!(asked, "no second permission.asked: {:?}", types(&seen));
+    let id = seen.last().unwrap()["data"]["id"].as_str().unwrap().to_owned();
+    server.reply_permission(&session, &id, Reply::Reject).await.expect("rejected: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: B after a reject {:?}", types(&run));
+    println!("probe: B the run's end {}", if done { run.last().unwrap().to_string() } else { "none within 60 s".into() });
+    println!("probe: B status {}, active {}", server.session_status(&session).await.unwrap(), server.snapshot(&session, &[]).await.unwrap().status);
+    let read = server.snapshot(&session, &[]).await.unwrap();
+    let last = read.messages.as_array().and_then(|m| m.last()).cloned().unwrap_or_default();
+    println!("probe: B the whole read's last message: type {} {}", last["type"], last["error"]);
+
+    // D: a form answered by its field's key.
+    ask("probe-4a form").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["form.created"], 30).await;
+    assert!(asked, "no form.created: {:?}", types(&seen));
+    let form = seen.last().unwrap()["data"]["form"].clone();
+    println!("probe: D form {form}");
+    let (form_id, key) = (form["id"].as_str().unwrap().to_owned(), form["fields"][0]["key"].as_str().unwrap().to_owned());
+    server.reply_form(&session, &form_id, &json!({key.clone(): "A"})).await.expect("answered: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: D after the answer {:?}", types(&run));
+    assert!(done && run.last().unwrap()["type"] == "session.execution.succeeded", "the run goes on and succeeds");
+    assert!(run.iter().any(|e| e["type"] == "form.replied" && e["data"]["id"] == form_id.as_str()), "form.replied names it");
+    println!("probe: D the question tool's result {:?}", tool_results().last());
+
+    // F: an answer the form can't take is refused and the form stays pending; then it is declined: how its run ends (D-7).
+    ask("probe-4a form").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["form.created"], 30).await;
+    assert!(asked, "no second form.created: {:?}", types(&seen));
+    let form_id = seen.last().unwrap()["data"]["form"]["id"].as_str().unwrap().to_owned();
+    let invalid = server.reply_form(&session, &form_id, &json!({"q9": "x"})).await.unwrap_err();
+    println!("probe: F an answer it can't take: {invalid}");
+    assert!(matches!(invalid.downcast_ref::<RequestRefused>(), Some(RequestRefused::Invalid { .. })), "refused as invalid: {invalid}");
+    assert_eq!(server.snapshot(&session, &[]).await.unwrap().questions.len(), 1, "the form stays pending");
+    server.cancel_form(&session, &form_id).await.expect("declined: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: F after a decline {:?}", types(&run));
+    println!("probe: F the run's end {}", if done { run.last().unwrap().to_string() } else { "none within 60 s".into() });
+    let read = server.snapshot(&session, &[]).await.unwrap();
+    let last = read.messages.as_array().and_then(|m| m.last()).cloned().unwrap_or_default();
+    println!("probe: F status {}; the whole read's last message: type {} {}", read.status, last["type"], last["error"]);
+
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
+    stub.kill().ok();
+    stub.wait().ok();
 }
