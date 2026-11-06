@@ -3,9 +3,10 @@ use std::path::Path;
 
 const GPU0: &str = "GPU-00000000-1111-2222-3333-444444444444";
 
-/// A stand-in nvidia-smi: its rows every `-l` seconds or `-lms`
-/// milliseconds, the second device's name holding a comma and its values
-/// unknown; each start noted in `starts` beside it. `mode` beside it: `once`
+/// A stand-in nvidia-smi: a burst of two rows every `-l` seconds or `-lms`
+/// milliseconds, each saying there are two, 30 ms apart (so a reading kept
+/// row by row would be seen half), the second device's name holding a comma
+/// and its values unknown; each start noted in `starts` beside it. `mode` beside it: `once`
 /// prints once and exits, `silent` exits at once with nothing.
 fn stub(dir: &Path) -> PathBuf {
     let path = dir.join("nvidia-smi");
@@ -21,8 +22,9 @@ mode=$(cat "$here/mode" 2>/dev/null)
 [ "$mode" = silent ] && exit 3
 n=0
 while :; do
-  printf '0, {GPU0}, Stub GPU, 32607, 16000, 16607, %s\n' $((n % 100))
-  printf '1, GPU-55555555-6666-7777-8888-999999999999, Stub, Second, 16376, [N/A], [N/A], [N/A]\n'
+  printf '2, 0, {GPU0}, Stub GPU, 32607, 16000, 16607, %s\n' $((n % 100))
+  sleep 0.03
+  printf '2, 1, GPU-55555555-6666-7777-8888-999999999999, Stub, Second, 16376, [N/A], [N/A], [N/A]\n'
   n=$((n + 1))
   [ "$mode" = once ] && exit 0
   sleep "$every"
@@ -49,24 +51,27 @@ fn alive(pid: &str) -> bool {
 
 const WAIT: Duration = Duration::from_secs(2);
 
-/// nvidia-smi's rows, read from both ends: a name may hold a comma, and
-/// `[N/A]` is unknown, not zero.
+/// nvidia-smi's rows, read from both ends: how many devices the burst has,
+/// a name that may hold a comma, and `[N/A]` as unknown, not zero.
 #[test]
 fn a_row_is_read_from_both_ends_and_n_a_is_unknown() {
-    assert_eq!(parse_row(&format!("0, {GPU0}, NVIDIA GeForce RTX 5090, 32607, 16972, 15215, 15")), Some(Device {
+    assert_eq!(parse_row(&format!("1, 0, {GPU0}, NVIDIA GeForce RTX 5090, 32607, 16972, 15215, 15")), Some((1, Device {
         index: 0, uuid: GPU0.into(), name: "NVIDIA GeForce RTX 5090".into(), memory_total_mib: Some(32607),
-        memory_free_mib: Some(16972), memory_used_mib: Some(15215), utilization_percent: Some(15) }));
-    let odd = parse_row("1, GPU-5, Stub, Second, 16376, [N/A], [N/A], [N/A]").unwrap();
+        memory_free_mib: Some(16972), memory_used_mib: Some(15215), utilization_percent: Some(15) })));
+    let (count, odd) = parse_row("2, 1, GPU-5, Stub, Second, 16376, [N/A], [N/A], [N/A]").unwrap();
+    assert_eq!(count, 2);
     assert_eq!(odd.name, "Stub, Second");
     assert_eq!((odd.memory_total_mib, odd.memory_free_mib, odd.memory_used_mib, odd.utilization_percent),
         (Some(16376), None, None, None), "[N/A] is unknown, not zero");
-    for bad in ["", "x, y", "0, GPU-0, 1, 2, 3, 4"] {
+    for bad in ["", "x, y", "1, 0, GPU-0, 1, 2, 3, 4", "0, GPU-0, Name, 1, 2, 3, 4"] {
         assert_eq!(parse_row(bad), None, "{bad:?}");
     }
 }
 
 /// Every read, however many and from whichever reader, shares one session
-/// and its one nvidia-smi child (T-58): no new process per read.
+/// and its one nvidia-smi child (T-58): no new process per read. Each reading
+/// is a whole burst, every device in it (PR CI 42171082428 found readings
+/// kept row by row).
 #[tokio::test]
 async fn every_read_shares_one_session_and_one_child() {
     let dir = tempfile::tempdir().unwrap();
@@ -74,7 +79,7 @@ async fn every_read_shares_one_session_and_one_child() {
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..60 {
         let sample = sampler.latest(WAIT).await.expect("a reading");
-        assert!(sample.source == "nvidia-smi" && !sample.devices.is_empty(), "{sample:?}");
+        assert_eq!((sample.source, sample.devices.len()), ("nvidia-smi", 2), "each reading is a whole burst, every device in it");
         seen.insert(sample.observed_at);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

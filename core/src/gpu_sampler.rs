@@ -401,7 +401,7 @@ fn start_smi(config: &Config) -> Result<(Child, PathBuf), String> {
     let mut errors = Vec::new();
     for program in &config.smi {
         let mut command = Command::new(program);
-        command.args(["--query-gpu=index,uuid,name,memory.total,memory.free,memory.used,utilization.gpu", "--format=csv,noheader,nounits"])
+        command.args(["--query-gpu=count,index,uuid,name,memory.total,memory.free,memory.used,utilization.gpu", "--format=csv,noheader,nounits"])
             .args(&every)
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
         #[cfg(target_os = "linux")]
@@ -423,9 +423,10 @@ fn start_smi(config: &Config) -> Result<(Child, PathBuf), String> {
     Err(if errors.is_empty() { "none configured".to_owned() } else { errors.join("; ") })
 }
 
-/// Reads the child's rows as it prints them, each a device's latest, until
-/// nothing has read the sampler for `idle`, the sampler is gone, or the
-/// child exits.
+/// Reads the child's rows as it prints them until nothing has read the
+/// sampler for `idle`, the sampler is gone, or the child exits. Each interval
+/// it prints one row per device, and each row says how many devices there
+/// are: a burst is kept whole, as one reading, once its last row is in.
 fn sample_smi(inner: &Inner, config: &Config, mut child: Child) -> Ended {
     let pid = child.id();
     let Some(stdout) = child.stdout.take() else {
@@ -433,13 +434,17 @@ fn sample_smi(inner: &Inner, config: &Config, mut child: Child) -> Ended {
         let _ = child.wait();
         return Ended::Unavailable("its output could not be read".into());
     };
-    let mut devices: BTreeMap<u32, Device> = BTreeMap::new();
+    let mut burst: BTreeMap<u32, Device> = BTreeMap::new();
+    let mut sampled = false;
     let mut ended = None;
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
-        if let Some(device) = parse_row(&line) {
-            devices.insert(device.index, device);
-            inner.sample.send_replace(Some(Sample::new("nvidia-smi", devices.values().cloned().collect(), None)));
+        if let Some((count, device)) = parse_row(&line) {
+            burst.insert(device.index, device);
+            if burst.len() >= count as usize {
+                inner.sample.send_replace(Some(Sample::new("nvidia-smi", std::mem::take(&mut burst).into_values().collect(), None)));
+                sampled = true;
+            }
         }
         let shared = inner.shared.lock().unwrap();
         if shared.stopping {
@@ -459,7 +464,7 @@ fn sample_smi(inner: &Inner, config: &Config, mut child: Child) -> Ended {
     }
     ended.unwrap_or_else(|| {
         let exited = status.map_or_else(|error| error.to_string(), |status| status.to_string());
-        if devices.is_empty() { Ended::Unavailable(format!("exited ({exited}) with no reading")) } else { Ended::Failed(format!("nvidia-smi exited ({exited})")) }
+        if sampled { Ended::Failed(format!("nvidia-smi exited ({exited})")) } else { Ended::Unavailable(format!("exited ({exited}) with no reading")) }
     })
 }
 
@@ -474,11 +479,13 @@ fn end(pid: u32) {
     let _ = pid;
 }
 
-/// One `index, uuid, name, memory.total, memory.free, memory.used,
-/// utilization.gpu` row (`--format=csv,noheader,nounits`). A name may hold a
-/// comma, so the fields are taken from both ends. `[N/A]` is None.
-pub fn parse_row(line: &str) -> Option<Device> {
-    let mut left = line.splitn(3, ',').map(str::trim);
+/// One `count, index, uuid, name, memory.total, memory.free, memory.used,
+/// utilization.gpu` row (`--format=csv,noheader,nounits`): how many devices
+/// its burst has, and this one. A name may hold a comma, so the fields are
+/// taken from both ends. `[N/A]` is None.
+pub fn parse_row(line: &str) -> Option<(u32, Device)> {
+    let mut left = line.splitn(4, ',').map(str::trim);
+    let count = left.next()?.parse().ok()?;
     let index = left.next()?.parse().ok()?;
     let uuid = left.next()?.to_owned();
     let mut right = left.next()?.rsplitn(5, ',').map(str::trim);
@@ -488,8 +495,8 @@ pub fn parse_row(line: &str) -> Option<Device> {
     let free = number(right.next()?);
     let total = number(right.next()?);
     let name = right.next()?.to_owned();
-    (!uuid.is_empty() && !name.is_empty()).then_some(Device { index, uuid, name, memory_total_mib: total, memory_free_mib: free,
-        memory_used_mib: used, utilization_percent: utilization })
+    (!uuid.is_empty() && !name.is_empty()).then_some((count, Device { index, uuid, name, memory_total_mib: total, memory_free_mib: free,
+        memory_used_mib: used, utilization_percent: utilization }))
 }
 
 /// NVML through `dlopen`, with no binding crate (D1, Lead 6032). The
