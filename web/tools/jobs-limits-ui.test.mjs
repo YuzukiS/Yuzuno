@@ -80,6 +80,8 @@ function mount() {
   const control = (l) => (l?.htmlFor ? window.document.getElementById(l.htmlFor) : l?.querySelector("input"));
   return {
     window, document: window.document, calls, errors, answers,
+    // What was sent: an SSH machine's editor also reads its executor limit (T-35 S3).
+    writes: () => calls.filter((c) => c.method !== "GET"),
     button: (text) => [...window.document.querySelectorAll("button")].find((b) => b.textContent.trim() === text),
     input: (text) => control(label(text)),
     select: (text) => label(text)?.querySelector("select"),
@@ -195,7 +197,9 @@ test("an SSH machine's Jobs settings start from what is saved and only a changed
     page.answers.push([200, { ...mini, defaultCwd: "/Users/me/work" }]);
     page.button("Save changes").click();
     await until(() => saved.length === 1);
-    assert.deepEqual(page.calls[0], {
+    assert.deepEqual(page.calls.filter((c) => c.method === "GET").map((c) => c.url), ["/api/executor-slots"],
+      "opening the editor reads its executor limit and nothing else");
+    assert.deepEqual(page.writes()[0], {
       url: "/api/machines/mini", method: "PUT",
       body: { name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/me/work" },
     });
@@ -207,7 +211,7 @@ test("an SSH machine's Jobs settings start from what is saved and only a changed
     await pause();
     page.button("Save changes").click();
     await until(() => saved.length === 2);
-    assert.deepEqual(page.calls[1].body, {
+    assert.deepEqual(page.writes()[1].body, {
       name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/me/work",
       maxJobs: null, budget: null, limitMode: "strict",
     });
@@ -217,7 +221,7 @@ test("an SSH machine's Jobs settings start from what is saved and only a changed
     assert.match(page.document.body.textContent, /Jobs there run as they did before limits: their CPU and RAM are recorded, not held/);
     page.button("Save changes").click();
     await until(() => saved.length === 3);
-    assert.deepEqual(page.calls[2].body.limitMode, null);
+    assert.deepEqual(page.writes()[2].body.limitMode, null);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -236,7 +240,7 @@ test("a machine saved before limits shows the record-only mode it keeps until it
     await pause();
     page.button("Save changes").click();
     await until(() => saved.length === 1);
-    assert.equal("limitMode" in page.calls[0].body, false, JSON.stringify(page.calls[0].body));
+    assert.equal("limitMode" in page.writes()[0].body, false, JSON.stringify(page.writes()[0].body));
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

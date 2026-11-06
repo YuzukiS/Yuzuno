@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Plus, Server } from "lucide-react";
 import { api, errorText, post } from "./api";
+import { saveMachineSlots } from "./executor-slots";
 import { strings, type Language } from "./i18n";
+import { machineLimitText, parseMachineLimit, useMachineLimit, versionConflict } from "./MachineExecutorLimit";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./remote.css";
 
@@ -77,6 +79,7 @@ export function MachineEditor({
   machine,
   disabled = false,
   onSaved,
+  onMachineSaved,
   onCancel,
   onBusyChange,
   language = "en",
@@ -86,7 +89,11 @@ export function MachineEditor({
   /** The machine to edit; without one, a new machine is added. */
   machine?: WorkspaceMachine;
   disabled?: boolean;
+  /** Both the machine and its executor limit are saved. */
   onSaved: (saved: WorkspaceMachine) => void;
+  /** The machine is saved but its executor limit is not: the editor stays
+   * open with the error, now editing this machine (T-35 S3c). */
+  onMachineSaved?: (saved: WorkspaceMachine) => void;
   onCancel: () => void;
   onBusyChange?: (busy: boolean) => void;
   /** The language of its own words; English where a page doesn't pass one. */
@@ -113,6 +120,17 @@ export function MachineEditor({
   const [cpu, setCpu] = useState(jobs.cpu);
   const [memory, setMemory] = useState(jobs.memory);
   const [mode, setMode] = useState(jobs.mode);
+  // Once Core has added it, this editor edits that machine: a save whose
+  // executor limit failed is finished here, never added twice (#645 R1).
+  const [created, setCreated] = useState<WorkspaceMachine | null>(null);
+  const current = created ?? machine;
+  // Its own limit on executors at once (T-35 S3), saved through its own
+  // route after the machine; untouched, the field shows what is saved.
+  const executorText = machineLimitText(language);
+  const executorLimit = useMachineLimit(current?.id, true);
+  const [executors, setExecutors] = useState<string | null>(null);
+  const savedExecutors = executorLimit.limit?.slots ?? null;
+  const executorsShown = executors ?? (savedExecutors === null ? "" : String(savedExecutors));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => onBusyChange?.(saving), [saving, onBusyChange]);
@@ -132,6 +150,11 @@ export function MachineEditor({
       setError(t.budgetPair);
       return;
     }
+    const executorSlots = parseMachineLimit(executorsShown, executorLimit.max);
+    if (executorSlots === undefined) {
+      setError(executorText.range(1, executorLimit.max));
+      return;
+    }
     setSaving(true);
     setError("");
     // Only a Jobs setting changed here is sent: Core keeps one left out and
@@ -149,12 +172,27 @@ export function MachineEditor({
       ...(mode !== jobs.mode ? { limitMode: mode === "legacy" ? null : mode } : {}),
     };
     try {
-      const saved = machine
+      const saved = current
         ? await api<WorkspaceMachine>(
-            `/machines/${encodeURIComponent(machine.id)}`,
+            `/machines/${encodeURIComponent(current.id)}`,
             { method: "PUT", body: JSON.stringify(body) },
           )
         : await post<WorkspaceMachine>("/machines", body);
+      if (!current) setCreated(saved);
+      // Its executor limit, once it has its id; a changed one only.
+      if (executorSlots !== savedExecutors) {
+        try {
+          await saveMachineSlots(saved.id, executorLimit.limit?.version ?? 0, executorSlots);
+        } catch (e) {
+          // Said here, with the value kept: on a conflict only the limit
+          // and its version are read again, and Save sends it again.
+          setError(executorText.notSaved(versionConflict(e) ? executorText.conflict : errorText(e)));
+          if (versionConflict(e)) executorLimit.reload();
+          setSaving(false);
+          onMachineSaved?.(saved);
+          return;
+        }
+      }
       setSaving(false);
       onSaved(saved);
     } catch (e) {
@@ -167,10 +205,10 @@ export function MachineEditor({
     <div id={id} className="remote-machine-editor create-form remote-create">
       <div className="remote-editor-heading">
         <Server size={17} />
-        <strong>{machine ? t.editTitle(machine.name) : t.addTitle}</strong>
+        <strong>{current ? t.editTitle(current.name) : t.addTitle}</strong>
       </div>
       <p className="remote-field-note">
-        {machine ? t.editNote : t.addNote}
+        {current ? t.editNote : t.addNote}
       </p>
       <label>
         {t.name}
@@ -264,6 +302,20 @@ export function MachineEditor({
           <span className="field-hint">{t.legacyHint}</span>
         )}
       </label>
+      <label>
+        {executorText.title}
+        <input
+          type="number"
+          min={1}
+          max={executorLimit.max}
+          step="1"
+          aria-label={executorText.title}
+          value={executorsShown}
+          onChange={(e) => setExecutors(e.target.value)}
+          placeholder={executorText.placeholder}
+        />
+        <span className="field-hint">{executorLimit.readError || executorText.help}</span>
+      </label>
       {error && (
         <p role="alert" className="remote-field-error">
           {error}
@@ -287,9 +339,9 @@ export function MachineEditor({
           {saving ? (
             <LoaderCircle size={14} className="spin" />
           ) : (
-            !machine && <Plus size={14} />
+            !current && <Plus size={14} />
           )}
-          {machine ? t.saveChanges : t.saveMachine}
+          {current ? t.saveChanges : t.saveMachine}
         </button>
       </div>
     </div>

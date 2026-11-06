@@ -23,6 +23,7 @@ import {
   type MachineCheck,
 } from "./machine-checks";
 import { MachineEditor } from "./MachineEditor";
+import { MachineExecutorLimit } from "./MachineExecutorLimit";
 import { strings, useLanguage, type Language } from "./i18n";
 import { shellText } from "./shell-text";
 import { machineIdOf, projectName } from "./projects";
@@ -234,6 +235,12 @@ const text = strings({
   footnote: "Agent 的状态来自它们自己的会话，而非这些检查。较早的检查不代表机器已离线，找到 CLI 也不代表已登录。",
 });
 
+/** The list with this machine as Core saved it: replaced, or added once. */
+const withMachine = (list: WorkspaceMachine[] | null, saved: WorkspaceMachine) =>
+  (list || []).some((m) => m.id === saved.id)
+    ? (list || []).map((m) => (m.id === saved.id ? saved : m))
+    : [...(list || []), saved];
+
 export function MachinesPage({
   open,
   onOpenChange,
@@ -344,8 +351,11 @@ export function MachinesPage({
             id="machines-new-ssh"
             language={language}
             onCancel={() => setChange(null)}
+            // Listed once Core has it, even while its executor limit is still
+            // to be saved from the open form (T-35 S3c).
+            onMachineSaved={(saved) => setMachines((list) => withMachine(list, saved))}
             onSaved={(saved) => {
-              setMachines((list) => [...(list || []), saved]);
+              setMachines((list) => withMachine(list, saved));
               setChange(null);
             }}
           />
@@ -490,6 +500,7 @@ export function MachinesPage({
                   machine={machine}
                   language={language}
                   onCancel={() => setChange(null)}
+                  onMachineSaved={(saved) => setMachines((list) => withMachine(list, saved))}
                   onSaved={(saved) => {
                     setChange(null);
                     // What Core saved shows at once, as for an added machine,
@@ -530,6 +541,8 @@ export function MachinesPage({
                   </div>
                 )}
               </dl>
+              {/* The Core host has no editor: its own executor limit is set here (T-35 S3). */}
+              {machine.kind === "local" && <MachineExecutorLimit machineId="local" language={language} />}
               <section
                 className="machine-agents"
                 aria-label={t.agentsOn(machine.name)}
