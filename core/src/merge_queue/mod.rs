@@ -121,10 +121,18 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         let mut merged = None;
         match entry["state"].as_str() {
             Some("queued" | "waiting" | "ready") => {
+                // Read again: a check earlier in this pass that ended a pause,
+                // or an unpause, may have re-anchored it since merge_due.
+                let key = id.clone();
+                let entry = ws.stored(move |s| s.merge_entry(&key)).await?;
+                if entry["attempt"].as_i64() != Some(attempt) || !matches!(entry["state"].as_str(), Some("queued" | "waiting" | "ready")) {
+                    continue;
+                }
+                let checked_from = store::anchor(&entry);
                 let outcome = remote::check(ws, &entry).await.map_err(|e| format!("{e:#}"));
                 let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await.unwrap_or(0);
                 let key = id.clone();
-                let recorded = ws.stored(move |s| s.merge_record(&key, attempt, outcome, cooldown)).await?;
+                let recorded = ws.stored(move |s| s.merge_record(&key, attempt, &checked_from, outcome, cooldown)).await?;
                 announced |= recorded.announced;
                 merging = recorded.merge;
             }
@@ -208,6 +216,12 @@ pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, 
         "merge_unpause" => {
             let i: Unpause = serde_json::from_value(input)?;
             request_key(&i.request_id)?;
+            // A retry with the same requestId gets the first answer back, before
+            // the precondition (the queue is no longer paused) or any GitHub read.
+            let (who, key, reason) = (actor.clone(), i.request_id.clone(), i.reason.clone());
+            if let Some(answer) = ws.stored(move |s| s.merge_unpause_receipt(who.as_deref(), i.repository_id, &key, reason.as_deref())).await? {
+                return Ok(answer);
+            }
             let who = actor.clone();
             let (repo, base) = ws.stored(move |s| s.merge_unpause_allowed(who.as_deref(), i.repository_id)).await?;
             let main = remote::main_now(&ws, &repo, &base).await?;

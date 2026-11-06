@@ -201,7 +201,12 @@ if method!='GET': out(404,{})
 if path=='pulls/11':
     q=s.get('pullQueue') or []
     d=q.pop(0) if q else s['pull']
-    save(); out(200,d)
+    slow=s.pop('slowPull',None)
+    save()
+    if slow:
+        p.with_name('pull-started').write_text('1'); time.sleep(2)
+    out(200,d)
+if path=='pulls/12' and s.get('pull12'): out(200,s['pull12'])
 if path.startswith('pulls/') and path.split('/')[1] in s['pulls']: out(200,s['pulls'][path.split('/')[1]])
 if path.startswith('git/ref/heads/queue/'):
     name=path[len('git/ref/heads/'):]
@@ -505,7 +510,7 @@ async fn retry_belongs_to_the_releaser_and_a_late_check_is_dropped() {
     change(lab.dir.path(), |s| s["runs"][1]["conclusion"] = json!("success"));
     let retried = lab.ws.collaboration_call(Some("lead"), "merge_retry", json!({"requestId":"t1","entryId":id})).await.unwrap();
     assert_eq!(retried["state"], "queued");
-    let late = lab.ws.store.merge_record(&id, retried["attempt"].as_i64().unwrap() - 1, Ok((json!({}), Ok(()))), 0).unwrap();
+    let late = lab.ws.store.merge_record(&id, retried["attempt"].as_i64().unwrap() - 1, &store::anchor(&retried), Ok((json!({}), Ok(()))), 0).unwrap();
     assert!(late.merge.is_none() && !late.announced, "a check that began before the retry changes nothing");
     assert_eq!(lab.entry().await["state"], "queued", "a check that began before the retry changes nothing");
     tick(&lab.ws).await.unwrap();
@@ -525,7 +530,7 @@ async fn cancel_belongs_to_the_releaser_and_a_late_check_is_dropped() {
     tick(&lab.ws).await.unwrap();
     let cancelled = lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c1","entryId":id})).await.unwrap();
     assert_eq!(cancelled["state"], "cancelled");
-    let late = lab.ws.store.merge_record(&id, cancelled["attempt"].as_i64().unwrap() - 1, Ok((json!({}), Ok(()))), 0).unwrap();
+    let late = lab.ws.store.merge_record(&id, cancelled["attempt"].as_i64().unwrap() - 1, &store::anchor(&cancelled), Ok((json!({}), Ok(()))), 0).unwrap();
     assert!(late.merge.is_none(), "a check that began before the cancel changes nothing");
     assert_eq!(lab.entry().await["state"], "cancelled");
     lab.step().await;
@@ -598,6 +603,121 @@ async fn an_entry_waiting_through_a_red_main_pause_proceeds_once_a_newer_main_is
     assert_eq!(r["pauses"].as_array().map(Vec::len), Some(1), "one journal line for the pause and what ended it: {r}");
     assert_eq!(r["pauses"][0]["clearedBy"]["by"], "a newer green main");
     assert_eq!(e["mainAtRelease"], sha('c'), "the entry counts main CI from the main that ended the pause");
+}
+
+/// Main went red at b after the release and the queue paused there; then
+/// main moved on to c, whose CI is green. Runs come newest first.
+fn red_then_green(s: &mut Value, at: &str) {
+    s["commits"][sha('b')] = json!({"sha":sha('b'),"tree":sha('6'),"parents":[main_sha()]});
+    let red = json!({"id":91,"name":"CI","head_sha":sha('b'),"status":"completed","conclusion":"failure","created_at":at});
+    s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    move_main(s, sha('c'), sha('d'));
+    let green = json!({"id":92,"name":"CI","head_sha":sha('c'),"status":"completed","conclusion":"success","created_at":at});
+    s["mainRuns"].as_array_mut().unwrap().insert(0, green);
+}
+#[cfg(unix)]
+fn pause_at_b(lab: &Lab, at: &str) {
+    lab.ws.store.db.write().unwrap().execute(
+        "UPDATE merge_repositories SET data=json_set(data,'$.paused',json(?1)) WHERE repository_id=7",
+        [json!({"reason":"main_red","at":at,"detail":"Main CI run 91 concluded failure","main":sha('b'),"base":"main"}).to_string()],
+    ).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pause_one_entry_ends_reanchors_the_next_entry_before_its_check_in_the_same_pass() {
+    let lab = lab(green());
+    let first = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    // A second entry of the repository, #12, released at the same main.
+    let second = {
+        let db = lab.ws.store.db.read().unwrap();
+        let mut w: Value = serde_json::from_str(&db.query_row("SELECT data FROM merge_entries", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        w["id"] = json!(uuid::Uuid::new_v4().to_string());
+        w["entryId"] = w["id"].clone();
+        w["number"] = json!(12);
+        w["url"] = json!("https://github.com/owner/repo/pull/12");
+        w
+    };
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,7,12,'queued',0,?3)",
+        rusqlite::params![second["id"].as_str(), second["taskId"].as_str(), second.to_string()],
+    ).unwrap();
+    let second = second["id"].as_str().unwrap().to_owned();
+    let after = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        let mut pull12 = s["pull"].clone();
+        pull12["number"] = json!(12);
+        s["pull12"] = pull12;
+        s["commits"][sha('b')] = json!({"sha":sha('b'),"tree":sha('6'),"parents":[main_sha()]});
+        s["main"] = json!(sha('b'));
+        let red = json!({"id":91,"name":"CI","head_sha":sha('b'),"status":"completed","conclusion":"failure","created_at":after});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    pause_at_b(&lab, &after);
+    tick(&lab.ws).await.unwrap();
+    let get = |id: &str| lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id}));
+    assert_eq!(get(&second).await.unwrap()["state"], "waiting", "both entries wait at the pause");
+    // Main moves on to c with green CI: the first entry's check ends the pause.
+    change(lab.dir.path(), |s| {
+        move_main(s, sha('c'), sha('d'));
+        let green = json!({"id":92,"name":"CI","head_sha":sha('c'),"status":"completed","conclusion":"success","created_at":after});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, green);
+    });
+    lab.step().await;
+    assert_eq!(get(&first).await.unwrap()["state"], "merged", "the first entry ended the pause and merged");
+    let e = get(&second).await.unwrap();
+    assert_ne!(e["reason"], "main_red", "the second entry is not stopped by the red run from before the pause ended: {e}");
+    assert_eq!(e["lastEvidence"]["main"]["atRelease"], sha('c'), "the second entry is checked from the new anchor in the same pass: {e}");
+    let r = lab.paused();
+    assert!(r["paused"].is_null(), "nothing pauses the queue again: {r}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unpause_during_a_check_drops_that_check_instead_of_stopping_on_the_old_red_run() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let after = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        red_then_green(s, &after);
+        s["slowPull"] = json!(true);
+    });
+    pause_at_b(&lab, &after);
+    // The check reads its entry, then the PR (slowly); the unpause lands then.
+    let ws = lab.ws.clone();
+    let pass = tokio::spawn(async move { tick(&ws).await });
+    let started = lab.dir.path().join("pull-started");
+    for _ in 0..200 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(started.exists(), "the check reached the PR read");
+    lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u","repositoryId":7,"reason":"fixed"})).await.unwrap();
+    pass.await.unwrap().unwrap();
+    let e = lab.entry().await;
+    assert_ne!(e["reason"], "main_red", "a check from the anchor before the unpause is dropped, not recorded as main_red: {e}");
+    assert!(lab.paused()["paused"].is_null(), "nothing pauses the queue again");
+    assert_eq!(e["mainAtRelease"], sha('c'), "the entry keeps the unpause's anchor");
+    assert_eq!(lab.step().await["state"], "merged", "checked again from the new anchor, it merges");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unpause_retried_with_its_request_id_gets_the_first_answer_back() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    pause_at_b(&lab, &chrono::Utc::now().to_rfc3339());
+    let input = json!({"requestId":"u1","repositoryId":7,"reason":"fixed"});
+    let first = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", input.clone()).await.unwrap();
+    let before = calls(lab.dir.path()).len();
+    let again = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", input).await.expect("an identical retry gets the first answer back");
+    assert_eq!(again, first);
+    assert_eq!(calls(lab.dir.path()).len(), before, "the retry reads nothing from GitHub");
+    assert_eq!(lab.paused()["pauses"].as_array().map(Vec::len), Some(1), "nothing is cleared twice");
+    let other = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u1","repositoryId":7,"reason":"other"})).await;
+    assert!(other.unwrap_err().to_string().starts_with("idempotency_conflict"), "the same requestId with another payload is refused");
 }
 
 #[cfg(unix)]

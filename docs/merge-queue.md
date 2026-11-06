@@ -57,7 +57,10 @@ conditions is merged by a person, or reviewed again first.
 ## What Core checks
 
 Every check reads GitHub afresh, in this order. The first condition that fails
-decides the outcome.
+decides the outcome. Core reads the entry again right before its check. If the
+entry's anchor changes while the check runs, because an unpause or another
+entry's check that ended a pause re-anchored it, the outcome is dropped and the
+entry is checked again from the new anchor.
 
 1. The PR is open, not a draft, at the released head, and on the base branch it
    was released for.
@@ -136,7 +139,9 @@ paused, entries are still checked but none merges, and the pause and its end
 are mailed, urgent, to the releaser and the leads of the repository's Projects.
 
 `merge_unpause` ends a pause. Only a lead of a Project the repository is linked
-to, or the user, may call it. A pause for red main CI also ends by itself once
+to, or the user, may call it. Retried with the same `requestId`, it returns its
+first answer without checking the pause again or reading GitHub; another payload
+under that `requestId` is refused. A pause for red main CI also ends by itself once
 main has moved past the red commit and CI on the new main is green. Either way,
 Core journals what ended the pause and re-anchors every waiting entry at the
 current main, so their main CI counts from there on.

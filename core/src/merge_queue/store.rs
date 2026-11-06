@@ -451,6 +451,11 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     mail(db, &recipients, &text, &task, "urgent", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
     Ok(waiting)
 }
+/// The main an entry counts main CI from, and since when. A check records its
+/// outcome only if the entry still has the anchor the check read.
+pub(super) fn anchor(e: &Value) -> Value {
+    json!([e["mainAtRelease"], e["mainAnchoredAt"]])
+}
 fn reanchor(e: &mut Value, main: &str, why: &str) {
     e["mainAtRelease"] = json!(main);
     e["mainAnchoredAt"] = json!(now());
@@ -631,6 +636,32 @@ impl Store {
         Ok(e)
     }
 
+    /// One entry as stored now.
+    pub(super) fn merge_entry(&self, id: &str) -> Result<Value> {
+        let db = self.db.read()?;
+        entry(&db, id)
+    }
+
+    /// The stored answer of an earlier `merge_unpause` with this requestId, so
+    /// a retry after a lost answer gets it back before any precondition or
+    /// GitHub read. Another payload under the same requestId is refused.
+    pub(super) fn merge_unpause_receipt(&self, actor: Option<&str>, id: i64, request_id: &str, reason: Option<&str>) -> Result<Option<Value>> {
+        let db = self.db.read()?;
+        let receipt: Option<(String, String)> = db
+            .query_row(
+                "SELECT input_json,response_json FROM collaboration_requests WHERE actor=?1 AND operation='merge_unpause' AND request_id=?2",
+                params![actor_key(actor), request_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((saved, answer)) = receipt else { return Ok(None) };
+        ensure!(
+            serde_json::from_str::<Value>(&saved)? == json!({"requestId":request_id,"repositoryId":id,"reason":reason}),
+            "idempotency_conflict: requestId already has another merge queue payload"
+        );
+        Ok(Some(serde_json::from_str(&answer)?))
+    }
+
     /// Entries with something due, oldest release first: a check, a merge to
     /// reconcile, a merge to follow, or a batch of Core's own to remove.
     pub(super) fn merge_due(&self) -> Result<Vec<Value>> {
@@ -647,22 +678,28 @@ impl Store {
         rows
     }
 
-    /// Record one check of `id` that started at `attempt`. A cancel or retry
-    /// in between moved the attempt on, and the outcome is then dropped. When
-    /// every gate check held, the entry merges now if the queue is on, not
-    /// paused, and no other merge of its repository is in flight: it becomes
-    /// `merging`, journaled before any request is sent, and is returned.
+    /// Record one check of `id` that started at `attempt` from `anchor`. A
+    /// cancel or retry in between moved the attempt on, and an unpause or
+    /// another entry's check that ended a pause moved the anchor on; the
+    /// outcome is then dropped, and the entry is checked again. When every gate
+    /// check held, the entry merges now if the queue is on, not paused, and no
+    /// other merge of its repository is in flight: it becomes `merging`,
+    /// journaled before any request is sent, and is returned.
     pub(super) fn merge_record(
         &self,
         id: &str,
         attempt: i64,
+        checked_from: &Value,
         outcome: std::result::Result<(Value, checks::Check<()>), String>,
         cooldown: i64,
     ) -> Result<Recorded> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut e = entry(&tx, id)?;
-        if e["attempt"].as_i64() != Some(attempt) || !matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready")) {
+        if e["attempt"].as_i64() != Some(attempt)
+            || !matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready"))
+            || anchor(&e) != *checked_from
+        {
             return Ok(Recorded { announced: false, merge: None });
         }
         let now_epoch = epoch();
