@@ -291,10 +291,27 @@ async fn repository(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>)
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Switch {
-    enabled: bool,
+    enabled: Option<bool>,
+    landing: Option<String>,
 }
 async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<Switch>) -> Result<Json<Value>, ApiError> {
-    let answer = ws.stored(move |s| s.merge_set_enabled(id, b.enabled)).await?;
+    if b.enabled.is_none() && b.landing.is_none() {
+        return Err(anyhow::anyhow!("invalid_input: give enabled, landing or both").into());
+    }
+    // A landing this Core does not have is refused before anything is saved.
+    let landing = b.landing.as_deref().map(landing::Landing::chosen).transpose()?;
+    let answer = ws
+        .stored(move |s| {
+            let mut answer = Value::Null;
+            if let Some(landing) = landing {
+                answer = s.merge_set_landing(id, landing)?;
+            }
+            if let Some(enabled) = b.enabled {
+                answer = s.merge_set_enabled(id, enabled)?;
+            }
+            Ok(answer)
+        })
+        .await?;
     ws.changes.send(json!({"mergeQueue":true}));
     ws.merge_queue.wake.notify_one();
     Ok(Json(answer))

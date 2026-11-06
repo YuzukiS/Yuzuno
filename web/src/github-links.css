@@ -234,6 +234,10 @@
 .merge-queue-switch small {
   color: var(--muted);
 }
+.merge-queue-landing {
+  display: block;
+  margin-top: 4px;
+}
 .merge-queue-confirm,
 .merge-queue-paused {
   margin-top: 8px;

@@ -1994,3 +1994,44 @@ async fn a_merge_begun_with_a_landing_this_core_lacks_is_not_sent() {
     assert_eq!(e["retiredMerges"][0]["landing"], "github-auto-merge", "the unsent merge is kept: {e}");
     assert!(writes(lab.dir.path()).is_empty(), "nothing was sent to GitHub");
 }
+
+/// The user sets a repository's landing on its route: `core-merge`, the only
+/// one this Core has. The two planned for core.25 are refused by name, and a
+/// refused request saves nothing, its switch change included.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    let put = |body: Value| {
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/merge-queue/repositories/7")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    let answer = |response: axum::response::Response| async move {
+        let status = response.status();
+        (status, serde_json::from_slice::<Value>(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap())
+    };
+    for name in ["github-auto-merge", "github-merge-queue"] {
+        let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":name,"enabled":false}))).await.unwrap()).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "a planned landing is refused: {body}");
+        assert!(body["error"].as_str().unwrap().contains(&format!("the {name} landing comes in core.25")), "{name} is refused by name: {body}");
+    }
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":"bors"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("unknown landing"), "{body}");
+    let r = lab.paused();
+    assert_eq!((r["landing"].clone(), r["enabled"].clone()), (json!("core-merge"), json!(true)), "a refused landing saves nothing, the switch included: {r}");
+    // A later Core's landing, set back to core-merge: the switch journal says so.
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_repositories SET data=json_set(data,'$.landing','github-auto-merge') WHERE repository_id=7", [])
+        .unwrap();
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":"core-merge"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!((body["landing"].clone(), body["enabled"].clone()), (json!("core-merge"), json!(true)), "setting the landing leaves the switch as it was: {body}");
+    let last = body["switches"].as_array().and_then(|j| j.last()).cloned().unwrap_or_default();
+    assert_eq!((last["detail"].clone(), last["by"].clone()), (json!("Landing set to core-merge"), json!("user")), "the switch journal records the landing: {body}");
+}

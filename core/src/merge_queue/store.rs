@@ -1227,6 +1227,25 @@ impl Store {
         tx.commit()?;
         Ok(data)
     }
+    /// The user's choice of how the repository's entries land; journaled with
+    /// the switch.
+    pub(super) fn merge_set_landing(&self, repository_id: i64, landing: super::landing::Landing) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&tx, repository_id)?;
+        if data["landing"] != landing.name() {
+            let on = data["enabled"] == true;
+            switched(&mut data, on, "user", &format!("Landing set to {}", landing.name()));
+        }
+        data["landing"] = json!(landing.name());
+        data["updatedAt"] = json!(now());
+        save_repository(&tx, repository_id, &data)?;
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
+        Ok(data)
+    }
     pub(super) fn merge_repository(&self, repository_id: i64) -> Result<Value> {
         let db = self.db.read()?;
         repository(&db, repository_id)

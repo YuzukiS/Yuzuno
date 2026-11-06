@@ -7,10 +7,12 @@ phase 4 of the [executor model](executor-model.md).
 ## What Core writes, and when
 
 Core writes to GitHub only while the repository's switch is on. The switch is
-off by default, and only the user can turn it on
-(`PUT /api/merge-queue/repositories/{id}`, with no MCP tool). On
-YuzukiS/Yuzuno it stays off until a Core with the queue is installed and the
-user turns it on; until then merges happen by hand.
+off by default, and only the user can turn it on: in Projects, each linked
+repository has the switch (`PUT /api/merge-queue/repositories/{id}` with
+`{"enabled": true}`; there is no MCP tool). Turning it on first lists these
+writes; turning it off saves at once. On YuzukiS/Yuzuno it stays off until a
+Core with the queue is installed and the user turns it on; until then merges
+happen by hand.
 
 In the dry-run build of the queue, a switch that was on only let Core check.
 That consent does not carry over: the first time this build opens a Workspace,
@@ -163,13 +165,21 @@ none.
 ## Landing
 
 Each repository names how its checked entries land: `landing` in
-`GET /api/merge-queue/repositories/{id}`. This Core has one landing,
-`core-merge`, the default: Core sends the merge itself, as described above.
-`github-auto-merge`, where GitHub merges once the repository's required checks
-pass, is planned for a later Core and does not exist yet. A merge records the
-landing it started with. If a repository names a landing this Core does not
-have (a later Core set it), a checked entry stays `ready` and Core sends
-nothing; a merge begun that way goes back to `waiting`, unsent.
+`GET /api/merge-queue/repositories/{id}`, set by the user with
+`PUT /api/merge-queue/repositories/{id}` and `{"landing": …}` (no MCP tool).
+There are three tiers:
+
+| Landing | What lands the merge | In this Core |
+| --- | --- | --- |
+| `core-merge` | Core sends the merge request itself, as described above. Any repository can use it; it needs no branch protection or paid plan. | Yes, the default. |
+| `github-auto-merge` | GitHub, once the repository's required checks pass; Core queues and updates the branch. For repositories with branch protection. | No: refused with "comes in core.25". |
+| `github-merge-queue` | GitHub's own merge queue, where the repository has one (organization-owned repositories). | No: refused with "comes in core.25". |
+
+A refused landing saves nothing. Setting the landing leaves the switch as it
+is, and the switch journal records the change. A merge records the landing it
+started with. If a repository names a landing this Core does not have (a
+later Core set it), a checked entry stays `ready` and Core sends nothing; a
+merge begun that way goes back to `waiting`, unsent.
 
 ## Pauses
 

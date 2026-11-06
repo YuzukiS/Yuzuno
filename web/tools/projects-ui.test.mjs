@@ -1100,6 +1100,7 @@ test("the merge queue switch names every write before it turns on, and turns off
     const toggle = () => row.querySelector("input[role='switch']");
     assert.equal(row.getAttribute("aria-label"), "Merge queue for owner/repo");
     assert.ok(row.textContent.includes("Off: Core writes nothing to GitHub here."), "off says Core writes nothing");
+    assert.ok(row.textContent.includes("Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."), "the landing and the tiers to come");
     toggle().click(); await pause();
     const confirm = row.querySelector(".merge-queue-confirm");
     assert.ok(confirm, "turning it on asks first");
@@ -1136,6 +1137,7 @@ test("a paused merge queue says why and unpauses with one request id until answe
     const box = () => row.querySelector(".merge-queue-paused");
     assert.equal(row.getAttribute("aria-label"), "owner/repo 的合并队列");
     assert.ok(row.textContent.includes("已开启：Core 合并此仓库中已放行合并的 PR。"), "on, in Chinese");
+    assert.ok(row.textContent.includes("落地方式 core-merge"), "the landing, in Chinese");
     assert.ok(box().textContent.includes("已暂停：main_red"), "the reason, as Core gave it");
     assert.ok(box().textContent.includes("Main CI run 91 concluded failure"), "and Core's detail, as written");
     within(row, "解除暂停").click();

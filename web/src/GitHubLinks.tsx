@@ -242,6 +242,7 @@ type QueueRepository = {
   repositoryId: number;
   enabled: boolean;
   paused: { reason: string; detail?: string; main?: string } | null;
+  landing?: string;
 };
 // T-37: the repository's merge queue switch, the user's only (Agents have no
 // tool for it). Turning it on names every write Core may then make; turning
@@ -264,6 +265,10 @@ const queueText = strings({
   paused: (reason: string) => `Paused: ${reason}`,
   pausedHint: "No PR merges here until the queue is unpaused. Look at main first.",
   unpause: "Unpause",
+  landing: (name: string) =>
+    name === "core-merge"
+      ? "Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."
+      : `Lands with ${name}, which this Core does not have: nothing merges here.`,
 }, {
   label: (name) => `${name} 的合并队列`,
   title: "合并队列",
@@ -282,6 +287,10 @@ const queueText = strings({
   paused: (reason) => `已暂停：${reason}`,
   pausedHint: "解除暂停之前，这里不会合并任何 PR。请先查看 main。",
   unpause: "解除暂停",
+  landing: (name) =>
+    name === "core-merge"
+      ? "落地方式 core-merge：由 Core 自己发出合并。GitHub 自动合并与 GitHub 合并队列将在 core.25 提供。"
+      : `落地方式 ${name}：此 Core 没有这种方式，这里不会合并任何 PR。`,
 });
 
 function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
@@ -360,6 +369,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
           </span>
         </label>
       )}
+      {state?.landing && <small className="merge-queue-landing">{t.landing(state.landing)}</small>}
       {confirming && state && !state.enabled && (
         <div className="merge-queue-confirm">
           <p>{t.confirm(name)}</p>
