@@ -24,7 +24,7 @@ use crate::{
     updates::admission::Permit,
     workspace::Workspace,
 };
-use anyhow::Result;
+use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 
@@ -53,6 +53,10 @@ impl Workspace {
     /// still its task's. A stop after the close then leaves the record for a
     /// pass, or the next start, to finish. Its dispatch, or none.
     pub(crate) async fn settling(&self, id: &str, why: &str) -> Result<Option<Made>> {
+        #[cfg(test)]
+        if self.executor_slots.fault_settling.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("a test's store error");
+        }
         let agent = id.to_owned();
         let Some(made) = self.stored(move |store| store.executor_made(&agent)).await? else { return Ok(None) };
         let (task, agent) = (made.task_id.clone(), id.to_owned());
@@ -149,6 +153,9 @@ impl Workspace {
         let mut input = made.input.clone();
         input["requestId"] = json!(rebuild_request(from));
         input["expectedVersion"] = version;
+        // On the machine the first one was made on, so it works in the same
+        // folder (T-35 S3a), whatever its template says now.
+        input["executor"]["machineId"] = json!(made.machine);
         #[cfg(test)]
         {
             let write = self.executor_slots.before_rebuild_dispatch.lock().unwrap().take();
@@ -245,6 +252,31 @@ impl Workspace {
         let (task, agent, dispatcher) = (made.task_id.clone(), agent.to_owned(), made.dispatcher().map(str::to_owned));
         self.stored(move |store| store.executor_start_blocked(&task, &agent, dispatcher.as_deref(), &blocker, detail, body)).await?;
         Ok(())
+    }
+
+    /// Before a cut-off start's close (executor_slots.rs): its runtime, on
+    /// another machine, confirmed stopped (T-35 S3a, Lead 2 Q5). For a Codex
+    /// executor, exactly the instance it recorded; one cut off before its
+    /// runtime was located recorded none, and the helper calls what it can't
+    /// find stopped, so that is no confirmation. For a Claude Code executor,
+    /// its host, through the connection the start made (`host_stop`, as
+    /// Disconnect asks it). Ok at once on this Core host, where the dropped
+    /// start ended its own process.
+    pub(crate) async fn remote_start_stopped(self: &Arc<Self>, id: &str) -> Result<()> {
+        let agent = self.listed(id).await?;
+        let Some(remote) = agent.remote else { return Ok(()) };
+        let machine = remote.machine.name.clone();
+        if agent.harness == "claude" {
+            let connection = self.claudes.lock().unwrap().get(id).map(|c| c.bridge.clone());
+            let bridge = connection.with_context(|| format!("its start never connected to Claude's host on {machine}, so nothing confirmed it stopped"))?;
+            let answer = bridge.request(json!({"op":"host_stop"})).await?;
+            ensure!(answer["stopped"] == true, "Claude's host on {machine} didn't confirm it stopped: {answer}");
+            return Ok(());
+        }
+        let runtime = remote.runtime.as_ref()
+            .with_context(|| format!("its start was cut off before its runtime on {machine} was recorded, so no stop could confirm it ended"))?;
+        let workspace = self.stored(|store| store.workspace_id()).await?;
+        crate::remote::stop_runtime_instance(&remote.machine, &workspace, id, runtime).await
     }
 
     async fn agent_name(&self, id: &str) -> String {

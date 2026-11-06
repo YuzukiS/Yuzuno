@@ -259,7 +259,7 @@ fn a_template_dispatch_is_refused_before_anything_is_written() {
     };
     for (input, says) in [
         (with(json!({"executor":{"templateId":"missing"}})), "template_not_found:"),
-        (with(json!({"executor":{"templateId":"reviewer","machineId":"laptop"}})), "Executors run on this Core host in this phase, not on laptop"),
+        (with(json!({"executor":{"templateId":"reviewer","machineId":"laptop"}})), "machine_not_found: no registered machine is laptop"),
         (with(json!({"executor":{"templateId":"reviewer","cwd":"/elsewhere"}})), "invalid_input: unknown field cwd"),
         (with(json!({"executor":"reviewer"})), "invalid_input: executor is"),
         (with(json!({"expectedVersion":7})), "version_conflict:"),
@@ -278,6 +278,66 @@ fn a_template_dispatch_is_refused_before_anything_is_written() {
     assert_eq!(begun(&store, None, given).unwrap().folders, ["/synthetic/given", "/synthetic/project"]);
     let cleared = with(json!({"requestId":"cleared","materials":null}));
     assert_eq!(begun(&store, None, cleared).unwrap().folders, ["/synthetic/project"]);
+}
+
+/// A registered machine, as the Machines list keeps it.
+fn machine(store: &Store, id: &str, name: &str, contained: bool) {
+    store.add_machine(&crate::remote::RemoteMachine {
+        id: id.into(), name: name.into(), target: "tester@192.0.2.10".into(), contained, ..Default::default()
+    }).unwrap();
+}
+
+/// T-35 S3a (D8, Lead 2 Q1/Q3): an executor runs on the dispatch's machine,
+/// else its template's, else this Core host; on another machine it works in
+/// its Project's folder there. What can't run there is refused before
+/// anything is written: no such machine, no Project folder on it, a worktree
+/// (a path on this Core host), a Codex executor on a contained machine.
+#[test]
+fn a_dispatch_runs_on_its_machine_in_its_projects_folder_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    machine(&store, "lab-box", "Lab box", false);
+    machine(&store, "boxed", "Boxed", true);
+    let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+        ("lab-box".into(), "/srv/lab/project".into()), ("boxed".into(), "/srv/boxed/project".into())])).unwrap().id;
+    templates(&store, json!([reviewer(), {"id":"remote","label":"Remote","harness":"claude","machineId":"lab-box"},
+        {"id":"coder","label":"Coder","harness":"codex"}]));
+    let t = task(&store, "Review", Some(&p), None);
+    let with = |request: &str, executor: Value| json!({"requestId":request,"taskId":t,"expectedVersion":1,"executor":executor});
+
+    let here = begun(&store, None, with("here", json!({"templateId":"reviewer"}))).unwrap();
+    assert_eq!((here.machine.as_str(), here.folders.as_slice()), ("local", ["/synthetic/project".to_owned()].as_slice()), "unset: this Core host");
+    let named = begun(&store, None, with("named", json!({"templateId":"reviewer","machineId":"lab-box"}))).unwrap();
+    assert_eq!((named.machine.as_str(), named.folders.as_slice()), ("lab-box", ["/srv/lab/project".to_owned()].as_slice()),
+        "the dispatch's machine, in the Project's folder there");
+    let template = begun(&store, None, with("template", json!({"templateId":"remote"}))).unwrap();
+    assert_eq!(template.machine, "lab-box", "the template's machine when the dispatch names none");
+    let over = begun(&store, None, with("over", json!({"templateId":"remote","machineId":"local"}))).unwrap();
+    assert_eq!(over.machine, "local", "the dispatch's machine wins");
+    let recorded: String = store.db.read().unwrap().query_row(
+        "SELECT machine_id FROM executor_dispatches WHERE request_id='named'", [], |r| r.get(0)).unwrap();
+    assert_eq!(recorded, "lab-box", "the dispatch records its machine");
+
+    let elsewhere = store.create_project("Here only", BTreeMap::from([("local".into(), "/synthetic/here".into())])).unwrap().id;
+    let local_only = task(&store, "Here only", Some(&elsewhere), None);
+    let registered = task(&store, "With a worktree", Some(&p), Some("/synthetic/worktree"));
+    for (input, says) in [
+        (with("unknown", json!({"templateId":"reviewer","machineId":"laptop"})), "machine_not_found: no registered machine is laptop".to_owned()),
+        (json!({"requestId":"no-folder","taskId":local_only,"expectedVersion":1,"executor":{"templateId":"reviewer","machineId":"lab-box"}}),
+            "no_folder: an executor on Lab box works in its Project's folder there, and the Project has none on Lab box".to_owned()),
+        (json!({"requestId":"worktree","taskId":registered,"expectedVersion":1,"executor":{"templateId":"reviewer","machineId":"lab-box"}}),
+            "folder_not_allowed: an executor on Lab box works in its Project's folder there, and the worktree /synthetic/worktree is a path on this Core host".to_owned()),
+        (json!({"requestId":"given","taskId":t,"expectedVersion":1,"executor":{"templateId":"reviewer","machineId":"lab-box"},
+            "materials":{"worktree":"/synthetic/given"}}),
+            "folder_not_allowed: an executor on Lab box works in its Project's folder there, and the worktree /synthetic/given is a path on this Core host".to_owned()),
+        (with("contained", json!({"templateId":"coder","machineId":"boxed"})), "machine_contained: Boxed keeps its Agents contained".to_owned()),
+    ] {
+        let got = begun(&store, None, input.clone()).err().unwrap_or_else(|| "accepted".into());
+        assert!(got.starts_with(&says), "{input} should be refused with {says}; got: {got}");
+    }
+    let refused: i64 = store.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM executor_dispatches WHERE request_id IN ('unknown','no-folder','worktree','given','contained')", [], |r| r.get(0)).unwrap();
+    assert_eq!(refused, 0, "nothing was written for a refused one");
 }
 
 /// T-34 (R3 d51396b7): an executor is created under the work permit its

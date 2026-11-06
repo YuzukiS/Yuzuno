@@ -47,6 +47,13 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         DELETE FROM agent_roles WHERE agent_id NOT IN (SELECT id FROM agents);
         DELETE FROM project_lead_versions WHERE project_id NOT IN (SELECT id FROM projects);",
     )?;
+    // Who released an executor (T-34), as the receipts key the caller. Added
+    // to the table wherever it is missing; older builds leave it as it is.
+    let released_by: bool =
+        db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_roles') WHERE name='released_by')", [], |r| r.get(0))?;
+    if !released_by {
+        db.execute("ALTER TABLE agent_roles ADD COLUMN released_by TEXT", [])?;
+    }
     Ok(())
 }
 

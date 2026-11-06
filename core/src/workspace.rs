@@ -316,6 +316,7 @@ impl Workspace {
             let mut agent = store.agent(&id)?;
             agent.project_id = store.agent_project(&id)?;
             agent.kind = store.agent_kind(&id)?;
+            crate::executor_release::show(&mut agent, crate::executor_release::release_of(&*store.db.read()?, &id)?);
             Ok(agent)
         }).await
     }
@@ -528,6 +529,8 @@ impl Workspace {
             work_summary: None,
             project_id,
             kind: None,
+            released_at: None,
+            released_by: None,
             cwd,
             model,
             settings,
@@ -1293,10 +1296,12 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        self.close_agent_locked(id).await
+        self.close_agent_locked(id, json!({})).await
     }
 
-    async fn close_agent_locked(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
+    /// Close under the Agent gate; `data` is its `agent/closed` row's, which
+    /// a release fills in (executor_release.rs).
+    pub(crate) async fn close_agent_locked(self: &Arc<Self>, id: &str, data: Value) -> Result<AgentDetail> {
         // Its state and each Turn's status, as the send view has them; the
         // whole record only where it is the answer (T-140).
         let mut view = self.send_view(id).await?;
@@ -1360,7 +1365,7 @@ impl Workspace {
             }
             shutdown?;
         }
-        self.record_update(id, "agent/closed", json!({}), Sel::Open, mark_closed).await?;
+        self.record_update(id, "agent/closed", data, Sel::Open, mark_closed).await?;
         self.changed(id);
         // An executor's slot is free once it is closed (T-35).
         self.wake_executor_slots();
@@ -1373,7 +1378,7 @@ impl Workspace {
         permit.validate(&self.admission)?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        self.close_agent_locked(id).await
+        self.close_agent_locked(id, json!({})).await
     }
 
     pub async fn reopen_agent(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
@@ -1407,7 +1412,9 @@ impl Workspace {
     /// Called under the Agent gate: marks a closed Agent open again (its Agent
     /// fields only); false if it was open. Neither reads its history (T-140).
     async fn mark_reopened(&self, id: &str) -> Result<bool> {
-        if self.listed(id).await?.closed_at.is_none() { return Ok(false); }
+        let listed = self.listed(id).await?;
+        anyhow::ensure!(listed.released_at.is_none(), crate::executor_release::REOPEN_REFUSED);
+        if listed.closed_at.is_none() { return Ok(false); }
         self.record_meta(id, "agent/reopened", json!({}), |m| {
             m.agent.closed_at = None;
             m.agent.disconnected_at = None;
@@ -1423,7 +1430,7 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        self.close_agent_locked(id).await?;
+        self.close_agent_locked(id, json!({})).await?;
         let closed = self.listed(id).await?;
         if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;

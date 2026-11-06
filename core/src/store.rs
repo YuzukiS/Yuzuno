@@ -271,6 +271,7 @@ fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
     agent.work_summary = crate::rail::project(detail);
     agent.project_id = None;
     agent.kind = None;
+    crate::executor_release::show(&mut agent, None);
     let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress");
     let active_turn = active.and_then(|t| t["id"].as_str()).map(str::to_owned);
     let active_turn_unmatched = active.is_some_and(|t| t["_yuzunoUnmatched"] == true);
@@ -1077,6 +1078,8 @@ fn project_window(
     crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
     index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
     index.agent.kind = crate::agent_roles::listed_kind(db, &index.agent.id)?;
+    let release = crate::executor_release::release_of(db, &index.agent.id)?;
+    crate::executor_release::show(&mut index.agent, release);
     let found = crate::conversation_window::project_from(&index.turns, query, |t, i| {
         let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
         // The complete index has already been annotated from this snapshot.
@@ -1107,6 +1110,8 @@ fn project_window_marked(
     crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
     index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
     index.agent.kind = crate::agent_roles::listed_kind(db, &index.agent.id)?;
+    let release = crate::executor_release::release_of(db, &index.agent.id)?;
+    crate::executor_release::show(&mut index.agent, release);
     let found = crate::conversation_window::project_marked(&index.turns, ords, counts, query, position, |t, i| {
         let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
         // The index has been annotated from this snapshot: its provenance on
@@ -1353,6 +1358,7 @@ impl Store {
         detail.agent.work_summary = None;
         let project = detail.agent.project_id.take();
         detail.agent.kind = None;
+        crate::executor_release::show(&mut detail.agent, None);
         let rows = record_rows::split(&detail)?;
         let _kept_out = self.keep_older_cores_out_for(detail.agent.remote.as_ref()
             .and_then(|remote| crate::older_cores::agent_hazard(&detail.agent.name, &remote.machine)))?;
@@ -2085,11 +2091,11 @@ impl Store {
     }
 
     pub fn agents(&self) -> Result<Vec<Agent>> {
-        let (ids, mut projects, kinds) = {
+        let (ids, mut projects, kinds, mut released) = {
             let db = self.db.read()?;
             let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
             let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?)
+            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?)
         };
         let mut agents = Vec::with_capacity(ids.len());
         for id in ids {
@@ -2098,6 +2104,7 @@ impl Store {
             let mut agent = listed.agent;
             agent.project_id = projects.remove(&id);
             agent.kind = kinds.get(&id).map(|kind| (*kind).to_owned());
+            crate::executor_release::show(&mut agent, released.remove(&id));
             agents.push(agent);
         }
         Ok(agents)
@@ -2861,6 +2868,8 @@ impl Store {
             settle_open_questions(&tx, id, plan.body(), &mut d.agent, d.pending.len() as u64, &written)?;
             // An executor's slot follows its close and reopen, in this transaction (T-35).
             crate::executor_slots::follow_agent(&tx, &d.agent, journaled)?;
+            // A release's close archives its executor, in this transaction too (T-34).
+            crate::executor_release::follow_close(&tx, &d.agent, journaled, data)?;
             let project_id = crate::projects::agent_project(&tx, id)?;
             tx.commit()?;
             #[cfg(test)]

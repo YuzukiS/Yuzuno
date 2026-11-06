@@ -40,7 +40,7 @@ export type Handover = {
   markdown: string;
   history: HandoverVersion[];
   limit: number;
-  /** The proposal waiting for the user, if any. */
+  /** The proposal waiting for the user, if any; absent from an answer that doesn't say (an older Core's save). */
   proposal?: HandoverProposalSummary | null;
 };
 
@@ -51,7 +51,7 @@ export const handoverView = (projectId: string, value: Partial<Handover>): Hando
   markdown: typeof value.markdown === "string" ? value.markdown : "",
   history: Array.isArray(value.history) ? value.history : [],
   limit: typeof value.limit === "number" ? value.limit : 32 * 1024,
-  proposal: value.proposal && typeof value.proposal === "object" ? value.proposal : null,
+  proposal: !("proposal" in value) ? undefined : value.proposal && typeof value.proposal === "object" ? value.proposal : null,
 });
 
 export const readHandover = (projectId: string, signal?: AbortSignal) =>

@@ -37,7 +37,7 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
 }
 
 /// The caller as the collaboration receipts key it.
-pub(super) fn actor_key(actor: &TaskActor) -> String {
+pub(crate) fn actor_key(actor: &TaskActor) -> String {
     if actor.kind == "agent" { format!("agent:{}", actor.id) } else { "user".into() }
 }
 
@@ -57,8 +57,11 @@ pub(crate) struct Plan {
     pub(crate) dispatch: Dispatch,
     pub(crate) template: Template,
     pub(crate) name: String,
-    /// Where it may work, in order: the dispatch's worktree, then its
-    /// Project's folder on this host. The first that is a folder here holds.
+    /// The machine it runs on: `local`, or a registered machine's id.
+    pub(crate) machine: String,
+    /// Where it may work, in order: on this host, the dispatch's worktree,
+    /// then its Project's folder, the first that is a folder here holding;
+    /// on another machine, its Project's folder there (D8).
     pub(crate) folders: Vec<String>,
     pub(crate) project_id: Option<String>,
     task_id: String,
@@ -95,6 +98,23 @@ impl Plan {
             Ok(())
         })
     }
+}
+
+/// The registered machine `machine` names, for an executor of `harness`;
+/// none for this Core host (T-35 S3a). A Codex executor can't run on a
+/// contained machine, which keeps no ~/.codex of its own (remote.rs).
+fn remote_machine(db: &Connection, machine: &str, harness: &str) -> Result<Option<crate::remote::RemoteMachine>> {
+    if machine == "local" {
+        return Ok(None);
+    }
+    let raw: Option<String> = db.query_row("SELECT data FROM machines WHERE id=?1", [machine], |r| r.get(0)).optional()?;
+    let remote: crate::remote::RemoteMachine = serde_json::from_str(&raw.with_context(|| {
+        format!("machine_not_found: no registered machine is {machine}; the Machines list names them")
+    })?)?;
+    ensure!(!(harness == "codex" && remote.contained),
+        "machine_contained: {} keeps its Agents contained, and runs no Codex Agent there; use a Claude Code template, or another machine",
+        remote.name);
+    Ok(Some(remote))
 }
 
 const AGENT_FOLDER: &str = "an executor an Agent dispatches works in the worktree the user registered on its task or inside its Project's folder on this host";
@@ -195,8 +215,7 @@ impl Store {
         ensure!(executor.is_object(), "invalid_input: executor is {{templateId, machineId?}}");
         allowed(executor, &["templateId", "machineId"])?;
         let template_id = required_text(executor, "templateId", 48)?;
-        let machine = optional_text(executor, "machineId", 128)?;
-        crate::executor_templates::this_host_only(machine.as_deref().filter(|m| !m.is_empty()))?;
+        let given_machine = optional_text(executor, "machineId", 128)?.filter(|m| !m.is_empty());
         let task = load_task(&tx, &required_text(&request, "taskId", 128)?)?;
         check_version(&task, &request)?;
         ensure!(task.archived_at.is_none(), "task_archived: unarchive the task first");
@@ -211,24 +230,47 @@ impl Store {
             format!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}")
         })?;
         template.validate(crate::opencode_agent::enabled())?;
+        // Where it runs (T-35 S3a, Lead 2 Q1): the dispatch's machine, else
+        // its template's, else this Core host.
+        let machine = given_machine.or_else(|| template.machine_id.clone()).unwrap_or_else(|| "local".into());
+        crate::executor_templates::machine_named(Some(&machine), &template.harness)?;
+        let remote = remote_machine(&tx, &machine, &template.harness)?;
         let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
         let project_dir = match &project {
-            Some(project) => crate::projects::default_dir(&tx, project, "local")?,
+            Some(project) => crate::projects::default_dir(&tx, project, &machine)?,
             None => None,
         };
-        // A path in a dispatch's materials is information, never permission
-        // (T-34, R6 3458f905): an Agent's executor works in the task's
-        // registered worktree or inside its Project's folder on this host,
-        // with the template's permissions. The user's may work anywhere.
-        let worktree = match author.kind.as_str() {
-            "agent" => agent_worktree(&tx, &task.id, &request, worktree, project_dir.as_deref())?,
-            _ => worktree,
+        let folders: Vec<String> = match &remote {
+            // D8: on another machine, the Project's folder there. A worktree
+            // is a path on this Core host, not on it (Lead 2 Q3).
+            Some(remote) => {
+                if let Some(path) = &worktree {
+                    bail!("folder_not_allowed: an executor on {} works in its Project's folder there, and the worktree {path} is a path on this Core host; dispatch without it, or to this Core host", remote.name);
+                }
+                let dir = project_dir.with_context(|| match &project {
+                    Some(_) => format!("no_folder: an executor on {0} works in its Project's folder there, and the Project has none on {0}; add one in the Project's settings", remote.name),
+                    None => format!("no_folder: an executor on {} works in its Project's folder there, and this task is in no Project", remote.name),
+                })?;
+                vec![dir]
+            }
+            None => {
+                // A path in a dispatch's materials is information, never
+                // permission (T-34, R6 3458f905): an Agent's executor works in
+                // the task's registered worktree or inside its Project's folder
+                // on this host, with the template's permissions. The user's may
+                // work anywhere.
+                let worktree = match author.kind.as_str() {
+                    "agent" => agent_worktree(&tx, &task.id, &request, worktree, project_dir.as_deref())?,
+                    _ => worktree,
+                };
+                let folders: Vec<String> = worktree.into_iter().chain(project_dir).collect();
+                ensure!(
+                    !folders.is_empty(),
+                    "no_folder: an executor works in this dispatch's worktree, or else in its Project's folder on this host, and there is neither; Core makes no folder"
+                );
+                folders
+            }
         };
-        let folders: Vec<String> = worktree.into_iter().chain(project_dir).collect();
-        ensure!(
-            !folders.is_empty(),
-            "no_folder: an executor works in this dispatch's worktree, or else in its Project's folder on this host, and there is neither; Core makes no folder"
-        );
         let agent_id = uuid::Uuid::new_v4().to_string();
         let at = now();
         // What the executor's materials say of its template (T-34, R1 b0046ce0):
@@ -236,14 +278,15 @@ impl Store {
         let given = json!({"id":template.id,"label":template.label,"source":source,"instructions":template.instructions});
         tx.execute(
             "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,'local',?7,?8,'pending',?9,?9)",
-            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at],
+             VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9)",
+            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at, machine],
         )?;
         tx.commit()?;
         Ok(Next::Create(Box::new(Plan {
             name: template.agent_name(&task_number(task.seq)),
             dispatch: Dispatch { input: store_input(&request, &sha_check, &agent_id), actor: key, request_id, agent_id },
             template,
+            machine,
             folders,
             project_id: project,
             task_id: task.id,
