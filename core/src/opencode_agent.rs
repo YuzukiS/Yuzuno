@@ -145,6 +145,10 @@ pub(crate) struct Connection {
     pub files: Arc<std::result::Result<crate::opencode_revert_files::Started, String>>,
     /// How this connection's 2.x events read in Core's shapes (T-32 slice 3b).
     cursor: Arc<std::sync::Mutex<crate::opencode_v2::Cursor>>,
+    /// The sign-in attempts journaled as logged in through this connection
+    /// (T-32 slice 4b, R3 b2b46a5f of #621): 2.x keeps its attempts in
+    /// memory, so an attempt is this process's alone.
+    pub logins: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -191,7 +195,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files), cursor: Arc::default() }
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.

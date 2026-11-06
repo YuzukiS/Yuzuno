@@ -191,15 +191,21 @@ fn integration(listed: &Value) -> Option<Integration> {
     Some(Integration { id, name: text(&listed["name"]), methods, connections })
 }
 
+/// The query parameters a sign-in's link names its callback by.
+const CALLBACKS: [&str; 4] = ["redirect_uri", "redirect_url", "callback", "callback_url"];
+
 /// Whether a sign-in's link sends the browser back to this computer (D7):
-/// the link's own host, or its `redirect_uri`'s, is a loopback address.
+/// the link's own host, or that of a callback it names (`CALLBACKS`), is
+/// `localhost`, a loopback address or an unspecified one (R3 b2b46a5f of
+/// #621).
 pub fn loopback(link: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(link) else { return false };
     let local = |url: &reqwest::Url| {
         let host = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
-        host == "localhost" || host.ends_with(".localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        host == "localhost" || host.ends_with(".localhost")
+            || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
     };
-    local(&url) || url.query_pairs().any(|(name, value)| name == "redirect_uri" && reqwest::Url::parse(&value).is_ok_and(|r| local(&r)))
+    local(&url) || url.query_pairs().any(|(name, value)| CALLBACKS.contains(&name.as_ref()) && reqwest::Url::parse(&value).is_ok_and(|r| local(&r)))
 }
 
 /// A login request's error for the user: OpenCode's status and kind for a
@@ -307,15 +313,32 @@ impl Workspace {
         Ok(json!({"attemptId":attempt_id,"url":link,"instructions":attempt["instructions"],"mode":attempt["mode"],"time":attempt["time"]}))
     }
 
+    /// A sign-in complete, journaled as logged in (R3 b2b46a5f of #621): once
+    /// per attempt, however often it is asked about, and only while the
+    /// connection it went through is still the Agent's.
+    async fn logged_in(&self, id: &str, generation: u64, integration: &str, attempt: &str) -> Result<()> {
+        let first = {
+            let connections = self.opencodes.lock().unwrap();
+            let Some(c) = connections.get(id).filter(|c| c.generation == generation) else {
+                bail!("OpenCode 连接已变化；请重新打开登录");
+            };
+            c.logins.lock().unwrap().insert(attempt.to_owned())
+        };
+        if first {
+            self.record_meta(id, "opencode/loggedIn", json!({"integration":integration,"method":"oauth"}), |_| {}).await?;
+            self.changed(id);
+        }
+        Ok(())
+    }
+
     /// Where a sign-in is; a complete one is journaled as logged in.
     pub async fn opencode_login_oauth_status(&self, id: &str, integration: &str, attempt: &str) -> Result<Value> {
         let _permit = self.admission.enter_work()?;
         let agent = self.listed(id).await?;
-        let (server, _) = self.login_connection(id, &agent)?;
+        let (server, generation) = self.login_connection(id, &agent)?;
         let status = server.oauth_status(integration, attempt).await.map_err(refused)?;
         if status["status"] == "complete" {
-            self.record_meta(id, "opencode/loggedIn", json!({"integration":integration,"method":"oauth"}), |_| {}).await?;
-            self.changed(id);
+            self.logged_in(id, generation, integration, attempt).await?;
         }
         Ok(json!({"status":status["status"],"message":status["message"],"time":status["time"]}))
     }
@@ -326,12 +349,10 @@ impl Workspace {
     pub async fn opencode_login_oauth_complete(&self, id: &str, integration: &str, attempt: &str, code: &str) -> Result<()> {
         let _permit = self.admission.enter_work()?;
         let agent = self.listed(id).await?;
-        let (server, _) = self.login_connection(id, &agent)?;
+        let (server, generation) = self.login_connection(id, &agent)?;
         ensure!(!code.trim().is_empty(), "请填写登录页面给出的代码");
         server.oauth_complete(integration, attempt, code.trim()).await.map_err(refused)?;
-        self.record_meta(id, "opencode/loggedIn", json!({"integration":integration,"method":"oauth"}), |_| {}).await?;
-        self.changed(id);
-        Ok(())
+        self.logged_in(id, generation, integration, attempt).await
     }
 
     pub async fn opencode_login_oauth_cancel(&self, id: &str, integration: &str, attempt: &str) -> Result<()> {

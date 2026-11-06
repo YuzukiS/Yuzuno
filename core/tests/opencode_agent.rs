@@ -2746,6 +2746,53 @@ async fn a_device_sign_in_is_shown_and_one_that_sends_the_browser_back_here_is_c
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A sign-in is journaled as logged in once, and only through the
+/// connection it went through (R3 b2b46a5f of #621): asked about twice once
+/// complete, one record; complete while the Agent's connection ended under
+/// the read, none, though the read answered.
+#[tokio::test]
+async fn a_sign_in_is_journaled_once_and_only_through_the_connection_it_went_through() {
+    let lab = lab(&[], false).await;
+    lab.control("mode", json!({
+        "integrations": [{"id":"example","name":"Example","methods":[{"type":"oauth","id":"example/device","label":"Device"}]}],
+        "oauth": {"example/device": {"url":"https://example.com/login/device"}}})).await;
+    let start = || async { lab.ws.opencode_login_oauth(ID, OAuthLogin { integration: "example".into(), method: "example/device".into(), answer: None })
+        .await.unwrap()["attemptId"].as_str().unwrap().to_owned() };
+    let logged = || journal(&lab).iter().filter(|k| *k == "opencode/loggedIn").count();
+
+    let first = start().await;
+    lab.control("oauthComplete", json!({"attemptID": first})).await;
+    for _ in 0..2 {
+        assert_eq!(lab.ws.opencode_login_oauth_status(ID, "example", &first).await.unwrap()["status"], "complete");
+    }
+    assert_eq!(logged(), 1, "a sign-in asked about twice once complete is journaled once");
+
+    let second = start().await;
+    lab.control("oauthComplete", json!({"attemptID": second})).await;
+    lab.control("mode", json!({"holdOauthStatus": true})).await;
+    let read = lab.ws.opencode_login_oauth_status(ID, "example", &second);
+    let ended = async {
+        let mut held = json!(0);
+        for _ in 0..400 {
+            held = lab.control("held", json!({})).await;
+            if held == json!(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(held, json!(1), "the read of the sign-in held at OpenCode");
+        // The Agent's connection ends while the read waits: its stream ends and every new one is refused.
+        lab.control("refuseEvents", json!({"seconds": 30})).await;
+        lab.control("drop", json!({})).await;
+        lab.until("the connection gone", |d| d.agent.connection_state == "disconnected").await;
+        lab.control("release", json!({})).await;
+    };
+    let (read, ()) = tokio::join!(read, ended);
+    let read = read.map(|status| status.to_string()).unwrap_or_else(|e| e.to_string());
+    assert_eq!(logged(), 1, "a sign-in complete on a connection no longer the Agent's is not journaled: {read}");
+    assert!(read.contains("OpenCode 连接已变化"), "{read}");
+}
+
 /// A method's form is answered as OpenCode's own clients answer it (R2
 /// 5ca76575 of #621): each hidden field's default goes with the page's
 /// answer where its conditions hold, and 2.x, which checks the answer

@@ -73,8 +73,9 @@ fn a_forms_answer_carries_its_hidden_defaults_where_their_conditions_hold() {
 }
 
 /// A sign-in whose page sends the browser back to this computer is told
-/// from a device or code one by its link (D7): the link's host or its
-/// `redirect_uri`'s is a loopback address.
+/// from a device or code one by its link (D7): the link's host, or that of a
+/// callback it names, is `localhost`, a loopback address or an unspecified
+/// one (R3 b2b46a5f of #621).
 #[test]
 fn a_sign_in_that_sends_the_browser_back_here_is_told_from_a_device_one() {
     for link in ["https://auth.example.com/authorize?client_id=a&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
@@ -82,7 +83,15 @@ fn a_sign_in_that_sends_the_browser_back_here_is_told_from_a_device_one() {
         "http://localhost:1455/start", "http://127.0.0.2/x", "https://auth.example.com/a?redirect_uri=http://app.localhost/cb"] {
         assert!(loopback(link), "sends the browser back here: {link}");
     }
+    for link in ["http://0.0.0.0:1455/auth/callback", "http://[::]:9/cb", "https://auth.example.com/a?redirect_uri=http://0.0.0.0:1455/cb"] {
+        assert!(loopback(link), "an unspecified address is local too: {link}");
+    }
+    for link in ["https://auth.example.com/a?redirect_url=http://localhost:1455/cb", "https://auth.example.com/a?callback=http://127.0.0.1:8080/cb",
+        "https://auth.example.com/a?callback_url=http%3A%2F%2F%5B%3A%3A1%5D%3A9%2Fcb"] {
+        assert!(loopback(link), "a callback named otherwise sends the browser back here too: {link}");
+    }
     for link in ["https://github.com/login/device", "https://auth.example.com/authorize?redirect_uri=https://app.example.com/cb",
+        "https://auth.example.com/a?callback=https://app.example.com/cb", "https://auth.example.com/a?state=http://localhost/cb",
         "https://auth.example.com/device?user_code=ABCD", "not a link"] {
         assert!(!loopback(link), "a device or code sign-in: {link}");
     }

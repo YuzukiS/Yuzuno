@@ -102,7 +102,8 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
-         'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False}
+         'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False,
+         'holdOauthStatus': False}
 # 2.x's logins (T-32 slice 4b): its credentials, values included, as its database keeps them; its sign-in attempts;
 # and those cancelled.
 credentials, attempts, cancelled = {}, {}, []
@@ -1432,6 +1433,13 @@ class Handler(BaseHTTPRequestHandler):
         if len(rest) >= 3 and rest[:2] == ['connect', 'oauth'] and rest[2] in attempts:
             attempt = attempts[rest[2]]
             if (method, *rest[3:]) == ('GET',):
+                if modes['holdOauthStatus']:
+                    # Once: this read of a sign-in waits for `release`, as held reads do.
+                    modes['holdOauthStatus'] = False
+                    waiter = threading.Event()
+                    with lock:
+                        held_reads.append(waiter)
+                    waiter.wait(30)
                 out = {'status': attempt['status'], 'time': attempt['time']}
                 if attempt['status'] == 'failed':
                     out['message'] = 'fixture: the provider refused it'
