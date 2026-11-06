@@ -192,7 +192,7 @@ def main():
         names = {t['name'] for t in mcp.rpc('tools/list', {})['tools']}
         assert {'job_submit', 'job_budget', 'job_gpu_admission'} <= names, names
 
-        # 1. Devices by UUID, from NVML; the same UUIDs nvidia-smi names.
+        # 1. Devices by UUID, from Core's GPU sampler (NVML in Core's process, T-58); the same UUIDs nvidia-smi names.
         gpus = wait_for(lambda: request('/jobs/gpus'), lambda v: v['devices'] and not v['problem'])
         assert gpus['source'] == 'nvml', gpus['source']
         device = gpus['devices'][0]

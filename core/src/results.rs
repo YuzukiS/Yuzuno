@@ -1145,6 +1145,24 @@ mod tests {
         assert_eq!(rejected["problems"][0]["code"], "extra_action");
     }
 
+    /// T-56: a proposal names a task in a Project by its key, as Core shows it.
+    #[tokio::test]
+    async fn a_task_status_proposal_takes_a_project_task_key() {
+        let (_dir, ws) = fixture();
+        let project = ws.store.create_project("Atlas", Default::default()).unwrap().id;
+        let created = ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Slice","projectId":project})).unwrap();
+        assert_eq!(created["task"]["id"], "ATL-1");
+        let proposal = |task: &str| json!({"root":"r","elements":{
+            "r":{"type":"Result","props":{"title":"Status","summary":"Ready for review."},"children":["p"]},
+            "p":{"type":"TaskStatus","props":{"taskId":task,"status":"review","reason":"PR open, CI green"}}}});
+        let shown = publish_as(&ws, "a", input("k1", "t1", proposal("ATL-1"))).await.unwrap();
+        assert!(shown.as_ref().is_ok_and(|s| s["accepted"] == true), "a proposal names a task by its Project key: {shown:?}");
+        let global = publish_as(&ws, "a", input("k2", "t1", proposal("T-1"))).await.unwrap();
+        assert!(global.as_ref().is_ok_and(|s| s["accepted"] == true), "the global number names it too: {global:?}");
+        let lower = publish_as(&ws, "a", input("k3", "t1", proposal("atl-1"))).await.unwrap().unwrap_err();
+        assert_eq!(lower["problems"][0]["path"], "elements.p.props.taskId", "only the canonical key: {lower}");
+    }
+
     #[tokio::test]
     async fn an_accepted_result_is_stored_as_validated_and_shown_with_its_turn() {
         let (_dir, ws) = fixture();

@@ -12,11 +12,13 @@ How to move a research pipeline that uses the local NVIDIA GPU onto Jobs: the GP
 | Sets `CUDA_VISIBLE_DEVICES` to the reserved UUIDs | Preempt, move or pause running work for a GPU job |
 | Lets CPU work behind a waiting GPU job start | Predict run times or backfill |
 
+The samples are Core's own (T-58). One GPU sampler in Core reads the host's GPUs every 5 s, in one NVML session it keeps open (or, where NVML can't be used, one `nvidia-smi … -l 5` process). Admission, the Jobs panel's GPU list and Home's Machine Load all read that one sample. It starts when something first asks, stops after 10 minutes with no reader, and starts again on the next. Nothing else in Core starts nvidia-smi or opens NVML: on WSL each new nvidia-smi process, or NVML session opened and closed, leaks Windows driver memory until the computer restarts.
+
 The most one job can ask of a device is its total memory less the memory kept free: 31583 MiB on a 32607 MiB RTX 5090 with the default. A larger request is refused at submit. A requirement measured on a bigger card (for example 40.7 GiB) must be measured again, and reduced if needed, on this one.
 
 ## Sizing a GPU stage
 
-- Measure the stage's peak GPU memory on a short run, for example with `nvidia-smi --query-gpu=memory.used --format=csv -lms 500` beside it. Declare that peak plus a margin for allocator fragmentation as `memoryMiB`.
+- Measure the stage's peak GPU memory on a short run, for example with one `nvidia-smi --query-gpu=memory.used --format=csv -lms 500` running beside it. Declare that peak plus a margin for allocator fragmentation as `memoryMiB`. Keep it one long-running process: on WSL every new nvidia-smi process leaks Windows driver memory until a restart, so never call it in a loop.
 - Inside the job, the reserved device is device 0: PyTorch's `cuda:0`, JAX's first device. Do not set `CUDA_VISIBLE_DEVICES` in the command or its `env`.
 - A stage that needs two devices declares `count: 2`. A stage that must use one particular card names it in `devices` by UUID, from `job_budget`.
 - On WSL, `nvidia-smi` is in `/usr/lib/wsl/lib`, which is not on a job's `PATH`. Call it by full path if a stage needs it.
@@ -103,7 +105,7 @@ Paths, modules and figures above are placeholders. Use the project's own entry p
 
 | Reason starts with | Meaning | What to do |
 |---|---|---|
-| Waiting for a current GPU sample | No sample yet, sampling failed, or the last one is older than 60 s | Usually clears on the next sample. If sampling keeps failing, the reason says why (no NVML and no nvidia-smi). |
+| Waiting for a current GPU sample | No sample yet, sampling failed, or the last one is older than 60 s | Usually clears on the next sample, within 5 s. If sampling keeps failing, the reason says why (no NVML and no nvidia-smi); Core tries again a minute later. |
 | … is in use by managed job … | Another managed GPU job holds the device | Wait. The job starts when that one ends. |
 | … has too little free memory for N MiB … | Free memory, less managed reservations and the memory kept free, is below the request | Something else is using the card, or the request is large. The GPU list in the Jobs panel shows the latest free memory. |
 | … is closed to new jobs | The user (or an Agent) closed the device to new jobs | Only the user reopens a close the user made. |

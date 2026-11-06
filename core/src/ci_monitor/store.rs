@@ -216,7 +216,8 @@ impl Store {
         // like a local one; only a closed Agent cannot receive results.
         ensure!(agent.closed_at.is_none(), "Choose an open Agent");
         let recipient = collaboration::agent_actor(self, &tx, agent_id)?;
-        let (task, seq) = collaboration::task_key(&tx, &input.task_id)?;
+        let (task, _) = collaboration::task_key(&tx, &input.task_id)?;
+        let reference = collaboration::task_number(&tx, &task)?;
         let archived: Option<String> = tx.query_row(
             "SELECT json_extract(data,'$.archivedAt') FROM collaboration_tasks WHERE id=?1",
             [&task],
@@ -276,7 +277,7 @@ impl Store {
         }
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let expires = chrono::Utc::now() + chrono::Duration::days(7);
-        let sub = json!({"id":id,"watchId":wid,"agentId":agent_id,"agent":recipient,"taskId":task,"taskRef":format!("T-{seq}"),"source":source,"createdAt":now(),"expiresAt":expires.to_rfc3339(),"active":true});
+        let sub = json!({"id":id,"watchId":wid,"agentId":agent_id,"agent":recipient,"taskId":task,"taskRef":reference,"source":source,"createdAt":now(),"expiresAt":expires.to_rfc3339(),"active":true});
         tx.execute("INSERT INTO ci_subscriptions(id,watch_id,agent_id,task_id,active,expires,data) VALUES(?1,?2,?3,?4,1,?5,?6) ON CONFLICT(id) DO UPDATE SET active=1,expires=excluded.expires,data=excluded.data",params![id,wid,agent_id,task,expires.timestamp(),sub.to_string()])?;
         tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'ci_subscribe',?2,?3,?4)",params![actor_key(actor),input.request_id,serde_json::to_string(&input)?,json!({"subscriptionId":id}).to_string()])?;
         super::lifecycle::register(

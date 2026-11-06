@@ -45,7 +45,7 @@ fn archived(db: &Connection, agent: &str) -> Result<Option<Archived>> {
         .optional()?;
     let Some((task, created_by)) = row else { return Ok(None) };
     let task = match task {
-        Some(task) => task_key(db, &task).ok().map(|(_, seq)| format!("T-{seq}")),
+        Some(task) => task_key(db, &task).ok().map(|(id, _)| crate::collaboration_store::task_shown(db, &id)),
         None => None,
     };
     let dispatcher = created_by.and_then(|by| by.strip_prefix("agent:").map(str::to_owned));

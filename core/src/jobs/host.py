@@ -4,7 +4,6 @@
 The supervisor is a separate, bounded service, outside the job's OOM boundary.
 It records OS evidence before releasing transient units. Never retries a command.
 """
-import ctypes
 import fcntl
 import hashlib
 import json
@@ -13,7 +12,6 @@ import os
 from pathlib import Path
 import signal
 import selectors
-import shutil
 import stat
 import struct
 import subprocess
@@ -774,70 +772,6 @@ def checkpoint_source_problem(source):
     return None
 
 
-class _Memory(ctypes.Structure):
-    _fields_ = [('total', ctypes.c_ulonglong), ('free', ctypes.c_ulonglong), ('used', ctypes.c_ulonglong)]
-
-
-class _Utilization(ctypes.Structure):
-    _fields_ = [('gpu', ctypes.c_uint), ('memory', ctypes.c_uint)]
-
-
-def nvml_devices():
-    lib = ctypes.CDLL('libnvidia-ml.so.1')
-    if lib.nvmlInit_v2() != 0:
-        raise RuntimeError('nvmlInit failed')
-    try:
-        count = ctypes.c_uint()
-        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0:
-            raise RuntimeError('nvmlDeviceGetCount failed')
-        devices = []
-        for index in range(count.value):
-            handle = ctypes.c_void_p()
-            if lib.nvmlDeviceGetHandleByIndex_v2(index, ctypes.byref(handle)) != 0:
-                raise RuntimeError(f'nvmlDeviceGetHandleByIndex {index} failed')
-            uuid, name = ctypes.create_string_buffer(96), ctypes.create_string_buffer(96)
-            memory, util = _Memory(), _Utilization()
-            if (lib.nvmlDeviceGetUUID(handle, uuid, 96) != 0 or lib.nvmlDeviceGetName(handle, name, 96) != 0
-                    or lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(memory)) != 0):
-                raise RuntimeError(f'NVML could not read device {index}')
-            devices.append({'index': index, 'uuid': uuid.value.decode(), 'name': name.value.decode(),
-                            'memoryTotalMiB': memory.total // 1048576, 'memoryFreeMiB': memory.free // 1048576,
-                            'memoryUsedMiB': memory.used // 1048576,
-                            'utilizationPercent': util.gpu if lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0 else None})
-        return devices
-    finally:
-        lib.nvmlShutdown()
-
-
-def smi_devices():
-    # WSL keeps nvidia-smi in /usr/lib/wsl/lib, which is not on a service's PATH.
-    smi = shutil.which('nvidia-smi') or next(
-        (p for p in ('/usr/lib/wsl/lib/nvidia-smi', '/usr/bin/nvidia-smi') if Path(p).exists()), None)
-    if not smi:
-        raise RuntimeError('nvidia-smi not found')
-    out = command([smi, '--query-gpu=index,uuid,name,memory.total,memory.free,memory.used,utilization.gpu',
-                   '--format=csv,noheader,nounits'], timeout=10).stdout
-    devices = []
-    for line in out.strip().splitlines():
-        index, uuid, name, total, free, used, util = [v.strip() for v in line.split(',')]
-        devices.append({'index': int(index), 'uuid': uuid, 'name': name, 'memoryTotalMiB': int(total),
-                        'memoryFreeMiB': int(free), 'memoryUsedMiB': int(used),
-                        'utilizationPercent': int(util) if util.isdigit() else None})
-    return devices
-
-
-def gpus():
-    """The local NVIDIA devices now, by UUID: memory and utilization. NVML
-    first, nvidia-smi if NVML cannot be used. The compute process list is never
-    read: on WSL it can be empty while the card is in use."""
-    try:
-        return {'source': 'nvml', 'devices': nvml_devices()}
-    except Exception as nvml_error:
-        try:
-            return {'source': 'nvidia-smi', 'devices': smi_devices(), 'nvmlError': str(nvml_error)[:200]}
-        except Exception as smi_error:
-            return {'error': f'NVML: {nvml_error}; nvidia-smi: {smi_error}'[:500], 'devices': []}
-
 def capabilities():
     version = command(['systemctl', '--version']).stdout.splitlines()[0]
     manager = command(['systemctl', '--user', 'show', '--property=ControlGroup']).stdout.strip().split('=', 1)[1]
@@ -1444,9 +1378,6 @@ def reconcile(spec, folder):
 
 def main():
     mode = sys.argv[1]
-    if mode == 'gpus':
-        print(json.dumps(gpus()))
-        return
     if mode == 'capabilities':
         print(json.dumps(capabilities()))
         return

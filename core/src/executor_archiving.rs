@@ -111,11 +111,15 @@ pub(crate) fn waits(db: &Connection, agent: &str) -> Result<Vec<String>> {
         out.push(format!("{what}: {}", jobs.join(", ")));
     }
     let mut flows = db.prepare(
-        "SELECT json_extract(data,'$.taskRef') FROM delivery_flows
+        "SELECT task_id, json_extract(data,'$.taskRef') FROM delivery_flows
          WHERE json_extract(data,'$.owner.id')=?1 AND json_type(data,'$.terminal') IS NOT 'object'",
     )?;
-    let flows = flows.query_map([agent], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    for task in flows {
+    let flows = flows
+        .query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (task, stored) in flows {
+        // Its task's key now (T-56), else the one the flow stored.
+        let task = crate::task_keys::current(db, &task).ok().flatten().or(stored);
         out.push(format!("its delivery flow for {} is still under way (stop it, or let it end)", task.as_deref().unwrap_or("its task")));
     }
     let operations: i64 = db.query_row(
@@ -205,7 +209,7 @@ pub(crate) fn follow_archive(db: &Connection, agent: &Agent) -> Result<()> {
         "UPDATE project_brief_sections SET owner_id=?2,owner_name=?3 WHERE owner_id=?1 AND live=1",
         params![agent.id, dispatcher, name],
     )?;
-    let task = task.as_deref().and_then(|t| task_key(db, t).ok()).map(|(_, seq)| format!("T-{seq}"));
+    let task = task.as_deref().and_then(|t| task_key(db, t).ok()).map(|(id, _)| crate::collaboration_store::task_shown(db, &id));
     for proposal in crate::task_proposals::undecided(db, &agent.id)? {
         let id = uuid::Uuid::new_v4().to_string();
         let body = format!(
