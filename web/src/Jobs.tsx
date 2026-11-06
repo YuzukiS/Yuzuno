@@ -847,6 +847,13 @@ export function Jobs({
   const shownError = (text: string) =>
     text === en.updatedCore ? t.updatedCore : text === en.envObject ? t.envObject : text === en.unconfirmed ? t.unconfirmed : text;
   const rail = useRef<HTMLDivElement>(null);
+  // Closed by Edit in Settings (T-55): Settings opens at its editor and puts
+  // the focus there, so this dialog gives none back to its trigger. Any other
+  // close gives it back, as Radix does; a new opening forgets the handoff.
+  const handingOff = useRef(false);
+  useEffect(() => {
+    if (open) handingOff.current = false;
+  }, [open]);
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
@@ -892,6 +899,11 @@ export function Jobs({
           ref={box}
           className="modal jobs-dialog"
           lang={langTag(language)}
+          onCloseAutoFocus={(event) => {
+            if (!handingOff.current) return;
+            handingOff.current = false;
+            event.preventDefault();
+          }}
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -1061,7 +1073,9 @@ export function Jobs({
                       onEditSettings={
                         onOpenSettings &&
                         (() => {
-                          // One dialog at a time: Jobs closes, Settings opens.
+                          // One dialog at a time: Jobs closes, Settings opens
+                          // and takes the focus (onCloseAutoFocus above).
+                          handingOff.current = true;
                           setOpen(false);
                           onOpenSettings("jobs-budget");
                         })

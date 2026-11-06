@@ -462,6 +462,58 @@ test("the Jobs card shows no editor, shows active against maxActive, keeps GPU p
   } finally { q.close(); }
 });
 
+// The handoff's focus (T-55): Settings puts it on its editor, so the Jobs
+// dialog closed by Edit in Settings gives none back to its trigger; Escape
+// and its close button still do, before and after a handoff.
+test("a Jobs dialog closed by Edit in Settings gives no focus back to its trigger, while a plain close still does", async () => {
+  const core = fixtureCore();
+  const p = mount(core);
+  const asked = [];
+  try {
+    p.window.renderJobs({ onOpenSettings: (editor) => asked.push(editor) });
+    await until(() => p.doc.querySelector('[aria-label="Jobs"]'), "the Jobs entry shows");
+    const trigger = p.doc.querySelector('[aria-label="Jobs"]');
+    const dialog = () => p.doc.querySelector('[role="dialog"]');
+    const openJobs = async () => {
+      trigger.click();
+      await until(() => dialog()?.querySelector(".jobs-budget"), "the Jobs dialog shows its machine card");
+    };
+    // After the dialog has gone, every timer set while it closed has run:
+    // the dialog gives focus back in one of them.
+    const settled = async () => {
+      await until(() => !dialog(), "the Jobs dialog closes");
+      for (let n = 0; n < 3; n++) await new Promise((done) => p.window.setTimeout(done, 0));
+    };
+    const escape = () => dialog().dispatchEvent(new p.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    // A plain close: its close button, then Escape.
+    await openJobs();
+    p.doc.querySelector('[aria-label="Close jobs"]').click();
+    await settled();
+    assert.equal(p.doc.activeElement === trigger, true, "the close button gives focus back to the Jobs button");
+    await openJobs();
+    escape();
+    await settled();
+    assert.equal(p.doc.activeElement === trigger, true, "Escape gives focus back to the Jobs button");
+    // The handoff: focus is on Edit in Settings, as a click leaves it.
+    await openJobs();
+    const edit = button(dialog(), "Edit in Settings");
+    edit.focus();
+    assert.equal(p.doc.activeElement === edit, true, "Edit in Settings has the focus before the handoff");
+    edit.click();
+    await settled();
+    assert.deepEqual(asked, ["jobs-budget"], "Settings is asked for at the Core host budget");
+    assert.equal(p.doc.activeElement === trigger, false, "the handoff gives no focus back to the Jobs button");
+    // A later plain close is not taken for a handoff.
+    await openJobs();
+    escape();
+    await settled();
+    assert.equal(p.doc.activeElement === trigger, true, "after a handoff, a plain close gives focus back again");
+    assert.deepEqual(asked, ["jobs-budget"], "a plain close asks for no Settings");
+    assert.equal(p.posts().length, 0, "closing writes nothing");
+    assert.deepEqual(p.errors, [], "no page errors");
+  } finally { p.close(); }
+});
+
 test("Settings opens Jobs and resources at the Core host budget; both entries open their own editors, and an unsaved field survives switching", async () => {
   const { settingsCatalog, translatedEditors } = (() => {
     const p = mount(fixtureCore());
