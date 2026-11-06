@@ -1213,8 +1213,11 @@ impl Store {
         data["updatedAt"] = json!(now());
         save_repository(&tx, repository_id, &data)?;
         if on {
+            // Turning the switch on makes due at once every removal it held up
+            // and every entry still to be checked or merged, a ready one
+            // waiting for the switch included.
             let waiting: Vec<String> = tx
-                .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND json_extract(data,'$.batch.cleanup')='pending'")?
+                .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND (json_extract(data,'$.batch.cleanup')='pending' OR state IN ('queued','waiting','ready'))")?
                 .query_map([repository_id], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for raw in waiting {

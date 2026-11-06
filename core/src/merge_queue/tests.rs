@@ -2035,3 +2035,29 @@ async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
     let last = body["switches"].as_array().and_then(|j| j.last()).cloned().unwrap_or_default();
     assert_eq!((last["detail"].clone(), last["by"].clone()), (json!("Landing set to core-merge"), json!("user")), "the switch journal records the landing: {body}");
 }
+
+/// Turning the switch on, through the user's route, makes an entry that was
+/// ready and waiting for it due at once: the next pass merges it, with no
+/// wait for its next check.
+#[cfg(unix)]
+#[tokio::test]
+async fn turning_the_switch_on_makes_a_ready_entry_due_at_once() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "every check held, with the switch off: {e}");
+    let on = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/merge-queue/repositories/7")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({"enabled":true}).to_string()))
+        .unwrap();
+    assert_eq!(router().with_state(lab.ws.clone()).oneshot(on).await.unwrap().status(), axum::http::StatusCode::OK);
+    // A plain pass, not one that makes every entry due.
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "turning the switch on makes a ready entry due at once: {e}");
+}
