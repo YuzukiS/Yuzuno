@@ -19,7 +19,7 @@ assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_CHECK_OUTPUT || "../acceptance/task-keys");
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-task-keys.test";
-const report = { task: "T-56", checks: [], shots: [], errors: [], writes: [], reads: [] };
+const report = { task: "T-56", checks: [], shots: [], errors: [], writes: [], reads: [], unmodelled: {} };
 const record = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -29,9 +29,29 @@ const shoot = async (target, name) => {
   report.shots.push(name);
 };
 
-const base = { harness: "claude", cwd: "/fixture", model: "test-model", settings: {}, color: "sage",
-  createdAt: "", updatedAt: "", status: "idle", unreadCount: 0, pendingCount: 0, lastSeq: 0, reviewedSeq: 0, goal: "" };
-const agents = [{ ...base, id: "dev5", name: "Dev 5", projectId: "p1" }];
+const agent = { id: "dev5", name: "Dev 5", status: "idle", harness: "codex", cwd: "/fixture", model: "test-model", projectId: "p1", color: "sage",
+  createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected", closedAt: null };
+const agents = [agent];
+// Well-formed answers for what the Projects window and the selected Agent's
+// panels read: `{}` there sends the app to its error boundary with no page
+// error (project-handover-check.mjs does the same).
+const templates = { workspace: { version: 0, templates: [] }, project: { id: "p1", version: 0, templates: [] }, available: [],
+  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false };
+const usage = { revision: 1, status: "unknown", account: null, accountId: null, source: { generation: "fixture", label: "Codex", machineId: null, runtimeId: null },
+  checkedAt: null, observedAt: null, ordinaryUsageAllowed: null, error: null, buckets: [] };
+const gets = {
+  "/api/projects/p1/home-editors": () => ({ version: 0, editorAgentIds: null }),
+  "/api/projects/p1/leads": () => ({ version: 0, leadAgentIds: [] }),
+  "/api/projects/p1/services": () => ({ services: [] }),
+  "/api/projects/p1/handover": () => ({ projectId: "p1", version: 0, markdown: "", history: [], limit: 32 * 1024 }),
+  "/api/executor-templates": () => templates,
+  "/api/models": () => ({ models: [] }),
+  "/api/backlog": () => ({ observedAt: new Date().toISOString(), agents: {} }),
+  "/api/agents/dev5": () => ({ agent, pending: [], messageReceipts: [], artifacts: [], turns: [] }),
+  "/api/agents/dev5/codex/usage": () => usage,
+  "/api/agents/dev5/codex/mcp": () => ({ state: "observed", reason: "", generation: 1, more: 0, servers: [] }),
+  "/api/agents/dev5/reading": () => ({ handoff: null }),
+};
 const user = { kind: "user", id: "user", name: "You" };
 const owner = { agentId: "dev5", name: "Dev 5", state: "active" };
 const at = "2026-11-06T09:00:00Z";
@@ -73,7 +93,8 @@ function core() {
     peer_read: () => ({ messages: [], hasMore: false }),
     peers_list: () => ({ peers: [] }),
     github_repositories: () => ({ repositories: [] }),
-    github_links: () => ({ links: [], repositories: [] }),
+    github_links: () => ({ links: [], repositories: [], refreshing: false }),
+    github_refresh: () => ({ links: [], repositories: [], refreshing: false }),
   };
   /** A key change, as Core's PATCH /api/projects/<id> answers it (task_keys::set). */
   const patch = (input) => {
@@ -136,7 +157,11 @@ async function open({ name, width, height, touch }) {
     if (path === "/api/machines") return route.fulfill({ json: { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture" }] } });
     if (path === "/api/catchup")
       return route.fulfill({ json: { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } } });
-    if (path.startsWith("/api/")) return route.fulfill({ json: {} });
+    if (gets[path]) return route.fulfill({ json: gets[path]() });
+    if (path.startsWith("/api/")) {
+      report.unmodelled[path] = (report.unmodelled[path] || 0) + 1;
+      return route.fulfill({ json: {} });
+    }
     const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
     assert.ok(file.startsWith(dist + "/"));
     try {
@@ -146,6 +171,12 @@ async function open({ name, width, height, touch }) {
     }
   });
   page.on("pageerror", (error) => report.errors.push(`${name}: ${error.message}`));
+  // React reports what its error boundary caught on the console, not as a page
+  // error. A refused request's own status line (the refusal asked for here) is not one.
+  page.on("console", (message) => {
+    if (message.type() === "error" && !message.text().startsWith("Failed to load resource"))
+      report.errors.push(`${name} console: ${message.text().slice(0, 600)}`);
+  });
   await page.goto(`https://${HOST}/`);
   await page.locator(".workspace-scope").first().waitFor({ timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
@@ -213,9 +244,19 @@ try {
       assert.ok((await sideways(page)) <= 0, `${view.name}: nothing sideways on the board`);
       record(`${view.name}: the task board shows the task by its new key, and T-2 as it was`, { ids });
       await shoot(page, `${view.name}-4-board`);
+      // The board is a window of its own on a wide screen; closed, Home is reached again.
+      const board = page.locator('[role="dialog"]').first();
+      if (await board.isVisible()) {
+        await page.keyboard.press("Escape");
+        await board.waitFor({ state: "hidden", timeout: 10_000 });
+      }
 
       // 3. Home: the report's live reference, written as YN-1, shows YNX-1.
       await page.locator(".toolbar-nav .catchup-nav:not(.collab-nav):not(.jobs-nav)").first().click();
+      // A project with nothing new starts folded; the user opens it.
+      const panel = page.locator(".home-view .home-panel-toggle", { hasText: "yuzuno-next" }).first();
+      await panel.waitFor({ timeout: 10_000 });
+      if ((await panel.getAttribute("aria-expanded")) === "false") await panel.click();
       const card = page.locator('.home-view [data-section-key="keys"]').first();
       await card.waitFor({ timeout: 10_000 });
       const opener = card.locator(".home-report-open");

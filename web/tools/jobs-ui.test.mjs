@@ -487,7 +487,8 @@ test('T-56 the form asks what earlier runs suggest for a task named by a Project
       await new Promise(r => setTimeout(r, 600));
     }
     await fill(p, 'Existing task', 'YN-3');
-    await until(() => asked.length);
+    // Bounded: a form that never asks fails at the assertion below, in its words.
+    for (let n = 0; n < 100 && !asked.length; n++) await wait();
     // Asked in order: one asked for any of those would be ahead of this one.
     assert.deepEqual(asked, ['YN-3'], 'a Project task key is asked about, and nothing before it');
     assert.deepEqual(p.errors, []);

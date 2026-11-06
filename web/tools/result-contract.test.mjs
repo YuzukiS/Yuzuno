@@ -180,8 +180,17 @@ test("T-56 a TaskStatus proposal names its task by T-n or a Project task key, in
     r: { type: "Result", props: { title: "Status", summary: "Ready for review." }, children: ["p"] },
     p: { type: "TaskStatus", props: { taskId, status: "review", reason: "PR open, CI green" } },
   } });
+  // What the contract makes of a taskId: the id taken, or where the first problem is.
+  const read = (taskId) => {
+    try {
+      return checkResultSpec(proposal(taskId)).spec.elements.p.props.taskId;
+    } catch (error) {
+      assert.ok(error instanceof ResultError);
+      return `refused at ${error.problems[0].path}`;
+    }
+  };
   for (const taskId of ["T-1", "YN-3", "ATL2-10", "ABCDEFGHIJ-9"])
-    assert.equal(checkResultSpec(proposal(taskId)).spec.elements.p.props.taskId, taskId, `${taskId} names a task`);
+    assert.equal(read(taskId), taskId, `${taskId} names a task`);
   for (const taskId of ["yn-3", "Yn-3", "Y-3", "ABCDEFGHIJK-1", "YN-0", "YN-", "YN3", "3-1"])
-    assert.equal(problems(proposal(taskId))[0].path, "elements.p.props.taskId", `${taskId} is not a task key`);
+    assert.equal(read(taskId), "refused at elements.p.props.taskId", `${taskId} is not a task key`);
 });

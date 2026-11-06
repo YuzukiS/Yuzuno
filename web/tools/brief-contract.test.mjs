@@ -608,11 +608,19 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   // T-56: a Task record is named by T-n or a Project task key, in canonical capitals only.
   const keyed = structuredClone(layoutStudy);
   const record = keyed.body.elements.desk.props.sources[0].task;
+  // The record's taskId as the contract takes it, or the first problem's code.
+  const taken = () => {
+    try {
+      return checkBriefSection(keyed).body.elements.desk.props.sources[0].task.taskId;
+    } catch {
+      return first(keyed).code;
+    }
+  };
   record.taskId = "YN-3";
-  assert.equal(checkBriefSection(keyed).body.elements.desk.props.sources[0].task.taskId, "YN-3", "a Project task key names the record's task");
+  assert.equal(taken(), "YN-3", "a Project task key names the record's task");
   for (const taskId of ["yn-3", "Y-3", "YN3"]) {
     record.taskId = taskId;
-    assert.equal(first(keyed).code, "invalid_field", `${taskId} is not a task key`);
+    assert.equal(taken(), "invalid_field", `${taskId} is not a task key`);
   }
   const both = rejected((p) => { p.sources[1].task = { taskId: "T-17", activitySeq: 42 }; });
   assert.equal(both.code, "invalid_field");
