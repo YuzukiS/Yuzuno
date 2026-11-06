@@ -229,7 +229,8 @@ async function run({ width, height, theme, language, density = "detailed" }) {
       return [id, a.kind === "lead" ? words.lead : a.executor ? rowSays(words, a) : null];
     }));
     // Its PRs come from their own read, after the list.
-    await list.locator(`article[data-agent-id="${delivered}"] .executor-pr-chip`).waitFor({ timeout: 10_000 });
+    // Attached, not visible: the compact list hides it, as its own assertion below says.
+    await list.locator(`article[data-agent-id="${delivered}"] .executor-pr-chip`).waitFor({ state: "attached", timeout: 10_000 });
     assert.deepEqual(await states(page), expected, `${tag}: each executor's row says its one state, and its PR`);
     assert.equal(await list.locator(".agent-runtime").count(), await list.locator("article[data-agent-id]:not(:has(.executor-row-state))").count(),
       `${tag}: no runtime status beside an executor's state`);

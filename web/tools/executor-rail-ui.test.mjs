@@ -55,6 +55,8 @@ const agents = () => [
   executor("a", "YN-a · Design first", "archived", { closedAt: at(30), releasedAt: at(30), releasedBy: "user" },
     { dispatchedAt: at(120), since: at(30) }),
   agent("s", { status: "waiting", pendingCount: 1, workSummary: { kind: "pending", source: "runtime", text: "Allow npm test", requestId: "q2" } }),
+  // Made from no template (an empty id): Executor where a template's label goes.
+  executor("g", "Agent g", "running", { status: "working" }, { template: { id: "", label: null } }),
 ];
 const live = {
   executors: {
@@ -159,6 +161,7 @@ test("its PR chip, its template when its name lacks it, and its time on the task
     assert.deepEqual(p.state("k"), ["Working", "Draft"], "at work on a draft PR");
     assert.equal(p.template("v"), "Design first", "its name doesn't say its template: the chip does");
     assert.equal(p.template("w"), null, "its name says it already");
+    assert.equal(p.template("g"), "Executor", "made from no template: Executor");
     assert.equal(p.elapsed("v"), "1 h 05 min", "on its task since its dispatch");
     assert.deepEqual(p.state("a"), ["Done", "Released"]);
     assert.equal(p.elapsed("a"), "1 h 30 min", "frozen when it was archived");
@@ -178,6 +181,7 @@ test("in Chinese the row reads in Chinese", async () => {
     assert.deepEqual(p.state("k"), ["在做", "草稿"]);
     assert.equal(p.elapsed("v"), "1 小时 05 分");
     assert.deepEqual(p.state("a"), ["完成", "已放行"]);
+    assert.equal(p.template("g"), "执行者");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

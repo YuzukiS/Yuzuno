@@ -64,7 +64,8 @@ fn an_open_executor_shows_its_tasks_open_pr_with_ci_and_rounds_on_its_head() {
     // A higher-numbered PR closed unmerged (superseded) is not the one it delivers on.
     link(&s, &public, 9, "closed", &old, Value::Null);
     let shown = pr(&s, "e1");
-    assert_eq!((shown["number"].clone(), shown["state"].clone(), shown["ci"].clone()), (json!(3), json!("open"), json!("success")), "{shown}");
+    assert_eq!((shown["number"].clone(), shown["state"].clone(), shown["ci"].clone()), (json!(3), json!("open"), json!("success")),
+        "the open PR, not one closed after it: {shown}");
     assert_eq!(shown["url"], "https://github.com/owner/repo/pull/3");
     assert_eq!(shown["reviews"], json!({"approved":0,"changesRequested":false,"running":false}));
 
@@ -74,7 +75,7 @@ fn an_open_executor_shows_its_tasks_open_pr_with_ci_and_rounds_on_its_head() {
     review(&s, &public, &open, "r1", &head, "completed", Some("approved_with_notes"));
     review(&s, &public, &open, "r2", &head, "failed", None);
     let running = review(&s, &public, &open, "r3", &head, "running", None);
-    assert_eq!(pr(&s, "e1")["reviews"], json!({"approved":1,"changesRequested":false,"running":true}));
+    assert_eq!(pr(&s, "e1")["reviews"], json!({"approved":1,"changesRequested":false,"running":true}), "only this head's rounds count");
     ended(&s, running, &head, "completed", Some("changes_requested"));
     assert_eq!(pr(&s, "e1")["reviews"], json!({"approved":0,"changesRequested":true,"running":false}), "a request for changes starts over");
 }
@@ -91,7 +92,8 @@ fn ci_of_another_head_is_unknown_and_only_open_executors_with_a_pr_are_listed() 
     link(&s, &public, 5, "merged", &head, json!({"state":"success","headSha":"4".repeat(40)}));
     link(&s, &public, 4, "merged", &head, Value::Null);
     let shown = pr(&s, "e1");
-    assert_eq!((shown["number"].clone(), shown["state"].clone(), shown["ci"].clone()), (json!(5), json!("merged"), json!("unknown")), "{shown}");
+    assert_eq!((shown["number"].clone(), shown["state"].clone(), shown["ci"].clone()), (json!(5), json!("merged"), json!("unknown")),
+        "another commit's checks say nothing of this head: {shown}");
 
     let (_, bare) = task(&s, "No PR yet");
     executor(&s, "e2", &bare);

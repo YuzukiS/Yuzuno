@@ -186,7 +186,8 @@ test("with List order the parts stay, each in the workspace's order; and a reloa
 test("in Chinese the groups and states read in Chinese", async () => {
   const p = await mount({ storage: { ...attention, "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
   try {
-    assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者3 运行 · 1 排队6");
+    assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者3 运行 · 1 排队6",
+      "in Chinese, how many run and how many wait");
     assert.equal(p.part("archived").querySelector(".rail-archived-toggle").textContent, "已归档1");
     assert.deepEqual(p.state("d"), ["审查", "等待放行"]);
     assert.deepEqual(p.state("q"), ["排队", "第 2 位"]);

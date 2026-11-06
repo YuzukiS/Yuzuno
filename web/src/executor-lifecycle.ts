@@ -14,7 +14,8 @@ export type ExecutorLifecycle = {
   agentId: string;
   /** Its task: `id` is the key it has now (YN-3), `T-<n>` while it has none (T-43 S2). */
   task?: { id: string; title: string } | null;
-  /** The template it was made from (T-43 S2); `label` as its dispatch's materials give it, null for an older dispatch. */
+  /** The template it was made from (T-43 S2); `label` as its dispatch's materials give it, null for an older
+   * dispatch. An empty `id` is an executor made from no template. */
   template?: { id: string; label?: string | null } | null;
   /** When it was dispatched: its time on the task starts here (T-43 S2). */
   dispatchedAt?: string | null;

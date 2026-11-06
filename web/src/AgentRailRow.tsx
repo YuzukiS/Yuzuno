@@ -182,8 +182,10 @@ export function AgentRailRow({
   const pr = useExecutorPR(agent.id);
   const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince }) : null;
   const shown = executor ? stateText(executor, language) : label;
-  // Its template beside its state when its name doesn't already say it.
-  const template = lifecycle?.template?.label && !agent.name.includes(lifecycle.template.label) ? lifecycle.template.label : null;
+  // Its template beside its state when its name doesn't already say it; one
+  // made from no template (an empty id) says Executor there.
+  const made = lifecycle?.template ? (lifecycle.template.id === "" ? t.executor : lifecycle.template.label || null) : null;
+  const template = made && !agent.name.includes(made) ? made : null;
   const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
     : agent.kind === "executor"
       ? {
