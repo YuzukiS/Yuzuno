@@ -48,8 +48,12 @@ export const jobsText = strings({
   // The conversation's dock.
   dock: "Jobs and CI in this conversation",
   // The dialog.
-  counts: (active: number, queued: number) => `${active} active jobs, ${queued} queued jobs`,
-  countsTitle: (active: number, queued: number) => `${active} active · ${queued} queued`,
+  // With `waiting` (T-69): the Jobs that wait for an earlier stage of their
+  // run, in neither of the other two. A Core before it says nothing of them.
+  counts: (active: number, queued: number, waiting?: number) =>
+    `${active} active jobs, ${queued} queued jobs${waiting === undefined ? "" : `, ${waiting} jobs waiting for an earlier stage`}`,
+  countsTitle: (active: number, queued: number, waiting?: number) =>
+    `${active} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting for an earlier stage of their run`}`,
   title: "Jobs",
   description: "Local commands, watched GitHub Actions and PR reviews. Results return to the requesting Agent.",
   scope: "Job scope",
@@ -59,7 +63,8 @@ export const jobsText = strings({
   close: "Close jobs",
   source: "Job source",
   sources: { local: "Local", github_actions: "GitHub Actions", reviews: "Reviews" } as Record<"local" | "github_actions" | "reviews", string>,
-  onMachine: (active: number, queued: number) => `${active} active · ${queued} queued on this machine`,
+  onMachine: (active: number, queued: number, waiting?: number) =>
+    `${active} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting for an earlier stage`} on this machine`,
   // Local jobs.
   local: "Local jobs",
   refresh: "Refresh jobs",
@@ -79,9 +84,11 @@ export const jobsText = strings({
   envObject: "Environment must be a JSON object of string values.",
   unconfirmed: "A previous submission reply is unconfirmed. Keep its command unchanged and retry to retrieve the same Job ID.",
   // The budget at a glance.
-  activeQueued: (active: number, queued: number) => `${active} active · ${queued} queued`,
+  activeQueued: (active: number, queued: number, waiting?: number) =>
+    `${active} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting`}`,
   // How many hold a slot, of how many may (T-55).
-  activeOf: (active: number, max: number, queued: number) => `${active} of ${max} active · ${queued} queued`,
+  activeOf: (active: number, max: number, queued: number, waiting?: number) =>
+    `${active} of ${max} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting`}`,
   slotsTitle: (max: number, set: boolean) =>
     `At most ${max} of this host's jobs run at once${set ? "" : " (the default)"}; one more waits in the queue.`,
   editInSettings: "Edit in Settings",
@@ -231,8 +238,10 @@ export const jobsText = strings({
   started: (when) => `开始于 ${when}`,
   finished: (when) => `完成于 ${when}`,
   dock: "此会话中的 Job 与 CI",
-  counts: (active, queued) => `${active} 个活跃 Job，${queued} 个排队 Job`,
-  countsTitle: (active, queued) => `${active} 个活跃 · ${queued} 个排队`,
+  counts: (active, queued, waiting) =>
+    `${active} 个活跃 Job，${queued} 个排队 Job${waiting === undefined ? "" : `，${waiting} 个等待上游阶段的 Job`}`,
+  countsTitle: (active, queued, waiting) =>
+    `${active} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待所在运行的上游阶段`}`,
   title: "Job",
   description: "本地命令、受监视的 GitHub Actions 与 PR 审查。结果会返回给发出请求的 Agent。",
   scope: "Job 范围",
@@ -241,7 +250,8 @@ export const jobsText = strings({
   close: "关闭 Job",
   source: "Job 来源",
   sources: { local: "本地", github_actions: "GitHub Actions", reviews: "审查" },
-  onMachine: (active, queued) => `此机器上 ${active} 个活跃 · ${queued} 个排队`,
+  onMachine: (active, queued, waiting) =>
+    `此机器上 ${active} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待上游阶段`}`,
   local: "本地 Job",
   refresh: "刷新 Job",
   back: "返回 Job 列表",
@@ -258,8 +268,10 @@ export const jobsText = strings({
   updatedCore: "本地 Job 需要更新的 Core。",
   envObject: "环境必须是值为字符串的 JSON 对象。",
   unconfirmed: "上一次提交的回复尚未确认。请保持其命令不变并重试，以取回同一个 Job ID。",
-  activeQueued: (active, queued) => `${active} 个活跃 · ${queued} 个排队`,
-  activeOf: (active, max, queued) => `${active} / ${max} 个活跃 · ${queued} 个排队`,
+  activeQueued: (active, queued, waiting) =>
+    `${active} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待上游`}`,
+  activeOf: (active, max, queued, waiting) =>
+    `${active} / ${max} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待上游`}`,
   slotsTitle: (max, set) => `此主机的 Job 同时最多运行 ${max} 个${set ? "" : "（默认）"}；超出的在队列中等待。`,
   editInSettings: "在设置中编辑",
   editInSettingsTitle: "在设置中更改此主机的预算、同时运行的 Job 数、磁盘保留、Windows 上限和 GPU 设置",

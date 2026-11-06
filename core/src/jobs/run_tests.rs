@@ -170,6 +170,30 @@ fn a_failed_stage_leaves_what_needs_it_waiting_and_never_started() {
 }
 
 #[test]
+fn job_budget_counts_a_stage_waiting_for_its_upstream_apart_from_the_queue() {
+    // T-69: a stage waiting for an earlier one is neither queued nor running;
+    // waitingCount names it.
+    let (_dir, s) = setup();
+    let counts = |s: &Store| {
+        let view = s.job_budget_view(machine()).unwrap();
+        let count = |key: &str| view[key].as_i64().unwrap_or_else(|| panic!("no {key}: {view}"));
+        (count("activeCount"), count("queuedCount"), count("waitingCount"))
+    };
+    let run = create(&s, "counts", json!([stage("first", &[]), stage("second", &["first"])]));
+    assert_eq!(counts(&s), (0, 1, 1), "the first stage queued, the second waiting for it");
+    start(&s);
+    assert_eq!(counts(&s), (1, 0, 1), "the first running; the second still waits, in neither count");
+    // A standalone Job queued meanwhile counts in queuedCount only.
+    let plain: Submit = serde_json::from_value(json!({"requestId":"plain","taskId":"T-1","name":"Plain","cwd":"/workspace","argv":["/usr/bin/true"],"resources":{"cpuMillis":100,"memoryMiB":64,"swapMiB":0}})).unwrap();
+    s.create_job(Some("a"), plain, json!({"cwd":"/workspace"}), machine(), json!({})).unwrap();
+    assert_eq!(counts(&s), (1, 1, 1));
+    // Its run cancelled, the waiting stage counts nowhere.
+    s.request_run_cancel(Some("a"), run["id"].as_str().unwrap()).unwrap();
+    assert_eq!(counts(&s).2, 0, "a cancelled waiting Job is not counted");
+    assert_eq!(counts(&s).1, 1, "the standalone Job is still queued");
+}
+
+#[test]
 fn only_a_verified_success_releases_the_next_stage_with_the_digests_it_read() {
     let (dir, s) = setup();
     let run = create(
