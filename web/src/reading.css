@@ -165,12 +165,14 @@
   color: var(--muted);
 }
 /* What needs someone stands out; what is over steps back. The default
-   palette has neither ink, so each falls back as elsewhere in the app. */
+   palette has neither ink: failed falls back to coral, as elsewhere in the
+   app, and delivered to the accent ink every other palette's attention ink
+   is (#987344 reads at about 3:1 on a dark row). */
 .agent-state-badge[data-state="failed"] {
   color: var(--error-ink, var(--coral));
 }
 .agent-state-badge[data-state="delivering"] {
-  color: var(--attention-ink, #987344);
+  color: var(--attention-ink, var(--accent-ink));
 }
 .agent-state-badge[data-state="archived"],
 .agent-state-badge[data-state="closed"] {
