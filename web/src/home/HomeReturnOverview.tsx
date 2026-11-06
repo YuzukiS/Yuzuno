@@ -120,7 +120,10 @@ export function HomeReturnOverview({
       </header>
       {stale.shown && (
         <div className="home-return-stale-slot">
-          <p className={`home-return-stale${stale.leaving ? " is-leaving" : ""}`} role="status">
+          <p
+            className={`home-return-stale${stale.leaving ? " is-leaving" : ""}`}
+            role="status"
+          >
             {t.stale}
           </p>
         </div>

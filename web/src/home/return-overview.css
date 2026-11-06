@@ -202,7 +202,8 @@
   animation: home-return-stale-in var(--motion-small) var(--ease-standard);
 }
 .home-return-stale.is-leaving {
-  animation: home-return-stale-out var(--motion-exit-small) var(--ease-exit) both;
+  animation: home-return-stale-out var(--motion-exit-small) var(--ease-exit)
+    both;
 }
 @keyframes home-return-stale-in {
   from {
