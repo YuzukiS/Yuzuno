@@ -14,7 +14,8 @@ export type ExecutorTemplate = {
   reasoningEffort?: string;
   permissionPreset?: string;
   permissionMode?: string;
-  /** Phase 1: unset or "local", this Core host. */
+  /** Where its executors run: unset or "local" for this Core host, a
+   * registered machine's id, or "auto" for Core to choose at each dispatch (T-35 S3). */
   machineId?: string;
   instructions?: string;
   /** At most this many of its executors run at once (T-35); unset, no limit of its own. */

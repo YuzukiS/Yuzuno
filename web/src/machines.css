@@ -263,6 +263,22 @@
 .machines-footnote {
   padding-top: 4px;
 }
+/* The Core host's own executor limit (T-35 S3), on its card: the form
+   fields' look, laid out for the card. */
+.machine-executor-limit {
+  display: grid;
+  gap: 6px;
+  max-width: 420px;
+}
+.machine-executor-limit label {
+  margin-top: 0;
+}
+.machine-executor-limit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 @media (max-width: 720px) {
   .machine-card-heading {
     grid-template-columns: auto minmax(0, 1fr);

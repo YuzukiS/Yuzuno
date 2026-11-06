@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Plus, Server } from "lucide-react";
 import { api, errorText, post } from "./api";
+import { saveMachineSlots } from "./executor-slots";
 import { strings, type Language } from "./i18n";
+import { machineLimitText, parseMachineLimit, useMachineLimit, versionConflict } from "./MachineExecutorLimit";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./remote.css";
 
@@ -113,6 +115,13 @@ export function MachineEditor({
   const [cpu, setCpu] = useState(jobs.cpu);
   const [memory, setMemory] = useState(jobs.memory);
   const [mode, setMode] = useState(jobs.mode);
+  // Its own limit on executors at once (T-35 S3), saved through its own
+  // route after the machine; untouched, the field shows what is saved.
+  const executorText = machineLimitText(language);
+  const executorLimit = useMachineLimit(machine?.id, true);
+  const [executors, setExecutors] = useState<string | null>(null);
+  const savedExecutors = executorLimit.limit?.slots ?? null;
+  const executorsShown = executors ?? (savedExecutors === null ? "" : String(savedExecutors));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => onBusyChange?.(saving), [saving, onBusyChange]);
@@ -130,6 +139,11 @@ export function MachineEditor({
     }
     if (!cpu.trim() !== !memory.trim()) {
       setError(t.budgetPair);
+      return;
+    }
+    const executorSlots = parseMachineLimit(executorsShown, executorLimit.max);
+    if (executorSlots === undefined) {
+      setError(executorText.range(1, executorLimit.max));
       return;
     }
     setSaving(true);
@@ -155,6 +169,20 @@ export function MachineEditor({
             { method: "PUT", body: JSON.stringify(body) },
           )
         : await post<WorkspaceMachine>("/machines", body);
+      // Its executor limit, once it has its id; a changed one only.
+      if (executorSlots !== savedExecutors) {
+        try {
+          await saveMachineSlots(saved.id, executorLimit.limit?.version ?? 0, executorSlots);
+        } catch (e) {
+          setError(versionConflict(e) ? executorText.conflict : errorText(e));
+          if (versionConflict(e)) {
+            setExecutors(null);
+            executorLimit.reload();
+          }
+          setSaving(false);
+          return;
+        }
+      }
       setSaving(false);
       onSaved(saved);
     } catch (e) {
@@ -263,6 +291,20 @@ export function MachineEditor({
         {mode === "legacy" && (
           <span className="field-hint">{t.legacyHint}</span>
         )}
+      </label>
+      <label>
+        {executorText.title}
+        <input
+          type="number"
+          min={1}
+          max={executorLimit.max}
+          step="1"
+          aria-label={executorText.title}
+          value={executorsShown}
+          onChange={(e) => setExecutors(e.target.value)}
+          placeholder={executorText.placeholder}
+        />
+        <span className="field-hint">{executorLimit.error || executorText.help}</span>
       </label>
       {error && (
         <p role="alert" className="remote-field-error">

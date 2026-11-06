@@ -44,6 +44,7 @@ import { settleWhenLanded } from "./settle";
 import { useLanguage, useStrings } from "./i18n";
 import { boardText } from "./collaboration-text";
 import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-templates";
+import { executorChoiceText, type ExecutorChoice } from "./executor-choice";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -68,6 +69,8 @@ export type ExecutorSlot = {
   machine: string;
   position?: number | null;
   reason?: string | null;
+  /** How `auto` chose its machine, when it did (T-35 S3b). */
+  choice?: ExecutorChoice | null;
 };
 export interface SharedTask {
   github?: GitHubLink[];
@@ -936,15 +939,21 @@ export function CollaborationBoard({
                 {projectName(task.projectId, projects)}
               </span>
             )}
-          {task.executorSlot && (
-            <span
-              className="collab-executor-slot"
-              data-slot-state={task.executorSlot.state}
-              title={t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason)}
-            >
-              {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
-            </span>
-          )}
+          {task.executorSlot && (() => {
+            // The machine `auto` chose, and how, when it did (T-35 S3).
+            const choice = executorChoiceText(task.executorSlot.choice, language);
+            const help = t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason);
+            return (
+              <span
+                className="collab-executor-slot"
+                data-slot-state={task.executorSlot.state}
+                title={choice ? `${help}\n${choice.title}` : help}
+              >
+                {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
+                {choice && ` · ${choice.text}`}
+              </span>
+            );
+          })()}
           <GitHubSummary links={task.github} openOnly />
           {currentResult(task) && (
             <span className="collab-has-result">

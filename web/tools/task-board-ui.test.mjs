@@ -42,7 +42,14 @@ const fixture = () => [
   task("T-1", { status: "todo", description: "Write the guide.\n\nThen the examples.", progress: "Last slice done", result: earlier, updatedAt: ago(180) }),
   task("T-2", {
     status: "doing", progress: "Halfway through `parsing`", result: earlier, updatedAt: ago(60), description: "Parse the files",
-    executorSlot: { agentId: "e2", state: "running", machine: "local" },
+    // On the machine `auto` chose, with the numbers it chose by (T-35 S3).
+    executorSlot: { agentId: "e2", state: "running", machine: "lab", choice: { requested: "auto", chosen: "lab", candidates: [
+      { machine: "lab", name: "Lab box", freeSlot: true, executors: 0, limit: null, budget: { cpuMillis: 4000, memoryMiB: 8192 },
+        reserved: { cpuMillis: 0, memoryMiB: 1024 }, spare: { cpuMillis: 4000, memoryMiB: 7168 } },
+      { machine: "local", name: "this Core host", freeSlot: true, executors: 1, limit: 2, budget: { cpuMillis: 2000, memoryMiB: 4096 },
+        reserved: { cpuMillis: 1000, memoryMiB: 2048 }, spare: { cpuMillis: 1000, memoryMiB: 2048 } },
+      { machine: "boxed", name: "Boxed", excluded: "it keeps its Agents contained, and runs no Codex Agent there" },
+    ] } },
     github: [pr(9, "open", "success", false), pr(8, "merged"), pr(7, "merged")],
   }),
   // Its executor waits for a slot, second in the queue (T-35).
@@ -57,7 +64,7 @@ const fixture = () => [
   }),
 ];
 
-async function mount({ reduceMotion = false } = {}) {
+async function mount({ reduceMotion = false, language } = {}) {
   const errors = [];
   const calls = [];
   const tasks = fixture();
@@ -91,10 +98,11 @@ async function mount({ reduceMotion = false } = {}) {
   };
   const doc = w.document;
   const button = (text, scope = doc) => [...scope.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  if (language) w.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   try {
     w.eval(bundle);
-    await waitFor(() => { const b = button("Tasks & messages"); return b && !b.disabled; }, "workspace ready");
-    button("Tasks & messages").click();
+    await waitFor(() => { const b = button(language === "zh-Hans" ? "任务与消息" : "Tasks & messages"); return b && !b.disabled; }, "workspace ready");
+    button(language === "zh-Hans" ? "任务与消息" : "Tasks & messages").click();
     await waitFor(() => doc.querySelector('button[data-task-id="T-1"]'), "task list loaded");
   } catch (error) {
     w.close();
@@ -169,10 +177,30 @@ test("a card says where its executor stands: queued with its place, starting wit
     assert.equal(slot("T-5").textContent, "Start not finished: its start was not confirmed");
     assert.equal(slot("T-5").title,
       "Its executor keeps its slot, open; its start didn't finish: its start was not confirmed. Connect starts it again; Close frees its slot.");
-    assert.equal(slot("T-2").textContent, "Running");
+    // A machine `auto` chose is named, with what it was chosen by in the title (T-35 S3).
+    assert.equal(slot("T-2").textContent, "Running · Lab box (chosen automatically)");
     assert.equal(slot("T-2").dataset.slotState, "running");
+    assert.match(slot("T-2").title, /Chosen automatically\. The machines in the order Core weighed them:/);
+    assert.match(slot("T-2").title, /Lab box: a free executor slot \(0 running, no limit of its own\); 7168 of 8192 MiB and 4 of 4 CPUs spare in its Jobs budget/);
+    assert.match(slot("T-2").title, /this Core host: a free executor slot \(1 running, limit 2\); 2048 of 4096 MiB and 1 of 2 CPUs spare/);
+    assert.match(slot("T-2").title, /Boxed: left out: it keeps its Agents contained/);
+    assert.ok(!/chosen automatically/.test(slot("T-3").textContent + slot("T-5").textContent), "without a choice, a card reads as before");
     // Booleans only: a failing assert must never print a jsdom node.
     for (const id of ["T-1", "T-4"]) assert.ok(!slot(id), `${id} has no executor slot`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a card names the machine auto chose in Chinese too, its numbers in the title (T-35 S3)", async () => {
+  const p = await mount({ language: "zh-Hans" });
+  try {
+    const slot = p.row("T-2").querySelector(".collab-executor-slot");
+    assert.match(slot.textContent, /Lab box（自动选择）$/);
+    assert.match(slot.title, /自动选择。Core 依次比较的机器：/);
+    assert.match(slot.title, /Lab box：有空闲执行者槽位（0 个运行中，没有自己的上限）；Job 预算中剩余内存 7168 \/ 8192 MiB、CPU 4 \/ 4/);
+    assert.match(slot.title, /Boxed：未选：it keeps its Agents contained/, "Core's reason stays as written");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

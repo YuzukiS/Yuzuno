@@ -51,6 +51,8 @@ export interface WorkspaceMachine {
   maxJobs?: number;
   budget?: { cpuMillis: number; memoryMiB: number };
   limitMode?: "strict" | "limited";
+  /** Its Agents are kept contained there: no Codex Agent runs on it. */
+  contained?: boolean;
   /** The most recent manual check, shared with the Machines page. */
   lastCheck?: MachineCheck | null;
 }

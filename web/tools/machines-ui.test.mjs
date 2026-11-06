@@ -502,3 +502,147 @@ test("a stored check shown where no language is passed (New agent) keeps English
   }
 });
 
+
+// T-35 S3: a machine's own limit on executors at once, as GET /api/executor-slots lists it.
+const slotsView = (machines) => ({
+  workspace: { version: 1, slots: 3, saved: false, default: 3, startLimitSeconds: 300 },
+  limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
+  inUse: { waiting: 0, starting: 0, running: 1 }, machines,
+});
+
+test("the executor limit of a machine is saved with its version after the machine, cleared to none, and a value outside 1 to 64 sends nothing", async () => {
+  let limits = [{ id: "local", name: "Core host", version: 0, slots: null, executors: 0 },
+    { id: "mini", name: "Mac mini", version: 2, slots: 3, executors: 1 }];
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/mini/executor-slots") && method === "PUT") {
+      const body = JSON.parse(init.body);
+      limits = limits.map((m) => (m.id === "mini" ? { ...m, version: m.version + 1, slots: body.slots } : m));
+      return slotsView(limits);
+    }
+    if (url.endsWith("/executor-slots")) return slotsView(limits);
+    if (url.endsWith("/machines/mini") && method === "PUT") return { ...mini, ...JSON.parse(init.body), lastCheck: null };
+    return undefined;
+  });
+  const puts = () => page.calls.filter((c) => c.method === "PUT");
+  const edit = async () => {
+    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
+    await until(() => field(page, "SSH destination") === "mac-mini", "the edit form, filled in");
+  };
+  try {
+    render(page);
+    await loaded(page);
+    await edit();
+    await until(() => field(page, "Executors at once") === "3", "the saved limit in the editor");
+    type(page, "Executors at once", "65");
+    await tick();
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => card(page, "mini").querySelector('[role="alert"]'), "the range refusal");
+    assert.match(card(page, "mini").querySelector('[role="alert"]').textContent, /Executors at once is a whole number from 1 to 64, or empty/);
+    assert.equal(puts().length, 0, "outside 1 to 64, nothing is sent");
+    type(page, "Executors at once", "5");
+    await tick();
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => puts().length === 2, "the machine, then its limit");
+    assert.deepEqual(puts().map((c) => c.url), ["/api/machines/mini", "/api/machines/mini/executor-slots"]);
+    assert.deepEqual(puts()[1].body, { expectedVersion: 2, slots: 5 }, "saved against the version it was read at");
+    await until(() => !card(page, "mini").querySelector(".remote-machine-editor"), "the editor to close");
+    await edit();
+    await until(() => field(page, "Executors at once") === "5", "the new limit");
+    type(page, "Executors at once", "");
+    await tick();
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => puts().length === 4, "the second save");
+    assert.deepEqual(puts()[3].body, { expectedVersion: 3, slots: null }, "empty clears it to none");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a machine executor limit changed meanwhile is read again and said so; the machine stays saved", async () => {
+  let version = 2;
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/mini/executor-slots") && method === "PUT") {
+      version = 4;
+      return { status: 400, ok: false, json: async () => ({ error: "version_conflict: these executor slots changed; reload before saving" }),
+        text: async () => JSON.stringify({ error: "version_conflict: these executor slots changed; reload before saving" }) };
+    }
+    if (url.endsWith("/executor-slots")) return slotsView([{ id: "mini", name: "Mac mini", version, slots: version === 4 ? 7 : 3, executors: 1 }]);
+    if (url.endsWith("/machines/mini") && method === "PUT") return { ...mini, ...JSON.parse(init.body), lastCheck: null };
+    return undefined;
+  });
+  try {
+    render(page);
+    await loaded(page);
+    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
+    await until(() => field(page, "Executors at once") === "3", "the saved limit");
+    type(page, "Executors at once", "5");
+    await tick();
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => card(page, "mini").querySelector('[role="alert"]'), "the conflict");
+    assert.match(card(page, "mini").querySelector('[role="alert"]').textContent, /changed meanwhile and was read again/);
+    await until(() => field(page, "Executors at once") === "7", "the limit as it is now");
+    assert.ok(card(page, "mini").querySelector(".remote-machine-editor"), "the editor stays open to save again");
+  } finally {
+    page.close();
+  }
+});
+
+// The Core host has no editor: its card holds its own executor limit.
+const localLimit = (page) => card(page, "local")?.querySelector(".machine-executor-limit");
+function typeLocal(page, value) {
+  const input = localLimit(page).querySelector("input");
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, value);
+  input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+}
+
+test("the Core host card sets its own executor limit, through the route for local", async () => {
+  let limits = [{ id: "local", name: "Core host", version: 0, slots: null, executors: 2 }];
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/local/executor-slots") && method === "PUT") {
+      const body = JSON.parse(init.body);
+      limits = [{ ...limits[0], version: limits[0].version + 1, slots: body.slots }];
+      return slotsView(limits);
+    }
+    if (url.endsWith("/executor-slots")) return slotsView(limits);
+    return undefined;
+  });
+  try {
+    render(page);
+    await loaded(page);
+    await until(() => localLimit(page), "the Core host card control");
+    assert.match(localLimit(page).textContent, /2 on this machine now/);
+    assert.match(localLimit(page).textContent, /Lowering it stops no running executor/);
+    typeLocal(page, "1");
+    await tick();
+    button(localLimit(page), "Save executors at once").click();
+    await until(() => page.calls.some((c) => c.method === "PUT"), "the save");
+    const put = page.calls.find((c) => c.method === "PUT");
+    assert.equal(put.url, "/api/machines/local/executor-slots");
+    assert.deepEqual(put.body, { expectedVersion: 0, slots: 1 });
+    await until(() => /Saved/.test(localLimit(page).textContent), "saved");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("the executor limit reads in Chinese on the Machines page (T-189)", async () => {
+  const page = mount((url) => (url.endsWith("/executor-slots")
+    ? slotsView([{ id: "local", name: "Core host", version: 0, slots: null, executors: 0 }]) : undefined));
+  try {
+    chinese(page);
+    render(page);
+    await loaded(page);
+    await until(() => localLimit(page), "the Core host card control");
+    assert.match(localLimit(page).textContent, /同时运行的执行者/);
+    assert.match(localLimit(page).textContent, /调低不会停止正在运行的执行者/);
+    assert.equal(localLimit(page).querySelector("input").placeholder, "没有自己的上限");
+    assert.ok(button(localLimit(page), "保存同时运行的执行者"), "its save reads in Chinese");
+  } finally {
+    page.close();
+  }
+});

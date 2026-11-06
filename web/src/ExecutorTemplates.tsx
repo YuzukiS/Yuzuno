@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Plus, Trash2 } from "lucide-react";
-import { errorText } from "./api";
+import { api, errorText } from "./api";
 import { CLAUDE_MODES, CODEX_PRESETS, claudeModeText, codexPermissionText } from "./agent-defaults";
 import {
   readExecutorTemplates, saveExecutorTemplates,
@@ -8,6 +8,7 @@ import {
 } from "./executor-templates";
 import { ExecutorSlots } from "./ExecutorSlots";
 import { langTag, strings, useLanguage } from "./i18n";
+import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./executor-templates.css";
 
 const text = strings({
@@ -20,7 +21,13 @@ const text = strings({
   none: "No template yet.",
   fromWorkspace: (names: string) => `Also available here, from the Workspace: ${names}.`,
   replaced: "replaced here",
-  host: "Executors run on this Core host.",
+  runsOn: "Runs on",
+  thisHost: "This Core host",
+  auto: "Choose automatically",
+  unknownMachine: (id: string) => `${id} (not in the Machines list)`,
+  machineHelp: "Where its executors run. A dispatch may name another machine.",
+  autoHelp: "Core chooses at each dispatch: a machine with a free executor slot first, then the most spare Jobs memory, then CPU. The task shows which it chose and why.",
+  opencodeHost: "OpenCode executors run on this Core host.",
   later: (n: number) => `This list also holds ${n} ${n === 1 ? "template" : "templates"} saved by a newer Core. This Core can’t show ${n === 1 ? "it" : "them"}; saving here keeps ${n === 1 ? "it" : "them"} as ${n === 1 ? "it is" : "they are"}.`,
   newTemplate: "New template",
   label: "Label",
@@ -57,7 +64,13 @@ const text = strings({
   none: "还没有模板。",
   fromWorkspace: (names) => `这里也可用 Workspace 的模板：${names}。`,
   replaced: "已在此替换",
-  host: "执行者在此 Core 主机上运行。",
+  runsOn: "运行于",
+  thisHost: "此 Core 主机",
+  auto: "自动选择",
+  unknownMachine: (id) => `${id}（不在机器列表中）`,
+  machineHelp: "其执行者运行的地方。派发时可以指定其他机器。",
+  autoHelp: "Core 在每次派发时选择：先选有空闲执行者槽位的机器，再选 Job 剩余内存最多的，然后是 CPU。任务上会显示选了哪台以及原因。",
+  opencodeHost: "OpenCode 执行者在此 Core 主机上运行。",
   later: (n) => `此列表还有 ${n} 个由较新的 Core 保存的模板。此 Core 无法显示；在此保存会原样保留它们。`,
   newTemplate: "新模板",
   label: "标签",
@@ -99,6 +112,8 @@ type Draft = {
   namePattern: string;
   instructions: string;
   maxConcurrent: string;
+  /** Where its executors run (T-35 S3): "" for this Core host, "auto", or a machine's id. */
+  machine: string;
 };
 
 let keys = 0;
@@ -106,6 +121,7 @@ const draftOf = (t: ExecutorTemplate): Draft => ({
   key: `t${++keys}`, id: t.id, idTouched: true, label: t.label, harness: t.harness, model: t.model ?? "",
   reasoningEffort: t.reasoningEffort ?? "", permission: t.permissionPreset ?? t.permissionMode ?? "",
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "", maxConcurrent: t.maxConcurrent ? String(t.maxConcurrent) : "",
+  machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
 });
 const slug = (label: string) => label.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
 /** A new template's id: its label's, or the first free `template-N` for a
@@ -141,8 +157,16 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   if (d.instructions.trim()) template.instructions = d.instructions;
   const limit = atOnce(d.maxConcurrent, Number.MAX_SAFE_INTEGER);
   if (limit) template.maxConcurrent = limit;
+  // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
+  if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   return template;
 };
+/** The machines a template's executors may run on, by harness: this Core
+ * host always; an SSH machine for Codex unless it keeps its Agents contained,
+ * and for Claude Code; `auto` for both. OpenCode runs on this Core host only,
+ * where `auto` would always choose (T-35 S3). */
+const machineOptions = (harness: ExecutorHarness, machines: WorkspaceMachine[]) =>
+  harness === "opencode" ? [] : machines.filter((m) => m.kind === "ssh" && !(harness === "codex" && m.contained));
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 
 /** The Workspace's executor templates, or with `projectId` that project's own
@@ -156,6 +180,8 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
   const [reload, setReload] = useState(0);
+  // The registered machines a template may name; none read, only this Core host and auto.
+  const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   const own = (from: ExecutorTemplatesView) => (projectId ? from.project ?? { version: 0, templates: [] } : from.workspace);
   const adopt = (next: ExecutorTemplatesView) => {
     setView(next);
@@ -169,6 +195,9 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
     readExecutorTemplates(controller.signal, projectId).then(next => {
       if (!controller.signal.aborted) adopt(next);
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
+    api<{ machines: WorkspaceMachine[] }>("/machines", { signal: controller.signal }).then(list => {
+      if (!controller.signal.aborted && Array.isArray(list.machines)) setMachines(list.machines);
+    }).catch(() => { /* Only this Core host and auto are offered then. */ });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, projectId, reload]);
@@ -186,6 +215,10 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
       if (change.label !== undefined && !d.idTouched) next.id = idFor(change.label, list.filter(o => o.key !== key).map(o => o.id));
       // Permissions differ per harness: a change of harness starts them over.
       if (change.harness && change.harness !== d.harness) next.permission = "";
+      // A machine the new harness can't run on goes back to this Core host:
+      // OpenCode runs only there, Codex on no machine that keeps Agents contained.
+      if (change.harness === "opencode"
+        || (change.harness === "codex" && machines.some(m => m.id === next.machine && m.contained))) next.machine = "";
       // An effort is for its model: clearing the model clears it too (R1 de0ae592).
       if (change.model !== undefined && !change.model.trim()) next.reasoningEffort = "";
       return next;
@@ -281,6 +314,23 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
               </>}
               <label className="settings-row">
                 <span className="settings-row-main">
+                  <span className="settings-row-title">{t.runsOn}</span>
+                  <span className="settings-row-help">
+                    {d.harness === "opencode" ? t.opencodeHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
+                  </span>
+                </span>
+                <select className="settings-select" aria-label={t.runsOn} value={d.harness === "opencode" ? "" : d.machine}
+                  disabled={locked || d.harness === "opencode"} onChange={e => edit(d.key, { machine: e.target.value })}>
+                  <option value="">{t.thisHost}</option>
+                  {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
+                    <option value={d.machine}>{t.unknownMachine(d.machine)}</option>
+                  )}
+                  {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
+                </select>
+              </label>
+              <label className="settings-row">
+                <span className="settings-row-main">
                   <span className="settings-row-title">{t.namePattern}</span>
                   <span className="settings-row-help">{t.namePatternHelp(view.defaultNamePattern)}</span>
                 </span>
@@ -312,7 +362,6 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
             </fieldset>
           );
         })}
-        <p className="settings-row-help">{t.host}</p>
         <div className="executor-templates-actions">
           <button type="button" className="quiet-button" disabled={locked || drafts.length >= view.limits.templates}
             onClick={() => { setDone(false); setDrafts(list => [...list, { ...draftOf({ id: "", label: "", harness: "codex" }), idTouched: false }]); }}>

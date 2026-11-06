@@ -118,7 +118,7 @@ test("Executor templates: a new template is added, said as written and saved as 
   const section = () => page.document.querySelector("#settings-executor-templates");
   await until(() => /No template yet\./.test(section()?.textContent ?? ""), "the empty list");
   assert.equal(button(page, "Save templates").disabled, true, "nothing to save yet");
-  assert.match(section().textContent, /Executors run on this Core host\./);
+  assert.doesNotMatch(section().textContent, /Executors run on this Core host\./, "the host-only line is gone: each template says where it runs (T-35 S3)");
 
   button(page, "Add template").click();
   await tick();
@@ -366,5 +366,81 @@ test("At most at once (T-35 S4): a template's own limit is a whole number from 1
   button(page, "Save templates").click();
   await until(() => puts(page).length === 2, "the second save");
   assert.deepEqual(puts(page)[1].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude" }], "empty: no limit of its own");
+  assert.deepEqual(page.errors, []);
+});
+
+// T-35 S3: where a template's executors run: this Core host, a registered
+// machine, or auto. The options are read from one rendering of the select,
+// so what is left out is checked in the same list as what is offered.
+const machineList = { machines: [
+  { id: "local", name: "Core host", kind: "local", defaultCwd: "/home/me" },
+  { id: "lab", name: "Lab box", kind: "ssh", target: "lab", defaultCwd: "/srv/lab" },
+  { id: "boxed", name: "Boxed", kind: "ssh", target: "boxed", defaultCwd: "/srv/boxed", contained: true },
+] };
+const runsOn = (page, label = "Runs on") => field(page, label);
+const offered = (page, label) => [...runsOn(page, label).options].map((o) => o.value);
+const shown = (page, label) => [...runsOn(page, label).options].map((o) => o.textContent);
+
+test("Runs on (T-35 S3): a template names this Core host, a registered machine or auto, by harness, and a save keeps it", async () => {
+  let workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "lab" }] };
+  const page = mount((url, method, body) => {
+    if (url.endsWith("/machines")) return [200, machineList];
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace, undefined, true)];
+  });
+  page.window.renderTemplates();
+  const section = () => page.document.querySelector("#settings-executor-templates").textContent;
+  await until(() => runsOn(page)?.value === "lab" && offered(page).length === 4, "the saved machine, with the machines read");
+  assert.deepEqual(offered(page), ["", "lab", "boxed", "auto"], "Claude Code: this Core host, each registered machine, and auto");
+  assert.deepEqual(shown(page), ["This Core host", "Lab box", "Boxed", "Choose automatically"]);
+  assert.match(section(), /Where its executors run\. A dispatch may name another machine\./);
+
+  await type(page, "Harness", "codex");
+  assert.deepEqual(offered(page), ["", "lab", "auto"], "Codex: no machine that keeps its Agents contained");
+  assert.equal(runsOn(page).value, "lab", "a machine Codex may run on stays chosen");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1 && /Saved\./.test(section()), "the save");
+  assert.equal(puts(page)[0].body.templates[0].machineId, "lab", "a save keeps the machine it names");
+
+  await type(page, "Runs on", "auto");
+  assert.match(section(), /Core chooses at each dispatch: a machine with a free executor slot first, then the most spare Jobs memory, then CPU\. The task shows which it chose and why\./);
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 2 && /Saved\./.test(section()), "the second save");
+  assert.equal(puts(page)[1].body.templates[0].machineId, "auto", "auto is saved as auto");
+
+  await type(page, "Harness", "opencode");
+  assert.deepEqual(offered(page), [""], "OpenCode: this Core host only, no machine and no auto");
+  assert.equal(runsOn(page).disabled, true);
+  assert.match(section(), /OpenCode executors run on this Core host\./);
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 3, "the third save");
+  assert.equal("machineId" in puts(page)[2].body.templates[0], false, "an OpenCode template names no machine");
+  assert.deepEqual(page.errors, []);
+});
+
+test("Runs on (T-35 S3): a machine the list no longer has is shown as unknown and kept until changed", async () => {
+  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "gone" }] };
+  const page = mount((url, method) => {
+    if (url.endsWith("/machines")) return [200, machineList];
+    if (method === "PUT") return [200, view(workspace)];
+    return [200, view(workspace)];
+  });
+  page.window.renderTemplates();
+  await until(() => runsOn(page)?.value === "gone" && offered(page).length === 5, "the unknown machine, with the machines read");
+  assert.equal(runsOn(page).selectedOptions[0].textContent, "gone (not in the Machines list)");
+  await type(page, "Label", "Lead reviewer");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.templates[0].machineId, "gone", "kept until changed");
+});
+
+test("Runs on (T-35 S3) reads in Chinese (T-189)", async () => {
+  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "auto" }] };
+  const page = mount((url) => [200, url.endsWith("/machines") ? machineList : view(workspace)]);
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.renderTemplates();
+  await until(() => runsOn(page, "运行于")?.value === "auto" && offered(page, "运行于").length === 4, "the select, in Chinese");
+  assert.deepEqual(shown(page, "运行于"), ["此 Core 主机", "Lab box", "Boxed", "自动选择"]);
+  assert.match(page.document.querySelector("#settings-executor-templates").textContent, /Core 在每次派发时选择：先选有空闲执行者槽位的机器/);
   assert.deepEqual(page.errors, []);
 });

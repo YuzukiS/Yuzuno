@@ -23,6 +23,7 @@ import {
   type MachineCheck,
 } from "./machine-checks";
 import { MachineEditor } from "./MachineEditor";
+import { MachineExecutorLimit } from "./MachineExecutorLimit";
 import { strings, useLanguage, type Language } from "./i18n";
 import { shellText } from "./shell-text";
 import { machineIdOf, projectName } from "./projects";
@@ -530,6 +531,8 @@ export function MachinesPage({
                   </div>
                 )}
               </dl>
+              {/* The Core host has no editor: its own executor limit is set here (T-35 S3). */}
+              {machine.kind === "local" && <MachineExecutorLimit machineId="local" language={language} />}
               <section
                 className="machine-agents"
                 aria-label={t.agentsOn(machine.name)}
