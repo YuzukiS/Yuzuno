@@ -283,6 +283,36 @@ pub(super) const CORE_HOST: &str = "local";
 /// Core from that Agent's own record at submit, never from the request.
 pub(super) const AGENT_MACHINE: &str = "agent";
 
+/// A machine's Jobs budget and what Jobs reserve of it now, read in the
+/// caller's transaction, for an executor's dispatch choosing its machine
+/// (T-35 S3b, collaboration_store/executor_choice.rs): `local` or a
+/// registered machine's id. None when it has no budget: an SSH machine
+/// without one, or this Core host before one is saved and with no
+/// `default_local` (`local_budget_default`).
+pub(crate) fn machine_headroom(db: &rusqlite::Connection, machine: &str, default_local: Option<&Value>)
+    -> Result<Option<(Resources, Resources)>> {
+    if machine == CORE_HOST {
+        let saved: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?;
+        if !saved && default_local.is_none() {
+            return Ok(None);
+        }
+        return Ok(Some((store::budget(db, default_local)?, store::reserved(db)?.0)));
+    }
+    let Some(budget) = remote::machine_settings(db, machine)?.and_then(|m| m.budget) else { return Ok(None) };
+    let budget = Resources { cpu_millis: budget.cpu_millis.into(), memory_mi_b: budget.memory_mib.into(), swap_mi_b: 0 };
+    Ok(Some((budget, remote::machine_reserved(db, machine)?)))
+}
+
+/// This Core host's suggested Jobs budget while none is saved, as its first
+/// local Job would save it; none once one is. Read before a transaction
+/// that needs it (`machine_headroom`).
+pub(crate) async fn local_budget_default(ws: &Workspace) -> Result<Option<Value>> {
+    if ws.stored(|store| store.job_budget_saved()).await? {
+        return Ok(None);
+    }
+    Ok(Some(host::machine_info().await?["suggestedBudget"].clone()))
+}
+
 /// The start record of a local Job's attempt (started.json), if it has one.
 pub(crate) fn started_record(data: &std::path::Path, job: &Value) -> Option<Value> {
     let folder = host::folder(data, job).ok()?;

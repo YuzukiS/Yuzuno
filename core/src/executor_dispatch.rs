@@ -42,7 +42,14 @@ impl Workspace {
         let permit = self.admission.enter_work().map_err(|_| anyhow::Error::new(WaitsForUpdate))?;
         ensure!(input.get("toAgentId").is_none(), "invalid_input: give toAgentId or executor, not both");
         let who = actor.map(str::to_owned);
-        let next = self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input)).await?;
+        // This Core host's Jobs budget while none is saved, for `auto` to rank
+        // it by (T-35 S3b): read before the dispatch's transaction. Unread, it
+        // has no budget, and ranks after every machine that has one.
+        let default_local = crate::jobs::local_budget_default(self).await.unwrap_or_else(|error| {
+            eprintln!("Executor dispatch: this host's default Jobs budget could not be read: {error:#}");
+            None
+        });
+        let next = self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input, default_local.as_ref())).await?;
         let dispatch = match next {
             Next::Dispatch(dispatch) => dispatch,
             Next::Create(plan) => {

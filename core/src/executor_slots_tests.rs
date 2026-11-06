@@ -466,3 +466,65 @@ fn a_saved_limit_is_a_whole_number_or_null() {
         assert_eq!(limit(Some(bad.clone())), Err("invalid_input: a start's time limit is a whole number of seconds from 30 to 3600".into()), "{bad}");
     }
 }
+
+/// T-35 S3b (Lead 2 mail 5898): a machine's own limit, this Core host's
+/// included, through its route: saved against its version, 1 to 64, null
+/// clearing it, for a registered machine only; the Workspace keeps the start
+/// time limit. Lowering it under the executors running there stops none: no
+/// more start there until fewer hold a slot.
+#[tokio::test]
+async fn a_machines_own_limit_is_saved_through_its_route() {
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.add_machine(&crate::remote::RemoteMachine {
+        id: "lab-box".into(), name: "Lab box".into(), target: "tester@192.0.2.10".into(), ..Default::default()
+    }).unwrap();
+    let call = |path: &str, body: Value| {
+        let request = axum::http::Request::builder().method("PUT").uri(path).header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string())).unwrap();
+        let ws = ws.clone();
+        async move {
+            let response = router().with_state(ws).oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+        }
+    };
+    let machines = |view: &Value| view["machines"].clone();
+    assert_eq!(machines(&ws.store.executor_slots_view(None).unwrap()),
+        json!([{"id":"local","name":"this Core host","version":0,"slots":null,"executors":0},
+            {"id":"lab-box","name":"Lab box","version":0,"slots":null,"executors":0}]));
+    let (status, saved) = call("/api/machines/lab-box/executor-slots", json!({"expectedVersion":0,"slots":1})).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{saved}");
+    assert_eq!(saved["machines"][1], json!({"id":"lab-box","name":"Lab box","version":1,"slots":1,"executors":0}));
+    let (status, local) = call("/api/machines/local/executor-slots", json!({"expectedVersion":0,"slots":2})).await;
+    assert_eq!((status.as_u16(), local["machines"][0]["slots"].clone()), (200, json!(2)), "this Core host's too: {local}");
+    for (path, body, says) in [
+        ("/api/machines/lab-box/executor-slots", json!({"expectedVersion":0,"slots":2}), "version_conflict:"),
+        ("/api/machines/lab-box/executor-slots", json!({"expectedVersion":1,"slots":65}), "invalid_input: executors at once"),
+        ("/api/machines/laptop/executor-slots", json!({"expectedVersion":0,"slots":1}), "machine_not_found: no registered machine is laptop"),
+        ("/api/machines/lab-box/executor-slots", json!({"expectedVersion":1,"slots":1,"startLimitSeconds":60}), "invalid_input: a start's time limit is the Workspace's"),
+    ] {
+        let (status, refused) = call(path, body.clone()).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}: {refused}");
+        assert!(refused["error"].as_str().unwrap_or_default().starts_with(says), "{body} should say {says}: {refused}");
+    }
+    // Raised to 2 and both start; lowered to 1 under them: none stops, and
+    // none more starts there.
+    for id in ["a", "b"] {
+        queued(&ws.store, id, None, "lab-box");
+    }
+    assert_eq!(started(&ws.store), ["a"], "its limit of 1 holds");
+    let (status, _) = call("/api/machines/lab-box/executor-slots", json!({"expectedVersion":1,"slots":2})).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(started(&ws.store), ["b"]);
+    let (status, lowered) = call("/api/machines/lab-box/executor-slots", json!({"expectedVersion":2,"slots":1})).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{lowered}");
+    assert_eq!((state(&ws.store, "a").0, state(&ws.store, "b").0), ("starting".into(), "starting".into()), "a lower limit stops none");
+    queued(&ws.store, "c", None, "lab-box");
+    assert!(started(&ws.store).is_empty(), "and none more starts there");
+    let (_, cleared) = call("/api/machines/lab-box/executor-slots", json!({"expectedVersion":3,"slots":null})).await;
+    assert_eq!(cleared["machines"][1]["slots"], Value::Null, "null clears it");
+    assert_eq!(started(&ws.store), ["c"], "unset: only the Workspace's applies");
+}

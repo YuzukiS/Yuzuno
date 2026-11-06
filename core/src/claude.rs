@@ -937,15 +937,46 @@ impl Workspace {
     async fn claude_remote_bridge(&self, machine: &RemoteMachine, id: &str, events: crate::backlog::EventSender) -> Result<(Arc<Bridge>, Option<String>)> {
         #[cfg(test)]
         if let Some((_, argv)) = REMOTE_ATTACH.lock().unwrap().iter().find(|(machine_id, _)| *machine_id == machine.id).cloned() {
-            let mut command = Command::new(&argv[0]);
-            command.args(&argv[1..]);
-            return Ok((Bridge::spawn_command(events, command)?, Some("test-host".into())));
+            return self.claude_stand_in_bridge(id, argv, events).await;
         }
         let (digest, _tools) = claude_remote_install(machine).await?;
         let workspace = self.stored(|store| store.workspace_id()).await?;
+        // Committed before the machine is asked to start Claude's host (T-35
+        // S3b, Lead 2 mail 5898): a failure before it launched nothing there.
+        self.launch_requested(id, "claude/hostEnsuring").await?;
         let host = crate::remote::claude_ensure(machine, &workspace, id, &digest).await?;
+        self.claude_host_located(id, &host.instance_id).await?;
         let bridge = Bridge::spawn_command(events, crate::remote::claude_attach_command(machine, &host)?)?;
         Ok((bridge, Some(host.instance_id)))
+    }
+
+    /// The host instance that answered, recorded as Codex's runtime is
+    /// (`runtime/located`): the one a failed start's stop names (T-35 S3b).
+    async fn claude_host_located(&self, id: &str, instance: &str) -> Result<()> {
+        let located = instance.to_owned();
+        self.record_meta(id, "claude/hostLocated", json!({"instanceId":instance}), move |m| {
+            if let Some(remote) = &mut m.agent.remote {
+                remote.host_instance = Some(located);
+            }
+        }).await
+    }
+
+    /// A test machine's host (REMOTE_ATTACH), in claude_remote_bridge's
+    /// order: the launch asked, the host's answer, the attach. `argv` names
+    /// the host's command, or how its start ends: `refuse-ensure` (refused)
+    /// or `never-ensure` (never answered).
+    #[cfg(test)]
+    async fn claude_stand_in_bridge(&self, id: &str, argv: Vec<String>, events: crate::backlog::EventSender) -> Result<(Arc<Bridge>, Option<String>)> {
+        self.launch_requested(id, "claude/hostEnsuring").await?;
+        match argv[0].as_str() {
+            "refuse-ensure" => bail!("a test's machine refused to start Claude's host"),
+            "never-ensure" => std::future::pending::<()>().await,
+            _ => {}
+        }
+        self.claude_host_located(id, "test-host").await?;
+        let mut command = Command::new(&argv[0]);
+        command.args(&argv[1..]);
+        Ok((Bridge::spawn_command(events, command)?, Some("test-host".into())))
     }
 
     /// Adds what Claude saved of `session` that the record lacks

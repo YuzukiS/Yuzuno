@@ -4,9 +4,9 @@
 //!
 //! The first definite failure of a fresh dispatch's executor is rebuilt
 //! once: a new dispatch of the same request by the same dispatcher, made as
-//! that request was. Its record here is written pending before Core closes
-//! the executor, done with the Agent and dispatch it made (in that dispatch's
-//! own transaction), or failed with why. A second failure, or a rebuild Core
+//! that request was. Its record here is written pending in the transaction
+//! that closes the executor (`settling_in`, T-35 S3b), done with the Agent and
+//! dispatch it made (in that dispatch's own transaction), or failed with why. A second failure, or a rebuild Core
 //! can't make, blocks the task. Core writes that itself, as a system actor,
 //! and mails the dispatcher when it is an Agent.
 use super::{activity, executor_dispatch::actor_key, insert_message, load_task, save_task, task_number, SharedTask, TaskActor};
@@ -111,20 +111,23 @@ impl Store {
             [agent], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
     }
 
-    /// A failed start is being settled: recorded, pending, before Core closes
-    /// the executor, so a stop after the close leaves this row for a pass or
-    /// the next start to finish (R1 dde34160). Written again, it keeps the
-    /// latest reason while pending.
+    /// A pending record as a Core before S3b wrote it, apart from the close:
+    /// a test's way to leave one where that Core stopped.
+    #[cfg(test)]
     pub(crate) fn executor_rebuild_begin(&self, made: &Made, agent: &str, reason: &str) -> Result<()> {
-        let at = now();
-        self.db.write()?.execute(
-            "INSERT INTO executor_rebuilds(from_agent,actor,request_id,task_id,from_dispatch,reason,state,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?7)
-             ON CONFLICT(from_agent) DO UPDATE SET reason=excluded.reason,updated_at=excluded.updated_at
-             WHERE executor_rebuilds.state='pending'",
-            params![agent, made.actor, made.request_id, made.task_id, made.dispatch_id, reason, at],
-        )?;
-        Ok(())
+        begin(&self.db.write()?, made, agent, reason)
+    }
+
+    /// The dispatch that made `agent`, when its close carried the record of
+    /// its settling (`settling_in`): what a settled start finishes. None when
+    /// no record was written: not a template dispatch's, or its task moved on.
+    pub(crate) fn executor_settling(&self, agent: &str) -> Result<Option<Made>> {
+        let pending: bool = self.db.read()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM executor_rebuilds WHERE from_agent=?1 AND state='pending')", [agent], |r| r.get(0))?;
+        if !pending {
+            return Ok(None);
+        }
+        self.executor_made(agent)
     }
 
     /// Its start may have happened after all: Core neither closes nor
@@ -245,6 +248,38 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+}
+
+/// A failed start's settling, recorded pending in the transaction of the
+/// close that carries it (executor_slots.rs `follow_agent`, T-35 S3b): for a
+/// fresh executor whose template dispatch is still its task's. The close and
+/// this row commit or fail together, so a closed executor's start is never
+/// left unsettled, whether Core's store errs or Core stops after the close
+/// (R2 2eb2935b): a pass, or the next start, finishes it.
+pub(crate) fn settling_in(db: &Connection, agent: &str, reason: &str) -> Result<()> {
+    let row: Option<(String, String, String, String, Option<String>, String)> = db.query_row(
+        "SELECT actor, request_id, input_json, task_id, dispatch_id, machine_id FROM executor_dispatches WHERE agent_id=?1 AND state='dispatched'",
+        [agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional()?;
+    let Some((actor, request_id, input, task_id, dispatch_id, machine)) = row else { return Ok(()) };
+    if !still_its(&load_task(db, &task_id)?, agent) {
+        return Ok(());
+    }
+    let made = Made { actor, request_id, input: serde_json::from_str(&input)?, task_id, dispatch_id, machine };
+    begin(db, &made, agent, reason)
+}
+
+/// The pending record of `agent`'s settling, with why. Written again, it
+/// keeps the latest reason while pending.
+fn begin(db: &Connection, made: &Made, agent: &str, reason: &str) -> Result<()> {
+    let at = now();
+    db.execute(
+        "INSERT INTO executor_rebuilds(from_agent,actor,request_id,task_id,from_dispatch,reason,state,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?7)
+         ON CONFLICT(from_agent) DO UPDATE SET reason=excluded.reason,updated_at=excluded.updated_at
+         WHERE executor_rebuilds.state='pending'",
+        params![agent, made.actor, made.request_id, made.task_id, made.dispatch_id, reason, at],
+    )?;
+    Ok(())
 }
 
 /// In the transaction that dispatches a task to a template executor: when

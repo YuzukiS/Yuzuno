@@ -33,6 +33,13 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
             PRIMARY KEY(actor,request_id));
         CREATE INDEX IF NOT EXISTS executor_dispatches_agent ON executor_dispatches(agent_id);",
     )?;
+    // T-35 S3b: how `auto` chose its machine (executor_choice.rs); none for
+    // a machine the dispatch or its template named.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('executor_dispatches') WHERE name='choice_json')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE executor_dispatches ADD COLUMN choice_json TEXT")?;
+    }
     Ok(())
 }
 
@@ -183,8 +190,10 @@ impl Store {
     /// known request goes on where it stopped: refused with another payload,
     /// its error when it failed, on to its Agent when that exists. A new one
     /// is checked (the task's version, not archived; who may; the template)
-    /// and written `pending` with its Agent's id chosen.
-    pub(crate) fn executor_dispatch_begin(&self, actor: Option<&str>, input: Value) -> Result<Next> {
+    /// and written `pending` with its Agent's id chosen. `default_local`: this
+    /// Core host's Jobs budget while none is saved, for `auto` to rank it by
+    /// (jobs `local_budget_default`).
+    pub(crate) fn executor_dispatch_begin(&self, actor: Option<&str>, input: Value, default_local: Option<&Value>) -> Result<Next> {
         ensure!(input.is_object(), "invalid_input: expected an object");
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
@@ -231,11 +240,18 @@ impl Store {
         })?;
         template.validate(crate::opencode_agent::enabled())?;
         // Where it runs (T-35 S3a, Lead 2 Q1): the dispatch's machine, else
-        // its template's, else this Core host.
-        let machine = given_machine.or_else(|| template.machine_id.clone()).unwrap_or_else(|| "local".into());
-        crate::executor_templates::machine_named(Some(&machine), &template.harness)?;
-        let remote = remote_machine(&tx, &machine, &template.harness)?;
+        // its template's, else this Core host; `auto`, the one Core chooses
+        // now (S3b, executor_choice.rs), recorded with why.
+        let requested = given_machine.or_else(|| template.machine_id.clone()).unwrap_or_else(|| "local".into());
+        crate::executor_templates::machine_named(Some(&requested), &template.harness)?;
         let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
+        let (machine, choice) = if requested == super::executor_choice::AUTO {
+            let (chosen, choice) = super::executor_choice::choose(&tx, &template, project.as_deref(), worktree.as_deref(), default_local)?;
+            (chosen, Some(choice.to_string()))
+        } else {
+            (requested, None)
+        };
+        let remote = remote_machine(&tx, &machine, &template.harness)?;
         let project_dir = match &project {
             Some(project) => crate::projects::default_dir(&tx, project, &machine)?,
             None => None,
@@ -277,9 +293,9 @@ impl Store {
         // its instructions reach it with the task, not only its settings.
         let given = json!({"id":template.id,"label":template.label,"source":source,"instructions":template.instructions});
         tx.execute(
-            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9)",
-            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at, machine],
+            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,choice_json)
+             VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9,?11)",
+            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at, machine, choice],
         )?;
         tx.commit()?;
         Ok(Next::Create(Box::new(Plan {
