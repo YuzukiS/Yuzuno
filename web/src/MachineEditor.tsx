@@ -80,6 +80,7 @@ export function MachineEditor({
   onCancel,
   onBusyChange,
   language = "en",
+  autoFocus = true,
 }: {
   id?: string;
   /** The machine to edit; without one, a new machine is added. */
@@ -90,6 +91,9 @@ export function MachineEditor({
   onBusyChange?: (busy: boolean) => void;
   /** The language of its own words; English where a page doesn't pass one. */
   language?: Language;
+  /** Its name field takes focus when it opens; not where a picker beside it
+   * opens it, so arrowing through that picker keeps focus there (T-55). */
+  autoFocus?: boolean;
 }) {
   const t = text(language);
   const [name, setName] = useState(machine?.name || "");
@@ -171,7 +175,7 @@ export function MachineEditor({
       <label>
         {t.name}
         <input
-          autoFocus
+          autoFocus={autoFocus}
           value={name}
           maxLength={60}
           onChange={(e) => setName(e.target.value)}

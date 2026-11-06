@@ -160,8 +160,8 @@
 }
 
 /* The machine at a glance: one bar per resource in a row of cells, the
-   lighter band reserved and the solid part in use; each cell's one setting
-   or note sits under its bar. */
+   lighter band reserved and the solid part in use; each cell's notes sit
+   under its bar. Its settings are in Settings (T-55). */
 .jobs-budget {
   display: grid;
   flex: none;
@@ -194,6 +194,19 @@
 .jobs-budget-machine span,
 .jobs-budget-key {
   color: var(--text-secondary);
+}
+/* The key and the way to the card's settings, in Settings (T-55). */
+.jobs-budget-side {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  min-width: 0;
+}
+.jobs-budget-edit {
+  padding: 0;
+  color: var(--accent-ink);
+  font-size: inherit;
 }
 .jobs-budget-key {
   display: inline-flex;
@@ -308,39 +321,7 @@
 .jobs-gpu-held[title] {
   cursor: help;
 }
-.job-budget-settings summary {
-  width: fit-content;
-  color: var(--accent-ink);
-  cursor: pointer;
-}
-.job-budget-settings form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 8px;
-  padding: 10px 0 2px;
-}
-.job-budget-settings label {
-  display: grid;
-  flex: 1;
-  gap: 4px;
-  min-width: 90px;
-  color: var(--text-secondary);
-}
-.job-budget-settings input {
-  width: 100%;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input);
-  color: var(--ink);
-  font: inherit;
-}
-.job-budget-settings .job-footnote {
-  flex-basis: 100%;
-}
-/* Reads like the settings beside it: a quiet word, not a boxed button. */
+/* Reads like the words beside it: a quiet word, not a boxed button. */
 .jobs-gpu-pause {
   padding: 0;
   color: var(--accent-ink);

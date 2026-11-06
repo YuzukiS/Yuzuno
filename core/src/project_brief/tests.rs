@@ -1725,6 +1725,8 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
 
 #[path = "editors_tests.rs"]
 mod editors_tests;
+#[path = "release_handover_tests.rs"]
+mod release_handover_tests;
 #[path = "cas_tests.rs"]
 mod cas_tests;
 

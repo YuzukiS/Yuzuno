@@ -80,6 +80,12 @@ export const jobsText = strings({
   unconfirmed: "A previous submission reply is unconfirmed. Keep its command unchanged and retry to retrieve the same Job ID.",
   // The budget at a glance.
   activeQueued: (active: number, queued: number) => `${active} active · ${queued} queued`,
+  // How many hold a slot, of how many may (T-55).
+  activeOf: (active: number, max: number, queued: number) => `${active} of ${max} active · ${queued} queued`,
+  slotsTitle: (max: number, set: boolean) =>
+    `At most ${max} of this host's jobs run at once${set ? "" : " (the default)"}; one more waits in the queue.`,
+  editInSettings: "Edit in Settings",
+  editInSettingsTitle: "Change this host's budget, how many jobs run at once, the disk reserve, Windows' ceiling and GPU settings in Settings",
   keyTitle: "Reservations include the bounded result collector. CPU is a quota; other apps and Windows also use this host.",
   inUse: "In use",
   reservedKey: "Reserved",
@@ -253,6 +259,10 @@ export const jobsText = strings({
   envObject: "环境必须是值为字符串的 JSON 对象。",
   unconfirmed: "上一次提交的回复尚未确认。请保持其命令不变并重试，以取回同一个 Job ID。",
   activeQueued: (active, queued) => `${active} 个活跃 · ${queued} 个排队`,
+  activeOf: (active, max, queued) => `${active} / ${max} 个活跃 · ${queued} 个排队`,
+  slotsTitle: (max, set) => `此主机的 Job 同时最多运行 ${max} 个${set ? "" : "（默认）"}；超出的在队列中等待。`,
+  editInSettings: "在设置中编辑",
+  editInSettingsTitle: "在设置中更改此主机的预算、同时运行的 Job 数、磁盘保留、Windows 上限和 GPU 设置",
   keyTitle: "预留包括有界的结果收集器。CPU 是配额；其他应用和 Windows 也在使用此主机。",
   inUse: "使用中",
   reservedKey: "已预留",

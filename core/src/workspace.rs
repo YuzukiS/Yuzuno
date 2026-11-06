@@ -85,6 +85,8 @@ pub struct Workspace {
     pub(crate) jobs: crate::jobs::State,
     /// How many executors run at once, and the queue (T-35); see `executor_slots`.
     pub(crate) executor_slots: crate::executor_slots::State,
+    /// Releases that wait for an executor's work to end (T-36); see `executor_archiving`.
+    pub(crate) executor_archiving: crate::executor_archiving::State,
     pub(crate) ci: crate::ci_monitor::State,
     pub(crate) codex_usage: crate::codex_usage::State,
     pub(crate) delivery: crate::delivery::State,
@@ -165,6 +167,7 @@ impl Workspace {
             pr_operations: Default::default(),
             jobs: Default::default(),
             executor_slots: Default::default(),
+            executor_archiving: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
             codex_context: Default::default(),
@@ -618,6 +621,9 @@ impl Workspace {
             let result = async {
                 if let Some(remote_agent) = agent.remote {
                     self.ensure_collaboration_tunnel(&remote_agent.machine).await?;
+                    // Committed before the machine is asked to launch anything
+                    // (T-35 S3b): a failure before it launched nothing there.
+                    self.launch_requested(id, "runtime/ensuring").await?;
                     let runtime = remote::ensure_runtime(&remote_agent.machine,
                         &self.stored(|store| store.workspace_id()).await?, id).await?;
                     if let Some(previous) = &remote_agent.runtime {

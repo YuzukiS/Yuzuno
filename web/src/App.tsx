@@ -178,7 +178,7 @@ import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
-import { Jobs, ConversationJobs, openJobs } from "./Jobs";
+import { Jobs, ConversationJobs } from "./Jobs";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
@@ -2116,6 +2116,15 @@ export function App() {
     else selectAgent(id);
     if (phone) requestAnimationFrame(() => phoneBack.current?.focus());
   }
+  /** Settings at one editor, from another dialog that has just closed (the
+   * Jobs card's Edit in Settings, T-55): it lets go of focus first. */
+  function openSettingsAt(editor: SettingsEditor) {
+    if (previewMode) return;
+    requestAnimationFrame(() => {
+      setSettingsAt({ editor, nonce: Date.now() });
+      setUpdatesOpen(true);
+    });
+  }
   function openSettingsDestination(destination: SettingsDestination) {
     if (previewMode) return;
     setUpdatesOpen(false);
@@ -2145,7 +2154,6 @@ export function App() {
       setTaskFocus({ taskId: destination.taskId, section: "workspaces", at: Date.now() });
       setCollaborationOpen(true);
     } else if (destination.kind === "machines") setMachinesOpen(true);
-    else openJobs({ source: "local", settings: "budget" });
     });
   }
   // An Agent's action menu (T-184), in the list and the conversation header.
@@ -3134,7 +3142,7 @@ export function App() {
               <MessageSquare size={15} />
               <span className="toolbar-nav-label">{shell.tasks}</span>
             </button>
-            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} />
+            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} onOpenSettings={openSettingsAt} />
           </nav>
         </div>
         <div className="toolbar-actions">

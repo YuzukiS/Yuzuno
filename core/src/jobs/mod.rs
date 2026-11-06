@@ -7,6 +7,8 @@ mod backfill_tests;
 mod gpu_tests;
 #[cfg(test)]
 mod limit_tests;
+#[cfg(test)]
+mod release_tests;
 mod checkpoint;
 mod host;
 mod ids;
@@ -304,6 +306,41 @@ pub(super) const CORE_HOST: &str = "local";
 /// `machineId` naming the machine the submitting Agent runs on: resolved by
 /// Core from that Agent's own record at submit, never from the request.
 pub(super) const AGENT_MACHINE: &str = "agent";
+
+/// A machine's Jobs budget and what Jobs reserve of it now, read in the
+/// caller's transaction, for an executor's dispatch choosing its machine
+/// (T-35 S3b, collaboration_store/executor_choice.rs): `local` or a
+/// registered machine's id. None when it has no budget: an SSH machine
+/// without one, or this Core host before one is saved and with no
+/// `default_local` (`local_budget_default`).
+pub(crate) fn machine_headroom(db: &rusqlite::Connection, machine: &str, default_local: Option<&Value>)
+    -> Result<Option<(Resources, Resources)>> {
+    if machine == CORE_HOST {
+        if !local_budget_saved(db)? && default_local.is_none() {
+            return Ok(None);
+        }
+        return Ok(Some((store::budget(db, default_local)?, store::reserved(db)?.0)));
+    }
+    let Some(budget) = remote::machine_settings(db, machine)?.and_then(|m| m.budget) else { return Ok(None) };
+    let budget = Resources { cpu_millis: budget.cpu_millis.into(), memory_mi_b: budget.memory_mib.into(), swap_mi_b: 0 };
+    Ok(Some((budget, remote::machine_reserved(db, machine)?)))
+}
+
+/// Whether this Core host's Jobs budget is saved, read in the caller's
+/// transaction: until then its default comes from the host itself.
+pub(crate) fn local_budget_saved(db: &rusqlite::Connection) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?)
+}
+
+/// This Core host's suggested Jobs budget while none is saved, as its first
+/// local Job would save it; none once one is. Read before a transaction
+/// that needs it (`machine_headroom`).
+pub(crate) async fn local_budget_default(ws: &Workspace) -> Result<Option<Value>> {
+    if ws.stored(|store| store.job_budget_saved()).await? {
+        return Ok(None);
+    }
+    Ok(Some(host::machine_info().await?["suggestedBudget"].clone()))
+}
 
 /// The start record of a local Job's attempt (started.json), if it has one.
 pub(crate) fn started_record(data: &std::path::Path, job: &Value) -> Option<Value> {
@@ -1328,6 +1365,8 @@ fn changed(ws: &Workspace) {
     ws.changes
         .publish(&json!({"type":"workspace.changed","scope":"jobs"}));
     ws.collaboration_wakeup.notify_one();
+    // A release may wait for a Job that just ended (T-36).
+    ws.wake_archive_passes();
 }
 
 /// A request that would queue a stage on a host that cannot run local Jobs
@@ -1668,7 +1707,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_cost", task_cost::DESCRIPTION, json!({"taskId":task_reference}), vec!["taskId"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
-        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. maxActive is how many of this host's own jobs run at once, 1–16, default 4 (set through the Jobs budget save, POST /api/jobs/budget with maxActive, null for the default; a Settings field follows with T-55 PR 2; maxActiveSet says whether one is saved); activeCount is how many hold a slot now, and a job past it waits with \"Waiting for an execution/collector slot\". CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
+        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. maxActive is how many of this host's own jobs run at once, 1–16, default 4 (set by the user in Settings → Jobs & resources → Core host budget, which saves it with POST /api/jobs/budget, null for the default; maxActiveSet says whether one is saved); activeCount is how many hold a slot now, and a job past it waits with \"Waiting for an execution/collector slot\". CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
         make("job_lower_memory", "Lower your running local job's memory limit (MiB) so the budget it frees can start queued work at once. Only down, never below what the job uses now plus 256 MiB, and it is never raised again; swap stays as reserved. systemd applies it to the running job, its reservation is lowered with it, and the change is recorded on the job and its task. A job that then needs more than the new limit is killed for memory, and its reason names this change. If an earlier lowering's answer was lost, asking for the same value again confirms it without changing anything. Not on SSH machines or Windows.", json!({"jobId":job_ref,"memoryMiB":{"type":"integer","minimum":1}}), vec!["jobId","memoryMiB"]),
         make("job_gpu_admission", "Open or close one local GPU (by UUID, from job_budget) to new managed jobs. Closing only stops new admission there; jobs already running or paused on it keep their reservation. Queued jobs that need it wait with this reason. A device the user closed stays closed until the user opens it.", json!({"uuid":string,"open":{"type":"boolean"},"reason":string}), vec!["uuid","open"]),
     ]

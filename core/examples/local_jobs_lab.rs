@@ -34,6 +34,8 @@ lock=threading.Lock()
 def emit(value):
  with lock: print(json.dumps(value),flush=True)
 def complete(turn):
+ # A check that needs a Turn running (a Brief write) holds Turns while hold-turns exists.
+ while (root/'hold-turns').exists(): time.sleep(0.1)
  time.sleep(1)
  emit({'method':'turn/completed','params':{'turn':{'id':turn,'status':'completed','items':[]}}})
 for line in sys.stdin:
@@ -84,6 +86,20 @@ for line in sys.stdin:
     let config =
         collaboration_mcp::agent_http_config(&ws, "lab-a", &format!("http://127.0.0.1:{port}"))?;
     std::fs::write(root.join("connection.json"), serde_json::to_vec(&config)?)?;
+    // Lab only: any Agent's MCP connection, so a check can act as an Agent
+    // Core created there (an executor, T-36), as connection.json does for lab-a.
+    let lab = Arc::clone(&ws);
+    let app = app.route(
+        "/lab/connection/{id}",
+        axum::routing::get(move |axum::extract::Path(id): axum::extract::Path<String>| {
+            let ws = Arc::clone(&lab);
+            async move {
+                collaboration_mcp::agent_http_config(&ws, &id, &format!("http://127.0.0.1:{port}"))
+                    .map(axum::Json)
+                    .map_err(|error| (axum::http::StatusCode::NOT_FOUND, error.to_string()))
+            }
+        }),
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
