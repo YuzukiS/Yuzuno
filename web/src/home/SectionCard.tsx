@@ -49,13 +49,14 @@ export function SectionTime({ label, iso }: { label: string; iso?: string }) {
 }
 
 /**
- * Keeps a card at least as tall as it was before Core sent a new version,
- * until the reader touches it, so shorter content never pulls up the blocks
- * below while they are being read.
+ * Keeps a card at least as tall as it was before Core sent a new version, or
+ * a new state of its ask (replied, as Core reads the reply: T-19 HM:A4, with
+ * the version unchanged), until the reader touches it, so shorter content
+ * never pulls up the blocks below while they are being read.
  */
-function useReservedHeight(version: number, collapsed: boolean) {
+function useReservedHeight(content: string, collapsed: boolean) {
   const ref = useRef<HTMLElement>(null);
-  const last = useRef<{ version: number; height: number } | null>(null);
+  const last = useRef<{ content: string; height: number } | null>(null);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
@@ -66,9 +67,9 @@ function useReservedHeight(version: number, collapsed: boolean) {
       return;
     }
     const previous = last.current;
-    if (previous && previous.version !== version && previous.height > 0)
+    if (previous && previous.content !== content && previous.height > 0)
       element.style.minHeight = `${previous.height}px`;
-    last.current = { version, height: element.getBoundingClientRect().height };
+    last.current = { content, height: element.getBoundingClientRect().height };
   });
   const release = () => {
     if (ref.current?.style.minHeight) ref.current.style.minHeight = "";
@@ -136,7 +137,7 @@ export const SectionCard = memo(function SectionCard({
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
   const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
-  const [ref, release] = useReservedHeight(section.version, collapsed);
+  const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
   const [seeing, setSeeing] = useState(false);
   const [deferOpen, setDeferOpen] = useState(false);
   const [busy, setBusy] = useState(false);

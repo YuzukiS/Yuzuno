@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
+  BadgeCheck,
   CheckCheck,
   LoaderCircle,
   MoreHorizontal,
@@ -15,7 +16,7 @@ import { agentHarnessName } from "./machine-checks";
 import type { Agent } from "./types";
 import "./agent-management.css";
 
-export type AgentAction = "close" | "reopen" | "delete";
+export type AgentAction = "close" | "reopen" | "delete" | "release";
 
 // The dialog's own words (T-189); names and Core's errors as they came.
 const text = strings({
@@ -51,6 +52,14 @@ const text = strings({
   interruptClose: "Interrupt & close",
   reopening: "Reopening the same session…",
   closeDialog: "Close dialog",
+  release: "Release executor",
+  releaseCard: "Its work is accepted: close it for good and free its slot.",
+  releaseAsk: (name: string) => `Release ${name}?`,
+  releaseDescription: "A released executor stays closed: it can't be reopened.",
+  releaseWhat: "Its runtime stops and its executor slot is freed.",
+  releaseKept: "Its task, dispatch and result stay as they are, so record the acceptance on the task. For new work, dispatch the task again.",
+  releasing: "Releasing…",
+  releasedDescription: (name: string) => `${name} · Released: this executor stays closed.`,
 }, {
   reopen: "重新打开 Agent",
   close: "关闭 Agent",
@@ -83,6 +92,14 @@ const text = strings({
   interruptClose: "中断并关闭",
   reopening: "正在重新打开同一会话…",
   closeDialog: "关闭对话框",
+  release: "放行执行者",
+  releaseCard: "工作已验收：永久关闭它，并释放其执行槽位。",
+  releaseAsk: (name) => `放行 ${name}？`,
+  releaseDescription: "放行后的执行者保持关闭，不能重新打开。",
+  releaseWhat: "它的运行时会停止，执行槽位会被释放。",
+  releaseKept: "它的任务、派发和结果保持不变，验收请记在任务上。如需新的工作，请重新派发任务。",
+  releasing: "正在放行…",
+  releasedDescription: (name) => `${name} · 已放行：此执行者保持关闭。`,
 });
 
 export function AgentManagement({
@@ -109,7 +126,7 @@ export function AgentManagement({
   /** Where this agent is listed; offered for open and closed agents alike. */
   projectControl?: React.ReactNode;
 }) {
-  const [mode, setMode] = useState<"actions" | "close" | "delete" | null>(null);
+  const [mode, setMode] = useState<"actions" | "close" | "delete" | "release" | null>(null);
   // Actions → close or delete swaps the content in place (T-19 ST:AG2): the
   // confirmation fades in over small and Cancel takes focus, as the card that
   // had it is gone. Opened on its own, it comes in with the dialog.
@@ -123,12 +140,16 @@ export function AgentManagement({
   const [busy, setBusy] = useState<AgentAction | "read" | null>(null);
   const [error, setError] = useState("");
   const working = agent.status === "working" || agent.status === "waiting";
+  // A released executor stays closed (T-34): nothing reopens it.
+  const released = !!agent.releasedAt;
+  const releasable = agent.kind === "executor" && !released;
+  const confirming = mode === "close" || mode === "delete" || mode === "release";
   const language = useLanguage();
   const t = text(language);
   function show(next: typeof mode) {
     if (busy) return;
     setError("");
-    if (mode === "actions" && (next === "close" || next === "delete")) setSwaps((n) => n + 1);
+    if (mode === "actions" && next !== "actions" && next) setSwaps((n) => n + 1);
     setMode(next);
     onOpenChange(!!next);
   }
@@ -148,7 +169,10 @@ export function AgentManagement({
       const updated =
         action === "delete"
           ? await api<undefined>(path, { method: "DELETE" })
-          : await post<Agent>(`${path}/${action}`);
+          : action === "release"
+            ? await post<Pick<Agent, "closedAt" | "releasedAt" | "releasedBy">>(`${path}/release`)
+              .then(({ closedAt, releasedAt, releasedBy }) => ({ ...agent, closedAt, releasedAt, releasedBy }))
+            : await post<Agent>(`${path}/${action}`);
       onChanged(action, updated);
       setMode(null);
       onOpenChange(false);
@@ -162,7 +186,7 @@ export function AgentManagement({
   }
   return (
     <>
-      <button
+      {!released && <button
         type="button"
         className="conversation-action agent-close-button"
         disabled={disabled || !!busy}
@@ -178,7 +202,7 @@ export function AgentManagement({
         ) : (
           <Archive size={16} />
         )}
-      </button>
+      </button>}
       {actionsButton && (
         <button
           type="button"
@@ -195,28 +219,34 @@ export function AgentManagement({
       )}
       <Modal
         open={!!mode}
-        confirm={mode === "close" || mode === "delete"}
+        confirm={confirming}
         onOpenChange={(open) => !open && show(null)}
         title={
           mode === "close"
             ? t.closeAsk(agent.name)
             : mode === "delete"
               ? t.deleteAsk(agent.name)
-              : t.actions
+              : mode === "release"
+                ? t.releaseAsk(agent.name)
+                : t.actions
         }
         description={
           mode === "delete"
             ? t.deleteDescription
             : mode === "close"
               ? t.closeDescription
-              : t.actionsDescription(agent.name)
+              : mode === "release"
+                ? t.releaseDescription
+                : released
+                  ? t.releasedDescription(agent.name)
+                  : t.actionsDescription(agent.name)
         }
         lang={langTag(language)}
         closeLabel={t.closeDialog}
       >
         {mode === "actions" ? (
           <div className="agent-action-list">
-            <button
+            {!released && <button
               className="agent-action-card"
               disabled={disabled || !!busy}
               onClick={() =>
@@ -236,7 +266,20 @@ export function AgentManagement({
                   {agent.closedAt ? t.reopenCard : t.closeCard}
                 </small>
               </span>
-            </button>
+            </button>}
+            {releasable && (
+              <button
+                className="agent-action-card"
+                disabled={disabled || !!busy}
+                onClick={() => show("release")}
+              >
+                <BadgeCheck size={20} />
+                <span>
+                  <strong>{t.release}</strong>
+                  <small>{t.releaseCard}</small>
+                </span>
+              </button>
+            )}
             {projectControl}
             <button
               className="agent-action-card danger-action"
@@ -277,9 +320,14 @@ export function AgentManagement({
             <div
               className={`agent-action-explanation ${mode === "delete" ? "delete-explanation" : ""}`}
             >
-              {mode === "delete" ? <Trash2 size={25} /> : <Archive size={25} />}
+              {mode === "delete" ? <Trash2 size={25} /> : mode === "release" ? <BadgeCheck size={25} /> : <Archive size={25} />}
               <div>
-                {mode === "close" ? (
+                {mode === "release" ? (
+                  <>
+                    <strong>{t.releaseWhat}</strong>
+                    <p>{t.releaseKept}</p>
+                  </>
+                ) : mode === "close" ? (
                   <>
                     <strong>
                       {working ? t.interrupted : t.rest}
@@ -317,18 +365,22 @@ export function AgentManagement({
                   mode === "delete" ? "danger-button" : "primary-button"
                 }
                 disabled={disabled || !!busy}
-                onClick={() => void act(mode === "delete" ? "delete" : "close")}
+                onClick={() => void act(mode === "delete" ? "delete" : mode === "release" ? "release" : "close")}
               >
                 {busy && <LoaderCircle size={15} className="spin" />}
                 {busy
                   ? mode === "delete"
                     ? t.deleting
-                    : t.closing
+                    : mode === "release"
+                      ? t.releasing
+                      : t.closing
                   : mode === "delete"
                     ? t.delete
-                    : working
-                      ? t.interruptClose
-                      : t.close}
+                    : mode === "release"
+                      ? t.release
+                      : working
+                        ? t.interruptClose
+                        : t.close}
               </button>
             </div>
           </div>

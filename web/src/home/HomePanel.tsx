@@ -430,22 +430,26 @@ export function HomePanel({
           {collapsed && quiet && <span className="home-quiet">{t.quiet}</span>}
         </span>
         {reorder && (
+          // Unavailable while the order saves, or at the end it would move past, an arrow says so but stays
+          // focusable, so the one just pressed keeps the focus (T-19 HM:H7).
           <span className="home-reorder" role="group" aria-label={t.move(panel.project.name)}>
             <button
               type="button"
               className="icon-button"
+              data-move="up"
               aria-label={t.moveUp(panel.project.name)}
-              disabled={!reorder.onUp || reorder.busy}
-              onClick={reorder.onUp}
+              aria-disabled={!reorder.onUp || reorder.busy || undefined}
+              onClick={() => { if (!reorder.busy) reorder.onUp?.(); }}
             >
               <ArrowUp size={14} />
             </button>
             <button
               type="button"
               className="icon-button"
+              data-move="down"
               aria-label={t.moveDown(panel.project.name)}
-              disabled={!reorder.onDown || reorder.busy}
-              onClick={reorder.onDown}
+              aria-disabled={!reorder.onDown || reorder.busy || undefined}
+              onClick={() => { if (!reorder.busy) reorder.onDown?.(); }}
             >
               <ArrowDown size={14} />
             </button>

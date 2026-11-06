@@ -94,7 +94,9 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
     setBusy(true);
     setError("");
     try {
-      adopt(await saveHandover(projectId, view.version, draft, reason));
+      const saved = await saveHandover(projectId, view.version, draft, reason);
+      // An answer that doesn't say leaves the proposal shown as it was (#612 R4).
+      adopt(saved.proposal === undefined ? { ...saved, proposal: view.proposal } : saved);
       setDone(true);
     } catch (e) {
       setError(errorText(e));

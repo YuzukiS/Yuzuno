@@ -9,8 +9,8 @@ when the work is accepted.
 
 The model arrives in phases. Phase 0 is in place: it marks what kind each
 Agent is and lets you choose a Project's leads. Phase 1 is arriving: you
-can keep executor templates and dispatch a task from one, and Core creates
-its executor. Releasing an executor comes next.
+can keep executor templates and dispatch a task from one, Core creates its
+executor, and once its work is accepted its dispatcher or you release it.
 
 ## Kinds
 
@@ -74,8 +74,11 @@ its settings.
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
   that Project's template of the named id, else the Workspace's. A task in no
   Project uses the Workspace's.
-- **Where executors run.** On this Core host. Other machines, and choosing
-  one automatically, come in phase 2.
+- **Where executors run.** On the machine the dispatch names, else the one
+  its template names, else this Core host. A machine is one from the
+  Machines list. Choosing one automatically comes later. OpenCode executors
+  run on this Core host only, and a Codex executor can't run on a machine
+  that keeps its Agents contained.
 - **Who changes them.** Only you. Saving replaces the whole list, and a save
   against a list changed meanwhile is refused, so the page reloads first.
   Removing a template, or a Project, changes no executor already made.
@@ -94,9 +97,11 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    dispatching, and the template. Nothing is written before these pass.
 2. **Creates the executor**, as **New Agent** creates an Agent. It is made
    from the template, in the task's Project, and named by the template's
-   pattern. It works in the dispatch's worktree when that is a folder on this
-   host, else in the Project's folder on this host. Core makes no folder: with
-   neither, the dispatch is refused. When an Agent dispatches, that folder
+   pattern. On this Core host it works in the dispatch's worktree when that is
+   a folder here, else in the Project's folder here. On another machine it
+   works in the Project's folder on that machine; a dispatch there that
+   carries a worktree is refused, since a worktree is a path on this Core
+   host. Core makes no folder: with none, the dispatch is refused. When an Agent dispatches, that folder
    must be the worktree you registered on the task or lie inside the
    Project's folder; any other is refused, since a path an Agent gives, in a
    dispatch's or a task's materials, is information, not permission. Your own
@@ -128,7 +133,10 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   the update is done: one that had not been made goes ahead then, and nothing
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
-- **This host only.** A dispatch's `machineId` may be empty or `local`.
+- **Which machine.** A dispatch's `machineId` names a machine from the
+  Machines list, or `local` for this Core host. Left out, the template's
+  machine holds, else this Core host. A machine that isn't registered, or
+  can't run the template's harness, is refused before anything is written.
 
 ## Executors at once
 
@@ -165,10 +173,18 @@ applies. Only you change them.
   too, or Core can't make the rebuild, Core blocks the task with every
   reason, and a dispatching Agent gets one mail. A start cut off by the time
   limit counts as failed only when closing the executor confirmed its
-  runtime stopped. A rebuild that meets an update draining waits for it,
+  runtime stopped. On another machine, cutting the start off stops nothing
+  there, so Core stops its runtime first and counts the start as failed only
+  when that stop is confirmed. For Codex, the stop must confirm the runtime
+  instance the start recorded; a start cut off before its runtime was
+  recorded has no instance to confirm. For Claude Code, the host must confirm
+  through the start's connection that it stopped the bridge. Anything less
+  holds the executor, as when Core can't tell. A rebuild is made on the first
+  executor's machine. A rebuild that meets an update draining waits for it,
   with no block and no mail: the first pass after the update makes it. So
   does one whose task changed while Core dispatched it: the next pass makes
-  it.
+  it. A change Core meets later, once the rebuilt executor exists, fails that
+  dispatch and blocks the task.
 - **When Core can't tell.** If Core can't tell whether a start happened
   (its runtime may be running), the executor stays open and keeps its slot.
   Its card says its start did not finish, and why, and a dispatching Agent
@@ -189,6 +205,32 @@ applies. Only you change them.
   task, "Core restarted while it rebuilt" it, unless that dispatch was made.
 - **Executors only.** Standing Agents don't count, and Jobs keep their own
   machine slots.
+
+## Releasing an executor
+
+Once an executor's work is accepted, it is released: Core closes it for good.
+
+- **Who.** The Agent that dispatched it from a template, with
+  `executor_release`, or you, with **Release executor** in its actions
+  (**Manage…**). Anyone else is refused with `not_dispatcher`, and a
+  standing Agent or a lead with `not_executor`. If its dispatcher no longer
+  exists, only you can release it.
+- **What it does.** Its runtime stops as on Close, and its slot goes to the
+  next executor waiting. Its history's close says it was a release, and who
+  made it. The close, the release and the slot are one change: all of it
+  happens, or none of it. An executor that was already closed is only marked
+  released. Who released is on the executor (`releasedBy`); an executor
+  closed before its release keeps its earlier close in its history.
+- **It stays closed.** A released executor is not reopened: Reopen is
+  refused with `executor_released` and isn't offered. For new work, dispatch
+  the task again. You can still delete it.
+- **What stays.** Its task, its dispatch and its result are as they were.
+  Releasing is not accepting the work; the dispatcher records that on the
+  task.
+- **Again.** Releasing a released executor answers with the same
+  `releasedAt`.
+- **During an update.** A release is refused while Core prepares an update,
+  as Close is. Release it once the update is done.
 
 ## What an executor starts with
 
@@ -294,9 +336,9 @@ A released executor takes no more mail or work:
 | Phase | What it adds |
 | --- | --- |
 | 0 | Kinds and leads, as above. |
-| 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request. |
+| 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request, and its dispatcher releases it. |
 | 2 | A limit on how many executors run at once, with a queue and one retry of a failed start. |
-| 3 | Releasing and archiving executors, routing their late mail to the lead, and grouping them in the sidebar. |
+| 3 | Routing a released executor's late mail to the lead, and grouping executors in the sidebar. |
 | 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. |
 
 Standing Agents keep working throughout. Tasks already in progress finish on
