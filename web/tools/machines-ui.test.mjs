@@ -560,19 +560,28 @@ test("the executor limit of a machine is saved with its version after the machin
   }
 });
 
-test("a machine executor limit changed meanwhile is read again and said so; the machine stays saved", async () => {
+// #645 R1 ae06571c P3: a conflict keeps what was typed; only the limit and
+// its version are read again, and the next save sends it against that version.
+test("a machine executor limit changed meanwhile is read again and said so; the draft is kept and saved against the version read again", async () => {
   let version = 2;
+  let limitPuts = 0;
   const page = mount((url, init) => {
     const method = init.method || "GET";
     if (url.endsWith("/machines/mini/executor-slots") && method === "PUT") {
-      version = 4;
-      return { status: 400, ok: false, json: async () => ({ error: "version_conflict: these executor slots changed; reload before saving" }),
-        text: async () => JSON.stringify({ error: "version_conflict: these executor slots changed; reload before saving" }) };
+      if (++limitPuts === 1) {
+        version = 4;
+        return { status: 400, ok: false, json: async () => ({ error: "version_conflict: these executor slots changed; reload before saving" }),
+          text: async () => JSON.stringify({ error: "version_conflict: these executor slots changed; reload before saving" }) };
+      }
+      version = 5;
+      return slotsView([{ id: "mini", name: "Mac mini", version, slots: JSON.parse(init.body).slots, executors: 1 }]);
     }
     if (url.endsWith("/executor-slots")) return slotsView([{ id: "mini", name: "Mac mini", version, slots: version === 4 ? 7 : 3, executors: 1 }]);
     if (url.endsWith("/machines/mini") && method === "PUT") return { ...mini, ...JSON.parse(init.body), lastCheck: null };
     return undefined;
   });
+  const limitWrites = () => page.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/executor-slots"));
+  const limitReads = () => page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/executor-slots")).length;
   try {
     render(page);
     await loaded(page);
@@ -580,11 +589,90 @@ test("a machine executor limit changed meanwhile is read again and said so; the 
     await until(() => field(page, "Executors at once") === "3", "the saved limit");
     type(page, "Executors at once", "5");
     await tick();
+    const reads = limitReads();
     button(card(page, "mini"), "Save changes").click();
     await until(() => card(page, "mini").querySelector('[role="alert"]'), "the conflict");
-    assert.match(card(page, "mini").querySelector('[role="alert"]').textContent, /changed meanwhile and was read again/);
-    await until(() => field(page, "Executors at once") === "7", "the limit as it is now");
+    assert.match(card(page, "mini").querySelector('[role="alert"]').textContent,
+      /The machine is saved; its executor limit is not\. This machine’s executor limit changed meanwhile and was read again/);
+    await until(() => limitReads() > reads, "the limit read again");
+    await tick(30);
+    assert.equal(field(page, "Executors at once"), "5", "the draft is kept after the conflict");
     assert.ok(card(page, "mini").querySelector(".remote-machine-editor"), "the editor stays open to save again");
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => limitWrites().length === 2, "the second save");
+    assert.deepEqual(limitWrites()[1].body, { expectedVersion: 4, slots: 5 }, "the draft is saved against the version read again");
+    await until(() => !card(page, "mini").querySelector(".remote-machine-editor"), "the editor to close once both are saved");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// #645 R1 ae06571c P2: the machine is saved and its limit is not. The list
+// has the machine at once and the form edits it, so the next save changes
+// that machine: it is never added twice.
+test("a new machine whose executor limit fails to save is listed at once and edited in place; the next save changes it and adds nothing", async () => {
+  let listed = [local, mini];
+  let limits = [];
+  let limitPuts = 0;
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines") && method === "POST") {
+      const id = `studio${listed.length === 2 ? "" : listed.length}`;
+      listed = [...listed, { id, kind: "ssh", ...JSON.parse(init.body), lastCheck: null }];
+      return listed.at(-1);
+    }
+    if (url.endsWith("/machines/studio") && method === "PUT") {
+      listed = listed.map((m) => (m.id === "studio" ? { ...m, ...JSON.parse(init.body) } : m));
+      return listed.find((m) => m.id === "studio");
+    }
+    if (url.endsWith("/machines/studio/executor-slots") && method === "PUT") {
+      if (++limitPuts === 1) return { status: 503, ok: false, json: async () => ({ error: "executor slots are not available right now" }),
+        text: async () => JSON.stringify({ error: "executor slots are not available right now" }) };
+      limits = [{ id: "studio", name: "Studio", version: 1, slots: JSON.parse(init.body).slots, executors: 0 }];
+      return slotsView(limits);
+    }
+    if (url.endsWith("/executor-slots")) return slotsView(limits);
+    if (url.endsWith("/machines")) return { machines: listed };
+    return undefined;
+  });
+  const form = () => page.document.querySelector("#machines-new-ssh");
+  // Its save, by either of its names: the next save is clicked the same way however the form names it.
+  const save = () => [...form().querySelectorAll("button")].find((b) => /^(Save machine|Save changes)$/.test(b.textContent.trim()));
+  const posts = () => page.calls.filter((c) => c.method === "POST" && c.url.endsWith("/machines"));
+  const limitWrites = () => page.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/executor-slots"));
+  try {
+    render(page);
+    await loaded(page);
+    button(page.document, "Add SSH machine").click();
+    await until(() => form(), "the new machine form");
+    type(page, "Machine name", "Studio");
+    type(page, "SSH destination", "me@studio.local");
+    type(page, "Default working folder", "/Users/me/studio");
+    type(page, "Executors at once", "4");
+    await tick();
+    save().click();
+    await until(() => form()?.querySelector('[role="alert"]'), "the limit failure");
+    // What the page shows at once, checked after the next save.
+    const alert = form().querySelector('[role="alert"]').textContent;
+    const listedAtOnce = !!card(page, "studio");
+    const heading = form().querySelector(".remote-editor-heading").textContent.trim();
+    const kept = field(page, "Executors at once");
+    save().click();
+    await until(() => limitWrites().length === 2, "the second save");
+    assert.equal(posts().length, 1, "the machine is added once: the next save changes it");
+    assert.equal(page.calls.filter((c) => c.method === "PUT" && c.url === "/api/machines/studio").length, 1, "the next save changes the machine it saved");
+    assert.deepEqual(limitWrites().map((c) => [c.url, c.body]), [
+      ["/api/machines/studio/executor-slots", { expectedVersion: 0, slots: 4 }],
+      ["/api/machines/studio/executor-slots", { expectedVersion: 0, slots: 4 }],
+    ], "its limit is sent again with the next save");
+    assert.match(alert, /The machine is saved; its executor limit is not\. executor slots are not available right now/, "the limit failure says the machine is saved");
+    assert.ok(listedAtOnce, "the list has the machine as soon as it is saved");
+    assert.equal(heading, "Edit Studio", "the form edits the machine it saved");
+    assert.equal(kept, "4", "the value typed is kept");
+    await until(() => !form(), "the form to close once both are saved");
+    assert.equal(page.document.querySelectorAll('[data-machine-id="studio"]').length, 1, "listed once");
+    assert.deepEqual(page.errors, []);
   } finally {
     page.close();
   }

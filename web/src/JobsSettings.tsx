@@ -231,6 +231,9 @@ export function RemoteJobsEditor({ active, onOpenMachines }: { active: boolean; 
             setSaved(null);
             picker.current?.focus();
           }}
+          // Saved, but not its executor limit: the list has it; the editor
+          // stays open with the error (T-35 S3c).
+          onMachineSaved={(next) => setMachines((list) => (list ?? []).map((m) => (m.id === next.id ? next : m)))}
           onSaved={(next) => {
             // What Core saved shows at once, and the editor starts from it.
             setMachines((list) => (list ?? []).map((m) => (m.id === next.id ? next : m)));
