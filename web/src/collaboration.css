@@ -402,6 +402,27 @@
 .collab-executor-slot[data-slot-state="running"] {
   color: var(--green);
 }
+/* Its executor's lifecycle (T-36 S3), in the slot chip's place. */
+.collab-executor-state {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.collab-executor-state[data-executor-state="running"] {
+  color: var(--green);
+}
+.collab-executor-state[data-executor-state="delivering"] {
+  color: var(--attention-ink, var(--accent-ink));
+}
+.collab-executor-state[data-executor-state="failed"] {
+  color: var(--error-ink, var(--coral));
+}
+.collab-owner-line > .collab-executor-state {
+  margin-left: 6px;
+}
 .collab-has-result {
   display: inline-flex;
   align-items: center;

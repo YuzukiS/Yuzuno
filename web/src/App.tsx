@@ -139,6 +139,8 @@ import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
 import { RailHeading } from "./RailHeading";
 import { GroupedAgents } from "./ProjectGroups";
+import { ExecutorRail } from "./ExecutorRail";
+import { inExecutors, isArchived } from "./executor-lifecycle";
 import { groupAgents } from "./project-groups";
 import { useAppearance } from "./appearance";
 import { StatusBar } from "./StatusBar";
@@ -924,7 +926,7 @@ export function App() {
                   : listed.lastSeq > old.lastSeq;
               if (!newer) return w;
               const agents = w.agents.slice();
-              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind };
+              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind, executor: old.executor };
               return { ...w, agents };
             });
           }
@@ -948,6 +950,12 @@ export function App() {
           }
           else if (event.scope === "projects" || event.scope === "runtime")
             workspaceRefresh.soon(250);
+          // An executor's lifecycle (T-36 S3): its row, Home, its task's card.
+          else if (event.scope === "executors") {
+            workspaceRefresh.soon(250);
+            homeRefresh.soon(500);
+            boardRefresh.now();
+          }
           else if (event.scope === "backup") setBackupRevision((n) => n + 1);
           else if (event.scope === "appearance-preset") presetRefresh.now();
           else refresh();
@@ -3139,17 +3147,22 @@ export function App() {
           : w,
       );
       live.sync.mutate((d) => (d.agent.id === id ? { ...d, agent: updated } : d));
+      // A release that waits for its work to end is archiving, still open (T-36 S3).
+      const archiving = action === "release" && !updated.releasedAt ? updated.executor?.reason || "" : null;
       if (currentSelected.current === id)
-        setAgentScope(action === "close" || action === "release" ? "closed" : "active");
+        setAgentScope(action === "close" || (action === "release" && archiving === null) ? "closed" : "active");
       setNotice(action === "close" ? shell.closedSaved(agent.name)
+        : archiving !== null ? shell.archiving(agent.name, archiving)
         : action === "release" ? shell.released(agent.name) : shell.reopened(agent.name));
     }
     live.clearError();
     setCatchupSource(null);
     refresh();
   }
+  // A failed executor still blocking its task, and the archived ones in
+  // their fold, are listed with the open Agents (T-36 S3).
   const searched =
-    (agentScope === "closed" ? scopedClosed : scopedActive).filter((a) =>
+    (agentScope === "closed" ? scopedClosed : [...scopedActive, ...scopedClosed.filter((a) => inExecutors(a) || isArchived(a))]).filter((a) =>
       `${a.name} ${a.workSummary?.text || ""} ${a.cwd} ${a.remote?.machine.name || ""}`
         .toLowerCase()
         .includes(search.toLowerCase()),
@@ -3413,6 +3426,14 @@ export function App() {
               scope === ALL_PROJECTS && appearance.projectGroups !== "none"
                 ? groupAgents(filteredAgents, projects, { unknown: shell.unknownProject, none: shell.noProject })
                 : null;
+            // Each Project's list in its parts (T-36 S3): leads, the others,
+            // its task executors, its archived ones folded. Closed as it was.
+            const parts = (agents: Agent[], key: string) =>
+              agentScope === "closed" ? agents.map(row) : (
+                <ExecutorRail agents={agents} listKey={key} workspaceId={workspaceId} selectedId={homeOpen ? null : selected}
+                  searching={!!search.trim()} renderAgent={row}
+                  order={appearance.agentOrder === "attention" ? { seen: turnSeen, waiting: proposersWaiting(needsYouItems) } : undefined} />
+              );
             return groups ? (
               <GroupedAgents
                 groups={groups}
@@ -3421,13 +3442,14 @@ export function App() {
                 selectedId={homeOpen ? null : selected}
                 searching={!!search.trim()}
                 renderAgent={row}
+                renderList={parts}
                 onCreate={(projectId) => {
                   setCreateProject(projectId ?? "");
                   setCreateOpen(true);
                 }}
               />
             ) : (
-              filteredAgents.map(row)
+              parts(filteredAgents, scope)
             );
           })()}
           {!loading && filteredAgents.length === 0 && !searchLink && (

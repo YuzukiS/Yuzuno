@@ -86,7 +86,7 @@ pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
     };
     let project = crate::projects::task_projects(db, &[task.id.as_str()])?.remove(&task.id);
     let mut view = json!({"current": {
-        "taskId": task_number(task.seq),
+        "taskId": task_number(db, &task.id)?,
         "title": task.title,
         "status": task.status,
         "version": task.version,
@@ -126,7 +126,7 @@ pub(super) fn activity(db: &Connection, task: &SharedTask, after: i64, limit: i6
     let has_more = activities.len() as i64 > limit;
     activities.truncate(limit as usize);
     let next = activities.last().and_then(|a| a["seq"].as_i64()).unwrap_or(after);
-    Ok(json!({"taskId": task_number(task.seq), "version": task.version, "activities": activities,
+    Ok(json!({"taskId": task_number(db, &task.id)?, "version": task.version, "activities": activities,
         "nextAfterSeq": next, "hasMore": has_more}))
 }
 

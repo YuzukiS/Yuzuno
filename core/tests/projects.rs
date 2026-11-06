@@ -74,7 +74,7 @@ fn archived_projects_keep_members_but_accept_none_and_delete_only_when_unused() 
     assert!(store.create_project(" app ", BTreeMap::new()).is_err(), "active names are unique");
     store.insert(&in_project("a", &project.id)).unwrap();
     let archived = store.update_project(&project.id, yuzuno_workspace::projects::ProjectChange {
-        name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+        name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     assert!(archived.archived_at.is_some());
     assert_eq!(store.detail("a").unwrap().agent.project_id.as_deref(), Some(project.id.as_str()));
     store.insert(&agent("b", "/workspace", false)).unwrap();
@@ -165,7 +165,7 @@ fn task_project_defaults_follow_the_creator_and_retries_return_the_first_answer(
     assert_eq!(dispatched["task"]["projectId"], json!(app.id));
 
     let archived = store.update_project(&research.id, yuzuno_workspace::projects::ProjectChange {
-        name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+        name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     assert!(archived.archived_at.is_some());
     // An Agent still in an archived project files new tasks under no project.
     let fallback = call(&store, Some("helper"), "task_create", json!({"requestId":"r7","title":"After archive"}));
@@ -231,7 +231,7 @@ fn peers_list_shows_each_agents_project() {
     let empty = store.create_project("Empty", BTreeMap::new()).unwrap();
     let old = store.create_project("Old", BTreeMap::new()).unwrap();
     store.update_project(&old.id, yuzuno_workspace::projects::ProjectChange {
-        name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+        name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     let peers = call(&store, Some("dev"), "peers_list", json!({}));
     let project = |id: &str| peers["peers"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap()["project"].clone();
     assert_eq!(project("dev"), json!({"id":app.id,"name":"App","archived":false}));
@@ -239,9 +239,9 @@ fn peers_list_shows_each_agents_project() {
     // Projects without agents are still addressable, and archived ones are marked.
     let listed = call(&store, Some("dev"), "projects_list", json!({}));
     assert_eq!(listed["projects"], json!([
-        {"id":app.id,"name":"App","archived":false},
-        {"id":empty.id,"name":"Empty","archived":false},
-        {"id":old.id,"name":"Old","archived":true},
+        {"id":app.id,"name":"App","key":"APP","archived":false},
+        {"id":empty.id,"name":"Empty","key":"EMP","archived":false},
+        {"id":old.id,"name":"Old","key":"OLD","archived":true},
     ]));
     assert!(store.collaboration_call(Some("dev"), "projects_list", json!({"x":1})).is_err());
     assert!(yuzuno_workspace::collaboration_store::tool_definitions().iter().any(|t| t["name"] == "projects_list"));

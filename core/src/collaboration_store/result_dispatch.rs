@@ -184,7 +184,7 @@ pub(super) fn notify(store: &Store, db: &Connection, task: &SharedTask, event: &
     let Some(message_id) = notification["messageId"].as_str() else {
         return Ok(None);
     };
-    let number = task_number(task.seq);
+    let number = task_number(db, &task.id)?;
     let seq = event["seq"]
         .as_i64()
         .context("Missing result activity sequence")?;

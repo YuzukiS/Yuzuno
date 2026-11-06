@@ -327,9 +327,10 @@ impl Store {
              VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9,?11)",
             params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at, machine, choice],
         )?;
+        let number = task_number(&tx, &task.id)?;
         tx.commit()?;
         Ok(Next::Create(Box::new(Plan {
-            name: template.agent_name(&task_number(task.seq)),
+            name: template.agent_name(&number),
             dispatch: Dispatch { input: store_input(&request, &sha_check, &agent_id), actor: key, request_id, agent_id },
             template,
             machine,

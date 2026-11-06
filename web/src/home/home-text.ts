@@ -42,6 +42,11 @@ export const homeText = strings({
   // Turn ends this device hasn't shown (T-42).
   unseenFailed: "Failed",
   unseenFinished: "Finished, not seen",
+  executorNeeds: {
+    delivering: "Awaiting your release",
+    failed: "Its start failed",
+    blocked: "Its task is blocked",
+  } as Record<"delivering" | "failed" | "blocked", string>,
   unseenOpen: (name: string) => `Open ${name}'s conversation`,
   questionTitle: (title: string) => `Question · ${title}`,
   // A card's fold.
@@ -321,6 +326,11 @@ export const homeText = strings({
   nothingNeedsYou: "目前没有需要你处理的事项。",
   unseenFailed: "失败",
   unseenFinished: "完成未看",
+  executorNeeds: {
+    delivering: "交付待你放行",
+    failed: "启动失败",
+    blocked: "任务受阻",
+  },
   unseenOpen: (name) => `打开 ${name} 的会话`,
   questionTitle: (title) => `提问 · ${title}`,
   expand: "展开",

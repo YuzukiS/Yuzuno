@@ -11,6 +11,7 @@
  */
 import { z } from "zod";
 import { clarificationSchema } from "./clarification.ts";
+import { TASK_KEY } from "./task-key.ts";
 
 /** Bumped when a valid result's meaning changes; stored with every result. */
 export const SCHEMA_VERSION = 2;
@@ -87,7 +88,7 @@ export const componentProps = {
     requiresSelection: z.boolean().optional(),
   }),
   TaskStatus: z.strictObject({
-    taskId: z.string().regex(/^T-[1-9]\d{0,9}$/),
+    taskId: z.string().regex(TASK_KEY),
     status: z.enum(TASK_STATUSES),
     reason: z.string().min(1).max(1000),
   }),
@@ -104,7 +105,7 @@ export const COMPONENT_DESCRIPTIONS = {
   BarChart: "A bar chart with equivalent selectable data table.",
   Sources: "Explicit HTTPS or local file references.",
   Continue: "A user-clicked button that appends instruction and current selection to a draft.",
-  TaskStatus: "Proposes one status change to one existing shared task: taskId T-N, status todo/doing/blocked/review/done/cancelled, and why. The user sees the task as Core reads it, may change the status or reason, and confirms or declines; only a confirmation changes the task, as the user.",
+  TaskStatus: "Proposes one status change to one existing shared task: taskId T-N or a Project task key such as YN-3, status todo/doing/blocked/review/done/cancelled, and why. The user sees the task as Core reads it, may change the status or reason, and confirms or declines; only a confirmation changes the task, as the user.",
 } as const satisfies Record<keyof typeof componentProps, string>;
 export type TableProps = z.infer<typeof componentProps.Table>;
 export type ChartProps = z.infer<typeof componentProps.BarChart>;

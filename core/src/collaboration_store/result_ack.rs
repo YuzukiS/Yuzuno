@@ -54,7 +54,7 @@ pub(super) fn acknowledge(db: &Connection, actor: &TaskActor, input: &Value) -> 
         [message_id],
         |r| r.get(0),
     )?;
-    Ok(json!({"acknowledgment":{"taskId":task_number(task.seq),"resultId":result_id,
+    Ok(json!({"acknowledgment":{"taskId":task_number(db, &task.id)?,"resultId":result_id,
         "dispatchId":dispatch_id,"acknowledgedAt":acked_at,"alreadyAcknowledged":added == 0},
         "wakeUp":{"messageId":message_id,"state":state}}))
 }

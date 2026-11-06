@@ -44,6 +44,7 @@ import { settleWhenLanded } from "./settle";
 import { useLanguage, useStrings } from "./i18n";
 import { boardText } from "./collaboration-text";
 import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-templates";
+import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "./executor-lifecycle";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -88,6 +89,8 @@ export interface SharedTask {
   /** Its executor's slot (T-35), when one holds or waits for one: waiting
    * with its place in the queue (1 first), starting, or running. */
   executorSlot?: ExecutorSlot | null;
+  /** Its executor's lifecycle (T-36 S3), when its newest dispatch made one. */
+  executor?: ExecutorLifecycle | null;
   version: number;
   createdAt: string;
   createdBy: Person;
@@ -373,6 +376,17 @@ function useMutation() {
     }
   };
   return { execute, pending, error, clearError: () => setError("") };
+}
+
+/** A task's executor and its state (T-36 S3): on its card, and beside its
+ * owner in the task's view. Its title says why, and who dispatched it. */
+function ExecutorChip({ lifecycle }: { lifecycle: ExecutorLifecycle }) {
+  const t = useStrings(lifecycleText);
+  return (
+    <span className="collab-executor-state" data-executor-state={lifecycle.state} title={stateDetail(lifecycle, t).join("\n")}>
+      {t.executor} · {stateLabel(lifecycle, t)}
+    </span>
+  );
 }
 
 function Status({ status }: { status: TaskStatus }) {
@@ -936,7 +950,9 @@ export function CollaborationBoard({
                 {projectName(task.projectId, projects)}
               </span>
             )}
-          {task.executorSlot && (
+          {task.executor ? (
+            <ExecutorChip lifecycle={task.executor} />
+          ) : task.executorSlot && (
             <span
               className="collab-executor-slot"
               data-slot-state={task.executorSlot.state}
@@ -1785,6 +1801,7 @@ function TaskPane({
                     {owner.name}
                     <ArrowUpRight size={13} />
                   </button>
+                  {task.executor && <ExecutorChip lifecycle={task.executor} />}
                 </>
               ) : (
                 <span>{task.assignee?.name || t.notAssigned}</span>

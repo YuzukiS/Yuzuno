@@ -111,11 +111,15 @@ pub(crate) fn waits(db: &Connection, agent: &str) -> Result<Vec<String>> {
         out.push(format!("{what}: {}", jobs.join(", ")));
     }
     let mut flows = db.prepare(
-        "SELECT json_extract(data,'$.taskRef') FROM delivery_flows
+        "SELECT task_id, json_extract(data,'$.taskRef') FROM delivery_flows
          WHERE json_extract(data,'$.owner.id')=?1 AND json_type(data,'$.terminal') IS NOT 'object'",
     )?;
-    let flows = flows.query_map([agent], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    for task in flows {
+    let flows = flows
+        .query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (task, stored) in flows {
+        // Its task's key now (T-56), else the one the flow stored.
+        let task = crate::task_keys::current(db, &task).ok().flatten().or(stored);
         out.push(format!("its delivery flow for {} is still under way (stop it, or let it end)", task.as_deref().unwrap_or("its task")));
     }
     let operations: i64 = db.query_row(
@@ -130,8 +134,10 @@ pub(crate) fn waits(db: &Connection, agent: &str) -> Result<Vec<String>> {
 }
 
 /// What a release waits for now, said on its row; a failed close also
-/// counts as an attempt, with the time it is tried again.
-fn note(store: &Store, agent: &str, reason: &str, failed: bool) -> Result<()> {
+/// counts as an attempt, with the time it is tried again. True when the row
+/// changed: the same wait said again is not written, nor announced by the
+/// caller (T-36 S3, #635's closing round 9ab74ebf).
+fn note(store: &Store, agent: &str, reason: &str, failed: bool) -> Result<bool> {
     let db = store.db.write()?;
     if failed {
         let attempts: i64 =
@@ -142,10 +148,13 @@ fn note(store: &Store, agent: &str, reason: &str, failed: bool) -> Result<()> {
             "UPDATE executor_archiving SET reason=?2,attempts=attempts+1,next_try_at=?3 WHERE agent_id=?1",
             params![agent, reason, next],
         )?;
-    } else {
-        db.execute("UPDATE executor_archiving SET reason=?2,next_try_at=NULL WHERE agent_id=?1", params![agent, reason])?;
+        return Ok(true);
     }
-    Ok(())
+    let changed = db.execute(
+        "UPDATE executor_archiving SET reason=?2,next_try_at=NULL WHERE agent_id=?1 AND (reason IS NOT ?2 OR next_try_at IS NOT NULL)",
+        params![agent, reason],
+    )?;
+    Ok(changed > 0)
 }
 
 /// Whether `operation` starts new work, which an executor being released may not.
@@ -205,7 +214,7 @@ pub(crate) fn follow_archive(db: &Connection, agent: &Agent) -> Result<()> {
         "UPDATE project_brief_sections SET owner_id=?2,owner_name=?3 WHERE owner_id=?1 AND live=1",
         params![agent.id, dispatcher, name],
     )?;
-    let task = task.as_deref().and_then(|t| task_key(db, t).ok()).map(|(_, seq)| format!("T-{seq}"));
+    let task = task.as_deref().and_then(|t| task_key(db, t).ok()).map(|(id, _)| crate::collaboration_store::task_shown(db, &id));
     for proposal in crate::task_proposals::undecided(db, &agent.id)? {
         let id = uuid::Uuid::new_v4().to_string();
         let body = format!(
@@ -238,14 +247,15 @@ impl Workspace {
         let agent = id.to_owned();
         if !waiting.is_empty() {
             let reason = format!("Waiting to close: {}.", waiting.join("; "));
-            self.stored(move |store| note(store, &agent, &reason, false)).await?;
-            self.changed(id);
+            if self.stored(move |store| note(store, &agent, &reason, false)).await? {
+                self.executor_changed(id);
+            }
             return Ok(false);
         }
         if let Err(error) = self.archive_now(id, by).await {
             let reason = format!("The close could not be confirmed, so it is tried again: {error:#}");
             self.stored(move |store| note(store, &agent, &reason, true)).await?;
-            self.changed(id);
+            self.executor_changed(id);
             return Ok(false);
         }
         Ok(true)

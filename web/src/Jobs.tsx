@@ -47,8 +47,10 @@ import {
 import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity, type WorkEntry } from "./WorkDock";
 import { jobWork, runWork } from "./work-activity.ts";
 import { useAppearance } from "./appearance";
+import { useDocumentVisible } from "./document-visible";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { jobsText, type JobsText } from "./jobs-text";
+import { TASK_KEY } from "./intelligent-ui/task-key";
 import {
   JobCard,
   JobDetailHeading,
@@ -64,6 +66,8 @@ type Job = {
   id: string;
   name: string;
   status: string;
+  /** This attempt's id: a retry is a new one. */
+  attempt?: string;
   reason: string | null;
   agentId: string;
   agent: { name: string };
@@ -167,6 +171,10 @@ type Log = {
   totalBytes: number;
   truncated: boolean;
 };
+/** Core's finished states (jobs/store.rs, runs.rs TERMINAL): a finished
+ * job's details and output no longer change (T-60). An unknown job is not
+ * one: Core holds its reservation and checks the attempt again. */
+const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "rejected"]);
 /** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
 const active = (job: Job) =>
   job.reserved || job.status === "queued" || job.status === "waiting";
@@ -536,9 +544,15 @@ export function Jobs({
   );
   const pending = useRef<{ key: string; requestId: string } | null>(saved);
   const generation = useRef(0);
+  // The selected job as last read finished (T-60): its details and output are
+  // read no more until the list shows it changed, or it is looked at afresh.
+  const settled = useRef<{ id: string; status: string; attempt?: string } | null>(null);
+  const visible = useDocumentVisible();
   const load = useCallback(
     async (before?: number) => {
       const stamp = generation.current;
+      // The selected job's row in the list just read, if it is there (T-60).
+      let row: Job | undefined;
       try {
         const query = new URLSearchParams(scope);
         if (before) query.set("before", String(before));
@@ -554,6 +568,7 @@ export function Jobs({
         if (stamp !== generation.current) return;
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
+        row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
         setPage((old) => {
           const retained = old.jobs.filter((j) => !active(j));
           const jobs = uniqueJobs([
@@ -592,18 +607,25 @@ export function Jobs({
         return;
       }
       if (!selected) return;
+      // Finished as last read, and the list still says so: nothing to read
+      // again (T-60). A row turning finished gives one more read, then none.
+      const done = settled.current;
+      if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
       // A failure already shown for this job stays until its read succeeds.
       if (stamp === generation.current)
         setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
       try {
-        const [job, output] = await Promise.all([
-          api<Job>(`/jobs/${selected}`),
-          api<Log>(`/jobs/${selected}/logs`),
-        ]);
+        // Its details first, then its output: output read after a finished
+        // job's details has all of it, so only that read settles the job.
+        // Read side by side, the output could be from before it finished
+        // (T-60, #642 R2 1e487ee9).
+        const job = await api<Job>(`/jobs/${selected}`);
+        const output = await api<Log>(`/jobs/${selected}/logs`);
         if (stamp === generation.current) {
           setDetail(job);
           setLog(output);
           setDetailRead({ id: selected, failure: null });
+          settled.current = FINISHED.has(job.status) ? { id: selected, status: job.status, attempt: job.attempt } : null;
         }
       } catch (e) {
         if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
@@ -648,16 +670,21 @@ export function Jobs({
       window.removeEventListener("yuzuno:handoff-sent", sent);
     };
   }, []);
+  // A finished job is read again once looked at afresh (T-60).
+  useEffect(() => {
+    settled.current = null;
+  }, [open, revision, selected, scope]);
   useEffect(() => {
     generation.current++;
-    if (!open || disabled || source !== "local") return;
+    // Not while the page is hidden: shown again, it reads at once (T-60).
+    if (!open || disabled || source !== "local" || !visible) return;
     void load();
     const timer = setInterval(() => void load(), 3000);
     return () => {
       generation.current++;
       clearInterval(timer);
     };
-  }, [open, disabled, load, revision, source]);
+  }, [open, disabled, load, revision, source, visible]);
   useEffect(() => {
     setPage({ jobs: [], hasMore: false, nextBefore: null });
     setListed(false);
@@ -1048,6 +1075,7 @@ export function Jobs({
                             className="icon-button"
                             onClick={() => {
                               setError("");
+                              settled.current = null;
                               void load();
                             }}
                             aria-label={t.refresh}
@@ -1736,7 +1764,7 @@ function useSuggestion(taskId: string, name: string, command: string) {
     // the next one is asked (review 7a85f843).
     setSuggestion(null);
     const task = taskId.trim();
-    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) return;
+    if (!TASK_KEY.test(task) || (!name.trim() && !command.trim())) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const query = new URLSearchParams({ taskId: task, name: name.trim() });

@@ -18,7 +18,7 @@ import { useHomeRead } from "../home-read";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useBrief, type BriefContextValue } from "./BriefContext";
 import type { LiveRefState, Section } from "../types";
-import { formatTime, type LiveRef, type LiveRefKind, type LiveRefsProps } from "./brief-catalog";
+import { formatTime, shownRefId, type LiveRef, type LiveRefKind, type LiveRefsProps } from "./brief-catalog";
 import { useTimeDisplay } from "../../time-preferences";
 import { useLanguage, useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
@@ -98,17 +98,18 @@ function Chip({ item }: { item: LiveRef }) {
   // Older Cores send no current state; the chip then shows what the Agent wrote.
   const state = (brief.section.refs as Section["refs"] | undefined)?.[`${item.kind}:${item.id}`];
   const target = opening(item, brief, state);
+  const id = shownRefId(item, state);
   // The Agent's short label leads; the current title is in the tooltip and
   // read out after it (T-173). Without a label, the current title shows.
-  const name = item.label || state?.title || item.id;
+  const name = item.label || state?.title || id;
   const full = item.label && state?.title && state.title !== item.label ? state.title : null;
-  const title = `${t.refKind[item.kind]} ${item.id}${full ? `: ${full}` : ""}${state?.observedAt ? t.refAsOf(formatTime(state.observedAt, time)) : ""}`;
+  const title = `${t.refKind[item.kind]} ${id}${full ? `: ${full}` : ""}${state?.observedAt ? t.refAsOf(formatTime(state.observedAt, time)) : ""}`;
   const content = (
     <>
       <Icon size={13} aria-hidden="true" />
       <span>{name}</span>
       {full && <span className="sr-only">: {full}</span>}
-      {name !== item.id && <small>{item.id}</small>}
+      {name !== id && <small>{id}</small>}
       {state && !state.found ? (
         // Core said it couldn't read the item (T-9): not the same as not found.
         <em className="brief-ref-state" data-tone="missing">
@@ -151,7 +152,7 @@ function Chip({ item }: { item: LiveRef }) {
 /** What Core says of one item now, as a list row shows it; a change in it
  * is a change the reader is told about. */
 const factsOf = (state: LiveRefState | undefined) =>
-  state ? JSON.stringify([state.found, state.unavailable, state.title, state.state, state.assignee?.id, state.updatedAt, state.archived]) : "";
+  state ? JSON.stringify([state.found, state.unavailable, state.title, state.state, state.assignee?.id, state.updatedAt, state.archived, state.key]) : "";
 
 /**
  * One item as a row of a list the Agent ordered (T-9): Core's title and
@@ -183,7 +184,8 @@ function Row({ item, stale, readAt }: { item: LiveRef; stale: boolean; readAt: s
   const Icon = kind.icon;
   const target = opening(item, brief, state);
   const missing = !!state && !state.found;
-  const name = (state?.found && state.title) || item.label || item.id;
+  const id = shownRefId(item, state);
+  const name = (state?.found && state.title) || item.label || id;
   // A task's state in the board's own words; others as Core reports them.
   const word = state?.state
     ? item.kind === "task" ? (boardText(language).statuses as Record<string, string>)[state.state] ?? state.state : state.state
@@ -192,11 +194,11 @@ function Row({ item, stale, readAt }: { item: LiveRef; stale: boolean; readAt: s
   const lead = (
     <>
       <Icon size={13} aria-hidden="true" />
-      <small>{item.id}</small>
+      <small>{id}</small>
       <span className="brief-ref-row-title" lang={state?.found && state.title ? "" : undefined}>{name}</span>
     </>
   );
-  const title = `${t.refKind[item.kind]} ${item.id}${state?.found && state.title ? `: ${state.title}` : ""}`;
+  const title = `${t.refKind[item.kind]} ${id}${state?.found && state.title ? `: ${state.title}` : ""}`;
   const opener: ReactNode = target && "href" in target ? (
     <a className="brief-ref-row-open" href={target.href} target="_blank" rel="noopener noreferrer" title={title}>
       {lead}

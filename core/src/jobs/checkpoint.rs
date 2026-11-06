@@ -174,7 +174,8 @@ fn tell(db: &Connection, job: &Value, event: &str, body: String) -> Result<()> {
 }
 
 fn task_ref(db: &Connection, job: &Value) -> Result<String> {
-    Ok(format!("T-{}", collaboration::task_key(db, job["taskId"].as_str().context("Missing task")?)?.1))
+    let (task, _) = collaboration::task_key(db, job["taskId"].as_str().context("Missing task")?)?;
+    collaboration::task_number(db, &task)
 }
 
 /// When a Job that the user stopped at a checkpoint ends: whether it is

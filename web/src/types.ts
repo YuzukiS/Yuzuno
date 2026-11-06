@@ -75,10 +75,15 @@ export interface Agent {
   releasedAt?: string | null;
   /** Who released it: `agent:<id>` or `user`. */
   releasedBy?: string | null;
+  /** An executor's lifecycle (T-36 S3): its state, task and dispatcher. */
+  executor?: import("./executor-lifecycle").ExecutorLifecycle | null;
 }
 export interface Project {
   id: string;
   name: string;
+  /** The prefix of its tasks' keys (T-56), such as `YN` for `YN-3`; absent
+   * from a Core without keys. */
+  key?: string;
   /** Machine ID to the folder that pre-fills new agents there. */
   defaultDirs: Record<string, string>;
   archivedAt?: string | null;

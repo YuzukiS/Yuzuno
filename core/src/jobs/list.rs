@@ -141,7 +141,9 @@ impl Store {
                 .into_iter()
                 .take(limit as usize)
                 .map(|(id, project)| {
-                    let job = queue.view(get(&db, &id)?);
+                    let mut job = queue.view(get(&db, &id)?);
+                    // Its task's key now (T-56): the summary keeps taskRef, not taskId.
+                    crate::task_keys::refresh(&db, &mut job);
                     let mut job = if compact {
                         compact_job(&job)
                     } else {
