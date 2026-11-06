@@ -4,7 +4,6 @@ import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
 import { AgentActionsMenu, type AgentActionsMenuHandle, type MenuPoint } from "./AgentActionsMenu";
 import { Avatar } from "./components";
-import { MachineBadge } from "./RemoteControls";
 import type { Agent, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";

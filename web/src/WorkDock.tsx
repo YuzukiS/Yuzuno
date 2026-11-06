@@ -388,7 +388,15 @@ export function WorkDock({
  * with nothing running: it is the reason the entry is there. The list behind
  * it is unchanged, and is where the detail stays.
  */
-export function WorkActivityEntry({ onOpen }: { onOpen: (from: HTMLElement) => void }) {
+export function WorkActivityEntry({
+  onOpen,
+  expanded,
+}: {
+  onOpen: (from: HTMLElement) => void;
+  /** Whether the view it opens is on screen, which is not the same as having
+   * been asked for: the rail it lives in can be collapsed (#459 R1, P2). */
+  expanded?: boolean;
+}) {
   const t = useStrings(entry);
   const activity = useContext(Activity);
   if (!activity?.any) return null;
@@ -408,6 +416,7 @@ export function WorkActivityEntry({ onOpen }: { onOpen: (from: HTMLElement) => v
       // listens for. An aria-label would be a second copy of them, free to
       // drift from the first (T-15, Dev 7).
       title={t.label}
+      aria-expanded={expanded}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       <BriefcaseBusiness size={13} aria-hidden="true" />

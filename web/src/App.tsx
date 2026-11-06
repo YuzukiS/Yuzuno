@@ -502,6 +502,27 @@ export function App() {
   // The list covers the open view instead of replacing it, so its drafts,
   // reading place and any annotation stay as they were.
   const phone = usePhone();
+  // Both head entries open a view *in the rail*, so opening one has to bring
+  // the rail back: collapsed from the toolbar the rail is `display: none`
+  // (styles.css `.rail-hidden .rail`), and a press that only swapped which
+  // view it renders changed nothing a reader could see — while the index
+  // beside it still reported itself open. On a touched screen that is the
+  // whole way in to the work list and the Turn index, since the docks there
+  // take no presses, so it was a dead path (#459 R1, P2). Closing a view
+  // leaves the rail as the reader had it: they may have collapsed it on
+  // purpose, and this is not the place to decide otherwise.
+  const openWorkView = useCallback(() => {
+    if (phone) return setPhoneDock((open) => (open === "work" ? null : "work"));
+    setRailIndex(false);
+    if (!railWork) setRailOpen(true);
+    setRailWork((open) => !open);
+  }, [phone, railWork]);
+  const openIndexView = useCallback(() => {
+    if (phone) return setPhoneDock((open) => (open === "turns" ? null : "turns"));
+    setRailWork(false);
+    if (!railIndex) setRailOpen(true);
+    setRailIndex((open) => !open);
+  }, [phone, railIndex]);
   // Touch rows wherever a finger is the pointer, not only where the phone
   // layout applies: a folding phone opened is wide and still all touch (T-15).
   const touchInput = useTouchInput();
@@ -3606,11 +3627,8 @@ export function App() {
                       conversation has, where there is room to read it; the
                       dock keeps the detail (T-15). */}
                   <WorkActivityEntry
-                    onOpen={() =>
-                      phone
-                        ? setPhoneDock((open) => (open === "work" ? null : "work"))
-                        : (setRailIndex(false), setRailWork((open) => !open))
-                    }
+                    expanded={phone ? phoneDock === "work" : railWork && railOpen}
+                    onOpen={openWorkView}
                   />
                   {/* And beside it, the way into where the reader is: the
                       rail takes the index where there is a rail, and a phone
@@ -3619,14 +3637,10 @@ export function App() {
                   <button
                     type="button"
                     className="conversation-index-entry"
-                    aria-expanded={phone ? phoneDock === "turns" : railIndex}
+                    aria-expanded={phone ? phoneDock === "turns" : railIndex && railOpen}
                     aria-label={shell.readingIndex}
                     title={shell.readingIndex}
-                    onClick={() =>
-                      phone
-                        ? setPhoneDock((open) => (open === "turns" ? null : "turns"))
-                        : (setRailWork(false), setRailIndex((open) => !open))
-                    }
+                    onClick={openIndexView}
                   >
                     <History size={14} aria-hidden="true" />
                     <span>{readingTurnNumber || logicalTurns.length}/{logicalTurns.length}</span>
