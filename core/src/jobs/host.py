@@ -609,11 +609,29 @@ def progress(folder):
     except (ValueError, RecursionError):
         return {'problem': 'not complete JSON of finite numbers', 'updatedAtUnix': at}
 
+# A Job's CPU (T-64, cpu.rs): Core grants it within the range asked for, as
+# the worker's CPUQuota; its CPUWeight follows the minimum, so that 2000 mCPU
+# is systemd's default of 100. Core writes the grant now to CPU_FILE before the
+# launch and after each raise.
+CPU_FILE = 'cpu-millis'
+
+def cpu_granted(spec):
+    """The CPU this attempt starts with, in millicores: Core's grant, or
+    (a spec from before T-64) its request."""
+    return spec.get('cpuGrantedAtStart') or (spec.get('resources') or {}).get('cpuMillis')
+
+def cpu_weight(spec):
+    return max(1, min(10000, spec['resources']['cpuMillis'] // 20))
+
 def attempt_env(spec, folder):
     """Where this attempt reports, and who it is. Core's values win."""
     env = {'YUZUNO_JOB_ID': spec['id'], 'YUZUNO_JOB_ATTEMPT': spec['attempt'],
            'YUZUNO_JOB_USAGE_FILE': str(folder / 'usage.jsonl'),
            'YUZUNO_JOB_PROGRESS_FILE': str(folder / 'progress.json')}
+    # Its CPU grant at the start, and the file holding it now.
+    granted = cpu_granted(spec)
+    if granted:
+        env.update({'YUZUNO_JOB_CPU_MILLIS': str(granted), 'YUZUNO_JOB_CPU_FILE': str(folder / CPU_FILE)})
     run = spec.get('run')
     if run:
         env.update({'YUZUNO_RUN_ID': run['id'], 'YUZUNO_RUN_STAGE': run['stage'],
@@ -801,12 +819,13 @@ def launch(spec, folder, stage):
     relative = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
     group = Path('/sys/fs/cgroup') / relative.lstrip('/')
     limits = {n: (group / n).read_text().strip()
-              for n in ('memory.max', 'memory.swap.max', 'cpu.max', 'pids.max')}
+              for n in ('memory.max', 'memory.swap.max', 'cpu.max', 'cpu.weight', 'pids.max')}
     quota, period = map(int, limits['cpu.max'].split())
     if (int(limits['memory.max']) != resource['memoryMiB'] * 1024 * 1024
             or int(limits['memory.swap.max']) != resource['swapMiB'] * 1024 * 1024
             or int(limits['pids.max']) != TASKS_MAX
-            or abs(quota / period - resource['cpuMillis'] / 1000) > .0001):
+            or abs(quota / period - cpu_granted(spec) / 1000) > .0001
+            or int(limits['cpu.weight']) != cpu_weight(spec)):
         raise RuntimeError('Requested cgroup limits are not effective; command was not started')
     proof = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'invocationId': os.environ.get('INVOCATION_ID'), 'controlGroup': relative,
@@ -1023,7 +1042,7 @@ def settled(spec, folder, outcome):
 PAUSE_WAIT = 10
 
 def controlled(operation):
-    """Serialize pause, resume, limit and cancel of one attempt. The lock is
+    """Serialize pause, resume, limit, CPU raises and cancel of one attempt. The lock is
     held only while the operation runs, so one process can run several in turn."""
     def run(spec, folder, *args):
         with (folder / 'control.lock').open('a') as lock:
@@ -1190,6 +1209,58 @@ def limit(spec, folder, request):
         return {'state': 'notLimited', 'reason': 'systemd did not lower the limit: ' + (asked.stderr.strip()[:300] or 'unknown error'), 'evidence': evidence}
     return {'state': 'unknown', 'reason': f'systemd accepted the change, but the worker cgroup reads {after} bytes', 'evidence': evidence}
 
+# Raising a running attempt's CPU quota (T-64): only this attempt's own
+# worker invocation, and only up. systemd applies the new CPUQuota to the
+# cgroup at once (--runtime: until the unit ends); the cgroup's own cpu.max,
+# read back, is the evidence. A target already in effect is a raise whose
+# answer never reached Core: it is confirmed as it is.
+def cgroup_cpu_millis(proof):
+    """The worker cgroup's cpu.max in millicores, or None ('max' too)."""
+    try:
+        quota, period = (Path('/sys/fs/cgroup') / proof['controlGroup'].lstrip('/') / 'cpu.max').read_text().split()
+        return None if quota == 'max' else round(int(quota) * 1000 / int(period))
+    except (OSError, ValueError, KeyError, AttributeError):
+        return None
+
+@controlled
+def raise_cpu(spec, folder, request):
+    try:
+        millis = int(request['cpuMillis'])
+    except (KeyError, TypeError, ValueError):
+        return {'state': 'notRaised', 'reason': 'No new CPU grant was given; nothing was changed'}
+    finished = read(folder / 'result.json')
+    if finished and finished['status'] != 'unknown':
+        return {'state': 'notRaised', 'reason': 'The job has already finished; nothing was changed'}
+    if read(folder / 'cancel.json'):
+        return {'state': 'notRaised', 'reason': 'Cancellation was requested; nothing was changed'}
+    state, proof = live_worker(spec, folder)
+    if state is None:
+        return {'state': 'notRaised', 'reason': proof}
+    if state.get('ActiveState') != 'active':
+        return {'state': 'notRaised', 'reason': f"The job is not running ({state.get('ActiveState')}/{state.get('SubState')}); nothing was changed"}
+    before = cgroup_cpu_millis(proof)
+    evidence = {'invocationId': proof['invocationId'], 'controlGroup': proof['controlGroup'],
+                'cpuMillisBefore': before, 'at': time.time()}
+    if before is None:
+        return {'state': 'notRaised', 'reason': "The worker cgroup's cpu.max could not be read; nothing was changed", 'evidence': evidence}
+    if millis == before:
+        return {'state': 'raised', 'confirmedByRetry': True, 'evidence': {**evidence, 'cpuMillisAfter': before},
+                'reason': f'The CPU quota is already {millis} mCPU: an earlier raise took effect; nothing was changed'}
+    if millis < before:
+        return {'state': 'notRaised', 'reason': f'{millis} mCPU is below the current {before} mCPU; a CPU grant is only raised', 'evidence': evidence}
+    asked = command(['systemctl', '--user', 'set-property', '--runtime', spec['unit'], f'CPUQuota={millis / 10}%'], timeout=15, check=False)
+    after = cgroup_cpu_millis(proof)
+    still, _ = live_worker(spec, folder)
+    evidence = {**evidence, 'cpuMillisAfter': after, 'setPropertyReturnCode': asked.returncode,
+                'setPropertyError': asked.stderr.strip()[:500]}
+    if after == millis:
+        return {'state': 'raised', 'reason': f'CPU quota raised to {millis} mCPU from {before} mCPU; the worker cgroup reads it back', 'evidence': evidence}
+    if still is None:
+        return {'state': 'unknown', 'reason': 'The worker changed or exited while its CPU quota was being raised', 'evidence': evidence}
+    if asked.returncode:
+        return {'state': 'notRaised', 'reason': 'systemd did not raise the CPU quota: ' + (asked.stderr.strip()[:300] or 'unknown error'), 'evidence': evidence}
+    return {'state': 'unknown', 'reason': f'systemd accepted the change, but the worker cgroup reads {after} mCPU', 'evidence': evidence}
+
 def thaw_for_stop(spec, folder, proof, state):
     """systemd refuses to stop a frozen unit. Thaw this attempt's own worker
     first; its processes may run briefly while they handle termination."""
@@ -1307,7 +1378,8 @@ def supervise(spec, folder):
             '-p', 'RuntimeMaxSec=' + str(runtime) + 's',
             '-p', 'MemoryMax=' + str(resource['memoryMiB']) + 'M',
             '-p', 'MemorySwapMax=' + str(resource['swapMiB']) + 'M',
-            '-p', 'CPUQuota=' + str(resource['cpuMillis'] / 10) + '%', '-p', 'TasksMax=' + str(TASKS_MAX),
+            '-p', 'CPUQuota=' + str(cpu_granted(spec) / 10) + '%', '-p', 'CPUWeight=' + str(cpu_weight(spec)),
+            '-p', 'TasksMax=' + str(TASKS_MAX),
             '-p', 'StandardOutput=null', '-p', 'StandardError=null',
             '--', sys.executable, str(Path(__file__).resolve()), 'worker', str(folder / 'spec.json')]
     launch = command(args, check=False)
@@ -1413,6 +1485,8 @@ def main():
         print(json.dumps(resume(spec, folder)))
     elif mode == 'limit':
         print(json.dumps(limit(spec, folder, json.load(sys.stdin))))
+    elif mode == 'cpu':
+        print(json.dumps(raise_cpu(spec, folder, json.load(sys.stdin))))
     elif mode == 'checkpoint':
         print(json.dumps(checkpoint_stop(spec, folder)))
     else:

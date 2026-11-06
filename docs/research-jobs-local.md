@@ -4,7 +4,7 @@ A local Job's attempt runs as two transient units of your systemd user manager. 
 
 ## The two units
 
-- **The worker** (`yuzuno-job-<jobId>.service`) runs the command with the Job's limits: memory, swap, CPU and at most 512 tasks. It writes the attempt's start receipt (`started.json`: its boot, its systemd invocation and its cgroup) before the command starts. It writes `command.json` once the command exists.
+- **The worker** (`yuzuno-job-<jobId>.service`) runs the command with the Job's limits: memory, swap, its CPU grant (below) and at most 512 tasks. It writes the attempt's start receipt (`started.json`: its boot, its systemd invocation and its cgroup) before the command starts. It writes `command.json` once the command exists.
 - **The collector** (`yuzuno-job-<jobId>-collector.service`) is `host.py supervise`, outside the worker's limits (64 MiB, a tenth of a CPU, 16 tasks). It starts the worker and records how the attempt ended, so an outcome is recorded even while Core is stopped or restarting. Its first record is `launch.json`, with its own cgroup.
 
 ## While an attempt runs
@@ -50,6 +50,29 @@ That count doesn't depend on how long the attempt runs or how many Jobs run besi
 - **The collector died or was stopped.** The worker goes on. Core asks once when the collector's cgroup goes, and again once the worker's cgroup empties; then it records the outcome from systemd itself. Until then the worker's own systemd time limit still applies, but no collector enforces a service run's end time.
 - **The collector's launch record is still missing** 30 s after Core first saw the attempt. Core asks systemd itself.
 - **A helper run fails** (for example, systemctl timed out). The attempt shows `unknown` with the reason, and Core asks again on the schedule above.
+
+## A Job's CPU: the grant and the raise
+
+A Job asks for CPU as one value (`cpuMillis`) or as a range (`cpuMillisMin` up to `cpuMillisMax`, with `cpuPolicy`) (T-64). Admission reserves the minimum and the collector, as it reserved `cpuMillis` before. What the Job runs with is Core's grant.
+
+**At the start.** In the transaction that reserves it, Core decides the grant:
+- `grant = clamp(free − headroom, min, max)`;
+- free is the budget less what every Job holding it has now: its current grant and its collector, or, for a Job without a grant (a Windows Job, or one reserved by an older Core), its reservation;
+- headroom is the Job's own collector, 100 mCPU;
+- the grant is the minimum while any other local Job is queued, and always with `cpuPolicy: "fixed"`;
+- a Job with one value has min = max, so its grant is that value, as before.
+
+The grant becomes the worker's `CPUQuota` (cgroup `cpu.max`), and its `CPUWeight` is its minimum / 20, so that 2000 mCPU is systemd's default of 100. The worker checks both before the command starts. The Job records the grant and its inputs: `cpuRequested`, `cpuGrantedAtStart`, `cpuGrant` (budget, held, free, headroom, queue length, maxActive, time) and `cpuCurrent`.
+
+**While it runs.** On a Jobs tick with nothing queued, Core raises running elastic Jobs, the oldest start first: each takes what is still free, up to its maximum.
+- The raise is `systemctl --user set-property --runtime <worker> CPUQuota=`, applied by systemd at once; the worker cgroup's `cpu.max`, read back, confirms it.
+- Each raise is appended to the Job's `cpuChanges`, and `cpuCurrent` follows it. A raise systemd refused is kept as `cpuRaiseRefusal` and not asked again for the same value.
+- Nothing is ever lowered: a Job queued later starts at its own minimum, so CPU quotas can add up to more than the budget. When Jobs then contend, their weights share the CPU.
+- The reservation stays the minimum throughout. Memory is untouched (lowering it is `job_lower_memory`, unchanged).
+
+**What the command reads.** `YUZUNO_JOB_CPU_MILLIS` is the grant at its start. The file `YUZUNO_JOB_CPU_FILE` names holds the grant now, on one line in millicores: Core writes it before the launch, and again after each raise once `cpu.max` allows it. Rust (`available_parallelism`), Cargo, libtest and Ninja read the quota when a process starts, so a raise helps the next process, not one already running.
+
+**Where the weight counts.** `cpu.weight` only shares CPU among siblings of one parent cgroup. The worker units are services in the systemd user manager's `app.slice` (`/user.slice/user-<uid>.slice/user@<uid>.service/app.slice/`), beside each other and their collectors. On the WSL host checked (2026-11-06), Core itself runs in `/init.scope` at the root, outside the user manager. A Job's weight is therefore its share among Jobs only; between Core and the Jobs, `init.scope` and `user.slice` share the CPU at their own weights (100 each there).
 
 ## Reading a running Job
 

@@ -211,6 +211,8 @@ fn budget_shortage(need: &Resources, free: &Resources) -> Option<(&'static str, 
 fn triple(r: &Resources) -> String {
     format!("{} mCPU / {} MiB RAM / {} MiB swap", r.cpu_millis, r.memory_mi_b, r.swap_mi_b)
 }
+/// What job_budget's CPU hints are, and are not (T-64).
+const CPU_HINT: &str = "cpuMillisFree (the budget less every running Job's current CPU grant and collector), queueLength (local Jobs waiting) and running (local Jobs running) are read now, to choose a CPU range with: they are not an entitlement. A Job's grant is decided when it starts.";
 pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
     db.execute(
         "UPDATE local_jobs SET status=?2,reserved=?3,data=?4 WHERE id=?1",
@@ -436,7 +438,7 @@ pub(super) fn new_job(
     ensure!(waiting < 200, "Local job queue is full (200)");
     let remote = input.machine_id.is_some();
     let windows = input.machine_id.as_deref() == Some(super::remote::WINDOWS);
-    let reservation = input.resources.reservation();
+    let reservation = input.resources.point().reservation();
     // Windows on this PC holds this host's budget (see reserved): it must be
     // able to fit it. job_submit sets the budget first if none is stored.
     if windows {
@@ -646,7 +648,7 @@ impl Store {
         // it is refused now rather than waiting forever.
         if let Some(id) = input.machine_id.as_deref().filter(|id| *id != super::remote::WINDOWS) {
             if let Some(limit) = super::remote::machine_settings(&tx, id)?.and_then(|m| m.budget) {
-                let need = input.resources.reservation();
+                let need = input.resources.point().reservation();
                 ensure!(need.cpu_millis <= u64::from(limit.cpu_millis) && need.memory_mi_b <= u64::from(limit.memory_mib),
                     "Job can never fit this machine's Jobs budget ({} mCPU / {} MiB RAM, including 64 MiB / 100 millicore for its supervisor); reduce resources or change the machine's budget",
                     limit.cpu_millis, limit.memory_mib);
@@ -1106,6 +1108,9 @@ impl Store {
                     }
                 },
             };
+            // Its CPU within what it asked for (T-64), decided before it holds
+            // any of the budget: what is free, and whether anything else waits.
+            super::cpu::record_grant(&tx, &mut job, limit.cpu_millis, queued.len().saturating_sub(1), max_active(&tx)?)?;
             job["reserved"] = json!(true);
             // A queued job has not started: bind its attempt to the boot at reservation,
             // not the earlier submission boot. Started attempts never get rebound.
@@ -1258,6 +1263,13 @@ impl Store {
             |r| r.get(0),
         )?;
         let available = limit.available(&used);
+        // Hints for choosing a CPU range (T-64), as the grant rule reads them now.
+        let cpu_free = limit.cpu_millis.saturating_sub(super::cpu::held(&db)?);
+        let running: i64 = db.query_row(
+            "SELECT COUNT(*) FROM local_jobs WHERE status='running' AND json_extract(data,'$.executor') IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
         let mut capacity = super::resource_summary::capacity(&limit, &available, &machine);
         capacity["snapshot"]["observedAt"] = json!(now());
         let windows_cap = windows_max_jobs(&db)?;
@@ -1270,7 +1282,7 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
     /// A budget save that leaves maxActive as it is (tests; the route takes both).

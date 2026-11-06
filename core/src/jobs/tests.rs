@@ -89,7 +89,7 @@ fn a_whole_host_budget_admits_more_than_the_old_shares_and_waits_only_for_free_m
     // Above the 24000 mCPU / 20053 MiB an older Core allowed on this host.
     s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 40107, swap_mi_b: 0 }).unwrap();
     let mut request = input("whole-host");
-    request.resources = Resources { cpu_millis: 30000, memory_mi_b: 30000, swap_mi_b: 0 };
+    request.resources = Requested { cpu_millis: 30000, memory_mi_b: 30000, swap_mi_b: 0, ..Requested::default() };
     let job = s
         .create_job(Some("a"), request, json!({"cwd":"/workspace"}), machine.clone(), json!({}))
         .unwrap();
@@ -121,10 +121,11 @@ fn two_development_jobs_need_collector_capacity_and_budget_edits_resume_same_que
     let jobs: Vec<_> = (0..3)
         .map(|i| {
             let mut request = input(&format!("development-{i}"));
-            request.resources = Resources {
+            request.resources = Requested {
                 cpu_millis: 2000,
                 memory_mi_b: 4096,
                 swap_mi_b: 0,
+                ..Requested::default()
             };
             s.create_job(
                 Some("a"),

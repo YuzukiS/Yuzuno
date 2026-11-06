@@ -176,9 +176,9 @@ class StageGuardTests(unittest.TestCase):
 
 
 def job_cgroup():
-    """This process's cgroup limits as a spec's resources, when it runs inside a
-    managed Job: launch()'s own check of its limits then passes, so its start
-    check runs for real. None anywhere else."""
+    """This process's cgroup limits as a spec's resources and CPU grant, when it
+    runs inside a managed Job: launch()'s own check of its limits then passes,
+    so its start check runs for real. None anywhere else."""
     if not os.environ.get('YUZUNO_JOB_ID'):
         return None
     try:
@@ -187,13 +187,16 @@ def job_cgroup():
         memory = int((group / 'memory.max').read_text())
         swap = int((group / 'memory.swap.max').read_text())
         quota, period = map(int, (group / 'cpu.max').read_text().split())
+        weight = int((group / 'cpu.weight').read_text())
         pids = (group / 'pids.max').read_text().strip()
     except (OSError, ValueError, IndexError):
         return None
     mib = 1024 * 1024
     if pids != str(host.TASKS_MAX) or memory % mib or swap % mib or quota * 1000 % period:
         return None
-    return {'cpuMillis': quota * 1000 // period, 'memoryMiB': memory // mib, 'swapMiB': swap // mib}
+    # The minimum as cpu.weight follows it (host.cpu_weight), the grant as cpu.max.
+    return {'resources': {'cpuMillis': weight * 20, 'memoryMiB': memory // mib, 'swapMiB': swap // mib},
+            'cpuGrantedAtStart': quota * 1000 // period}
 
 
 class GuardPathsTests(unittest.TestCase):
@@ -230,11 +233,11 @@ class GuardPathsTests(unittest.TestCase):
 
     def started(self, spec):
         """The worker's own start of this frozen spec: its exit status and why it refused, if it did."""
-        resources = job_cgroup()
-        if resources is None:
+        limits = job_cgroup()
+        if limits is None:
             self.skipTest('needs a managed Job: the worker checks its cgroup limits before the start check')
         spec = {'id': 'job', 'attempt': 'attempt', 'argv': ['/bin/true'], 'env': {'PATH': '/usr/bin:/bin'},
-                'resources': resources, 'timeoutSeconds': 60, **spec}
+                **limits, 'timeoutSeconds': 60, **spec}
         code = host.launch(spec, self.folder, {'at': 'prepare'})
         return code, (host.read(self.folder / 'input-changed.json') or {}).get('reason'), spec
 

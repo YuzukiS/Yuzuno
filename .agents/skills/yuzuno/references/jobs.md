@@ -28,6 +28,17 @@ Use the parameters your session advertises: a session that loaded its tool schem
 - Declare report files in `outputs`, set a realistic `timeoutSeconds`, and use a stable `requestId`.
 - Do not start a second resource manager inside the Job (for example a scope that escapes its cgroup). Project limits such as concurrency slots or memory caps come from the project's instructions.
 
+## A CPU range
+
+- `resources.cpuMillis` alone runs the Job at exactly that, as before.
+- For work that scales with cores (a build, a test suite), give a range instead: `cpuMillisMin`, which admission reserves as it reserved `cpuMillis`, and `cpuMillisMax`. Core decides the grant when the Job starts: `clamp(free − 100, min, max)`, where free is the budget less every running Job's current grant and collector, and 100 mCPU is the Job's own collector. While other Jobs are queued the grant is the minimum.
+- While nothing is queued and the budget frees, Core raises a running Job's grant, the oldest Job first, up to its maximum. A grant is never lowered: a Job queued later starts at its own minimum, and when Jobs contend, each one's share follows its minimum (cgroup `cpu.weight`, 100 for 2000 mCPU).
+- `cpuPolicy: "fixed"` always runs at the minimum: use it for timing-sensitive tests, benchmarks and performance gates, and to reproduce a red at the grant it had.
+- Read the grant inside the Job: `YUZUNO_JOB_CPU_MILLIS` is the grant at its start, and the file `YUZUNO_JOB_CPU_FILE` names holds it now (one line, in millicores, rewritten after each raise).
+- Rust's `available_parallelism`, Cargo's `-j`, libtest's `--test-threads` and Ninja size themselves from the cgroup's CPU quota when a process starts. So a raise helps the next process (the next `cargo` invocation), not a build already running. A tool that counts CPUs instead (Python's `os.cpu_count()`, Chromium) sees every CPU of the host: size it from the grant yourself.
+- `job_get` shows `cpuRequested` {min, max, policy}, `cpuGrantedAtStart` with the inputs it was decided from (`cpuGrant`), `cpuCurrent` and each raise in `cpuChanges`. `job_budget`'s `cpuMillisFree`, `queueLength` and `running` are hints for choosing a range, read now; they are not an entitlement.
+- A range is for this host's Jobs only: on an SSH machine or Windows, give `cpuMillis`.
+
 ## GPUs
 
 - A command that uses a local NVIDIA GPU declares `gpu` with the `memoryMiB` it needs on the card, with margin. Admission reserves a device by UUID together with CPU and RAM and sets `CUDA_VISIBLE_DEVICES` to the reserved UUIDs: use that, never pick a device yourself. A GPU command without `gpu` is invisible to admission.
