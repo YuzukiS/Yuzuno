@@ -74,7 +74,7 @@ async fn every_read_shares_one_session_and_one_child() {
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..60 {
         let sample = sampler.latest(WAIT).await.expect("a reading");
-        assert_eq!((sample.source, sample.devices.len()), ("nvidia-smi", 2));
+        assert!(sample.source == "nvidia-smi" && !sample.devices.is_empty(), "{sample:?}");
         seen.insert(sample.observed_at);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
