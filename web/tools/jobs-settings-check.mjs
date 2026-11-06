@@ -91,6 +91,8 @@ const answers = {
   "/api/reviews": () => noReviews,
   "/api/catchup": () => ({ items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } }),
 };
+/** The open conversation's own writes: where it was read, and that it was. */
+const appOwn = (path) => /^\/api\/agents\/a\/(reading|review)$/.test(path);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const server = createServer(async (req, res) => {
   try {
@@ -103,6 +105,8 @@ const server = createServer(async (req, res) => {
         res.writeHead(status, { "Content-Type": "application/json" });
         res.end(JSON.stringify(value));
       };
+      // Reads Home makes by POST: the repositories linked to a project.
+      if (req.method === "POST" && path === "/api/collaboration/github_repositories") return send(200, { repositories: [], links: [] });
       if (req.method !== "GET") {
         const body = raw ? JSON.parse(raw) : null;
         report.writes.push({ method: req.method, path, body });
@@ -117,8 +121,9 @@ const server = createServer(async (req, res) => {
           state.machines[index] = { ...state.machines[index], ...body };
           return send(200, state.machines[index]);
         }
-        // Reading where an Agent was read is the app's own; the rest is not this check's.
-        if (/^\/api\/agents\/a\/reading$/.test(path)) return send(200, { accepted: true, sourceSeq: 0 });
+        // Where an Agent was read, and that it was, are the app's own writes;
+        // the rest is not this check's.
+        if (appOwn(path)) return send(200, path.endsWith("/reading") ? { accepted: true, sourceSeq: 0 } : {});
         return send(400, { error: `Unexpected ${req.method} ${path} in this check` });
       }
       const answer = answers[path];
@@ -258,7 +263,7 @@ try {
       await context.close();
     }
   }
-  const writes = report.writes.filter((w) => w.path !== "/api/agents/a/reading");
+  const writes = report.writes.filter((w) => !appOwn(w.path));
   assert.equal(writes.filter((w) => w.path === "/api/jobs/budget").length, runs.length, "one budget save per run");
   assert.equal(writes.filter((w) => w.method === "PUT" && w.path === "/api/machines/mini").length, 1, "one machine save");
   assert.equal(writes.length, runs.length + 1, "nothing else was written");

@@ -2,7 +2,7 @@
 // the Jobs card showed in place before, and each SSH machine's, which its
 // editor on the Machines page also has. Each reads what it shows itself and
 // saves through Core's existing routes; Core's refusals are shown as they came.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { api, errorText } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -150,6 +150,7 @@ export function RemoteJobsEditor({ active, onOpenMachines }: { active: boolean; 
   const [saved, setSaved] = useState<{ id: string; name: string; round: number } | null>(null);
   const [reload, setReload] = useState(0);
   const picker = useRef<HTMLSelectElement>(null);
+  const pickerId = useId();
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
@@ -187,12 +188,17 @@ export function RemoteJobsEditor({ active, onOpenMachines }: { active: boolean; 
       )}
       {remote.length > 0 && (
         <div className="settings-group jobs-settings-group">
-          <label className="settings-row jobs-settings-row">
+          {/* Named by its label alone: a label around the picker would add
+              its options' words to its name. */}
+          <div className="settings-row jobs-settings-row">
             <span className="settings-row-main">
-              <span className="settings-row-title">{t.machine}</span>
+              <label className="settings-row-title" htmlFor={pickerId}>
+                {t.machine}
+              </label>
             </span>
             <span className="jobs-settings-control">
               <select
+                id={pickerId}
                 ref={picker}
                 className="settings-select"
                 name="machine"
@@ -211,7 +217,7 @@ export function RemoteJobsEditor({ active, onOpenMachines }: { active: boolean; 
                 ))}
               </select>
             </span>
-          </label>
+          </div>
         </div>
       )}
       {machine && (

@@ -376,6 +376,9 @@ test("the remote tab lists only SSH machines, opens none by default, and saves t
     assert.deepEqual([...picker.options].map((o) => o.value), ["", "mini", "studio"], "only SSH machines are listed; the Core host is in the other tab");
     assert.deepEqual([...picker.options].map((o) => o.textContent), ["Choose a machine…", "Mac mini · mac-mini", "Studio · me@studio.local"], "each machine shows its name and destination as written");
     assert.equal(picker.value, "", "no machine is chosen by default");
+    // Named by its label alone, so its name is not followed by its options.
+    assert.equal(section.querySelector(`label[for="${picker.id}"]`)?.textContent, "Machine", "the picker is named Machine by its label");
+    assert.equal(!!picker.closest("label"), false, "no label wraps the picker");
     assert.equal(!!section.querySelector(".remote-machine-editor"), false, "no editor before a machine is chosen");
     picker.focus();
     await type(p, picker, "mini");
