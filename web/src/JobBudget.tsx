@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { LoaderCircle } from "lucide-react";
 import { post, errorText } from "./api";
 import { readMachineLoad } from "./home/home-api";
@@ -318,6 +318,21 @@ export const maxActiveOf = (view: JobsBudgetView): MaxActive | null =>
       }
     : null;
 
+/** A field's draft: what Core has, until it is edited, and again whenever
+ * Core's value changes (a save, or a read again), set while rendering. An
+ * effect would reset it after the first commit, and a first keystroke that
+ * came before that effect ran was undone by it (the CPU quota typed at once
+ * came back as Core's). */
+function useDraft<T>(saved: T, key: string): [T, Dispatch<SetStateAction<T>>] {
+  const [draft, setDraft] = useState(saved);
+  const [from, setFrom] = useState(key);
+  if (from !== key) {
+    setFrom(key);
+    setDraft(saved);
+  }
+  return [draft, setDraft];
+}
+
 /** A field of Settings' Core host editor: its words beside it, its input
  * named so the label reads it. */
 function SettingField({
@@ -395,15 +410,11 @@ export function BudgetSettings({
   onSaved: () => void;
 }) {
   const t = useStrings(text);
-  const [value, setValue] = useState(budget);
-  useEffect(() => setValue(budget), [budget.cpuMillis, budget.memoryMiB, budget.swapMiB]);
-  const [slots, setSlots] = useState(maxActive ? String(maxActive.value) : "");
+  const [value, setValue] = useDraft(budget, `${budget.cpuMillis}:${budget.memoryMiB}:${budget.swapMiB}`);
+  const slotsKey = maxActive ? `${maxActive.value}:${maxActive.set}` : "";
+  const [slots, setSlots] = useDraft(maxActive ? String(maxActive.value) : "", slotsKey);
   // Use default chosen: the default shows, and null is sent.
-  const [toDefault, setToDefault] = useState(false);
-  useEffect(() => {
-    setSlots(maxActive ? String(maxActive.value) : "");
-    setToDefault(false);
-  }, [maxActive?.value, maxActive?.set]);
+  const [toDefault, setToDefault] = useDraft(false, slotsKey);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -422,9 +433,10 @@ export function BudgetSettings({
     value.memoryMiB !== budget.memoryMiB ||
     value.swapMiB !== budget.swapMiB ||
     "maxActive" in slotsChange;
-  const edit = (next: Resources) => {
+  // Each field changes only its own part, whatever the others are by then.
+  const edit = (change: Partial<Resources>) => {
     setDone(false);
-    setValue(next);
+    setValue((old) => ({ ...old, ...change }));
   };
   return (
     <form
@@ -502,7 +514,7 @@ export function BudgetSettings({
             step="0.1"
             required
             value={value.cpuMillis / 1000}
-            onChange={(e) => edit({ ...value, cpuMillis: Math.round(Number(e.target.value) * 1000) })}
+            onChange={(e) => edit({ cpuMillis: Math.round(Number(e.target.value) * 1000) })}
           />
         )}
       </SettingField>
@@ -517,7 +529,7 @@ export function BudgetSettings({
             max={bounds?.maximum.memoryMiB}
             required
             value={value.memoryMiB}
-            onChange={(e) => edit({ ...value, memoryMiB: Number(e.target.value) })}
+            onChange={(e) => edit({ memoryMiB: Number(e.target.value) })}
           />
         )}
       </SettingField>
@@ -532,7 +544,7 @@ export function BudgetSettings({
             max={bounds?.maximum.swapMiB}
             required
             value={value.swapMiB}
-            onChange={(e) => edit({ ...value, swapMiB: Number(e.target.value) })}
+            onChange={(e) => edit({ swapMiB: Number(e.target.value) })}
           />
         )}
       </SettingField>
@@ -647,8 +659,7 @@ export function DiskSpace({ disk }: { disk: DiskView }) {
 export function DiskReserveSettings({ disk, onSaved }: { disk: DiskView; onSaved: () => void }) {
   const t = useStrings(text);
   const saved = disk.reserveGiB == null ? "" : String(disk.reserveGiB);
-  const [value, setValue] = useState(saved);
-  useEffect(() => setValue(saved), [saved]);
+  const [value, setValue] = useDraft(saved, saved);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -758,8 +769,7 @@ export function WindowsJobs({ windows }: { windows: WindowsJobsView }) {
 export function WindowsJobsSettings({ windows, onSaved }: { windows: WindowsJobsView; onSaved: () => void }) {
   const t = useStrings(text);
   const saved = windows.set ? String(windows.maxJobs) : "";
-  const [value, setValue] = useState(saved);
-  useEffect(() => setValue(saved), [saved]);
+  const [value, setValue] = useDraft(saved, saved);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -1008,11 +1018,9 @@ export function GpuDeviceSettings({ gpus, onSaved }: { gpus: GpuView; onSaved: (
 function GpuSettings({ device, onSaved }: { device: GpuDevice; onSaved: () => void }) {
   const t = useStrings(text);
   const [reason, setReason] = useState("");
-  const [sharing, setSharing] = useState(device.sharing);
-  const [headroom, setHeadroom] = useState(String(device.headroomMiB));
   // What Core has, again whenever it changes: after a save, or another window's.
-  useEffect(() => setSharing(device.sharing), [device.sharing]);
-  useEffect(() => setHeadroom(String(device.headroomMiB)), [device.headroomMiB]);
+  const [sharing, setSharing] = useDraft(device.sharing, String(device.sharing));
+  const [headroom, setHeadroom] = useDraft(String(device.headroomMiB), String(device.headroomMiB));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
