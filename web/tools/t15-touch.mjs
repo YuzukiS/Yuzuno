@@ -77,8 +77,12 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 
 const browser = await launchBrowser();
 const errors = [];
+// 951x669 is the fixture this task is about; T15_HEIGHT shortens it, which is
+// how the "row below the list's fold" branch below is exercised on a machine
+// where every row happens to fit.
 const context = await browser.newContext({
-  viewport: { width: 951, height: 669 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
+  viewport: { width: 951, height: Number(process.env.T15_HEIGHT || 669) },
+  hasTouch: true, isMobile: true, reducedMotion: "reduce" });
 const page = await context.newPage();
 await page.addInitScript(([right, lang]) => {
   window.EventSource = class { close() {} };
@@ -205,6 +209,18 @@ const sweep = (want) => {
         top: Math.round(cy - up), bottom: Math.round(cy + down) },
       text: (el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 28),
       thieves,
+      // What its nearest scrolling ancestor keeps out of sight. A probe stops
+      // at the edge of that box, so a row scrolled half out measures short
+      // without being small: it is a row to scroll to, not a target to fix.
+      cut: (() => {
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          const o = getComputedStyle(p).overflowY;
+          if (o === "visible") continue;
+          const pr = p.getBoundingClientRect();
+          return Math.round(Math.max(0, pr.top - r.top) + Math.max(0, r.bottom - pr.bottom));
+        }
+        return 0;
+      })(),
     });
   }
   // Do two targets' regions take each other's presses? Neighbours that
@@ -218,7 +234,9 @@ const sweep = (want) => {
       if (w > 1 && h > 1) overlaps.push({ a: targets[i].what, b: targets[j].what,
         where: targets[i].where, by: `${Math.round(w)}x${Math.round(h)}` });
     }
-  return { targets, skipped, covered, overlaps, want };
+  const list = document.querySelector(".work-activity-column-list");
+  const scrolls = !!list && list.scrollHeight > list.clientHeight + 1;
+  return { targets, skipped, covered, overlaps, want, scrolls };
 };
 const audit = await page.evaluate(sweep, WANT);
 
@@ -303,10 +321,26 @@ if (entry) {
   for (const t of rows.slice(0, 6))
     console.log(`    ${t.what}  box ${t.box.w}x${t.box.h}  hit ${t.hit.w}x${t.hit.h}  "${t.text}"`);
   check(rows.length > 0, `the column opens with the work in it (${rows.length} rows)`);
-  check(shortRows.length === 0,
-    shortRows.length
-      ? `every row in it is at least ${WANT}px, but ${shortRows.map((t) => `${t.what} ${t.hit.w}x${t.hit.h}`).join(", ")}`
-      : `every row in it is at least ${WANT}px by hit test, which is the way in the dock gave up`);
+  const whole = rows.filter((t) => !t.cut);
+  const below = rows.filter((t) => t.cut);
+  const tooSmall = whole.filter((t) => Math.min(t.hit.w, t.hit.h) < WANT);
+  check(whole.length > 0, `and some of them are wholly in view to judge (${whole.length} of ${rows.length})`);
+  check(tooSmall.length === 0,
+    tooSmall.length
+      ? `every row wholly in view is at least ${WANT}px, but ${tooSmall.map((t) => `${t.what} ${t.hit.w}x${t.hit.h}`).join(", ")}`
+      : `every row wholly in view is at least ${WANT}px by hit test, which is the way in the dock gave up`);
+  if (below.length) {
+    console.log(`  ${below.length} row(s) reach past the list's edge: ${below.map((t) => `${t.what} box ${t.box.h}px, ${t.cut}px out of view`).join(", ")}`);
+    // Short only because the list ends there, so the list has to scroll.
+    check(open.scrolls, `and the rest are reached by scrolling the list (${below.length} below the fold, list scrolls: ${open.scrolls})`);
+    // And they are drawn full size, or being below the fold would excuse a
+    // row that is genuinely too small once it is scrolled to.
+    const drawnSmall = below.filter((t) => Math.min(t.box.w, t.box.h) < WANT);
+    check(drawnSmall.length === 0,
+      drawnSmall.length
+        ? `each is still drawn at least ${WANT}px, but ${drawnSmall.map((t) => `${t.what} box ${t.box.w}x${t.box.h}`).join(", ")}`
+        : `and each is drawn at least ${WANT}px (${below.map((t) => `${t.box.h}px`).join(", ")}), so scrolling to it gives a full target`);
+  }
   check(open.overlaps.length === 0,
     open.overlaps.length ? `and no two of them take each other's presses, but ${open.overlaps.length} pairs do` : "and no two of them take each other's presses");
 }
