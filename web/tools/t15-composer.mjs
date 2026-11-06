@@ -6,10 +6,9 @@
 // d6 asked for four rows; T-44 was approved later and it stands. What is
 // checked here is that this task's layout leaves all of that working, and
 // that the input area, the head and the rail keep out of each other.
-// Jobs, CI runs and sub-agents each hand their work to the dock, and the
-// entry beside the conversation's name says it once: what needs a look
-// first, then what is going on, never a total across the three.
-//   YUZUNO_UI_DIST=<isolated build> node tools/t15-work-entry.mjs
+//   YUZUNO_UI_DIST=<isolated build> node tools/t15-composer.mjs
+// With an Agent at work, so Interrupt is there to press:
+//   T15_WORKING=1 YUZUNO_UI_DIST=<isolated build> node tools/t15-composer.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";

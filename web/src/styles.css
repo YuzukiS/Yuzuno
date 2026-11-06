@@ -3771,3 +3771,34 @@ p {
   position: relative;
   z-index: 5;
 }
+
+/* The chrome above the conversation on a middle-sized workbench (T-15 V4).
+   At 951x669 the two rows above the conversation cost 122px — a toolbar of
+   57 and a header of 65 — to carry contents 32px and 40px tall. The rest is
+   breathing room a tall desktop can spend and a short screen cannot: 122 of
+   669 is nearly a fifth of the window before a word of the conversation.
+   A short screen, or any screen worked by touch, keeps the contents and
+   gives back the room around them. The header's own buttons grow to 40px in
+   the same breath (V3), so the shorter head is not a harder one to hit: 32px
+   inside a padded group cost the same 40px of header that a 40px button
+   costs without the padding. A tall screen with a mouse is left as it was. */
+@media (max-height: 820px), (hover: none) and (pointer: coarse) {
+  .app:not(.phone) {
+    grid-template-rows: 48px minmax(0, 1fr) 27px;
+  }
+  .app:not(.phone):has(.preview-strip) {
+    grid-template-rows: 28px 48px minmax(0, 1fr) 27px;
+  }
+  .app:not(.phone) .conversation-header {
+    padding-block: 6px;
+  }
+  /* The group keeps its outline — it reads as one set of tools — and loses
+     only the padding inside it. */
+  .app:not(.phone) .conversation-header .conversation-actions {
+    padding: 0;
+  }
+  .app:not(.phone) .conversation-action {
+    height: 40px;
+    min-width: 40px;
+  }
+}
